@@ -17,11 +17,11 @@ trait EpochSchedule:
     comptime SUPPORTS_MINIBATCH_NORM: Bool
 
     @staticmethod
-    fn get_num_epochs(num_epochs: Int) -> Int:
+    def get_num_epochs(num_epochs: Int) -> Int:
         ...
 
     @staticmethod
-    fn get_minibatch_size(minibatch_size: Int, buf_len: Int) -> Int:
+    def get_minibatch_size(minibatch_size: Int, buf_len: Int) -> Int:
         ...
 
 
@@ -41,12 +41,12 @@ struct SinglePass(EpochSchedule):
     comptime SUPPORTS_MINIBATCH_NORM: Bool = False
 
     @staticmethod
-    fn get_num_epochs(num_epochs: Int) -> Int:
+    def get_num_epochs(num_epochs: Int) -> Int:
         """Always returns 1."""
         return 1
 
     @staticmethod
-    fn get_minibatch_size(minibatch_size: Int, buf_len: Int) -> Int:
+    def get_minibatch_size(minibatch_size: Int, buf_len: Int) -> Int:
         """Returns the full buffer length."""
         return buf_len
 
@@ -68,11 +68,11 @@ struct MultiEpochMinibatch(EpochSchedule):
     comptime SUPPORTS_MINIBATCH_NORM: Bool = True
 
     @staticmethod
-    fn get_num_epochs(num_epochs: Int) -> Int:
+    def get_num_epochs(num_epochs: Int) -> Int:
         """Returns the configured number of epochs."""
         return num_epochs
 
     @staticmethod
-    fn get_minibatch_size(minibatch_size: Int, buf_len: Int) -> Int:
+    def get_minibatch_size(minibatch_size: Int, buf_len: Int) -> Int:
         """Returns the configured minibatch size."""
         return minibatch_size

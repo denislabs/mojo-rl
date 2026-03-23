@@ -19,12 +19,12 @@ OnPolicyDiscreteState / OnPolicyContinuousState (CPU buffer container traits):
 Usage — new OnPolicyDiscreteAgent style (PPO):
     struct MyAgent[...](OnPolicyDiscreteAgent):
         comptime CPUStateType = PPODiscreteState[...]
-        fn make_cpu_state(self) -> Self.CPUStateType: ...
-        fn collect_rollout[E](mut self, mut cpu_state, mut env: E) -> None: ...
-        fn compute_advantages(mut self, mut cpu_state) -> None: ...
-        fn update_epochs(mut self, mut cpu_state) -> Float64: ...
-        fn select_greedy_action(self, cpu_state, obs) -> List[Float64]: ...
-        fn get_explore_rate(self) -> Float64: ...
+        def make_cpu_state(self) -> Self.CPUStateType: ...
+        def collect_rollout[E](mut self, mut cpu_state, mut env: E) -> None: ...
+        def compute_advantages(mut self, mut cpu_state) -> None: ...
+        def update_epochs(mut self, mut cpu_state) -> Float64: ...
+        def select_greedy_action(self, cpu_state, obs) -> List[Float64]: ...
+        def get_explore_rate(self) -> Float64: ...
 
     var agent = MyAgent[...]()
     var cpu_state = agent.make_cpu_state()
@@ -63,7 +63,7 @@ trait OnPolicyAgent:
     comptime ROLLOUT_LEN: Int
     """Number of steps per rollout buffer (compile-time constant)."""
 
-    fn collect_rollout[E: BoxDiscreteActionEnv](mut self, mut env: E) -> None:
+    def collect_rollout[E: BoxDiscreteActionEnv](mut self, mut env: E) -> None:
         """Collect exactly ROLLOUT_LEN steps in a discrete-action environment.
 
         Must handle episode resets internally when done=True.
@@ -74,7 +74,7 @@ trait OnPolicyAgent:
         """
         ...
 
-    fn collect_rollout_continuous[
+    def collect_rollout_continuous[
         E: BoxContinuousActionEnv
     ](mut self, mut env: E) -> None:
         """Collect exactly ROLLOUT_LEN steps in a continuous-action environment.
@@ -86,7 +86,7 @@ trait OnPolicyAgent:
         """
         ...
 
-    fn compute_advantages(mut self) -> None:
+    def compute_advantages(mut self) -> None:
         """Compute GAE advantages and returns from the collected rollout.
 
         Called after collect_rollout, before update_epochs.
@@ -94,7 +94,7 @@ trait OnPolicyAgent:
         """
         ...
 
-    fn update_epochs(mut self) -> Float64:
+    def update_epochs(mut self) -> Float64:
         """Update policy and value function using the collected rollout.
 
         For PPO: multiple epochs over minibatches with clipped surrogate loss.
@@ -105,7 +105,7 @@ trait OnPolicyAgent:
         """
         ...
 
-    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
+    def select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
         """Select action without exploration for evaluation.
 
         Args:
@@ -116,7 +116,7 @@ trait OnPolicyAgent:
         """
         ...
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         """Return current exploration rate (entropy coef, policy std, etc.)."""
         ...
 
@@ -126,7 +126,7 @@ trait OnPolicyAgent:
 # =============================================================================
 
 
-fn run_onpolicy_discrete_train[
+def run_onpolicy_discrete_train[
     E: BoxDiscreteActionEnv,
     A: OnPolicyAgent & Checkpointable,
     L: Logger = NoOpLogger,
@@ -140,9 +140,7 @@ fn run_onpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-        L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Shared on-policy discrete loop: collect → advantages → update × num_updates.
 
@@ -222,7 +220,7 @@ fn run_onpolicy_discrete_train[
 # =============================================================================
 
 
-fn run_onpolicy_continuous_train[
+def run_onpolicy_continuous_train[
     E: BoxContinuousActionEnv,
     A: OnPolicyAgent & Checkpointable,
     L: Logger = NoOpLogger,
@@ -236,9 +234,7 @@ fn run_onpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-        L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Shared on-policy continuous loop: collect → advantages → update × num_updates.
 
@@ -325,7 +321,7 @@ trait OnPolicyDiscreteState:
     Exposed to training loops via store_step / is_full / clear.
     """
 
-    fn store_step(
+    def store_step(
         mut self,
         obs: List[Scalar[DType.float32]],
         action: Int,
@@ -337,11 +333,11 @@ trait OnPolicyDiscreteState:
         """Store one (obs, action, reward, value, log_prob, done) step."""
         ...
 
-    fn is_full(self) -> Bool:
+    def is_full(self) -> Bool:
         """Return True when the rollout buffer is at capacity."""
         ...
 
-    fn clear(mut self) -> None:
+    def clear(mut self) -> None:
         """Reset the write pointer (does not zero the buffer)."""
         ...
 
@@ -358,7 +354,7 @@ trait OnPolicyContinuousState:
     (one float per action dimension) instead of Int.
     """
 
-    fn store_step(
+    def store_step(
         mut self,
         obs: List[Scalar[DType.float32]],
         action: List[Scalar[DType.float32]],
@@ -370,11 +366,11 @@ trait OnPolicyContinuousState:
         """Store one (obs, action, reward, value, log_prob, done) step."""
         ...
 
-    fn is_full(self) -> Bool:
+    def is_full(self) -> Bool:
         """Return True when the rollout buffer is at capacity."""
         ...
 
-    fn clear(mut self) -> None:
+    def clear(mut self) -> None:
         """Reset the write pointer (does not zero the buffer)."""
         ...
 
@@ -399,32 +395,32 @@ trait OnPolicyDiscreteAgent:
 
     comptime CPUStateType: OnPolicyDiscreteState
 
-    fn make_cpu_state(self) -> Self.CPUStateType:
+    def make_cpu_state(self) -> Self.CPUStateType:
         """Allocate a fresh CPUStateType. Networks initialized with Xavier."""
         ...
 
-    fn collect_rollout[
+    def collect_rollout[
         E: BoxDiscreteActionEnv
     ](mut self, mut cpu_state: Self.CPUStateType, mut env: E) -> None:
         """Collect exactly rollout_len steps into cpu_state rollout buffers."""
         ...
 
-    fn compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
+    def compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
         """Compute GAE advantages and returns from the collected rollout."""
         ...
 
-    fn update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
+    def update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         """Update actor/critic over multiple epochs. Returns mean policy loss.
         """
         ...
 
-    fn select_greedy_action(
+    def select_greedy_action(
         self, cpu_state: Self.CPUStateType, obs: List[Float64]
     ) -> List[Float64]:
         """Select a greedy action for evaluation."""
         ...
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         """Return current exploration coefficient."""
         ...
 
@@ -442,32 +438,32 @@ trait OnPolicyContinuousAgent:
 
     comptime CPUStateType: OnPolicyContinuousState
 
-    fn make_cpu_state(self) -> Self.CPUStateType:
+    def make_cpu_state(self) -> Self.CPUStateType:
         """Allocate a fresh CPUStateType."""
         ...
 
-    fn collect_rollout[
+    def collect_rollout[
         E: BoxContinuousActionEnv
     ](mut self, mut cpu_state: Self.CPUStateType, mut env: E) -> None:
         """Collect exactly rollout_len steps into cpu_state rollout buffers."""
         ...
 
-    fn compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
+    def compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
         """Compute GAE advantages and returns from the collected rollout."""
         ...
 
-    fn update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
+    def update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         """Update actor/critic over multiple epochs. Returns mean policy loss.
         """
         ...
 
-    fn select_greedy_action(
+    def select_greedy_action(
         self, cpu_state: Self.CPUStateType, obs: List[Float64]
     ) -> List[Float64]:
         """Select a deterministic action for evaluation."""
         ...
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         """Return current exploration coefficient."""
         ...
 
@@ -477,7 +473,7 @@ trait OnPolicyContinuousAgent:
 # =============================================================================
 
 
-fn run_onpolicy_discrete_train[
+def run_onpolicy_discrete_train[
     E: BoxDiscreteActionEnv,
     A: OnPolicyDiscreteAgent & Checkpointable,
     L: Logger = NoOpLogger,
@@ -492,9 +488,7 @@ fn run_onpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-        L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Shared on-policy discrete loop with explicit state: collect → advantages → update.
 
@@ -573,7 +567,7 @@ fn run_onpolicy_discrete_train[
 # =============================================================================
 
 
-fn run_onpolicy_continuous_train[
+def run_onpolicy_continuous_train[
     E: BoxContinuousActionEnv,
     A: OnPolicyContinuousAgent & Checkpointable,
     L: Logger = NoOpLogger,
@@ -588,9 +582,7 @@ fn run_onpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OnPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-        L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Shared on-policy continuous loop with explicit state: collect → advantages → update.
 

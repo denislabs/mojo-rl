@@ -7,7 +7,7 @@ from std.math import exp, log, tanh
 from std.random import random_float64
 
 
-fn test_rsample_op_shapes() raises:
+def test_rsample_op_shapes() raises:
     """Verify RSampleOp compile-time shape constants."""
     comptime A = 6
     comptime R = RSampleOp[A]
@@ -24,7 +24,7 @@ fn test_rsample_op_shapes() raises:
     print("  [PASS] RSampleOp shapes correct")
 
 
-fn test_rsample_op_forward() raises:
+def test_rsample_op_forward() raises:
     """Test RSampleOp forward pass produces valid actions and log_probs."""
     comptime A = 3
     comptime BS = 4
@@ -36,7 +36,9 @@ fn test_rsample_op_forward() raises:
             # mean values
             input_arr[b * 2 * A + j] = Scalar[dtype](0.5 * Float64(j))
             # tanh(raw_log_std) values in [-1, 1]
-            input_arr[b * 2 * A + A + j] = Scalar[dtype](0.0)  # maps to log_std = -1.5
+            input_arr[b * 2 * A + A + j] = Scalar[dtype](
+                0.0
+            )  # maps to log_std = -1.5
 
     var input_t = LayoutTensor[
         dtype, Layout.row_major(BS, 2 * A), MutAnyOrigin
@@ -55,9 +57,7 @@ fn test_rsample_op_forward() raises:
         dtype, Layout.row_major(RSampleOp[A].PARAM_SIZE), MutAnyOrigin
     ](params_arr.unsafe_ptr())
 
-    var cache_arr = InlineArray[Scalar[dtype], BS * 3 * A](
-        uninitialized=True
-    )
+    var cache_arr = InlineArray[Scalar[dtype], BS * 3 * A](uninitialized=True)
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BS, 3 * A), MutAnyOrigin
     ](cache_arr.unsafe_ptr())
@@ -95,7 +95,7 @@ fn test_rsample_op_forward() raises:
         print("  [PASS] RSampleOp forward: log_probs finite")
 
 
-fn test_rsample_op_backward() raises:
+def test_rsample_op_backward() raises:
     """Test RSampleOp backward produces non-zero gradients."""
     comptime A = 2
     comptime BS = 2
@@ -118,9 +118,7 @@ fn test_rsample_op_backward() raises:
     var params_t = LayoutTensor[
         dtype, Layout.row_major(RSampleOp[A].PARAM_SIZE), MutAnyOrigin
     ](params_arr.unsafe_ptr())
-    var cache_arr = InlineArray[Scalar[dtype], BS * 3 * A](
-        uninitialized=True
-    )
+    var cache_arr = InlineArray[Scalar[dtype], BS * 3 * A](uninitialized=True)
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BS, 3 * A), MutAnyOrigin
     ](cache_arr.unsafe_ptr())
@@ -134,9 +132,7 @@ fn test_rsample_op_backward() raises:
     # grad_action = -1/BS (from critic gradient), grad_log_prob = alpha/BS
     for b in range(BS):
         for j in range(A):
-            grad_out_arr[b * (A + 1) + j] = Scalar[dtype](
-                -1.0 / Float64(BS)
-            )
+            grad_out_arr[b * (A + 1) + j] = Scalar[dtype](-1.0 / Float64(BS))
         grad_out_arr[b * (A + 1) + A] = Scalar[dtype](
             0.2 / Float64(BS)
         )  # alpha=0.2
@@ -144,9 +140,7 @@ fn test_rsample_op_backward() raises:
     var grad_out_t = LayoutTensor[
         dtype, Layout.row_major(BS, A + 1), MutAnyOrigin
     ](grad_out_arr.unsafe_ptr())
-    var grad_in_arr = InlineArray[Scalar[dtype], BS * 2 * A](
-        uninitialized=True
-    )
+    var grad_in_arr = InlineArray[Scalar[dtype], BS * 2 * A](uninitialized=True)
     var grad_in_t = LayoutTensor[
         dtype, Layout.row_major(BS, 2 * A), MutAnyOrigin
     ](grad_in_arr.unsafe_ptr())
@@ -176,7 +170,7 @@ fn test_rsample_op_backward() raises:
         print("  [FAIL] RSampleOp backward: all gradients zero")
 
 
-fn test_min_op_shapes() raises:
+def test_min_op_shapes() raises:
     """Verify MinOp compile-time shape constants."""
     comptime M = MinOp[1]
 
@@ -188,7 +182,7 @@ fn test_min_op_shapes() raises:
     print("  [PASS] MinOp shapes correct")
 
 
-fn test_min_op_forward_backward() raises:
+def test_min_op_forward_backward() raises:
     """Test MinOp forward selects min and backward routes gradient."""
     comptime D = 1
     comptime BS = 4
@@ -247,21 +241,19 @@ fn test_min_op_forward_backward() raises:
     for b in range(BS):
         grad_out_arr[b] = Scalar[dtype](-1.0)
 
-    var grad_out_t = LayoutTensor[
-        dtype, Layout.row_major(BS, 1), MutAnyOrigin
-    ](grad_out_arr.unsafe_ptr())
+    var grad_out_t = LayoutTensor[dtype, Layout.row_major(BS, 1), MutAnyOrigin](
+        grad_out_arr.unsafe_ptr()
+    )
     var grad_in_arr = InlineArray[Scalar[dtype], BS * 2](uninitialized=True)
-    var grad_in_t = LayoutTensor[
-        dtype, Layout.row_major(BS, 2), MutAnyOrigin
-    ](grad_in_arr.unsafe_ptr())
+    var grad_in_t = LayoutTensor[dtype, Layout.row_major(BS, 2), MutAnyOrigin](
+        grad_in_arr.unsafe_ptr()
+    )
     var grad_params_arr = InlineArray[Scalar[dtype], 1](uninitialized=True)
     var grad_params_t = LayoutTensor[
         dtype, Layout.row_major(MinOp[D].PARAM_SIZE), MutAnyOrigin
     ](grad_params_arr.unsafe_ptr())
 
-    MinOp[D].vjp[BS](
-        grad_out_t, grad_in_t, params_t, cache_t, grad_params_t
-    )
+    MinOp[D].vjp[BS](grad_out_t, grad_in_t, params_t, cache_t, grad_params_t)
 
     # Check gradient routing
     var bwd_ok = True
@@ -286,7 +278,7 @@ fn test_min_op_forward_backward() raises:
         print("  [PASS] MinOp backward: gradient routing correct")
 
 
-fn main() raises:
+def main() raises:
     print("=== RSampleOp / MinOp Tests ===")
     test_rsample_op_shapes()
     test_rsample_op_forward()

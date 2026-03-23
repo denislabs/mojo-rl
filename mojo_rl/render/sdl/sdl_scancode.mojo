@@ -50,19 +50,19 @@ struct Scancode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime SCANCODE_UNKNOWN = Self(0)

@@ -73,19 +73,19 @@ struct TextureAccess(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime TEXTUREACCESS_STATIC = Self(0)
@@ -105,19 +105,19 @@ struct RendererLogicalPresentation(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime LOGICAL_PRESENTATION_DISABLED = Self(0)
@@ -160,7 +160,7 @@ struct Texture(ImplicitlyCopyable, Movable):
     """Application reference count, used when freeing texture."""
 
 
-fn get_num_render_drivers() raises -> c_int:
+def get_num_render_drivers() raises -> c_int:
     """Get the number of 2D rendering drivers available for the current display.
 
     A render driver is a set of code that handles rendering and texture
@@ -183,7 +183,7 @@ fn get_num_render_drivers() raises -> c_int:
     ]()()
 
 
-fn get_render_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_render_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Use this function to get the name of a built in 2D rendering driver.
 
     The list of rendering drivers is given in the order that they are normally
@@ -215,7 +215,7 @@ fn get_render_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()(index)
 
 
-fn create_window_and_renderer(
+def create_window_and_renderer(
     var title: String,
     width: c_int,
     height: c_int,
@@ -267,7 +267,7 @@ fn create_window_and_renderer(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_renderer(
+def create_renderer(
     window: Ptr[Window, MutAnyOrigin], var name: String
 ) raises -> Ptr[Renderer, MutAnyOrigin]:
     """Create a 2D rendering context for a window.
@@ -310,7 +310,7 @@ fn create_renderer(
     ]()(window, name.as_c_string_slice().unsafe_ptr())
 
 
-fn create_renderer_with_properties(
+def create_renderer_with_properties(
     props: PropertiesID,
 ) raises -> Ptr[Renderer, MutAnyOrigin]:
     """Create a 2D rendering context for a window, with the specified properties.
@@ -369,7 +369,7 @@ fn create_renderer_with_properties(
     ]()(props)
 
 
-fn create_software_renderer(
+def create_software_renderer(
     surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> Ptr[Renderer, MutAnyOrigin]:
     """Create a 2D software rendering context for a surface.
@@ -400,7 +400,7 @@ fn create_software_renderer(
     ]()(surface)
 
 
-fn get_renderer(
+def get_renderer(
     window: Ptr[Window, MutAnyOrigin],
     out ret: Ptr[Renderer, MutAnyOrigin],
 ) raises:
@@ -428,7 +428,7 @@ fn get_renderer(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_window(
+def get_render_window(
     renderer: Ptr[Renderer, MutAnyOrigin],
     out ret: Ptr[Window, MutAnyOrigin],
 ) raises:
@@ -456,7 +456,7 @@ fn get_render_window(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_renderer_name(
+def get_renderer_name(
     renderer: Ptr[Renderer, MutAnyOrigin],
     out ret: Ptr[c_char, ImmutAnyOrigin],
 ) raises:
@@ -486,7 +486,7 @@ fn get_renderer_name(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_renderer_properties(
+def get_renderer_properties(
     renderer: Ptr[Renderer, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a renderer.
@@ -584,7 +584,7 @@ fn get_renderer_properties(
     ]()(renderer)
 
 
-fn get_render_output_size(
+def get_render_output_size(
     renderer: Ptr[Renderer, MutAnyOrigin],
     w: Ptr[c_int, MutAnyOrigin],
     h: Ptr[c_int, MutAnyOrigin],
@@ -625,7 +625,7 @@ fn get_render_output_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_current_render_output_size(
+def get_current_render_output_size(
     renderer: Ptr[Renderer, MutAnyOrigin],
     w: Ptr[c_int, MutAnyOrigin],
     h: Ptr[c_int, MutAnyOrigin],
@@ -666,7 +666,7 @@ fn get_current_render_output_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_texture(
+def create_texture(
     renderer: Ptr[Renderer, MutAnyOrigin],
     format: PixelFormat,
     access: TextureAccess,
@@ -710,7 +710,7 @@ fn create_texture(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_texture_from_surface(
+def create_texture_from_surface(
     renderer: Ptr[Renderer, MutAnyOrigin],
     surface: Ptr[Surface, MutAnyOrigin],
     out ret: Ptr[Texture, MutAnyOrigin],
@@ -753,7 +753,7 @@ fn create_texture_from_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_texture_with_properties(
+def create_texture_with_properties(
     renderer: Ptr[Renderer, MutAnyOrigin],
     props: PropertiesID,
     out ret: Ptr[Texture, MutAnyOrigin],
@@ -876,7 +876,7 @@ fn create_texture_with_properties(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_texture_properties(
+def get_texture_properties(
     texture: Ptr[Texture, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a texture.
@@ -976,7 +976,7 @@ fn get_texture_properties(
     ]()(texture)
 
 
-fn get_renderer_from_texture(
+def get_renderer_from_texture(
     texture: Ptr[Texture, MutAnyOrigin]
 ) raises -> Ptr[Renderer, MutAnyOrigin]:
     """Get the renderer that created an SDL_Texture.
@@ -1001,7 +1001,7 @@ fn get_renderer_from_texture(
     ]()(texture)
 
 
-fn get_texture_size(
+def get_texture_size(
     texture: Ptr[Texture, MutAnyOrigin],
     w: Ptr[c_float, MutAnyOrigin],
     h: Ptr[c_float, MutAnyOrigin],
@@ -1038,7 +1038,7 @@ fn get_texture_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_texture_color_mod(
+def set_texture_color_mod(
     texture: Ptr[Texture, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
 ) raises:
     """Set an additional color value multiplied into render copy operations.
@@ -1079,7 +1079,7 @@ fn set_texture_color_mod(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_texture_color_mod_float(
+def set_texture_color_mod_float(
     texture: Ptr[Texture, MutAnyOrigin], r: c_float, g: c_float, b: c_float
 ) raises:
     """Set an additional color value multiplied into render copy operations.
@@ -1123,7 +1123,7 @@ fn set_texture_color_mod_float(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_texture_color_mod(
+def get_texture_color_mod(
     texture: Ptr[Texture, MutAnyOrigin],
     r: Ptr[UInt8, MutAnyOrigin],
     g: Ptr[UInt8, MutAnyOrigin],
@@ -1161,7 +1161,7 @@ fn get_texture_color_mod(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_texture_color_mod_float(
+def get_texture_color_mod_float(
     texture: Ptr[Texture, MutAnyOrigin],
     r: Ptr[c_float, MutAnyOrigin],
     g: Ptr[c_float, MutAnyOrigin],
@@ -1199,7 +1199,7 @@ fn get_texture_color_mod_float(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_texture_alpha_mod(
+def set_texture_alpha_mod(
     texture: Ptr[Texture, MutAnyOrigin], alpha: UInt8
 ) raises:
     """Set an additional alpha value multiplied into render copy operations.
@@ -1235,7 +1235,7 @@ fn set_texture_alpha_mod(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_texture_alpha_mod_float(
+def set_texture_alpha_mod_float(
     texture: Ptr[Texture, MutAnyOrigin], alpha: c_float
 ) raises:
     """Set an additional alpha value multiplied into render copy operations.
@@ -1271,7 +1271,7 @@ fn set_texture_alpha_mod_float(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_texture_alpha_mod(
+def get_texture_alpha_mod(
     texture: Ptr[Texture, MutAnyOrigin], alpha: Ptr[UInt8, MutAnyOrigin]
 ) raises:
     """Get the additional alpha value multiplied into render copy operations.
@@ -1302,7 +1302,7 @@ fn get_texture_alpha_mod(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_texture_alpha_mod_float(
+def get_texture_alpha_mod_float(
     texture: Ptr[Texture, MutAnyOrigin], alpha: Ptr[c_float, MutAnyOrigin]
 ) raises:
     """Get the additional alpha value multiplied into render copy operations.
@@ -1333,7 +1333,7 @@ fn get_texture_alpha_mod_float(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_texture_blend_mode(
+def set_texture_blend_mode(
     texture: Ptr[Texture, MutAnyOrigin], blend_mode: BlendMode
 ) raises:
     """Set the blend mode for a texture, used by SDL_RenderTexture().
@@ -1364,7 +1364,7 @@ fn set_texture_blend_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_texture_blend_mode(
+def get_texture_blend_mode(
     texture: Ptr[Texture, MutAnyOrigin],
     blend_mode: Ptr[BlendMode, MutAnyOrigin],
 ) raises:
@@ -1396,7 +1396,7 @@ fn get_texture_blend_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_texture_scale_mode(
+def set_texture_scale_mode(
     texture: Ptr[Texture, MutAnyOrigin], scale_mode: ScaleMode
 ) raises:
     """Set the scale mode used for texture scale operations.
@@ -1428,7 +1428,7 @@ fn set_texture_scale_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_texture_scale_mode(
+def get_texture_scale_mode(
     texture: Ptr[Texture, MutAnyOrigin],
     scale_mode: Ptr[ScaleMode, MutAnyOrigin],
 ) raises:
@@ -1460,7 +1460,7 @@ fn get_texture_scale_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn update_texture(
+def update_texture(
     texture: Ptr[Texture, MutAnyOrigin],
     rect: Ptr[Rect, ImmutAnyOrigin],
     pixels: Ptr[NoneType, ImmutAnyOrigin],
@@ -1511,7 +1511,7 @@ fn update_texture(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn update_yuv_texture(
+def update_yuv_texture(
     texture: Ptr[Texture, MutAnyOrigin],
     rect: Ptr[Rect, ImmutAnyOrigin],
     y_plane: Ptr[UInt8, ImmutAnyOrigin],
@@ -1570,7 +1570,7 @@ fn update_yuv_texture(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn update_nv_texture(
+def update_nv_texture(
     texture: Ptr[Texture, MutAnyOrigin],
     rect: Ptr[Rect, ImmutAnyOrigin],
     y_plane: Ptr[UInt8, ImmutAnyOrigin],
@@ -1621,7 +1621,7 @@ fn update_nv_texture(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn lock_texture(
+def lock_texture(
     texture: Ptr[Texture, MutAnyOrigin],
     rect: Ptr[Rect, ImmutAnyOrigin],
     pixels: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
@@ -1672,7 +1672,7 @@ fn lock_texture(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn lock_texture_to_surface(
+def lock_texture_to_surface(
     texture: Ptr[Texture, MutAnyOrigin],
     rect: Ptr[Rect, ImmutAnyOrigin],
     surface: Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin],
@@ -1725,7 +1725,7 @@ fn lock_texture_to_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn unlock_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
+def unlock_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
     """Unlock a texture, uploading the changes to video memory, if needed.
 
     **Warning**: Please note that SDL_LockTexture() is intended to be
@@ -1752,7 +1752,7 @@ fn unlock_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
     ]()(texture)
 
 
-fn set_render_target(
+def set_render_target(
     renderer: Ptr[Renderer, MutAnyOrigin],
     texture: Ptr[Texture, MutAnyOrigin],
 ) raises:
@@ -1795,7 +1795,7 @@ fn set_render_target(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_target(
+def get_render_target(
     renderer: Ptr[Renderer, MutAnyOrigin]
 ) raises -> Ptr[Texture, MutAnyOrigin]:
     """Get the current render target.
@@ -1822,7 +1822,7 @@ fn get_render_target(
     ]()(renderer)
 
 
-fn set_render_logical_presentation(
+def set_render_logical_presentation(
     renderer: Ptr[Renderer, MutAnyOrigin],
     w: c_int,
     h: c_int,
@@ -1895,7 +1895,7 @@ fn set_render_logical_presentation(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_logical_presentation(
+def get_render_logical_presentation(
     renderer: Ptr[Renderer, MutAnyOrigin],
     w: Ptr[c_int, MutAnyOrigin],
     h: Ptr[c_int, MutAnyOrigin],
@@ -1939,7 +1939,7 @@ fn get_render_logical_presentation(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_logical_presentation_rect(
+def get_render_logical_presentation_rect(
     renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[FRect, MutAnyOrigin]
 ) raises:
     """Get the final presentation rectangle for rendering.
@@ -1979,7 +1979,7 @@ fn get_render_logical_presentation_rect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_coordinates_from_window(
+def render_coordinates_from_window(
     renderer: Ptr[Renderer, MutAnyOrigin],
     window_x: c_float,
     window_y: c_float,
@@ -2027,7 +2027,7 @@ fn render_coordinates_from_window(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_coordinates_to_window(
+def render_coordinates_to_window(
     renderer: Ptr[Renderer, MutAnyOrigin],
     x: c_float,
     y: c_float,
@@ -2077,7 +2077,7 @@ fn render_coordinates_to_window(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_event_to_render_coordinates(
+def convert_event_to_render_coordinates(
     renderer: Ptr[Renderer, MutAnyOrigin], event: Ptr[Event, MutAnyOrigin]
 ) raises:
     """Convert the coordinates in an event to render coordinates.
@@ -2128,7 +2128,7 @@ fn convert_event_to_render_coordinates(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_render_viewport(
+def set_render_viewport(
     renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, ImmutAnyOrigin]
 ) raises:
     """Set the drawing area for rendering on the current target.
@@ -2169,7 +2169,7 @@ fn set_render_viewport(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_viewport(
+def get_render_viewport(
     renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the drawing area for the current target.
@@ -2203,7 +2203,7 @@ fn get_render_viewport(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_viewport_set(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
+def render_viewport_set(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
     """Return whether an explicit rectangle was set as the viewport.
 
     This is useful if you're saving and restoring the viewport and want to know
@@ -2232,7 +2232,7 @@ fn render_viewport_set(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
     ]()(renderer)
 
 
-fn get_render_safe_area(
+def get_render_safe_area(
     renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the safe area for rendering within the current viewport.
@@ -2271,7 +2271,7 @@ fn get_render_safe_area(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_render_clip_rect(
+def set_render_clip_rect(
     renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, ImmutAnyOrigin]
 ) raises:
     """Set the clip rectangle for rendering on the specified target.
@@ -2306,7 +2306,7 @@ fn set_render_clip_rect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_clip_rect(
+def get_render_clip_rect(
     renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the clip rectangle for the current target.
@@ -2341,7 +2341,7 @@ fn get_render_clip_rect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_clip_enabled(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
+def render_clip_enabled(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
     """Get whether clipping is enabled on the given render target.
 
     Each render target has its own clip rectangle. This function checks the
@@ -2367,7 +2367,7 @@ fn render_clip_enabled(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
     ]()(renderer)
 
 
-fn set_render_scale(
+def set_render_scale(
     renderer: Ptr[Renderer, MutAnyOrigin], scale_x: c_float, scale_y: c_float
 ) raises:
     """Set the drawing scale for rendering on the current target.
@@ -2411,7 +2411,7 @@ fn set_render_scale(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_scale(
+def get_render_scale(
     renderer: Ptr[Renderer, MutAnyOrigin],
     scale_x: Ptr[c_float, MutAnyOrigin],
     scale_y: Ptr[c_float, MutAnyOrigin],
@@ -2449,7 +2449,7 @@ fn get_render_scale(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_render_draw_color(
+def set_render_draw_color(
     renderer: Ptr[Renderer, MutAnyOrigin],
     r: UInt8,
     g: UInt8,
@@ -2495,7 +2495,7 @@ fn set_render_draw_color(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_render_draw_color_float(
+def set_render_draw_color_float(
     renderer: Ptr[Renderer, MutAnyOrigin],
     r: c_float,
     g: c_float,
@@ -2541,7 +2541,7 @@ fn set_render_draw_color_float(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_draw_color(
+def get_render_draw_color(
     renderer: Ptr[Renderer, MutAnyOrigin],
     r: Ptr[UInt8, MutAnyOrigin],
     g: Ptr[UInt8, MutAnyOrigin],
@@ -2586,7 +2586,7 @@ fn get_render_draw_color(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_draw_color_float(
+def get_render_draw_color_float(
     renderer: Ptr[Renderer, MutAnyOrigin],
     r: Ptr[c_float, MutAnyOrigin],
     g: Ptr[c_float, MutAnyOrigin],
@@ -2631,7 +2631,7 @@ fn get_render_draw_color_float(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_render_color_scale(
+def set_render_color_scale(
     renderer: Ptr[Renderer, MutAnyOrigin], scale: c_float
 ) raises:
     """Set the color scale used for render operations.
@@ -2667,7 +2667,7 @@ fn set_render_color_scale(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_color_scale(
+def get_render_color_scale(
     renderer: Ptr[Renderer, MutAnyOrigin],
     scale: Ptr[c_float, MutAnyOrigin],
 ) raises:
@@ -2699,7 +2699,7 @@ fn get_render_color_scale(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_render_draw_blend_mode(
+def set_render_draw_blend_mode(
     renderer: Ptr[Renderer, MutAnyOrigin], blend_mode: BlendMode
 ) raises:
     """Set the blend mode used for drawing operations (Fill and Line).
@@ -2731,7 +2731,7 @@ fn set_render_draw_blend_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_draw_blend_mode(
+def get_render_draw_blend_mode(
     renderer: Ptr[Renderer, MutAnyOrigin],
     blend_mode: Ptr[BlendMode, MutAnyOrigin],
 ) raises:
@@ -2763,7 +2763,7 @@ fn get_render_draw_blend_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_clear(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
+def render_clear(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     """Clear the current rendering target with the drawing color.
 
     This function clears the entire rendering target, ignoring the viewport and
@@ -2793,7 +2793,7 @@ fn render_clear(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_point(
+def render_point(
     renderer: Ptr[Renderer, MutAnyOrigin], x: c_float, y: c_float
 ) raises:
     """Draw a point on the current rendering target at subpixel precision.
@@ -2824,7 +2824,7 @@ fn render_point(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_points(
+def render_points(
     renderer: Ptr[Renderer, MutAnyOrigin],
     points: Ptr[FPoint, ImmutAnyOrigin],
     count: c_int,
@@ -2859,7 +2859,7 @@ fn render_points(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_line(
+def render_line(
     renderer: Ptr[Renderer, MutAnyOrigin],
     x1: c_float,
     y1: c_float,
@@ -2900,7 +2900,7 @@ fn render_line(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_lines(
+def render_lines(
     renderer: Ptr[Renderer, MutAnyOrigin],
     points: Ptr[FPoint, ImmutAnyOrigin],
     count: c_int,
@@ -2936,7 +2936,7 @@ fn render_lines(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_rect(
+def render_rect(
     renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[FRect, ImmutAnyOrigin]
 ) raises:
     """Draw a rectangle on the current rendering target at subpixel precision.
@@ -2968,7 +2968,7 @@ fn render_rect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_rects(
+def render_rects(
     renderer: Ptr[Renderer, MutAnyOrigin],
     rects: Ptr[FRect, ImmutAnyOrigin],
     count: c_int,
@@ -3004,7 +3004,7 @@ fn render_rects(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_fill_rect(
+def render_fill_rect(
     renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[FRect, ImmutAnyOrigin]
 ) raises:
     """Fill a rectangle on the current rendering target with the drawing color at
@@ -3037,7 +3037,7 @@ fn render_fill_rect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_fill_rects(
+def render_fill_rects(
     renderer: Ptr[Renderer, MutAnyOrigin],
     rects: Ptr[FRect, ImmutAnyOrigin],
     count: c_int,
@@ -3073,7 +3073,7 @@ fn render_fill_rects(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_texture(
+def render_texture(
     renderer: Ptr[Renderer, MutAnyOrigin],
     texture: Ptr[Texture, MutAnyOrigin],
     srcrect: Ptr[FRect, ImmutAnyOrigin],
@@ -3114,7 +3114,7 @@ fn render_texture(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_texture_rotated(
+def render_texture_rotated(
     renderer: Ptr[Renderer, MutAnyOrigin],
     texture: Ptr[Texture, MutAnyOrigin],
     srcrect: Ptr[FRect, ImmutAnyOrigin],
@@ -3168,7 +3168,7 @@ fn render_texture_rotated(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_texture_affine(
+def render_texture_affine(
     renderer: Ptr[Renderer, MutAnyOrigin],
     texture: Ptr[Texture, MutAnyOrigin],
     srcrect: Ptr[FRect, ImmutAnyOrigin],
@@ -3220,7 +3220,7 @@ fn render_texture_affine(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_texture_tiled(
+def render_texture_tiled(
     renderer: Ptr[Renderer, MutAnyOrigin],
     texture: Ptr[Texture, MutAnyOrigin],
     srcrect: Ptr[FRect, ImmutAnyOrigin],
@@ -3269,7 +3269,7 @@ fn render_texture_tiled(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_texture_9grid(
+def render_texture_9grid(
     renderer: Ptr[Renderer, MutAnyOrigin],
     texture: Ptr[Texture, MutAnyOrigin],
     srcrect: Ptr[FRect, ImmutAnyOrigin],
@@ -3343,7 +3343,7 @@ fn render_texture_9grid(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_geometry(
+def render_geometry(
     renderer: Ptr[Renderer, MutAnyOrigin],
     texture: Ptr[Texture, MutAnyOrigin],
     vertices: Ptr[Vertex, ImmutAnyOrigin],
@@ -3391,7 +3391,7 @@ fn render_geometry(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_geometry_raw(
+def render_geometry_raw(
     renderer: Ptr[Renderer, MutAnyOrigin],
     texture: Ptr[Texture, MutAnyOrigin],
     xy: Ptr[c_float, ImmutAnyOrigin],
@@ -3469,7 +3469,7 @@ fn render_geometry_raw(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_read_pixels(
+def render_read_pixels(
     renderer: Ptr[Renderer, MutAnyOrigin],
     rect: Ptr[Rect, ImmutAnyOrigin],
     out ret: Ptr[Surface, MutAnyOrigin],
@@ -3515,7 +3515,7 @@ fn render_read_pixels(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_present(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
+def render_present(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     """Update the screen with any rendering performed since the previous call.
 
     SDL's rendering functions operate on a backbuffer; that is, calling a
@@ -3564,7 +3564,7 @@ fn render_present(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
+def destroy_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
     """Destroy the specified texture.
 
     Passing NULL or an otherwise invalid texture will set the SDL error message
@@ -3586,7 +3586,7 @@ fn destroy_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
     ]()(texture)
 
 
-fn destroy_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> None:
+def destroy_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> None:
     """Destroy the rendering context for a window and free all associated
     textures.
 
@@ -3608,7 +3608,7 @@ fn destroy_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> None:
     ]()(renderer)
 
 
-fn flush_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
+def flush_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     """Force the rendering context to flush any pending commands and state.
 
     You do not need to (and in fact, shouldn't) call this function unless you
@@ -3653,7 +3653,7 @@ fn flush_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_metal_layer(
+def get_render_metal_layer(
     renderer: Ptr[Renderer, MutAnyOrigin]
 ) raises -> Ptr[NoneType, MutAnyOrigin]:
     """Get the CAMetalLayer associated with the given Metal renderer.
@@ -3683,7 +3683,7 @@ fn get_render_metal_layer(
     ]()(renderer)
 
 
-fn get_render_metal_command_encoder(
+def get_render_metal_command_encoder(
     renderer: Ptr[Renderer, MutAnyOrigin]
 ) raises -> Ptr[NoneType, MutAnyOrigin]:
     """Get the Metal command encoder for the current frame.
@@ -3718,7 +3718,7 @@ fn get_render_metal_command_encoder(
     ]()(renderer)
 
 
-fn add_vulkan_render_semaphores(
+def add_vulkan_render_semaphores(
     renderer: Ptr[Renderer, MutAnyOrigin],
     wait_stage_mask: UInt32,
     wait_semaphore: Int64,
@@ -3770,7 +3770,7 @@ fn add_vulkan_render_semaphores(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_render_vsync(renderer: Ptr[Renderer, MutAnyOrigin], vsync: c_int) raises:
+def set_render_vsync(renderer: Ptr[Renderer, MutAnyOrigin], vsync: c_int) raises:
     """Toggle VSync of the given renderer.
 
     When a renderer is created, vsync defaults to SDL_RENDERER_VSYNC_DISABLED.
@@ -3805,7 +3805,7 @@ fn set_render_vsync(renderer: Ptr[Renderer, MutAnyOrigin], vsync: c_int) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_render_vsync(
+def get_render_vsync(
     renderer: Ptr[Renderer, MutAnyOrigin], vsync: Ptr[c_int, MutAnyOrigin]
 ) raises:
     """Get VSync of the given renderer.
@@ -3837,7 +3837,7 @@ fn get_render_vsync(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn render_debug_text(
+def render_debug_text(
     renderer: Ptr[Renderer, MutAnyOrigin],
     x: c_float,
     y: c_float,

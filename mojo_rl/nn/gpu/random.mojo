@@ -7,7 +7,7 @@ from std.random import random_float64
 # =============================================================================
 
 
-fn gaussian_noise() -> Float64:
+def gaussian_noise() -> Float64:
     """Generate standard Gaussian noise (mean=0, std=1) using Box-Muller transform.
 
     Uses the standard library's random_float64() for uniform samples.
@@ -27,7 +27,7 @@ fn gaussian_noise() -> Float64:
     return sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
 
 
-fn gaussian_noise_pair() -> Tuple[Float64, Float64]:
+def gaussian_noise_pair() -> Tuple[Float64, Float64]:
     """Generate two independent standard Gaussian samples using Box-Muller.
 
     More efficient when you need multiple samples, as Box-Muller

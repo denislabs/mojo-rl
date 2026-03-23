@@ -4,7 +4,7 @@ from mojo_rl.deep_agents.core.agents import C51Agent, C51Config, GenericC51Agent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== C51 Agent Test ===")
 
     # Create C51 agent for CartPole (obs=4, actions=2)

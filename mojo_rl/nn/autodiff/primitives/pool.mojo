@@ -31,13 +31,13 @@ struct MaxPool2D[
     comptime CACHE_SIZE: Int = Self.channels * Self.out_h * Self.out_w
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -45,7 +45,7 @@ struct MaxPool2D[
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -72,18 +72,26 @@ struct MaxPool2D[
                             for pw in range(Self.pool_size):
                                 var ih = oh * Self.pool_size + ph
                                 var iw = ow * Self.pool_size + pw
-                                var in_idx = c * Self.in_h * Self.in_w + ih * Self.in_w + iw
-                                var val = rebind[Scalar[dtype]](input[b, in_idx])
+                                var in_idx = (
+                                    c * Self.in_h * Self.in_w
+                                    + ih * Self.in_w
+                                    + iw
+                                )
+                                var val = rebind[Scalar[dtype]](
+                                    input[b, in_idx]
+                                )
                                 if val > max_val:
                                     max_val = val
                                     max_idx = in_idx
-                        var out_idx = c * Self.spatial_out + oh * Self.out_w + ow
+                        var out_idx = (
+                            c * Self.spatial_out + oh * Self.out_w + ow
+                        )
                         output[b, out_idx] = max_val
                         # Store argmax as float (will cast back to int in backward)
                         cache[b, out_idx] = Scalar[dtype](max_idx)
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -113,7 +121,9 @@ struct MaxPool2D[
             for out_idx in range(Self.OUT_DIM):
                 var max_idx = Int(rebind[Scalar[dtype]](cache[b, out_idx]))
                 var cur = rebind[Scalar[dtype]](grad_input[b, max_idx])
-                grad_input[b, max_idx] = cur + rebind[Scalar[dtype]](grad_output[b, out_idx])
+                grad_input[b, max_idx] = cur + rebind[Scalar[dtype]](
+                    grad_output[b, out_idx]
+                )
 
     # =========================================================================
     # GPU kernels
@@ -121,7 +131,7 @@ struct MaxPool2D[
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -165,7 +175,7 @@ struct MaxPool2D[
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -178,7 +188,8 @@ struct MaxPool2D[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """One thread per output element, atomically routes gradient to argmax."""
+        """One thread per output element, atomically routes gradient to argmax.
+        """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         var total = BATCH * Self.OUT_DIM
         if idx >= total:
@@ -192,14 +203,16 @@ struct MaxPool2D[
         # For non-overlapping pools (stride == pool_size), each input maps to at most
         # one output, so no race.
         var cur = rebind[Scalar[dtype]](grad_input[b, max_idx])
-        grad_input[b, max_idx] = cur + rebind[Scalar[dtype]](grad_output[b, out_pos])
+        grad_input[b, max_idx] = cur + rebind[Scalar[dtype]](
+            grad_output[b, out_pos]
+        )
 
     # =========================================================================
     # GPU launchers
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -225,7 +238,7 @@ struct MaxPool2D[
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -247,7 +260,7 @@ struct MaxPool2D[
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -279,7 +292,7 @@ struct MaxPool2D[
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -327,13 +340,13 @@ struct AvgPool2D[
     comptime CACHE_SIZE: Int = 0
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -341,7 +354,7 @@ struct AvgPool2D[
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -368,13 +381,19 @@ struct AvgPool2D[
                             for pw in range(Self.pool_size):
                                 var ih = oh * Self.pool_size + ph
                                 var iw = ow * Self.pool_size + pw
-                                var in_idx = c * Self.in_h * Self.in_w + ih * Self.in_w + iw
+                                var in_idx = (
+                                    c * Self.in_h * Self.in_w
+                                    + ih * Self.in_w
+                                    + iw
+                                )
                                 acc += rebind[Scalar[dtype]](input[b, in_idx])
-                        var out_idx = c * Self.spatial_out + oh * Self.out_w + ow
+                        var out_idx = (
+                            c * Self.spatial_out + oh * Self.out_w + ow
+                        )
                         output[b, out_idx] = acc * scale
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -405,14 +424,25 @@ struct AvgPool2D[
             for c in range(Self.channels):
                 for oh in range(Self.out_h):
                     for ow in range(Self.out_w):
-                        var out_idx = c * Self.spatial_out + oh * Self.out_w + ow
-                        var g = rebind[Scalar[dtype]](grad_output[b, out_idx]) * scale
+                        var out_idx = (
+                            c * Self.spatial_out + oh * Self.out_w + ow
+                        )
+                        var g = (
+                            rebind[Scalar[dtype]](grad_output[b, out_idx])
+                            * scale
+                        )
                         for ph in range(Self.pool_size):
                             for pw in range(Self.pool_size):
                                 var ih = oh * Self.pool_size + ph
                                 var iw = ow * Self.pool_size + pw
-                                var in_idx = c * Self.in_h * Self.in_w + ih * Self.in_w + iw
-                                var cur = rebind[Scalar[dtype]](grad_input[b, in_idx])
+                                var in_idx = (
+                                    c * Self.in_h * Self.in_w
+                                    + ih * Self.in_w
+                                    + iw
+                                )
+                                var cur = rebind[Scalar[dtype]](
+                                    grad_input[b, in_idx]
+                                )
                                 grad_input[b, in_idx] = cur + g
 
     # =========================================================================
@@ -421,7 +451,7 @@ struct AvgPool2D[
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -458,7 +488,7 @@ struct AvgPool2D[
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -468,7 +498,8 @@ struct AvgPool2D[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ],
     ):
-        """One thread per input element, find which pool window it belongs to."""
+        """One thread per input element, find which pool window it belongs to.
+        """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         var total = BATCH * Self.IN_DIM
         if idx >= total:
@@ -489,7 +520,9 @@ struct AvgPool2D[
 
         if oh < Self.out_h and ow < Self.out_w:
             var out_idx = c * Self.spatial_out + oh * Self.out_w + ow
-            grad_input[b, in_pos] = rebind[Scalar[dtype]](grad_output[b, out_idx]) * scale
+            grad_input[b, in_pos] = (
+                rebind[Scalar[dtype]](grad_output[b, out_idx]) * scale
+            )
         else:
             grad_input[b, in_pos] = 0
 
@@ -498,7 +531,7 @@ struct AvgPool2D[
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -524,7 +557,7 @@ struct AvgPool2D[
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -542,7 +575,7 @@ struct AvgPool2D[
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -571,7 +604,7 @@ struct AvgPool2D[
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],

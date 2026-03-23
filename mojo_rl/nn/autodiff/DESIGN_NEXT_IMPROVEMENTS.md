@@ -104,7 +104,7 @@ struct GNode[
 Inside `ComputeGraph`, resolve names to indices:
 ```mojo
 @staticmethod
-fn _resolve_index[target_name: StringLiteral]() -> Int:
+def _resolve_index[target_name: StringLiteral]() -> Int:
     """Resolve node name to index. 'input' = -1, '' = -2."""
     comptime if target_name == "input":
         return -1
@@ -224,12 +224,12 @@ Candidates: Scale, NegateOp, BiasAdd (standalone), ReLU, Tanh, Sigmoid, Mish.
 Composing the element-wise functions at compile time. Need a way to chain:
 ```mojo
 # Pseudocode for fused Scale[d,2,1] → NegateOp[d] → BiasAdd[d]:
-fn fused_forward(input: Scalar, bias: Scalar) -> Scalar:
+def fused_forward(input: Scalar, bias: Scalar) -> Scalar:
     return -(input * 2.0) + bias
 ```
 
-Could use an `ElementWiseOp` sub-trait with `fn apply(x: Scalar, params...) -> Scalar`
-and `fn grad(x: Scalar, dy: Scalar, params...) -> (dx, dparams...)`. Then the fused
+Could use an `ElementWiseOp` sub-trait with `def apply(x: Scalar, params...) -> Scalar`
+and `def grad(x: Scalar, dy: Scalar, params...) -> (dx, dparams...)`. Then the fused
 kernel iterates the chain at compile time.
 
 With `comptime if conforms_to(Op, ElementWiseOp)` (new in v0.26.2), the fusion pass

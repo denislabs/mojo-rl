@@ -30,7 +30,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
     # CPU Methods
     # =========================================================================
 
-    fn integrate_velocities[
+    def integrate_velocities[
         BATCH: Int,
         NUM_BODIES: Int,
     ](
@@ -58,7 +58,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         """
         ...
 
-    fn integrate_positions[
+    def integrate_positions[
         BATCH: Int,
         NUM_BODIES: Int,
     ](
@@ -86,7 +86,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
 
     @staticmethod
     @staticmethod
-    fn integrate_velocities_gpu[
+    def integrate_velocities_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -111,7 +111,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn integrate_positions_gpu[
+    def integrate_positions_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,

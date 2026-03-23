@@ -34,7 +34,7 @@ from mojo_rl.core import (
 from mojo_rl.agents import SACAgent
 
 
-fn main() raises:
+def main() raises:
     print("\n" + "=" * 60)
     print("    SAC on Pendulum - Linear Function Approximation")
     print("=" * 60 + "\n")

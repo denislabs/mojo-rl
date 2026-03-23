@@ -71,7 +71,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     var step_num: Int
     var lr_scale: Float64
 
-    fn __init__(out self):
+    def __init__(out self):
         """Allocate and zero-initialize all state lists."""
         self.step_num = 0
         self.lr_scale = 1.0
@@ -85,14 +85,14 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         self.optimizer_state = alloc[Scalar[dtype]](Self.STATE_SIZE)
         memset(self.optimizer_state, 0, Self.STATE_SIZE)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.step_num = copy.step_num
         self.lr_scale = copy.lr_scale
         self.params = copy.params.copy()
         self.grads = copy.grads.copy()
         self.optimizer_state = copy.optimizer_state.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.step_num = take.step_num
         self.lr_scale = take.lr_scale
         self.params = take.params
@@ -103,7 +103,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # Initialization
     # =========================================================================
 
-    fn initialize[INITIALIZER: Initializer = Xavier[]](mut self):
+    def initialize[INITIALIZER: Initializer = Xavier[]](mut self):
         """Initialize params using the given initializer strategy.
 
         Delegates to MODEL.initialize_params which handles per-layer fan
@@ -124,7 +124,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # LayoutTensor Views (zero-copy)
     # =========================================================================
 
-    fn params_view(
+    def params_view(
         self,
     ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
         """Return a LayoutTensor view over params (zero-copy pointer cast)."""
@@ -133,7 +133,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.params)
 
-    fn grads_view(
+    def grads_view(
         self,
     ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
         """Return a LayoutTensor view over grads (zero-copy pointer cast)."""
@@ -141,7 +141,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.grads)
 
-    fn state_view(
+    def state_view(
         self,
     ) -> LayoutTensor[
         dtype,
@@ -159,12 +159,12 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # Core Mutation
     # =========================================================================
 
-    fn zero_grads(mut self):
+    def zero_grads(mut self):
         """Zero all parameter gradients before a backward pass."""
         for i in range(Self.PARAM_SIZE):
             (self.grads + i)[] = 0
 
-    fn set_lr_scale(mut self, scale: Float64):
+    def set_lr_scale(mut self, scale: Float64):
         """Set the LR multiplier applied at each optimizer step.
 
         Use for LR annealing (e.g. PPO linear decay):
@@ -175,7 +175,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         """
         self.lr_scale = scale
 
-    fn optimizer_step(mut self):
+    def optimizer_step(mut self):
         """One optimizer step + increment step_num.
 
         Applies self.lr_scale to the base LR (set via set_lr_scale()).
@@ -192,7 +192,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # Target Network Operations
     # =========================================================================
 
-    fn copy_params_from(mut self, source: Self):
+    def copy_params_from(mut self, source: Self):
         """Hard copy: self.params = source.params (θ_target ← θ_online).
 
         Args:
@@ -201,7 +201,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         for i in range(Self.PARAM_SIZE):
             (self.params + i)[] = (source.params + i)[]
 
-    fn soft_update_from(mut self, source: Self, tau: Float64):
+    def soft_update_from(mut self, source: Self, tau: Float64):
         """Soft update: self = tau * source + (1 - tau) * self.
 
         Used for target network updates in DQN, DDPG, TD3, SAC.
@@ -213,13 +213,15 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         var tau_s = Scalar[dtype](tau)
         var one_m = Scalar[dtype](1.0 - tau)
         for i in range(Self.PARAM_SIZE):
-            (self.params + i)[] = tau_s * (source.params + i)[] + one_m * (self.params + i)[]
+            (self.params + i)[] = (
+                tau_s * (source.params + i)[] + one_m * (self.params + i)[]
+            )
 
     # =========================================================================
     # Section-based helpers (for multi-network single-file checkpoints)
     # =========================================================================
 
-    fn write_sections(self, prefix: String) -> String:
+    def write_sections(self, prefix: String) -> String:
         """Serialize params and optimizer_state as prefixed sections.
 
         Used by agents to build a single checkpoint file containing multiple
@@ -247,7 +249,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         )
         return content
 
-    fn read_sections(mut self, content: String, prefix: String) raises:
+    def read_sections(mut self, content: String, prefix: String) raises:
         """Load params and optimizer_state from prefixed sections.
 
         Counterpart of write_sections — reads "{prefix}params:" and
@@ -273,7 +275,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # Checkpoint Save / Load (single-network file)
     # =========================================================================
 
-    fn save_checkpoint(self, filepath: String) raises:
+    def save_checkpoint(self, filepath: String) raises:
         """Save params, optimizer state, and step_num to a checkpoint file.
 
         Args:
@@ -288,7 +290,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         content += write_metadata_section(metadata)
         save_checkpoint_file(filepath, content)
 
-    fn load_checkpoint(mut self, filepath: String) raises:
+    def load_checkpoint(mut self, filepath: String) raises:
         """Load params and optimizer state from a checkpoint file.
 
         Args:
@@ -317,19 +319,21 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # Binary Checkpoint Save / Load (~3x smaller files)
     # =========================================================================
 
-    fn write_sections_binary(self, mut ckpt: BinaryCheckpoint, prefix: String):
+    def write_sections_binary(self, mut ckpt: BinaryCheckpoint, prefix: String):
         """Add params and optimizer_state as named sections to a binary checkpoint.
 
         Args:
             ckpt: BinaryCheckpoint to add sections to.
             prefix: Section name prefix (e.g. "actor_", "critic_").
         """
-        ckpt.add_float_section_ptr(prefix + "params", self.params, Self.PARAM_SIZE)
+        ckpt.add_float_section_ptr(
+            prefix + "params", self.params, Self.PARAM_SIZE
+        )
         ckpt.add_float_section_ptr(
             prefix + "optimizer_state", self.optimizer_state, Self.STATE_SIZE
         )
 
-    fn read_sections_binary(
+    def read_sections_binary(
         mut self, ckpt: BinaryCheckpoint, prefix: String
     ) raises:
         """Load params and optimizer_state from a binary checkpoint.
@@ -350,7 +354,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         for i in range(Self.STATE_SIZE):
             (self.optimizer_state + i)[] = loaded_state[i]
 
-    fn save_checkpoint_binary(self, filepath: String) raises:
+    def save_checkpoint_binary(self, filepath: String) raises:
         """Save params, optimizer state, and step_num to a binary checkpoint.
 
         Binary format is ~3x smaller than text format.
@@ -363,7 +367,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         ckpt.add_metadata("step_num", String(self.step_num))
         ckpt.save(filepath)
 
-    fn load_checkpoint_binary(mut self, filepath: String) raises:
+    def load_checkpoint_binary(mut self, filepath: String) raises:
         """Load params and optimizer state from a binary checkpoint.
 
         Args:

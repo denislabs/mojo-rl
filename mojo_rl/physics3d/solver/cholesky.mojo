@@ -17,7 +17,7 @@ from ..types import _max_one
 
 
 @always_inline
-fn chol_factor[
+def chol_factor[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -46,7 +46,7 @@ fn chol_factor[
 
 
 @always_inline
-fn chol_solve[
+def chol_solve[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -74,7 +74,7 @@ fn chol_solve[
 
 
 @always_inline
-fn chol_factor_inline[
+def chol_factor_inline[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -107,7 +107,7 @@ fn chol_factor_inline[
 
 
 @always_inline
-fn chol_solve_inline[
+def chol_solve_inline[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -142,7 +142,7 @@ fn chol_solve_inline[
 
 
 @always_inline
-fn chol_rank1_update[
+def chol_rank1_update[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,

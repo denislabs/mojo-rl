@@ -46,7 +46,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 # =============================================================================
 
 
-fn compare_fk(
+def compare_fk(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
 ) raises:
@@ -206,7 +206,7 @@ fn compare_fk(
 # =============================================================================
 
 
-fn test_fk_default_qpos() raises:
+def test_fk_default_qpos() raises:
     """FK at Ant's default init_qpos: torso at z=0.75, identity quaternion,
     legs at their default angles from the XML custom/numeric init_qpos."""
     # From XML: <numeric data="0.0 0.0 0.55 1.0 0.0 0.0 0.0 0.0 1.0 0.0 -1.0 0.0 -1.0 0.0 1.0" name="init_qpos"/>
@@ -231,7 +231,7 @@ fn test_fk_default_qpos() raises:
     compare_fk("Default init_qpos (z=0.55, identity quat)", qpos)
 
 
-fn test_fk_zero_joints() raises:
+def test_fk_zero_joints() raises:
     """FK with all hinge joints at 0, torso at default height."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[2] = 0.55  # z
@@ -239,7 +239,7 @@ fn test_fk_zero_joints() raises:
     compare_fk("All-zero joints, z=0.55", qpos)
 
 
-fn test_fk_bent_legs() raises:
+def test_fk_bent_legs() raises:
     """FK with legs bent symmetrically — exercises multi-level hinge chains."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[2] = 0.55  # z
@@ -256,7 +256,7 @@ fn test_fk_bent_legs() raises:
     compare_fk("Bent legs (hips 15 deg, ankles 45 deg)", qpos)
 
 
-fn test_fk_rotated_torso() raises:
+def test_fk_rotated_torso() raises:
     """FK with torso rotated 45 degrees around the z-axis.
     This exercises the full 3D quaternion propagation through the body tree."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -269,7 +269,7 @@ fn test_fk_rotated_torso() raises:
     compare_fk("Torso rotated 45 deg about z-axis", qpos)
 
 
-fn test_fk_elevated_and_tilted() raises:
+def test_fk_elevated_and_tilted() raises:
     """FK with elevated torso and small tilt — simulates mid-jump or landing."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 2.0  # x displacement
@@ -287,5 +287,5 @@ fn test_fk_elevated_and_tilted() raises:
     compare_fk("Elevated and tilted torso", qpos)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

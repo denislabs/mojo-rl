@@ -57,7 +57,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 # =============================================================================
 
 
-fn compare_fk(
+def compare_fk(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
 ) raises:
@@ -232,7 +232,7 @@ fn compare_fk(
 #   [23]   left_elbow
 
 
-fn test_fk_default_qpos() raises:
+def test_fk_default_qpos() raises:
     """FK at default standing pose (qpos = qpos0).
     Torso at z=1.4, identity quaternion, all joint angles zero.
     This is the initial pose MuJoCo initializes to."""
@@ -243,7 +243,7 @@ fn test_fk_default_qpos() raises:
     compare_fk("Default standing pose (z=1.4, identity quat)", qpos)
 
 
-fn test_fk_bent_knees() raises:
+def test_fk_bent_knees() raises:
     """FK with both knees bent — tests hip multi-joint chains.
     right_hip_y and left_hip_y rotate the thighs; right_knee and
     left_knee bend the shins."""
@@ -257,7 +257,7 @@ fn test_fk_bent_knees() raises:
     compare_fk("Bent knees (hip_y=-0.5, knee=-1.0 both sides)", qpos)
 
 
-fn test_fk_arms_extended() raises:
+def test_fk_arms_extended() raises:
     """FK with arms extended — tests shoulder + elbow chains branching off torso.
     The arm branches are independent of the leg branches."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -272,7 +272,7 @@ fn test_fk_arms_extended() raises:
     compare_fk("Arms extended (shoulders=0.5, elbows=0.8)", qpos)
 
 
-fn test_fk_rotated_torso() raises:
+def test_fk_rotated_torso() raises:
     """FK with torso rotated ~30 deg about z-axis.
     Tests quaternion propagation through the dense body tree:
     all 13 child bodies must accumulate the root rotation correctly."""
@@ -287,7 +287,7 @@ fn test_fk_rotated_torso() raises:
     compare_fk("Torso rotated 30 deg about z-axis", qpos)
 
 
-fn test_fk_full_body_pose() raises:
+def test_fk_full_body_pose() raises:
     """FK at a realistic walking pose: bent knees, abdomen lean, arms moving.
     Exercises all body branches simultaneously."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -311,5 +311,5 @@ fn test_fk_full_body_pose() raises:
     compare_fk("Full body walking pose (all joints active)", qpos)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

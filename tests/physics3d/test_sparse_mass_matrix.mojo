@@ -64,7 +64,7 @@ comptime TOL: Float64 = 1e-12
 # =============================================================================
 
 
-fn check_sparse_pattern(
+def check_sparse_pattern(
     model: Model[
         DTYPE,
         NQ,
@@ -145,7 +145,7 @@ fn check_sparse_pattern(
 # =============================================================================
 
 
-fn check_sparse_values_match_dense(
+def check_sparse_values_match_dense(
     model: Model[
         DTYPE,
         NQ,
@@ -258,7 +258,7 @@ fn check_sparse_values_match_dense(
 # =============================================================================
 
 
-fn check_sparse_solve_matches_dense(
+def check_sparse_solve_matches_dense(
     model: Model[
         DTYPE,
         NQ,
@@ -405,7 +405,7 @@ fn check_sparse_solve_matches_dense(
 # =============================================================================
 
 
-fn check_sparse_solve_residual(
+def check_sparse_solve_residual(
     model: Model[
         DTYPE,
         NQ,
@@ -509,7 +509,7 @@ fn check_sparse_solve_residual(
 # =============================================================================
 
 
-fn test_sparse_mass_matrix_all() raises:
+def test_sparse_mass_matrix_all() raises:
     """Run all sparse mass matrix tests."""
     print("=" * 60)
     print("Sparse Mass Matrix Validation (CSR vs Dense)")
@@ -579,5 +579,5 @@ fn test_sparse_mass_matrix_all() raises:
     print("=" * 60)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -11,7 +11,7 @@ from mojo_rl.deep_agents.core.agents import DeepPPOAgent
 from mojo_rl.envs import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Generic On-Policy Agent Test ===\n")
 
     # Test 1: PPO
@@ -21,8 +21,10 @@ fn main() raises:
     var env1 = CartPoleEnv[DType.float64]()
     var m1 = ppo.train(env1, num_updates=20)
     print(
-        "   updates:", ppo.train_step_count,
-        " entries:", len(m1.episodes),
+        "   updates:",
+        ppo.train_step_count,
+        " entries:",
+        len(m1.episodes),
     )
 
     # Test 2: A2C
@@ -32,8 +34,10 @@ fn main() raises:
     var env2 = CartPoleEnv[DType.float64]()
     var m2 = a2c.train(env2, num_updates=20)
     print(
-        "   updates:", a2c.train_step_count,
-        " entries:", len(m2.episodes),
+        "   updates:",
+        a2c.train_step_count,
+        " entries:",
+        len(m2.episodes),
     )
 
     # Test 3: Old PPO for comparison
@@ -43,18 +47,27 @@ fn main() raises:
     var env3 = CartPoleEnv[DType.float64]()
     var m3 = old_ppo.train(env3, num_updates=20)
     print(
-        "   updates:", old_ppo.train_step_count,
+        "   updates:",
+        old_ppo.train_step_count,
     )
 
     # Comparison
     print("\n4. Comparison...")
     if ppo.train_step_count > 0:
-        print("   OK: Generic PPO trained (" + String(ppo.train_step_count) + " updates)")
+        print(
+            "   OK: Generic PPO trained ("
+            + String(ppo.train_step_count)
+            + " updates)"
+        )
     else:
         print("   FAIL: Generic PPO did not train")
 
     if a2c.train_step_count > 0:
-        print("   OK: Generic A2C trained (" + String(a2c.train_step_count) + " updates)")
+        print(
+            "   OK: Generic A2C trained ("
+            + String(a2c.train_step_count)
+            + " updates)"
+        )
     else:
         print("   FAIL: Generic A2C did not train")
 

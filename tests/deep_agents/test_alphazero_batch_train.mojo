@@ -16,9 +16,14 @@ from mojo_rl.nn.optimizer import Adam
 from mojo_rl.deep_agents.alphazero import GenericAlphaZeroAgent
 from mojo_rl.deep_agents.alphazero.configs import AlphaZeroConfig
 from mojo_rl.deep_agents.muzero.strategies import (
-    DirichletNoise, AlphaGoPUCT, SelfPlay,
+    DirichletNoise,
+    AlphaGoPUCT,
+    SelfPlay,
 )
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, MinimaxTicTacToe
+from mojo_rl.deep_agents.muzero.evaluators import (
+    RandomOpponent,
+    MinimaxTicTacToe,
+)
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
@@ -31,18 +36,18 @@ struct TTTBatchConfig(AlphaZeroConfig):
         LinearReLU[128, 128],
         Parallel[Linear[128, 9], Linear[128, 1]],
     ]
-    comptime OptType = Adam[LR=0.001]   # Standard Adam, LR=0.001
+    comptime OptType = Adam[LR=0.001]  # Standard Adam, LR=0.001
     comptime batch_size: Int = 64
     comptime buffer_capacity: Int = 50000
-    comptime history_window: Int = 3    # Keep last 3 iterations for small game
+    comptime history_window: Int = 3  # Keep last 3 iterations for small game
     comptime num_simulations: Int = 25  # Like alpha-zero-general
     comptime max_nodes: Int = 64
     comptime Noise = DirichletNoise[0.25, 0.25]
-    comptime PUCT = AlphaGoPUCT[1.0]    # cpuct=1
+    comptime PUCT = AlphaGoPUCT[1.0]  # cpuct=1
     comptime Players = SelfPlay
 
 
-fn main() raises:
+def main() raises:
     print("=== AlphaZero Batch-Then-Train ===")
     print("Collect 100 games → Train 10 epochs → Arena → Repeat")
     print("SIMS=25, cpuct=1, LR=0.001/Adam, 8x symmetries")
@@ -77,8 +82,8 @@ fn main() raises:
             arena_env,
             num_steps=1000,
             warmup_steps=0,
-            gradient_steps=0,   # No training during collection
-            print_every=100000, # Don't print
+            gradient_steps=0,  # No training during collection
+            print_every=100000,  # Don't print
         )
 
         # 2. Train for multiple epochs on collected data
@@ -97,8 +102,15 @@ fn main() raises:
         gpu.download_to(agent.state, ctx)
 
         # 3. Evaluate
-        print("Iter", iter + 1, "(replay:", agent.state.buf_size,
-              "train:", num_train_steps, "steps)")
+        print(
+            "Iter",
+            iter + 1,
+            "(replay:",
+            agent.state.buf_size,
+            "train:",
+            num_train_steps,
+            "steps)",
+        )
         var r = agent.evaluate_against[TTTCPU](eval_env, random_eval, 100)
         print("  vs Random: W", r[0], "D", r[1], "L", r[2])
         var m = agent.evaluate_against[TTTCPU](eval_env, minimax_eval, 100)

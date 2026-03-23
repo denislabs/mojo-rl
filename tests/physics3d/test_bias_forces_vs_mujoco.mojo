@@ -48,7 +48,7 @@ comptime REL_TOL: Float64 = 1e-3
 # =============================================================================
 
 
-fn compare_bias_forces(
+def compare_bias_forces(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
@@ -184,7 +184,7 @@ fn compare_bias_forces(
 # =============================================================================
 
 
-fn test_default_qpos_zero_vel() raises:
+def test_default_qpos_zero_vel() raises:
     """Bias at default qpos, zero velocity (gravity only)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
@@ -192,14 +192,14 @@ fn test_default_qpos_zero_vel() raises:
     compare_bias_forces("Default qpos, zero vel (gravity only)", qpos, qvel)
 
 
-fn test_zero_qpos_zero_vel() raises:
+def test_zero_qpos_zero_vel() raises:
     """Bias at qpos=0, zero velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
     compare_bias_forces("Zero qpos, zero vel", qpos, qvel)
 
 
-fn test_nonzero_joints_zero_vel() raises:
+def test_nonzero_joints_zero_vel() raises:
     """Bias with non-zero joints, zero velocity (gravity only)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # rootx
@@ -215,7 +215,7 @@ fn test_nonzero_joints_zero_vel() raises:
     compare_bias_forces("Non-zero joints, zero vel", qpos, qvel)
 
 
-fn test_nonzero_vel() raises:
+def test_nonzero_vel() raises:
     """Bias with non-zero velocity (includes Coriolis)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
@@ -232,7 +232,7 @@ fn test_nonzero_vel() raises:
     compare_bias_forces("Non-zero vel (gravity + Coriolis)", qpos, qvel)
 
 
-fn test_extreme_vel() raises:
+def test_extreme_vel() raises:
     """Bias with large velocities (stress test Coriolis)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
@@ -251,5 +251,5 @@ fn test_extreme_vel() raises:
     compare_bias_forces("Extreme velocities", qpos, qvel)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

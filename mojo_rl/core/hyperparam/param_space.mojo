@@ -28,7 +28,7 @@ struct FloatParam(Copyable, ImplicitlyCopyable, Movable):
     var log_scale: Bool
     var num_values: Int
 
-    fn __init__(
+    def __init__(
         out self,
         name: String,
         min_val: Float64,
@@ -51,21 +51,21 @@ struct FloatParam(Copyable, ImplicitlyCopyable, Movable):
         self.log_scale = log_scale
         self.num_values = num_values
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.name = copy.name
         self.min_val = copy.min_val
         self.max_val = copy.max_val
         self.log_scale = copy.log_scale
         self.num_values = copy.num_values
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.name = take.name^
         self.min_val = take.min_val
         self.max_val = take.max_val
         self.log_scale = take.log_scale
         self.num_values = take.num_values
 
-    fn sample_random(self) -> Float64:
+    def sample_random(self) -> Float64:
         """Sample a random value from the parameter space."""
         var rand = random_float64()
         if self.log_scale:
@@ -75,7 +75,7 @@ struct FloatParam(Copyable, ImplicitlyCopyable, Movable):
         else:
             return self.min_val + rand * (self.max_val - self.min_val)
 
-    fn get_grid_values(self) -> List[Float64]:
+    def get_grid_values(self) -> List[Float64]:
         """Get discrete grid values for grid search."""
         var values = List[Float64]()
         if self.num_values <= 1:
@@ -94,7 +94,7 @@ struct FloatParam(Copyable, ImplicitlyCopyable, Movable):
                 values.append(self.min_val + t * (self.max_val - self.min_val))
         return values^
 
-    fn get_value_at_index(self, idx: Int) -> Float64:
+    def get_value_at_index(self, idx: Int) -> Float64:
         """Get the grid value at a specific index."""
         if self.num_values <= 1:
             return self.min_val
@@ -113,47 +113,47 @@ struct IntParam(Copyable, ImplicitlyCopyable, Movable):
     var name: String
     var values: List[Int]
 
-    fn __init__(out self, name: String, min_val: Int, max_val: Int):
+    def __init__(out self, name: String, min_val: Int, max_val: Int):
         """Initialize with a range of consecutive integers."""
         self.name = name
         self.values = List[Int]()
         for i in range(min_val, max_val + 1):
             self.values.append(i)
 
-    fn __init__(out self, name: String, var values: List[Int]):
+    def __init__(out self, name: String, var values: List[Int]):
         """Initialize with an explicit list of values."""
         self.name = name
         self.values = values^
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.name = copy.name
         self.values = List[Int]()
         for i in range(len(copy.values)):
             self.values.append(copy.values[i])
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.name = take.name^
         self.values = take.values^
 
-    fn sample_random(self) -> Int:
+    def sample_random(self) -> Int:
         """Sample a random value from the parameter space."""
         var idx = Int(random_float64() * Float64(len(self.values)))
         if idx >= len(self.values):
             idx = len(self.values) - 1
         return self.values[idx]
 
-    fn get_grid_values(self) -> List[Int]:
+    def get_grid_values(self) -> List[Int]:
         """Get all values for grid search."""
         var result = List[Int]()
         for i in range(len(self.values)):
             result.append(self.values[i])
         return result^
 
-    fn num_values(self) -> Int:
+    def num_values(self) -> Int:
         """Return the number of discrete values."""
         return len(self.values)
 
-    fn get_value_at_index(self, idx: Int) -> Int:
+    def get_value_at_index(self, idx: Int) -> Int:
         """Get the value at a specific index."""
         return self.values[idx]
 
@@ -163,20 +163,20 @@ struct BoolParam(Copyable, Movable):
 
     var name: String
 
-    fn __init__(out self, name: String):
+    def __init__(out self, name: String):
         self.name = name
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.name = copy.name
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.name = take.name^
 
-    fn sample_random(self) -> Bool:
+    def sample_random(self) -> Bool:
         """Sample a random boolean value."""
         return random_float64() < 0.5
 
-    fn get_grid_values(self) -> List[Bool]:
+    def get_grid_values(self) -> List[Bool]:
         """Get both boolean values for grid search."""
         var values = List[Bool]()
         values.append(False)
@@ -198,7 +198,7 @@ struct TabularHyperparams(Copyable, Movable):
     var epsilon_decay: Float64
     var epsilon_min: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         learning_rate: Float64 = 0.1,
         discount_factor: Float64 = 0.99,
@@ -212,25 +212,25 @@ struct TabularHyperparams(Copyable, Movable):
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
         self.epsilon_decay = copy.epsilon_decay
         self.epsilon_min = copy.epsilon_min
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
         self.epsilon = take.epsilon
         self.epsilon_decay = take.epsilon_decay
         self.epsilon_min = take.epsilon_min
 
-    fn to_csv_header(self) -> String:
+    def to_csv_header(self) -> String:
         """Return CSV header for hyperparameters."""
         return "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min"
 
-    fn to_csv_row(self) -> String:
+    def to_csv_row(self) -> String:
         """Return CSV row for hyperparameters."""
         return (
             String(self.learning_rate)
@@ -254,7 +254,7 @@ struct TabularParamSpace(Copyable, Movable):
     var epsilon_decay: FloatParam
     var epsilon_min: FloatParam
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize with default search ranges."""
         self.learning_rate = FloatParam(
             "learning_rate", 0.01, 0.5, log_scale=True, num_values=5
@@ -272,21 +272,21 @@ struct TabularParamSpace(Copyable, Movable):
             "epsilon_min", 0.01, 0.1, log_scale=False, num_values=2
         )
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
         self.epsilon_decay = copy.epsilon_decay
         self.epsilon_min = copy.epsilon_min
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate^
         self.discount_factor = take.discount_factor^
         self.epsilon = take.epsilon^
         self.epsilon_decay = take.epsilon_decay^
         self.epsilon_min = take.epsilon_min^
 
-    fn sample_random(self) -> TabularHyperparams:
+    def sample_random(self) -> TabularHyperparams:
         """Sample random hyperparameters from the search space."""
         return TabularHyperparams(
             learning_rate=self.learning_rate.sample_random(),
@@ -296,7 +296,7 @@ struct TabularParamSpace(Copyable, Movable):
             epsilon_min=self.epsilon_min.sample_random(),
         )
 
-    fn get_grid_size(self) -> Int:
+    def get_grid_size(self) -> Int:
         """Return total number of grid combinations."""
         return (
             self.learning_rate.num_values
@@ -306,7 +306,7 @@ struct TabularParamSpace(Copyable, Movable):
             * self.epsilon_min.num_values
         )
 
-    fn get_grid_config(self, index: Int) -> TabularHyperparams:
+    def get_grid_config(self, index: Int) -> TabularHyperparams:
         """Get hyperparameters for a specific grid index.
 
         Decodes the flat index into multi-dimensional indices.
@@ -352,7 +352,7 @@ struct NStepHyperparams(Copyable, Movable):
     var epsilon_min: Float64
     var n: Int
 
-    fn __init__(
+    def __init__(
         out self,
         learning_rate: Float64 = 0.1,
         discount_factor: Float64 = 0.99,
@@ -368,7 +368,7 @@ struct NStepHyperparams(Copyable, Movable):
         self.epsilon_min = epsilon_min
         self.n = n
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
@@ -376,7 +376,7 @@ struct NStepHyperparams(Copyable, Movable):
         self.epsilon_min = copy.epsilon_min
         self.n = copy.n
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
         self.epsilon = take.epsilon
@@ -384,12 +384,12 @@ struct NStepHyperparams(Copyable, Movable):
         self.epsilon_min = take.epsilon_min
         self.n = take.n
 
-    fn to_csv_header(self) -> String:
+    def to_csv_header(self) -> String:
         return (
             "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min,n"
         )
 
-    fn to_csv_row(self) -> String:
+    def to_csv_row(self) -> String:
         return (
             String(self.learning_rate)
             + ","
@@ -415,7 +415,7 @@ struct NStepParamSpace(Copyable, Movable):
     var epsilon_min: FloatParam
     var n: IntParam
 
-    fn __init__(out self):
+    def __init__(out self):
         self.learning_rate = FloatParam(
             "learning_rate", 0.01, 0.5, log_scale=True, num_values=5
         )
@@ -439,7 +439,7 @@ struct NStepParamSpace(Copyable, Movable):
         n_values.append(10)
         self.n = IntParam("n", n_values^)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
@@ -447,7 +447,7 @@ struct NStepParamSpace(Copyable, Movable):
         self.epsilon_min = copy.epsilon_min
         self.n = copy.n
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate^
         self.discount_factor = take.discount_factor^
         self.epsilon = take.epsilon^
@@ -455,7 +455,7 @@ struct NStepParamSpace(Copyable, Movable):
         self.epsilon_min = take.epsilon_min^
         self.n = take.n^
 
-    fn sample_random(self) -> NStepHyperparams:
+    def sample_random(self) -> NStepHyperparams:
         return NStepHyperparams(
             learning_rate=self.learning_rate.sample_random(),
             discount_factor=self.discount_factor.sample_random(),
@@ -465,7 +465,7 @@ struct NStepParamSpace(Copyable, Movable):
             n=self.n.sample_random(),
         )
 
-    fn get_grid_size(self) -> Int:
+    def get_grid_size(self) -> Int:
         return (
             self.learning_rate.num_values
             * self.discount_factor.num_values
@@ -475,7 +475,7 @@ struct NStepParamSpace(Copyable, Movable):
             * self.n.num_values()
         )
 
-    fn get_grid_config(self, index: Int) -> NStepHyperparams:
+    def get_grid_config(self, index: Int) -> NStepHyperparams:
         var remaining = index
         var lr_idx = remaining % self.learning_rate.num_values
         remaining //= self.learning_rate.num_values
@@ -514,7 +514,7 @@ struct LambdaHyperparams(Copyable, Movable):
     var epsilon_min: Float64
     var lambda_: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         learning_rate: Float64 = 0.1,
         discount_factor: Float64 = 0.99,
@@ -530,7 +530,7 @@ struct LambdaHyperparams(Copyable, Movable):
         self.epsilon_min = epsilon_min
         self.lambda_ = lambda_
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
@@ -538,7 +538,7 @@ struct LambdaHyperparams(Copyable, Movable):
         self.epsilon_min = copy.epsilon_min
         self.lambda_ = copy.lambda_
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
         self.epsilon = take.epsilon
@@ -546,10 +546,10 @@ struct LambdaHyperparams(Copyable, Movable):
         self.epsilon_min = take.epsilon_min
         self.lambda_ = take.lambda_
 
-    fn to_csv_header(self) -> String:
+    def to_csv_header(self) -> String:
         return "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min,lambda"
 
-    fn to_csv_row(self) -> String:
+    def to_csv_row(self) -> String:
         return (
             String(self.learning_rate)
             + ","
@@ -575,7 +575,7 @@ struct LambdaParamSpace(Copyable, Movable):
     var epsilon_min: FloatParam
     var lambda_: FloatParam
 
-    fn __init__(out self):
+    def __init__(out self):
         self.learning_rate = FloatParam(
             "learning_rate", 0.01, 0.5, log_scale=True, num_values=5
         )
@@ -595,7 +595,7 @@ struct LambdaParamSpace(Copyable, Movable):
             "lambda", 0.8, 0.99, log_scale=False, num_values=4
         )
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
@@ -603,7 +603,7 @@ struct LambdaParamSpace(Copyable, Movable):
         self.epsilon_min = copy.epsilon_min
         self.lambda_ = copy.lambda_
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate^
         self.discount_factor = take.discount_factor^
         self.epsilon = take.epsilon^
@@ -611,7 +611,7 @@ struct LambdaParamSpace(Copyable, Movable):
         self.epsilon_min = take.epsilon_min^
         self.lambda_ = take.lambda_^
 
-    fn sample_random(self) -> LambdaHyperparams:
+    def sample_random(self) -> LambdaHyperparams:
         return LambdaHyperparams(
             learning_rate=self.learning_rate.sample_random(),
             discount_factor=self.discount_factor.sample_random(),
@@ -621,7 +621,7 @@ struct LambdaParamSpace(Copyable, Movable):
             lambda_=self.lambda_.sample_random(),
         )
 
-    fn get_grid_size(self) -> Int:
+    def get_grid_size(self) -> Int:
         return (
             self.learning_rate.num_values
             * self.discount_factor.num_values
@@ -631,7 +631,7 @@ struct LambdaParamSpace(Copyable, Movable):
             * self.lambda_.num_values
         )
 
-    fn get_grid_config(self, index: Int) -> LambdaHyperparams:
+    def get_grid_config(self, index: Int) -> LambdaHyperparams:
         var remaining = index
         var lr_idx = remaining % self.learning_rate.num_values
         remaining //= self.learning_rate.num_values
@@ -670,7 +670,7 @@ struct ModelBasedHyperparams(Copyable, Movable):
     var epsilon_min: Float64
     var n_planning: Int
 
-    fn __init__(
+    def __init__(
         out self,
         learning_rate: Float64 = 0.1,
         discount_factor: Float64 = 0.99,
@@ -686,7 +686,7 @@ struct ModelBasedHyperparams(Copyable, Movable):
         self.epsilon_min = epsilon_min
         self.n_planning = n_planning
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
@@ -694,7 +694,7 @@ struct ModelBasedHyperparams(Copyable, Movable):
         self.epsilon_min = copy.epsilon_min
         self.n_planning = copy.n_planning
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
         self.epsilon = take.epsilon
@@ -702,10 +702,10 @@ struct ModelBasedHyperparams(Copyable, Movable):
         self.epsilon_min = take.epsilon_min
         self.n_planning = take.n_planning
 
-    fn to_csv_header(self) -> String:
+    def to_csv_header(self) -> String:
         return "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min,n_planning"
 
-    fn to_csv_row(self) -> String:
+    def to_csv_row(self) -> String:
         return (
             String(self.learning_rate)
             + ","
@@ -731,7 +731,7 @@ struct ModelBasedParamSpace(Copyable, Movable):
     var epsilon_min: FloatParam
     var n_planning: IntParam
 
-    fn __init__(out self):
+    def __init__(out self):
         self.learning_rate = FloatParam(
             "learning_rate", 0.01, 0.5, log_scale=True, num_values=5
         )
@@ -755,7 +755,7 @@ struct ModelBasedParamSpace(Copyable, Movable):
         n_values.append(50)
         self.n_planning = IntParam("n_planning", n_values^)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
@@ -763,7 +763,7 @@ struct ModelBasedParamSpace(Copyable, Movable):
         self.epsilon_min = copy.epsilon_min
         self.n_planning = copy.n_planning
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate^
         self.discount_factor = take.discount_factor^
         self.epsilon = take.epsilon^
@@ -771,7 +771,7 @@ struct ModelBasedParamSpace(Copyable, Movable):
         self.epsilon_min = take.epsilon_min^
         self.n_planning = take.n_planning^
 
-    fn sample_random(self) -> ModelBasedHyperparams:
+    def sample_random(self) -> ModelBasedHyperparams:
         return ModelBasedHyperparams(
             learning_rate=self.learning_rate.sample_random(),
             discount_factor=self.discount_factor.sample_random(),
@@ -781,7 +781,7 @@ struct ModelBasedParamSpace(Copyable, Movable):
             n_planning=self.n_planning.sample_random(),
         )
 
-    fn get_grid_size(self) -> Int:
+    def get_grid_size(self) -> Int:
         return (
             self.learning_rate.num_values
             * self.discount_factor.num_values
@@ -791,7 +791,7 @@ struct ModelBasedParamSpace(Copyable, Movable):
             * self.n_planning.num_values()
         )
 
-    fn get_grid_config(self, index: Int) -> ModelBasedHyperparams:
+    def get_grid_config(self, index: Int) -> ModelBasedHyperparams:
         var remaining = index
         var lr_idx = remaining % self.learning_rate.num_values
         remaining //= self.learning_rate.num_values
@@ -832,7 +832,7 @@ struct ReplayHyperparams(Copyable, Movable):
     var batch_size: Int
     var min_buffer_size: Int
 
-    fn __init__(
+    def __init__(
         out self,
         learning_rate: Float64 = 0.1,
         discount_factor: Float64 = 0.99,
@@ -852,7 +852,7 @@ struct ReplayHyperparams(Copyable, Movable):
         self.batch_size = batch_size
         self.min_buffer_size = min_buffer_size
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
@@ -862,7 +862,7 @@ struct ReplayHyperparams(Copyable, Movable):
         self.batch_size = copy.batch_size
         self.min_buffer_size = copy.min_buffer_size
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
         self.epsilon = take.epsilon
@@ -872,10 +872,10 @@ struct ReplayHyperparams(Copyable, Movable):
         self.batch_size = take.batch_size
         self.min_buffer_size = take.min_buffer_size
 
-    fn to_csv_header(self) -> String:
+    def to_csv_header(self) -> String:
         return "learning_rate,discount_factor,epsilon,epsilon_decay,epsilon_min,buffer_size,batch_size,min_buffer_size"
 
-    fn to_csv_row(self) -> String:
+    def to_csv_row(self) -> String:
         return (
             String(self.learning_rate)
             + ","
@@ -906,7 +906,7 @@ struct ReplayParamSpace(Copyable, Movable):
     var buffer_size: IntParam
     var batch_size: IntParam
 
-    fn __init__(out self):
+    def __init__(out self):
         self.learning_rate = FloatParam(
             "learning_rate", 0.01, 0.5, log_scale=True, num_values=5
         )
@@ -936,7 +936,7 @@ struct ReplayParamSpace(Copyable, Movable):
         batch_values.append(64)
         self.batch_size = IntParam("batch_size", batch_values^)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
         self.epsilon = copy.epsilon
@@ -945,7 +945,7 @@ struct ReplayParamSpace(Copyable, Movable):
         self.buffer_size = copy.buffer_size
         self.batch_size = copy.batch_size
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.learning_rate = take.learning_rate^
         self.discount_factor = take.discount_factor^
         self.epsilon = take.epsilon^
@@ -954,7 +954,7 @@ struct ReplayParamSpace(Copyable, Movable):
         self.buffer_size = take.buffer_size^
         self.batch_size = take.batch_size^
 
-    fn sample_random(self) -> ReplayHyperparams:
+    def sample_random(self) -> ReplayHyperparams:
         var buffer = self.buffer_size.sample_random()
         return ReplayHyperparams(
             learning_rate=self.learning_rate.sample_random(),
@@ -967,7 +967,7 @@ struct ReplayParamSpace(Copyable, Movable):
             min_buffer_size=buffer // 10,  # 10% of buffer size
         )
 
-    fn get_grid_size(self) -> Int:
+    def get_grid_size(self) -> Int:
         return (
             self.learning_rate.num_values
             * self.discount_factor.num_values
@@ -978,7 +978,7 @@ struct ReplayParamSpace(Copyable, Movable):
             * self.batch_size.num_values()
         )
 
-    fn get_grid_config(self, index: Int) -> ReplayHyperparams:
+    def get_grid_config(self, index: Int) -> ReplayHyperparams:
         var remaining = index
         var lr_idx = remaining % self.learning_rate.num_values
         remaining //= self.learning_rate.num_values
@@ -1022,7 +1022,7 @@ struct PolicyGradientHyperparams(Copyable, Movable):
     var use_baseline: Bool
     var baseline_lr: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         actor_lr: Float64 = 0.001,
         critic_lr: Float64 = 0.01,
@@ -1038,7 +1038,7 @@ struct PolicyGradientHyperparams(Copyable, Movable):
         self.use_baseline = use_baseline
         self.baseline_lr = baseline_lr
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.actor_lr = copy.actor_lr
         self.critic_lr = copy.critic_lr
         self.discount_factor = copy.discount_factor
@@ -1046,7 +1046,7 @@ struct PolicyGradientHyperparams(Copyable, Movable):
         self.use_baseline = copy.use_baseline
         self.baseline_lr = copy.baseline_lr
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.actor_lr = take.actor_lr
         self.critic_lr = take.critic_lr
         self.discount_factor = take.discount_factor
@@ -1054,10 +1054,10 @@ struct PolicyGradientHyperparams(Copyable, Movable):
         self.use_baseline = take.use_baseline
         self.baseline_lr = take.baseline_lr
 
-    fn to_csv_header(self) -> String:
+    def to_csv_header(self) -> String:
         return "actor_lr,critic_lr,discount_factor,entropy_coef,use_baseline,baseline_lr"
 
-    fn to_csv_row(self) -> String:
+    def to_csv_row(self) -> String:
         return (
             String(self.actor_lr)
             + ","
@@ -1081,7 +1081,7 @@ struct PolicyGradientParamSpace(Copyable, Movable):
     var discount_factor: FloatParam
     var entropy_coef: FloatParam
 
-    fn __init__(out self):
+    def __init__(out self):
         self.actor_lr = FloatParam(
             "actor_lr", 0.0001, 0.01, log_scale=True, num_values=4
         )
@@ -1095,19 +1095,19 @@ struct PolicyGradientParamSpace(Copyable, Movable):
             "entropy_coef", 0.001, 0.1, log_scale=True, num_values=3
         )
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.actor_lr = copy.actor_lr
         self.critic_lr = copy.critic_lr
         self.discount_factor = copy.discount_factor
         self.entropy_coef = copy.entropy_coef
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.actor_lr = take.actor_lr^
         self.critic_lr = take.critic_lr^
         self.discount_factor = take.discount_factor^
         self.entropy_coef = take.entropy_coef^
 
-    fn sample_random(self) -> PolicyGradientHyperparams:
+    def sample_random(self) -> PolicyGradientHyperparams:
         return PolicyGradientHyperparams(
             actor_lr=self.actor_lr.sample_random(),
             critic_lr=self.critic_lr.sample_random(),
@@ -1117,7 +1117,7 @@ struct PolicyGradientParamSpace(Copyable, Movable):
             baseline_lr=self.critic_lr.sample_random(),
         )
 
-    fn get_grid_size(self) -> Int:
+    def get_grid_size(self) -> Int:
         return (
             self.actor_lr.num_values
             * self.critic_lr.num_values
@@ -1125,7 +1125,7 @@ struct PolicyGradientParamSpace(Copyable, Movable):
             * self.entropy_coef.num_values
         )
 
-    fn get_grid_config(self, index: Int) -> PolicyGradientHyperparams:
+    def get_grid_config(self, index: Int) -> PolicyGradientHyperparams:
         var remaining = index
         var actor_idx = remaining % self.actor_lr.num_values
         remaining //= self.actor_lr.num_values
@@ -1163,7 +1163,7 @@ struct PPOHyperparams(Copyable, Movable):
     var num_epochs: Int
     var normalize_advantages: Bool
 
-    fn __init__(
+    def __init__(
         out self,
         actor_lr: Float64 = 0.0003,
         critic_lr: Float64 = 0.001,
@@ -1183,7 +1183,7 @@ struct PPOHyperparams(Copyable, Movable):
         self.num_epochs = num_epochs
         self.normalize_advantages = normalize_advantages
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.actor_lr = copy.actor_lr
         self.critic_lr = copy.critic_lr
         self.discount_factor = copy.discount_factor
@@ -1193,7 +1193,7 @@ struct PPOHyperparams(Copyable, Movable):
         self.num_epochs = copy.num_epochs
         self.normalize_advantages = copy.normalize_advantages
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.actor_lr = take.actor_lr
         self.critic_lr = take.critic_lr
         self.discount_factor = take.discount_factor
@@ -1203,10 +1203,10 @@ struct PPOHyperparams(Copyable, Movable):
         self.num_epochs = take.num_epochs
         self.normalize_advantages = take.normalize_advantages
 
-    fn to_csv_header(self) -> String:
+    def to_csv_header(self) -> String:
         return "actor_lr,critic_lr,discount_factor,gae_lambda,clip_epsilon,entropy_coef,num_epochs"
 
-    fn to_csv_row(self) -> String:
+    def to_csv_row(self) -> String:
         return (
             String(self.actor_lr)
             + ","
@@ -1235,7 +1235,7 @@ struct PPOParamSpace(Copyable, Movable):
     var entropy_coef: FloatParam
     var num_epochs: IntParam
 
-    fn __init__(out self):
+    def __init__(out self):
         self.actor_lr = FloatParam(
             "actor_lr", 0.0001, 0.001, log_scale=True, num_values=3
         )
@@ -1260,7 +1260,7 @@ struct PPOParamSpace(Copyable, Movable):
         epoch_values.append(8)
         self.num_epochs = IntParam("num_epochs", epoch_values^)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.actor_lr = copy.actor_lr
         self.critic_lr = copy.critic_lr
         self.discount_factor = copy.discount_factor
@@ -1269,7 +1269,7 @@ struct PPOParamSpace(Copyable, Movable):
         self.entropy_coef = copy.entropy_coef
         self.num_epochs = copy.num_epochs
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.actor_lr = take.actor_lr^
         self.critic_lr = take.critic_lr^
         self.discount_factor = take.discount_factor^
@@ -1278,7 +1278,7 @@ struct PPOParamSpace(Copyable, Movable):
         self.entropy_coef = take.entropy_coef^
         self.num_epochs = take.num_epochs^
 
-    fn sample_random(self) -> PPOHyperparams:
+    def sample_random(self) -> PPOHyperparams:
         return PPOHyperparams(
             actor_lr=self.actor_lr.sample_random(),
             critic_lr=self.critic_lr.sample_random(),
@@ -1290,7 +1290,7 @@ struct PPOParamSpace(Copyable, Movable):
             normalize_advantages=True,
         )
 
-    fn get_grid_size(self) -> Int:
+    def get_grid_size(self) -> Int:
         return (
             self.actor_lr.num_values
             * self.critic_lr.num_values
@@ -1301,7 +1301,7 @@ struct PPOParamSpace(Copyable, Movable):
             * self.num_epochs.num_values()
         )
 
-    fn get_grid_config(self, index: Int) -> PPOHyperparams:
+    def get_grid_config(self, index: Int) -> PPOHyperparams:
         var remaining = index
         var actor_idx = remaining % self.actor_lr.num_values
         remaining //= self.actor_lr.num_values
@@ -1352,7 +1352,7 @@ struct ContinuousHyperparams(Copyable, Movable):
     var alpha: Float64
     var auto_alpha: Bool
 
-    fn __init__(
+    def __init__(
         out self,
         actor_lr: Float64 = 0.001,
         critic_lr: Float64 = 0.001,
@@ -1380,7 +1380,7 @@ struct ContinuousHyperparams(Copyable, Movable):
         self.alpha = alpha
         self.auto_alpha = auto_alpha
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.actor_lr = copy.actor_lr
         self.critic_lr = copy.critic_lr
         self.discount_factor = copy.discount_factor
@@ -1394,7 +1394,7 @@ struct ContinuousHyperparams(Copyable, Movable):
         self.alpha = copy.alpha
         self.auto_alpha = copy.auto_alpha
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.actor_lr = take.actor_lr
         self.critic_lr = take.critic_lr
         self.discount_factor = take.discount_factor
@@ -1408,10 +1408,10 @@ struct ContinuousHyperparams(Copyable, Movable):
         self.alpha = take.alpha
         self.auto_alpha = take.auto_alpha
 
-    fn to_csv_header(self) -> String:
+    def to_csv_header(self) -> String:
         return "actor_lr,critic_lr,discount_factor,tau,noise_std,buffer_size,batch_size,policy_delay,target_noise_std,target_noise_clip,alpha,auto_alpha"
 
-    fn to_csv_row(self) -> String:
+    def to_csv_row(self) -> String:
         return (
             String(self.actor_lr)
             + ","
@@ -1449,7 +1449,7 @@ struct ContinuousParamSpace(Copyable, Movable):
     var noise_std: FloatParam
     var batch_size: IntParam
 
-    fn __init__(out self):
+    def __init__(out self):
         self.actor_lr = FloatParam(
             "actor_lr", 0.0001, 0.003, log_scale=True, num_values=4
         )
@@ -1470,7 +1470,7 @@ struct ContinuousParamSpace(Copyable, Movable):
         batch_values.append(256)
         self.batch_size = IntParam("batch_size", batch_values^)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.actor_lr = copy.actor_lr
         self.critic_lr = copy.critic_lr
         self.discount_factor = copy.discount_factor
@@ -1478,7 +1478,7 @@ struct ContinuousParamSpace(Copyable, Movable):
         self.noise_std = copy.noise_std
         self.batch_size = copy.batch_size
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.actor_lr = take.actor_lr^
         self.critic_lr = take.critic_lr^
         self.discount_factor = take.discount_factor^
@@ -1486,7 +1486,7 @@ struct ContinuousParamSpace(Copyable, Movable):
         self.noise_std = take.noise_std^
         self.batch_size = take.batch_size^
 
-    fn sample_random(self) -> ContinuousHyperparams:
+    def sample_random(self) -> ContinuousHyperparams:
         return ContinuousHyperparams(
             actor_lr=self.actor_lr.sample_random(),
             critic_lr=self.critic_lr.sample_random(),
@@ -1497,7 +1497,7 @@ struct ContinuousParamSpace(Copyable, Movable):
             batch_size=self.batch_size.sample_random(),
         )
 
-    fn get_grid_size(self) -> Int:
+    def get_grid_size(self) -> Int:
         return (
             self.actor_lr.num_values
             * self.critic_lr.num_values
@@ -1507,7 +1507,7 @@ struct ContinuousParamSpace(Copyable, Movable):
             * self.batch_size.num_values()
         )
 
-    fn get_grid_config(self, index: Int) -> ContinuousHyperparams:
+    def get_grid_config(self, index: Int) -> ContinuousHyperparams:
         var remaining = index
         var actor_idx = remaining % self.actor_lr.num_values
         remaining //= self.actor_lr.num_values

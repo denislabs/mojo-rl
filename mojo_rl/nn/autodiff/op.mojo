@@ -12,7 +12,7 @@ struct OpID:
 
     var _value: Int
 
-    fn __init__(out self, value: Int):
+    def __init__(out self, value: Int):
         self._value = value
 
     # Arithmetic primitives (1-9)
@@ -102,7 +102,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
 
     # --- CPU ---
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -121,7 +121,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -144,7 +144,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
 
     # --- GPU ---
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -165,7 +165,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,

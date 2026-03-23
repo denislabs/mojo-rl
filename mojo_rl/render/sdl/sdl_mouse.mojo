@@ -70,15 +70,15 @@ struct MouseID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -103,19 +103,19 @@ struct SystemCursor(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime SYSTEM_CURSOR_DEFAULT = Self(0)
@@ -170,19 +170,19 @@ struct MouseWheelDirection(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime MOUSEWHEEL_NORMAL = Self(0)
@@ -206,15 +206,15 @@ struct MouseButtonFlags(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime BUTTON_LEFT = Self(1)
@@ -224,7 +224,7 @@ struct MouseButtonFlags(Intable, TrivialRegisterPassable):
     comptime BUTTON_X2 = Self(5)
 
 
-fn has_mouse() raises -> Bool:
+def has_mouse() raises -> Bool:
     """Return whether a mouse is currently connected.
 
     Returns:
@@ -239,7 +239,7 @@ fn has_mouse() raises -> Bool:
     return _get_dylib_function[lib, "SDL_HasMouse", fn() -> Bool]()()
 
 
-fn get_mice(
+def get_mice(
     count: Ptr[c_int, MutAnyOrigin], out ret: Ptr[MouseID, MutAnyOrigin]
 ) raises:
     """Get a list of currently connected mice.
@@ -273,7 +273,7 @@ fn get_mice(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_mouse_name_for_id(
+def get_mouse_name_for_id(
     instance_id: MouseID, out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the name of a mouse.
@@ -302,7 +302,7 @@ fn get_mouse_name_for_id(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_mouse_focus() raises -> Ptr[Window, MutAnyOrigin]:
+def get_mouse_focus() raises -> Ptr[Window, MutAnyOrigin]:
     """Get the window which currently has mouse focus.
 
     Returns:
@@ -319,7 +319,7 @@ fn get_mouse_focus() raises -> Ptr[Window, MutAnyOrigin]:
     ]()()
 
 
-fn get_mouse_state(
+def get_mouse_state(
     x: Ptr[c_float, MutAnyOrigin], y: Ptr[c_float, MutAnyOrigin]
 ) raises -> MouseButtonFlags:
     """Query SDL's cache for the synchronous mouse button state and the
@@ -363,7 +363,7 @@ fn get_mouse_state(
     ]()(x, y)
 
 
-fn get_global_mouse_state(
+def get_global_mouse_state(
     x: Ptr[c_float, MutAnyOrigin], y: Ptr[c_float, MutAnyOrigin]
 ) raises -> MouseButtonFlags:
     """Query the platform for the asynchronous mouse button state and the
@@ -410,7 +410,7 @@ fn get_global_mouse_state(
     ]()(x, y)
 
 
-fn get_relative_mouse_state(
+def get_relative_mouse_state(
     x: Ptr[c_float, MutAnyOrigin], y: Ptr[c_float, MutAnyOrigin]
 ) raises -> MouseButtonFlags:
     """Query SDL's cache for the synchronous mouse button state and accumulated
@@ -456,7 +456,7 @@ fn get_relative_mouse_state(
     ]()(x, y)
 
 
-fn warp_mouse_in_window(
+def warp_mouse_in_window(
     window: Ptr[Window, MutAnyOrigin], x: c_float, y: c_float
 ) raises -> None:
     """Move the mouse cursor to the given position within the window.
@@ -487,7 +487,7 @@ fn warp_mouse_in_window(
     ]()(window, x, y)
 
 
-fn warp_mouse_global(x: c_float, y: c_float) raises:
+def warp_mouse_global(x: c_float, y: c_float) raises:
     """Move the mouse to the given position in global screen space.
 
     This function generates a mouse motion event.
@@ -519,7 +519,7 @@ fn warp_mouse_global(x: c_float, y: c_float) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_relative_mouse_mode(
+def set_window_relative_mouse_mode(
     window: Ptr[Window, MutAnyOrigin], enabled: Bool
 ) raises:
     """Set relative mouse mode for a window.
@@ -559,7 +559,7 @@ fn set_window_relative_mouse_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_relative_mouse_mode(
+def get_window_relative_mouse_mode(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> Bool:
     """Query whether relative mouse mode is enabled for a window.
@@ -583,7 +583,7 @@ fn get_window_relative_mouse_mode(
     ]()(window)
 
 
-fn capture_mouse(enabled: Bool) raises:
+def capture_mouse(enabled: Bool) raises:
     """Capture the mouse and to track input outside an SDL window.
 
     Capturing enables your app to obtain mouse events globally, instead of just
@@ -639,7 +639,7 @@ fn capture_mouse(enabled: Bool) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_cursor(
+def create_cursor(
     data: Ptr[UInt8, ImmutAnyOrigin],
     mask: Ptr[UInt8, ImmutAnyOrigin],
     w: c_int,
@@ -704,7 +704,7 @@ fn create_cursor(
     ]()(data, mask, w, h, hot_x, hot_y)
 
 
-fn create_color_cursor(
+def create_color_cursor(
     surface: Ptr[Surface, MutAnyOrigin],
     hot_x: c_int,
     hot_y: c_int,
@@ -748,7 +748,7 @@ fn create_color_cursor(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_system_cursor(
+def create_system_cursor(
     id: SystemCursor, out ret: Ptr[Cursor, MutAnyOrigin]
 ) raises:
     """Create a system cursor.
@@ -775,7 +775,7 @@ fn create_system_cursor(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_cursor(cursor: Ptr[Cursor, MutAnyOrigin]) raises:
+def set_cursor(cursor: Ptr[Cursor, MutAnyOrigin]) raises:
     """Set the active cursor.
 
     This function sets the currently active cursor to the specified one. If the
@@ -803,7 +803,7 @@ fn set_cursor(cursor: Ptr[Cursor, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_cursor() raises -> Ptr[Cursor, MutAnyOrigin]:
+def get_cursor() raises -> Ptr[Cursor, MutAnyOrigin]:
     """Get the active cursor.
 
     This function returns a pointer to the current cursor which is owned by the
@@ -823,7 +823,7 @@ fn get_cursor() raises -> Ptr[Cursor, MutAnyOrigin]:
     ]()()
 
 
-fn get_default_cursor() raises -> Ptr[Cursor, MutAnyOrigin]:
+def get_default_cursor() raises -> Ptr[Cursor, MutAnyOrigin]:
     """Get the default cursor.
 
     You do not have to call SDL_DestroyCursor() on the return value, but it is
@@ -844,7 +844,7 @@ fn get_default_cursor() raises -> Ptr[Cursor, MutAnyOrigin]:
     ]()()
 
 
-fn destroy_cursor(cursor: Ptr[Cursor, MutAnyOrigin]) raises -> None:
+def destroy_cursor(cursor: Ptr[Cursor, MutAnyOrigin]) raises -> None:
     """Free a previously-created cursor.
 
     Use this function to free cursor resources created with SDL_CreateCursor(),
@@ -866,7 +866,7 @@ fn destroy_cursor(cursor: Ptr[Cursor, MutAnyOrigin]) raises -> None:
     ]()(cursor)
 
 
-fn show_cursor() raises:
+def show_cursor() raises:
     """Show the cursor.
 
     Raises:
@@ -884,7 +884,7 @@ fn show_cursor() raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn hide_cursor() raises:
+def hide_cursor() raises:
     """Hide the cursor.
 
     Raises:
@@ -902,7 +902,7 @@ fn hide_cursor() raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn cursor_visible() raises -> Bool:
+def cursor_visible() raises -> Bool:
     """Return whether the cursor is currently being shown.
 
     Returns:

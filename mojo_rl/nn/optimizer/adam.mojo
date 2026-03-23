@@ -35,17 +35,17 @@ struct Adam[
 
     comptime STATE_PER_PARAM: Int = 2
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn step[
+    def step[
         PARAM_SIZE: Int
     ](
         mut params: LayoutTensor[
@@ -100,7 +100,7 @@ struct Adam[
 
     @always_inline
     @staticmethod
-    fn step_kernel_impl[
+    def step_kernel_impl[
         PARAM_SIZE: Int
     ](
         params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -146,7 +146,7 @@ struct Adam[
     # =========================================================================
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         PARAM_SIZE: Int
     ](
         ctx: DeviceContext,
@@ -180,7 +180,7 @@ struct Adam[
         var eps = Scalar[dtype](Self.EPS)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             params: LayoutTensor[
                 dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
             ],

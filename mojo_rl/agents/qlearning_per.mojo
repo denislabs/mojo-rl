@@ -65,7 +65,7 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
     var beta_start: Float64
     var total_steps: Int  # Track steps for beta annealing
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.q_table = copy.q_table
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
@@ -86,7 +86,7 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
         self.beta_start = copy.beta_start
         self.total_steps = copy.total_steps
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.q_table = take.q_table^
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
@@ -101,7 +101,7 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
         self.beta_start = take.beta_start
         self.total_steps = take.total_steps
 
-    fn __init__(
+    def __init__(
         out self,
         num_states: Int,
         num_actions: Int,
@@ -149,7 +149,7 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
         self.beta_start = beta_start
         self.total_steps = 0
 
-    fn select_action(self, state_idx: Int) -> Int:
+    def select_action(self, state_idx: Int) -> Int:
         """Select action using epsilon-greedy policy."""
         var rand = random_float64()
         if rand < self.epsilon:
@@ -157,7 +157,7 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
         else:
             return self.q_table.get_best_action(state_idx)
 
-    fn _compute_td_error(
+    def _compute_td_error(
         self,
         state: Int,
         action: Int,
@@ -176,7 +176,7 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
             )
         return target - current_q
 
-    fn _q_update_weighted(
+    def _q_update_weighted(
         mut self,
         state: Int,
         action: Int,
@@ -207,7 +207,7 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
         self.q_table.set(state, action, new_q)
         return td_error
 
-    fn update(
+    def update(
         mut self,
         state_idx: Int,
         action: Int,
@@ -242,19 +242,19 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
         for i in range(len(indices)):
             self.buffer.update_priority(indices[i], td_errors[i])
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay epsilon after each episode."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current epsilon value."""
         return self.epsilon
 
-    fn get_best_action(self, state_idx: Int) -> Int:
+    def get_best_action(self, state_idx: Int) -> Int:
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
 
-    fn train[
+    def train[
         E: DiscreteEnv
     ](
         mut self,
@@ -325,7 +325,7 @@ struct QLearningPERAgent(Copyable, Movable, TabularAgent):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: DiscreteEnv & RenderableEnv
     ](
         self,

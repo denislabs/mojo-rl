@@ -36,7 +36,7 @@ from std.gpu import block_dim, block_idx, thread_idx
 
 
 @always_inline
-fn soft_update_kernel[
+def soft_update_kernel[
     dtype: DType,
     SIZE: Int,
 ](
@@ -90,7 +90,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     var step_num: Int
     var lr_scale: Float64
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all device and pinned host buffers.
 
         Args:
@@ -110,7 +110,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         ctx.enqueue_memset(self.grads_buf, 0)
         ctx.enqueue_memset(self.state_buf, 0)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.step_num = copy.step_num
         self.lr_scale = copy.lr_scale
         self.params_buf = copy.params_buf.copy()
@@ -119,7 +119,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         self.params_host = copy.params_host.copy()
         self.state_host = copy.state_host.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.step_num = take.step_num
         self.lr_scale = take.lr_scale
         self.params_buf = take.params_buf^
@@ -132,7 +132,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # LayoutTensor Views over device memory (zero-copy)
     # =========================================================================
 
-    fn params_view(
+    def params_view(
         self,
     ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
         """LayoutTensor view over device params buffer."""
@@ -140,7 +140,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.params_buf.unsafe_ptr())
 
-    fn grads_view(
+    def grads_view(
         self,
     ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
         """LayoutTensor view over device grads buffer."""
@@ -148,7 +148,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.grads_buf.unsafe_ptr())
 
-    fn state_view(
+    def state_view(
         self,
     ) -> LayoutTensor[
         dtype,
@@ -166,11 +166,11 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # Core GPU Operations
     # =========================================================================
 
-    fn zero_grads(self, ctx: DeviceContext) raises:
+    def zero_grads(self, ctx: DeviceContext) raises:
         """Zero the gradients buffer on device (async)."""
         ctx.enqueue_memset(self.grads_buf, 0)
 
-    fn set_lr_scale(mut self, scale: Float64):
+    def set_lr_scale(mut self, scale: Float64):
         """Set the LR multiplier applied at each optimizer step.
 
         Args:
@@ -178,7 +178,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         """
         self.lr_scale = scale
 
-    fn optimizer_step(mut self, ctx: DeviceContext) raises:
+    def optimizer_step(mut self, ctx: DeviceContext) raises:
         """One GPU optimizer step + increment step_num.
 
         Applies self.lr_scale to the base LR (set via set_lr_scale()).
@@ -194,7 +194,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             ctx, p, self.grads_view(), s, self.step_num, self.lr_scale
         )
 
-    fn soft_update_from_gpu(
+    def soft_update_from_gpu(
         self,
         source: Self,
         tau: Float64,
@@ -216,7 +216,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         var tau_s = Scalar[dtype](tau)
 
         @always_inline
-        fn soft_update_wrapper(
+        def soft_update_wrapper(
             tgt: LayoutTensor[
                 dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
             ],
@@ -239,7 +239,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # CPU ↔ GPU Sync
     # =========================================================================
 
-    fn upload_from(
+    def upload_from(
         mut self,
         cpu: NetworkState[Self.MODEL, Self.OPTIMIZER],
         ctx: DeviceContext,
@@ -263,7 +263,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
 
         self.step_num = cpu.step_num
 
-    fn download_to(
+    def download_to(
         mut self,
         mut cpu: NetworkState[Self.MODEL, Self.OPTIMIZER],
         ctx: DeviceContext,

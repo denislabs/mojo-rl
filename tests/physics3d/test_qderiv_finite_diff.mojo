@@ -38,7 +38,7 @@ comptime CDOF_SIZE = NV * 6
 comptime CRB_SIZE = NBODY * 10
 
 
-fn compute_bias_at_qvel(
+def compute_bias_at_qvel(
     model: Model[
         DTYPE,
         NQ,
@@ -81,7 +81,7 @@ fn compute_bias_at_qvel(
     return bias^
 
 
-fn test_qderiv_finite_diff() raises:
+def test_qderiv_finite_diff() raises:
     print("=" * 60)
     print("qDeriv Finite Difference Verification")
     print("=" * 60)
@@ -266,5 +266,5 @@ fn test_qderiv_finite_diff() raises:
     )
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

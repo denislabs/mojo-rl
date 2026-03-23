@@ -198,8 +198,12 @@ struct DreamerV3Agent[
     ]
 
     # ── Actor/Critic Network aliases (matching state.mojo definitions) ───
-    comptime ActorNet = Network[Self.StateType.ActorModel, Adam[LR=Self.actor_lr]]
-    comptime CriticNet = Network[Self.StateType.CriticModel, Adam[LR=Self.critic_lr]]
+    comptime ActorNet = Network[
+        Self.StateType.ActorModel, Adam[LR=Self.actor_lr]
+    ]
+    comptime CriticNet = Network[
+        Self.StateType.CriticModel, Adam[LR=Self.critic_lr]
+    ]
 
     # ── Core state ────────────────────────────────────────────────────────
     var state: Self.StateType
@@ -231,7 +235,7 @@ struct DreamerV3Agent[
     # Constructors
     # ══════════════════════════════════════════════════════════════════════
 
-    fn __init__(
+    def __init__(
         out self,
         gamma: Float64 = 0.997,
         lambda_: Float64 = 0.95,
@@ -278,7 +282,7 @@ struct DreamerV3Agent[
         self._prev_action = alloc[Scalar[dtype]](Self.action_dim)
         memset(self._prev_action, 0, Self.action_dim)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor — transfer ownership of all fields."""
         self.state = take.state^
         self.gamma = take.gamma
@@ -301,7 +305,7 @@ struct DreamerV3Agent[
     # Episode Management
     # ══════════════════════════════════════════════════════════════════════
 
-    fn reset_episode(mut self):
+    def reset_episode(mut self):
         """Reset the running RSSM state for a new episode.
 
         Zeros out the deterministic state, stochastic state, and previous
@@ -315,7 +319,7 @@ struct DreamerV3Agent[
     # Data Collection
     # ══════════════════════════════════════════════════════════════════════
 
-    fn observe(
+    def observe(
         mut self,
         obs: List[Scalar[dtype]],
         action: List[Scalar[dtype]],
@@ -360,7 +364,7 @@ struct DreamerV3Agent[
     # Action Selection
     # ══════════════════════════════════════════════════════════════════════
 
-    fn select_action(
+    def select_action(
         mut self,
         obs: List[Scalar[dtype]],
         training: Bool = True,
@@ -518,7 +522,7 @@ struct DreamerV3Agent[
     # Training Step
     # ══════════════════════════════════════════════════════════════════════
 
-    fn update(mut self) -> Float64:
+    def update(mut self) -> Float64:
         """Full DreamerV3 training step.
 
         1. Sample sequences from replay buffer
@@ -1251,7 +1255,7 @@ struct DreamerV3Agent[
     # World Model Backward (Full BPTT via Autodiff)
     # ══════════════════════════════════════════════════════════════════════
 
-    fn _backward_world_model_autodiff[
+    def _backward_world_model_autodiff[
         B: Int
     ](
         mut self,
@@ -1575,7 +1579,7 @@ struct DreamerV3Agent[
     # + separate BPTT backward loop with a single unified reverse pass)
     # ══════════════════════════════════════════════════════════════════════
 
-    fn _gpu_bptt_autodiff(
+    def _gpu_bptt_autodiff(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -1831,9 +1835,9 @@ struct DreamerV3Agent[
         var rew_target_ib = LayoutTensor[
             dtype, Layout.row_major(IB_, BINS), MutAnyOrigin
         ](gpu_state.rew_target_buf.unsafe_ptr())
-        var bins_1d = LayoutTensor[
-            dtype, Layout.row_major(BINS), MutAnyOrigin
-        ](gpu_state.bins_buf.unsafe_ptr())
+        var bins_1d = LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin](
+            gpu_state.bins_buf.unsafe_ptr()
+        )
         comptime ad_rew_two_hot_ib = two_hot_encode_kernel[IB_, BINS]
         ctx.enqueue_function[ad_rew_two_hot_ib, ad_rew_two_hot_ib](
             rew_target_ib,
@@ -1978,9 +1982,9 @@ struct DreamerV3Agent[
             grid_dim=(INT_REW_IB_BLK,),
             block_dim=(TPB,),
         )
-        var cg_ib = LayoutTensor[
-            dtype, Layout.row_major(IB_), MutAnyOrigin
-        ](gpu_state.cont_grad_buf.unsafe_ptr())
+        var cg_ib = LayoutTensor[dtype, Layout.row_major(IB_), MutAnyOrigin](
+            gpu_state.cont_grad_buf.unsafe_ptr()
+        )
         comptime _int_cont_ib = interleave_kernel[
             IB_, 1, HEADS_OUT, OBS + BINS, HEADS_FLAT_IB
         ]
@@ -2591,11 +2595,11 @@ struct DreamerV3Agent[
     # GPU Methods
     # ══════════════════════════════════════════════════════════════════════
 
-    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+    def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         """Allocate all GPU buffers for DreamerV3 training."""
         return Self.GPUStateType(ctx)
 
-    fn upload_to_gpu(
+    def upload_to_gpu(
         self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -2626,7 +2630,7 @@ struct DreamerV3Agent[
             bins_host[i] = Scalar[dtype](self.state.rssm.bins[i])
         ctx.enqueue_copy(gpu_state.bins_buf, bins_host)
 
-    fn download_from_gpu(
+    def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -2646,7 +2650,7 @@ struct DreamerV3Agent[
         gpu_state.actor.download_to(self.state.actor, ctx)
         gpu_state.critic.download_to(self.state.critic, ctx)
 
-    fn do_gpu_train_step(
+    def do_gpu_train_step(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -2754,7 +2758,11 @@ struct DreamerV3Agent[
         comptime OBS_SRC_FLAT = OBS_SIZE  # B * (BL+1) * OBS
         comptime OBS_DEINT_BLK = (OBS_FLAT + TPB - 1) // TPB
         comptime run_deint_obs = deinterleave_kernel[
-            OBS_FLAT, OBS, OBS_STRIDE, 0, OBS_SRC_FLAT,
+            OBS_FLAT,
+            OBS,
+            OBS_STRIDE,
+            0,
+            OBS_SRC_FLAT,
         ]
 
         comptime ACT_FLAT = B * ACT
@@ -2762,7 +2770,11 @@ struct DreamerV3Agent[
         comptime ACT_SRC_FLAT = ACT_SIZE  # B * BL * ACT
         comptime ACT_DEINT_BLK = (ACT_FLAT + TPB - 1) // TPB
         comptime run_deint_act = deinterleave_kernel[
-            ACT_FLAT, ACT, ACT_STRIDE, 0, ACT_SRC_FLAT,
+            ACT_FLAT,
+            ACT,
+            ACT_STRIDE,
+            0,
+            ACT_SRC_FLAT,
         ]
 
         var act_step_lt = LayoutTensor[
@@ -4118,9 +4130,9 @@ struct DreamerV3Agent[
         # 6. REINFORCE gradient for all steps
         #    Advantages are in imag_rewards_buf[0..H1*IB-1] (contiguous)
         #    Actions are in imag_all_actions_buf[0..H1*IB*ACT-1] (contiguous)
-        var adv_all = LayoutTensor[
-            dtype, Layout.row_major(HIB), MutAnyOrigin
-        ](gpu_state.imag_rewards_buf.unsafe_ptr())
+        var adv_all = LayoutTensor[dtype, Layout.row_major(HIB), MutAnyOrigin](
+            gpu_state.imag_rewards_buf.unsafe_ptr()
+        )
         var actions_all = LayoutTensor[
             dtype, Layout.row_major(HIB, ACT), MutAnyOrigin
         ](gpu_state.imag_all_actions_buf.unsafe_ptr())
@@ -4293,7 +4305,7 @@ struct DreamerV3Agent[
     # Training Loop (CPU)
     # ══════════════════════════════════════════════════════════════════════
 
-    fn train[
+    def train[
         E: BoxContinuousActionEnv,
     ](
         mut self,
@@ -4459,7 +4471,7 @@ struct DreamerV3Agent[
     # Training Loop (GPU environments + GPU training)
     # ══════════════════════════════════════════════════════════════════════
 
-    fn train_gpu[
+    def train_gpu[
         E: GPUContinuousEnv,
         n_envs: Int = 32,
     ](
@@ -4622,7 +4634,7 @@ struct DreamerV3Agent[
         comptime run_copy_act = copy_kernel[n_envs * ACT]
 
         @always_inline
-        fn run_rssm_reset_done(
+        def run_rssm_reset_done(
             det: LayoutTensor[
                 dtype, Layout.row_major(n_envs, DETER), MutAnyOrigin
             ],
@@ -5127,9 +5139,9 @@ struct DreamerV3Agent[
 
                                     var b = b_offset
                                     for k in range(SEQ_OBS_SIZE):
-                                        batch_obs[
-                                            b * SEQ_OBS_SIZE + k
-                                        ] = s_obs[k]
+                                        batch_obs[b * SEQ_OBS_SIZE + k] = s_obs[
+                                            k
+                                        ]
                                     for k in range(SEQ_ACT_SIZE):
                                         batch_acts[
                                             b * SEQ_ACT_SIZE + k
@@ -5201,7 +5213,7 @@ struct DreamerV3Agent[
 
 
 @always_inline
-fn _to_dtype_list[SRC: DType](src: List[Scalar[SRC]]) -> List[Scalar[dtype]]:
+def _to_dtype_list[SRC: DType](src: List[Scalar[SRC]]) -> List[Scalar[dtype]]:
     """Convert a list of scalars from any floating-point DType to dtype."""
     var out = List[Scalar[dtype]](capacity=len(src))
     for i in range(len(src)):
@@ -5209,7 +5221,7 @@ fn _to_dtype_list[SRC: DType](src: List[Scalar[SRC]]) -> List[Scalar[dtype]]:
     return out^
 
 
-fn _clip_grads_gpu[
+def _clip_grads_gpu[
     PARAM_SIZE: Int,
 ](
     ctx: DeviceContext,

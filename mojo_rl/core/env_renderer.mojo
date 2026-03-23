@@ -24,10 +24,10 @@ Benefits over UnsafePointer approach:
 
 Design Pattern:
     trait EnvRenderer[E: Env]:
-        fn render(mut self, ref env: E) raises -> None
+        def render(mut self, ref env: E) raises -> None
 
     struct MyEnv:
-        fn render[R: EnvRenderer[Self]](self, ref renderer: R) raises -> None:
+        def render[R: EnvRenderer[Self]](self, ref renderer: R) raises -> None:
             renderer.render(self)
 """
 
@@ -45,15 +45,15 @@ trait EnvRenderer:
     - Parametric mutability (can work with mut or immut refs)
     """
 
-    fn init(mut self) raises -> None:
+    def init(mut self) raises -> None:
         """Initialize the renderer (create window, load resources, etc.)."""
         ...
 
-    fn close(mut self) raises -> None:
+    def close(mut self) raises -> None:
         """Close the renderer and release resources."""
         ...
 
-    fn check_quit(mut self) -> Bool:
+    def check_quit(mut self) -> Bool:
         """Check if user requested quit (e.g., closed window).
 
         Returns:
@@ -61,7 +61,7 @@ trait EnvRenderer:
         """
         ...
 
-    fn is_open(self) -> Bool:
+    def is_open(self) -> Bool:
         """Check if renderer window is still open.
 
         Returns:
@@ -69,7 +69,7 @@ trait EnvRenderer:
         """
         ...
 
-    fn delay(self, ms: Int) -> None:
+    def delay(self, ms: Int) -> None:
         """Delay for specified milliseconds (for frame rate control).
 
         Args:
@@ -84,7 +84,9 @@ trait EnvRenderer3D(EnvRenderer):
     Adds 3D-specific methods like camera control.
     """
 
-    fn orbit_camera(mut self, delta_theta: Float64, delta_phi: Float64) -> None:
+    def orbit_camera(
+        mut self, delta_theta: Float64, delta_phi: Float64
+    ) -> None:
         """Orbit camera around target.
 
         Args:
@@ -93,7 +95,7 @@ trait EnvRenderer3D(EnvRenderer):
         """
         ...
 
-    fn zoom_camera(mut self, delta: Float64) -> None:
+    def zoom_camera(mut self, delta: Float64) -> None:
         """Zoom camera in/out.
 
         Args:
@@ -114,26 +116,26 @@ struct NoRenderer(EnvRenderer):
     work uniformly whether rendering is enabled or not.
     """
 
-    fn __init__(out self):
+    def __init__(out self):
         """Create a no-op renderer."""
         pass
 
-    fn init(mut self) raises -> None:
+    def init(mut self) raises -> None:
         """No-op init."""
         pass
 
-    fn close(mut self) raises -> None:
+    def close(mut self) raises -> None:
         """No-op close."""
         pass
 
-    fn check_quit(mut self) -> Bool:
+    def check_quit(mut self) -> Bool:
         """Never quit."""
         return False
 
-    fn is_open(self) -> Bool:
+    def is_open(self) -> Bool:
         """Always reports as open (since there's nothing to close)."""
         return True
 
-    fn delay(self, ms: Int) -> None:
+    def delay(self, ms: Int) -> None:
         """No-op delay."""
         pass

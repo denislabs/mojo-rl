@@ -8,18 +8,18 @@ struct GridState(Copyable, ImplicitlyCopyable, Movable, State):
     var x: Int
     var y: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.x = copy.x
         self.y = copy.y
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.x = take.x
         self.y = take.y
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.x == other.x and self.y == other.y
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return "GridState(" + String(self.x) + ", " + String(self.y) + ")"
 
 
@@ -29,29 +29,29 @@ struct GridAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod
-    fn up() -> Self:
+    def up() -> Self:
         return Self(direction=0)
 
     @staticmethod
-    fn right() -> Self:
+    def right() -> Self:
         return Self(direction=1)
 
     @staticmethod
-    fn down() -> Self:
+    def down() -> Self:
         return Self(direction=2)
 
     @staticmethod
-    fn left() -> Self:
+    def left() -> Self:
         return Self(direction=3)
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         if self.direction == 0:
             return "GridAction(UP)"
         elif self.direction == 1:
@@ -80,30 +80,30 @@ struct GridWorldEnv(DiscreteEnv, RenderableEnv):
     var goal: GridState
     var _renderer_initialized: Bool
 
-    fn __init__(out self, width: Int = 5, height: Int = 5):
+    def __init__(out self, width: Int = 5, height: Int = 5):
         self.width = width
         self.height = height
         self.state = GridState(0, 0)
         self.goal = GridState(width - 1, height - 1)
         self._renderer_initialized = False
 
-    fn state_to_index(self, state: GridState) -> Int:
+    def state_to_index(self, state: GridState) -> Int:
         """Convert a GridState to a flat index."""
         return state.y * self.width + state.x
 
-    fn action_from_index(self, action_idx: Int) -> GridAction:
+    def action_from_index(self, action_idx: Int) -> GridAction:
         """Create a GridAction from an index."""
         return GridAction(direction=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of states (width * height)."""
         return self.width * self.height
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (4 directions)."""
         return 4
 
-    fn step(
+    def step(
         mut self, action: GridAction, verbose: Bool = False
     ) -> Tuple[GridState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
@@ -126,16 +126,16 @@ struct GridWorldEnv(DiscreteEnv, RenderableEnv):
 
         return (self.state, reward, done)
 
-    fn reset(mut self) -> GridState:
+    def reset(mut self) -> GridState:
         """Reset agent to starting position."""
         self.state = GridState(0, 0)
         return self.state
 
-    fn get_state(self) -> GridState:
+    def get_state(self) -> GridState:
         """Return current state."""
         return self.state
 
-    fn close(mut self):
+    def close(mut self):
         """No resources to clean up."""
         pass
 
@@ -143,11 +143,11 @@ struct GridWorldEnv(DiscreteEnv, RenderableEnv):
     # RenderableEnv Trait Implementation (text-only stubs)
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Print the grid with agent position (text-based, renderer argument ignored).
         """
         for y in range(self.height - 1, -1, -1):
@@ -162,20 +162,20 @@ struct GridWorldEnv(DiscreteEnv, RenderableEnv):
             print(row)
         print("")
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         return False
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False

@@ -36,7 +36,7 @@ from .constraint_data import (
 )
 
 
-fn _compute_aref[
+def _compute_aref[
     DTYPE: DType,
 ](
     penetration: Scalar[DTYPE],
@@ -98,7 +98,7 @@ fn _compute_aref[
     return (bias, inv_K_imp, imp)
 
 
-fn _compute_angular_jacobian_row[
+def _compute_angular_jacobian_row[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -177,7 +177,7 @@ fn _compute_angular_jacobian_row[
                 J_row[dof_idx] = J_row[dof_idx] - val
 
 
-fn _joint_affects_body[
+def _joint_affects_body[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -219,7 +219,7 @@ fn _joint_affects_body[
     return False
 
 
-fn build_constraints[
+def build_constraints[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1851,7 +1851,7 @@ fn build_constraints[
     constraints.num_rows = row_idx
 
 
-fn writeback_forces[
+def writeback_forces[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

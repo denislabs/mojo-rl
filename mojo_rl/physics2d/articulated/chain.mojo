@@ -75,7 +75,7 @@ struct LinkDef:
     var joint_lower: Float64  # Lower angle limit
     var joint_upper: Float64  # Upper angle limit
 
-    fn __init__(
+    def __init__(
         out self,
         name: String,
         parent_idx: Int,
@@ -98,7 +98,7 @@ struct LinkDef:
         self.joint_upper = joint_upper
 
 
-fn compute_link_inertia(
+def compute_link_inertia(
     mass: Float64, length: Float64, width: Float64
 ) -> Float64:
     """Compute moment of inertia for a rectangular link (rod).
@@ -126,7 +126,7 @@ struct ArticulatedChain[
     # =========================================================================
 
     @staticmethod
-    fn compute_link_transforms[
+    def compute_link_transforms[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -197,7 +197,7 @@ struct ArticulatedChain[
     # =========================================================================
 
     @staticmethod
-    fn get_joint_angles[
+    def get_joint_angles[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -230,7 +230,7 @@ struct ArticulatedChain[
             angles[j] = rebind[Scalar[dtype]](angle_b - angle_a - ref_angle)
 
     @staticmethod
-    fn get_joint_velocities[
+    def get_joint_velocities[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -266,7 +266,7 @@ struct ArticulatedChain[
     # =========================================================================
 
     @staticmethod
-    fn apply_motor_torques[
+    def apply_motor_torques[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -308,7 +308,7 @@ struct ArticulatedChain[
             )
 
     @staticmethod
-    fn apply_pd_control[
+    def apply_pd_control[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -377,7 +377,7 @@ struct ArticulatedChain[
     # =========================================================================
 
     @staticmethod
-    fn get_root_state[
+    def get_root_state[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -407,7 +407,7 @@ struct ArticulatedChain[
         )
 
     @staticmethod
-    fn get_center_of_mass[
+    def get_center_of_mass[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,

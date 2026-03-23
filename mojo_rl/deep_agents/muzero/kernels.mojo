@@ -22,13 +22,11 @@ comptime TPB: Int = 256  # Threads per block
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn scale_hidden_kernel[
+def scale_hidden_kernel[
     BATCH: Int,
     LATENT: Int,
     dtype: DType where dtype.is_floating_point(),
-](
-    hidden: LayoutTensor[dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin],
-):
+](hidden: LayoutTensor[dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin],):
     """Scale hidden states to [0, 1] per sample via min-max normalization.
 
     Each thread handles one sample (all LATENT elements).
@@ -63,15 +61,21 @@ fn scale_hidden_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn ce_policy_grad_kernel[
+def ce_policy_grad_kernel[
     BATCH: Int,
     ACT: Int,
     PRED_OUT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    grad_out: LayoutTensor[dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin],
-    pred_outputs: LayoutTensor[dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin],
-    policy_targets: LayoutTensor[dtype, Layout.row_major(BATCH * ACT), MutAnyOrigin],
+    grad_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    pred_outputs: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    policy_targets: LayoutTensor[
+        dtype, Layout.row_major(BATCH * ACT), MutAnyOrigin
+    ],
     scale: Scalar[dtype],
 ):
     """Compute policy CE gradient: scale * (softmax(logits) - target).
@@ -95,27 +99,36 @@ fn ce_policy_grad_kernel[
 
     var sum_exp = Scalar[dtype](0.0)
     for a in range(ACT):
-        sum_exp += exp(rebind[Scalar[dtype]](pred_outputs[pred_off + a]) - max_val)
+        sum_exp += exp(
+            rebind[Scalar[dtype]](pred_outputs[pred_off + a]) - max_val
+        )
 
     var inv_sum = Scalar[dtype](1.0) / sum_exp
     for a in range(ACT):
-        var prob = exp(
-            rebind[Scalar[dtype]](pred_outputs[pred_off + a]) - max_val
-        ) * inv_sum
+        var prob = (
+            exp(rebind[Scalar[dtype]](pred_outputs[pred_off + a]) - max_val)
+            * inv_sum
+        )
         var target = rebind[Scalar[dtype]](policy_targets[pol_off + a])
         grad_out[pred_off + a] = (prob - target) * scale
 
 
-fn ce_value_grad_kernel[
+def ce_value_grad_kernel[
     BATCH: Int,
     BINS: Int,
     ACT: Int,
     PRED_OUT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    grad_out: LayoutTensor[dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin],
-    pred_outputs: LayoutTensor[dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin],
-    value_targets: LayoutTensor[dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin],
+    grad_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    pred_outputs: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    value_targets: LayoutTensor[
+        dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
+    ],
     scale: Scalar[dtype],
 ):
     """Compute value CE gradient: scale * (softmax(value_logits) - target).
@@ -139,27 +152,36 @@ fn ce_value_grad_kernel[
 
     var sum_exp = Scalar[dtype](0.0)
     for i in range(BINS):
-        sum_exp += exp(rebind[Scalar[dtype]](pred_outputs[pred_off + i]) - max_val)
+        sum_exp += exp(
+            rebind[Scalar[dtype]](pred_outputs[pred_off + i]) - max_val
+        )
 
     var inv_sum = Scalar[dtype](1.0) / sum_exp
     for i in range(BINS):
-        var prob = exp(
-            rebind[Scalar[dtype]](pred_outputs[pred_off + i]) - max_val
-        ) * inv_sum
+        var prob = (
+            exp(rebind[Scalar[dtype]](pred_outputs[pred_off + i]) - max_val)
+            * inv_sum
+        )
         var target = rebind[Scalar[dtype]](value_targets[tgt_off + i])
         grad_out[b * PRED_OUT + ACT + i] = (prob - target) * scale
 
 
-fn ce_reward_grad_kernel[
+def ce_reward_grad_kernel[
     BATCH: Int,
     BINS: Int,
     DYN_OUT: Int,
     LATENT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    grad_out: LayoutTensor[dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin],
-    dyn_outputs: LayoutTensor[dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin],
-    reward_targets: LayoutTensor[dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin],
+    grad_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+    ],
+    dyn_outputs: LayoutTensor[
+        dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+    ],
+    reward_targets: LayoutTensor[
+        dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
+    ],
     scale: Scalar[dtype],
 ):
     """Compute reward CE gradient: scale * (softmax(reward_logits) - target).
@@ -181,13 +203,16 @@ fn ce_reward_grad_kernel[
 
     var sum_exp = Scalar[dtype](0.0)
     for i in range(BINS):
-        sum_exp += exp(rebind[Scalar[dtype]](dyn_outputs[rew_off + i]) - max_val)
+        sum_exp += exp(
+            rebind[Scalar[dtype]](dyn_outputs[rew_off + i]) - max_val
+        )
 
     var inv_sum = Scalar[dtype](1.0) / sum_exp
     for i in range(BINS):
-        var prob = exp(
-            rebind[Scalar[dtype]](dyn_outputs[rew_off + i]) - max_val
-        ) * inv_sum
+        var prob = (
+            exp(rebind[Scalar[dtype]](dyn_outputs[rew_off + i]) - max_val)
+            * inv_sum
+        )
         var target = rebind[Scalar[dtype]](reward_targets[tgt_off + i])
         grad_out[rew_off + i] = (prob - target) * scale
 
@@ -197,12 +222,14 @@ fn ce_reward_grad_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn two_hot_encode_kernel[
+def two_hot_encode_kernel[
     BATCH: Int,
     BINS: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    targets_out: LayoutTensor[dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin],
+    targets_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
+    ],
     scalar_values: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     v_min: Scalar[dtype],
     v_max: Scalar[dtype],
@@ -245,15 +272,19 @@ fn two_hot_encode_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn build_dyn_input_kernel[
+def build_dyn_input_kernel[
     BATCH: Int,
     LATENT: Int,
     ACT: Int,
     DYN_IN: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    dyn_input: LayoutTensor[dtype, Layout.row_major(BATCH * DYN_IN), MutAnyOrigin],
-    hidden_states: LayoutTensor[dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin],
+    dyn_input: LayoutTensor[
+        dtype, Layout.row_major(BATCH * DYN_IN), MutAnyOrigin
+    ],
+    hidden_states: LayoutTensor[
+        dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+    ],
     actions: LayoutTensor[dtype, Layout.row_major(BATCH * ACT), MutAnyOrigin],
 ):
     """Assemble dynamics input: [hidden_state || one_hot_action] per sample.
@@ -278,16 +309,21 @@ fn build_dyn_input_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn extract_hidden_kernel[
+def extract_hidden_kernel[
     BATCH: Int,
     LATENT: Int,
     DYN_OUT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    next_hidden: LayoutTensor[dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin],
-    dyn_output: LayoutTensor[dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin],
+    next_hidden: LayoutTensor[
+        dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+    ],
+    dyn_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+    ],
 ):
-    """Extract hidden state from dynamics output (first LATENT elements per sample)."""
+    """Extract hidden state from dynamics output (first LATENT elements per sample).
+    """
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * LATENT:
         return
@@ -302,14 +338,18 @@ fn extract_hidden_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn extract_hidden_grad_kernel[
+def extract_hidden_grad_kernel[
     BATCH: Int,
     LATENT: Int,
     DYN_IN: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    grad_hidden: LayoutTensor[dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin],
-    grad_dyn_in: LayoutTensor[dtype, Layout.row_major(BATCH * DYN_IN), MutAnyOrigin],
+    grad_hidden: LayoutTensor[
+        dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+    ],
+    grad_dyn_in: LayoutTensor[
+        dtype, Layout.row_major(BATCH * DYN_IN), MutAnyOrigin
+    ],
 ):
     """Extract hidden state gradient from dynamics input gradient."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -326,7 +366,7 @@ fn extract_hidden_grad_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn add_scaled_kernel[
+def add_scaled_kernel[
     SIZE: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
@@ -338,10 +378,13 @@ fn add_scaled_kernel[
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= SIZE:
         return
-    dst[idx] = rebind[Scalar[dtype]](dst[idx]) + rebind[Scalar[dtype]](src[idx]) * scale
+    dst[idx] = (
+        rebind[Scalar[dtype]](dst[idx])
+        + rebind[Scalar[dtype]](src[idx]) * scale
+    )
 
 
-fn scale_kernel[
+def scale_kernel[
     SIZE: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
@@ -355,7 +398,7 @@ fn scale_kernel[
     data[idx] = rebind[Scalar[dtype]](data[idx]) * scale
 
 
-fn copy_kernel[
+def copy_kernel[
     SIZE: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
@@ -374,14 +417,18 @@ fn copy_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn set_hidden_grad_for_dyn_kernel[
+def set_hidden_grad_for_dyn_kernel[
     BATCH: Int,
     LATENT: Int,
     DYN_OUT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    grad_dyn_out: LayoutTensor[dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin],
-    grad_hidden: LayoutTensor[dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin],
+    grad_dyn_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+    ],
+    grad_hidden: LayoutTensor[
+        dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+    ],
     scale: Scalar[dtype],
 ):
     """Copy hidden gradient into dynamics output gradient (first LATENT elements), scaled.
@@ -394,7 +441,9 @@ fn set_hidden_grad_for_dyn_kernel[
 
     var b = idx // LATENT
     var d = idx % LATENT
-    grad_dyn_out[b * DYN_OUT + d] = rebind[Scalar[dtype]](grad_hidden[idx]) * scale
+    grad_dyn_out[b * DYN_OUT + d] = (
+        rebind[Scalar[dtype]](grad_hidden[idx]) * scale
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -402,14 +451,16 @@ fn set_hidden_grad_for_dyn_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn store_mcts_targets_kernel[
+def store_mcts_targets_kernel[
     N_ENVS: Int,
     PER_ENV_CAP: Int,
     ACT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
     # Input: MCTS policies/values for this step (from CPU)
-    policies_in: LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin],
+    policies_in: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
     values_in: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Output: per-env circular buffers
     policy_buf: LayoutTensor[
@@ -445,7 +496,7 @@ fn store_mcts_targets_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn sample_seq_with_targets_kernel[
+def sample_seq_with_targets_kernel[
     BATCH: Int,
     H: Int,
     N_ENVS: Int,
@@ -481,7 +532,9 @@ fn sample_seq_with_targets_kernel[
     batch_actions: LayoutTensor[
         dtype, Layout.row_major(BATCH * H * ACT_DIM), MutAnyOrigin
     ],
-    batch_rewards: LayoutTensor[dtype, Layout.row_major(BATCH * H), MutAnyOrigin],
+    batch_rewards: LayoutTensor[
+        dtype, Layout.row_major(BATCH * H), MutAnyOrigin
+    ],
     batch_dones: LayoutTensor[dtype, Layout.row_major(BATCH * H), MutAnyOrigin],
     batch_policies: LayoutTensor[
         dtype, Layout.row_major(BATCH * (H + 1) * ACT_DIM), MutAnyOrigin
@@ -509,7 +562,8 @@ fn sample_seq_with_targets_kernel[
 
     # Rejection sampling to find valid sequence start
     var philox = PhiloxRandom(
-        seed=UInt64(rng_seed) + UInt64(tid * 137 + 1), offset=0,
+        seed=UInt64(rng_seed) + UInt64(tid * 137 + 1),
+        offset=0,
     )
     var start = -1
     var max_start = sz - H - 1
@@ -568,9 +622,7 @@ fn sample_seq_with_targets_kernel[
     # H steps: actions, rewards, dones
     for t in range(H):
         var buf_idx = (start + t) % PER_ENV_CAP
-        var env_act_base = (
-            env_idx * PER_ENV_CAP * ACT_DIM + buf_idx * ACT_DIM
-        )
+        var env_act_base = env_idx * PER_ENV_CAP * ACT_DIM + buf_idx * ACT_DIM
         var act_off = act_out_base + t * ACT_DIM
         for d in range(ACT_DIM):
             batch_actions[act_off + d] = buf_actions[env_act_base + d]
@@ -588,17 +640,25 @@ fn sample_seq_with_targets_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn nstep_value_targets_kernel[
+def nstep_value_targets_kernel[
     BATCH: Int,
     K: Int,
     N: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    value_targets: LayoutTensor[dtype, Layout.row_major((K + 1) * BATCH), MutAnyOrigin],
-    reward_targets: LayoutTensor[dtype, Layout.row_major(K * BATCH), MutAnyOrigin],
-    batch_rewards: LayoutTensor[dtype, Layout.row_major(BATCH * K), MutAnyOrigin],
+    value_targets: LayoutTensor[
+        dtype, Layout.row_major((K + 1) * BATCH), MutAnyOrigin
+    ],
+    reward_targets: LayoutTensor[
+        dtype, Layout.row_major(K * BATCH), MutAnyOrigin
+    ],
+    batch_rewards: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K), MutAnyOrigin
+    ],
     batch_dones: LayoutTensor[dtype, Layout.row_major(BATCH * K), MutAnyOrigin],
-    batch_values: LayoutTensor[dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin],
+    batch_values: LayoutTensor[
+        dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+    ],
     gamma: Scalar[dtype],
 ):
     """Compute n-step bootstrapped value targets and reward targets.
@@ -629,7 +689,9 @@ fn nstep_value_targets_kernel[
         gamma_power *= gamma
         steps_used += 1
 
-        if rebind[Scalar[dtype]](batch_dones[b * K + step_k]) > Scalar[dtype](0.5):
+        if rebind[Scalar[dtype]](batch_dones[b * K + step_k]) > Scalar[dtype](
+            0.5
+        ):
             hit_terminal = True
             break
 
@@ -653,7 +715,7 @@ fn nstep_value_targets_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn scalar_transform_kernel[
+def scalar_transform_kernel[
     SIZE: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
@@ -669,6 +731,10 @@ fn scalar_transform_kernel[
         return
 
     var x = rebind[Scalar[dtype]](data[idx])
-    var sign = Scalar[dtype](1.0) if x >= Scalar[dtype](0.0) else Scalar[dtype](-1.0)
+    var sign = Scalar[dtype](1.0) if x >= Scalar[dtype](0.0) else Scalar[dtype](
+        -1.0
+    )
     var abs_x = x if x >= Scalar[dtype](0.0) else -x
-    data[idx] = sign * (sqrt(abs_x + Scalar[dtype](1.0)) - Scalar[dtype](1.0)) + eps * x
+    data[idx] = (
+        sign * (sqrt(abs_x + Scalar[dtype](1.0)) - Scalar[dtype](1.0)) + eps * x
+    )

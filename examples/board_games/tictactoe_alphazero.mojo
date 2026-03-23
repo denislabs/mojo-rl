@@ -9,11 +9,14 @@ from mojo_rl.deep_agents.alphazero import (
     GenericAlphaZeroAgent,
     AlphaZeroTicTacToeConfig,
 )
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, MinimaxTicTacToe
+from mojo_rl.deep_agents.muzero.evaluators import (
+    RandomOpponent,
+    MinimaxTicTacToe,
+)
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
-fn main() raises:
+def main() raises:
     print("╔══════════════════════════════════════════════════╗")
     print("║  AlphaZero on TicTacToe (proper implementation) ║")
     print("╚══════════════════════════════════════════════════╝")

@@ -22,15 +22,20 @@ from layout import Layout, LayoutTensor
 from layout.layout_tensor import copy_dram_to_sram_async
 
 from ..constants import (
-    MMA_M, MMA_N, MMA_K,
-    MMA_BLOCK_M, MMA_BLOCK_N,
-    MMA_WARPS_M, MMA_WARPS_N,
-    MMA_NUM_WARPS, MMA_BLOCK_THREADS,
+    MMA_M,
+    MMA_N,
+    MMA_K,
+    MMA_BLOCK_M,
+    MMA_BLOCK_N,
+    MMA_WARPS_M,
+    MMA_WARPS_N,
+    MMA_NUM_WARPS,
+    MMA_BLOCK_THREADS,
 )
 
 
 @always_inline
-fn tiled_matmul_kernel[
+def tiled_matmul_kernel[
     dtype: DType,
     M: Int,
     N: Int,
@@ -56,14 +61,14 @@ fn tiled_matmul_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: Scalar[dtype] = 0
@@ -103,7 +108,7 @@ fn tiled_matmul_kernel[
 
 
 @always_inline
-fn matmul_kernel[
+def matmul_kernel[
     dtype: DType,
     M: Int,
     N: Int,
@@ -135,14 +140,14 @@ fn matmul_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: output.element_type = 0
@@ -193,8 +198,9 @@ fn matmul_kernel[
 # MMA (Tensor Core) Matmul — NVIDIA only
 # =============================================================================
 
+
 @always_inline
-fn mma_matmul_kernel[
+def mma_matmul_kernel[
     dtype: DType,
     M: Int,
     N: Int,
@@ -229,14 +235,14 @@ fn mma_matmul_kernel[
             dtype,
             Layout.row_major(MMA_BLOCK_M, MMA_K),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var b_smem = LayoutTensor[
             dtype,
             Layout.row_major(MMA_K, MMA_BLOCK_N),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         # Accumulator — 4 FP32 values per thread (m16n8k8 output fragment)
@@ -338,7 +344,7 @@ fn mma_matmul_kernel[
 
 
 @always_inline
-fn _tiled_2x2_kernel[
+def _tiled_2x2_kernel[
     dtype: DType,
     M: Int,
     N: Int,
@@ -356,12 +362,12 @@ fn _tiled_2x2_kernel[
     Block: (256, 1)
     Grid: ((N + 31) // 32, (M + 31) // 32)
     """
-    comptime BT = 32   # Block tile size
-    comptime SK = 16   # Shared memory K-tile
+    comptime BT = 32  # Block tile size
+    comptime SK = 16  # Shared memory K-tile
 
     var tid = Int(thread_idx.x)
     var sub_r = tid // 16  # 0..15 → output rows 2*sub_r, 2*sub_r+1
-    var sub_c = tid % 16   # 0..15 → output cols 2*sub_c, 2*sub_c+1
+    var sub_c = tid % 16  # 0..15 → output cols 2*sub_c, 2*sub_c+1
 
     var block_row = Int(block_idx.y) * BT
     var block_col = Int(block_idx.x) * BT
@@ -370,14 +376,14 @@ fn _tiled_2x2_kernel[
         dtype,
         Layout.row_major(BT, SK),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_smem = LayoutTensor[
         dtype,
         Layout.row_major(SK, BT),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc00: Scalar[dtype] = 0
@@ -458,7 +464,7 @@ fn _tiled_2x2_kernel[
 # =============================================================================
 
 
-fn gpu_matmul[
+def gpu_matmul[
     dtype: DType,
     M: Int,
     N: Int,
@@ -480,7 +486,7 @@ fn gpu_matmul[
     comptime grid_y = (M + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
     @always_inline
-    fn kernel(
+    def kernel(
         output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
         a: LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin],
         b: LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin],
@@ -500,7 +506,7 @@ fn gpu_matmul[
 
 
 @always_inline
-fn matmul_bias_kernel[
+def matmul_bias_kernel[
     dtype: DType,
     M: Int,
     N: Int,
@@ -533,14 +539,14 @@ fn matmul_bias_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: output.element_type = 0

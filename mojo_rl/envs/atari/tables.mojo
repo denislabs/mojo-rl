@@ -10,15 +10,20 @@ Ported from CuLE (BSD-3): cule/atari/tables.hpp, tables.cpp
 
 from .atari_state import AtariState
 from .flags import (
-    TIA_P0_REFLECT, TIA_P1_REFLECT, TIA_PF_REFLECT,
-    TIA_M0_LOCK, TIA_M1_LOCK,
-    TIA_VDELP0, TIA_VDELP1, TIA_VDELBL,
+    TIA_P0_REFLECT,
+    TIA_P1_REFLECT,
+    TIA_PF_REFLECT,
+    TIA_M0_LOCK,
+    TIA_M1_LOCK,
+    TIA_VDELP0,
+    TIA_VDELP1,
+    TIA_VDELBL,
     FRAME_WIDTH,
 )
 
 
 @always_inline
-fn player_mask(state: AtariState, player: Int, pixel: Int) -> Bool:
+def player_mask(state: AtariState, player: Int, pixel: Int) -> Bool:
     """Check if player sprite is visible at this pixel position.
 
     Considers position, NUSIZ (copies/size), reflection, and VDEL.
@@ -30,12 +35,18 @@ fn player_mask(state: AtariState, player: Int, pixel: Int) -> Bool:
 
     if player == 0:
         pos = Int(state.pos_p0)
-        grp = state.grp0 if (state.tia_flags & TIA_VDELP0) == 0 else state.grp0_old
+        grp = (
+            state.grp0 if (state.tia_flags & TIA_VDELP0)
+            == 0 else state.grp0_old
+        )
         nusiz = state.nusiz0
         reflect = (state.tia_flags & TIA_P0_REFLECT) != 0
     else:
         pos = Int(state.pos_p1)
-        grp = state.grp1 if (state.tia_flags & TIA_VDELP1) == 0 else state.grp1_old
+        grp = (
+            state.grp1 if (state.tia_flags & TIA_VDELP1)
+            == 0 else state.grp1_old
+        )
         nusiz = state.nusiz1
         reflect = (state.tia_flags & TIA_P1_REFLECT) != 0
 
@@ -87,7 +98,7 @@ fn player_mask(state: AtariState, player: Int, pixel: Int) -> Bool:
 
 
 @always_inline
-fn missile_mask(state: AtariState, missile: Int, pixel: Int) -> Bool:
+def missile_mask(state: AtariState, missile: Int, pixel: Int) -> Bool:
     """Check if missile is visible at this pixel position."""
     var enabled: UInt8
     var pos: Int
@@ -119,9 +130,11 @@ fn missile_mask(state: AtariState, missile: Int, pixel: Int) -> Bool:
 
 
 @always_inline
-fn ball_mask(state: AtariState, pixel: Int) -> Bool:
+def ball_mask(state: AtariState, pixel: Int) -> Bool:
     """Check if ball is visible at this pixel position."""
-    var enabled = state.enabl if (state.tia_flags & TIA_VDELBL) == 0 else state.enabl_old
+    var enabled = (
+        state.enabl if (state.tia_flags & TIA_VDELBL) == 0 else state.enabl_old
+    )
     if (enabled & 0x02) == 0:
         return False
 
@@ -137,7 +150,7 @@ fn ball_mask(state: AtariState, pixel: Int) -> Bool:
 
 
 @always_inline
-fn playfield_mask(state: AtariState, pixel: Int) -> Bool:
+def playfield_mask(state: AtariState, pixel: Int) -> Bool:
     """Check if playfield is visible at this pixel position.
 
     The playfield is 40 bits wide (20 bits repeated or reflected).
@@ -149,7 +162,9 @@ fn playfield_mask(state: AtariState, pixel: Int) -> Bool:
     captured at ~cycle 49, and the right half uses the final PF values.
     For non-score scanlines, both snapshots are identical.
     """
-    var x = pixel >> 2  # 4 clocks per playfield bit, so 160 pixels / 4 = 40 pf pixels
+    var x = (
+        pixel >> 2
+    )  # 4 clocks per playfield bit, so 160 pixels / 4 = 40 pf pixels
 
     # Select PF register source: midpoint snapshot for left, final for right
     var pf0 = state.pf0_mid if pixel < 80 else state.pf0
@@ -182,6 +197,6 @@ fn playfield_mask(state: AtariState, pixel: Int) -> Bool:
 
 
 @always_inline
-fn collision_mask() -> UInt16:
+def collision_mask() -> UInt16:
     """Return initial (empty) collision mask."""
     return UInt16(0)

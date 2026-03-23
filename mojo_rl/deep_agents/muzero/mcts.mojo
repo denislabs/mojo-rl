@@ -28,7 +28,7 @@ from .utils import MinMaxStats, inverse_scalar_transform
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-struct MCTSNode[ACTION_DIM: Int](Movable, ImplicitlyCopyable):
+struct MCTSNode[ACTION_DIM: Int](ImplicitlyCopyable, Movable):
     """A single node in the MCTS search tree.
 
     Stores per-action statistics and links to child hidden states via
@@ -39,24 +39,34 @@ struct MCTSNode[ACTION_DIM: Int](Movable, ImplicitlyCopyable):
     """
 
     # Per-action statistics
-    var visit_count: InlineArray[Int, Self.ACTION_DIM]       # N(s, a)
-    var total_value: InlineArray[Float64, Self.ACTION_DIM]    # W(s, a) = sum of values
-    var prior: InlineArray[Float64, Self.ACTION_DIM]          # P(s, a) from prediction net
-    var reward: InlineArray[Float64, Self.ACTION_DIM]         # R(s, a) from dynamics net
-    var child_idx: InlineArray[Int, Self.ACTION_DIM]          # Index of child node (-1 = unexpanded)
+    var visit_count: InlineArray[Int, Self.ACTION_DIM]  # N(s, a)
+    var total_value: InlineArray[
+        Float64, Self.ACTION_DIM
+    ]  # W(s, a) = sum of values
+    var prior: InlineArray[
+        Float64, Self.ACTION_DIM
+    ]  # P(s, a) from prediction net
+    var reward: InlineArray[
+        Float64, Self.ACTION_DIM
+    ]  # R(s, a) from dynamics net
+    var child_idx: InlineArray[
+        Int, Self.ACTION_DIM
+    ]  # Index of child node (-1 = unexpanded)
 
     # Node-level
     var total_visits: Int  # N(s) = sum of N(s, a)
     var hidden_state_idx: Int  # Index into hidden state pool
 
-    fn __init__(out self, hidden_idx: Int):
+    def __init__(out self, hidden_idx: Int):
         """Initialize node with zero statistics.
 
         Args:
             hidden_idx: Index of this node's hidden state in the pool.
         """
         self.visit_count = InlineArray[Int, Self.ACTION_DIM](uninitialized=True)
-        self.total_value = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
+        self.total_value = InlineArray[Float64, Self.ACTION_DIM](
+            uninitialized=True
+        )
         self.prior = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
         self.reward = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
         self.child_idx = InlineArray[Int, Self.ACTION_DIM](uninitialized=True)
@@ -69,7 +79,7 @@ struct MCTSNode[ACTION_DIM: Int](Movable, ImplicitlyCopyable):
         self.total_visits = 0
         self.hidden_state_idx = hidden_idx
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.visit_count = copy.visit_count
         self.total_value = copy.total_value
         self.prior = copy.prior
@@ -78,7 +88,7 @@ struct MCTSNode[ACTION_DIM: Int](Movable, ImplicitlyCopyable):
         self.total_visits = copy.total_visits
         self.hidden_state_idx = copy.hidden_state_idx
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.visit_count = take.visit_count
         self.total_value = take.total_value
         self.prior = take.prior
@@ -87,7 +97,7 @@ struct MCTSNode[ACTION_DIM: Int](Movable, ImplicitlyCopyable):
         self.total_visits = take.total_visits
         self.hidden_state_idx = take.hidden_state_idx
 
-    fn mean_value(self, action: Int) -> Float64:
+    def mean_value(self, action: Int) -> Float64:
         """Mean Q-value for an action: Q(s, a) = W(s, a) / N(s, a).
 
         Args:
@@ -100,7 +110,7 @@ struct MCTSNode[ACTION_DIM: Int](Movable, ImplicitlyCopyable):
             return self.total_value[action] / Float64(self.visit_count[action])
         return Float64(0.0)
 
-    fn is_expanded(self, action: Int) -> Bool:
+    def is_expanded(self, action: Int) -> Bool:
         """Check whether a child node exists for the given action.
 
         Args:
@@ -153,7 +163,7 @@ struct MCTS[
     var dirichlet_alpha: Float64
     var noise_fraction: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         gamma: Float64 = 0.997,
         c_base: Float64 = 19652.0,
@@ -171,7 +181,9 @@ struct MCTS[
             noise_fraction: Fraction of Dirichlet noise at root.
         """
         self.nodes = List[MCTSNode[Self.ACTION_DIM]](capacity=Self.MAX_NODES)
-        self.hidden_states = alloc[Scalar[dtype]](Self.MAX_NODES * Self.LATENT_DIM)
+        self.hidden_states = alloc[Scalar[dtype]](
+            Self.MAX_NODES * Self.LATENT_DIM
+        )
         memset(self.hidden_states, 0, Self.MAX_NODES * Self.LATENT_DIM)
         self.min_max = MinMaxStats()
         self.c_base = c_base
@@ -180,7 +192,7 @@ struct MCTS[
         self.dirichlet_alpha = dirichlet_alpha
         self.noise_fraction = noise_fraction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.nodes = take.nodes^
         self.hidden_states = take.hidden_states
         self.min_max = take.min_max
@@ -190,14 +202,14 @@ struct MCTS[
         self.dirichlet_alpha = take.dirichlet_alpha
         self.noise_fraction = take.noise_fraction
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         self.hidden_states.free()
 
     # ══════════════════════════════════════════════════════════════════════
     # Core MCTS Search
     # ══════════════════════════════════════════════════════════════════════
 
-    fn search[
+    def search[
         RepModel: Model,
         DynModel: Model,
         PredModel: Model,
@@ -263,7 +275,9 @@ struct MCTS[
             dtype, Layout.row_major(B, REP_OUT), MutAnyOrigin
         ](h0_ptr)
 
-        Network[RepModel, RepOpt].forward[B](obs_t, h0_t, rep_state.params_view())
+        Network[RepModel, RepOpt].forward[B](
+            obs_t, h0_t, rep_state.params_view()
+        )
 
         # Scale hidden state to [0, 1]
         self._scale_hidden_state(0)
@@ -288,7 +302,9 @@ struct MCTS[
         )
 
         # Parse prediction: [policy_logits(ACTION_DIM) | value_logits(NUM_BINS)]
-        var root_value = self._decode_value(pred_out_ptr + Self.ACTION_DIM, v_min, v_max)
+        var root_value = self._decode_value(
+            pred_out_ptr + Self.ACTION_DIM, v_min, v_max
+        )
 
         # Create root node
         var root = MCTSNode[Self.ACTION_DIM](hidden_idx=0)
@@ -296,7 +312,9 @@ struct MCTS[
         # Set prior from softmax of policy logits
         var policy_logits_ptr = alloc[Float64](Self.ACTION_DIM)
         for a in range(Self.ACTION_DIM):
-            policy_logits_ptr[a] = Float64(rebind[Scalar[dtype]](pred_out_t[0, a]))
+            policy_logits_ptr[a] = Float64(
+                rebind[Scalar[dtype]](pred_out_t[0, a])
+            )
         # Softmax
         var max_logit = policy_logits_ptr[0]
         for a in range(1, Self.ACTION_DIM):
@@ -337,7 +355,9 @@ struct MCTS[
         # ── Step 3: Add Dirichlet noise to root ─────────────────────
         if add_noise:
             # Approximate Dirichlet by sampling Gamma(alpha, 1) then normalizing
-            var noise = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
+            var noise = InlineArray[Float64, Self.ACTION_DIM](
+                uninitialized=True
+            )
             var noise_sum = Float64(0.0)
             for a in range(Self.ACTION_DIM):
                 # Gamma approximation: for small alpha, use -log(U) * alpha
@@ -347,10 +367,9 @@ struct MCTS[
                 noise_sum += g
             for a in range(Self.ACTION_DIM):
                 noise[a] /= noise_sum
-                root.prior[a] = (
-                    (1.0 - self.noise_fraction) * root.prior[a]
-                    + self.noise_fraction * noise[a]
-                )
+                root.prior[a] = (1.0 - self.noise_fraction) * root.prior[
+                    a
+                ] + self.noise_fraction * noise[a]
 
         self.nodes.append(root^)
 
@@ -379,7 +398,7 @@ struct MCTS[
     # Batched MCTS Search (Virtual Loss)
     # ══════════════════════════════════════════════════════════════════════
 
-    fn search_batched[
+    def search_batched[
         RepModel: Model,
         DynModel: Model,
         PredModel: Model,
@@ -441,7 +460,9 @@ struct MCTS[
         var h0_t = LayoutTensor[
             dtype, Layout.row_major(B1, REP_OUT), MutAnyOrigin
         ](h0_ptr)
-        Network[RepModel, RepOpt].forward[B1](obs_t, h0_t, rep_state.params_view())
+        Network[RepModel, RepOpt].forward[B1](
+            obs_t, h0_t, rep_state.params_view()
+        )
         self._scale_hidden_state(0)
         obs_ptr.free()
 
@@ -464,7 +485,9 @@ struct MCTS[
         var root = MCTSNode[Self.ACTION_DIM](hidden_idx=0)
         var policy_logits_ptr = alloc[Float64](Self.ACTION_DIM)
         for a in range(Self.ACTION_DIM):
-            policy_logits_ptr[a] = Float64(rebind[Scalar[dtype]](pred_out_t[0, a]))
+            policy_logits_ptr[a] = Float64(
+                rebind[Scalar[dtype]](pred_out_t[0, a])
+            )
         var max_logit = policy_logits_ptr[0]
         for a in range(1, Self.ACTION_DIM):
             if policy_logits_ptr[a] > max_logit:
@@ -480,7 +503,9 @@ struct MCTS[
 
         # Dirichlet noise
         if add_noise:
-            var noise = InlineArray[Float64, Self.ACTION_DIM](uninitialized=True)
+            var noise = InlineArray[Float64, Self.ACTION_DIM](
+                uninitialized=True
+            )
             var noise_sum = Float64(0.0)
             for a in range(Self.ACTION_DIM):
                 var u = random_float64(0.0001, 0.9999)
@@ -488,10 +513,9 @@ struct MCTS[
                 noise_sum += noise[a]
             for a in range(Self.ACTION_DIM):
                 noise[a] /= noise_sum
-                root.prior[a] = (
-                    (1.0 - self.noise_fraction) * root.prior[a]
-                    + self.noise_fraction * noise[a]
-                )
+                root.prior[a] = (1.0 - self.noise_fraction) * root.prior[
+                    a
+                ] + self.noise_fraction * noise[a]
 
         self.nodes.append(root^)
         policy_logits_ptr.free()
@@ -504,7 +528,9 @@ struct MCTS[
         # Pre-allocate batched forward buffers
         var batch_dyn_input = alloc[Scalar[dtype]](BATCH_SIMS * DYN_IN)
         var batch_dyn_output = alloc[Scalar[dtype]](BATCH_SIMS * DYN_OUT)
-        var batch_pred_input = alloc[Scalar[dtype]](BATCH_SIMS * PredModel.IN_DIM)
+        var batch_pred_input = alloc[Scalar[dtype]](
+            BATCH_SIMS * PredModel.IN_DIM
+        )
         var batch_pred_output = alloc[Scalar[dtype]](BATCH_SIMS * PRED_OUT)
 
         # Per-simulation tracking
@@ -561,7 +587,9 @@ struct MCTS[
                 self.nodes[parent_idx].total_visits += VIRTUAL_LOSS
 
                 # Build dynamics input for this leaf
-                var parent_h_offset = self.nodes[parent_idx].hidden_state_idx * Self.LATENT_DIM
+                var parent_h_offset = (
+                    self.nodes[parent_idx].hidden_state_idx * Self.LATENT_DIM
+                )
                 for i in range(Self.LATENT_DIM):
                     batch_dyn_input[pending_expansions * DYN_IN + i] = (
                         self.hidden_states + parent_h_offset + i
@@ -615,9 +643,9 @@ struct MCTS[
                 # Extract hidden state
                 var child_h_offset = child_hidden_idx * Self.LATENT_DIM
                 for i in range(Self.LATENT_DIM):
-                    (self.hidden_states + child_h_offset + i)[] = batch_dyn_output[
-                        expansion_idx * DYN_OUT + i
-                    ]
+                    (
+                        self.hidden_states + child_h_offset + i
+                    )[] = batch_dyn_output[expansion_idx * DYN_OUT + i]
                 self._scale_hidden_state(child_hidden_idx)
 
                 # Copy to prediction input
@@ -660,21 +688,29 @@ struct MCTS[
 
                 # Extract reward from dynamics output
                 var reward = self._decode_value(
-                    batch_dyn_output + expansion_idx * DYN_OUT + Self.LATENT_DIM,
+                    batch_dyn_output
+                    + expansion_idx * DYN_OUT
+                    + Self.LATENT_DIM,
                     v_min,
                     v_max,
                 )
 
                 # Create child node with softmax prior from prediction
-                var child = MCTSNode[Self.ACTION_DIM](hidden_idx=child_hidden_idx)
+                var child = MCTSNode[Self.ACTION_DIM](
+                    hidden_idx=child_hidden_idx
+                )
                 var max_l = Float64(batch_pred_output[expansion_idx * PRED_OUT])
                 for a in range(1, Self.ACTION_DIM):
-                    var v = Float64(batch_pred_output[expansion_idx * PRED_OUT + a])
+                    var v = Float64(
+                        batch_pred_output[expansion_idx * PRED_OUT + a]
+                    )
                     if v > max_l:
                         max_l = v
                 var se = Float64(0.0)
                 for a in range(Self.ACTION_DIM):
-                    var v = Float64(batch_pred_output[expansion_idx * PRED_OUT + a])
+                    var v = Float64(
+                        batch_pred_output[expansion_idx * PRED_OUT + a]
+                    )
                     child.prior[a] = exp(v - max_l)
                     se += child.prior[a]
                 for a in range(Self.ACTION_DIM):
@@ -682,7 +718,9 @@ struct MCTS[
 
                 # Get leaf value
                 var leaf_value = self._decode_value(
-                    batch_pred_output + expansion_idx * PRED_OUT + Self.ACTION_DIM,
+                    batch_pred_output
+                    + expansion_idx * PRED_OUT
+                    + Self.ACTION_DIM,
                     v_min,
                     v_max,
                 )
@@ -697,7 +735,9 @@ struct MCTS[
                 self.nodes[parent].total_visits -= VIRTUAL_LOSS
 
                 # Backup
-                self._backup(sim_search_paths[s], sim_action_paths[s], leaf_value)
+                self._backup(
+                    sim_search_paths[s], sim_action_paths[s], leaf_value
+                )
 
                 expansion_idx += 1
 
@@ -731,7 +771,7 @@ struct MCTS[
     # Internal Methods
     # ══════════════════════════════════════════════════════════════════════
 
-    fn _run_simulation[
+    def _run_simulation[
         DynModel: Model,
         PredModel: Model,
         DynOpt: Optimizer,
@@ -789,12 +829,14 @@ struct MCTS[
         )
 
         # Get leaf value from prediction
-        var leaf_value = self._get_leaf_value(child_hidden_idx, pred_state, v_min, v_max)
+        var leaf_value = self._get_leaf_value(
+            child_hidden_idx, pred_state, v_min, v_max
+        )
 
         # ── Backup: propagate value up the search path ───────────────
         self._backup(search_path, actions_path, leaf_value)
 
-    fn _select_action(self, node_idx: Int) -> Int:
+    def _select_action(self, node_idx: Int) -> Int:
         """Select action using PUCT formula.
 
         a* = argmax_a [ Q(s,a) + c(s) * P(s,a) * sqrt(N(s)) / (1 + N(s,a)) ]
@@ -811,9 +853,10 @@ struct MCTS[
         var sqrt_total = sqrt(Float64(node.total_visits))
 
         # Exploration rate c(s)
-        var c = log(
-            (1.0 + Float64(node.total_visits) + self.c_base) / self.c_base
-        ) + self.c_init
+        var c = (
+            log((1.0 + Float64(node.total_visits) + self.c_base) / self.c_base)
+            + self.c_init
+        )
 
         var best_action = 0
         var best_score = Float64(-1e18)
@@ -825,8 +868,11 @@ struct MCTS[
             else:
                 q_value = Float64(0.0)
 
-            var prior_score = c * node.prior[a] * sqrt_total / (
-                1.0 + Float64(node.visit_count[a])
+            var prior_score = (
+                c
+                * node.prior[a]
+                * sqrt_total
+                / (1.0 + Float64(node.visit_count[a]))
             )
             var score = q_value + prior_score
 
@@ -836,7 +882,7 @@ struct MCTS[
 
         return best_action
 
-    fn _expand_node[
+    def _expand_node[
         DynModel: Model,
         PredModel: Model,
         DynOpt: Optimizer,
@@ -871,7 +917,9 @@ struct MCTS[
         memset(dyn_input_ptr, 0, DYN_IN)
 
         # Copy parent hidden state
-        var parent_h_offset = self.nodes[parent_idx].hidden_state_idx * Self.LATENT_DIM
+        var parent_h_offset = (
+            self.nodes[parent_idx].hidden_state_idx * Self.LATENT_DIM
+        )
         for i in range(Self.LATENT_DIM):
             dyn_input_ptr[i] = (self.hidden_states + parent_h_offset + i)[]
 
@@ -951,7 +999,7 @@ struct MCTS[
         self.nodes[parent_idx].child_idx[action] = child_hidden_idx
         self.nodes.append(child^)
 
-    fn _get_leaf_value[
+    def _get_leaf_value[
         PredModel: Model,
         PredOpt: Optimizer,
     ](
@@ -991,11 +1039,13 @@ struct MCTS[
             h_t, pred_out_t, pred_state.params_view()
         )
 
-        var value = self._decode_value(pred_out_ptr + Self.ACTION_DIM, v_min, v_max)
+        var value = self._decode_value(
+            pred_out_ptr + Self.ACTION_DIM, v_min, v_max
+        )
         pred_out_ptr.free()
         return value
 
-    fn _backup(
+    def _backup(
         mut self,
         search_path: List[Int],
         actions_path: List[Int],
@@ -1033,7 +1083,7 @@ struct MCTS[
 
             self.min_max.update(self.nodes[node_idx].mean_value(action))
 
-    fn _scale_hidden_state(mut self, node_idx: Int):
+    def _scale_hidden_state(mut self, node_idx: Int):
         """Scale hidden state to [0, 1] via min-max normalization.
 
         Prevents hidden state magnitudes from growing unboundedly through
@@ -1060,7 +1110,7 @@ struct MCTS[
                     (Float64(v) - Float64(min_val)) / delta
                 )
 
-    fn _decode_value(
+    def _decode_value(
         self,
         logits_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         v_min: Float64,
@@ -1076,9 +1126,9 @@ struct MCTS[
         Returns:
             Decoded scalar value (after inverse scalar transform).
         """
-        var step = (v_max - v_min) / Float64(Self.NUM_BINS - 1) if Self.NUM_BINS > 1 else Float64(
-            0.0
-        )
+        var step = (v_max - v_min) / Float64(
+            Self.NUM_BINS - 1
+        ) if Self.NUM_BINS > 1 else Float64(0.0)
 
         # Softmax
         var max_val = Float64(logits_ptr[0])

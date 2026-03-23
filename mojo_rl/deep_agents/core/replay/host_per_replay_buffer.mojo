@@ -89,7 +89,7 @@ struct HostPrioritizedReplayBuffer[
     # Device buffer for weights (copied from host after sampling)
     var dev_weights: DeviceBuffer[dtype]
 
-    fn __init__(
+    def __init__(
         out self,
         ctx: DeviceContext,
         alpha: Float64 = 0.6,
@@ -176,7 +176,7 @@ struct HostPrioritizedReplayBuffer[
         )
         self.dev_weights = ctx.enqueue_create_buffer[dtype](Self.BATCH_SIZE)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.states_buf = take.states_buf^
         self.actions_buf = take.actions_buf^
         self.rewards_buf = take.rewards_buf^
@@ -208,25 +208,25 @@ struct HostPrioritizedReplayBuffer[
     # Sum-tree helpers (CPU) — identical to GPUPrioritizedReplayBuffer
     # =========================================================================
 
-    fn _leaf_to_tree_idx(self, leaf_idx: Int) -> Int:
+    def _leaf_to_tree_idx(self, leaf_idx: Int) -> Int:
         return leaf_idx + Self.CAPACITY - 1
 
-    fn _tree_to_leaf_idx(self, tree_idx: Int) -> Int:
+    def _tree_to_leaf_idx(self, tree_idx: Int) -> Int:
         return tree_idx - Self.CAPACITY + 1
 
-    fn _propagate_up(mut self, mut idx: Int, change: Scalar[dtype]):
+    def _propagate_up(mut self, mut idx: Int, change: Scalar[dtype]):
         while idx > 0:
             var parent = (idx - 1) // 2
             self.tree[parent] += change
             idx = parent
 
-    fn _update_tree(mut self, leaf_idx: Int, priority: Scalar[dtype]):
+    def _update_tree(mut self, leaf_idx: Int, priority: Scalar[dtype]):
         var tree_idx = self._leaf_to_tree_idx(leaf_idx)
         var change = priority - self.tree[tree_idx]
         self.tree[tree_idx] = priority
         self._propagate_up(tree_idx, change)
 
-    fn _sample_tree(self, target: Scalar[dtype]) -> Int:
+    def _sample_tree(self, target: Scalar[dtype]) -> Int:
         var idx = 0
         var remaining = target
         while True:
@@ -241,10 +241,10 @@ struct HostPrioritizedReplayBuffer[
                 idx = right
         return self._tree_to_leaf_idx(idx)
 
-    fn _total_priority(self) -> Scalar[dtype]:
+    def _total_priority(self) -> Scalar[dtype]:
         return self.tree[0]
 
-    fn _min_priority(self) -> Scalar[dtype]:
+    def _min_priority(self) -> Scalar[dtype]:
         var min_p = Scalar[dtype](1e10)
         for i in range(self.size):
             var tree_idx = self._leaf_to_tree_idx(i)
@@ -257,13 +257,13 @@ struct HostPrioritizedReplayBuffer[
     # Buffer state
     # =========================================================================
 
-    fn is_ready[BATCH: Int](self) -> Bool:
+    def is_ready[BATCH: Int](self) -> Bool:
         return self.size >= BATCH
 
-    fn set_beta(mut self, beta: Scalar[dtype]):
+    def set_beta(mut self, beta: Scalar[dtype]):
         self.beta = beta
 
-    fn anneal_beta(
+    def anneal_beta(
         mut self,
         progress: Scalar[dtype],
         beta_start: Scalar[dtype] = 0.4,
@@ -274,7 +274,7 @@ struct HostPrioritizedReplayBuffer[
     # Store (GPU→Host copy + CPU ring write + CPU tree update)
     # =========================================================================
 
-    fn store[
+    def store[
         N_ENVS: Int
     ](
         mut self,
@@ -285,7 +285,8 @@ struct HostPrioritizedReplayBuffer[
         next_states: DeviceBuffer[dtype],
         dones: DeviceBuffer[dtype],
     ) raises:
-        """Store N_ENVS transitions: copy GPU→host, write to ring, update tree."""
+        """Store N_ENVS transitions: copy GPU→host, write to ring, update tree.
+        """
         # 1. GPU → Host staging copy
         ctx.enqueue_copy(self.store_host_obs, states)
         ctx.enqueue_copy(self.store_host_nobs, next_states)
@@ -332,7 +333,7 @@ struct HostPrioritizedReplayBuffer[
     # Sample (CPU priority sampling + CPU gather + Host→GPU copy)
     # =========================================================================
 
-    fn sample[
+    def sample[
         BATCH: Int
     ](
         mut self,
@@ -368,9 +369,7 @@ struct HostPrioritizedReplayBuffer[
         for b in range(BATCH):
             var low = segment_size * Scalar[dtype](b)
             var high = segment_size * Scalar[dtype](b + 1)
-            var target = low + Scalar[dtype](
-                random_float64()
-            ) * (high - low)
+            var target = low + Scalar[dtype](random_float64()) * (high - low)
 
             var idx = self._sample_tree(target)
             self.host_indices[b] = Int32(idx)
@@ -393,9 +392,9 @@ struct HostPrioritizedReplayBuffer[
                 self.sample_host_obs[dst_obs_base + d] = self.states_buf[
                     src_obs_base + d
                 ]
-                self.sample_host_nobs[dst_obs_base + d] = (
-                    self.next_states_buf[src_obs_base + d]
-                )
+                self.sample_host_nobs[dst_obs_base + d] = self.next_states_buf[
+                    src_obs_base + d
+                ]
             # Actions
             var src_act_base = idx * Self.ACTION_DIM
             var dst_act_base = b * Self.ACTION_DIM
@@ -420,13 +419,9 @@ struct HostPrioritizedReplayBuffer[
     # Priority update (GPU→CPU TD errors → CPU tree update)
     # =========================================================================
 
-    fn update_priorities[
+    def update_priorities[
         BATCH: Int
-    ](
-        mut self,
-        ctx: DeviceContext,
-        td_errors_buf: DeviceBuffer[dtype],
-    ) raises:
+    ](mut self, ctx: DeviceContext, td_errors_buf: DeviceBuffer[dtype],) raises:
         """Update priorities from GPU TD errors.
 
         1. Copy TD errors GPU→CPU
@@ -452,7 +447,7 @@ struct HostPrioritizedReplayBuffer[
     # GPUOffPolicyState compatibility
     # =========================================================================
 
-    fn gpu_store[
+    def gpu_store[
         N_ENVS: Int
     ](
         mut self,
@@ -468,5 +463,5 @@ struct HostPrioritizedReplayBuffer[
             ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
         )
 
-    fn gpu_buffer_is_ready(self) -> Bool:
+    def gpu_buffer_is_ready(self) -> Bool:
         return self.size >= Self.BATCH_SIZE

@@ -23,13 +23,13 @@ struct SoftmaxOp[dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = Self.dim
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -37,7 +37,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -79,7 +79,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
                 cache[b, i] = y
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -118,7 +118,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -171,7 +171,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -195,7 +195,9 @@ struct SoftmaxOp[dim: Int](DiffOp):
         var my_dot = Scalar[dtype](0)
         var idx = local_i
         while idx < Self.dim:
-            my_dot += rebind[Scalar[dtype]](grad_output[b, idx]) * rebind[Scalar[dtype]](cache[b, idx])
+            my_dot += rebind[Scalar[dtype]](grad_output[b, idx]) * rebind[
+                Scalar[dtype]
+            ](cache[b, idx])
             idx += TPB
 
         var dot = block.sum[block_size=TPB, broadcast=True](val=my_dot)
@@ -213,7 +215,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -236,7 +238,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
         ](input.ptr)
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -258,7 +260,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -287,7 +289,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
         ](cache.ptr)
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],

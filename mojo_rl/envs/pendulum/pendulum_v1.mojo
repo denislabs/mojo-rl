@@ -52,13 +52,13 @@ struct PendulumState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -72,28 +72,28 @@ struct PendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod
-    fn left() -> Self:
+    def left() -> Self:
         """Maximum negative torque (-2.0)."""
         return Self(direction=0)
 
     @staticmethod
-    fn none() -> Self:
+    def none() -> Self:
         """No torque (0.0)."""
         return Self(direction=1)
 
     @staticmethod
-    fn right() -> Self:
+    def right() -> Self:
         """Maximum positive torque (+2.0)."""
         return Self(direction=2)
 
-    fn to_continuous(self) -> Float64:
+    def to_continuous(self) -> Float64:
         """Convert discrete action to continuous torque value."""
         # Maps: 0 -> -2.0, 1 -> 0.0, 2 -> +2.0
         return Float64(self.direction - 1) * 2.0
@@ -156,7 +156,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
     var _renderer_initialized: Bool
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor."""
         self.max_speed = copy.max_speed
         self.max_torque = copy.max_torque
@@ -177,7 +177,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.max_speed = take.max_speed
         self.max_torque = take.max_torque
@@ -198,7 +198,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer = take._renderer
         self._renderer_initialized = take._renderer_initialized
 
-    fn __init__(
+    def __init__(
         out self, num_bins_angle: Int = 15, num_bins_velocity: Int = 15
     ):
         """Initialize Pendulum with default physics parameters.
@@ -238,7 +238,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> PendulumState:
+    def reset(mut self) -> PendulumState:
         """Reset environment to random initial state.
 
         Initial angle is uniformly random in [-π, π].
@@ -260,7 +260,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return PendulumState(index=self._discretize_obs())
 
-    fn step(
+    def step(
         mut self, action: PendulumAction, verbose: Bool = False
     ) -> Tuple[PendulumState, Scalar[Self.dtype], Bool]:
         """Take discrete action and return (state, reward, done).
@@ -275,7 +275,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var torque = Scalar[Self.dtype](action.to_continuous())
         return self._step_with_torque(torque)
 
-    fn _step_with_torque(
+    def _step_with_torque(
         mut self, torque: Scalar[Self.dtype]
     ) -> Tuple[PendulumState, Scalar[Self.dtype], Bool]:
         """Internal step function that accepts continuous torque."""
@@ -324,15 +324,15 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return (PendulumState(index=self._discretize_obs()), reward, self.done)
 
-    fn get_state(self) -> PendulumState:
+    def get_state(self) -> PendulumState:
         """Return current discretized state."""
         return PendulumState(index=self._discretize_obs())
 
-    fn state_to_index(self, state: PendulumState) -> Int:
+    def state_to_index(self, state: PendulumState) -> Int:
         """Convert a PendulumState to an index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> PendulumAction:
+    def action_from_index(self, action_idx: Int) -> PendulumAction:
         """Create a PendulumAction from an index."""
         return PendulumAction(direction=action_idx)
 
@@ -340,7 +340,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Continuous action API (for DDPG and other continuous control algorithms)
     # ========================================================================
 
-    fn step_continuous[
+    def step_continuous[
         DTYPE_SC: DType
     ](mut self, torque: Scalar[DTYPE_SC]) -> Tuple[
         List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool
@@ -361,7 +361,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
             obs.append(Scalar[DTYPE_SC](obs_self[i]))
         return (obs^, Scalar[DTYPE_SC](reward), self.done)
 
-    fn step_continuous_vec[
+    def step_continuous_vec[
         DTYPE_VEC: DType
     ](
         mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
@@ -387,7 +387,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(Scalar[DTYPE_VEC](results[0][2]))
         return (obs^, Scalar[DTYPE_VEC](results[1]), results[2])
 
-    fn step_continuous_simd(
+    def step_continuous_simd(
         mut self, torque: Scalar[Self.dtype]
     ) -> Tuple[SIMD[Self.dtype, 4], Scalar[Self.dtype], Bool]:
         """Take continuous action and return SIMD observation (optimized).
@@ -408,7 +408,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Internal helpers
     # ========================================================================
 
-    fn _angle_normalize(self, x: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
+    def _angle_normalize(self, x: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
         """Normalize angle to [-π, π]."""
         var result = x
         var pi_val = Scalar[Self.dtype](pi)
@@ -419,7 +419,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
             result += two_pi
         return result
 
-    fn _get_obs(self) -> SIMD[Self.dtype, 4]:
+    def _get_obs(self) -> SIMD[Self.dtype, 4]:
         """Return current continuous observation [cos(θ), sin(θ), θ_dot, 0].
 
         Padded to 4D for consistency with other environments.
@@ -431,14 +431,14 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs[3] = Scalar[Self.dtype](0.0)  # Padding
         return obs
 
-    fn _discretize_obs(self) -> Int:
+    def _discretize_obs(self) -> Int:
         """Discretize current continuous observation into a single state index.
 
         Uses 2D discretization: angle bins × velocity bins
         """
 
         # Discretize angle (θ in [-π, π])
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -460,7 +460,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return b_angle * self.num_bins_velocity + b_vel
 
-    fn get_obs(self) -> SIMD[Self.dtype, 4]:
+    def get_obs(self) -> SIMD[Self.dtype, 4]:
         """Return current continuous observation as SIMD (optimized, padded to 4D).
         """
         return self._get_obs()
@@ -469,7 +469,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ContinuousStateEnv / BoxDiscreteActionEnv / BoxContinuousActionEnv trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list (trait method).
 
         Returns true 3D observation without padding.
@@ -480,13 +480,13 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(self.theta_dot)
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial observation as list (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take discrete action and return (obs_list, reward, done) - trait method.
@@ -501,7 +501,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # SIMD-optimized observation API (for performance)
     # ========================================================================
 
-    fn reset_obs(mut self) -> SIMD[Self.dtype, 4]:
+    def reset_obs(mut self) -> SIMD[Self.dtype, 4]:
         """Reset environment and return raw continuous observation.
 
         Use this for function approximation methods (tile coding, linear FA)
@@ -513,7 +513,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         _ = self.reset()  # Reset internal state
         return self._get_obs()
 
-    fn step_raw(
+    def step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[Self.dtype, 4], Scalar[Self.dtype], Bool]:
         """Take discrete action and return raw continuous observation.
@@ -530,7 +530,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var result = self.step(PendulumAction(direction=action))
         return (self._get_obs(), result[1], result[2])
 
-    fn render(mut self, mut renderer: Renderer2D):
+    def render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.
 
         Args:
@@ -624,38 +624,38 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Update display
         renderer.flip()
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer[].close()
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of discrete actions (3)."""
         return 3
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension (3, padded to 4)."""
         return 3
 
-    fn action_dim(self) -> Int:
+    def action_dim(self) -> Int:
         """Return action dimension (1 for torque)."""
         return 1
 
-    fn action_low(self) -> Scalar[Self.dtype]:
+    def action_low(self) -> Scalar[Self.dtype]:
         """Return lower bound for action values."""
         return -self.max_torque
 
-    fn action_high(self) -> Scalar[Self.dtype]:
+    def action_high(self) -> Scalar[Self.dtype]:
         """Return upper bound for action values."""
         return self.max_torque
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of discrete states."""
         return self.num_bins_angle * self.num_bins_velocity
 
@@ -664,14 +664,14 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ========================================================================
 
     @staticmethod
-    fn get_num_states(
+    def get_num_states(
         num_bins_angle: Int = 15, num_bins_velocity: Int = 15
     ) -> Int:
         """Get the number of discrete states for Pendulum with given bins."""
         return num_bins_angle * num_bins_velocity
 
     @staticmethod
-    fn discretize_obs(
+    def discretize_obs(
         obs: SIMD[DType.float64, 4],
         num_bins_angle: Int = 15,
         num_bins_velocity: Int = 15,
@@ -693,7 +693,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var theta_dot = obs[2]
         var max_speed: Float64 = 8.0
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -711,7 +711,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         return b_angle * num_bins_velocity + b_vel
 
     @staticmethod
-    fn make_tile_coding(
+    def make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
     ) -> TileCoding[Self.dtype]:
@@ -750,7 +750,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
+    def make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
         """Create polynomial features for Pendulum (3D observation) with normalization.
 
         Pendulum observation: [cos(θ), sin(θ), θ_dot]
@@ -783,7 +783,7 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # RenderableEnv Trait Implementation
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
@@ -792,13 +792,13 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
         self.render(self._renderer[])
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
@@ -806,26 +806,26 @@ struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False

@@ -1,9 +1,16 @@
 from ...constants import (
-    dtype, TILE, TPB,
-    MMA_M, MMA_N, MMA_K,
-    MMA_BLOCK_M, MMA_BLOCK_N,
-    MMA_WARPS_M, MMA_WARPS_N,
-    MMA_NUM_WARPS, MMA_BLOCK_THREADS,
+    dtype,
+    TILE,
+    TPB,
+    MMA_M,
+    MMA_N,
+    MMA_K,
+    MMA_BLOCK_M,
+    MMA_BLOCK_N,
+    MMA_WARPS_M,
+    MMA_WARPS_N,
+    MMA_NUM_WARPS,
+    MMA_BLOCK_THREADS,
 )
 from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
@@ -31,13 +38,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = Self.in_dim
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -45,7 +52,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -80,7 +87,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
                 output[b, j] = acc
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -126,7 +133,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_tiled[
+    def eval_kernel_tiled[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -156,13 +163,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var W_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc: Scalar[dtype] = 0
@@ -171,16 +178,22 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         for tile_idx in range(num_tiles):
             var in_col = tile_idx * TILE + local_col
             if global_row < BATCH and in_col < Self.in_dim:
-                input_shared[local_row, local_col] = rebind[Scalar[dtype]](input[global_row, in_col])
+                input_shared[local_row, local_col] = rebind[Scalar[dtype]](
+                    input[global_row, in_col]
+                )
                 # Cache input (only first x-block to avoid races)
                 if Int(block_idx.x) == 0:
-                    cache[global_row, in_col] = rebind[Scalar[dtype]](input[global_row, in_col])
+                    cache[global_row, in_col] = rebind[Scalar[dtype]](
+                        input[global_row, in_col]
+                    )
             else:
                 input_shared[local_row, local_col] = 0
 
             var W_row = tile_idx * TILE + local_row
             if W_row < Self.in_dim and global_col < Self.out_dim:
-                W_shared[local_row, local_col] = rebind[Scalar[dtype]](W[W_row, global_col])
+                W_shared[local_row, local_col] = rebind[Scalar[dtype]](
+                    W[W_row, global_col]
+                )
             else:
                 W_shared[local_row, local_col] = 0
 
@@ -198,7 +211,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dx_kernel_tiled[
+    def backward_dx_kernel_tiled[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -225,13 +238,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var WT_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc: Scalar[dtype] = 0
@@ -240,16 +253,18 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         for tile_idx in range(num_tiles):
             var dy_col = tile_idx * TILE + local_col
             if global_row < BATCH and dy_col < Self.out_dim:
-                dy_shared[local_row, local_col] = rebind[Scalar[dtype]](grad_output[
-                    global_row, dy_col
-                ])
+                dy_shared[local_row, local_col] = rebind[Scalar[dtype]](
+                    grad_output[global_row, dy_col]
+                )
             else:
                 dy_shared[local_row, local_col] = 0
 
             # W.T[tile_idx*TILE+local_row, global_col] = W[global_col, tile_idx*TILE+local_row]
             var WT_row = tile_idx * TILE + local_row
             if global_col < Self.in_dim and WT_row < Self.out_dim:
-                WT_shared[local_row, local_col] = rebind[Scalar[dtype]](W[global_col, WT_row])
+                WT_shared[local_row, local_col] = rebind[Scalar[dtype]](
+                    W[global_col, WT_row]
+                )
             else:
                 WT_shared[local_row, local_col] = 0
 
@@ -267,7 +282,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dW_kernel_tiled[
+    def backward_dW_kernel_tiled[
         BATCH: Int
     ](
         dW: LayoutTensor[
@@ -294,13 +309,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var dy_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc: Scalar[dtype] = 0
@@ -310,17 +325,17 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             # cache.T[global_row, tile_idx*TILE+local_col] = cache[tile_idx*TILE+local_col, global_row]
             var batch_col = tile_idx * TILE + local_col
             if batch_col < BATCH and global_row < Self.in_dim:
-                cacheT_shared[local_row, local_col] = rebind[Scalar[dtype]](cache[
-                    batch_col, global_row
-                ])
+                cacheT_shared[local_row, local_col] = rebind[Scalar[dtype]](
+                    cache[batch_col, global_row]
+                )
             else:
                 cacheT_shared[local_row, local_col] = 0
 
             var batch_row = tile_idx * TILE + local_row
             if batch_row < BATCH and global_col < Self.out_dim:
-                dy_shared[local_row, local_col] = rebind[Scalar[dtype]](grad_output[
-                    batch_row, global_col
-                ])
+                dy_shared[local_row, local_col] = rebind[Scalar[dtype]](
+                    grad_output[batch_row, global_col]
+                )
             else:
                 dy_shared[local_row, local_col] = 0
 
@@ -342,7 +357,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_mma[
+    def eval_kernel_mma[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -387,14 +402,14 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
                 dtype,
                 Layout.row_major(MMA_BLOCK_M, MMA_K),
                 MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var b_smem = LayoutTensor[
                 dtype,
                 Layout.row_major(MMA_K, MMA_BLOCK_N),
                 MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -431,16 +446,30 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
 
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -463,7 +492,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_2x2[
+    def eval_kernel_2x2[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -507,13 +536,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             dtype,
             Layout.row_major(BT, SK),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
             dtype,
             Layout.row_major(SK, BT),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -582,7 +611,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dx_kernel_mma[
+    def backward_dx_kernel_mma[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -616,13 +645,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
                 dtype,
                 Layout.row_major(MMA_BLOCK_M, MMA_K),
                 MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
                 dtype,
                 Layout.row_major(MMA_K, MMA_BLOCK_N),
                 MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -649,7 +678,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
                 var b_r = tid // MMA_BLOCK_N
                 var b_c = tid % MMA_BLOCK_N
                 var w_row = block_col + b_c  # in_dim axis
-                var w_col = k_off + b_r      # out_dim axis
+                var w_col = k_off + b_r  # out_dim axis
                 if w_row < Self.in_dim and w_col < Self.out_dim:
                     b_smem[b_r, b_c] = W[w_row, w_col]
                 else:
@@ -659,16 +688,30 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
 
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -690,7 +733,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dx_kernel_2x2[
+    def backward_dx_kernel_2x2[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -721,13 +764,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             dtype,
             Layout.row_major(BT, SK),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
             dtype,
             Layout.row_major(SK, BT),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -796,7 +839,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dW_kernel_mma[
+    def backward_dW_kernel_mma[
         BATCH: Int
     ](
         dW: LayoutTensor[
@@ -829,13 +872,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
                 dtype,
                 Layout.row_major(MMA_BLOCK_M, MMA_K),
                 MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
                 dtype,
                 Layout.row_major(MMA_K, MMA_BLOCK_N),
                 MutAnyOrigin,
-                address_space = AddressSpace.SHARED,
+                address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
             var acc = SIMD[DType.float32, 4](0)
@@ -872,16 +915,30 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
 
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -903,7 +960,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dW_kernel_2x2[
+    def backward_dW_kernel_2x2[
         BATCH: Int
     ](
         dW: LayoutTensor[
@@ -934,13 +991,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             dtype,
             Layout.row_major(BT, SK),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
         var b_smem = LayoutTensor[
             dtype,
             Layout.row_major(SK, BT),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc00: Scalar[dtype] = 0
@@ -1012,7 +1069,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -1042,7 +1099,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
             ],
@@ -1073,7 +1130,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -1112,7 +1169,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
         @always_inline
-        fn dx_wrapper(
+        def dx_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
             ],
@@ -1143,7 +1200,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         comptime dW_grid_y = (Self.in_dim + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
         @always_inline
-        fn dW_wrapper(
+        def dW_wrapper(
             dW: LayoutTensor[
                 dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
             ],

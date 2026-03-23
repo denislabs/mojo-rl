@@ -34,7 +34,7 @@ from ..traits.integrator import Integrator
 
 
 @always_inline
-fn normalize_angle_inplace(
+def normalize_angle_inplace(
     mut angle: Scalar[dtype],
     pi_val: Scalar[dtype],
     two_pi_val: Scalar[dtype],
@@ -71,7 +71,7 @@ struct SemiImplicitEuler(Integrator):
     2. x' = x + v' * dt          (position update using NEW velocity)
     """
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize the integrator (stateless, nothing to store)."""
         pass
 
@@ -79,7 +79,7 @@ struct SemiImplicitEuler(Integrator):
     # CPU Implementation
     # =========================================================================
 
-    fn integrate_velocities[
+    def integrate_velocities[
         BATCH: Int,
         NUM_BODIES: Int,
     ](
@@ -127,7 +127,7 @@ struct SemiImplicitEuler(Integrator):
                 bodies[env, body, IDX_VY] = vy
                 bodies[env, body, IDX_OMEGA] = omega
 
-    fn integrate_positions[
+    def integrate_positions[
         BATCH: Int,
         NUM_BODIES: Int,
     ](
@@ -199,7 +199,7 @@ struct SemiImplicitEuler(Integrator):
 
     @always_inline
     @staticmethod
-    fn integrate_velocities_single_env[
+    def integrate_velocities_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -251,7 +251,7 @@ struct SemiImplicitEuler(Integrator):
 
     @always_inline
     @staticmethod
-    fn integrate_positions_single_env[
+    def integrate_positions_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -310,7 +310,7 @@ struct SemiImplicitEuler(Integrator):
 
     @always_inline
     @staticmethod
-    fn integrate_velocities_kernel[
+    def integrate_velocities_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -337,7 +337,7 @@ struct SemiImplicitEuler(Integrator):
 
     @always_inline
     @staticmethod
-    fn integrate_positions_kernel[
+    def integrate_positions_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -360,7 +360,7 @@ struct SemiImplicitEuler(Integrator):
         ](env, state, dt)
 
     @staticmethod
-    fn integrate_velocities_gpu[
+    def integrate_velocities_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -391,7 +391,7 @@ struct SemiImplicitEuler(Integrator):
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, STATE_SIZE),
@@ -415,7 +415,7 @@ struct SemiImplicitEuler(Integrator):
         )
 
     @staticmethod
-    fn integrate_positions_gpu[
+    def integrate_positions_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -441,7 +441,7 @@ struct SemiImplicitEuler(Integrator):
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, STATE_SIZE),

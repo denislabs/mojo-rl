@@ -6,12 +6,18 @@ Tests multiple PUCT values and more training iterations.
 
 from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import dtype
-from mojo_rl.deep_agents.alphazero import GenericAlphaZeroAgent, AlphaZeroTicTacToeConfig
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, MinimaxTicTacToe
+from mojo_rl.deep_agents.alphazero import (
+    GenericAlphaZeroAgent,
+    AlphaZeroTicTacToeConfig,
+)
+from mojo_rl.deep_agents.muzero.evaluators import (
+    RandomOpponent,
+    MinimaxTicTacToe,
+)
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== MCTS Quality + Training Debug ===")
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]
@@ -19,10 +25,13 @@ fn main() raises:
 
     # Low PUCT for deeper search + more sims + more gradient steps
     comptime Config = AlphaZeroTicTacToeConfig[
-        HIDDEN=128, LR=0.01, BS=128,
-        CAP=200000,             # Larger buffer to prevent forgetting
-        SIMS=200, NODES=512,
-        C_PUCT=0.5,             # Low exploration → deeper search
+        HIDDEN=128,
+        LR=0.01,
+        BS=128,
+        CAP=200000,  # Larger buffer to prevent forgetting
+        SIMS=200,
+        NODES=512,
+        C_PUCT=0.5,  # Low exploration → deeper search
     ]
 
     var agent = GenericAlphaZeroAgent[Config, 64]()
@@ -44,7 +53,7 @@ fn main() raises:
             ctx,
             num_steps=25000,
             warmup_steps=500 if chunk == 0 else 0,
-            gradient_steps=8,   # More training per data
+            gradient_steps=8,  # More training per data
             print_every=25000,
         )
 
@@ -80,7 +89,12 @@ fn main() raises:
                     max_p = p
             if max_p > 0.3:  # More than 30% on one action = somewhat sharp
                 sharp_count += 1
-        print("  Sharp policies (max>30%):", sharp_count, "/", min(1000, agent.state.buf_size))
+        print(
+            "  Sharp policies (max>30%):",
+            sharp_count,
+            "/",
+            min(1000, agent.state.buf_size),
+        )
 
     print("\nTrain steps:", agent.train_step_count)
     print("=== Done ===")

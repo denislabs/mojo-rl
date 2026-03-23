@@ -21,7 +21,7 @@ from mojo_rl.deep_agents.dreamer_v3.rssm import (
 )
 
 
-fn test_symlog_symexp():
+def test_symlog_symexp():
     """Test symlog/symexp are inverses."""
     print("Test symlog/symexp...")
 
@@ -48,7 +48,7 @@ fn test_symlog_symexp():
         print("  PASS")
 
 
-fn test_symlog_bins():
+def test_symlog_bins():
     """Test symlog bin computation."""
     print("Test symlog bins...")
     var bins = compute_symlog_bins[255]()
@@ -56,12 +56,24 @@ fn test_symlog_bins():
     # Check symmetry: bins[0] should be -symexp(20), bins[254] should be symexp(20)
     var diff = abs(bins[0] + bins[254])
     if diff > 1e-2:
-        print("  FAIL: bins not symmetric. bins[0] =", bins[0], "bins[254] =", bins[254])
+        print(
+            "  FAIL: bins not symmetric. bins[0] =",
+            bins[0],
+            "bins[254] =",
+            bins[254],
+        )
     else:
-        print("  PASS: bins symmetric. bins[0] =", bins[0], "bins[127] =", bins[127], "bins[254] =", bins[254])
+        print(
+            "  PASS: bins symmetric. bins[0] =",
+            bins[0],
+            "bins[127] =",
+            bins[127],
+            "bins[254] =",
+            bins[254],
+        )
 
 
-fn test_categorical_sample():
+def test_categorical_sample():
     """Test categorical sampling with unimix."""
     print("Test categorical_sample...")
 
@@ -84,9 +96,15 @@ fn test_categorical_sample():
                     Float64(c) * 0.5
                 )
 
-    var logits_t = LayoutTensor[dtype, Layout.row_major(B, SD * C), MutAnyOrigin](logits_ptr)
-    var output_t = LayoutTensor[dtype, Layout.row_major(B, SD * C), MutAnyOrigin](output_ptr)
-    var probs_t = LayoutTensor[dtype, Layout.row_major(B, SD * C), MutAnyOrigin](probs_ptr)
+    var logits_t = LayoutTensor[
+        dtype, Layout.row_major(B, SD * C), MutAnyOrigin
+    ](logits_ptr)
+    var output_t = LayoutTensor[
+        dtype, Layout.row_major(B, SD * C), MutAnyOrigin
+    ](output_ptr)
+    var probs_t = LayoutTensor[
+        dtype, Layout.row_major(B, SD * C), MutAnyOrigin
+    ](probs_ptr)
 
     categorical_sample[B, SD, C, 0.01](logits_t, output_t, probs_t, True)
 
@@ -98,11 +116,27 @@ fn test_categorical_sample():
             for c in range(C):
                 var v = Float64(output_ptr[b * SD * C + s * C + c])
                 if v != 0.0 and v != 1.0:
-                    print("  FAIL: output not one-hot at b=", b, "s=", s, "c=", c, "v=", v)
+                    print(
+                        "  FAIL: output not one-hot at b=",
+                        b,
+                        "s=",
+                        s,
+                        "c=",
+                        c,
+                        "v=",
+                        v,
+                    )
                     all_pass = False
                 sum_val += v
             if abs(sum_val - 1.0) > 1e-6:
-                print("  FAIL: one-hot sum != 1 at b=", b, "s=", s, "sum=", sum_val)
+                print(
+                    "  FAIL: one-hot sum != 1 at b=",
+                    b,
+                    "s=",
+                    s,
+                    "sum=",
+                    sum_val,
+                )
                 all_pass = False
 
     # Check: probs should sum to 1 per category
@@ -123,7 +157,7 @@ fn test_categorical_sample():
     probs_ptr.free()
 
 
-fn test_kl_divergence():
+def test_kl_divergence():
     """Test KL divergence computation."""
     print("Test kl_divergence...")
 
@@ -139,8 +173,12 @@ fn test_kl_divergence():
         post_ptr[i] = Scalar[dtype](0.25)
         prior_ptr[i] = Scalar[dtype](0.25)
 
-    var post_t = LayoutTensor[dtype, Layout.row_major(B, SD * C), MutAnyOrigin](post_ptr)
-    var prior_t = LayoutTensor[dtype, Layout.row_major(B, SD * C), MutAnyOrigin](prior_ptr)
+    var post_t = LayoutTensor[dtype, Layout.row_major(B, SD * C), MutAnyOrigin](
+        post_ptr
+    )
+    var prior_t = LayoutTensor[
+        dtype, Layout.row_major(B, SD * C), MutAnyOrigin
+    ](prior_ptr)
 
     var kl_uniform = kl_divergence[B, SD, C](post_t, prior_t)
     if abs(kl_uniform) > 1e-4:
@@ -160,7 +198,10 @@ fn test_kl_divergence():
 
     var kl_concentrated = kl_divergence[B, SD, C](post_t, prior_t)
     if kl_concentrated <= 0:
-        print("  FAIL: KL(concentrated||uniform) should be > 0, got", kl_concentrated)
+        print(
+            "  FAIL: KL(concentrated||uniform) should be > 0, got",
+            kl_concentrated,
+        )
     else:
         print("  PASS: KL(concentrated||uniform) =", kl_concentrated)
 
@@ -168,7 +209,7 @@ fn test_kl_divergence():
     prior_ptr.free()
 
 
-fn test_rssm_init():
+def test_rssm_init():
     """Test RSSM initialization."""
     print("Test RSSM init...")
 
@@ -191,10 +232,17 @@ fn test_rssm_init():
         print("  PASS: RSSM initialized successfully")
         print("    STOCH_FLAT =", rssm.STOCH_FLAT)
         print("    FEAT_DIM =", rssm.FEAT_DIM)
-        print("    bins[0] =", rssm.bins[0], "bins[15] =", rssm.bins[15], "bins[30] =", rssm.bins[30])
+        print(
+            "    bins[0] =",
+            rssm.bins[0],
+            "bins[15] =",
+            rssm.bins[15],
+            "bins[30] =",
+            rssm.bins[30],
+        )
 
 
-fn test_rssm_observe_step():
+def test_rssm_observe_step():
     """Test RSSM observe step forward pass."""
     print("Test RSSM observe_step...")
 
@@ -225,7 +273,9 @@ fn test_rssm_observe_step():
     # Set some observation values
     for b in range(B):
         for i in range(OBS):
-            (obs_ptr + b * OBS + i)[] = Scalar[dtype](Float64(i) * 0.1 + Float64(b) * 0.5)
+            (obs_ptr + b * OBS + i)[] = Scalar[dtype](
+                Float64(i) * 0.1 + Float64(b) * 0.5
+            )
 
     # Allocate outputs
     var new_deter_ptr = alloc[Scalar[dtype]](B * DETER)
@@ -240,20 +290,45 @@ fn test_rssm_observe_step():
     memset(feat_ptr, 0, B * FEAT)
 
     # Create LayoutTensors
-    var obs_t = LayoutTensor[dtype, Layout.row_major(B, OBS), MutAnyOrigin](obs_ptr)
-    var deter_t = LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin](deter_ptr)
-    var stoch_t = LayoutTensor[dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin](stoch_ptr)
-    var action_t = LayoutTensor[dtype, Layout.row_major(B, ACT), MutAnyOrigin](action_ptr)
-    var new_deter_t = LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin](new_deter_ptr)
-    var new_stoch_t = LayoutTensor[dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin](new_stoch_ptr)
-    var post_probs_t = LayoutTensor[dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin](post_probs_ptr)
-    var prior_probs_t = LayoutTensor[dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin](prior_probs_ptr)
-    var feat_t = LayoutTensor[dtype, Layout.row_major(B, FEAT), MutAnyOrigin](feat_ptr)
+    var obs_t = LayoutTensor[dtype, Layout.row_major(B, OBS), MutAnyOrigin](
+        obs_ptr
+    )
+    var deter_t = LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin](
+        deter_ptr
+    )
+    var stoch_t = LayoutTensor[
+        dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin
+    ](stoch_ptr)
+    var action_t = LayoutTensor[dtype, Layout.row_major(B, ACT), MutAnyOrigin](
+        action_ptr
+    )
+    var new_deter_t = LayoutTensor[
+        dtype, Layout.row_major(B, DETER), MutAnyOrigin
+    ](new_deter_ptr)
+    var new_stoch_t = LayoutTensor[
+        dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin
+    ](new_stoch_ptr)
+    var post_probs_t = LayoutTensor[
+        dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin
+    ](post_probs_ptr)
+    var prior_probs_t = LayoutTensor[
+        dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin
+    ](prior_probs_ptr)
+    var feat_t = LayoutTensor[dtype, Layout.row_major(B, FEAT), MutAnyOrigin](
+        feat_ptr
+    )
 
     # Run observe step
     rssm.observe_step[B](
-        obs_t, deter_t, stoch_t, action_t,
-        new_deter_t, new_stoch_t, post_probs_t, prior_probs_t, feat_t,
+        obs_t,
+        deter_t,
+        stoch_t,
+        action_t,
+        new_deter_t,
+        new_stoch_t,
+        post_probs_t,
+        prior_probs_t,
+        feat_t,
         True,
     )
 
@@ -279,9 +354,14 @@ fn test_rssm_observe_step():
     if deter_nonzero and stoch_has_one and feat_nonzero:
         print("  PASS: observe_step produced non-trivial outputs")
     else:
-        print("  FAIL: deter_nonzero=", deter_nonzero,
-              "stoch_has_one=", stoch_has_one,
-              "feat_nonzero=", feat_nonzero)
+        print(
+            "  FAIL: deter_nonzero=",
+            deter_nonzero,
+            "stoch_has_one=",
+            stoch_has_one,
+            "feat_nonzero=",
+            feat_nonzero,
+        )
 
     # Free
     obs_ptr.free()
@@ -295,7 +375,7 @@ fn test_rssm_observe_step():
     feat_ptr.free()
 
 
-fn test_rssm_imagine_step():
+def test_rssm_imagine_step():
     """Test RSSM imagine step (prior only, no observations)."""
     print("Test RSSM imagine_step...")
 
@@ -336,16 +416,32 @@ fn test_rssm_imagine_step():
     memset(new_stoch_ptr, 0, B * STOCH_FLAT)
     memset(feat_ptr, 0, B * FEAT)
 
-    var deter_t = LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin](deter_ptr)
-    var stoch_t = LayoutTensor[dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin](stoch_ptr)
-    var action_t = LayoutTensor[dtype, Layout.row_major(B, ACT), MutAnyOrigin](action_ptr)
-    var new_deter_t = LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin](new_deter_ptr)
-    var new_stoch_t = LayoutTensor[dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin](new_stoch_ptr)
-    var feat_t = LayoutTensor[dtype, Layout.row_major(B, FEAT), MutAnyOrigin](feat_ptr)
+    var deter_t = LayoutTensor[dtype, Layout.row_major(B, DETER), MutAnyOrigin](
+        deter_ptr
+    )
+    var stoch_t = LayoutTensor[
+        dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin
+    ](stoch_ptr)
+    var action_t = LayoutTensor[dtype, Layout.row_major(B, ACT), MutAnyOrigin](
+        action_ptr
+    )
+    var new_deter_t = LayoutTensor[
+        dtype, Layout.row_major(B, DETER), MutAnyOrigin
+    ](new_deter_ptr)
+    var new_stoch_t = LayoutTensor[
+        dtype, Layout.row_major(B, STOCH_FLAT), MutAnyOrigin
+    ](new_stoch_ptr)
+    var feat_t = LayoutTensor[dtype, Layout.row_major(B, FEAT), MutAnyOrigin](
+        feat_ptr
+    )
 
     rssm.imagine_step[B](
-        deter_t, stoch_t, action_t,
-        new_deter_t, new_stoch_t, feat_t,
+        deter_t,
+        stoch_t,
+        action_t,
+        new_deter_t,
+        new_stoch_t,
+        feat_t,
         True,
     )
 
@@ -368,7 +464,7 @@ fn test_rssm_imagine_step():
     feat_ptr.free()
 
 
-fn main():
+def main():
     print("=" * 60)
     print("DreamerV3 RSSM Tests")
     print("=" * 60)

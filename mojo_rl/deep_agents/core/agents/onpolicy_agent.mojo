@@ -122,7 +122,7 @@ struct GenericOnPolicyCPUState[
     # Minibatch indices
     var _indices: List[Int]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.actor = NetworkState[Self.ActorModel, Self.ActorOpt]()
         self.actor.initialize[Xavier[]]()
         self.critic = NetworkState[Self.CriticModel, Self.CriticOpt]()
@@ -161,7 +161,7 @@ struct GenericOnPolicyCPUState[
             self._indices.append(i)
 
     # OnPolicyDiscreteState trait
-    fn store_step(
+    def store_step(
         mut self,
         obs: List[Scalar[dtype]],
         action: Int,
@@ -180,10 +180,10 @@ struct GenericOnPolicyCPUState[
         self.buffer_dones[idx] = done
         self.buffer_idx += 1
 
-    fn is_full(self) -> Bool:
+    def is_full(self) -> Bool:
         return self.buffer_idx >= Self.ROLLOUT
 
-    fn clear(mut self) -> None:
+    def clear(mut self) -> None:
         self.buffer_idx = 0
 
 
@@ -250,17 +250,19 @@ struct PPOGPUStateGeneric[
     ]
     comptime _LOSS_OUT = Self._LossGraph.OUT_DIM
     comptime _LOSS_CS = Self._LossGraph.CACHE_SIZE
-    comptime _LOSS_WS = max(1, Self.MB * Self._LossGraph.WORKSPACE_SIZE_PER_SAMPLE)
+    comptime _LOSS_WS = max(
+        1, Self.MB * Self._LossGraph.WORKSPACE_SIZE_PER_SAMPLE
+    )
     comptime _LOSS_PS = max(1, Self._LossGraph.PARAM_SIZE)
     comptime LOSS_WS_TOTAL = (
-        Self.MB * Self._LOSS_IN        # loss_input
-        + Self.MB * Self._LOSS_OUT     # loss_output
+        Self.MB * Self._LOSS_IN  # loss_input
+        + Self.MB * Self._LOSS_OUT  # loss_output
         + max(1, Self.MB * Self._LOSS_CS)  # loss_cache
-        + Self._LOSS_PS                # loss_params
-        + Self._LOSS_PS                # loss_grads
-        + Self.MB * Self._LOSS_IN      # loss_grad_input
-        + Self.MB * Self._LOSS_OUT     # loss_grad_output
-        + Self._LOSS_WS                # loss_workspace
+        + Self._LOSS_PS  # loss_params
+        + Self._LOSS_PS  # loss_grads
+        + Self.MB * Self._LOSS_IN  # loss_grad_input
+        + Self.MB * Self._LOSS_OUT  # loss_grad_output
+        + Self._LOSS_WS  # loss_workspace
     )
 
     # Workspace type aliases
@@ -278,10 +280,18 @@ struct PPOGPUStateGeneric[
     var gpu_critic: GPUNetworkState[Self.CriticModel, Self.CriticOpt]
 
     # Consolidated workspace buffers
-    var rollout_buf: DeviceBuffer[dtype]  # RolloutWS: obs, actions, lp, values, rewards, dones, adv, ret
-    var minibatch_buf: DeviceBuffer[dtype]  # MinibatchWS: obs, actions, adv, ret, old_lp, old_values
-    var actor_train_buf: DeviceBuffer[dtype]  # ActorTrainWS: logits, cache, grad_out, grad_in
-    var critic_train_buf: DeviceBuffer[dtype]  # CriticTrainWS: values, cache, grad_out, grad_in
+    var rollout_buf: DeviceBuffer[
+        dtype
+    ]  # RolloutWS: obs, actions, lp, values, rewards, dones, adv, ret
+    var minibatch_buf: DeviceBuffer[
+        dtype
+    ]  # MinibatchWS: obs, actions, adv, ret, old_lp, old_values
+    var actor_train_buf: DeviceBuffer[
+        dtype
+    ]  # ActorTrainWS: logits, cache, grad_out, grad_in
+    var critic_train_buf: DeviceBuffer[
+        dtype
+    ]  # CriticTrainWS: values, cache, grad_out, grad_in
     var rollout_step: Int
 
     # Pinned host buffers for GAE computation
@@ -310,7 +320,9 @@ struct PPOGPUStateGeneric[
     var diag_values_host: HostBuffer[dtype]  # [MB]
     var diag_returns_host: HostBuffer[dtype]  # [MB]
     var actor_grad_partial_sums_buf: DeviceBuffer[dtype]  # [ACTOR_GRAD_BLOCKS]
-    var critic_grad_partial_sums_buf: DeviceBuffer[dtype]  # [CRITIC_GRAD_BLOCKS]
+    var critic_grad_partial_sums_buf: DeviceBuffer[
+        dtype
+    ]  # [CRITIC_GRAD_BLOCKS]
     var actor_scale_buf: DeviceBuffer[dtype]  # [1]
     var critic_scale_buf: DeviceBuffer[dtype]  # [1]
     var actor_env_workspace_buf: DeviceBuffer[dtype]
@@ -325,7 +337,7 @@ struct PPOGPUStateGeneric[
     var values_env_buf: DeviceBuffer[dtype]  # [N]
     var log_probs_env_buf: DeviceBuffer[dtype]  # [N]
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU device and pinned host buffers."""
         self.gpu_actor = GPUNetworkState[Self.ActorModel, Self.ActorOpt](ctx)
         self.gpu_critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](ctx)
@@ -373,9 +385,7 @@ struct PPOGPUStateGeneric[
         self.kl_divergences_host = ctx.enqueue_create_host_buffer[dtype](
             Self.MB
         )
-        self.mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.MB
-        )
+        self.mb_advantages_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
         self.diag_entropy_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
         self.diag_entropy_host = ctx.enqueue_create_host_buffer[dtype](Self.MB)
         self.diag_clip_buf = ctx.enqueue_create_buffer[dtype](Self.MB)
@@ -419,19 +429,19 @@ struct PPOGPUStateGeneric[
     # Workspace accessors
     # -------------------------------------------------------------------------
 
-    fn rollout_ws(self) -> Self.RolloutWSType:
+    def rollout_ws(self) -> Self.RolloutWSType:
         """Get typed rollout workspace view."""
         return Self.RolloutWSType(self.rollout_buf.unsafe_ptr())
 
-    fn minibatch_ws(self) -> Self.MinibatchWSType:
+    def minibatch_ws(self) -> Self.MinibatchWSType:
         """Get typed minibatch workspace view."""
         return Self.MinibatchWSType(self.minibatch_buf.unsafe_ptr())
 
-    fn actor_ws(self) -> Self.ActorWSType:
+    def actor_ws(self) -> Self.ActorWSType:
         """Get typed actor training workspace view."""
         return Self.ActorWSType(self.actor_train_buf.unsafe_ptr())
 
-    fn critic_ws(self) -> Self.CriticWSType:
+    def critic_ws(self) -> Self.CriticWSType:
         """Get typed critic training workspace view."""
         return Self.CriticWSType(self.critic_train_buf.unsafe_ptr())
 
@@ -439,11 +449,11 @@ struct PPOGPUStateGeneric[
     # GPUOnPolicyState trait methods
     # -------------------------------------------------------------------------
 
-    fn gpu_rollout_reset(mut self) -> None:
+    def gpu_rollout_reset(mut self) -> None:
         """Reset rollout write pointer to 0 for the next update cycle."""
         self.rollout_step = 0
 
-    fn gpu_store_pre_step[
+    def gpu_store_pre_step[
         N_ENVS: Int
     ](
         mut self,
@@ -453,7 +463,8 @@ struct PPOGPUStateGeneric[
         log_probs_buf: DeviceBuffer[dtype],
         values_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Store pre-step data (obs, actions, log_probs, values) into rollout buffers."""
+        """Store pre-step data (obs, actions, log_probs, values) into rollout buffers.
+        """
         var t_offset = self.rollout_step * N_ENVS
         var rws = self.rollout_ws()
         var r_obs = rws.obs_at[N_ENVS](t_offset)
@@ -490,7 +501,7 @@ struct PPOGPUStateGeneric[
         comptime blocks = (N_ENVS + TPB - 1) // TPB
 
         @always_inline
-        fn store_scalars_wrapper(
+        def store_scalars_wrapper(
             r_a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
             r_lp: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
             r_v: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -516,7 +527,7 @@ struct PPOGPUStateGeneric[
             block_dim=(TPB,),
         )
 
-    fn gpu_store_post_step[
+    def gpu_store_post_step[
         N_ENVS: Int
     ](
         mut self,
@@ -524,7 +535,8 @@ struct PPOGPUStateGeneric[
         rewards_buf: DeviceBuffer[dtype],
         dones_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Store post-step data (rewards, dones) into rollout buffers, advance pointer."""
+        """Store post-step data (rewards, dones) into rollout buffers, advance pointer.
+        """
         var t_offset = self.rollout_step * N_ENVS
         var rws = self.rollout_ws()
         var r_rewards = rws.rewards_at[N_ENVS](t_offset)
@@ -549,7 +561,7 @@ struct PPOGPUStateGeneric[
         )
         self.rollout_step += 1
 
-    fn gpu_rollout_is_full(self) -> Bool:
+    def gpu_rollout_is_full(self) -> Bool:
         """Return True when rollout_len steps have been stored."""
         return self.rollout_step >= Self.ROLLOUT
 
@@ -559,7 +571,7 @@ struct PPOGPUStateGeneric[
 # =============================================================================
 
 
-fn _generic_sample_actions_kernel[
+def _generic_sample_actions_kernel[
     dtype: DType where dtype.is_floating_point(),
     N_ENVS: Int,
     NUM_ACTIONS: Int,
@@ -715,7 +727,7 @@ struct GenericOnPolicyAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
-    fn __init__(
+    def __init__(
         out self,
         gamma: Float64 = 0.99,
         gae_lambda: Float64 = 0.95,
@@ -755,10 +767,10 @@ struct GenericOnPolicyAgent[
     # OnPolicyDiscreteAgent trait
     # =========================================================================
 
-    fn make_cpu_state(self) -> Self.CPUStateType:
+    def make_cpu_state(self) -> Self.CPUStateType:
         return Self.CPUStateType()
 
-    fn collect_rollout[
+    def collect_rollout[
         E: BoxDiscreteActionEnv
     ](mut self, mut cpu_state: Self.CPUStateType, mut env: E) -> None:
         if not cpu_state._env_initialized:
@@ -839,9 +851,7 @@ struct GenericOnPolicyAgent[
                 for i in range(Self.OBS):
                     cpu_state._current_obs[i] = Scalar[dtype](result[0][i])
 
-    fn compute_advantages(
-        mut self, mut cpu_state: Self.CPUStateType
-    ) -> None:
+    def compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
         var buf_len = cpu_state.buffer_idx
         if buf_len == 0:
             return
@@ -880,16 +890,16 @@ struct GenericOnPolicyAgent[
         if self.normalize_advantages and buf_len > 1:
             normalize_advantages_list[dtype](cpu_state._advantages, buf_len)
 
-    fn update_epochs(
-        mut self, mut cpu_state: Self.CPUStateType
-    ) -> Float64:
+    def update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         var buf_len = cpu_state.buffer_idx
         if buf_len == 0:
             return 0.0
 
         # Determine number of epochs and minibatch size
         var n_epochs = Self.Config.EpochSched.get_num_epochs(self.num_epochs)
-        var mb_size = Self.Config.EpochSched.get_minibatch_size(self.minibatch_size, buf_len)
+        var mb_size = Self.Config.EpochSched.get_minibatch_size(
+            self.minibatch_size, buf_len
+        )
 
         var total_loss: Float64 = 0.0
         var sample_count = 0
@@ -946,9 +956,9 @@ struct GenericOnPolicyAgent[
                     var logits_t = LayoutTensor[
                         dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
                     ](logits_arr.unsafe_ptr())
-                    var actor_cache = InlineArray[
-                        Scalar[dtype], Self.ACTOR_CS
-                    ](uninitialized=True)
+                    var actor_cache = InlineArray[Scalar[dtype], Self.ACTOR_CS](
+                        uninitialized=True
+                    )
                     var actor_cache_t = LayoutTensor[
                         dtype, Layout.row_major(1, Self.ACTOR_CS), MutAnyOrigin
                     ](actor_cache.unsafe_ptr())
@@ -958,9 +968,7 @@ struct GenericOnPolicyAgent[
                     )
 
                     var probs = softmax_inline[dtype, Self.ACTIONS](logits_arr)
-                    var new_log_prob = log(
-                        probs[action] + Scalar[dtype](1e-8)
-                    )
+                    var new_log_prob = log(probs[action] + Scalar[dtype](1e-8))
 
                     # Entropy
                     var entropy = Scalar[dtype](0.0)
@@ -990,9 +998,9 @@ struct GenericOnPolicyAgent[
                         comptime LOSS_CS = LossGraph.CACHE_SIZE
 
                         # Pack input: [logits(A) || action_idx(1) || old_lp(1) || adv(1)]
-                        var loss_in_arr = InlineArray[
-                            Scalar[dtype], LOSS_IN
-                        ](uninitialized=True)
+                        var loss_in_arr = InlineArray[Scalar[dtype], LOSS_IN](
+                            uninitialized=True
+                        )
                         for j in range(A):
                             loss_in_arr[j] = logits_arr[j]
                         loss_in_arr[A] = Scalar[dtype](Float64(action))
@@ -1006,9 +1014,9 @@ struct GenericOnPolicyAgent[
                         ](loss_in_arr.unsafe_ptr())
 
                         # Forward
-                        var loss_out_arr = InlineArray[
-                            Scalar[dtype], LOSS_OUT
-                        ](uninitialized=True)
+                        var loss_out_arr = InlineArray[Scalar[dtype], LOSS_OUT](
+                            uninitialized=True
+                        )
                         var loss_out_t = LayoutTensor[
                             dtype,
                             Layout.row_major(1, LOSS_OUT),
@@ -1039,18 +1047,18 @@ struct GenericOnPolicyAgent[
                         )
 
                         # Backward
-                        var loss_go_arr = InlineArray[
-                            Scalar[dtype], LOSS_OUT
-                        ](uninitialized=True)
+                        var loss_go_arr = InlineArray[Scalar[dtype], LOSS_OUT](
+                            uninitialized=True
+                        )
                         loss_go_arr[0] = Scalar[dtype](1.0)
                         var loss_go_t = LayoutTensor[
                             dtype,
                             Layout.row_major(1, LOSS_OUT),
                             MutAnyOrigin,
                         ](loss_go_arr.unsafe_ptr())
-                        var loss_gi_arr = InlineArray[
-                            Scalar[dtype], LOSS_IN
-                        ](uninitialized=True)
+                        var loss_gi_arr = InlineArray[Scalar[dtype], LOSS_IN](
+                            uninitialized=True
+                        )
                         var loss_gi_t = LayoutTensor[
                             dtype,
                             Layout.row_major(1, LOSS_IN),
@@ -1079,9 +1087,12 @@ struct GenericOnPolicyAgent[
                             var d_lp = loss_gi_arr[j]
                             # Entropy gradient: d(-sum(p*log(p)))/d(logit[j]) = -p[j]*(1+log(p[j]))
                             var d_ent = -probs[j] * (
-                                Scalar[dtype](1.0) + log(probs[j] + Scalar[dtype](1e-8))
+                                Scalar[dtype](1.0)
+                                + log(probs[j] + Scalar[dtype](1e-8))
                             )
-                            d_logits[j] = d_lp - Scalar[dtype](self.entropy_coef) * d_ent
+                            d_logits[j] = (
+                                d_lp - Scalar[dtype](self.entropy_coef) * d_ent
+                            )
 
                     else:
                         Self.Config.PolicyGrad.compute_d_logits[Self.ACTIONS](
@@ -1175,12 +1186,10 @@ struct GenericOnPolicyAgent[
             return total_loss / Float64(sample_count)
         return 0.0
 
-    fn select_greedy_action(
+    def select_greedy_action(
         self, cpu_state: Self.CPUStateType, obs: List[Float64]
     ) -> List[Float64]:
-        var obs_arr = InlineArray[Scalar[dtype], Self.OBS](
-            uninitialized=True
-        )
+        var obs_arr = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
         for i in range(Self.OBS):
             obs_arr[i] = Scalar[dtype](obs[i])
         var obs_t = LayoutTensor[
@@ -1202,11 +1211,11 @@ struct GenericOnPolicyAgent[
         result.append(Float64(action))
         return result^
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         return self.entropy_coef
 
     # Checkpointable
-    fn save_checkpoint(self, path: String) raises -> None:
+    def save_checkpoint(self, path: String) raises -> None:
         """Save agent state to a checkpoint file.
 
         Saves actor and critic network params + optimizer states,
@@ -1237,7 +1246,7 @@ struct GenericOnPolicyAgent[
 
         save_checkpoint_file(path, content)
 
-    fn load_checkpoint(mut self, path: String) raises -> None:
+    def load_checkpoint(mut self, path: String) raises -> None:
         """Load agent state from a checkpoint file."""
         from mojo_rl.nn.checkpoint import (
             read_checkpoint_file,
@@ -1278,7 +1287,7 @@ struct GenericOnPolicyAgent[
     # CPU Convenience training
     # =========================================================================
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -1326,7 +1335,7 @@ struct GenericOnPolicyAgent[
     # Evaluation
     # =========================================================================
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         mut self,
@@ -1423,11 +1432,11 @@ struct GenericOnPolicyAgent[
     # GPUOnPolicyDiscreteAgent trait conformance
     # =========================================================================
 
-    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+    def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         """Allocate all GPU buffers for this agent."""
         return Self.GPUStateType(ctx)
 
-    fn upload_to_gpu(
+    def upload_to_gpu(
         self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1436,7 +1445,7 @@ struct GenericOnPolicyAgent[
         gpu_state.gpu_actor.upload_from(self.cpu_state.actor, ctx)
         gpu_state.gpu_critic.upload_from(self.cpu_state.critic, ctx)
 
-    fn download_from_gpu(
+    def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1446,7 +1455,7 @@ struct GenericOnPolicyAgent[
         gpu_state.gpu_critic.download_to(self.cpu_state.critic, ctx)
         ctx.synchronize()
 
-    fn select_actions_with_meta_gpu[
+    def select_actions_with_meta_gpu[
         N_ENVS: Int
     ](
         mut self,
@@ -1516,7 +1525,7 @@ struct GenericOnPolicyAgent[
             block_dim=(TPB,),
         )
 
-    fn compute_advantages_gpu(
+    def compute_advantages_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -1552,12 +1561,8 @@ struct GenericOnPolicyAgent[
         ctx.enqueue_copy(
             gpu_state.rollout_rewards_host, rws.rewards_subbuf(ctx)
         )
-        ctx.enqueue_copy(
-            gpu_state.rollout_values_host, rws.values_subbuf(ctx)
-        )
-        ctx.enqueue_copy(
-            gpu_state.rollout_dones_host, rws.dones_subbuf(ctx)
-        )
+        ctx.enqueue_copy(gpu_state.rollout_values_host, rws.values_subbuf(ctx))
+        ctx.enqueue_copy(gpu_state.rollout_dones_host, rws.dones_subbuf(ctx))
         ctx.synchronize()
 
         # GAE computation per environment
@@ -1615,13 +1620,14 @@ struct GenericOnPolicyAgent[
         ctx.enqueue_copy(rws.returns_subbuf(ctx), gpu_state.returns_host)
         ctx.synchronize()
 
-    fn update_epochs_gpu(
+    def update_epochs_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
         update_idx: Int,
     ) raises -> None:
-        """Run on-policy update epochs on GPU (PPO or A2C via strategy dispatch)."""
+        """Run on-policy update epochs on GPU (PPO or A2C via strategy dispatch).
+        """
         comptime ROLLOUT_TOTAL = Self.TOTAL_ROLLOUT_SIZE
         comptime MINIBATCH = Self.GPU_MINIBATCH
         comptime MINIBATCH_BLOCKS = (MINIBATCH + TPB - 1) // TPB
@@ -1678,13 +1684,17 @@ struct GenericOnPolicyAgent[
             dtype, Layout.row_major(MINIBATCH, C_OUT), MutAnyOrigin
         ](cws.ptr)
         var critic_cache_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH, C_CS), MutAnyOrigin,
+            dtype,
+            Layout.row_major(MINIBATCH, C_CS),
+            MutAnyOrigin,
         ](cws.ptr + _C_O_CACHE)
         var critic_grad_output_t = LayoutTensor[
             dtype, Layout.row_major(MINIBATCH, C_OUT), MutAnyOrigin
         ](cws.ptr + _C_O_GO)
         var critic_grad_input_t = LayoutTensor[
-            dtype, Layout.row_major(MINIBATCH, C_IN), MutAnyOrigin,
+            dtype,
+            Layout.row_major(MINIBATCH, C_IN),
+            MutAnyOrigin,
         ](cws.ptr + _C_O_GI)
 
         var kl_divergences_t = LayoutTensor[
@@ -1776,9 +1786,7 @@ struct GenericOnPolicyAgent[
                     dtype, MINIBATCH, Self.OBS, ROLLOUT_TOTAL
                 ]
                 comptime GATHER_OBS_BLOCKS = (Self.OBS + TPB - 1) // TPB
-                ctx.enqueue_function[
-                    gather_obs_wrapper, gather_obs_wrapper
-                ](
+                ctx.enqueue_function[gather_obs_wrapper, gather_obs_wrapper](
                     mb_obs_t,
                     rollout_obs_t,
                     mb_indices_t,
@@ -1789,7 +1797,7 @@ struct GenericOnPolicyAgent[
 
                 # Scalar gather: actions, advantages, returns, log_probs, values
                 @always_inline
-                fn gather_scalars_mb_wrapper(
+                def gather_scalars_mb_wrapper(
                     mb_a: LayoutTensor[
                         dtype, Layout.row_major(MINIBATCH), MutAnyOrigin
                     ],
@@ -1872,10 +1880,13 @@ struct GenericOnPolicyAgent[
                         adv_mean /= Scalar[dtype](MINIBATCH)
                         var adv_var = Scalar[dtype](0.0)
                         for i in range(MINIBATCH):
-                            var diff = gpu_state.mb_advantages_host[i] - adv_mean
+                            var diff = (
+                                gpu_state.mb_advantages_host[i] - adv_mean
+                            )
                             adv_var += diff * diff
                         var adv_std = sqrt(
-                            adv_var / Scalar[dtype](MINIBATCH) + Scalar[dtype](1e-8)
+                            adv_var / Scalar[dtype](MINIBATCH)
+                            + Scalar[dtype](1e-8)
                         )
                         ctx.enqueue_function[
                             normalize_advantages_wrapper,
@@ -1961,7 +1972,7 @@ struct GenericOnPolicyAgent[
                     ](loss_input_ptr)
 
                     @always_inline
-                    fn pack_discrete_loss_input_k(
+                    def pack_discrete_loss_input_k(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(MINIBATCH, LOSS_IN),
@@ -1988,9 +1999,7 @@ struct GenericOnPolicyAgent[
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= MINIBATCH:
                             return
                         # Copy logits
@@ -2073,16 +2082,14 @@ struct GenericOnPolicyAgent[
                     ](loss_grad_output_ptr)
 
                     @always_inline
-                    fn seed_discrete_grad_k(
+                    def seed_discrete_grad_k(
                         go: LayoutTensor[
                             dtype,
                             Layout.row_major(MINIBATCH, LOSS_OUT),
                             MutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= MINIBATCH:
                             return
                         go[idx, 0] = Scalar[dtype](1.0) / Scalar[dtype](
@@ -2128,7 +2135,7 @@ struct GenericOnPolicyAgent[
                     ](loss_grad_input_ptr)
 
                     @always_inline
-                    fn extract_entropy_diag_k(
+                    def extract_entropy_diag_k(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(MINIBATCH, A),
@@ -2172,9 +2179,7 @@ struct GenericOnPolicyAgent[
                         ent_coef: Scalar[dtype],
                         clip_eps: Scalar[dtype],
                     ):
-                        var b = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var b = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if b >= MINIBATCH:
                             return
 
@@ -2193,31 +2198,46 @@ struct GenericOnPolicyAgent[
                             fill=Scalar[dtype](0.0)
                         )
                         for j in range(A):
-                            probs_local[j] = exp(
-                                logits_in.ptr[b * A + j] - max_logit
-                            ) / sum_exp
+                            probs_local[j] = (
+                                exp(logits_in.ptr[b * A + j] - max_logit)
+                                / sum_exp
+                            )
 
                         # Extract graph grad + entropy bonus
                         for j in range(A):
                             var d_lp = src.ptr[b * LOSS_IN + j]
-                            var prob_for_log = Float32(probs_local[j]) + Float32(1e-8)
+                            var prob_for_log = Float32(
+                                probs_local[j]
+                            ) + Float32(1e-8)
                             var d_ent = -probs_local[j] * (
-                                Scalar[dtype](1.0) + Scalar[dtype](log(prob_for_log))
+                                Scalar[dtype](1.0)
+                                + Scalar[dtype](log(prob_for_log))
                             )
-                            dst.ptr[b * A + j] = d_lp - ent_coef / Scalar[dtype](MINIBATCH) * d_ent
+                            dst.ptr[b * A + j] = (
+                                d_lp
+                                - ent_coef / Scalar[dtype](MINIBATCH) * d_ent
+                            )
 
                         # Compute entropy
                         var ent = Scalar[dtype](0.0)
                         for j in range(A):
                             if probs_local[j] > Scalar[dtype](1e-10):
-                                var p_log = Float32(probs_local[j]) + Float32(1e-8)
-                                ent -= probs_local[j] * Scalar[dtype](log(p_log))
+                                var p_log = Float32(probs_local[j]) + Float32(
+                                    1e-8
+                                )
+                                ent -= probs_local[j] * Scalar[dtype](
+                                    log(p_log)
+                                )
                         ent_out[b] = ent
 
                         # Compute KL divergence and clip flags
-                        var action_idx = Int(rebind[Scalar[dtype]](actions_in.ptr[b]))
+                        var action_idx = Int(
+                            rebind[Scalar[dtype]](actions_in.ptr[b])
+                        )
                         var new_log_prob = Scalar[dtype](
-                            log(Float32(probs_local[action_idx]) + Float32(1e-8))
+                            log(
+                                Float32(probs_local[action_idx]) + Float32(1e-8)
+                            )
                         )
                         var old_lp_val = old_lp.ptr[b]
                         var ratio = exp(new_log_prob - old_lp_val)
@@ -2282,7 +2302,10 @@ struct GenericOnPolicyAgent[
                         var kl_sum = Scalar[dtype](0.0)
                         for i in range(MINIBATCH):
                             kl_sum += gpu_state.kl_divergences_host[i]
-                        if Float64(kl_sum) / Float64(MINIBATCH) > self.target_kl:
+                        if (
+                            Float64(kl_sum) / Float64(MINIBATCH)
+                            > self.target_kl
+                        ):
                             kl_early_stop = True
                             break
 
@@ -2329,7 +2352,9 @@ struct GenericOnPolicyAgent[
 
                 # ---- Train critic ---- (rebind obs for CRITIC_IN)
                 var mb_c_obs_t = LayoutTensor[
-                    dtype, Layout.row_major(MINIBATCH, Self.CRITIC_IN), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(MINIBATCH, Self.CRITIC_IN),
+                    MutAnyOrigin,
                 ](mws.obs().ptr)
                 gpu_state.gpu_critic.zero_grads(ctx)
                 Self.CriticModel.forward_gpu[MINIBATCH](
@@ -2421,7 +2446,7 @@ struct GenericOnPolicyAgent[
     # GPU Training convenience method
     # =========================================================================
 
-    fn train_gpu[
+    def train_gpu[
         EnvType: GPUDiscreteEnv,
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](

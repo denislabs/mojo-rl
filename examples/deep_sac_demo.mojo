@@ -12,7 +12,7 @@ from mojo_rl.deep_agents.core.agents import DeepSACAgent
 from mojo_rl.envs import PendulumEnv
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Deep SAC Demo on Pendulum")
     print("=" * 60)

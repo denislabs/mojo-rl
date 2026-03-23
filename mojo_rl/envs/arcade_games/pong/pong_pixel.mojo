@@ -85,7 +85,7 @@ from .pong import (
 
 
 @always_inline
-fn _render_pong_frame(
+def _render_pong_frame(
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     bx: Int,
     by: Int,
@@ -136,7 +136,7 @@ fn _render_pong_frame(
 
 
 @always_inline
-fn _resize_and_push[
+def _resize_and_push[
     WS_FRAME_STACK: Int,
     WS_FRAME_IDX: Int,
 ](
@@ -227,7 +227,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
     var _frame_stack: UnsafePointer[Scalar[Self.DTYPE], MutAnyOrigin]  # 4×84×84
     var _frame_idx: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.inner = PongEnv[Self.DTYPE]()
         self._frame_buf = alloc[UInt8](SCREEN_W * SCREEN_H)
         self._frame_stack = alloc[Scalar[Self.DTYPE]](PIXEL_OBS_DIM)
@@ -236,7 +236,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         for i in range(PIXEL_OBS_DIM):
             self._frame_stack[i] = 0
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         if self._frame_buf:
             self._frame_buf.free()
         if self._frame_stack:
@@ -246,7 +246,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # CPU: render game to pixel obs
     # ========================================================================
 
-    fn _render_to_buf(self):
+    def _render_to_buf(self):
         """Render current Pong state to internal grayscale buffer."""
         _render_pong_frame(
             self._frame_buf,
@@ -258,7 +258,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
             Int(self.inner.state[S_CPU_SCORE]),
         )
 
-    fn _push_frame(mut self):
+    def _push_frame(mut self):
         """Resize framebuffer to 84×84 and push to frame stack."""
         comptime FRAME_SIZE = OBS_W * OBS_H  # 7056
         var slot_offset = self._frame_idx * FRAME_SIZE
@@ -292,7 +292,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Env trait — delegate to inner PongEnv
     # ========================================================================
 
-    fn reset(mut self) -> ArcadeGameState:
+    def reset(mut self) -> ArcadeGameState:
         var state = self.inner.reset()
         # Render initial frame and fill all 4 slots
         self._render_to_buf()
@@ -301,7 +301,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
             self._push_frame()
         return state
 
-    fn step(
+    def step(
         mut self, action: ArcadeGameAction, verbose: Bool = False
     ) -> Tuple[ArcadeGameState, Scalar[Self.DTYPE], Bool]:
         var result = self.inner.step(action, verbose)
@@ -309,32 +309,32 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._push_frame()
         return result
 
-    fn get_state(self) -> ArcadeGameState:
+    def get_state(self) -> ArcadeGameState:
         return self.inner.get_state()
 
-    fn close(mut self):
+    def close(mut self):
         self.inner.close()
 
-    fn action_from_index(self, action_idx: Int) -> ArcadeGameAction:
+    def action_from_index(self, action_idx: Int) -> ArcadeGameAction:
         return self.inner.action_from_index(action_idx)
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         return 3
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         return PIXEL_OBS_DIM
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         return 1
 
-    fn state_to_index(self, state: ArcadeGameState) -> Int:
+    def state_to_index(self, state: ArcadeGameState) -> Int:
         return state.index
 
     # ========================================================================
     # BoxDiscreteActionEnv — pixel observations
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.DTYPE]]:
+    def get_obs_list(self) -> List[Scalar[Self.DTYPE]]:
         """Return 4×84×84 pixel observations as chronological frame stack."""
         comptime FRAME_SIZE = OBS_W * OBS_H
         var obs = List[Scalar[Self.DTYPE]](capacity=PIXEL_OBS_DIM)
@@ -345,11 +345,11 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 obs.append(self._frame_stack[read_base + i])
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.DTYPE]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.DTYPE]]:
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
         var result = self.inner._step_impl(action)
@@ -361,28 +361,28 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # RenderableEnv — delegate to inner PongEnv
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         return self.inner.init_renderer()
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         self.inner.render_frame()
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         self.inner.close_renderer()
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         return self.inner.is_renderer_open()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         return self.inner.check_renderer_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         self.inner.renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
@@ -392,7 +392,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
     comptime TPB = 64  # Fewer threads per block — pixel rendering is heavy
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -430,7 +430,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         # ── Kernel 1: Physics + Render (1 thread per env) ──
         @always_inline
-        fn physics_render_wrapper(
+        def physics_render_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -495,7 +495,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var obs_ptr = obs_buf.unsafe_ptr()
 
         @always_inline
-        fn resize_stack_wrapper(
+        def resize_stack_wrapper(
             ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
             obs_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
         ):
@@ -557,7 +557,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         comptime WS_FRAME_IDX_OFF = FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE
 
         @always_inline
-        fn advance_frame_idx_wrapper(
+        def advance_frame_idx_wrapper(
             ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
         ):
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -578,7 +578,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -595,7 +595,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -611,7 +611,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -635,7 +635,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var seed = Scalar[DType.uint64](rng_seed)
 
         @always_inline
-        fn selective_reset_wrapper(
+        def selective_reset_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -676,7 +676,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype]) raises:
         """Initialize workspace: zero frame stacks and frame indices."""
@@ -686,7 +686,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var ws_ptr = workspace_buf.unsafe_ptr()
 
         @always_inline
-        fn init_ws_wrapper(
+        def init_ws_wrapper(
             ws: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -701,7 +701,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[gpu_dtype],
         curriculum_values: List[Scalar[gpu_dtype]],

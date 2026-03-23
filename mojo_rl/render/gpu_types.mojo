@@ -33,7 +33,7 @@ struct GPUVertex(TrivialRegisterPassable):
     var u: Float32
     var v: Float32
 
-    fn __init__(
+    def __init__(
         out self,
         px: Float32,
         py: Float32,
@@ -86,7 +86,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
     var light3_color: InlineArray[Float32, 4]
     var ground_params: InlineArray[Float32, 4]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.view_proj = InlineArray[Float32, 16](fill=Float32(0))
         self.camera_pos = InlineArray[Float32, 4](fill=Float32(0))
         self.light0_dir = InlineArray[Float32, 4](fill=Float32(0))
@@ -99,7 +99,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.light3_color = InlineArray[Float32, 4](fill=Float32(0))
         self.ground_params = InlineArray[Float32, 4](fill=Float32(0))
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.view_proj = copy.view_proj.copy()
         self.camera_pos = copy.camera_pos.copy()
         self.light0_dir = copy.light0_dir.copy()
@@ -112,7 +112,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.light3_color = copy.light3_color.copy()
         self.ground_params = copy.ground_params.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.view_proj = take.view_proj^
         self.camera_pos = take.camera_pos^
         self.light0_dir = take.light0_dir^
@@ -139,7 +139,7 @@ struct ObjectUniforms(ImplicitlyCopyable, Movable):
     var color: InlineArray[Float32, 4]
     var material: InlineArray[Float32, 4]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.model = InlineArray[Float32, 16](fill=Float32(0))
         self.color = InlineArray[Float32, 4](fill=Float32(0))
         self.material = InlineArray[Float32, 4](fill=Float32(0))
@@ -147,12 +147,12 @@ struct ObjectUniforms(ImplicitlyCopyable, Movable):
         self.material[0] = 0.5
         self.material[1] = 0.5
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.model = copy.model.copy()
         self.color = copy.color.copy()
         self.material = copy.material.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.model = take.model^
         self.color = take.color^
         self.material = take.material^
@@ -169,7 +169,7 @@ struct SkyboxUniforms(ImplicitlyCopyable, Movable):
     var top_color: InlineArray[Float32, 4]
     var bottom_color: InlineArray[Float32, 4]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.top_color = InlineArray[Float32, 4](fill=Float32(0))
         self.bottom_color = InlineArray[Float32, 4](fill=Float32(0))
         # Default: white top, dark blue bottom
@@ -182,11 +182,11 @@ struct SkyboxUniforms(ImplicitlyCopyable, Movable):
         self.bottom_color[2] = 0.5
         self.bottom_color[3] = 1.0
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.top_color = copy.top_color.copy()
         self.bottom_color = copy.bottom_color.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.top_color = take.top_color^
         self.bottom_color = take.bottom_color^
 
@@ -202,15 +202,15 @@ struct LineUniforms(ImplicitlyCopyable, Movable):
     var view_proj: InlineArray[Float32, 16]
     var color: InlineArray[Float32, 4]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.view_proj = InlineArray[Float32, 16](fill=Float32(0))
         self.color = InlineArray[Float32, 4](fill=Float32(0))
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.view_proj = copy.view_proj.copy()
         self.color = copy.color.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.view_proj = take.view_proj^
         self.color = take.color^
 
@@ -226,18 +226,18 @@ struct ShadowUniforms(ImplicitlyCopyable, Movable):
     var light_view_proj: InlineArray[Float32, 16]
     var params: InlineArray[Float32, 4]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.light_view_proj = InlineArray[Float32, 16](fill=Float32(0))
         self.params = InlineArray[Float32, 4](fill=Float32(0))
         # Defaults: intensity=0.5, bias=0.005
         self.params[0] = 0.5
         self.params[1] = 0.005
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.light_view_proj = copy.light_view_proj.copy()
         self.params = copy.params.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.light_view_proj = take.light_view_proj^
         self.params = take.params^
 
@@ -251,18 +251,18 @@ struct MeshData(Movable):
     var vertices: List[GPUVertex]
     var indices: List[UInt16]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.vertices = List[GPUVertex]()
         self.indices = List[UInt16]()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.vertices = take.vertices^
         self.indices = take.indices^
 
-    fn vertex_byte_size(self) -> Int:
+    def vertex_byte_size(self) -> Int:
         return len(self.vertices) * 32  # sizeof(GPUVertex)
 
-    fn index_byte_size(self) -> Int:
+    def index_byte_size(self) -> Int:
         return len(self.indices) * 2  # sizeof(UInt16)
 
 
@@ -274,13 +274,13 @@ struct MeshHandle(Copyable, Movable):
     var num_indices: UInt32
     var num_vertices: UInt32
 
-    fn __init__(out self):
+    def __init__(out self):
         self.vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
         self.index_buffer = Ptr[GPUBuffer, MutAnyOrigin]()
         self.num_indices = 0
         self.num_vertices = 0
 
-    fn __init__(
+    def __init__(
         out self,
         vertex_buffer: Ptr[GPUBuffer, MutAnyOrigin],
         index_buffer: Ptr[GPUBuffer, MutAnyOrigin],
@@ -292,13 +292,13 @@ struct MeshHandle(Copyable, Movable):
         self.num_indices = num_indices
         self.num_vertices = num_vertices
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.vertex_buffer = copy.vertex_buffer
         self.index_buffer = copy.index_buffer
         self.num_indices = copy.num_indices
         self.num_vertices = copy.num_vertices
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.vertex_buffer = take.vertex_buffer
         self.index_buffer = take.index_buffer
         self.num_indices = take.num_indices
@@ -312,7 +312,7 @@ struct CapsuleCacheEntry(Copyable, Movable):
     var half_height: Float32
     var mesh: MeshHandle
 
-    fn __init__(
+    def __init__(
         out self,
         radius: Float32,
         half_height: Float32,
@@ -327,7 +327,7 @@ struct CapsuleCacheEntry(Copyable, Movable):
             mesh.num_vertices,
         )
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.radius = copy.radius
         self.half_height = copy.half_height
         self.mesh = MeshHandle(
@@ -337,12 +337,12 @@ struct CapsuleCacheEntry(Copyable, Movable):
             copy.mesh.num_vertices,
         )
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.radius = take.radius
         self.half_height = take.half_height
         self.mesh = take.mesh^
 
-    fn matches(self, radius: Float32, half_height: Float32) -> Bool:
+    def matches(self, radius: Float32, half_height: Float32) -> Bool:
         """Check if this entry matches the given dimensions (within tolerance).
         """
         var eps = Float32(0.001)
@@ -360,7 +360,7 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
     var is_capsule: Bool
     var capsule_cache_idx: Int
 
-    fn __init__(
+    def __init__(
         out self,
         mesh_idx: Int,
         uniforms: ObjectUniforms,
@@ -372,13 +372,13 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         self.is_capsule = is_capsule
         self.capsule_cache_idx = capsule_cache_idx
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.mesh_idx = copy.mesh_idx
         self.uniforms = copy.uniforms
         self.is_capsule = copy.is_capsule
         self.capsule_cache_idx = copy.capsule_cache_idx
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.mesh_idx = take.mesh_idx
         self.uniforms = take.uniforms
         self.is_capsule = take.is_capsule
@@ -388,7 +388,7 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
 # --- Helper functions ---
 
 
-fn mat4_to_gpu_f32(m: Mat4) -> InlineArray[Float32, 16]:
+def mat4_to_gpu_f32(m: Mat4) -> InlineArray[Float32, 16]:
     """Convert row-major Mat4[float64] to column-major Float32 array for GPU.
 
     Mat4 is row-major, but Metal/GLSL expect column-major. We transpose during
@@ -425,7 +425,7 @@ fn mat4_to_gpu_f32(m: Mat4) -> InlineArray[Float32, 16]:
     return out^
 
 
-fn perspective_metal(
+def perspective_metal(
     fov_y: Float64, aspect: Float64, near: Float64, far: Float64
 ) -> Mat4:
     """Metal-compatible perspective projection with Z in [0, 1].
@@ -469,7 +469,7 @@ fn perspective_metal(
     return m
 
 
-fn color_to_vec4(color: Color) -> InlineArray[Float32, 4]:
+def color_to_vec4(color: Color) -> InlineArray[Float32, 4]:
     """Convert Color to normalized Float32 RGBA.
 
     Args:
@@ -486,7 +486,7 @@ fn color_to_vec4(color: Color) -> InlineArray[Float32, 4]:
     return out^
 
 
-fn color_to_vec4(r: UInt8, g: UInt8, b: UInt8) -> InlineArray[Float32, 4]:
+def color_to_vec4(r: UInt8, g: UInt8, b: UInt8) -> InlineArray[Float32, 4]:
     """Convert UInt8 RGB to normalized Float32 RGBA.
 
     Args:
@@ -505,7 +505,7 @@ fn color_to_vec4(r: UInt8, g: UInt8, b: UInt8) -> InlineArray[Float32, 4]:
     return out^
 
 
-fn make_identity_f32() -> InlineArray[Float32, 16]:
+def make_identity_f32() -> InlineArray[Float32, 16]:
     """Create a Float32 identity matrix in column-major order."""
     var out = InlineArray[Float32, 16](fill=Float32(0))
     out[0] = 1.0
@@ -515,7 +515,7 @@ fn make_identity_f32() -> InlineArray[Float32, 16]:
     return out^
 
 
-fn ortho_metal(
+def ortho_metal(
     left: Float64,
     right: Float64,
     bottom: Float64,
@@ -576,7 +576,7 @@ struct TextVertex(TrivialRegisterPassable):
     var cb: Float32  # color blue
     var ca: Float32  # color alpha
 
-    fn __init__(
+    def __init__(
         out self,
         px: Float32,
         py: Float32,
@@ -603,11 +603,11 @@ struct TextUniforms(ImplicitlyCopyable, Movable):
 
     var ortho_proj: InlineArray[Float32, 16]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.ortho_proj = make_identity_f32()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.ortho_proj = copy.ortho_proj.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.ortho_proj = take.ortho_proj^

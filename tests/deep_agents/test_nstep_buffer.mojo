@@ -4,7 +4,7 @@ from mojo_rl.deep_agents.core.replay import NStepBuffer, NStepTransition
 from mojo_rl.nn.constants import dtype
 
 
-fn test_3step_basic() raises:
+def test_3step_basic() raises:
     """Test 3-step return: R_3 = r0 + γ*r1 + γ²*r2."""
     print("Test 3-step basic...")
     var buf = NStepBuffer[3, 2](gamma=0.99)
@@ -42,9 +42,11 @@ fn test_3step_basic() raises:
         return
 
     # Check: R_3 = 1.0 + 0.99*2.0 + 0.99²*3.0
-    var expected = Scalar[dtype](1.0) + Scalar[dtype](0.99) * Scalar[dtype](
-        2.0
-    ) + Scalar[dtype](0.99 * 0.99) * Scalar[dtype](3.0)
+    var expected = (
+        Scalar[dtype](1.0)
+        + Scalar[dtype](0.99) * Scalar[dtype](2.0)
+        + Scalar[dtype](0.99 * 0.99) * Scalar[dtype](3.0)
+    )
     var diff = r2.reward - expected
     if diff < 0:
         diff = -diff
@@ -71,7 +73,7 @@ fn test_3step_basic() raises:
         print("  FAIL: return mismatch")
 
 
-fn test_episode_boundary() raises:
+def test_episode_boundary() raises:
     """Test partial flush on done before N steps."""
     print("Test episode boundary flush...")
     var buf = NStepBuffer[3, 1](gamma=0.99)
@@ -89,9 +91,7 @@ fn test_episode_boundary() raises:
         return
 
     # R_2 = 1.0 + 0.99*2.0 = 2.98
-    var expected = Scalar[dtype](1.0) + Scalar[dtype](0.99) * Scalar[dtype](
-        2.0
-    )
+    var expected = Scalar[dtype](1.0) + Scalar[dtype](0.99) * Scalar[dtype](2.0)
     var diff = r.reward - expected
     if diff < 0:
         diff = -diff
@@ -113,7 +113,7 @@ fn test_episode_boundary() raises:
         print("  FAIL: return mismatch")
 
 
-fn test_overlapping_transitions() raises:
+def test_overlapping_transitions() raises:
     """Test that transitions overlap: step 0-2, then 1-3, etc."""
     print("Test overlapping transitions...")
     var buf = NStepBuffer[3, 1](gamma=1.0)  # gamma=1 for easy verification
@@ -124,9 +124,7 @@ fn test_overlapping_transitions() raises:
     # Steps 0,1,2 → emit R = r0 + r1 + r2 = 1+2+3 = 6
     _ = buf.add(obs, Scalar[dtype](0), Scalar[dtype](1.0), nobs, False)
     _ = buf.add(obs, Scalar[dtype](0), Scalar[dtype](2.0), nobs, False)
-    var r1 = buf.add(
-        obs, Scalar[dtype](0), Scalar[dtype](3.0), nobs, False
-    )
+    var r1 = buf.add(obs, Scalar[dtype](0), Scalar[dtype](3.0), nobs, False)
 
     if not r1.valid or Float64(r1.reward) != 6.0:
         print("  FAIL: first emission should be R=6, got", r1.reward)
@@ -134,9 +132,7 @@ fn test_overlapping_transitions() raises:
     print("  First: R =", r1.reward, "(expected 6)")
 
     # Step 3 → emit R = r1 + r2 + r3 = 2+3+4 = 9 (shifted)
-    var r2 = buf.add(
-        obs, Scalar[dtype](0), Scalar[dtype](4.0), nobs, False
-    )
+    var r2 = buf.add(obs, Scalar[dtype](0), Scalar[dtype](4.0), nobs, False)
 
     if not r2.valid or Float64(r2.reward) != 9.0:
         print("  FAIL: second emission should be R=9, got", r2.reward)
@@ -146,7 +142,7 @@ fn test_overlapping_transitions() raises:
     print("  PASS")
 
 
-fn main() raises:
+def main() raises:
     print("=== NStepBuffer CPU Tests ===")
     test_3step_basic()
     test_episode_boundary()

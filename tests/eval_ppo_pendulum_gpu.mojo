@@ -48,7 +48,7 @@ comptime MAX_STEPS_PER_EPISODE = 200
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Pendulum GPU Evaluation")

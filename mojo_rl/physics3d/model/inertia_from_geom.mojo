@@ -66,7 +66,7 @@ comptime MJ_DEFAULT_DENSITY: Float64 = 1000.0
 # =============================================================================
 
 
-fn geom_volume[
+def geom_volume[
     DTYPE: DType
 ](
     geom_type: Int,
@@ -101,7 +101,7 @@ fn geom_volume[
         return Scalar[DTYPE](0.0)
 
 
-fn geom_effective_mass[
+def geom_effective_mass[
     DTYPE: DType
 ](
     geom_type: Int,
@@ -130,7 +130,7 @@ fn geom_effective_mass[
 # =============================================================================
 
 
-fn geom_inertia[
+def geom_inertia[
     DTYPE: DType
 ](
     geom_type: Int,
@@ -218,7 +218,7 @@ fn geom_inertia[
 # =============================================================================
 
 
-fn quat_to_mat[
+def quat_to_mat[
     DTYPE: DType
 ](
     qx: Scalar[DTYPE],
@@ -260,7 +260,7 @@ fn quat_to_mat[
 # =============================================================================
 
 
-fn globalinertia[
+def globalinertia[
     DTYPE: DType
 ](
     local_ixx: Scalar[DTYPE],
@@ -316,7 +316,7 @@ fn globalinertia[
 # =============================================================================
 
 
-fn offcenter[
+def offcenter[
     DTYPE: DType
 ](
     mass: Scalar[DTYPE],
@@ -343,7 +343,7 @@ fn offcenter[
 # =============================================================================
 
 
-fn mat3_to_quat[
+def mat3_to_quat[
     DTYPE: DType
 ](
     mat: InlineArray[Scalar[DTYPE], 9],
@@ -402,7 +402,7 @@ fn mat3_to_quat[
     return (qx, qy, qz, qw)
 
 
-fn eig3_symmetric[
+def eig3_symmetric[
     DTYPE: DType
 ](
     mut full_inertia: InlineArray[Scalar[DTYPE], 6],
@@ -573,7 +573,7 @@ fn eig3_symmetric[
 # =============================================================================
 
 
-fn compute_inertia_from_geoms[
+def compute_inertia_from_geoms[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -809,7 +809,7 @@ fn compute_inertia_from_geoms[
             model.body_iquat[body_id * 4 + 3] = eig[6]
 
 
-fn compute_inertia_from_geoms_buffer[
+def compute_inertia_from_geoms_buffer[
     DTYPE: DType,
     NBODY: Int,
     NJOINT: Int,

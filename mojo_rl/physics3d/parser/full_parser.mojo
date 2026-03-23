@@ -83,7 +83,7 @@ from mojo_rl.physics3d.joint_types import (
 # =============================================================================
 
 
-fn _min_valid(a: Int, b: Int) -> Int:
+def _min_valid(a: Int, b: Int) -> Int:
     """Return the smaller of a and b, treating -1 as +infinity."""
     if a == -1:
         return b
@@ -99,7 +99,7 @@ fn _min_valid(a: Int, b: Int) -> Int:
 # =============================================================================
 
 
-fn _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64]:
+def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64]:
     """Extract (gravity_x, gravity_y, gravity_z, timestep) from <option .../>.
 
     Defaults: gravity=(0,0,-9.81), timestep=0.01.
@@ -134,7 +134,7 @@ fn _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64]:
 # =============================================================================
 
 
-fn _parse_defaults(xml: String) -> DefaultsData:
+def _parse_defaults(xml: String) -> DefaultsData:
     """Extract default joint/geom/motor attrs from the <default> section."""
     var d = DefaultsData()
     var defaults_sec = _extract_section(xml, "default")
@@ -279,7 +279,7 @@ fn _parse_defaults(xml: String) -> DefaultsData:
 # =============================================================================
 
 
-fn _geom_type_from_str(s: String) -> Int:
+def _geom_type_from_str(s: String) -> Int:
     """Convert geom type string to integer constant."""
     var t = _trim(s)
     if t == "plane":
@@ -300,7 +300,7 @@ fn _geom_type_from_str(s: String) -> Int:
 # =============================================================================
 
 
-fn _tex_type_from_str(s: String) -> Int:
+def _tex_type_from_str(s: String) -> Int:
     var t = _trim(s)
     if t == "skybox":
         return TEX_SKYBOX
@@ -309,7 +309,7 @@ fn _tex_type_from_str(s: String) -> Int:
     return TEX_2D  # default
 
 
-fn _tex_builtin_from_str(s: String) -> Int:
+def _tex_builtin_from_str(s: String) -> Int:
     var t = _trim(s)
     if t == "gradient":
         return TEX_BUILTIN_GRADIENT
@@ -320,7 +320,7 @@ fn _tex_builtin_from_str(s: String) -> Int:
     return TEX_BUILTIN_NONE
 
 
-fn _tex_mark_from_str(s: String) -> Int:
+def _tex_mark_from_str(s: String) -> Int:
     var t = _trim(s)
     if t == "edge":
         return TEX_MARK_EDGE
@@ -331,7 +331,7 @@ fn _tex_mark_from_str(s: String) -> Int:
     return TEX_MARK_NONE
 
 
-fn _light_mode_from_str(s: String) -> Int:
+def _light_mode_from_str(s: String) -> Int:
     var t = _trim(s)
     if t == "track":
         return LIGHT_MODE_TRACK
@@ -344,7 +344,7 @@ fn _light_mode_from_str(s: String) -> Int:
     return LIGHT_MODE_FIXED
 
 
-fn _cam_mode_from_str(s: String) -> Int:
+def _cam_mode_from_str(s: String) -> Int:
     var t = _trim(s)
     if t == "track":
         return CAM_MODE_TRACK
@@ -357,7 +357,7 @@ fn _cam_mode_from_str(s: String) -> Int:
     return CAM_MODE_FIXED
 
 
-fn _find_texture_index_by_name(asset_sec: String, name: String) -> Int:
+def _find_texture_index_by_name(asset_sec: String, name: String) -> Int:
     """Return 0-based index of <texture name="name"> in asset_sec, or -1."""
     var search = 'name="' + name + '"'
     var scan_pos = 0
@@ -377,7 +377,7 @@ fn _find_texture_index_by_name(asset_sec: String, name: String) -> Int:
     return -1
 
 
-fn _parse_rgb3(s: String) -> Tuple[Float64, Float64, Float64]:
+def _parse_rgb3(s: String) -> Tuple[Float64, Float64, Float64]:
     """Parse "r g b" string into three Float64 values."""
     var parts = List[String]()
     from .xml_parser import _split_spaces
@@ -395,7 +395,7 @@ fn _parse_rgb3(s: String) -> Tuple[Float64, Float64, Float64]:
     return (r, g, b)
 
 
-fn _parse_rgba4(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
+def _parse_rgba4(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     """Parse "r g b a" string into four Float64 values."""
     var parts = List[String]()
     from .xml_parser import _split_spaces
@@ -416,7 +416,7 @@ fn _parse_rgba4(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     return (r, g, b, a)
 
 
-fn _xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
+def _xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     """Convert xyaxes="x1 x2 x3 y1 y2 y3" to quaternion (qx, qy, qz, qw).
 
     The six values define the X and Y axes of the frame in world coordinates.
@@ -494,7 +494,7 @@ fn _xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     return (qx, qy, qz, qw)
 
 
-fn _fill_assets[
+def _fill_assets[
     NBODY: Int,
     NJOINT: Int,
     NQ: Int,
@@ -633,7 +633,7 @@ fn _fill_assets[
 # =============================================================================
 
 
-fn _fill_model[
+def _fill_model[
     NBODY: Int,
     NJOINT: Int,
     NQ: Int,
@@ -1358,7 +1358,7 @@ fn _fill_model[
 # =============================================================================
 
 
-fn _fill_actuators[
+def _fill_actuators[
     NBODY: Int,
     NJOINT: Int,
     NQ: Int,
@@ -1438,7 +1438,7 @@ fn _fill_actuators[
 # =============================================================================
 
 
-fn _find_material_index_by_name(asset_sec: String, name: String) -> Int:
+def _find_material_index_by_name(asset_sec: String, name: String) -> Int:
     """Return 0-based index of <material name="name"> in asset_sec, or -1."""
     var search = 'name="' + name + '"'
     var scan_pos = 0
@@ -1458,7 +1458,7 @@ fn _find_material_index_by_name(asset_sec: String, name: String) -> Int:
     return -1
 
 
-fn _resolve_geom_materials[
+def _resolve_geom_materials[
     NBODY: Int,
     NJOINT: Int,
     NQ: Int,
@@ -1511,7 +1511,7 @@ fn _resolve_geom_materials[
 # =============================================================================
 
 
-fn parse_xml_full[
+def parse_xml_full[
     NBODY: Int,
     NJOINT: Int,
     NQ: Int,

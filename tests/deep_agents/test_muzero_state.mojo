@@ -3,17 +3,40 @@
 from mojo_rl.deep_agents.muzero.state import MuZeroCPUState
 
 
-fn main():
+def main():
     print("=== MuZero State Tests ===")
 
     comptime OBS = 4
     comptime ACT = 2
 
     # Check compile-time dimensions
-    comptime StateType = MuZeroCPUState[OBS, ACT, LATENT_DIM=64, HIDDEN_DIM=64, NUM_BINS=51]
-    print("RepModel: IN=", StateType.RepModel.IN_DIM, "OUT=", StateType.RepModel.OUT_DIM, "PARAMS=", StateType.RepModel.PARAM_SIZE)
-    print("DynModel: IN=", StateType.DynModel.IN_DIM, "OUT=", StateType.DynModel.OUT_DIM, "PARAMS=", StateType.DynModel.PARAM_SIZE)
-    print("PredModel: IN=", StateType.PredModel.IN_DIM, "OUT=", StateType.PredModel.OUT_DIM, "PARAMS=", StateType.PredModel.PARAM_SIZE)
+    comptime StateType = MuZeroCPUState[
+        OBS, ACT, LATENT_DIM=64, HIDDEN_DIM=64, NUM_BINS=51
+    ]
+    print(
+        "RepModel: IN=",
+        StateType.RepModel.IN_DIM,
+        "OUT=",
+        StateType.RepModel.OUT_DIM,
+        "PARAMS=",
+        StateType.RepModel.PARAM_SIZE,
+    )
+    print(
+        "DynModel: IN=",
+        StateType.DynModel.IN_DIM,
+        "OUT=",
+        StateType.DynModel.OUT_DIM,
+        "PARAMS=",
+        StateType.DynModel.PARAM_SIZE,
+    )
+    print(
+        "PredModel: IN=",
+        StateType.PredModel.IN_DIM,
+        "OUT=",
+        StateType.PredModel.OUT_DIM,
+        "PARAMS=",
+        StateType.PredModel.PARAM_SIZE,
+    )
 
     # Verify dimension consistency
     if StateType.RepModel.OUT_DIM == 64:

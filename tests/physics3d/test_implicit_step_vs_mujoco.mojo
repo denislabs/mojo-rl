@@ -57,7 +57,7 @@ comptime QVEL_REL_TOL: Float64 = 1e-4
 # =============================================================================
 
 
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -265,7 +265,7 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_freefall() raises:
+def test_freefall() raises:
     """Free fall from height — no contacts expected."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 1.5  # rootz high enough to avoid ground contact
@@ -274,7 +274,7 @@ fn test_freefall() raises:
     compare_step("Free fall (no contacts)", qpos, qvel, actions)
 
 
-fn test_standing_with_action() raises:
+def test_standing_with_action() raises:
     """Standing with moderate actions."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 1.5  # high enough for no contacts
@@ -289,7 +289,7 @@ fn test_standing_with_action() raises:
     compare_step("Actions (no contacts)", qpos, qvel, actions)
 
 
-fn test_moving_with_action() raises:
+def test_moving_with_action() raises:
     """Moving with velocity + actions, no contacts.
 
     This is the key test for the full implicit integrator — with nonzero
@@ -315,7 +315,7 @@ fn test_moving_with_action() raises:
     compare_step("Moving with actions (no contacts)", qpos, qvel, actions)
 
 
-fn test_fast_spinning() raises:
+def test_fast_spinning() raises:
     """High angular velocities — maximizes Coriolis/gyroscopic effects.
 
     This test has high joint velocities which produce significant RNE
@@ -346,7 +346,7 @@ fn test_fast_spinning() raises:
     compare_step("Fast spinning (high angular vel)", qpos, qvel, actions)
 
 
-fn test_freefall_10_steps() raises:
+def test_freefall_10_steps() raises:
     """Free fall 10 steps — accumulates per-step drift."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 1.5
@@ -355,7 +355,7 @@ fn test_freefall_10_steps() raises:
     compare_step("Free fall (10 steps)", qpos, qvel, actions, num_steps=10)
 
 
-fn test_moving_10_steps() raises:
+def test_moving_10_steps() raises:
     """Moving with velocity 10 steps — Coriolis effects accumulate."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 1.5
@@ -375,5 +375,5 @@ fn test_moving_10_steps() raises:
     )
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -74,13 +74,13 @@ struct PendulumLayout:
 
     @staticmethod
     @always_inline
-    fn physics_offset(field: Int) -> Int:
+    def physics_offset(field: Int) -> Int:
         """Get offset for a physics field."""
         return Self.PHYSICS_OFFSET + field
 
     @staticmethod
     @always_inline
-    fn metadata_offset(field: Int) -> Int:
+    def metadata_offset(field: Int) -> Int:
         """Get offset for a metadata field."""
         return Self.METADATA_OFFSET + field
 

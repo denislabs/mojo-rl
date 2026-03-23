@@ -55,7 +55,7 @@ from .island_detection import detect_islands, IslandData, MAX_ISLANDS
 comptime ISLAND_CONVERGE_EPS: Float64 = 1e-6
 
 
-fn solve_with_islands[
+def solve_with_islands[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

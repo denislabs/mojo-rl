@@ -66,7 +66,7 @@ struct RevoluteJointSolver:
     # =========================================================================
 
     @staticmethod
-    fn solve_velocity[
+    def solve_velocity[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -320,7 +320,7 @@ struct RevoluteJointSolver:
                         )
 
     @staticmethod
-    fn solve_position[
+    def solve_position[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -509,7 +509,7 @@ struct RevoluteJointSolver:
 
     @always_inline
     @staticmethod
-    fn solve_velocity_single_env[
+    def solve_velocity_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -731,7 +731,7 @@ struct RevoluteJointSolver:
 
     @always_inline
     @staticmethod
-    fn _solve_velocity_kernel[
+    def _solve_velocity_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -766,7 +766,7 @@ struct RevoluteJointSolver:
 
     @always_inline
     @staticmethod
-    fn solve_position_single_env[
+    def solve_position_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -924,7 +924,7 @@ struct RevoluteJointSolver:
 
     @always_inline
     @staticmethod
-    fn _solve_position_kernel[
+    def _solve_position_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -959,7 +959,7 @@ struct RevoluteJointSolver:
         ](env, state, n_joints, baumgarte, slop)
 
     @staticmethod
-    fn solve_velocity_gpu[
+    def solve_velocity_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -983,7 +983,7 @@ struct RevoluteJointSolver:
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -1010,7 +1010,7 @@ struct RevoluteJointSolver:
         )
 
     @staticmethod
-    fn solve_position_gpu[
+    def solve_position_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_JOINTS: Int,
@@ -1035,7 +1035,7 @@ struct RevoluteJointSolver:
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],

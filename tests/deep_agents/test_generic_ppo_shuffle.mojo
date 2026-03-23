@@ -6,7 +6,7 @@ from mojo_rl.deep_agents.core.agents import GenericOnPolicyAgent, PPOConfig
 from mojo_rl.envs import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== PPO Multi-Epoch Minibatch Test ===\n")
 
     seed(42)
@@ -27,7 +27,9 @@ fn main() raises:
     # With rollout_len=128 and minibatch_size=32:
     # 4 minibatches per epoch × 4 epochs = 16 minibatch updates per rollout
     # Each sample should be seen exactly 4 times (once per epoch)
-    var expected_mb_per_update = (agent.ROLLOUT // agent.minibatch_size) * agent.num_epochs
+    var expected_mb_per_update = (
+        agent.ROLLOUT // agent.minibatch_size
+    ) * agent.num_epochs
     print("Expected minibatch passes per update:", expected_mb_per_update)
 
     if agent.train_step_count == 10:

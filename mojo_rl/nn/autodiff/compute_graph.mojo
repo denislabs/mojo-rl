@@ -46,7 +46,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 
 # GPU matmul requires 16-byte alignment = 4 float32 elements
 @always_inline
-fn _align4(x: Int) -> Int:
+def _align4(x: Int) -> Int:
     """Round up to next multiple of 4 for GPU alignment."""
     return (x + 3) & ~3
 
@@ -78,7 +78,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
     comptime OP_WORKSPACE_SIZE_PER_SAMPLE: Int
 
     @staticmethod
-    fn initialize_params[
+    def initialize_params[
         INIT: Initializer
     ](
         mut params: LayoutTensor[
@@ -88,7 +88,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn op_forward[
+    def op_forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -107,7 +107,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn op_forward_no_cache[
+    def op_forward_no_cache[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -123,7 +123,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn op_backward[
+    def op_backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -147,7 +147,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
     # --- GPU methods ---
 
     @staticmethod
-    fn op_forward_gpu[
+    def op_forward_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -168,7 +168,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn op_backward_gpu[
+    def op_backward_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -226,7 +226,7 @@ struct GNode[
     )
 
     @staticmethod
-    fn initialize_params[
+    def initialize_params[
         INIT: Initializer
     ](
         mut params: LayoutTensor[
@@ -236,7 +236,7 @@ struct GNode[
         Self.Op.initialize_params[INIT](params)
 
     @staticmethod
-    fn op_forward[
+    def op_forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -255,7 +255,7 @@ struct GNode[
         Self.Op.forward[BATCH](input, output, params, cache)
 
     @staticmethod
-    fn op_forward_no_cache[
+    def op_forward_no_cache[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -271,7 +271,7 @@ struct GNode[
         Self.Op.forward[BATCH](input, output, params)
 
     @staticmethod
-    fn op_backward[
+    def op_backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -293,7 +293,7 @@ struct GNode[
         Self.Op.backward[BATCH](grad_output, grad_input, params, cache, grads)
 
     @staticmethod
-    fn op_forward_gpu[
+    def op_forward_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -314,7 +314,7 @@ struct GNode[
         Self.Op.forward_gpu[BATCH](ctx, output, input, params, cache, workspace)
 
     @staticmethod
-    fn op_backward_gpu[
+    def op_backward_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -375,7 +375,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # =========================================================================
 
     @staticmethod
-    fn _source_dim_by_name[name: String]() -> Int:
+    def _source_dim_by_name[name: String]() -> Int:
         """Get output dimension of named source. 'input' = graph IN_DIM."""
         comptime if name == "input":
             return Self.IN_DIM
@@ -385,7 +385,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return 0
 
     @staticmethod
-    fn _source_act_offset_by_name[name: String]() -> Int:
+    def _source_act_offset_by_name[name: String]() -> Int:
         """Get activation offset for a named source node."""
         comptime for j in range(Self.N):
             comptime if Self.node_types[j].NAME == name:
@@ -397,7 +397,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # =========================================================================
 
     @staticmethod
-    fn _total_act_size() -> Int:
+    def _total_act_size() -> Int:
         """Total activation storage per sample (all node outputs)."""
         var total = 0
         comptime for i in range(Self.N):
@@ -405,7 +405,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return total
 
     @staticmethod
-    fn _total_cache_size() -> Int:
+    def _total_cache_size() -> Int:
         """Total per-node cache storage per sample."""
         var total = 0
         comptime for i in range(Self.N):
@@ -413,7 +413,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return total
 
     @staticmethod
-    fn _act_offset[idx: Int]() -> Int:
+    def _act_offset[idx: Int]() -> Int:
         """Per-sample offset to node idx's activation output."""
         var total = 0
         comptime for j in range(idx):
@@ -421,7 +421,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return total
 
     @staticmethod
-    fn _node_cache_offset[idx: Int]() -> Int:
+    def _node_cache_offset[idx: Int]() -> Int:
         """Per-sample offset to node idx's op cache (after all activations)."""
         var total = Self._total_act_size()
         comptime for j in range(idx):
@@ -429,7 +429,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return total
 
     @staticmethod
-    fn _param_offset[idx: Int]() -> Int:
+    def _param_offset[idx: Int]() -> Int:
         """Aligned param offset for node idx."""
         var total = 0
         comptime for j in range(idx):
@@ -438,7 +438,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return total
 
     @staticmethod
-    fn _sum_param_size() -> Int:
+    def _sum_param_size() -> Int:
         """Total param size with alignment padding."""
         var total = 0
         comptime for j in range(Self.N - 1):
@@ -448,7 +448,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return total
 
     @staticmethod
-    fn _max_concat_dim() -> Int:
+    def _max_concat_dim() -> Int:
         """Max concat input dimension across all dual-input nodes."""
         var m = 0
         comptime for i in range(Self.N):
@@ -458,7 +458,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return m
 
     @staticmethod
-    fn _max_node_in_dim() -> Int:
+    def _max_node_in_dim() -> Int:
         """Max OP_IN_DIM across all nodes (for backward gi scratch)."""
         var m = 0
         comptime for i in range(Self.N):
@@ -467,14 +467,14 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return m
 
     @staticmethod
-    fn _max_scratch_dim() -> Int:
+    def _max_scratch_dim() -> Int:
         """Max scratch per sample: max(concat_dim, node_in_dim)."""
         comptime c = Self._max_concat_dim()
         comptime n = Self._max_node_in_dim()
         return c if c > n else n
 
     @staticmethod
-    fn _max_ws() -> Int:
+    def _max_ws() -> Int:
         """Max per-node workspace across all nodes."""
         var m = 0
         comptime for i in range(Self.N):
@@ -500,7 +500,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[
+    def initialize_params[
         INIT: Initializer
     ](
         mut params: LayoutTensor[
@@ -525,7 +525,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -655,7 +655,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -687,7 +687,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -844,7 +844,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -947,7 +947,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     ](input.ptr)
 
                     @always_inline
-                    fn copy_s0_ext(
+                    def copy_s0_ext(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, NI),
@@ -983,7 +983,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     )
 
                     @always_inline
-                    fn copy_s0_node(
+                    def copy_s0_node(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, NI),
@@ -1021,7 +1021,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     ](input.ptr)
 
                     @always_inline
-                    fn copy_s1_ext(
+                    def copy_s1_ext(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, NI),
@@ -1059,7 +1059,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     )
 
                     @always_inline
-                    fn copy_s1_node(
+                    def copy_s1_node(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, NI),
@@ -1102,7 +1102,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         ](cache.ptr + BATCH * Self._act_offset[Self.N - 1]())
 
         @always_inline
-        fn copy_output_kernel(
+        def copy_output_kernel(
             dst: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.OUT_DIM),
@@ -1127,7 +1127,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1155,7 +1155,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         Self.forward_gpu[BATCH](ctx, output, input, params, cache_t, workspace)
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1179,7 +1179,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1213,7 +1213,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         var ga_grid = (GA_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn zero_ga_kernel(
+        def zero_ga_kernel(
             dst: LayoutTensor[
                 dtype,
                 Layout.row_major(GA_TOTAL, 1),
@@ -1240,7 +1240,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         var init_grid = (INIT_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn init_last_grad_kernel(
+        def init_last_grad_kernel(
             dst: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, LAST_DIM),
@@ -1279,7 +1279,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn zero_gi_kernel(
+        def zero_gi_kernel(
             dst: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.IN_DIM),
@@ -1366,7 +1366,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     ](gi_scratch_ptr)
 
                     @always_inline
-                    fn add_to_gi_single(
+                    def add_to_gi_single(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, Self.IN_DIM),
@@ -1409,7 +1409,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     ](gi_scratch_ptr)
 
                     @always_inline
-                    fn add_to_pred_single(
+                    def add_to_pred_single(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, dst_dim),
@@ -1447,7 +1447,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     var s0_grid = (S0_N + TPB - 1) // TPB
 
                     @always_inline
-                    fn scatter_to_gi_s0(
+                    def scatter_to_gi_s0(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, Self.IN_DIM),
@@ -1486,7 +1486,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     comptime d0_dim = Self._source_dim_by_name[src0_name]()
 
                     @always_inline
-                    fn scatter_to_pred_s0(
+                    def scatter_to_pred_s0(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, d0_dim),
@@ -1535,7 +1535,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     var s1_grid = (S1_N + TPB - 1) // TPB
 
                     @always_inline
-                    fn scatter_to_gi_s1(
+                    def scatter_to_gi_s1(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, Self.IN_DIM),
@@ -1574,7 +1574,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     comptime d1_dim = Self._source_dim_by_name[src1_name]()
 
                     @always_inline
-                    fn scatter_to_pred_s1(
+                    def scatter_to_pred_s1(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(BATCH, d1_dim),

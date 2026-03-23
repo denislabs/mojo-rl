@@ -29,7 +29,7 @@ from mojo_rl.deep_agents.core.agents import DeepA2CAgent
 from mojo_rl.deep_agents.core.agents import DeepPPOAgent
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Deep A2C and PPO on CartPole")
     print("=" * 60)

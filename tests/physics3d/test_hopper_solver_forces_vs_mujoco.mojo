@@ -88,7 +88,7 @@ comptime QFRC_REL_TOL: Float64 = 2e-1
 # =============================================================================
 
 
-fn compare_vector(
+def compare_vector(
     label: String,
     our_vals: InlineArray[Float64, NV],
     mj_vals: InlineArray[Float64, NV],
@@ -156,7 +156,7 @@ fn compare_vector(
 # =============================================================================
 
 
-fn compare_solver_forces(
+def compare_solver_forces(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
@@ -543,7 +543,7 @@ fn compare_solver_forces(
 # =============================================================================
 
 
-fn test_low_pose_static() raises:
+def test_low_pose_static() raises:
     """Low pose — foot on ground, zero velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8  # rootz low
@@ -551,7 +551,7 @@ fn test_low_pose_static() raises:
     compare_solver_forces("Low pose static (rootz=-0.8)", qpos, qvel)
 
 
-fn test_low_pose_moving() raises:
+def test_low_pose_moving() raises:
     """Low pose with velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8
@@ -562,7 +562,7 @@ fn test_low_pose_moving() raises:
     compare_solver_forces("Low pose moving", qpos, qvel)
 
 
-fn test_very_low_pose() raises:
+def test_very_low_pose() raises:
     """Very low — deeper penetration."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -1.0  # very low
@@ -570,7 +570,7 @@ fn test_very_low_pose() raises:
     compare_solver_forces("Very low pose (rootz=-1.0)", qpos, qvel)
 
 
-fn test_bent_joints() raises:
+def test_bent_joints() raises:
     """Bent joints — different contact geometry."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8
@@ -581,5 +581,5 @@ fn test_bent_joints() raises:
     compare_solver_forces("Bent joints", qpos, qvel)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

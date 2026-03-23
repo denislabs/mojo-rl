@@ -3,7 +3,7 @@
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
-fn test_reset() raises:
+def test_reset() raises:
     """Test that reset produces a clean board."""
     print("test_reset...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -35,7 +35,7 @@ fn test_reset() raises:
     print(" OK")
 
 
-fn test_win_row() raises:
+def test_win_row() raises:
     """Test P0 wins with top row: 0,1,2."""
     print("test_win_row...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -71,7 +71,7 @@ fn test_win_row() raises:
     print(" OK")
 
 
-fn test_win_col() raises:
+def test_win_col() raises:
     """Test P1 wins with left column: 0,3,6."""
     print("test_win_col...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -99,7 +99,7 @@ fn test_win_col() raises:
     print(" OK")
 
 
-fn test_win_diagonal() raises:
+def test_win_diagonal() raises:
     """Test P0 wins with diagonal: 0,4,8."""
     print("test_win_diagonal...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -126,7 +126,7 @@ fn test_win_diagonal() raises:
     print(" OK")
 
 
-fn test_draw() raises:
+def test_draw() raises:
     """Test draw when board is full with no winner."""
     print("test_draw...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -163,7 +163,7 @@ fn test_draw() raises:
     print(" OK")
 
 
-fn test_illegal_move() raises:
+def test_illegal_move() raises:
     """Test that placing on occupied cell returns -1 reward."""
     print("test_illegal_move...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -183,7 +183,7 @@ fn test_illegal_move() raises:
     print(" OK")
 
 
-fn test_legal_mask_updates() raises:
+def test_legal_mask_updates() raises:
     """Test that legal mask correctly reflects board state."""
     print("test_legal_mask_updates...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -205,7 +205,7 @@ fn test_legal_mask_updates() raises:
     print(" OK")
 
 
-fn test_canonical_obs() raises:
+def test_canonical_obs() raises:
     """Test that observations flip correctly based on current player."""
     print("test_canonical_obs...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -242,7 +242,7 @@ fn test_canonical_obs() raises:
     print(" OK")
 
 
-fn test_obs_dim() raises:
+def test_obs_dim() raises:
     """Test observation dimension."""
     print("test_obs_dim...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -257,7 +257,7 @@ fn test_obs_dim() raises:
     print(" OK")
 
 
-fn test_step_obs_with_opponent() raises:
+def test_step_obs_with_opponent() raises:
     """Test step_obs plays random opponent automatically."""
     print("test_step_obs_with_opponent...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -291,7 +291,7 @@ fn test_step_obs_with_opponent() raises:
     print(" OK")
 
 
-fn test_random_game_completion() raises:
+def test_random_game_completion() raises:
     """Test that random games always terminate."""
     print("test_random_game_completion...", end="")
     var env = TicTacToeEnv[DType.float64]()
@@ -326,7 +326,7 @@ fn test_random_game_completion() raises:
     print(" OK")
 
 
-fn main() raises:
+def main() raises:
     print("=== Testing TicTacToeEnv ===\n")
 
     test_reset()

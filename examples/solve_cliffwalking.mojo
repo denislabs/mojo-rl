@@ -32,7 +32,7 @@ from mojo_rl.agents import QLearningAgent, SARSAAgent, SARSALambdaAgent
 from mojo_rl.render import Renderer2D
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("    Solving CliffWalking - SARSA vs Q-Learning")
     print("=" * 60)

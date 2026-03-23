@@ -118,7 +118,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
     var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
     var _renderer_initialized: Bool
 
-    fn __init__(out self):
+    def __init__(out self):
         self.state = InlineArray[Scalar[Self.dtype], 80](
             fill=Scalar[Self.dtype](0.0)
         )
@@ -131,7 +131,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # CPU reset + step
     # ========================================================================
 
-    fn reset(mut self) -> ArcadeGameState:
+    def reset(mut self) -> ArcadeGameState:
         self._rng_counter += 1
         self.state[S_SHIP_X] = Scalar[Self.dtype](SCREEN_W // 2)
         self.state[S_BULLET_ACTIVE] = 0.0
@@ -151,7 +151,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self.done = False
         return ArcadeGameState(index=0)
 
-    fn step(
+    def step(
         mut self, action: ArcadeGameAction, verbose: Bool = False
     ) -> Tuple[ArcadeGameState, Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action.value)
@@ -161,7 +161,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
             result[1],
         )
 
-    fn _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
+    def _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
         var reward = Scalar[Self.dtype](0.0)
 
         # Move ship
@@ -316,31 +316,31 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Trait methods
     # ========================================================================
 
-    fn get_state(self) -> ArcadeGameState:
+    def get_state(self) -> ArcadeGameState:
         return ArcadeGameState(index=Int(self.state[S_STEP_COUNT]))
 
-    fn close(mut self):
+    def close(mut self):
         if self._renderer_initialized:
             self._renderer[].close()
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn action_from_index(self, action_idx: Int) -> ArcadeGameAction:
+    def action_from_index(self, action_idx: Int) -> ArcadeGameAction:
         return ArcadeGameAction(value=action_idx)
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         return 4
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         return 8
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         return 1
 
-    fn state_to_index(self, state: ArcadeGameState) -> Int:
+    def state_to_index(self, state: ArcadeGameState) -> Int:
         return state.index
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs = List[Scalar[Self.dtype]](capacity=8)
         obs.append(self.state[S_SHIP_X] / Scalar[Self.dtype](SCREEN_W))
         obs.append(self.state[S_BULLET_X] / Scalar[Self.dtype](SCREEN_W))
@@ -352,11 +352,11 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(self.state[S_ALIENS_REM] / Scalar[Self.dtype](TOTAL_ALIENS))
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action)
@@ -366,7 +366,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # RenderableEnv
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
@@ -374,12 +374,12 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._render(self._renderer[])
 
-    fn _render(self, mut renderer: Renderer2D):
+    def _render(self, mut renderer: Renderer2D):
         """Render Space Invaders — Atari-style dark theme."""
         var bg_color = SDL_Color(10, 10, 30, 255)
         if not renderer.begin_frame_with_color(bg_color):
@@ -445,7 +445,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Helper to map game Y to screen Y
         @always_inline
-        fn gy(game_y: Float64) -> Int:
+        def gy(game_y: Float64) -> Int:
             return play_top + Int(game_y / Float64(SCREEN_H) * Float64(play_h))
 
         # -- Draw aliens --
@@ -522,32 +522,32 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         renderer.flip()
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].close()
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
@@ -556,7 +556,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
     @staticmethod
     @always_inline
-    fn step_kernel[
+    def step_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -643,10 +643,15 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Alien firing (deterministic based on rng)
         if abul_active < Scalar[gpu_dtype](0.5):
             var rng = PhiloxRandom(
-                seed=UInt64(rng_seed) * UInt64(BATCH_SIZE) + UInt64(i) + UInt64(Int(steps)) * UInt64(1000003), offset=0
+                seed=UInt64(rng_seed) * UInt64(BATCH_SIZE)
+                + UInt64(i)
+                + UInt64(Int(steps)) * UInt64(1000003),
+                offset=0,
             )
             var rand_vals = rng.step_uniform()
-            if Scalar[gpu_dtype](rand_vals[0]) < Scalar[gpu_dtype](ALIEN_FIRE_CHANCE):
+            if Scalar[gpu_dtype](rand_vals[0]) < Scalar[gpu_dtype](
+                ALIEN_FIRE_CHANCE
+            ):
                 # Find a bottom-row alive alien
                 for row in range(ALIEN_ROWS - 1, -1, -1):
                     for col in range(ALIEN_COLS):
@@ -766,7 +771,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
     @staticmethod
     @always_inline
-    fn reset_kernel[
+    def reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -798,7 +803,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
     @staticmethod
     @always_inline
-    fn selective_reset_kernel[
+    def selective_reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -844,7 +849,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
     comptime TPB = 256
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -884,7 +889,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var seed = Scalar[DType.uint64](rng_seed)
 
         @always_inline
-        fn step_wrapper(
+        def step_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -947,7 +952,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -961,7 +966,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -977,7 +982,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -999,7 +1004,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var seed = Scalar[DType.uint64](rng_seed)
 
         @always_inline
-        fn sel_reset_wrapper(
+        def sel_reset_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -1023,13 +1028,13 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype]) raises:
         pass
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[gpu_dtype],
         curriculum_values: List[Scalar[gpu_dtype]],

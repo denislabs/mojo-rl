@@ -26,13 +26,13 @@ from mojo_rl.nn.model.sequential import Sequential
 from layout import Layout, LayoutTensor
 
 
-fn print_header(name: String):
+def print_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
 
 
-fn check(cond: Bool, msg: String, mut fails: Int):
+def check(cond: Bool, msg: String, mut fails: Int):
     if cond:
         print("  PASS: " + msg)
     else:
@@ -40,21 +40,21 @@ fn check(cond: Bool, msg: String, mut fails: Int):
         fails += 1
 
 
-fn make_list(size: Int) -> List[Scalar[dtype]]:
+def make_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(0)
     return lst^
 
 
-fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
+def make_rand_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(Scalar[dtype](random_float64(-0.5, 0.5)))
     return lst^
 
 
-fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
+def max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
     var md: Float64 = 0
     for i in range(n):
         var d = math_abs(Float64(a[i]) - Float64(b[i]))
@@ -68,7 +68,7 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # =============================================================================
 
 
-fn test_attention_dims() -> Int:
+def test_attention_dims() -> Int:
     print_header("ScaledDotProductAttention dimension checks")
     var fails = 0
 
@@ -114,7 +114,7 @@ fn test_attention_dims() -> Int:
 # =============================================================================
 
 
-fn test_single_head_forward() -> Int:
+def test_single_head_forward() -> Int:
     print_header("Single-head attention forward correctness")
     var fails = 0
     seed(42)
@@ -235,7 +235,7 @@ fn test_single_head_forward() -> Int:
 # =============================================================================
 
 
-fn test_multi_head_forward() -> Int:
+def test_multi_head_forward() -> Int:
     print_header("Multi-head attention forward (dim=4, heads=2, seq=3)")
     var fails = 0
     seed(123)
@@ -310,7 +310,7 @@ fn test_multi_head_forward() -> Int:
 # =============================================================================
 
 
-fn test_attention_grad() -> Int:
+def test_attention_grad() -> Int:
     print_header("ScaledDotProductAttention gradient check (finite diff)")
     var fails = 0
     seed(77)
@@ -432,7 +432,7 @@ fn test_attention_grad() -> Int:
 # =============================================================================
 
 
-fn test_chain_with_attention() -> Int:
+def test_chain_with_attention() -> Int:
     print_header("AutoDiffChain composition: MatMul -> Attention")
     var fails = 0
     seed(99)
@@ -529,7 +529,7 @@ fn test_chain_with_attention() -> Int:
 # =============================================================================
 
 
-fn test_residual_attention() -> Int:
+def test_residual_attention() -> Int:
     print_header(
         "Residual[AutoDiffChain[Proj, Attention]] — transformer block pattern"
     )
@@ -621,7 +621,7 @@ fn test_residual_attention() -> Int:
 # =============================================================================
 
 
-fn test_transformer_composites() -> Int:
+def test_transformer_composites() -> Int:
     print_header("Transformer composites: Sequential[ResAttn, ResFFN] compiles")
     var fails = 0
     seed(55)
@@ -640,7 +640,7 @@ fn test_transformer_composites() -> Int:
     ]
     comptime ResAttn = Residual[AttnInner]
 
-    # FFN sub-block
+    # Fdef sub-block
     comptime FFNInner = AutoDiffChain[
         MatMul[SD, FF_DIM],
         BiasAdd[FF_DIM],
@@ -648,7 +648,7 @@ fn test_transformer_composites() -> Int:
         MatMul[FF_DIM, SD],
         BiasAdd[SD],
     ]
-    comptime ResFFN = Residual[FFNInner]
+    comptime ResFdef = Residual[FFNInner]
 
     # Full transformer layer
     comptime TransformerLayer = Sequential[ResAttn, ResFFN]
@@ -726,7 +726,7 @@ fn test_transformer_composites() -> Int:
 # =============================================================================
 
 
-fn test_stacked_transformer() -> Int:
+def test_stacked_transformer() -> Int:
     print_header("Repeat[2, TransformerLayer] — stacked transformer")
     var fails = 0
     seed(77)
@@ -750,7 +750,7 @@ fn test_stacked_transformer() -> Int:
         MatMul[FF_DIM, SD],
         BiasAdd[SD],
     ]
-    comptime ResFFN = Residual[FFNInner]
+    comptime ResFdef = Residual[FFNInner]
     comptime Layer = Sequential[ResAttn, ResFFN]
 
     # Stack 2 layers with shared weights
@@ -847,7 +847,7 @@ fn test_stacked_transformer() -> Int:
 # =============================================================================
 
 
-fn main():
+def main():
     print("=" * 70)
     print("Phase 8: Attention & Transformer Primitives — Test Suite")
     print("=" * 70)

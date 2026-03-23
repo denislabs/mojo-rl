@@ -36,7 +36,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Constructors
     # =========================================================================
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize to identity matrix."""
         self.m00 = 1.0
         self.m01 = 0.0
@@ -48,7 +48,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         self.m21 = 0.0
         self.m22 = 1.0
 
-    fn __init__(
+    def __init__(
         out self,
         m00: Scalar[Self.DTYPE],
         m01: Scalar[Self.DTYPE],
@@ -71,7 +71,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         self.m21 = m21
         self.m22 = m22
 
-    fn __init__(
+    def __init__(
         out self,
         row0: Vec3[Self.DTYPE],
         row1: Vec3[Self.DTYPE],
@@ -93,34 +93,34 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # =========================================================================
 
     @staticmethod
-    fn identity() -> Self:
+    def identity() -> Self:
         """Return the identity matrix."""
         return Self()
 
     @staticmethod
-    fn zero() -> Self:
+    def zero() -> Self:
         """Return the zero matrix."""
         return Self(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     @staticmethod
-    fn diagonal(d: Scalar[Self.DTYPE]) -> Self:
+    def diagonal(d: Scalar[Self.DTYPE]) -> Self:
         """Return a diagonal matrix with d on diagonal."""
         return Self(d, 0.0, 0.0, 0.0, d, 0.0, 0.0, 0.0, d)
 
     @staticmethod
-    fn diagonal(d: Vec3[Self.DTYPE]) -> Self:
+    def diagonal(d: Vec3[Self.DTYPE]) -> Self:
         """Return a diagonal matrix from a vector."""
         return Self(d.x, 0.0, 0.0, 0.0, d.y, 0.0, 0.0, 0.0, d.z)
 
     @staticmethod
-    fn from_rows(
+    def from_rows(
         row0: Vec3[Self.DTYPE], row1: Vec3[Self.DTYPE], row2: Vec3[Self.DTYPE]
     ) -> Self:
         """Create matrix from row vectors."""
         return Self(row0, row1, row2)
 
     @staticmethod
-    fn from_cols(
+    def from_cols(
         col0: Vec3[Self.DTYPE], col1: Vec3[Self.DTYPE], col2: Vec3[Self.DTYPE]
     ) -> Self:
         """Create matrix from column vectors."""
@@ -137,12 +137,12 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         )
 
     @staticmethod
-    fn from_scale(scale: Vec3[Self.DTYPE]) -> Self:
+    def from_scale(scale: Vec3[Self.DTYPE]) -> Self:
         """Create a scaling matrix."""
         return Self.diagonal(scale)
 
     @staticmethod
-    fn from_scale(s: Scalar[Self.DTYPE]) -> Self:
+    def from_scale(s: Scalar[Self.DTYPE]) -> Self:
         """Create a uniform scaling matrix."""
         return Self.diagonal(s)
 
@@ -151,7 +151,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # =========================================================================
 
     @staticmethod
-    fn rotation_x(
+    def rotation_x(
         angle: Scalar[Self.DTYPE],
     ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around X axis.
@@ -164,7 +164,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         return Self(1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c)
 
     @staticmethod
-    fn rotation_y(
+    def rotation_y(
         angle: Scalar[Self.DTYPE],
     ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around Y axis.
@@ -177,7 +177,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         return Self(c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c)
 
     @staticmethod
-    fn rotation_z(
+    def rotation_z(
         angle: Scalar[Self.DTYPE],
     ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around Z axis.
@@ -190,7 +190,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         return Self(c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0)
 
     @staticmethod
-    fn rotation_axis(
+    def rotation_axis(
         axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Create rotation matrix around arbitrary axis.
@@ -217,7 +217,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         )
 
     @staticmethod
-    fn from_quat(q: Quat[Self.DTYPE]) -> Self:
+    def from_quat(q: Quat[Self.DTYPE]) -> Self:
         """Create rotation matrix from quaternion.
 
         Args:
@@ -250,7 +250,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         )
 
     @staticmethod
-    fn skew(v: Vec3[Self.DTYPE]) -> Self:
+    def skew(v: Vec3[Self.DTYPE]) -> Self:
         """Create skew-symmetric matrix from vector (for cross product).
 
         skew(v) * u = v × u
@@ -258,7 +258,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         return Self(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
 
     @staticmethod
-    fn outer(a: Vec3[Self.DTYPE], b: Vec3[Self.DTYPE]) -> Self:
+    def outer(a: Vec3[Self.DTYPE], b: Vec3[Self.DTYPE]) -> Self:
         """Create outer product matrix (a ⊗ b).
 
         Result: M[i,j] = a[i] * b[j]
@@ -279,7 +279,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Row/Column Access
     # =========================================================================
 
-    fn row(self, i: Int) -> Vec3[Self.DTYPE]:
+    def row(self, i: Int) -> Vec3[Self.DTYPE]:
         """Get row i as a vector."""
         if i == 0:
             return Vec3(self.m00, self.m01, self.m02)
@@ -288,7 +288,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         else:
             return Vec3(self.m20, self.m21, self.m22)
 
-    fn col(self, j: Int) -> Vec3[Self.DTYPE]:
+    def col(self, j: Int) -> Vec3[Self.DTYPE]:
         """Get column j as a vector."""
         if j == 0:
             return Vec3(self.m00, self.m10, self.m20)
@@ -297,7 +297,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         else:
             return Vec3(self.m02, self.m12, self.m22)
 
-    fn set_row(mut self, i: Int, v: Vec3[Self.DTYPE]):
+    def set_row(mut self, i: Int, v: Vec3[Self.DTYPE]):
         """Set row i from a vector."""
         if i == 0:
             self.m00 = v.x
@@ -312,7 +312,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.m21 = v.y
             self.m22 = v.z
 
-    fn set_col(mut self, j: Int, v: Vec3[Self.DTYPE]):
+    def set_col(mut self, j: Int, v: Vec3[Self.DTYPE]):
         """Set column j from a vector."""
         if j == 0:
             self.m00 = v.x
@@ -331,7 +331,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Matrix Operations
     # =========================================================================
 
-    fn __add__(self, other: Self) -> Self:
+    def __add__(self, other: Self) -> Self:
         """Matrix addition."""
         return Self(
             self.m00 + other.m00,
@@ -345,7 +345,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.m22 + other.m22,
         )
 
-    fn __sub__(self, other: Self) -> Self:
+    def __sub__(self, other: Self) -> Self:
         """Matrix subtraction."""
         return Self(
             self.m00 - other.m00,
@@ -359,7 +359,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.m22 - other.m22,
         )
 
-    fn __mul__(self, scalar: Scalar[Self.DTYPE]) -> Self:
+    def __mul__(self, scalar: Scalar[Self.DTYPE]) -> Self:
         """Scalar multiplication."""
         return Self(
             self.m00 * scalar,
@@ -373,7 +373,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.m22 * scalar,
         )
 
-    fn __mul__(self, v: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
+    def __mul__(self, v: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
         """Matrix-vector multiplication (M * v)."""
         return Vec3(
             self.m00 * v.x + self.m01 * v.y + self.m02 * v.z,
@@ -381,7 +381,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.m20 * v.x + self.m21 * v.y + self.m22 * v.z,
         )
 
-    fn __matmul__(self, other: Self) -> Self:
+    def __matmul__(self, other: Self) -> Self:
         """Matrix-matrix multiplication (self @ other)."""
         return Self(
             self.m00 * other.m00 + self.m01 * other.m10 + self.m02 * other.m20,
@@ -395,7 +395,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.m20 * other.m02 + self.m21 * other.m12 + self.m22 * other.m22,
         )
 
-    fn __neg__(self) -> Self:
+    def __neg__(self) -> Self:
         """Negation."""
         return Self(
             -self.m00,
@@ -409,7 +409,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             -self.m22,
         )
 
-    fn transpose(self) -> Self:
+    def transpose(self) -> Self:
         """Return transposed matrix."""
         return Self(
             self.m00,
@@ -423,7 +423,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.m22,
         )
 
-    fn determinant(self) -> Scalar[Self.DTYPE]:
+    def determinant(self) -> Scalar[Self.DTYPE]:
         """Compute determinant."""
         return (
             self.m00 * (self.m11 * self.m22 - self.m12 * self.m21)
@@ -431,7 +431,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.m02 * (self.m10 * self.m21 - self.m11 * self.m20)
         )
 
-    fn inverse(self) -> Self:
+    def inverse(self) -> Self:
         """Return inverse matrix.
 
         Returns identity if matrix is singular.
@@ -453,7 +453,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             (self.m00 * self.m11 - self.m01 * self.m10) * inv_det,
         )
 
-    fn trace(self) -> Scalar[Self.DTYPE]:
+    def trace(self) -> Scalar[Self.DTYPE]:
         """Return trace (sum of diagonal elements)."""
         return self.m00 + self.m11 + self.m22
 
@@ -461,7 +461,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Conversion to Quaternion
     # =========================================================================
 
-    fn to_quat(self) -> Quat[Self.DTYPE] where Self.DTYPE.is_floating_point():
+    def to_quat(self) -> Quat[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Convert rotation matrix to quaternion.
 
         Assumes this is a valid rotation matrix (orthogonal with det = 1).
@@ -505,7 +505,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Comparison
     # =========================================================================
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         """Equality check."""
         return (
             self.m00 == other.m00
@@ -519,11 +519,11 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             and self.m22 == other.m22
         )
 
-    fn __ne__(self, other: Self) -> Bool:
+    def __ne__(self, other: Self) -> Bool:
         """Inequality check."""
         return not (self == other)
 
-    fn approx_eq(
+    def approx_eq(
         self, other: Self, tolerance: Scalar[Self.DTYPE] = 1e-10
     ) -> Bool:
         """Approximate equality with tolerance."""
@@ -543,7 +543,7 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # String Conversion
     # =========================================================================
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         """String representation."""
         return (
             "Mat3(\n  ["
@@ -573,26 +573,26 @@ struct Mat3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
 # =========================================================================
 
 
-fn mat3_identity[DTYPE: DType]() -> Mat3[DTYPE]:
+def mat3_identity[DTYPE: DType]() -> Mat3[DTYPE]:
     """Return identity matrix."""
     return Mat3[DTYPE].identity()
 
 
-fn mat3_rotation_x[
+def mat3_rotation_x[
     DTYPE: DType
 ](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
     """Create rotation matrix around X axis."""
     return Mat3.rotation_x(angle)
 
 
-fn mat3_rotation_y[
+def mat3_rotation_y[
     DTYPE: DType
 ](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
     """Create rotation matrix around Y axis."""
     return Mat3.rotation_y(angle)
 
 
-fn mat3_rotation_z[
+def mat3_rotation_z[
     DTYPE: DType
 ](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
     """Create rotation matrix around Z axis."""

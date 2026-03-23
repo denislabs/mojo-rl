@@ -17,7 +17,7 @@ from mojo_rl.envs import CliffWalkingEnv
 from mojo_rl.agents import QLearningReplayAgent, QLearningPERAgent
 
 
-fn run_comparison():
+def run_comparison():
     """Run comparison between uniform replay and PER."""
     print("=" * 70)
     print("Prioritized Experience Replay vs Uniform Replay Comparison")
@@ -182,7 +182,7 @@ fn run_comparison():
     print()
 
 
-fn demonstrate_per_sampling():
+def demonstrate_per_sampling():
     """Demonstrate how PER samples differently than uniform."""
     print()
     print("=" * 70)
@@ -262,7 +262,7 @@ fn demonstrate_per_sampling():
     print()
 
 
-fn main():
+def main():
     """Run PER comparison demo."""
     demonstrate_per_sampling()
     run_comparison()

@@ -54,7 +54,7 @@ struct IslandData[MAX_ROWS: Int, NV: Int](Movable):
     var island_num_rows: InlineArray[Int, MAX_ISLANDS]
     var island_num_dofs: InlineArray[Int, MAX_ISLANDS]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.num_islands = 0
         self.dof_island = InlineArray[Int, _max_one[Self.NV]()](fill=-1)
         self.row_island = InlineArray[Int, _max_one[Self.MAX_ROWS]()](fill=-1)
@@ -62,7 +62,7 @@ struct IslandData[MAX_ROWS: Int, NV: Int](Movable):
         self.island_num_dofs = InlineArray[Int, MAX_ISLANDS](fill=0)
 
 
-fn detect_islands[
+def detect_islands[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,

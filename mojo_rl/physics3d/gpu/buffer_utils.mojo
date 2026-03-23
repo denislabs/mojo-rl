@@ -190,7 +190,7 @@ from ..types import Model, Data, ConeType
 # =============================================================================
 
 
-fn create_state_buffer[
+def create_state_buffer[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -227,7 +227,7 @@ fn create_state_buffer[
     return buffer
 
 
-fn create_model_buffer[
+def create_model_buffer[
     DTYPE: DType,
     NBODY: Int,
     NJOINT: Int,
@@ -256,7 +256,7 @@ fn create_model_buffer[
 # =============================================================================
 
 
-fn copy_model_to_buffer[
+def copy_model_to_buffer[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -419,7 +419,7 @@ fn copy_model_to_buffer[
     )
 
 
-fn copy_invweight0_to_buffer[
+def copy_invweight0_to_buffer[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -471,7 +471,7 @@ fn copy_invweight0_to_buffer[
         buffer[dw_offset + i] = model.dof_invweight0[i]
 
 
-fn copy_geoms_to_buffer[
+def copy_geoms_to_buffer[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -540,7 +540,7 @@ fn copy_geoms_to_buffer[
         buffer[offset + GEOM_IDX_MARGIN] = model.geom_margin[g]
 
 
-fn copy_equality_to_buffer[
+def copy_equality_to_buffer[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -586,7 +586,7 @@ fn copy_equality_to_buffer[
         buffer[offset + EQ_IDX_SOLIMP_4] = eq.solimp_4
 
 
-fn copy_tendons_to_buffer[
+def copy_tendons_to_buffer[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -647,7 +647,7 @@ fn copy_tendons_to_buffer[
 # =============================================================================
 
 
-fn copy_data_to_buffer[
+def copy_data_to_buffer[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -731,7 +731,7 @@ fn copy_data_to_buffer[
         buffer[base + QFRC_ACT_OFF + i] = Scalar[DTYPE](0)
 
 
-fn copy_buffer_to_data[
+def copy_buffer_to_data[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

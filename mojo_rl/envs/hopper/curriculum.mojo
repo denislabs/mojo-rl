@@ -38,7 +38,9 @@ struct HopperCurriculum(CurriculumScheduler):
     comptime final_max_pitch: Scalar[DType.float64] = Scalar[DType.float64](0.2)
 
     @staticmethod
-    fn get_params[DTYPE: DType](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
+    def get_params[
+        DTYPE: DType
+    ](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
         """Get curriculum parameters for given training progress.
 
         Uses linear interpolation from initial to final values.
@@ -80,7 +82,7 @@ struct HopperCurriculum(CurriculumScheduler):
         return params^
 
     @staticmethod
-    fn get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
+    def get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
         """Get human-readable curriculum stage name.
 
         Args:

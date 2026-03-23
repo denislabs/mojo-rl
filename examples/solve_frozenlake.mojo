@@ -30,7 +30,7 @@ from mojo_rl.agents import QLearningAgent, DoubleQLearningAgent
 from mojo_rl.render import Renderer2D
 
 
-fn train_and_evaluate(
+def train_and_evaluate(
     mut env: FrozenLakeEnv,
     mut agent: QLearningAgent,
     num_episodes: Int,
@@ -68,7 +68,7 @@ fn train_and_evaluate(
     return (metrics.mean_reward(), success_rate)
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("    Solving FrozenLake - Stochastic Environment")
     print("=" * 60)

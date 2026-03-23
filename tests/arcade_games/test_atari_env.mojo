@@ -6,7 +6,7 @@ from mojo_rl.envs.atari.games.pong import PongDef
 from mojo_rl.envs.atari.flags import RAM_SIZE, OBS_WIDTH, OBS_HEIGHT
 
 
-fn test_ram_mode() raises:
+def test_ram_mode() raises:
     """Test RAM mode (OBS_MODE=0): 128-dim observations."""
     print("Test: AtariEnv RAM mode...")
 
@@ -54,7 +54,7 @@ fn test_ram_mode() raises:
     print("  PASSED")
 
 
-fn test_pixel_mode() raises:
+def test_pixel_mode() raises:
     """Test pixel mode (OBS_MODE=1): 4×84×84 = 28224-dim observations."""
     print("Test: AtariEnv pixel mode...")
 
@@ -107,7 +107,7 @@ fn test_pixel_mode() raises:
     print("  PASSED")
 
 
-fn test_trait_conformance() raises:
+def test_trait_conformance() raises:
     """Test that AtariEnv works through BoxDiscreteActionEnv interface."""
     print("Test: BoxDiscreteActionEnv conformance...")
 
@@ -138,7 +138,7 @@ fn test_trait_conformance() raises:
 # ========================================================================
 
 
-fn assert_equal(a: Int, b: Int, msg: String) raises:
+def assert_equal(a: Int, b: Int, msg: String) raises:
     if a != b:
         raise Error(
             "ASSERTION FAILED: "
@@ -151,12 +151,12 @@ fn assert_equal(a: Int, b: Int, msg: String) raises:
         )
 
 
-fn assert_true(val: Bool, msg: String) raises:
+def assert_true(val: Bool, msg: String) raises:
     if not val:
         raise Error("ASSERTION FAILED: " + msg)
 
 
-fn main() raises:
+def main() raises:
     print("=== AtariEnv Smoke Tests ===")
     test_ram_mode()
     test_pixel_mode()

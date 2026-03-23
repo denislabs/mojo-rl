@@ -79,50 +79,90 @@ struct MuZeroCPUState[
 
     # MCTS target storage — parallel arrays alongside replay buffer
     # Stores MCTS visit count policies and root values for training targets
-    var mcts_policies: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [CAPACITY * ACT]
-    var mcts_values: UnsafePointer[Scalar[dtype], MutAnyOrigin]    # [CAPACITY]
+    var mcts_policies: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [CAPACITY * ACT]
+    var mcts_values: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [CAPACITY]
 
     # ── Batch sampling scratch ───────────────────────────────────────────
     # For K-step unroll training, we sample positions and extract windows
-    var _batch_obs: UnsafePointer[Scalar[dtype], MutAnyOrigin]     # [BATCH * (K+1) * OBS]
-    var _batch_actions: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * K]  (discrete action indices)
-    var _batch_rewards: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * K]
-    var _batch_dones: UnsafePointer[Scalar[dtype], MutAnyOrigin]    # [BATCH * K]
-    var _batch_policies: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * (K+1) * ACT]
-    var _batch_values: UnsafePointer[Scalar[dtype], MutAnyOrigin]    # [BATCH * (K+1)]
+    var _batch_obs: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * (K+1) * OBS]
+    var _batch_actions: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * K]  (discrete action indices)
+    var _batch_rewards: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * K]
+    var _batch_dones: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * K]
+    var _batch_policies: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * (K+1) * ACT]
+    var _batch_values: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * (K+1)]
 
     # ── K-step unroll scratch ────────────────────────────────────────────
     # Hidden states through the unroll
-    var _hidden_states: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [(K+1) * BATCH * LATENT]
+    var _hidden_states: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [(K+1) * BATCH * LATENT]
 
     # Prediction outputs at each step
-    var _pred_outputs: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [(K+1) * BATCH * PRED_OUT]
+    var _pred_outputs: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [(K+1) * BATCH * PRED_OUT]
 
     # Dynamics outputs (reward logits) at each step
-    var _dyn_reward_logits: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [K * BATCH * BINS]
+    var _dyn_reward_logits: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [K * BATCH * BINS]
 
     # ── Network cache scratch (for backward pass) ────────────────────────
-    var _rep_cache: UnsafePointer[Scalar[dtype], MutAnyOrigin]   # [BATCH * RepModel.CACHE_SIZE]
-    var _dyn_caches: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [K * BATCH * DynModel.CACHE_SIZE]
-    var _pred_caches: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [(K+1) * BATCH * PredModel.CACHE_SIZE]
+    var _rep_cache: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * RepModel.CACHE_SIZE]
+    var _dyn_caches: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [K * BATCH * DynModel.CACHE_SIZE]
+    var _pred_caches: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [(K+1) * BATCH * PredModel.CACHE_SIZE]
 
     # ── Gradient scratch ─────────────────────────────────────────────────
-    var _grad_hidden: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * LATENT]
-    var _grad_pred_out: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * PRED_OUT]
-    var _grad_dyn_out: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * DYN_OUT]
-    var _grad_dyn_in: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * DYN_IN]
-    var _grad_rep_out: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * LATENT]
-    var _grad_rep_in: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * OBS]
+    var _grad_hidden: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * LATENT]
+    var _grad_pred_out: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * PRED_OUT]
+    var _grad_dyn_out: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * DYN_OUT]
+    var _grad_dyn_in: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * DYN_IN]
+    var _grad_rep_out: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * LATENT]
+    var _grad_rep_in: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * OBS]
 
     # ── Value/Reward target scratch ──────────────────────────────────────
-    var _value_targets: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [(K+1) * BATCH]
-    var _reward_targets: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [K * BATCH]
+    var _value_targets: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [(K+1) * BATCH]
+    var _reward_targets: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [K * BATCH]
 
     # ══════════════════════════════════════════════════════════════════════
     # Constructors
     # ══════════════════════════════════════════════════════════════════════
 
-    fn __init__(out self):
+    def __init__(out self):
         """Allocate networks, replay buffer, and all scratch buffers."""
 
         # ── Networks ─────────────────────────────────────────────────────
@@ -136,9 +176,7 @@ struct MuZeroCPUState[
         self.prediction.initialize[Kaiming[]]()
 
         # ── Replay buffer ────────────────────────────────────────────────
-        self.buffer = SequenceReplayBuffer[
-            Self._CAP, Self.OBS, Self.ACT
-        ]()
+        self.buffer = SequenceReplayBuffer[Self._CAP, Self.OBS, Self.ACT]()
 
         # MCTS target parallel storage
         comptime POLICY_SIZE = Self._CAP * Self.ACT
@@ -235,7 +273,7 @@ struct MuZeroCPUState[
         self._reward_targets = alloc[Scalar[dtype]](REW_TARGET_SIZE)
         memset(self._reward_targets, 0, REW_TARGET_SIZE)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor — transfer ownership of all fields."""
         self.representation = take.representation^
         self.dynamics = take.dynamics^
@@ -264,7 +302,7 @@ struct MuZeroCPUState[
         self._value_targets = take._value_targets
         self._reward_targets = take._reward_targets
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         """Free all heap-allocated buffers."""
         self.mcts_policies.free()
         self.mcts_values.free()
@@ -293,20 +331,23 @@ struct MuZeroCPUState[
     # Buffer Readiness
     # ══════════════════════════════════════════════════════════════════════
 
-    fn is_ready(self) -> Bool:
+    def is_ready(self) -> Bool:
         """Check if the replay buffer has enough data for training.
 
         Returns:
             True if buffer has more samples than BATCH_SIZE and enough
             for K-step unrolling.
         """
-        return self.buffer.len() > Self.BATCH * 2 and self.buffer.len() > Self.K + Self.N + 1
+        return (
+            self.buffer.len() > Self.BATCH * 2
+            and self.buffer.len() > Self.K + Self.N + 1
+        )
 
     # ══════════════════════════════════════════════════════════════════════
     # Sampling with MCTS Targets
     # ══════════════════════════════════════════════════════════════════════
 
-    fn sample_batch_with_targets(
+    def sample_batch_with_targets(
         mut self,
         gamma: Float64,
     ):
@@ -338,7 +379,10 @@ struct MuZeroCPUState[
             attempts += 1
 
             # Random starting position in the valid range
-            var start = Int(random_float64() * Float64(self.buffer.size)) % self.buffer.size
+            var start = (
+                Int(random_float64() * Float64(self.buffer.size))
+                % self.buffer.size
+            )
             var actual_start = (
                 self.buffer.ptr - self.buffer.size + start
             ) % CAPACITY
@@ -355,9 +399,7 @@ struct MuZeroCPUState[
 
             # Verify end index is within recorded data
             var end_idx = (actual_start + K) % CAPACITY
-            var end_age = (
-                self.buffer.ptr - end_idx - 1 + CAPACITY
-            ) % CAPACITY
+            var end_age = (self.buffer.ptr - end_idx - 1 + CAPACITY) % CAPACITY
             if end_age >= self.buffer.size:
                 continue
 
@@ -492,7 +534,9 @@ struct MuZeroCPUState[
 # ══════════════════════════════════════════════════════════════════════════
 
 
-struct MuZeroGPUState[Config: MuZeroConfig, N_ENVS: Int = 64, PER_ENV_CAP: Int = 1000](Movable):
+struct MuZeroGPUState[
+    Config: MuZeroConfig, N_ENVS: Int = 64, PER_ENV_CAP: Int = 1000
+](Movable):
     """GPU-resident state for MuZero training.
 
     Holds GPUNetworkState for all three networks and DeviceBuffers
@@ -528,49 +572,61 @@ struct MuZeroGPUState[Config: MuZeroConfig, N_ENVS: Int = 64, PER_ENV_CAP: Int =
 
     # ── MCTS Target Buffers (parallel to replay, same per-env layout) ─
     var mcts_policy_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP * ACT]
-    var mcts_value_buf: DeviceBuffer[dtype]   # [N_ENVS * PER_ENV_CAP]
+    var mcts_value_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP]
 
     # Per-step MCTS target staging buffers (for CPU→GPU upload per step)
     var mcts_step_policy_buf: DeviceBuffer[dtype]  # [N_ENVS * ACT]
-    var mcts_step_value_buf: DeviceBuffer[dtype]   # [N_ENVS]
+    var mcts_step_value_buf: DeviceBuffer[dtype]  # [N_ENVS]
 
     # Host buffers for uploading MCTS targets from CPU
-    var mcts_policy_host: HostBuffer[dtype]   # [N_ENVS * ACT]
-    var mcts_value_host: HostBuffer[dtype]    # [N_ENVS]
+    var mcts_policy_host: HostBuffer[dtype]  # [N_ENVS * ACT]
+    var mcts_value_host: HostBuffer[dtype]  # [N_ENVS]
 
     # ── Batch data (sampled on GPU) ──────────────────────────────────
-    var batch_obs_buf: DeviceBuffer[dtype]      # [BATCH * (K+1) * OBS]
-    var batch_actions_buf: DeviceBuffer[dtype]   # [BATCH * K * ACT]
+    var batch_obs_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * OBS]
+    var batch_actions_buf: DeviceBuffer[dtype]  # [BATCH * K * ACT]
     var batch_policies_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * ACT]
 
     # ── Value/Reward target scratch ──────────────────────────────────
-    var value_targets_buf: DeviceBuffer[dtype]   # [(K+1) * BATCH]  (scalar-transformed)
-    var reward_targets_buf: DeviceBuffer[dtype]  # [K * BATCH]      (scalar-transformed)
-    var value_target_dist_buf: DeviceBuffer[dtype]  # [BATCH * BINS] (two-hot encoded)
-    var reward_target_dist_buf: DeviceBuffer[dtype]  # [BATCH * BINS] (two-hot encoded)
+    var value_targets_buf: DeviceBuffer[
+        dtype
+    ]  # [(K+1) * BATCH]  (scalar-transformed)
+    var reward_targets_buf: DeviceBuffer[
+        dtype
+    ]  # [K * BATCH]      (scalar-transformed)
+    var value_target_dist_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * BINS] (two-hot encoded)
+    var reward_target_dist_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * BINS] (two-hot encoded)
 
     # ── K-step unroll scratch ────────────────────────────────────────
-    var hidden_buf: DeviceBuffer[dtype]          # [(K+1) * BATCH * LATENT]
-    var pred_out_buf: DeviceBuffer[dtype]        # [BATCH * PRED_OUT] (reused per step)
-    var dyn_input_buf: DeviceBuffer[dtype]       # [BATCH * DYN_IN]
-    var dyn_output_buf: DeviceBuffer[dtype]      # [BATCH * DYN_OUT]
+    var hidden_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * LATENT]
+    var pred_out_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * PRED_OUT] (reused per step)
+    var dyn_input_buf: DeviceBuffer[dtype]  # [BATCH * DYN_IN]
+    var dyn_output_buf: DeviceBuffer[dtype]  # [BATCH * DYN_OUT]
 
     # ── Network cache (for backward) ────────────────────────────────
-    var rep_cache_buf: DeviceBuffer[dtype]       # [BATCH * RepModel.CACHE_SIZE]
-    var dyn_cache_buf: DeviceBuffer[dtype]       # [K * BATCH * DynModel.CACHE_SIZE]
-    var pred_cache_buf: DeviceBuffer[dtype]      # [(K+1) * BATCH * PredModel.CACHE_SIZE]
+    var rep_cache_buf: DeviceBuffer[dtype]  # [BATCH * RepModel.CACHE_SIZE]
+    var dyn_cache_buf: DeviceBuffer[dtype]  # [K * BATCH * DynModel.CACHE_SIZE]
+    var pred_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [(K+1) * BATCH * PredModel.CACHE_SIZE]
 
     # ── Gradient scratch ─────────────────────────────────────────────
-    var grad_pred_out_buf: DeviceBuffer[dtype]   # [BATCH * PRED_OUT]
-    var grad_pred_in_buf: DeviceBuffer[dtype]    # [BATCH * LATENT]
-    var grad_dyn_out_buf: DeviceBuffer[dtype]    # [BATCH * DYN_OUT]
-    var grad_dyn_in_buf: DeviceBuffer[dtype]     # [BATCH * DYN_IN]
-    var grad_hidden_buf: DeviceBuffer[dtype]     # [BATCH * LATENT]
-    var grad_rep_out_buf: DeviceBuffer[dtype]    # [BATCH * LATENT]
-    var grad_rep_in_buf: DeviceBuffer[dtype]     # [BATCH * OBS]
+    var grad_pred_out_buf: DeviceBuffer[dtype]  # [BATCH * PRED_OUT]
+    var grad_pred_in_buf: DeviceBuffer[dtype]  # [BATCH * LATENT]
+    var grad_dyn_out_buf: DeviceBuffer[dtype]  # [BATCH * DYN_OUT]
+    var grad_dyn_in_buf: DeviceBuffer[dtype]  # [BATCH * DYN_IN]
+    var grad_hidden_buf: DeviceBuffer[dtype]  # [BATCH * LATENT]
+    var grad_rep_out_buf: DeviceBuffer[dtype]  # [BATCH * LATENT]
+    var grad_rep_in_buf: DeviceBuffer[dtype]  # [BATCH * OBS]
 
     # ── Network workspace (for forward/backward GPU) ─────────────────
-    var workspace_buf: DeviceBuffer[dtype]       # max workspace across all networks
+    var workspace_buf: DeviceBuffer[dtype]  # max workspace across all networks
 
     # ── Host transfer buffers ────────────────────────────────────────
     var batch_obs_host: HostBuffer[dtype]
@@ -583,7 +639,7 @@ struct MuZeroGPUState[Config: MuZeroConfig, N_ENVS: Int = 64, PER_ENV_CAP: Int =
     # Constructor
     # ══════════════════════════════════════════════════════════════════
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers and network states."""
 
         # ── Networks ─────────────────────────────────────────────────
@@ -609,9 +665,7 @@ struct MuZeroGPUState[Config: MuZeroConfig, N_ENVS: Int = 64, PER_ENV_CAP: Int =
         self.mcts_step_policy_buf = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * Self.ACT
         )
-        self.mcts_step_value_buf = ctx.enqueue_create_buffer[dtype](
-            Self.N_ENVS
-        )
+        self.mcts_step_value_buf = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
 
         self.mcts_policy_host = ctx.enqueue_create_host_buffer[dtype](
             Self.N_ENVS * Self.ACT
@@ -722,7 +776,7 @@ struct MuZeroGPUState[Config: MuZeroConfig, N_ENVS: Int = 64, PER_ENV_CAP: Int =
             Self.K * Self.BATCH
         )
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.representation = take.representation^
         self.dynamics = take.dynamics^
@@ -762,7 +816,9 @@ struct MuZeroGPUState[Config: MuZeroConfig, N_ENVS: Int = 64, PER_ENV_CAP: Int =
         self.value_targets_host = take.value_targets_host^
         self.reward_targets_host = take.reward_targets_host^
 
-    fn upload_from[_C: Int](
+    def upload_from[
+        _C: Int
+    ](
         mut self,
         cpu: MuZeroCPUState[Self.Config, _C],
         ctx: DeviceContext,
@@ -772,7 +828,9 @@ struct MuZeroGPUState[Config: MuZeroConfig, N_ENVS: Int = 64, PER_ENV_CAP: Int =
         self.dynamics.upload_from(cpu.dynamics, ctx)
         self.prediction.upload_from(cpu.prediction, ctx)
 
-    fn download_to[_C: Int](
+    def download_to[
+        _C: Int
+    ](
         mut self,
         mut cpu: MuZeroCPUState[Self.Config, _C],
         ctx: DeviceContext,

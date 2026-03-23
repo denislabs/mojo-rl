@@ -95,7 +95,7 @@ from ..collision.collision_primitives import (
 )
 
 
-fn normalize_qpos_quaternions[
+def normalize_qpos_quaternions[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -154,7 +154,7 @@ fn normalize_qpos_quaternions[
 
 
 @always_inline
-fn normalize_qpos_quaternions_gpu[
+def normalize_qpos_quaternions_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -218,7 +218,7 @@ fn normalize_qpos_quaternions_gpu[
 # =============================================================================
 
 
-fn _geom_world_pos[
+def _geom_world_pos[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -296,7 +296,7 @@ fn _geom_world_pos[
     return (wpx, wpy, wpz, wq[0], wq[1], wq[2], wq[3])
 
 
-fn detect_contacts[
+def detect_contacts[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -983,7 +983,7 @@ fn detect_contacts[
 
 
 @always_inline
-fn _geom_world_pos_gpu[
+def _geom_world_pos_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1062,7 +1062,7 @@ fn _geom_world_pos_gpu[
 
 
 @always_inline
-fn detect_contacts_gpu[
+def detect_contacts_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

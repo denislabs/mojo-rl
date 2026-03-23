@@ -15,7 +15,7 @@ struct LunarLanderState[dtype: DType](
     var left_leg_contact: Scalar[Self.dtype]  # 1.0 if touching, 0.0 otherwise
     var right_leg_contact: Scalar[Self.dtype]  # 1.0 if touching, 0.0 otherwise
 
-    fn __init__(out self):
+    def __init__(out self):
         self.x = 0.0
         self.y = 0.0
         self.vx = 0.0
@@ -25,7 +25,7 @@ struct LunarLanderState[dtype: DType](
         self.left_leg_contact = 0.0
         self.right_leg_contact = 0.0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.x = take.x
         self.y = take.y
         self.vx = take.vx
@@ -35,7 +35,7 @@ struct LunarLanderState[dtype: DType](
         self.left_leg_contact = take.left_leg_contact
         self.right_leg_contact = take.right_leg_contact
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.x = copy.x
         self.y = copy.y
         self.vx = copy.vx
@@ -45,7 +45,7 @@ struct LunarLanderState[dtype: DType](
         self.left_leg_contact = copy.left_leg_contact
         self.right_leg_contact = copy.right_leg_contact
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         """Check equality of two states."""
         return (
             self.x == other.x
@@ -58,7 +58,7 @@ struct LunarLanderState[dtype: DType](
             and self.right_leg_contact == other.right_leg_contact
         )
 
-    fn to_list(self) -> List[Scalar[Self.dtype]]:
+    def to_list(self) -> List[Scalar[Self.dtype]]:
         """Convert to list for agent interface."""
         var result = List[Scalar[Self.dtype]]()
         result.append(self.x)

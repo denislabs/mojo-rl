@@ -5,23 +5,23 @@ from mojo_rl.deep_agents.core.agents import RainbowConfig, GenericRainbowAgent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Rainbow DQN GPU Test ===")
 
     comptime N_ENVS = 256
 
     var agent = GenericRainbowAgent[
         RainbowConfig[
-            4,       # obs_dim
-            2,       # num_actions
-            51,      # num_atoms
-            -10.0,   # v_min
-            200.0,   # v_max
-            128,     # hidden
-            128,     # stream_hidden
-            3,       # n_step
-            100_000, # buffer_capacity
-            32,      # batch_size
+            4,  # obs_dim
+            2,  # num_actions
+            51,  # num_atoms
+            -10.0,  # v_min
+            200.0,  # v_max
+            128,  # hidden
+            128,  # stream_hidden
+            3,  # n_step
+            100_000,  # buffer_capacity
+            32,  # batch_size
             2.5e-4,  # lr
         ],
         N_ENVS,

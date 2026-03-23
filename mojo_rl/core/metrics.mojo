@@ -16,7 +16,7 @@ struct EpisodeMetrics(Copyable, ImplicitlyCopyable, Movable):
     var steps: Int
     var epsilon: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         episode: Int,
         total_reward: Float64,
@@ -28,13 +28,13 @@ struct EpisodeMetrics(Copyable, ImplicitlyCopyable, Movable):
         self.steps = steps
         self.epsilon = epsilon
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.episode = copy.episode
         self.total_reward = copy.total_reward
         self.steps = copy.steps
         self.epsilon = copy.epsilon
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.episode = take.episode
         self.total_reward = take.total_reward
         self.steps = take.steps
@@ -59,7 +59,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
     var algorithm_name: String
     var environment_name: String
 
-    fn __init__(
+    def __init__(
         out self,
         algorithm_name: String = "Unknown",
         environment_name: String = "Unknown",
@@ -74,17 +74,17 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
         self.algorithm_name = algorithm_name
         self.environment_name = environment_name
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.episodes = copy.episodes.copy()
         self.algorithm_name = copy.algorithm_name
         self.environment_name = copy.environment_name
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.episodes = take.episodes^
         self.algorithm_name = take.algorithm_name^
         self.environment_name = take.environment_name^
 
-    fn log_episode[
+    def log_episode[
         dtype: DType
     ](
         mut self,
@@ -105,25 +105,25 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
             EpisodeMetrics(episode, Float64(total_reward), steps, epsilon)
         )
 
-    fn num_episodes(self) -> Int:
+    def num_episodes(self) -> Int:
         """Return the number of logged episodes."""
         return len(self.episodes)
 
-    fn get_rewards(self) -> List[Float64]:
+    def get_rewards(self) -> List[Float64]:
         """Return a list of all episode rewards."""
         var rewards = List[Float64]()
         for i in range(len(self.episodes)):
             rewards.append(self.episodes[i].total_reward)
         return rewards^
 
-    fn get_steps(self) -> List[Int]:
+    def get_steps(self) -> List[Int]:
         """Return a list of all episode step counts."""
         var steps = List[Int]()
         for i in range(len(self.episodes)):
             steps.append(self.episodes[i].steps)
         return steps^
 
-    fn mean_reward(self) -> Float64:
+    def mean_reward(self) -> Float64:
         """Compute mean reward across all episodes."""
         if len(self.episodes) == 0:
             return 0.0
@@ -132,7 +132,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
             total += self.episodes[i].total_reward
         return total / Float64(len(self.episodes))
 
-    fn std_reward(self) -> Float64:
+    def std_reward(self) -> Float64:
         """Compute standard deviation of rewards across all episodes."""
         if len(self.episodes) == 0:
             return 0.0
@@ -143,7 +143,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
             sum_sq += diff * diff
         return sqrt(sum_sq / Float64(len(self.episodes)))
 
-    fn mean_steps(self) -> Float64:
+    def mean_steps(self) -> Float64:
         """Compute mean steps per episode."""
         if len(self.episodes) == 0:
             return 0.0
@@ -152,7 +152,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
             total += Float64(self.episodes[i].steps)
         return total / Float64(len(self.episodes))
 
-    fn max_reward(self) -> Float64:
+    def max_reward(self) -> Float64:
         """Return maximum reward achieved."""
         if len(self.episodes) == 0:
             return 0.0
@@ -162,7 +162,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
                 max_r = self.episodes[i].total_reward
         return max_r
 
-    fn min_reward(self) -> Float64:
+    def min_reward(self) -> Float64:
         """Return minimum reward achieved."""
         if len(self.episodes) == 0:
             return 0.0
@@ -172,7 +172,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
                 min_r = self.episodes[i].total_reward
         return min_r
 
-    fn mean_reward_last_n(self, n: Int) -> Float64:
+    def mean_reward_last_n(self, n: Int) -> Float64:
         """Compute mean reward over the last n episodes.
 
         Args:
@@ -190,7 +190,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
             total += self.episodes[i].total_reward
         return total / Float64(count)
 
-    fn moving_average(self, window: Int = 100) -> List[Float64]:
+    def moving_average(self, window: Int = 100) -> List[Float64]:
         """Compute moving average of rewards.
 
         Args:
@@ -210,7 +210,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
             result.append(sum_val / Float64(count))
         return result^
 
-    fn to_csv(self, filepath: String) raises:
+    def to_csv(self, filepath: String) raises:
         """Export metrics to a CSV file for visualization.
 
         The CSV file will contain columns:
@@ -240,7 +240,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
         with open(filepath, "w") as f:
             f.write(content)
 
-    fn print_summary(self):
+    def print_summary(self):
         """Print a summary of training metrics to stdout."""
         print("=" * 50)
         print("Training Summary")
@@ -257,7 +257,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
         print("  Mean steps:", self.mean_steps())
         print("=" * 50)
 
-    fn print_progress(self, episode: Int, window: Int = 100):
+    def print_progress(self, episode: Int, window: Int = 100):
         """Print progress update during training.
 
         Args:
@@ -290,7 +290,7 @@ struct TrainingMetrics(Copyable, ImplicitlyCopyable, Movable):
         )
 
 
-fn compute_success_rate(rewards: List[Float64], threshold: Float64) -> Float64:
+def compute_success_rate(rewards: List[Float64], threshold: Float64) -> Float64:
     """Compute the fraction of episodes with reward >= threshold.
 
     Args:
@@ -309,7 +309,7 @@ fn compute_success_rate(rewards: List[Float64], threshold: Float64) -> Float64:
     return Float64(count) / Float64(len(rewards))
 
 
-fn compute_convergence_episode(
+def compute_convergence_episode(
     rewards: List[Float64],
     target: Float64,
     window: Int = 100,

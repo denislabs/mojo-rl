@@ -52,15 +52,15 @@ struct Keycode(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime SDLK_EXTENDED_MASK = Self(1 << 29)
@@ -68,7 +68,7 @@ struct Keycode(Intable, TrivialRegisterPassable):
 
     @always_inline
     @staticmethod
-    fn SCANCODE_TO_KEYCODE(X: UInt32) -> UInt32:
+    def SCANCODE_TO_KEYCODE(X: UInt32) -> UInt32:
         return X | Self.SDLK_SCANCODE_MASK.value
 
     comptime SDLK_UNKNOWN = Self(0x00000000)
@@ -594,15 +594,15 @@ struct Keymod(Intable, TrivialRegisterPassable):
     var value: UInt16
 
     @always_inline
-    fn __init__(out self, value: UInt16):
+    def __init__(out self, value: UInt16):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime KMOD_NONE = Self(0x0000)

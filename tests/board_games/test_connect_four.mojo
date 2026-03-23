@@ -3,7 +3,7 @@
 from mojo_rl.envs.board_games.connect_four import ConnectFourEnv
 
 
-fn test_reset() raises:
+def test_reset() raises:
     print("test_reset...", end="")
     var env = ConnectFourEnv[DType.float64]()
     _ = env.reset()
@@ -28,7 +28,7 @@ fn test_reset() raises:
     print(" OK")
 
 
-fn test_gravity() raises:
+def test_gravity() raises:
     """Test that pieces drop to the bottom."""
     print("test_gravity...", end="")
     var env = ConnectFourEnv[DType.float64]()
@@ -56,7 +56,7 @@ fn test_gravity() raises:
     print(" OK")
 
 
-fn test_horizontal_win() raises:
+def test_horizontal_win() raises:
     """Test P0 wins with 4 in a row horizontally."""
     print("test_horizontal_win...", end="")
     var env = ConnectFourEnv[DType.float64]()
@@ -85,7 +85,7 @@ fn test_horizontal_win() raises:
     print(" OK")
 
 
-fn test_vertical_win() raises:
+def test_vertical_win() raises:
     """Test P0 wins with 4 in a column."""
     print("test_vertical_win...", end="")
     var env = ConnectFourEnv[DType.float64]()
@@ -110,7 +110,7 @@ fn test_vertical_win() raises:
     print(" OK")
 
 
-fn test_diagonal_win() raises:
+def test_diagonal_win() raises:
     """Test P0 wins diagonally (/)."""
     print("test_diagonal_win...", end="")
     var env = ConnectFourEnv[DType.float64]()
@@ -159,7 +159,7 @@ fn test_diagonal_win() raises:
     print(" OK")
 
 
-fn test_full_column_illegal() raises:
+def test_full_column_illegal() raises:
     """Test that a full column returns illegal move."""
     print("test_full_column_illegal...", end="")
     var env = ConnectFourEnv[DType.float64]()
@@ -184,7 +184,7 @@ fn test_full_column_illegal() raises:
     print(" OK")
 
 
-fn test_draw() raises:
+def test_draw() raises:
     """Test draw when board is full with no winner."""
     print("test_draw...", end="")
     var env = ConnectFourEnv[DType.float64]()
@@ -224,10 +224,16 @@ fn test_draw() raises:
         print(" FAIL: game should end within 42 moves, played", moves_played)
         return
 
-    print(" OK (game ended after", moves_played, "moves, result:", env.game_result(), ")")
+    print(
+        " OK (game ended after",
+        moves_played,
+        "moves, result:",
+        env.game_result(),
+        ")",
+    )
 
 
-fn test_obs_dim() raises:
+def test_obs_dim() raises:
     print("test_obs_dim...", end="")
     var env = ConnectFourEnv[DType.float64]()
     if env.obs_dim() != 126:
@@ -241,7 +247,7 @@ fn test_obs_dim() raises:
     print(" OK")
 
 
-fn test_canonical_obs() raises:
+def test_canonical_obs() raises:
     """Test canonical observation flipping."""
     print("test_canonical_obs...", end="")
     var env = ConnectFourEnv[DType.float64]()
@@ -271,7 +277,7 @@ fn test_canonical_obs() raises:
     print(" OK")
 
 
-fn test_random_game_completion() raises:
+def test_random_game_completion() raises:
     """Test that random games always terminate."""
     print("test_random_game_completion...", end="")
     var env = ConnectFourEnv[DType.float64]()
@@ -305,7 +311,7 @@ fn test_random_game_completion() raises:
     print(" OK")
 
 
-fn main() raises:
+def main() raises:
     print("=== Testing ConnectFourEnv ===\n")
 
     test_reset()

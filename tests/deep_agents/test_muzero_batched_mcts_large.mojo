@@ -6,7 +6,7 @@ from mojo_rl.deep_agents.muzero.mcts import MCTS
 from mojo_rl.nn.constants import dtype
 
 
-fn main():
+def main():
     print("=== Batched MCTS Benchmark (Large Networks) ===")
 
     # Larger network: 256-dim latent, 256-dim hidden (realistic MuZero size)
@@ -38,9 +38,21 @@ fn main():
     var t0 = perf_counter_ns()
     for _ in range(NUM_RUNS):
         _ = mcts1.search[
-            StateType.RepModel, StateType.DynModel, StateType.PredModel,
-            StateType.OptType, StateType.OptType, StateType.OptType,
-        ](obs, state.representation, state.dynamics, state.prediction, -10.0, 10.0, add_noise=False)
+            StateType.RepModel,
+            StateType.DynModel,
+            StateType.PredModel,
+            StateType.OptType,
+            StateType.OptType,
+            StateType.OptType,
+        ](
+            obs,
+            state.representation,
+            state.dynamics,
+            state.prediction,
+            -10.0,
+            10.0,
+            add_noise=False,
+        )
     var t1 = perf_counter_ns()
     var unbatched_ms = Float64(t1 - t0) / 1e6
 
@@ -49,9 +61,22 @@ fn main():
     var t2 = perf_counter_ns()
     for _ in range(NUM_RUNS):
         _ = mcts2.search_batched[
-            StateType.RepModel, StateType.DynModel, StateType.PredModel,
-            StateType.OptType, StateType.OptType, StateType.OptType, 8,
-        ](obs, state.representation, state.dynamics, state.prediction, -10.0, 10.0, add_noise=False)
+            StateType.RepModel,
+            StateType.DynModel,
+            StateType.PredModel,
+            StateType.OptType,
+            StateType.OptType,
+            StateType.OptType,
+            8,
+        ](
+            obs,
+            state.representation,
+            state.dynamics,
+            state.prediction,
+            -10.0,
+            10.0,
+            add_noise=False,
+        )
     var t3 = perf_counter_ns()
     var batched8_ms = Float64(t3 - t2) / 1e6
 
@@ -60,15 +85,50 @@ fn main():
     var t4 = perf_counter_ns()
     for _ in range(NUM_RUNS):
         _ = mcts3.search_batched[
-            StateType.RepModel, StateType.DynModel, StateType.PredModel,
-            StateType.OptType, StateType.OptType, StateType.OptType, 16,
-        ](obs, state.representation, state.dynamics, state.prediction, -10.0, 10.0, add_noise=False)
+            StateType.RepModel,
+            StateType.DynModel,
+            StateType.PredModel,
+            StateType.OptType,
+            StateType.OptType,
+            StateType.OptType,
+            16,
+        ](
+            obs,
+            state.representation,
+            state.dynamics,
+            state.prediction,
+            -10.0,
+            10.0,
+            add_noise=False,
+        )
     var t5 = perf_counter_ns()
     var batched16_ms = Float64(t5 - t4) / 1e6
 
     print("\nResults (", NUM_RUNS, "runs x", SIMS, "sims):")
-    print("  Unbatched: ", unbatched_ms, "ms (", unbatched_ms / Float64(NUM_RUNS), "ms/search)")
-    print("  Batched B=8: ", batched8_ms, "ms (", batched8_ms / Float64(NUM_RUNS), "ms/search) →", unbatched_ms / batched8_ms, "x")
-    print("  Batched B=16:", batched16_ms, "ms (", batched16_ms / Float64(NUM_RUNS), "ms/search) →", unbatched_ms / batched16_ms, "x")
+    print(
+        "  Unbatched: ",
+        unbatched_ms,
+        "ms (",
+        unbatched_ms / Float64(NUM_RUNS),
+        "ms/search)",
+    )
+    print(
+        "  Batched B=8: ",
+        batched8_ms,
+        "ms (",
+        batched8_ms / Float64(NUM_RUNS),
+        "ms/search) →",
+        unbatched_ms / batched8_ms,
+        "x",
+    )
+    print(
+        "  Batched B=16:",
+        batched16_ms,
+        "ms (",
+        batched16_ms / Float64(NUM_RUNS),
+        "ms/search) →",
+        unbatched_ms / batched16_ms,
+        "x",
+    )
 
     print("=== Done ===")

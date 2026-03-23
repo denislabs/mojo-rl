@@ -45,7 +45,7 @@ comptime TARGET_UPDATE_FREQ = 50
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("Autodiff DQN Agent GPU Test on CartPole")

@@ -138,7 +138,7 @@ struct AtariRenderer(Movable):
     var recorder: VideoRecorder
     var recording_counter: Int
 
-    fn __init__(
+    def __init__(
         out self,
         width: Int = WINDOW_WIDTH,
         height: Int = WINDOW_HEIGHT + HUD_HEIGHT,
@@ -170,7 +170,7 @@ struct AtariRenderer(Movable):
         self.recorder = VideoRecorder()
         self.recording_counter = 0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.window = take.window
         self.sdl_renderer = take.sdl_renderer
         self.texture = take.texture
@@ -193,12 +193,12 @@ struct AtariRenderer(Movable):
         self.recorder = take.recorder^
         self.recording_counter = take.recording_counter
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         if self.initialized:
             self.close()
         self.pixel_buf.free()
 
-    fn init_display(mut self) -> Bool:
+    def init_display(mut self) -> Bool:
         """Initialize SDL3 window, renderer, and streaming texture."""
         if self.initialized:
             return True
@@ -236,7 +236,7 @@ struct AtariRenderer(Movable):
             print("Failed to initialize Atari renderer")
             return False
 
-    fn handle_events(mut self) -> Bool:
+    def handle_events(mut self) -> Bool:
         """Process SDL events. Returns False if quit requested."""
         var event = Event()
 
@@ -264,7 +264,7 @@ struct AtariRenderer(Movable):
         self._update_action()
         return True
 
-    fn _handle_key_down(mut self, key: Int):
+    def _handle_key_down(mut self, key: Int):
         """Handle key press."""
         if key == Int(Keycode.SDLK_ESCAPE) or key == Int(Keycode.SDLK_Q):
             self.should_quit = True
@@ -297,7 +297,7 @@ struct AtariRenderer(Movable):
             except:
                 pass
 
-    fn _handle_key_up(mut self, key: Int):
+    def _handle_key_up(mut self, key: Int):
         """Handle key release."""
         if key == Int(Keycode.SDLK_UP):
             self.key_up = False
@@ -312,7 +312,7 @@ struct AtariRenderer(Movable):
         elif key == Int(Keycode.SDLK_R):
             self.key_reset = False
 
-    fn _update_action(mut self):
+    def _update_action(mut self):
         """Convert current key state to an ALE action."""
         # RESET takes priority over everything
         if self.key_reset:
@@ -372,7 +372,7 @@ struct AtariRenderer(Movable):
             else:
                 self.current_action = ACTION_NOOP
 
-    fn get_pixel_buffer(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
+    def get_pixel_buffer(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
         """Get the pixel buffer pointer for external rendering.
 
         Use with run_frame_with_video() which fills the buffer
@@ -380,7 +380,7 @@ struct AtariRenderer(Movable):
         """
         return self.pixel_buf
 
-    fn display_buffer(mut self):
+    def display_buffer(mut self):
         """Upload the pixel buffer to screen (call after buffer is filled).
 
         The buffer should already contain a complete 160×210 BGRA frame,
@@ -421,7 +421,7 @@ struct AtariRenderer(Movable):
         except:
             pass
 
-    fn display_buffer_with_hud(
+    def display_buffer_with_hud(
         mut self,
         score: Int,
         lives: Int,
@@ -474,7 +474,7 @@ struct AtariRenderer(Movable):
 
         self.flip()
 
-    fn flip(mut self):
+    def flip(mut self):
         """Present the frame and cap framerate. Also captures for recording."""
         try:
             # Capture frame for recording before present
@@ -502,7 +502,7 @@ struct AtariRenderer(Movable):
         except:
             pass
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up SDL resources."""
         try:
             if self.recorder.is_recording:
@@ -523,10 +523,10 @@ struct AtariRenderer(Movable):
 
         self.initialized = False
 
-    fn start_recording(mut self, filename: String) raises:
+    def start_recording(mut self, filename: String) raises:
         """Start recording to a video file."""
         self.recorder.start(filename, self.fps)
 
-    fn stop_recording(mut self) raises:
+    def stop_recording(mut self) raises:
         """Stop recording."""
         self.recorder.stop()

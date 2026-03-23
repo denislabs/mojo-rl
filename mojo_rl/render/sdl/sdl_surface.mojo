@@ -50,15 +50,15 @@ struct SurfaceFlags(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime SURFACE_PREALLOCATED = Self(0x00000001)
@@ -80,19 +80,19 @@ struct ScaleMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime SCALEMODE_INVALID = Self(-1)
@@ -111,19 +111,19 @@ struct FlipMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime FLIP_NONE = Self(0)
@@ -181,7 +181,7 @@ struct Surface(ImplicitlyCopyable, Movable):
     """Reserved for internal use."""
 
 
-fn create_surface(
+def create_surface(
     width: c_int,
     height: c_int,
     format: PixelFormat,
@@ -217,7 +217,7 @@ fn create_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_surface_from(
+def create_surface_from(
     width: c_int,
     height: c_int,
     format: PixelFormat,
@@ -269,7 +269,7 @@ fn create_surface_from(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
+def destroy_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     """Free a surface.
 
     It is safe to pass NULL to this function.
@@ -290,7 +290,7 @@ fn destroy_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     ]()(surface)
 
 
-fn get_surface_properties(
+def get_surface_properties(
     surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a surface.
@@ -336,7 +336,7 @@ fn get_surface_properties(
     ]()(surface)
 
 
-fn set_surface_colorspace(
+def set_surface_colorspace(
     surface: Ptr[Surface, MutAnyOrigin], colorspace: Colorspace
 ) raises:
     """Set the colorspace used by a surface.
@@ -368,7 +368,7 @@ fn set_surface_colorspace(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_colorspace(
+def get_surface_colorspace(
     surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> Colorspace:
     """Get the colorspace used by a surface.
@@ -397,7 +397,7 @@ fn get_surface_colorspace(
     ]()(surface)
 
 
-fn create_surface_palette(
+def create_surface_palette(
     surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> Ptr[Palette, MutAnyOrigin]:
     """Create a palette and associate it with a surface.
@@ -437,7 +437,7 @@ fn create_surface_palette(
     ]()(surface)
 
 
-fn set_surface_palette(
+def set_surface_palette(
     surface: Ptr[Surface, MutAnyOrigin],
     palette: Ptr[Palette, MutAnyOrigin],
 ) raises:
@@ -471,7 +471,7 @@ fn set_surface_palette(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_palette(
+def get_surface_palette(
     surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> Ptr[Palette, MutAnyOrigin]:
     """Get the palette used by a surface.
@@ -496,7 +496,7 @@ fn get_surface_palette(
     ]()(surface)
 
 
-fn add_surface_alternate_image(
+def add_surface_alternate_image(
     surface: Ptr[Surface, MutAnyOrigin], image: Ptr[Surface, MutAnyOrigin]
 ) raises:
     """Add an alternate version of a surface.
@@ -536,7 +536,7 @@ fn add_surface_alternate_image(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn surface_has_alternate_images(
+def surface_has_alternate_images(
     surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> Bool:
     """Return whether a surface has alternate versions available.
@@ -560,7 +560,7 @@ fn surface_has_alternate_images(
     ]()(surface)
 
 
-fn get_surface_images(
+def get_surface_images(
     surface: Ptr[Surface, MutAnyOrigin], count: Ptr[c_int, MutAnyOrigin]
 ) raises -> Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin]:
     """Get an array including all versions of a surface.
@@ -598,7 +598,7 @@ fn get_surface_images(
     ]()(surface, count)
 
 
-fn remove_surface_alternate_images(
+def remove_surface_alternate_images(
     surface: Ptr[Surface, MutAnyOrigin]
 ) raises -> None:
     """Remove all alternate versions of a surface.
@@ -622,7 +622,7 @@ fn remove_surface_alternate_images(
     ]()(surface)
 
 
-fn lock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises:
+def lock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises:
     """Set up a surface for directly accessing the pixels.
 
     Between calls to SDL_LockSurface() / SDL_UnlockSurface(), you can write to
@@ -658,7 +658,7 @@ fn lock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn unlock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
+def unlock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     """Release a surface after directly accessing the pixels.
 
     Args:
@@ -679,7 +679,7 @@ fn unlock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     ]()(surface)
 
 
-fn load_bmp_io(
+def load_bmp_io(
     src: Ptr[IOStream, MutAnyOrigin],
     closeio: Bool,
     out ret: Ptr[Surface, MutAnyOrigin],
@@ -715,7 +715,7 @@ fn load_bmp_io(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
+def load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
     """Load a BMP image from a file.
 
     The new surface should be freed with SDL_DestroySurface(). Not doing so
@@ -743,7 +743,7 @@ fn load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn save_bmp_io(
+def save_bmp_io(
     surface: Ptr[Surface, MutAnyOrigin],
     dst: Ptr[IOStream, MutAnyOrigin],
     closeio: Bool,
@@ -785,7 +785,7 @@ fn save_bmp_io(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
+def save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
     """Save a surface to a file.
 
     Surfaces with a 24-bit, 32-bit and paletted 8-bit format get saved in the
@@ -820,7 +820,7 @@ fn save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_rle(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) raises:
+def set_surface_rle(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) raises:
     """Set the RLE acceleration hint for a surface.
 
     If RLE is enabled, color key and alpha blending blits are much faster, but
@@ -849,7 +849,7 @@ fn set_surface_rle(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn surface_has_rle(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
+def surface_has_rle(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     """Returns whether the surface is RLE enabled.
 
     It is safe to pass a NULL `surface` here; it will return false.
@@ -873,7 +873,7 @@ fn surface_has_rle(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     ]()(surface)
 
 
-fn set_surface_color_key(
+def set_surface_color_key(
     surface: Ptr[Surface, MutAnyOrigin], enabled: Bool, key: UInt32
 ) raises:
     """Set the color key (transparent pixel) in a surface.
@@ -911,7 +911,7 @@ fn set_surface_color_key(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn surface_has_color_key(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
+def surface_has_color_key(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     """Returns whether the surface has a color key.
 
     It is safe to pass a NULL `surface` here; it will return false.
@@ -935,7 +935,7 @@ fn surface_has_color_key(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     ]()(surface)
 
 
-fn get_surface_color_key(
+def get_surface_color_key(
     surface: Ptr[Surface, MutAnyOrigin], key: Ptr[UInt32, MutAnyOrigin]
 ) raises:
     """Get the color key (transparent pixel) for a surface.
@@ -971,7 +971,7 @@ fn get_surface_color_key(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_color_mod(
+def set_surface_color_mod(
     surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
 ) raises:
     """Set an additional color value multiplied into blit operations.
@@ -1009,7 +1009,7 @@ fn set_surface_color_mod(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_color_mod(
+def get_surface_color_mod(
     surface: Ptr[Surface, MutAnyOrigin],
     r: Ptr[UInt8, MutAnyOrigin],
     g: Ptr[UInt8, MutAnyOrigin],
@@ -1047,7 +1047,7 @@ fn get_surface_color_mod(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_alpha_mod(
+def set_surface_alpha_mod(
     surface: Ptr[Surface, MutAnyOrigin], alpha: UInt8
 ) raises:
     """Set an additional alpha value used in blit operations.
@@ -1080,7 +1080,7 @@ fn set_surface_alpha_mod(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_alpha_mod(
+def get_surface_alpha_mod(
     surface: Ptr[Surface, MutAnyOrigin], alpha: Ptr[UInt8, MutAnyOrigin]
 ) raises:
     """Get the additional alpha value used in blit operations.
@@ -1111,7 +1111,7 @@ fn get_surface_alpha_mod(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_blend_mode(
+def set_surface_blend_mode(
     surface: Ptr[Surface, MutAnyOrigin], blend_mode: BlendMode
 ) raises:
     """Set the blend mode used for blit operations.
@@ -1143,7 +1143,7 @@ fn set_surface_blend_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_surface_blend_mode(
+def get_surface_blend_mode(
     surface: Ptr[Surface, MutAnyOrigin],
     blend_mode: Ptr[BlendMode, MutAnyOrigin],
 ) raises:
@@ -1175,7 +1175,7 @@ fn get_surface_blend_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_surface_clip_rect(
+def set_surface_clip_rect(
     surface: Ptr[Surface, MutAnyOrigin], rect: Ptr[Rect, ImmutAnyOrigin]
 ) raises -> Bool:
     """Set the clipping rectangle for a surface.
@@ -1211,7 +1211,7 @@ fn set_surface_clip_rect(
     ]()(surface, rect)
 
 
-fn get_surface_clip_rect(
+def get_surface_clip_rect(
     surface: Ptr[Surface, MutAnyOrigin], rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the clipping rectangle for a surface.
@@ -1247,7 +1247,7 @@ fn get_surface_clip_rect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn flip_surface(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) raises:
+def flip_surface(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) raises:
     """Flip a surface vertically or horizontally.
 
     Args:
@@ -1273,7 +1273,7 @@ fn flip_surface(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn duplicate_surface(
+def duplicate_surface(
     surface: Ptr[Surface, MutAnyOrigin],
     out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
@@ -1306,7 +1306,7 @@ fn duplicate_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn scale_surface(
+def scale_surface(
     surface: Ptr[Surface, MutAnyOrigin],
     width: c_int,
     height: c_int,
@@ -1348,7 +1348,7 @@ fn scale_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_surface(
+def convert_surface(
     surface: Ptr[Surface, MutAnyOrigin],
     format: PixelFormat,
     out ret: Ptr[Surface, MutAnyOrigin],
@@ -1391,7 +1391,7 @@ fn convert_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_surface_and_colorspace(
+def convert_surface_and_colorspace(
     surface: Ptr[Surface, MutAnyOrigin],
     format: PixelFormat,
     palette: Ptr[Palette, MutAnyOrigin],
@@ -1441,7 +1441,7 @@ fn convert_surface_and_colorspace(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_pixels(
+def convert_pixels(
     width: c_int,
     height: c_int,
     src_format: PixelFormat,
@@ -1493,7 +1493,7 @@ fn convert_pixels(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_pixels_and_colorspace(
+def convert_pixels_and_colorspace(
     width: c_int,
     height: c_int,
     src_format: PixelFormat,
@@ -1575,7 +1575,7 @@ fn convert_pixels_and_colorspace(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn premultiply_alpha(
+def premultiply_alpha(
     width: c_int,
     height: c_int,
     src_format: PixelFormat,
@@ -1643,7 +1643,7 @@ fn premultiply_alpha(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn premultiply_surface_alpha(
+def premultiply_surface_alpha(
     surface: Ptr[Surface, MutAnyOrigin], linear: Bool
 ) raises:
     """Premultiply the alpha in a surface.
@@ -1674,7 +1674,7 @@ fn premultiply_surface_alpha(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn clear_surface(
+def clear_surface(
     surface: Ptr[Surface, MutAnyOrigin],
     r: c_float,
     g: c_float,
@@ -1720,7 +1720,7 @@ fn clear_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn fill_surface_rect(
+def fill_surface_rect(
     dst: Ptr[Surface, MutAnyOrigin],
     rect: Ptr[Rect, ImmutAnyOrigin],
     color: UInt32,
@@ -1765,7 +1765,7 @@ fn fill_surface_rect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn fill_surface_rects(
+def fill_surface_rects(
     dst: Ptr[Surface, MutAnyOrigin],
     rects: Ptr[Rect, ImmutAnyOrigin],
     count: c_int,
@@ -1812,7 +1812,7 @@ fn fill_surface_rects(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface(
+def blit_surface(
     src: Ptr[Surface, MutAnyOrigin],
     srcrect: Ptr[Rect, ImmutAnyOrigin],
     dst: Ptr[Surface, MutAnyOrigin],
@@ -1905,7 +1905,7 @@ fn blit_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_unchecked(
+def blit_surface_unchecked(
     src: Ptr[Surface, MutAnyOrigin],
     srcrect: Ptr[Rect, ImmutAnyOrigin],
     dst: Ptr[Surface, MutAnyOrigin],
@@ -1949,7 +1949,7 @@ fn blit_surface_unchecked(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_scaled(
+def blit_surface_scaled(
     src: Ptr[Surface, MutAnyOrigin],
     srcrect: Ptr[Rect, ImmutAnyOrigin],
     dst: Ptr[Surface, MutAnyOrigin],
@@ -1995,7 +1995,7 @@ fn blit_surface_scaled(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_unchecked_scaled(
+def blit_surface_unchecked_scaled(
     src: Ptr[Surface, MutAnyOrigin],
     srcrect: Ptr[Rect, ImmutAnyOrigin],
     dst: Ptr[Surface, MutAnyOrigin],
@@ -2042,7 +2042,7 @@ fn blit_surface_unchecked_scaled(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn stretch_surface(
+def stretch_surface(
     src: Ptr[Surface, MutAnyOrigin],
     srcrect: Ptr[Rect, ImmutAnyOrigin],
     dst: Ptr[Surface, MutAnyOrigin],
@@ -2087,7 +2087,7 @@ fn stretch_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_tiled(
+def blit_surface_tiled(
     src: Ptr[Surface, MutAnyOrigin],
     srcrect: Ptr[Rect, ImmutAnyOrigin],
     dst: Ptr[Surface, MutAnyOrigin],
@@ -2132,7 +2132,7 @@ fn blit_surface_tiled(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_tiled_with_scale(
+def blit_surface_tiled_with_scale(
     src: Ptr[Surface, MutAnyOrigin],
     srcrect: Ptr[Rect, ImmutAnyOrigin],
     scale: c_float,
@@ -2185,7 +2185,7 @@ fn blit_surface_tiled_with_scale(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn blit_surface_9grid(
+def blit_surface_9grid(
     src: Ptr[Surface, MutAnyOrigin],
     srcrect: Ptr[Rect, ImmutAnyOrigin],
     left_width: c_int,
@@ -2264,7 +2264,7 @@ fn blit_surface_9grid(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn map_surface_rgb(
+def map_surface_rgb(
     surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
 ) raises -> UInt32:
     """Map an RGB triple to an opaque pixel value for a surface.
@@ -2308,7 +2308,7 @@ fn map_surface_rgb(
     ]()(surface, r, g, b)
 
 
-fn map_surface_rgba(
+def map_surface_rgba(
     surface: Ptr[Surface, MutAnyOrigin],
     r: UInt8,
     g: UInt8,
@@ -2361,7 +2361,7 @@ fn map_surface_rgba(
     ]()(surface, r, g, b, a)
 
 
-fn read_surface_pixel(
+def read_surface_pixel(
     surface: Ptr[Surface, MutAnyOrigin],
     x: c_int,
     y: c_int,
@@ -2418,7 +2418,7 @@ fn read_surface_pixel(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn read_surface_pixel_float(
+def read_surface_pixel_float(
     surface: Ptr[Surface, MutAnyOrigin],
     x: c_int,
     y: c_int,
@@ -2472,7 +2472,7 @@ fn read_surface_pixel_float(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn write_surface_pixel(
+def write_surface_pixel(
     surface: Ptr[Surface, MutAnyOrigin],
     x: c_int,
     y: c_int,
@@ -2525,7 +2525,7 @@ fn write_surface_pixel(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn write_surface_pixel_float(
+def write_surface_pixel_float(
     surface: Ptr[Surface, MutAnyOrigin],
     x: c_int,
     y: c_int,

@@ -52,7 +52,7 @@ struct GUID(ImplicitlyCopyable, Movable):
     var data: ArrayHelper[UInt8, 16, MutAnyOrigin]
 
 
-fn guid_to_string(
+def guid_to_string(
     guid: GUID, psz_guid: Ptr[c_char, MutAnyOrigin], cb_guid: c_int
 ) raises -> None:
     """Get an ASCII string representation for a given SDL_GUID.
@@ -77,7 +77,7 @@ fn guid_to_string(
     ]()(guid, psz_guid, cb_guid)
 
 
-fn string_to_guid(var pch_guid: String) raises -> GUID:
+def string_to_guid(var pch_guid: String) raises -> GUID:
     """Convert a GUID string into a SDL_GUID structure.
 
     Performs no error checking. If this function is given a string containing

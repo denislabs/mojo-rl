@@ -55,15 +55,15 @@ struct SensorID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -123,19 +123,19 @@ struct SensorType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime SENSOR_INVALID = Self(-1)
@@ -157,7 +157,7 @@ struct SensorType(Indexer, Intable, TrivialRegisterPassable):
     comptime SENSOR_COUNT = Self(7)
 
 
-fn get_sensors(
+def get_sensors(
     count: Ptr[c_int, MutAnyOrigin], out ret: Ptr[SensorID, MutAnyOrigin]
 ) raises:
     """Get a list of currently connected sensors.
@@ -183,7 +183,7 @@ fn get_sensors(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_sensor_name_for_id(
+def get_sensor_name_for_id(
     instance_id: SensorID,
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the implementation dependent name of a sensor.
@@ -206,7 +206,7 @@ fn get_sensor_name_for_id(
     ]()(instance_id)
 
 
-fn get_sensor_type_for_id(instance_id: SensorID) raises -> SensorType:
+def get_sensor_type_for_id(instance_id: SensorID) raises -> SensorType:
     """Get the type of a sensor.
 
     This can be called before any sensors are opened.
@@ -226,7 +226,7 @@ fn get_sensor_type_for_id(instance_id: SensorID) raises -> SensorType:
     ]()(instance_id)
 
 
-fn get_sensor_non_portable_type_for_id(instance_id: SensorID) raises -> c_int:
+def get_sensor_non_portable_type_for_id(instance_id: SensorID) raises -> c_int:
     """Get the platform dependent type of a sensor.
 
     This can be called before any sensors are opened.
@@ -248,7 +248,7 @@ fn get_sensor_non_portable_type_for_id(instance_id: SensorID) raises -> c_int:
     ]()(instance_id)
 
 
-fn open_sensor(
+def open_sensor(
     instance_id: SensorID, out ret: Ptr[Sensor, MutAnyOrigin]
 ) raises:
     """Open a sensor for use.
@@ -272,7 +272,7 @@ fn open_sensor(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_sensor_from_id(
+def get_sensor_from_id(
     instance_id: SensorID, out ret: Ptr[Sensor, MutAnyOrigin]
 ) raises:
     """Return the SDL_Sensor associated with an instance ID.
@@ -296,7 +296,7 @@ fn get_sensor_from_id(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_sensor_properties(
+def get_sensor_properties(
     sensor: Ptr[Sensor, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a sensor.
@@ -318,7 +318,7 @@ fn get_sensor_properties(
     ]()(sensor)
 
 
-fn get_sensor_name(
+def get_sensor_name(
     sensor: Ptr[Sensor, MutAnyOrigin], out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the implementation dependent name of a sensor.
@@ -342,7 +342,7 @@ fn get_sensor_name(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_sensor_type(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorType:
+def get_sensor_type(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorType:
     """Get the type of a sensor.
 
     Args:
@@ -362,7 +362,7 @@ fn get_sensor_type(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorType:
     ]()(sensor)
 
 
-fn get_sensor_non_portable_type(
+def get_sensor_non_portable_type(
     sensor: Ptr[Sensor, MutAnyOrigin]
 ) raises -> c_int:
     """Get the platform dependent type of a sensor.
@@ -383,7 +383,7 @@ fn get_sensor_non_portable_type(
     ]()(sensor)
 
 
-fn get_sensor_id(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorID:
+def get_sensor_id(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorID:
     """Get the instance ID of a sensor.
 
     Args:
@@ -403,7 +403,7 @@ fn get_sensor_id(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorID:
     ]()(sensor)
 
 
-fn get_sensor_data(
+def get_sensor_data(
     sensor: Ptr[Sensor, MutAnyOrigin],
     data: Ptr[c_float, MutAnyOrigin],
     num_values: c_int,
@@ -437,7 +437,7 @@ fn get_sensor_data(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn close_sensor(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> None:
+def close_sensor(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> None:
     """Close a sensor previously opened with SDL_OpenSensor().
 
     Args:
@@ -451,7 +451,7 @@ fn close_sensor(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> None:
     ]()(sensor)
 
 
-fn update_sensors() raises -> None:
+def update_sensors() raises -> None:
     """Update the current state of the open sensors.
 
     This is called automatically by the event loop if sensor events are

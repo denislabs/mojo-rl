@@ -9,7 +9,7 @@ trait TabularAgent:
     work with any tabular agent.
     """
 
-    fn select_action(self, state_idx: Int) -> Int:
+    def select_action(self, state_idx: Int) -> Int:
         """Select an action given the state index.
 
         Args:
@@ -20,7 +20,7 @@ trait TabularAgent:
         """
         ...
 
-    fn update(
+    def update(
         mut self,
         state_idx: Int,
         action: Int,
@@ -39,14 +39,14 @@ trait TabularAgent:
         """
         ...
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay exploration rate after an episode."""
         ...
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Get the current exploration rate."""
         ...
 
-    fn get_best_action(self, state_idx: Int) -> Int:
+    def get_best_action(self, state_idx: Int) -> Int:
         """Get the greedy action for evaluation (no exploration)."""
         ...

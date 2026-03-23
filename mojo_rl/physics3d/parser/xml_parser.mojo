@@ -54,7 +54,7 @@ struct ParsedModel:
     var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
     var TIMESTEP: Float64  # <option timestep="..."/>
 
-    fn __init__(
+    def __init__(
         out self,
         nbody: Int = 0,
         njoint: Int = 0,
@@ -84,7 +84,7 @@ struct ParsedModel:
         self.ANGLE_DEG = angle_deg
         self.TIMESTEP = timestep
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         return (
             "ParsedModel("
             + "NBODY="
@@ -120,7 +120,7 @@ struct ParsedModel:
 # =============================================================================
 
 
-fn _count_exact(xml: String, search: String) -> Int:
+def _count_exact(xml: String, search: String) -> Int:
     """Count non-overlapping occurrences of `search` in `xml`."""
     var count = 0
     var start = 0
@@ -133,7 +133,7 @@ fn _count_exact(xml: String, search: String) -> Int:
     return count
 
 
-fn _strip_xml_comments(s: String) -> String:
+def _strip_xml_comments(s: String) -> String:
     """Strip all XML comments <!-- ... --> from the string.
 
     Handles multiple comments and nested <!-- in comment text.
@@ -150,7 +150,7 @@ fn _strip_xml_comments(s: String) -> String:
     return result
 
 
-fn _count_tag(xml: String, tag: String) -> Int:
+def _count_tag(xml: String, tag: String) -> Int:
     """Count occurrences of `<tag` followed by SPACE, >, /, NEWLINE, or TAB.
 
     This intentionally does NOT match longer tag names: `<body ` will NOT
@@ -166,7 +166,7 @@ fn _count_tag(xml: String, tag: String) -> Int:
     )
 
 
-fn _extract_section(xml: String, tag: String) -> String:
+def _extract_section(xml: String, tag: String) -> String:
     """Return the substring from `<tag` to (including) `</tag>`.
 
     Returns empty string if the section is not found.
@@ -188,7 +188,7 @@ fn _extract_section(xml: String, tag: String) -> String:
 # =============================================================================
 
 
-fn _trim(s: String) -> String:
+def _trim(s: String) -> String:
     """Trim leading/trailing whitespace (space, tab, newline, carriage return).
     """
     var start = 0
@@ -210,7 +210,7 @@ fn _trim(s: String) -> String:
     return String(s[start:end])
 
 
-fn _extract_opening_tag(xml: String, pos: Int) -> String:
+def _extract_opening_tag(xml: String, pos: Int) -> String:
     """From `<tag` at pos, extract everything up to (and including) `>` or `/>`.
 
     Returns the raw opening-tag string for attribute parsing.
@@ -221,7 +221,7 @@ fn _extract_opening_tag(xml: String, pos: Int) -> String:
     return String(xml[pos : end + 1])
 
 
-fn _extract_attr(tag: String, attr: String) -> String:
+def _extract_attr(tag: String, attr: String) -> String:
     """Extract value from attr="value" or attr='value' in a tag string.
 
     Returns "" if not found.
@@ -245,13 +245,13 @@ fn _extract_attr(tag: String, attr: String) -> String:
     return String("")
 
 
-fn _digit_value(c: String) -> Int:
+def _digit_value(c: String) -> Int:
     """Return integer value 0-9 for digit character; -1 if not a digit."""
     var digits = "0123456789"
     return digits.find(c)
 
 
-fn _parse_float(s: String) -> Float64:
+def _parse_float(s: String) -> Float64:
     """Parse a float string such as "0.7", "-3.14", "1e-3" to Float64.
 
     Uses slice-based character iteration (s[i:i+1]) — comptime-safe.
@@ -336,7 +336,7 @@ fn _parse_float(s: String) -> Float64:
     return result
 
 
-fn _parse_int_str(s: String) -> Int:
+def _parse_int_str(s: String) -> Int:
     """Parse "3", "-1" etc. to Int."""
     var t = _trim(s)
     if len(t) == 0:
@@ -356,7 +356,7 @@ fn _parse_int_str(s: String) -> Int:
     return val
 
 
-fn _split_spaces(s: String, mut parts: List[String]):
+def _split_spaces(s: String, mut parts: List[String]):
     """Split string by whitespace runs into parts (in-place fill)."""
     var t = _trim(s)
     var start = 0
@@ -382,7 +382,7 @@ fn _split_spaces(s: String, mut parts: List[String]):
         start = end
 
 
-fn _parse_vec3(s: String) -> Tuple[Float64, Float64, Float64]:
+def _parse_vec3(s: String) -> Tuple[Float64, Float64, Float64]:
     """Parse "x y z" space-separated string into (x, y, z)."""
     var parts = List[String]()
     _split_spaces(s, parts)
@@ -398,7 +398,7 @@ fn _parse_vec3(s: String) -> Tuple[Float64, Float64, Float64]:
     return (x, y, z)
 
 
-fn _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
+def _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     """Parse MuJoCo "w x y z" quaternion string into internal (qx, qy, qz, qw).
 
     MuJoCo XML stores all quaternion attributes (body quat, geom quat, iquat,
@@ -421,7 +421,7 @@ fn _parse_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
     return (qx, qy, qz, qw)
 
 
-fn _sqrt_f64(x: Float64) -> Float64:
+def _sqrt_f64(x: Float64) -> Float64:
     """Sqrt via Newton–Raphson (comptime-safe, no stdlib)."""
     if x <= Float64(0):
         return Float64(0)
@@ -435,7 +435,7 @@ fn _sqrt_f64(x: Float64) -> Float64:
     return g
 
 
-fn _axisangle_to_quat(
+def _axisangle_to_quat(
     ax: Float64, ay: Float64, az: Float64, angle: Float64
 ) -> Tuple[Float64, Float64, Float64, Float64]:
     """Convert axis-angle (ax,ay,az,angle_rad) to quaternion (qx,qy,qz,qw).
@@ -477,7 +477,7 @@ fn _axisangle_to_quat(
     return (nx * sin_a, ny * sin_a, nz * sin_a, cos_a)
 
 
-fn _parse_axisangle_to_quat(
+def _parse_axisangle_to_quat(
     s: String,
     deg_factor: Float64 = 1.0,
 ) -> Tuple[Float64, Float64, Float64, Float64]:
@@ -502,7 +502,7 @@ fn _parse_axisangle_to_quat(
     return _axisangle_to_quat(ax, ay, az, angle)
 
 
-fn _fromto_to_pos_quat(
+def _fromto_to_pos_quat(
     s: String,
 ) -> Tuple[
     Float64,
@@ -609,7 +609,7 @@ fn _fromto_to_pos_quat(
     return (mx, my, mz, qx, qy, qz, qw, half_length, Float64(0))
 
 
-fn _find_joint_index_by_name(worldbody: String, joint_name: String) -> Int:
+def _find_joint_index_by_name(worldbody: String, joint_name: String) -> Int:
     """Return 0-based index of first <joint name="joint_name"> in DFS order, or -1.
     """
     var search_name = 'name="' + joint_name + '"'
@@ -631,7 +631,7 @@ fn _find_joint_index_by_name(worldbody: String, joint_name: String) -> Int:
     return -1
 
 
-fn _count_joints_with_type(xml: String, joint_type: String) -> Int:
+def _count_joints_with_type(xml: String, joint_type: String) -> Int:
     """Count <joint ... type="joint_type" ...> occurrences.
 
     Scans each `<joint` tag's content and looks for `type="joint_type"`.
@@ -660,7 +660,7 @@ fn _count_joints_with_type(xml: String, joint_type: String) -> Int:
 # =============================================================================
 
 
-fn _xml_compiler_angle_is_deg[xml: String]() -> Bool:
+def _xml_compiler_angle_is_deg[xml: String]() -> Bool:
     """Return True when <compiler angle="degree"/> is present. Comptime-safe."""
     var t = xml.find("<compiler")
     if t == -1:
@@ -673,7 +673,7 @@ fn _xml_compiler_angle_is_deg[xml: String]() -> Bool:
     return _trim(angle_val) == "degree"
 
 
-fn _xml_compiler_inertiafromgeom[xml: String]() -> Bool:
+def _xml_compiler_inertiafromgeom[xml: String]() -> Bool:
     """Return True when <compiler inertiafromgeom="true"/> is present. Comptime-safe.
     """
     var t = xml.find("<compiler")
@@ -687,7 +687,7 @@ fn _xml_compiler_inertiafromgeom[xml: String]() -> Bool:
     return _trim(val) == "true"
 
 
-fn _xml_compiler_settotalmass[xml: String]() -> Float64:
+def _xml_compiler_settotalmass[xml: String]() -> Float64:
     """Return settotalmass value from <compiler settotalmass="..."/>. Returns -1.0 if absent. Comptime-safe.
     """
     var t = xml.find("<compiler")
@@ -704,7 +704,7 @@ fn _xml_compiler_settotalmass[xml: String]() -> Float64:
     return _parse_float(trimmed)
 
 
-fn parse_xml(xml: String) -> ParsedModel:
+def parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 
     Designed to be called at comptime:
@@ -839,7 +839,7 @@ struct ComptimeActData(Copyable, Movable):
     # qpos address of the first free joint (-1 if no free joint present).
     var free_joint_qpos_adr: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize with safe defaults: gears=1.0, dof_adr=-1, all others=0/False.
         """
         self.motor_gears = InlineArray[Float64, 32](fill=1.0)
@@ -854,7 +854,7 @@ struct ComptimeActData(Copyable, Movable):
         self.nq = 0
         self.free_joint_qpos_adr = -1
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         # InlineArray is not ImplicitlyCopyable; copy element-by-element.
         self.motor_gears = InlineArray[Float64, 32](fill=1.0)
         self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
@@ -877,7 +877,7 @@ struct ComptimeActData(Copyable, Movable):
         for i in range(64):
             self.qpos0[i] = copy.qpos0[i]
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.motor_gears = take.motor_gears^
         self.motor_dof_adr = take.motor_dof_adr^
         self.joint_is_limited = take.joint_is_limited^
@@ -891,7 +891,7 @@ struct ComptimeActData(Copyable, Movable):
         self.free_joint_qpos_adr = take.free_joint_qpos_adr
 
 
-fn _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
+def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
     """Return DOF address of joint with the given name in worldbody DFS order.
 
     Scans joints in DFS order, accumulating DOF count until the target joint
@@ -933,7 +933,7 @@ fn _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
     return -1
 
 
-fn parse_xml_model_data(xml: String) -> ComptimeActData:
+def parse_xml_model_data(xml: String) -> ComptimeActData:
     """Parse XML and return actuator/joint data as InlineArrays.
 
     Designed to be called at struct-level comptime:
@@ -1109,7 +1109,7 @@ fn parse_xml_model_data(xml: String) -> ComptimeActData:
 # =============================================================================
 
 
-fn _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:
+def _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:
     """Return gear ratio for the n-th <motor> in <actuator> section.
 
     Returns 1.0 if not found or no gear attribute. Comptime-safe.
@@ -1147,7 +1147,7 @@ fn _xml_nth_motor_gear[xml: String, n: Int]() -> Float64:
     return Float64(1.0)
 
 
-fn _xml_nth_motor_dof_adr[xml: String, n: Int]() -> Int:
+def _xml_nth_motor_dof_adr[xml: String, n: Int]() -> Int:
     """Return DOF address for the n-th motor's actuated joint.
 
     DOF address = sum of NV for all joints before the target joint in DFS order.
@@ -1222,7 +1222,7 @@ fn _xml_nth_motor_dof_adr[xml: String, n: Int]() -> Int:
     return -1
 
 
-fn _xml_nth_joint_qpos_adr[xml: String, n: Int]() -> Int:
+def _xml_nth_joint_qpos_adr[xml: String, n: Int]() -> Int:
     """Return qpos address for the n-th joint in worldbody DFS order.
 
     qpos address = sum of NQ for all joints before joint n. Comptime-safe.
@@ -1264,7 +1264,7 @@ fn _xml_nth_joint_qpos_adr[xml: String, n: Int]() -> Int:
     return qpos_adr
 
 
-fn _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
+def _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
     """Return whether the n-th joint in worldbody DFS order has limits.
 
     Checks per-joint limited attr first; falls back to <default><joint limited=.../>.
@@ -1318,7 +1318,7 @@ fn _xml_nth_joint_limited[xml: String, n: Int]() -> Bool:
     return False
 
 
-fn _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
+def _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
     """Return range_min for the n-th joint in worldbody DFS order (radians).
 
     Automatically converts from degrees when <compiler angle="degree"/> is set.
@@ -1363,7 +1363,7 @@ fn _xml_nth_joint_range_min[xml: String, n: Int]() -> Float64:
     return Float64(0.0)
 
 
-fn _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
+def _xml_nth_joint_range_max[xml: String, n: Int]() -> Float64:
     """Return range_max for the n-th joint in worldbody DFS order (radians).
 
     Automatically converts from degrees when <compiler angle="degree"/> is set.

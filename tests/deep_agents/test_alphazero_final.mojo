@@ -8,9 +8,14 @@ from mojo_rl.nn.optimizer import Adam
 from mojo_rl.deep_agents.alphazero import GenericAlphaZeroAgent
 from mojo_rl.deep_agents.alphazero.configs import AlphaZeroConfig
 from mojo_rl.deep_agents.muzero.strategies import (
-    DirichletNoise, AlphaGoPUCT, SelfPlay,
+    DirichletNoise,
+    AlphaGoPUCT,
+    SelfPlay,
 )
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, MinimaxTicTacToe
+from mojo_rl.deep_agents.muzero.evaluators import (
+    RandomOpponent,
+    MinimaxTicTacToe,
+)
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
@@ -26,7 +31,7 @@ struct TTTConfig(AlphaZeroConfig):
     comptime OptType = Adam[LR=0.001]
     comptime batch_size: Int = 64
     comptime buffer_capacity: Int = 50000
-    comptime history_window: Int = 3     # Keep last 3 iterations
+    comptime history_window: Int = 3  # Keep last 3 iterations
     comptime num_simulations: Int = 25
     comptime max_nodes: Int = 64
     comptime Noise = DirichletNoise[0.25, 0.25]
@@ -34,7 +39,7 @@ struct TTTConfig(AlphaZeroConfig):
     comptime Players = SelfPlay
 
 
-fn main() raises:
+def main() raises:
     print("=== AlphaZero: Batch-Then-Train + Arena ===")
     print("SIMS=25, cpuct=1.0, LR=0.001/Adam")
     print("Arena: 40 games, 55% threshold (draws=0.5)")
@@ -75,7 +80,7 @@ fn main() raises:
             arena_env,
             num_steps=1000,
             warmup_steps=0,
-            gradient_steps=0,       # No training during collection
+            gradient_steps=0,  # No training during collection
             print_every=100000,
         )
 
@@ -95,8 +100,10 @@ fn main() raises:
         # 4. Arena comparison (skip first 5 iters to let model learn first)
         if iter >= 5:
             var accepted = agent.arena_compare[TTTCPU](
-                arena_env, best_params,
-                num_games=40, threshold=0.55,
+                arena_env,
+                best_params,
+                num_games=40,
+                threshold=0.55,
             )
             if accepted:
                 for i in range(PS):
@@ -110,10 +117,19 @@ fn main() raises:
                 best_params[i] = agent.state.prediction.params[i]
 
         # 5. Evaluate
-        print("Iter", iter + 1,
-              "(replay:", agent.state.buf_size,
-              "train:", num_train_steps,
-              "arena:", arena_accepts, "/", arena_rejects, ")")
+        print(
+            "Iter",
+            iter + 1,
+            "(replay:",
+            agent.state.buf_size,
+            "train:",
+            num_train_steps,
+            "arena:",
+            arena_accepts,
+            "/",
+            arena_rejects,
+            ")",
+        )
         var r = agent.evaluate_against[TTTCPU](eval_env, random_eval, 100)
         print("  vs Random: W", r[0], "D", r[1], "L", r[2])
         var m = agent.evaluate_against[TTTCPU](eval_env, minimax_eval, 100)

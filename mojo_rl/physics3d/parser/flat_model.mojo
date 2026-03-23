@@ -45,7 +45,7 @@ struct BodyData(Copyable, ImplicitlyCopyable, Movable):
     var iyy: Float64
     var izz: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         parent: Int = 0,
         mass: Float64 = 1.0,
@@ -123,7 +123,7 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
     var solimp_limit_3: Float64  # -1.0 = use model default
     var solimp_limit_4: Float64  # -1.0 = use model default
 
-    fn __init__(
+    def __init__(
         out self,
         jnt_type: Int = JNT_HINGE,
         body_id: Int = 1,
@@ -231,7 +231,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var rgba_a: Float64
     var material_id: Int  # index into FlatModelDef.materials[], -1 if none
 
-    fn __init__(
+    def __init__(
         out self,
         body_id: Int = 0,
         geom_type: Int = _GEOM_SPHERE,
@@ -320,7 +320,7 @@ struct ActuatorData(Copyable, ImplicitlyCopyable, Movable):
     var ctrl_max: Float64
     var is_ctrl_limited: Bool
 
-    fn __init__(
+    def __init__(
         out self,
         joint_id: Int = -1,
         gear: Float64 = 1.0,
@@ -376,7 +376,7 @@ struct TextureData(Copyable, ImplicitlyCopyable, Movable):
     var height: Int
     var random: Float64  # random mark density (0..1)
 
-    fn __init__(
+    def __init__(
         out self,
         tex_type: Int = TEX_2D,
         builtin: Int = TEX_BUILTIN_NONE,
@@ -431,7 +431,7 @@ struct MaterialData(Copyable, ImplicitlyCopyable, Movable):
     var texrepeat_v: Float64
     var texuniform: Bool  # tile texture uniformly across surface
 
-    fn __init__(
+    def __init__(
         out self,
         tex_id: Int = -1,
         rgba_r: Float64 = 1.0,
@@ -495,7 +495,7 @@ struct LightData(Copyable, ImplicitlyCopyable, Movable):
     var exponent: Float64  # spot exponent
     var mode: Int  # LIGHT_MODE_*
 
-    fn __init__(
+    def __init__(
         out self,
         body_id: Int = 0,
         pos_x: Float64 = 0.0,
@@ -569,7 +569,7 @@ struct CameraData(Copyable, ImplicitlyCopyable, Movable):
     var ipd: Float64  # interpupillary distance (stereo)
     var mode: Int  # CAM_MODE_*
 
-    fn __init__(
+    def __init__(
         out self,
         body_id: Int = 0,
         pos_x: Float64 = 0.0,
@@ -617,7 +617,7 @@ struct SiteData(Copyable, ImplicitlyCopyable, Movable):
     var size_1: Float64  # half-length (capsule/cylinder) or half-y (box)
     var size_2: Float64  # half-z (box only)
 
-    fn __init__(
+    def __init__(
         out self,
         body_id: Int = 0,
         site_type: Int = 1,  # _GEOM_SPHERE
@@ -690,7 +690,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
     var motor_ctrl_min: Float64
     var motor_ctrl_max: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         joint_armature: Float64 = 0.0,
         joint_damping: Float64 = 0.0,
@@ -808,7 +808,7 @@ struct FlatModelDef[
     var gravity_z: Float64
     var timestep: Float64
 
-    fn __init__(out self):
+    def __init__(out self):
         self.bodies = InlineArray[BodyData, Self.NBODY](fill=BodyData())
         self.joints = InlineArray[JointData, Self.NJOINT](fill=JointData())
         self.geoms = InlineArray[GeomData, Self.NGEOM](fill=GeomData())
@@ -829,7 +829,7 @@ struct FlatModelDef[
         self.gravity_z = Float64(-9.81)
         self.timestep = Float64(0.01)
 
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         MAX_CONTACTS: Int,
         MAX_EQUALITY: Int = 0,

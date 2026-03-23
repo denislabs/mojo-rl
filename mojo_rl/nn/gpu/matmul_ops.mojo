@@ -36,7 +36,7 @@ comptime TILE_APPLE = 8
 
 
 @always_inline
-fn matmul_bias_kernel[
+def matmul_bias_kernel[
     BATCH: Int,
     IN_DIM: Int,
     OUT_DIM: Int,
@@ -61,14 +61,14 @@ fn matmul_bias_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # Start with bias
@@ -109,7 +109,7 @@ fn matmul_bias_kernel[
 
 
 @always_inline
-fn matmul_bias_cache_input_kernel[
+def matmul_bias_cache_input_kernel[
     BATCH: Int,
     IN_DIM: Int,
     OUT_DIM: Int,
@@ -139,14 +139,14 @@ fn matmul_bias_cache_input_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # Start with bias
@@ -190,7 +190,7 @@ fn matmul_bias_cache_input_kernel[
 
 
 @always_inline
-fn matmul_bias_tanh_cached_kernel[
+def matmul_bias_tanh_cached_kernel[
     BATCH: Int,
     IN_DIM: Int,
     OUT_DIM: Int,
@@ -225,14 +225,14 @@ fn matmul_bias_tanh_cached_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # Start with bias
@@ -274,7 +274,7 @@ fn matmul_bias_tanh_cached_kernel[
 
 
 @always_inline
-fn matmul_bias_tanh_kernel[
+def matmul_bias_tanh_kernel[
     BATCH: Int,
     IN_DIM: Int,
     OUT_DIM: Int,
@@ -301,14 +301,14 @@ fn matmul_bias_tanh_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: output.element_type = 0
@@ -348,7 +348,7 @@ fn matmul_bias_tanh_kernel[
 
 
 @always_inline
-fn matmul_bias_relu_cached_kernel[
+def matmul_bias_relu_cached_kernel[
     BATCH: Int,
     IN_DIM: Int,
     OUT_DIM: Int,
@@ -383,14 +383,14 @@ fn matmul_bias_relu_cached_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: output.element_type = 0
@@ -429,7 +429,7 @@ fn matmul_bias_relu_cached_kernel[
 
 
 @always_inline
-fn matmul_bias_relu_kernel[
+def matmul_bias_relu_kernel[
     BATCH: Int,
     IN_DIM: Int,
     OUT_DIM: Int,
@@ -456,14 +456,14 @@ fn matmul_bias_relu_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: output.element_type = 0
@@ -503,7 +503,7 @@ fn matmul_bias_relu_kernel[
 
 
 @always_inline
-fn matmul_backward_dx_kernel[
+def matmul_backward_dx_kernel[
     BATCH: Int,
     IN_DIM: Int,
     OUT_DIM: Int,
@@ -531,14 +531,14 @@ fn matmul_backward_dx_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_T_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: grad_input.element_type = 0
@@ -572,7 +572,7 @@ fn matmul_backward_dx_kernel[
 
 
 @always_inline
-fn matmul_backward_dW_kernel[
+def matmul_backward_dW_kernel[
     BATCH: Int,
     IN_DIM: Int,
     OUT_DIM: Int,
@@ -600,14 +600,14 @@ fn matmul_backward_dW_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var dy_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: dW.element_type = 0
@@ -647,21 +647,21 @@ fn matmul_backward_dW_kernel[
 # =============================================================================
 
 
-fn get_forward_grid[
+def get_forward_grid[
     BATCH: Int, OUT_DIM: Int, TILE: Int = TILE_APPLE
 ]() -> Tuple[Int, Int]:
     """Returns (grid_x, grid_y) for forward kernels."""
     return ((OUT_DIM + TILE - 1) // TILE, (BATCH + TILE - 1) // TILE)
 
 
-fn get_backward_dx_grid[
+def get_backward_dx_grid[
     BATCH: Int, IN_DIM: Int, TILE: Int = TILE_APPLE
 ]() -> Tuple[Int, Int]:
     """Returns (grid_x, grid_y) for dx backward kernel."""
     return ((IN_DIM + TILE - 1) // TILE, (BATCH + TILE - 1) // TILE)
 
 
-fn get_backward_dW_grid[
+def get_backward_dW_grid[
     IN_DIM: Int, OUT_DIM: Int, TILE: Int = TILE_APPLE
 ]() -> Tuple[Int, Int]:
     """Returns (grid_x, grid_y) for dW backward kernel."""

@@ -42,7 +42,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 # =============================================================================
 
 
-fn compare_fk(
+def compare_fk(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
 ) raises:
@@ -193,20 +193,20 @@ fn compare_fk(
 # =============================================================================
 
 
-fn test_fk_default_qpos() raises:
+def test_fk_default_qpos() raises:
     """Test FK at default qpos (all zeros — torso at body_pos height 1.25)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     compare_fk("Default qpos (torso at 1.25)", qpos)
 
 
-fn test_fk_nonzero_rootz() raises:
+def test_fk_nonzero_rootz() raises:
     """Test FK with nonzero rootz (jumping)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.5  # rootz offset => torso at 1.75
     compare_fk("Nonzero rootz (jumping)", qpos)
 
 
-fn test_fk_nonzero_joints() raises:
+def test_fk_nonzero_joints() raises:
     """Test FK with non-zero joint angles."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # rootx = 1m forward
@@ -218,7 +218,7 @@ fn test_fk_nonzero_joints() raises:
     compare_fk("Non-zero joints", qpos)
 
 
-fn test_fk_extreme_joints() raises:
+def test_fk_extreme_joints() raises:
     """Test FK at or near joint limits."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[2] = -0.3  # rooty negative pitch
@@ -228,7 +228,7 @@ fn test_fk_extreme_joints() raises:
     compare_fk("Extreme joint angles", qpos)
 
 
-fn test_fk_large_rootx() raises:
+def test_fk_large_rootx() raises:
     """Test FK with large horizontal displacement."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 100.0  # rootx far forward
@@ -237,5 +237,5 @@ fn test_fk_large_rootx() raises:
     compare_fk("Large rootx (100m)", qpos)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

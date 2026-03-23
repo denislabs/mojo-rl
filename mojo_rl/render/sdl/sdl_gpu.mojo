@@ -488,19 +488,19 @@ struct GPUPrimitiveType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_PRIMITIVETYPE_TRIANGLELIST = Self(0)
@@ -525,19 +525,19 @@ struct GPULoadOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_LOADOP_LOAD = Self(0)
@@ -558,19 +558,19 @@ struct GPUStoreOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_STOREOP_STORE = Self(0)
@@ -592,19 +592,19 @@ struct GPUIndexElementSize(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_INDEXELEMENTSIZE_16BIT = Self(0)
@@ -699,19 +699,19 @@ struct GPUTextureFormat(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_TEXTUREFORMAT_INVALID = Self(0)
@@ -859,15 +859,15 @@ struct GPUTextureUsageFlags(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime GPU_TEXTUREUSAGE_SAMPLER = Self(1 << 0)
@@ -897,19 +897,19 @@ struct GPUTextureType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_TEXTURETYPE_2D = Self(0)
@@ -936,19 +936,19 @@ struct GPUSampleCount(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_SAMPLECOUNT_1 = Self(0)
@@ -972,19 +972,19 @@ struct GPUCubeMapFace(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_CUBEMAPFACE_POSITIVEX = Self(0)
@@ -1014,15 +1014,15 @@ struct GPUBufferUsageFlags(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime GPU_BUFFERUSAGE_VERTEX = Self(1 << 0)
@@ -1051,19 +1051,19 @@ struct GPUTransferBufferUsage(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_TRANSFERBUFFERUSAGE_UPLOAD = Self(0)
@@ -1079,19 +1079,19 @@ struct GPUShaderStage(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_SHADERSTAGE_VERTEX = Self(0)
@@ -1109,15 +1109,15 @@ struct GPUShaderFormat(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime GPU_SHADERFORMAT_INVALID = Self(0)
@@ -1144,19 +1144,19 @@ struct GPUVertexElementFormat(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_VERTEXELEMENTFORMAT_INVALID = Self(0)
@@ -1225,19 +1225,19 @@ struct GPUVertexInputRate(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_VERTEXINPUTRATE_VERTEX = Self(0)
@@ -1255,19 +1255,19 @@ struct GPUFillMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_FILLMODE_FILL = Self(0)
@@ -1285,19 +1285,19 @@ struct GPUCullMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_CULLMODE_NONE = Self(0)
@@ -1318,19 +1318,19 @@ struct GPUFrontFace(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_FRONTFACE_COUNTER_CLOCKWISE = Self(0)
@@ -1348,19 +1348,19 @@ struct GPUCompareOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_COMPAREOP_INVALID = Self(0)
@@ -1392,19 +1392,19 @@ struct GPUStencilOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_STENCILOP_INVALID = Self(0)
@@ -1439,19 +1439,19 @@ struct GPUBlendOp(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_BLENDOP_INVALID = Self(0)
@@ -1480,19 +1480,19 @@ struct GPUBlendFactor(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_BLENDFACTOR_INVALID = Self(0)
@@ -1533,15 +1533,15 @@ struct GPUColorComponentFlags(Intable, TrivialRegisterPassable):
     var value: UInt8
 
     @always_inline
-    fn __init__(out self, value: Int):
+    def __init__(out self, value: Int):
         self.value = UInt8(value)
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(Int(lhs.value | rhs.value))
 
     comptime GPU_COLORCOMPONENT_R = Self(1 << 0)
@@ -1563,19 +1563,19 @@ struct GPUFilter(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_FILTER_NEAREST = Self(0)
@@ -1593,19 +1593,19 @@ struct GPUSamplerMipmapMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_SAMPLERMIPMAPMODE_NEAREST = Self(0)
@@ -1624,19 +1624,19 @@ struct GPUSamplerAddressMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_SAMPLERADDRESSMODE_REPEAT = Self(0)
@@ -1672,19 +1672,19 @@ struct GPUPresentMode(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_PRESENTMODE_VSYNC = Self(0)
@@ -1718,19 +1718,19 @@ struct GPUSwapchainComposition(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GPU_SWAPCHAINCOMPOSITION_SDR = Self(0)
@@ -2620,7 +2620,7 @@ struct GPUStorageTextureReadWriteBinding(ImplicitlyCopyable, Movable):
     var padding3: UInt8
 
 
-fn gpu_supports_shader_formats(
+def gpu_supports_shader_formats(
     format_flags: GPUShaderFormat, var name: String
 ) raises -> Bool:
     """Checks for GPU runtime support.
@@ -2646,7 +2646,7 @@ fn gpu_supports_shader_formats(
     ]()(format_flags, name.as_c_string_slice().unsafe_ptr())
 
 
-fn gpu_supports_properties(props: PropertiesID) raises -> Bool:
+def gpu_supports_properties(props: PropertiesID) raises -> Bool:
     """Checks for GPU runtime support.
 
     Args:
@@ -2663,7 +2663,7 @@ fn gpu_supports_properties(props: PropertiesID) raises -> Bool:
     ]()(props)
 
 
-fn create_gpu_device(
+def create_gpu_device(
     format_flags: GPUShaderFormat,
     debug_mode: Bool,
     var name: String,
@@ -2698,7 +2698,7 @@ fn create_gpu_device(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_gpu_device_with_properties(
+def create_gpu_device_with_properties(
     props: PropertiesID, out ret: Ptr[GPUDevice, MutAnyOrigin]
 ) raises:
     """Creates a GPU context.
@@ -2751,7 +2751,7 @@ fn create_gpu_device_with_properties(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_gpu_device(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
+def destroy_gpu_device(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
     """Destroys a GPU context previously returned by SDL_CreateGPUDevice.
 
     Args:
@@ -2767,7 +2767,7 @@ fn destroy_gpu_device(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
     ]()(device)
 
 
-fn get_num_gpu_drivers() raises -> c_int:
+def get_num_gpu_drivers() raises -> c_int:
     """Get the number of GPU drivers compiled into SDL.
 
     Returns:
@@ -2779,7 +2779,7 @@ fn get_num_gpu_drivers() raises -> c_int:
     return _get_dylib_function[lib, "SDL_GetNumGPUDrivers", fn() -> c_int]()()
 
 
-fn get_gpu_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_gpu_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the name of a built in GPU driver.
 
     The GPU drivers are presented in the order in which they are normally
@@ -2805,7 +2805,7 @@ fn get_gpu_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()(index)
 
 
-fn get_gpu_device_driver(
+def get_gpu_device_driver(
     device: Ptr[GPUDevice, MutAnyOrigin]
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Returns the name of the backend used to create this GPU context.
@@ -2826,7 +2826,7 @@ fn get_gpu_device_driver(
     ]()(device)
 
 
-fn get_gpu_shader_formats(
+def get_gpu_shader_formats(
     device: Ptr[GPUDevice, MutAnyOrigin]
 ) raises -> GPUShaderFormat:
     """Returns the supported shader formats for this GPU context.
@@ -2848,7 +2848,7 @@ fn get_gpu_shader_formats(
     ]()(device)
 
 
-fn create_gpu_compute_pipeline(
+def create_gpu_compute_pipeline(
     device: Ptr[GPUDevice, MutAnyOrigin],
     createinfo: Ptr[GPUComputePipelineCreateInfo, ImmutAnyOrigin],
     out ret: Ptr[GPUComputePipeline, MutAnyOrigin],
@@ -2910,7 +2910,7 @@ fn create_gpu_compute_pipeline(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_gpu_graphics_pipeline(
+def create_gpu_graphics_pipeline(
     device: Ptr[GPUDevice, MutAnyOrigin],
     createinfo: Ptr[GPUGraphicsPipelineCreateInfo, ImmutAnyOrigin],
     out ret: Ptr[GPUGraphicsPipeline, MutAnyOrigin],
@@ -2947,7 +2947,7 @@ fn create_gpu_graphics_pipeline(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_gpu_sampler(
+def create_gpu_sampler(
     device: Ptr[GPUDevice, MutAnyOrigin],
     createinfo: Ptr[GPUSamplerCreateInfo, ImmutAnyOrigin],
     out ret: Ptr[GPUSampler, MutAnyOrigin],
@@ -2984,7 +2984,7 @@ fn create_gpu_sampler(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_gpu_shader(
+def create_gpu_shader(
     device: Ptr[GPUDevice, MutAnyOrigin],
     createinfo: Ptr[GPUShaderCreateInfo, ImmutAnyOrigin],
     out ret: Ptr[GPUShader, MutAnyOrigin],
@@ -3074,7 +3074,7 @@ fn create_gpu_shader(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_gpu_texture(
+def create_gpu_texture(
     device: Ptr[GPUDevice, MutAnyOrigin],
     createinfo: Ptr[GPUTextureCreateInfo, ImmutAnyOrigin],
     out ret: Ptr[GPUTexture, MutAnyOrigin],
@@ -3138,7 +3138,7 @@ fn create_gpu_texture(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_gpu_buffer(
+def create_gpu_buffer(
     device: Ptr[GPUDevice, MutAnyOrigin],
     createinfo: Ptr[GPUBufferCreateInfo, ImmutAnyOrigin],
     out ret: Ptr[GPUBuffer, MutAnyOrigin],
@@ -3189,7 +3189,7 @@ fn create_gpu_buffer(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_gpu_transfer_buffer(
+def create_gpu_transfer_buffer(
     device: Ptr[GPUDevice, MutAnyOrigin],
     createinfo: Ptr[GPUTransferBufferCreateInfo, ImmutAnyOrigin],
     out ret: Ptr[GPUTransferBuffer, MutAnyOrigin],
@@ -3230,7 +3230,7 @@ fn create_gpu_transfer_buffer(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_gpu_buffer_name(
+def set_gpu_buffer_name(
     device: Ptr[GPUDevice, MutAnyOrigin],
     buffer: Ptr[GPUBuffer, MutAnyOrigin],
     var text: String,
@@ -3263,7 +3263,7 @@ fn set_gpu_buffer_name(
     ]()(device, buffer, text.as_c_string_slice().unsafe_ptr())
 
 
-fn set_gpu_texture_name(
+def set_gpu_texture_name(
     device: Ptr[GPUDevice, MutAnyOrigin],
     texture: Ptr[GPUTexture, MutAnyOrigin],
     var text: String,
@@ -3297,7 +3297,7 @@ fn set_gpu_texture_name(
     ]()(device, texture, text.as_c_string_slice().unsafe_ptr())
 
 
-fn insert_gpu_debug_label(
+def insert_gpu_debug_label(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin], var text: String
 ) raises -> None:
     """Inserts an arbitrary string label into the command buffer callstream.
@@ -3321,7 +3321,7 @@ fn insert_gpu_debug_label(
     ]()(command_buffer, text.as_c_string_slice().unsafe_ptr())
 
 
-fn push_gpu_debug_group(
+def push_gpu_debug_group(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin], var name: String
 ) raises -> None:
     """Begins a debug group with an arbitrary name.
@@ -3354,7 +3354,7 @@ fn push_gpu_debug_group(
     ]()(command_buffer, name.as_c_string_slice().unsafe_ptr())
 
 
-fn pop_gpu_debug_group(
+def pop_gpu_debug_group(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]
 ) raises -> None:
     """Ends the most-recently pushed debug group.
@@ -3372,7 +3372,7 @@ fn pop_gpu_debug_group(
     ]()(command_buffer)
 
 
-fn release_gpu_texture(
+def release_gpu_texture(
     device: Ptr[GPUDevice, MutAnyOrigin],
     texture: Ptr[GPUTexture, MutAnyOrigin],
 ) raises -> None:
@@ -3397,7 +3397,7 @@ fn release_gpu_texture(
     ]()(device, texture)
 
 
-fn release_gpu_sampler(
+def release_gpu_sampler(
     device: Ptr[GPUDevice, MutAnyOrigin],
     sampler: Ptr[GPUSampler, MutAnyOrigin],
 ) raises -> None:
@@ -3422,7 +3422,7 @@ fn release_gpu_sampler(
     ]()(device, sampler)
 
 
-fn release_gpu_buffer(
+def release_gpu_buffer(
     device: Ptr[GPUDevice, MutAnyOrigin],
     buffer: Ptr[GPUBuffer, MutAnyOrigin],
 ) raises -> None:
@@ -3447,7 +3447,7 @@ fn release_gpu_buffer(
     ]()(device, buffer)
 
 
-fn release_gpu_transfer_buffer(
+def release_gpu_transfer_buffer(
     device: Ptr[GPUDevice, MutAnyOrigin],
     transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin],
 ) raises -> None:
@@ -3472,7 +3472,7 @@ fn release_gpu_transfer_buffer(
     ]()(device, transfer_buffer)
 
 
-fn release_gpu_compute_pipeline(
+def release_gpu_compute_pipeline(
     device: Ptr[GPUDevice, MutAnyOrigin],
     compute_pipeline: Ptr[GPUComputePipeline, MutAnyOrigin],
 ) raises -> None:
@@ -3497,7 +3497,7 @@ fn release_gpu_compute_pipeline(
     ]()(device, compute_pipeline)
 
 
-fn release_gpu_shader(
+def release_gpu_shader(
     device: Ptr[GPUDevice, MutAnyOrigin],
     shader: Ptr[GPUShader, MutAnyOrigin],
 ) raises -> None:
@@ -3522,7 +3522,7 @@ fn release_gpu_shader(
     ]()(device, shader)
 
 
-fn release_gpu_graphics_pipeline(
+def release_gpu_graphics_pipeline(
     device: Ptr[GPUDevice, MutAnyOrigin],
     graphics_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin],
 ) raises -> None:
@@ -3547,7 +3547,7 @@ fn release_gpu_graphics_pipeline(
     ]()(device, graphics_pipeline)
 
 
-fn acquire_gpu_command_buffer(
+def acquire_gpu_command_buffer(
     device: Ptr[GPUDevice, MutAnyOrigin],
     out ret: Ptr[GPUCommandBuffer, MutAnyOrigin],
 ) raises:
@@ -3586,7 +3586,7 @@ fn acquire_gpu_command_buffer(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn push_gpu_vertex_uniform_data(
+def push_gpu_vertex_uniform_data(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     slot_index: UInt32,
     data: Ptr[NoneType, ImmutAnyOrigin],
@@ -3621,7 +3621,7 @@ fn push_gpu_vertex_uniform_data(
     ]()(command_buffer, slot_index, data, length)
 
 
-fn push_gpu_fragment_uniform_data(
+def push_gpu_fragment_uniform_data(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     slot_index: UInt32,
     data: Ptr[NoneType, ImmutAnyOrigin],
@@ -3656,7 +3656,7 @@ fn push_gpu_fragment_uniform_data(
     ]()(command_buffer, slot_index, data, length)
 
 
-fn push_gpu_compute_uniform_data(
+def push_gpu_compute_uniform_data(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     slot_index: UInt32,
     data: Ptr[NoneType, ImmutAnyOrigin],
@@ -3691,7 +3691,7 @@ fn push_gpu_compute_uniform_data(
     ]()(command_buffer, slot_index, data, length)
 
 
-fn begin_gpu_render_pass(
+def begin_gpu_render_pass(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     color_target_infos: Ptr[GPUColorTargetInfo, ImmutAnyOrigin],
     num_color_targets: UInt32,
@@ -3742,7 +3742,7 @@ fn begin_gpu_render_pass(
     )
 
 
-fn bind_gpu_graphics_pipeline(
+def bind_gpu_graphics_pipeline(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     graphics_pipeline: Ptr[GPUGraphicsPipeline, MutAnyOrigin],
 ) raises -> None:
@@ -3767,7 +3767,7 @@ fn bind_gpu_graphics_pipeline(
     ]()(render_pass, graphics_pipeline)
 
 
-fn set_gpu_viewport(
+def set_gpu_viewport(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     viewport: Ptr[GPUViewport, ImmutAnyOrigin],
 ) raises -> None:
@@ -3790,7 +3790,7 @@ fn set_gpu_viewport(
     ]()(render_pass, viewport)
 
 
-fn set_gpu_scissor(
+def set_gpu_scissor(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     scissor: Ptr[Rect, ImmutAnyOrigin],
 ) raises -> None:
@@ -3813,7 +3813,7 @@ fn set_gpu_scissor(
     ]()(render_pass, scissor)
 
 
-fn set_gpu_blend_constants(
+def set_gpu_blend_constants(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin], blend_constants: FColor
 ) raises -> None:
     """Sets the current blend constants on a command buffer.
@@ -3835,7 +3835,7 @@ fn set_gpu_blend_constants(
     ]()(render_pass, blend_constants)
 
 
-fn set_gpu_stencil_reference(
+def set_gpu_stencil_reference(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin], reference: UInt8
 ) raises -> None:
     """Sets the current stencil reference value on a command buffer.
@@ -3856,7 +3856,7 @@ fn set_gpu_stencil_reference(
     ]()(render_pass, reference)
 
 
-fn bind_gpu_vertex_buffers(
+def bind_gpu_vertex_buffers(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
     bindings: Ptr[GPUBufferBinding, ImmutAnyOrigin],
@@ -3887,7 +3887,7 @@ fn bind_gpu_vertex_buffers(
     ]()(render_pass, first_slot, bindings, num_bindings)
 
 
-fn bind_gpu_index_buffer(
+def bind_gpu_index_buffer(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     binding: Ptr[GPUBufferBinding, ImmutAnyOrigin],
     index_element_size: GPUIndexElementSize,
@@ -3915,7 +3915,7 @@ fn bind_gpu_index_buffer(
     ]()(render_pass, binding, index_element_size)
 
 
-fn bind_gpu_vertex_samplers(
+def bind_gpu_vertex_samplers(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
     texture_sampler_bindings: Ptr[GPUTextureSamplerBinding, ImmutAnyOrigin],
@@ -3953,7 +3953,7 @@ fn bind_gpu_vertex_samplers(
     ]()(render_pass, first_slot, texture_sampler_bindings, num_bindings)
 
 
-fn bind_gpu_vertex_storage_textures(
+def bind_gpu_vertex_storage_textures(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
     storage_textures: Ptr[GPUTexture, MutAnyOrigin],
@@ -3988,7 +3988,7 @@ fn bind_gpu_vertex_storage_textures(
     ]()(render_pass, first_slot, storage_textures, num_bindings)
 
 
-fn bind_gpu_vertex_storage_buffers(
+def bind_gpu_vertex_storage_buffers(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
     storage_buffers: Ptr[GPUBuffer, MutAnyOrigin],
@@ -4023,7 +4023,7 @@ fn bind_gpu_vertex_storage_buffers(
     ]()(render_pass, first_slot, storage_buffers, num_bindings)
 
 
-fn bind_gpu_fragment_samplers(
+def bind_gpu_fragment_samplers(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
     texture_sampler_bindings: Ptr[GPUTextureSamplerBinding, ImmutAnyOrigin],
@@ -4061,7 +4061,7 @@ fn bind_gpu_fragment_samplers(
     ]()(render_pass, first_slot, texture_sampler_bindings, num_bindings)
 
 
-fn bind_gpu_fragment_storage_textures(
+def bind_gpu_fragment_storage_textures(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
     storage_textures: Ptr[GPUTexture, MutAnyOrigin],
@@ -4096,7 +4096,7 @@ fn bind_gpu_fragment_storage_textures(
     ]()(render_pass, first_slot, storage_textures, num_bindings)
 
 
-fn bind_gpu_fragment_storage_buffers(
+def bind_gpu_fragment_storage_buffers(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
     storage_buffers: Ptr[GPUBuffer, MutAnyOrigin],
@@ -4131,7 +4131,7 @@ fn bind_gpu_fragment_storage_buffers(
     ]()(render_pass, first_slot, storage_buffers, num_bindings)
 
 
-fn draw_gpu_indexed_primitives(
+def draw_gpu_indexed_primitives(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     num_indices: UInt32,
     num_instances: UInt32,
@@ -4184,7 +4184,7 @@ fn draw_gpu_indexed_primitives(
     )
 
 
-fn draw_gpu_primitives(
+def draw_gpu_primitives(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     num_vertices: UInt32,
     num_instances: UInt32,
@@ -4225,7 +4225,7 @@ fn draw_gpu_primitives(
     ]()(render_pass, num_vertices, num_instances, first_vertex, first_instance)
 
 
-fn draw_gpu_primitives_indirect(
+def draw_gpu_primitives_indirect(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     buffer: Ptr[GPUBuffer, MutAnyOrigin],
     offset: UInt32,
@@ -4260,7 +4260,7 @@ fn draw_gpu_primitives_indirect(
     ]()(render_pass, buffer, offset, draw_count)
 
 
-fn draw_gpu_indexed_primitives_indirect(
+def draw_gpu_indexed_primitives_indirect(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     buffer: Ptr[GPUBuffer, MutAnyOrigin],
     offset: UInt32,
@@ -4295,7 +4295,7 @@ fn draw_gpu_indexed_primitives_indirect(
     ]()(render_pass, buffer, offset, draw_count)
 
 
-fn end_gpu_render_pass(
+def end_gpu_render_pass(
     render_pass: Ptr[GPURenderPass, MutAnyOrigin]
 ) raises -> None:
     """Ends the given render pass.
@@ -4316,7 +4316,7 @@ fn end_gpu_render_pass(
     ]()(render_pass)
 
 
-fn begin_gpu_compute_pass(
+def begin_gpu_compute_pass(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     storage_texture_bindings: Ptr[
         GPUStorageTextureReadWriteBinding, ImmutAnyOrigin
@@ -4388,7 +4388,7 @@ fn begin_gpu_compute_pass(
     )
 
 
-fn bind_gpu_compute_pipeline(
+def bind_gpu_compute_pipeline(
     compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
     compute_pipeline: Ptr[GPUComputePipeline, MutAnyOrigin],
 ) raises -> None:
@@ -4411,7 +4411,7 @@ fn bind_gpu_compute_pipeline(
     ]()(compute_pass, compute_pipeline)
 
 
-fn bind_gpu_compute_samplers(
+def bind_gpu_compute_samplers(
     compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
     first_slot: UInt32,
     texture_sampler_bindings: Ptr[GPUTextureSamplerBinding, ImmutAnyOrigin],
@@ -4449,7 +4449,7 @@ fn bind_gpu_compute_samplers(
     ]()(compute_pass, first_slot, texture_sampler_bindings, num_bindings)
 
 
-fn bind_gpu_compute_storage_textures(
+def bind_gpu_compute_storage_textures(
     compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
     first_slot: UInt32,
     storage_textures: Ptr[GPUTexture, MutAnyOrigin],
@@ -4484,7 +4484,7 @@ fn bind_gpu_compute_storage_textures(
     ]()(compute_pass, first_slot, storage_textures, num_bindings)
 
 
-fn bind_gpu_compute_storage_buffers(
+def bind_gpu_compute_storage_buffers(
     compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
     first_slot: UInt32,
     storage_buffers: Ptr[GPUBuffer, MutAnyOrigin],
@@ -4519,7 +4519,7 @@ fn bind_gpu_compute_storage_buffers(
     ]()(compute_pass, first_slot, storage_buffers, num_bindings)
 
 
-fn dispatch_gpu_compute(
+def dispatch_gpu_compute(
     compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
     groupcount_x: UInt32,
     groupcount_y: UInt32,
@@ -4558,7 +4558,7 @@ fn dispatch_gpu_compute(
     ]()(compute_pass, groupcount_x, groupcount_y, groupcount_z)
 
 
-fn dispatch_gpu_compute_indirect(
+def dispatch_gpu_compute_indirect(
     compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
     buffer: Ptr[GPUBuffer, MutAnyOrigin],
     offset: UInt32,
@@ -4593,7 +4593,7 @@ fn dispatch_gpu_compute_indirect(
     ]()(compute_pass, buffer, offset)
 
 
-fn end_gpu_compute_pass(
+def end_gpu_compute_pass(
     compute_pass: Ptr[GPUComputePass, MutAnyOrigin]
 ) raises -> None:
     """Ends the current compute pass.
@@ -4614,7 +4614,7 @@ fn end_gpu_compute_pass(
     ]()(compute_pass)
 
 
-fn map_gpu_transfer_buffer(
+def map_gpu_transfer_buffer(
     device: Ptr[GPUDevice, MutAnyOrigin],
     transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin],
     cycle: Bool,
@@ -4648,7 +4648,7 @@ fn map_gpu_transfer_buffer(
     ]()(device, transfer_buffer, cycle)
 
 
-fn unmap_gpu_transfer_buffer(
+def unmap_gpu_transfer_buffer(
     device: Ptr[GPUDevice, MutAnyOrigin],
     transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin],
 ) raises -> None:
@@ -4671,7 +4671,7 @@ fn unmap_gpu_transfer_buffer(
     ]()(device, transfer_buffer)
 
 
-fn begin_gpu_copy_pass(
+def begin_gpu_copy_pass(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]
 ) raises -> Ptr[GPUCopyPass, MutAnyOrigin]:
     """Begins a copy pass on a command buffer.
@@ -4698,7 +4698,7 @@ fn begin_gpu_copy_pass(
     ]()(command_buffer)
 
 
-fn upload_to_gpu_texture(
+def upload_to_gpu_texture(
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
     source: Ptr[GPUTextureTransferInfo, ImmutAnyOrigin],
     destination: Ptr[GPUTextureRegion, ImmutAnyOrigin],
@@ -4734,7 +4734,7 @@ fn upload_to_gpu_texture(
     ]()(copy_pass, source, destination, cycle)
 
 
-fn upload_to_gpu_buffer(
+def upload_to_gpu_buffer(
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
     source: Ptr[GPUTransferBufferLocation, ImmutAnyOrigin],
     destination: Ptr[GPUBufferRegion, ImmutAnyOrigin],
@@ -4767,7 +4767,7 @@ fn upload_to_gpu_buffer(
     ]()(copy_pass, source, destination, cycle)
 
 
-fn copy_gpu_texture_to_texture(
+def copy_gpu_texture_to_texture(
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
     source: Ptr[GPUTextureLocation, ImmutAnyOrigin],
     destination: Ptr[GPUTextureLocation, ImmutAnyOrigin],
@@ -4809,7 +4809,7 @@ fn copy_gpu_texture_to_texture(
     ]()(copy_pass, source, destination, w, h, d, cycle)
 
 
-fn copy_gpu_buffer_to_buffer(
+def copy_gpu_buffer_to_buffer(
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
     source: Ptr[GPUBufferLocation, ImmutAnyOrigin],
     destination: Ptr[GPUBufferLocation, ImmutAnyOrigin],
@@ -4845,7 +4845,7 @@ fn copy_gpu_buffer_to_buffer(
     ]()(copy_pass, source, destination, size, cycle)
 
 
-fn download_from_gpu_texture(
+def download_from_gpu_texture(
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
     source: Ptr[GPUTextureRegion, ImmutAnyOrigin],
     destination: Ptr[GPUTextureTransferInfo, ImmutAnyOrigin],
@@ -4875,7 +4875,7 @@ fn download_from_gpu_texture(
     ]()(copy_pass, source, destination)
 
 
-fn download_from_gpu_buffer(
+def download_from_gpu_buffer(
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
     source: Ptr[GPUBufferRegion, ImmutAnyOrigin],
     destination: Ptr[GPUTransferBufferLocation, ImmutAnyOrigin],
@@ -4904,7 +4904,7 @@ fn download_from_gpu_buffer(
     ]()(copy_pass, source, destination)
 
 
-fn end_gpu_copy_pass(copy_pass: Ptr[GPUCopyPass, MutAnyOrigin]) raises -> None:
+def end_gpu_copy_pass(copy_pass: Ptr[GPUCopyPass, MutAnyOrigin]) raises -> None:
     """Ends the current copy pass.
 
     Args:
@@ -4920,7 +4920,7 @@ fn end_gpu_copy_pass(copy_pass: Ptr[GPUCopyPass, MutAnyOrigin]) raises -> None:
     ]()(copy_pass)
 
 
-fn generate_mipmaps_for_gpu_texture(
+def generate_mipmaps_for_gpu_texture(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     texture: Ptr[GPUTexture, MutAnyOrigin],
 ) raises -> None:
@@ -4945,7 +4945,7 @@ fn generate_mipmaps_for_gpu_texture(
     ]()(command_buffer, texture)
 
 
-fn blit_gpu_texture(
+def blit_gpu_texture(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     info: Ptr[GPUBlitInfo, ImmutAnyOrigin],
 ) raises -> None:
@@ -4970,7 +4970,7 @@ fn blit_gpu_texture(
     ]()(command_buffer, info)
 
 
-fn window_supports_gpu_swapchain_composition(
+def window_supports_gpu_swapchain_composition(
     device: Ptr[GPUDevice, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
     swapchain_composition: GPUSwapchainComposition,
@@ -5001,7 +5001,7 @@ fn window_supports_gpu_swapchain_composition(
     ]()(device, window, swapchain_composition)
 
 
-fn window_supports_gpu_present_mode(
+def window_supports_gpu_present_mode(
     device: Ptr[GPUDevice, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
     present_mode: GPUPresentMode,
@@ -5032,7 +5032,7 @@ fn window_supports_gpu_present_mode(
     ]()(device, window, present_mode)
 
 
-fn claim_window_for_gpu_device(
+def claim_window_for_gpu_device(
     device: Ptr[GPUDevice, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
 ) raises:
@@ -5074,7 +5074,7 @@ fn claim_window_for_gpu_device(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn release_window_from_gpu_device(
+def release_window_from_gpu_device(
     device: Ptr[GPUDevice, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
 ) raises -> None:
@@ -5097,7 +5097,7 @@ fn release_window_from_gpu_device(
     ]()(device, window)
 
 
-fn set_gpu_swapchain_parameters(
+def set_gpu_swapchain_parameters(
     device: Ptr[GPUDevice, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
     swapchain_composition: GPUSwapchainComposition,
@@ -5138,7 +5138,7 @@ fn set_gpu_swapchain_parameters(
     ]()(device, window, swapchain_composition, present_mode)
 
 
-fn set_gpu_allowed_frames_in_flight(
+def set_gpu_allowed_frames_in_flight(
     device: Ptr[GPUDevice, MutAnyOrigin], allowed_frames_in_flight: UInt32
 ) raises -> Bool:
     """Configures the maximum allowed number of frames in flight.
@@ -5179,7 +5179,7 @@ fn set_gpu_allowed_frames_in_flight(
     ]()(device, allowed_frames_in_flight)
 
 
-fn get_gpu_swapchain_texture_format(
+def get_gpu_swapchain_texture_format(
     device: Ptr[GPUDevice, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
 ) raises -> GPUTextureFormat:
@@ -5207,7 +5207,7 @@ fn get_gpu_swapchain_texture_format(
     ]()(device, window)
 
 
-fn acquire_gpu_swapchain_texture(
+def acquire_gpu_swapchain_texture(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
     swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], MutAnyOrigin],
@@ -5276,7 +5276,7 @@ fn acquire_gpu_swapchain_texture(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn wait_for_gpu_swapchain(
+def wait_for_gpu_swapchain(
     device: Ptr[GPUDevice, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
 ) raises:
@@ -5309,7 +5309,7 @@ fn wait_for_gpu_swapchain(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn wait_and_acquire_gpu_swapchain_texture(
+def wait_and_acquire_gpu_swapchain_texture(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
     swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], MutAnyOrigin],
@@ -5379,7 +5379,7 @@ fn wait_and_acquire_gpu_swapchain_texture(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn submit_gpu_command_buffer(
+def submit_gpu_command_buffer(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]
 ) raises:
     """Submits a command buffer so its commands can be processed on the GPU.
@@ -5410,7 +5410,7 @@ fn submit_gpu_command_buffer(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn submit_gpu_command_buffer_and_acquire_fence(
+def submit_gpu_command_buffer_and_acquire_fence(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     out ret: Ptr[GPUFence, MutAnyOrigin],
 ) raises:
@@ -5446,7 +5446,7 @@ fn submit_gpu_command_buffer_and_acquire_fence(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn cancel_gpu_command_buffer(
+def cancel_gpu_command_buffer(
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin]
 ) raises:
     """Cancels a command buffer.
@@ -5479,7 +5479,7 @@ fn cancel_gpu_command_buffer(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn wait_for_gpu_idle(device: Ptr[GPUDevice, MutAnyOrigin]) raises:
+def wait_for_gpu_idle(device: Ptr[GPUDevice, MutAnyOrigin]) raises:
     """Blocks the thread until the GPU is completely idle.
 
     Args:
@@ -5501,7 +5501,7 @@ fn wait_for_gpu_idle(device: Ptr[GPUDevice, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn wait_for_gpu_fences(
+def wait_for_gpu_fences(
     device: Ptr[GPUDevice, MutAnyOrigin],
     wait_all: Bool,
     fences: Ptr[GPUFence, MutAnyOrigin],
@@ -5537,7 +5537,7 @@ fn wait_for_gpu_fences(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn query_gpu_fence(
+def query_gpu_fence(
     device: Ptr[GPUDevice, MutAnyOrigin],
     fence: Ptr[GPUFence, MutAnyOrigin],
 ) raises -> Bool:
@@ -5563,7 +5563,7 @@ fn query_gpu_fence(
     ]()(device, fence)
 
 
-fn release_gpu_fence(
+def release_gpu_fence(
     device: Ptr[GPUDevice, MutAnyOrigin],
     fence: Ptr[GPUFence, MutAnyOrigin],
 ) raises -> None:
@@ -5588,7 +5588,7 @@ fn release_gpu_fence(
     ]()(device, fence)
 
 
-fn gpu_texture_format_texel_block_size(
+def gpu_texture_format_texel_block_size(
     format: GPUTextureFormat,
 ) raises -> UInt32:
     """Obtains the texel block size for a texture format.
@@ -5609,7 +5609,7 @@ fn gpu_texture_format_texel_block_size(
     ]()(format)
 
 
-fn gpu_texture_supports_format(
+def gpu_texture_supports_format(
     device: Ptr[GPUDevice, MutAnyOrigin],
     format: GPUTextureFormat,
     type: GPUTextureType,
@@ -5642,7 +5642,7 @@ fn gpu_texture_supports_format(
     ]()(device, format, type, usage)
 
 
-fn gpu_texture_supports_sample_count(
+def gpu_texture_supports_sample_count(
     device: Ptr[GPUDevice, MutAnyOrigin],
     format: GPUTextureFormat,
     sample_count: GPUSampleCount,
@@ -5671,7 +5671,7 @@ fn gpu_texture_supports_sample_count(
     ]()(device, format, sample_count)
 
 
-fn calculate_gpu_texture_format_size(
+def calculate_gpu_texture_format_size(
     format: GPUTextureFormat,
     width: UInt32,
     height: UInt32,
@@ -5703,7 +5703,7 @@ fn calculate_gpu_texture_format_size(
     ]()(format, width, height, depth_or_layer_count)
 
 
-fn gdk_suspend_gpu(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
+def gdk_suspend_gpu(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
     """Call this to suspend GPU operation on Xbox when you receive the
     SDL_EVENT_DID_ENTER_BACKGROUND event.
 
@@ -5723,7 +5723,7 @@ fn gdk_suspend_gpu(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
     ]()(device)
 
 
-fn gdk_resume_gpu(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
+def gdk_resume_gpu(device: Ptr[GPUDevice, MutAnyOrigin]) raises -> None:
     """Call this to resume GPU operation on Xbox when you receive the
     SDL_EVENT_WILL_ENTER_FOREGROUND event.
 

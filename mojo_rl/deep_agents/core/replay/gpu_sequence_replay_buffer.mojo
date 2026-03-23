@@ -40,7 +40,7 @@ from mojo_rl.nn.constants import dtype, TPB
 
 
 @always_inline
-fn gpu_seq_store_kernel[
+def gpu_seq_store_kernel[
     dtype: DType,
     N_ENVS: Int,
     PER_ENV_CAP: Int,
@@ -103,7 +103,7 @@ fn gpu_seq_store_kernel[
 
 
 @always_inline
-fn gpu_seq_sample_kernel[
+def gpu_seq_sample_kernel[
     dtype: DType,
     BATCH: Int,
     H: Int,
@@ -272,7 +272,7 @@ struct GPUSequenceReplayBuffer[
     var write_idx: Int
     var size: Int
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all device buffers and zero-initialize."""
         self.obs_buf = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * Self.PER_ENV_CAP * Self.OBS_DIM
@@ -297,7 +297,7 @@ struct GPUSequenceReplayBuffer[
         self.write_idx = 0
         self.size = 0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.obs_buf = take.obs_buf^
         self.actions_buf = take.actions_buf^
         self.rewards_buf = take.rewards_buf^
@@ -306,7 +306,7 @@ struct GPUSequenceReplayBuffer[
         self.write_idx = take.write_idx
         self.size = take.size
 
-    fn save_obs(self, ctx: DeviceContext, env_obs: DeviceBuffer[dtype]) raises:
+    def save_obs(self, ctx: DeviceContext, env_obs: DeviceBuffer[dtype]) raises:
         """Save current observations before env step overwrites them.
 
         Call this BEFORE stepping the environments.
@@ -317,7 +317,7 @@ struct GPUSequenceReplayBuffer[
         """
         ctx.enqueue_copy(self.prev_obs_buf, env_obs)
 
-    fn store(
+    def store(
         mut self,
         ctx: DeviceContext,
         actions: DeviceBuffer[dtype],
@@ -378,7 +378,7 @@ struct GPUSequenceReplayBuffer[
         var write_idx_s = Scalar[DType.int32](self.write_idx)
 
         @always_inline
-        fn store_wrapper(
+        def store_wrapper(
             po: LayoutTensor[
                 dtype,
                 Layout.row_major(Self.N_ENVS * Self.OBS_DIM),
@@ -441,11 +441,11 @@ struct GPUSequenceReplayBuffer[
         self.write_idx = (self.write_idx + 1) % Self.PER_ENV_CAP
         self.size = min(self.size + 1, Self.PER_ENV_CAP)
 
-    fn is_ready[min_size: Int](self) -> Bool:
+    def is_ready[min_size: Int](self) -> Bool:
         """Check if the buffer has enough data for sampling sequences."""
         return self.size >= min_size
 
-    fn sample[
+    def sample[
         BATCH: Int,
         H: Int,
     ](
@@ -521,7 +521,7 @@ struct GPUSequenceReplayBuffer[
         var rng_seed_s = Scalar[DType.uint32](rng_seed)
 
         @always_inline
-        fn sample_wrapper(
+        def sample_wrapper(
             bo: LayoutTensor[
                 dtype,
                 Layout.row_major(Self.N_ENVS * Self.PER_ENV_CAP * Self.OBS_DIM),

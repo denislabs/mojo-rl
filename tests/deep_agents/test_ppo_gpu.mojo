@@ -38,7 +38,7 @@ comptime NUM_EPISODES = 200  # CartPole converges fast, no need for more
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Agent GPU Test on CartPole")

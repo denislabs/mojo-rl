@@ -2,18 +2,29 @@
 
 from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import dtype
-from mojo_rl.deep_agents.alphazero import GenericAlphaZeroAgent, AlphaZeroTicTacToeConfig
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, MinimaxTicTacToe
+from mojo_rl.deep_agents.alphazero import (
+    GenericAlphaZeroAgent,
+    AlphaZeroTicTacToeConfig,
+)
+from mojo_rl.deep_agents.muzero.evaluators import (
+    RandomOpponent,
+    MinimaxTicTacToe,
+)
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== AlphaZero Sanity Check ===")
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]
     comptime TTTCPU = TicTacToeEnv[DType.float64]
     comptime Config = AlphaZeroTicTacToeConfig[
-        HIDDEN=64, LR=0.0001, BS=64, SIMS=200, NODES=256, C_PUCT=0.5,
+        HIDDEN=64,
+        LR=0.0001,
+        BS=64,
+        SIMS=200,
+        NODES=256,
+        C_PUCT=0.5,
     ]
 
     var agent = GenericAlphaZeroAgent[Config, 32]()
@@ -27,8 +38,11 @@ fn main() raises:
     # Train 3 chunks of 100K with eval between each
     for chunk in range(3):
         _ = agent.train_selfplay_gpu[TTT](
-            ctx, num_steps=100000, warmup_steps=500 if chunk == 0 else 0,
-            gradient_steps=16, print_every=100000,
+            ctx,
+            num_steps=100000,
+            warmup_steps=500 if chunk == 0 else 0,
+            gradient_steps=16,
+            print_every=100000,
         )
         var step = (chunk + 1) * 100000
         print("[", step, "]")
@@ -45,7 +59,9 @@ fn main() raises:
     var obs1 = env.get_obs_list()
     var obs1_f = List[Scalar[dtype]](capacity=27)
     for i in range(27):
-        obs1_f.append(Scalar[dtype](obs1[i]) if i < len(obs1) else Scalar[dtype](0.0))
+        obs1_f.append(
+            Scalar[dtype](obs1[i]) if i < len(obs1) else Scalar[dtype](0.0)
+        )
     var a1 = agent.select_action(obs1_f, legal1)
     print("\nEmpty board: action =", a1)
 
@@ -56,7 +72,9 @@ fn main() raises:
     var obs2 = env.get_obs_list()
     var obs2_f = List[Scalar[dtype]](capacity=27)
     for i in range(27):
-        obs2_f.append(Scalar[dtype](obs2[i]) if i < len(obs2) else Scalar[dtype](0.0))
+        obs2_f.append(
+            Scalar[dtype](obs2[i]) if i < len(obs2) else Scalar[dtype](0.0)
+        )
     var a2 = agent.select_action(obs2_f, legal2)
     print("After X=center: O plays action =", a2, "(legal:", legal2[a2], ")")
 
@@ -68,7 +86,9 @@ fn main() raises:
     var obs3 = env.get_obs_list()
     var obs3_f = List[Scalar[dtype]](capacity=27)
     for i in range(27):
-        obs3_f.append(Scalar[dtype](obs3[i]) if i < len(obs3) else Scalar[dtype](0.0))
+        obs3_f.append(
+            Scalar[dtype](obs3[i]) if i < len(obs3) else Scalar[dtype](0.0)
+        )
     var a3 = agent.select_action(obs3_f, legal3)
     print("X=center O=corner: X plays action =", a3)
 

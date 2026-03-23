@@ -33,13 +33,13 @@ struct MinOp[dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = Self.dim
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -47,7 +47,7 @@ struct MinOp[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -75,7 +75,7 @@ struct MinOp[dim: Int](DiffOp):
                     cache[b, i] = Scalar[dtype](1.0)  # x2 was selected
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -114,7 +114,7 @@ struct MinOp[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -143,7 +143,7 @@ struct MinOp[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -176,7 +176,7 @@ struct MinOp[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -201,7 +201,7 @@ struct MinOp[dim: Int](DiffOp):
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -223,7 +223,7 @@ struct MinOp[dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -254,7 +254,7 @@ struct MinOp[dim: Int](DiffOp):
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],

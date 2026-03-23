@@ -15,7 +15,7 @@ from layout import Layout, LayoutTensor
 from std.math import abs
 
 
-fn test_identity() raises:
+def test_identity() raises:
     """Identity model passes input through unchanged."""
     print("Test 1: Identity model...")
 
@@ -29,18 +29,14 @@ fn test_identity() raises:
     if M.PARAM_SIZE != 0 or M.CACHE_SIZE != 0:
         raise Error("Identity should have no params or cache")
 
-    var input_arr = InlineArray[Scalar[dtype], BATCH * DIM](
-        uninitialized=True
-    )
+    var input_arr = InlineArray[Scalar[dtype], BATCH * DIM](uninitialized=True)
     for i in range(BATCH * DIM):
         input_arr[i] = Scalar[dtype](Float64(i + 1) * 0.1)
     var input_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](input_arr.unsafe_ptr())
 
-    var output_arr = InlineArray[Scalar[dtype], BATCH * DIM](
-        uninitialized=True
-    )
+    var output_arr = InlineArray[Scalar[dtype], BATCH * DIM](uninitialized=True)
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](output_arr.unsafe_ptr())
@@ -57,18 +53,14 @@ fn test_identity() raises:
             raise Error("Identity forward failed")
 
     # Backward: grad_input should equal grad_output
-    var grad_out = InlineArray[Scalar[dtype], BATCH * DIM](
-        uninitialized=True
-    )
+    var grad_out = InlineArray[Scalar[dtype], BATCH * DIM](uninitialized=True)
     for i in range(BATCH * DIM):
         grad_out[i] = Scalar[dtype](Float64(i) * 0.2)
     var grad_out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](grad_out.unsafe_ptr())
 
-    var grad_in = InlineArray[Scalar[dtype], BATCH * DIM](
-        uninitialized=True
-    )
+    var grad_in = InlineArray[Scalar[dtype], BATCH * DIM](uninitialized=True)
     var grad_in_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](grad_in.unsafe_ptr())
@@ -91,7 +83,7 @@ fn test_identity() raises:
     print("  PASSED")
 
 
-fn test_identity_in_compute_graph() raises:
+def test_identity_in_compute_graph() raises:
     """Identity used as concat node in ComputeGraph."""
     print("Test 2: Identity as concat in ComputeGraph...")
 
@@ -99,35 +91,31 @@ fn test_identity_in_compute_graph() raises:
 
     # 2-way fan-out, concat with Identity
     comptime G = ComputeGraph[
-        GNode["branch_a", Linear[3, 2]],           # 0: input → a(2)
-        GNode["branch_b", Linear[3, 4]],           # 1: input → b(4)  (fan-out)
-        GNode["output",   Identity[6], "branch_a", "branch_b"],  # 2: concat(a, b) = (6) ← clean!
+        GNode["branch_a", Linear[3, 2]],  # 0: input → a(2)
+        GNode["branch_b", Linear[3, 4]],  # 1: input → b(4)  (fan-out)
+        GNode[
+            "output", Identity[6], "branch_a", "branch_b"
+        ],  # 2: concat(a, b) = (6) ← clean!
     ]
 
     if G.OUT_DIM != 6:
         raise Error("OUT_DIM should be 6")
 
-    var params = InlineArray[Scalar[dtype], G.PARAM_SIZE](
-        uninitialized=True
-    )
+    var params = InlineArray[Scalar[dtype], G.PARAM_SIZE](uninitialized=True)
     var params_t = LayoutTensor[
         dtype, Layout.row_major(G.PARAM_SIZE), MutAnyOrigin
     ](params.unsafe_ptr())
     G.initialize_params[Xavier[]](params_t)
 
-    var input_arr = InlineArray[Scalar[dtype], BATCH * 3](
-        uninitialized=True
-    )
+    var input_arr = InlineArray[Scalar[dtype], BATCH * 3](uninitialized=True)
     input_arr[0] = Scalar[dtype](0.5)
     input_arr[1] = Scalar[dtype](-0.3)
     input_arr[2] = Scalar[dtype](0.8)
-    var input_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, 3), MutAnyOrigin
-    ](input_arr.unsafe_ptr())
-
-    var output_arr = InlineArray[Scalar[dtype], BATCH * 6](
-        uninitialized=True
+    var input_t = LayoutTensor[dtype, Layout.row_major(BATCH, 3), MutAnyOrigin](
+        input_arr.unsafe_ptr()
     )
+
+    var output_arr = InlineArray[Scalar[dtype], BATCH * 6](uninitialized=True)
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 6), MutAnyOrigin
     ](output_arr.unsafe_ptr())
@@ -142,33 +130,25 @@ fn test_identity_in_compute_graph() raises:
     print("  Output:", output_arr[0], output_arr[1], "...", output_arr[5])
 
     # Gradient check
-    var grad_out = InlineArray[Scalar[dtype], BATCH * 6](
-        uninitialized=True
-    )
+    var grad_out = InlineArray[Scalar[dtype], BATCH * 6](uninitialized=True)
     for i in range(6):
         grad_out[i] = Scalar[dtype](1.0)
     var grad_out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 6), MutAnyOrigin
     ](grad_out.unsafe_ptr())
 
-    var grad_in = InlineArray[Scalar[dtype], BATCH * 3](
-        uninitialized=True
-    )
+    var grad_in = InlineArray[Scalar[dtype], BATCH * 3](uninitialized=True)
     var grad_in_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 3), MutAnyOrigin
     ](grad_in.unsafe_ptr())
-    var grads_arr = InlineArray[Scalar[dtype], G.PARAM_SIZE](
-        uninitialized=True
-    )
+    var grads_arr = InlineArray[Scalar[dtype], G.PARAM_SIZE](uninitialized=True)
     for i in range(G.PARAM_SIZE):
         grads_arr[i] = Scalar[dtype](0.0)
     var grads_t = LayoutTensor[
         dtype, Layout.row_major(G.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    G.backward[BATCH](
-        grad_out_t, grad_in_t, params_t, cache_t, grads_t
-    )
+    G.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
 
     # Grad_input should be non-zero (both branches contribute)
     var any_nz = False
@@ -181,7 +161,7 @@ fn test_identity_in_compute_graph() raises:
     print("  PASSED")
 
 
-fn test_composite_params() raises:
+def test_composite_params() raises:
     """CompositeParams assembly and scatter."""
     print("Test 3: CompositeParams...")
 
@@ -191,18 +171,25 @@ fn test_composite_params() raises:
     # Two-model composition (DDPG-like)
     comptime P2 = CompositeParams[ActorModel, CriticModel]
     print(
-        "  2-model: TOTAL=", P2.TOTAL_SIZE,
-        "offset[0]=", P2.offset[0](),
-        "offset[1]=", P2.offset[1](),
+        "  2-model: TOTAL=",
+        P2.TOTAL_SIZE,
+        "offset[0]=",
+        P2.offset[0](),
+        "offset[1]=",
+        P2.offset[1](),
     )
 
     # Three-model composition (SAC-like: actor + critic1 + critic2)
     comptime P3 = CompositeParams[ActorModel, CriticModel, CriticModel]
     print(
-        "  3-model: TOTAL=", P3.TOTAL_SIZE,
-        "offset[0]=", P3.offset[0](),
-        "offset[1]=", P3.offset[1](),
-        "offset[2]=", P3.offset[2](),
+        "  3-model: TOTAL=",
+        P3.TOTAL_SIZE,
+        "offset[0]=",
+        P3.offset[0](),
+        "offset[1]=",
+        P3.offset[1](),
+        "offset[2]=",
+        P3.offset[2](),
     )
 
     # Verify alignment
@@ -225,9 +212,7 @@ fn test_composite_params() raises:
         critic_params[i] = Scalar[dtype](Float64(i + 100) * 0.01)
 
     # Assemble
-    var combined = InlineArray[Scalar[dtype], P2.TOTAL_SIZE](
-        uninitialized=True
-    )
+    var combined = InlineArray[Scalar[dtype], P2.TOTAL_SIZE](uninitialized=True)
     P2.assemble(
         combined.unsafe_ptr(),
         actor_params.unsafe_ptr(),
@@ -267,7 +252,7 @@ fn test_composite_params() raises:
     print("  PASSED")
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Identity + CompositeParams Tests")
     print("=" * 60)

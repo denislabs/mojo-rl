@@ -48,7 +48,7 @@ trait Model(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[
+    def initialize_params[
         INIT: Initializer
     ](
         mut params: LayoutTensor[
@@ -68,7 +68,7 @@ trait Model(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -95,7 +95,7 @@ trait Model(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -122,7 +122,7 @@ trait Model(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -162,7 +162,7 @@ trait Model(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -197,7 +197,7 @@ trait Model(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -232,7 +232,7 @@ trait Model(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -260,7 +260,7 @@ trait Model(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,

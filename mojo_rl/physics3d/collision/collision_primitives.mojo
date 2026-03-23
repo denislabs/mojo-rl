@@ -23,7 +23,7 @@ from std.math import sqrt
 
 
 @always_inline
-fn rotate_vector_by_quat[
+def rotate_vector_by_quat[
     DTYPE: DType
 ](
     vx: Scalar[DTYPE],
@@ -65,7 +65,7 @@ fn rotate_vector_by_quat[
 
 
 @always_inline
-fn rotate_vector_by_quat_inverse[
+def rotate_vector_by_quat_inverse[
     DTYPE: DType
 ](
     vx: Scalar[DTYPE],
@@ -98,7 +98,7 @@ fn rotate_vector_by_quat_inverse[
 
 
 @always_inline
-fn compute_tangent_basis[
+def compute_tangent_basis[
     DTYPE: DType
 ](
     nx: Scalar[DTYPE],
@@ -174,7 +174,7 @@ fn compute_tangent_basis[
 
 
 @always_inline
-fn sphere_sphere[
+def sphere_sphere[
     DTYPE: DType
 ](
     pos1_x: Scalar[DTYPE],
@@ -251,7 +251,7 @@ fn sphere_sphere[
 
 
 @always_inline
-fn sphere_plane[
+def sphere_plane[
     DTYPE: DType
 ](
     sphere_x: Scalar[DTYPE],
@@ -291,7 +291,7 @@ fn sphere_plane[
 
 
 @always_inline
-fn capsule_plane[
+def capsule_plane[
     DTYPE: DType
 ](
     # Capsule center and orientation
@@ -383,7 +383,7 @@ fn capsule_plane[
 
 
 @always_inline
-fn capsule_sphere[
+def capsule_sphere[
     DTYPE: DType
 ](
     # Capsule
@@ -486,7 +486,7 @@ fn capsule_sphere[
 
 
 @always_inline
-fn _closest_points_line_segments[
+def _closest_points_line_segments[
     DTYPE: DType
 ](
     # Segment 1: p1 to p1 + d1
@@ -608,7 +608,7 @@ fn _closest_points_line_segments[
 
 
 @always_inline
-fn capsule_capsule[
+def capsule_capsule[
     DTYPE: DType
 ](
     # Capsule A
@@ -743,7 +743,7 @@ fn capsule_capsule[
 
 
 @always_inline
-fn cylinder_plane[
+def cylinder_plane[
     DTYPE: DType
 ](
     # Cylinder center and orientation
@@ -846,7 +846,7 @@ fn cylinder_plane[
 
 
 @always_inline
-fn cylinder_sphere[
+def cylinder_sphere[
     DTYPE: DType
 ](
     # Cylinder
@@ -1054,7 +1054,7 @@ fn cylinder_sphere[
 
 
 @always_inline
-fn _check_vertex[
+def _check_vertex[
     DTYPE: DType
 ](
     box_x: Scalar[DTYPE],
@@ -1091,7 +1091,7 @@ fn _check_vertex[
 
 
 @always_inline
-fn box_plane[
+def box_plane[
     DTYPE: DType
 ](
     # Box center and orientation
@@ -1289,7 +1289,7 @@ fn box_plane[
 
 
 @always_inline
-fn box_sphere[
+def box_sphere[
     DTYPE: DType
 ](
     # Box
@@ -1441,7 +1441,7 @@ fn box_sphere[
 
 
 @always_inline
-fn box_capsule[
+def box_capsule[
     DTYPE: DType
 ](
     # Box
@@ -1585,7 +1585,7 @@ fn box_capsule[
 
 
 @always_inline
-fn _project_box_onto_axis[
+def _project_box_onto_axis[
     DTYPE: DType
 ](
     # Box rotation matrix columns (already computed)
@@ -1620,7 +1620,7 @@ fn _project_box_onto_axis[
 
 
 @always_inline
-fn _test_sat_axis[
+def _test_sat_axis[
     DTYPE: DType
 ](
     axis_x: Scalar[DTYPE],
@@ -1737,7 +1737,7 @@ fn _test_sat_axis[
 
 
 @always_inline
-fn box_box[
+def box_box[
     DTYPE: DType
 ](
     # Box A

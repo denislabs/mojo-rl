@@ -18,7 +18,7 @@ from mojo_rl.envs import LunarLanderEnv
 from mojo_rl.deep_agents.core.agents import DQNAgent, DQNPERAgent
 
 
-fn main() raises:
+def main() raises:
     print("=" * 70)
     print("LunarLander: DQN vs DQN + Prioritized Experience Replay")
     print("=" * 70)

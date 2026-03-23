@@ -80,7 +80,7 @@ comptime half_cheetah_xml = """
 """
 
 
-fn read_file(path: String) -> String:
+def read_file(path: String) -> String:
     try:
         return open(path, "r").read()
     except Exception:
@@ -88,7 +88,7 @@ fn read_file(path: String) -> String:
         return ""
 
 
-fn test_parser_xml_compile() raises:
+def test_parser_xml_compile() raises:
     # Parse inline XML at comptime
     comptime xml = read_file("envs/half_cheetah/half_cheetah.xml")
     print(xml)
@@ -113,5 +113,5 @@ fn test_parser_xml_compile() raises:
     # or use a build-time code generator.
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

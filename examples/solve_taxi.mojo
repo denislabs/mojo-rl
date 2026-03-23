@@ -41,7 +41,7 @@ from mojo_rl.agents import QLearningAgent, DoubleQLearningAgent, DynaQAgent
 from mojo_rl.render import Renderer2D
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("    Solving Taxi - Pickup/Dropoff Task")
     print("=" * 60)

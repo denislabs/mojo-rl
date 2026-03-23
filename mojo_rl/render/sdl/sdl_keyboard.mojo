@@ -46,19 +46,19 @@ struct KeyboardID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
-fn has_keyboard() raises -> Bool:
+def has_keyboard() raises -> Bool:
     """Return whether a keyboard is currently connected.
 
     Returns:
@@ -73,7 +73,7 @@ fn has_keyboard() raises -> Bool:
     return _get_dylib_function[lib, "SDL_HasKeyboard", fn() -> Bool]()()
 
 
-fn get_keyboards(
+def get_keyboards(
     count: Ptr[c_int, MutAnyOrigin],
     out ret: Ptr[KeyboardID, MutAnyOrigin],
 ) raises:
@@ -108,7 +108,7 @@ fn get_keyboards(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_keyboard_name_for_id(
+def get_keyboard_name_for_id(
     instance_id: KeyboardID, out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the name of a keyboard.
@@ -137,7 +137,7 @@ fn get_keyboard_name_for_id(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_keyboard_focus() raises -> Ptr[Window, MutAnyOrigin]:
+def get_keyboard_focus() raises -> Ptr[Window, MutAnyOrigin]:
     """Query the window which currently has keyboard focus.
 
     Returns:
@@ -154,7 +154,7 @@ fn get_keyboard_focus() raises -> Ptr[Window, MutAnyOrigin]:
     ]()()
 
 
-fn get_keyboard_state(
+def get_keyboard_state(
     numkeys: Ptr[c_int, MutAnyOrigin]
 ) raises -> Ptr[Bool, ImmutAnyOrigin]:
     """Get a snapshot of the current state of the keyboard.
@@ -196,7 +196,7 @@ fn get_keyboard_state(
     ]()(numkeys)
 
 
-fn reset_keyboard() raises -> None:
+def reset_keyboard() raises -> None:
     """Clear the state of the keyboard.
 
     This function will generate key up events for all pressed keys.
@@ -210,7 +210,7 @@ fn reset_keyboard() raises -> None:
     return _get_dylib_function[lib, "SDL_ResetKeyboard", fn() -> None]()()
 
 
-fn get_mod_state() raises -> Keymod:
+def get_mod_state() raises -> Keymod:
     """Get the current key modifier state for the keyboard.
 
     Returns:
@@ -226,7 +226,7 @@ fn get_mod_state() raises -> Keymod:
     return _get_dylib_function[lib, "SDL_GetModState", fn() -> Keymod]()()
 
 
-fn set_mod_state(modstate: Keymod) raises -> None:
+def set_mod_state(modstate: Keymod) raises -> None:
     """Set the current key modifier state for the keyboard.
 
     The inverse of SDL_GetModState(), SDL_SetModState() allows you to impose
@@ -251,7 +251,7 @@ fn set_mod_state(modstate: Keymod) raises -> None:
     ]()(modstate)
 
 
-fn get_key_from_scancode(
+def get_key_from_scancode(
     scancode: Scancode, modstate: Keymod, key_event: Bool
 ) raises -> Keycode:
     """Get the key code corresponding to the given scancode according to the
@@ -284,7 +284,7 @@ fn get_key_from_scancode(
     ]()(scancode, modstate, key_event)
 
 
-fn get_scancode_from_key(
+def get_scancode_from_key(
     key: Keycode, modstate: Ptr[Keymod, MutAnyOrigin]
 ) raises -> Scancode:
     """Get the scancode corresponding to the given key code according to the
@@ -314,7 +314,7 @@ fn get_scancode_from_key(
     ]()(key, modstate)
 
 
-fn set_scancode_name(scancode: Scancode, var name: String) raises:
+def set_scancode_name(scancode: Scancode, var name: String) raises:
     """Set a human-readable name for a scancode.
 
     Args:
@@ -342,7 +342,7 @@ fn set_scancode_name(scancode: Scancode, var name: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_scancode_name(
+def get_scancode_name(
     scancode: Scancode,
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get a human-readable name for a scancode.
@@ -376,7 +376,7 @@ fn get_scancode_name(
     ]()(scancode)
 
 
-fn get_scancode_from_name(var name: String) raises -> Scancode:
+def get_scancode_from_name(var name: String) raises -> Scancode:
     """Get a scancode from a human-readable name.
 
     Args:
@@ -399,7 +399,7 @@ fn get_scancode_from_name(var name: String) raises -> Scancode:
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
-fn get_key_name(key: Keycode) raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_key_name(key: Keycode) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get a human-readable name for a key.
 
     If the key doesn't have a name, this function returns an empty string ("").
@@ -423,7 +423,7 @@ fn get_key_name(key: Keycode) raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()(key)
 
 
-fn get_key_from_name(var name: String) raises -> Keycode:
+def get_key_from_name(var name: String) raises -> Keycode:
     """Get a key code from a human-readable name.
 
     Args:
@@ -446,7 +446,7 @@ fn get_key_from_name(var name: String) raises -> Keycode:
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
-fn start_text_input(window: Ptr[Window, MutAnyOrigin]) raises:
+def start_text_input(window: Ptr[Window, MutAnyOrigin]) raises:
     """Start accepting Unicode text input events in a window.
 
     This function will enable text input (SDL_EVENT_TEXT_INPUT and
@@ -494,19 +494,19 @@ struct TextInputType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime TEXTINPUT_TYPE_TEXT = Self(0)
@@ -542,19 +542,19 @@ struct Capitalization(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime CAPITALIZE_NONE = Self(0)
@@ -567,7 +567,7 @@ struct Capitalization(Indexer, Intable, TrivialRegisterPassable):
     """All letters will be capitalized."""
 
 
-fn start_text_input_with_properties(
+def start_text_input_with_properties(
     window: Ptr[Window, MutAnyOrigin], props: PropertiesID
 ) raises:
     """Start accepting Unicode text input events in a window, with properties
@@ -628,7 +628,7 @@ fn start_text_input_with_properties(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn text_input_active(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
+def text_input_active(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     """Check whether or not Unicode text input events are enabled for a window.
 
     Args:
@@ -650,7 +650,7 @@ fn text_input_active(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     ]()(window)
 
 
-fn stop_text_input(window: Ptr[Window, MutAnyOrigin]) raises:
+def stop_text_input(window: Ptr[Window, MutAnyOrigin]) raises:
     """Stop receiving any text input events in a window.
 
     If SDL_StartTextInput() showed the screen keyboard, this function will hide
@@ -678,7 +678,7 @@ fn stop_text_input(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn clear_composition(window: Ptr[Window, MutAnyOrigin]) raises:
+def clear_composition(window: Ptr[Window, MutAnyOrigin]) raises:
     """Dismiss the composition window/IME without disabling the subsystem.
 
     Args:
@@ -703,7 +703,7 @@ fn clear_composition(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_text_input_area(
+def set_text_input_area(
     window: Ptr[Window, MutAnyOrigin],
     rect: Ptr[Rect, ImmutAnyOrigin],
     cursor: c_int,
@@ -743,7 +743,7 @@ fn set_text_input_area(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_text_input_area(
+def get_text_input_area(
     window: Ptr[Window, MutAnyOrigin],
     rect: Ptr[Rect, MutAnyOrigin],
     cursor: Ptr[c_int, MutAnyOrigin],
@@ -782,7 +782,7 @@ fn get_text_input_area(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn has_screen_keyboard_support() raises -> Bool:
+def has_screen_keyboard_support() raises -> Bool:
     """Check whether the platform has screen keyboard support.
 
     Returns:
@@ -800,7 +800,7 @@ fn has_screen_keyboard_support() raises -> Bool:
     ]()()
 
 
-fn screen_keyboard_shown(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
+def screen_keyboard_shown(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     """Check whether the screen keyboard is shown for given window.
 
     Args:

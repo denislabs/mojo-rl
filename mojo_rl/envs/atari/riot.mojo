@@ -10,36 +10,100 @@ Ported from CuLE (BSD-3): cule/atari/m6532.hpp
 
 from .atari_state import AtariState
 from .flags import (
-    FLAG_CON_UP, FLAG_CON_DOWN, FLAG_CON_LEFT, FLAG_CON_RIGHT, FLAG_CON_FIRE,
-    FLAG_CON_SELECT, FLAG_CON_RESET, FLAG_CON_COLOR,
-    FLAG_CON_LEFT_DIFF, FLAG_CON_RIGHT_DIFF,
-    ACTION_NOOP, ACTION_FIRE, ACTION_UP, ACTION_RIGHT, ACTION_LEFT,
-    ACTION_DOWN, ACTION_UPRIGHT, ACTION_UPLEFT, ACTION_DOWNRIGHT,
-    ACTION_DOWNLEFT, ACTION_UPFIRE, ACTION_RIGHTFIRE, ACTION_LEFTFIRE,
-    ACTION_DOWNFIRE, ACTION_UPRIGHTFIRE, ACTION_UPLEFTFIRE,
-    ACTION_DOWNRIGHTFIRE, ACTION_DOWNLEFTFIRE, ACTION_RESET,
+    FLAG_CON_UP,
+    FLAG_CON_DOWN,
+    FLAG_CON_LEFT,
+    FLAG_CON_RIGHT,
+    FLAG_CON_FIRE,
+    FLAG_CON_SELECT,
+    FLAG_CON_RESET,
+    FLAG_CON_COLOR,
+    FLAG_CON_LEFT_DIFF,
+    FLAG_CON_RIGHT_DIFF,
+    ACTION_NOOP,
+    ACTION_FIRE,
+    ACTION_UP,
+    ACTION_RIGHT,
+    ACTION_LEFT,
+    ACTION_DOWN,
+    ACTION_UPRIGHT,
+    ACTION_UPLEFT,
+    ACTION_DOWNRIGHT,
+    ACTION_DOWNLEFT,
+    ACTION_UPFIRE,
+    ACTION_RIGHTFIRE,
+    ACTION_LEFTFIRE,
+    ACTION_DOWNFIRE,
+    ACTION_UPRIGHTFIRE,
+    ACTION_UPLEFTFIRE,
+    ACTION_DOWNRIGHTFIRE,
+    ACTION_DOWNLEFTFIRE,
+    ACTION_RESET,
 )
 from .ram import read_ram, write_ram
 
 
 @always_inline
-fn set_action(mut state: AtariState, action: UInt8):
+def set_action(mut state: AtariState, action: UInt8):
     """Map an ALE action to joystick flags in sys_flags."""
     # Clear all controller flags (including RESET so it doesn't stick)
     state.sys_flags = state.sys_flags & ~(
-        FLAG_CON_UP | FLAG_CON_DOWN | FLAG_CON_LEFT | FLAG_CON_RIGHT | FLAG_CON_FIRE | FLAG_CON_RESET
+        FLAG_CON_UP
+        | FLAG_CON_DOWN
+        | FLAG_CON_LEFT
+        | FLAG_CON_RIGHT
+        | FLAG_CON_FIRE
+        | FLAG_CON_RESET
     )
 
     # Set flags based on action
-    if action == ACTION_UP or action == ACTION_UPRIGHT or action == ACTION_UPLEFT or action == ACTION_UPFIRE or action == ACTION_UPRIGHTFIRE or action == ACTION_UPLEFTFIRE:
+    if (
+        action == ACTION_UP
+        or action == ACTION_UPRIGHT
+        or action == ACTION_UPLEFT
+        or action == ACTION_UPFIRE
+        or action == ACTION_UPRIGHTFIRE
+        or action == ACTION_UPLEFTFIRE
+    ):
         state.sys_flags = state.sys_flags | FLAG_CON_UP
-    if action == ACTION_DOWN or action == ACTION_DOWNRIGHT or action == ACTION_DOWNLEFT or action == ACTION_DOWNFIRE or action == ACTION_DOWNRIGHTFIRE or action == ACTION_DOWNLEFTFIRE:
+    if (
+        action == ACTION_DOWN
+        or action == ACTION_DOWNRIGHT
+        or action == ACTION_DOWNLEFT
+        or action == ACTION_DOWNFIRE
+        or action == ACTION_DOWNRIGHTFIRE
+        or action == ACTION_DOWNLEFTFIRE
+    ):
         state.sys_flags = state.sys_flags | FLAG_CON_DOWN
-    if action == ACTION_LEFT or action == ACTION_UPLEFT or action == ACTION_DOWNLEFT or action == ACTION_LEFTFIRE or action == ACTION_UPLEFTFIRE or action == ACTION_DOWNLEFTFIRE:
+    if (
+        action == ACTION_LEFT
+        or action == ACTION_UPLEFT
+        or action == ACTION_DOWNLEFT
+        or action == ACTION_LEFTFIRE
+        or action == ACTION_UPLEFTFIRE
+        or action == ACTION_DOWNLEFTFIRE
+    ):
         state.sys_flags = state.sys_flags | FLAG_CON_LEFT
-    if action == ACTION_RIGHT or action == ACTION_UPRIGHT or action == ACTION_DOWNRIGHT or action == ACTION_RIGHTFIRE or action == ACTION_UPRIGHTFIRE or action == ACTION_DOWNRIGHTFIRE:
+    if (
+        action == ACTION_RIGHT
+        or action == ACTION_UPRIGHT
+        or action == ACTION_DOWNRIGHT
+        or action == ACTION_RIGHTFIRE
+        or action == ACTION_UPRIGHTFIRE
+        or action == ACTION_DOWNRIGHTFIRE
+    ):
         state.sys_flags = state.sys_flags | FLAG_CON_RIGHT
-    if action == ACTION_FIRE or action == ACTION_UPFIRE or action == ACTION_RIGHTFIRE or action == ACTION_LEFTFIRE or action == ACTION_DOWNFIRE or action == ACTION_UPRIGHTFIRE or action == ACTION_UPLEFTFIRE or action == ACTION_DOWNRIGHTFIRE or action == ACTION_DOWNLEFTFIRE:
+    if (
+        action == ACTION_FIRE
+        or action == ACTION_UPFIRE
+        or action == ACTION_RIGHTFIRE
+        or action == ACTION_LEFTFIRE
+        or action == ACTION_DOWNFIRE
+        or action == ACTION_UPRIGHTFIRE
+        or action == ACTION_UPLEFTFIRE
+        or action == ACTION_DOWNRIGHTFIRE
+        or action == ACTION_DOWNLEFTFIRE
+    ):
         state.sys_flags = state.sys_flags | FLAG_CON_FIRE
     if action == ACTION_RESET:
         state.sys_flags = state.sys_flags | FLAG_CON_RESET
@@ -60,7 +124,7 @@ fn set_action(mut state: AtariState, action: UInt8):
 
 
 @always_inline
-fn riot_read_swcha(state: AtariState) -> UInt8:
+def riot_read_swcha(state: AtariState) -> UInt8:
     """Read SWCHA — joystick port.
 
     Each direction pulls a pin low (0). Default is 0xFF (nothing pressed).
@@ -73,19 +137,19 @@ fn riot_read_swcha(state: AtariState) -> UInt8:
     var value: UInt8 = 0xFF  # All pins high (unpressed)
 
     if (state.sys_flags & FLAG_CON_UP) != 0:
-        value = value & ~UInt8(0x10)    # Bit 4 low
+        value = value & ~UInt8(0x10)  # Bit 4 low
     if (state.sys_flags & FLAG_CON_DOWN) != 0:
-        value = value & ~UInt8(0x20)    # Bit 5 low
+        value = value & ~UInt8(0x20)  # Bit 5 low
     if (state.sys_flags & FLAG_CON_LEFT) != 0:
-        value = value & ~UInt8(0x40)    # Bit 6 low
+        value = value & ~UInt8(0x40)  # Bit 6 low
     if (state.sys_flags & FLAG_CON_RIGHT) != 0:
-        value = value & ~UInt8(0x80)    # Bit 7 low
+        value = value & ~UInt8(0x80)  # Bit 7 low
 
     return value
 
 
 @always_inline
-fn riot_read_swchb(state: AtariState) -> UInt8:
+def riot_read_swchb(state: AtariState) -> UInt8:
     """Read SWCHB — console switches.
 
     Bit 0: RESET (active low)
@@ -109,7 +173,7 @@ fn riot_read_swchb(state: AtariState) -> UInt8:
 
 
 @always_inline
-fn riot_read(state: AtariState, addr: UInt8) -> UInt8:
+def riot_read(state: AtariState, addr: UInt8) -> UInt8:
     """Read a RIOT register or RAM.
 
     Address space: 0x0280-0x0297 for registers, 0x0080-0x00FF for RAM.
@@ -133,7 +197,7 @@ fn riot_read(state: AtariState, addr: UInt8) -> UInt8:
 
 
 @always_inline
-fn riot_write(mut state: AtariState, addr: UInt8, value: UInt8):
+def riot_write(mut state: AtariState, addr: UInt8, value: UInt8):
     """Write a RIOT register. Handles timer setup."""
     var reg = addr & 0x1F
 
@@ -156,7 +220,7 @@ fn riot_write(mut state: AtariState, addr: UInt8, value: UInt8):
 
 
 @always_inline
-fn riot_update_timer(mut state: AtariState, cycles: UInt32):
+def riot_update_timer(mut state: AtariState, cycles: UInt32):
     """Advance the RIOT timer by the given number of CPU cycles.
 
     Each CPU cycle = 3 TIA clocks. Timer counts down at (3 * cycles / interval).

@@ -34,7 +34,7 @@ from layout import Layout, LayoutTensor
 # =============================================================================
 
 
-fn cpu_forward_batch[
+def cpu_forward_batch[
     OBS_DIM: Int, HIDDEN_DIM: Int, OUT_DIM: Int, BATCH: Int
 ](
     obs: List[Float32],
@@ -60,7 +60,7 @@ fn cpu_forward_batch[
             output[b * OUT_DIM + j] = sum_val
 
 
-fn benchmark_cpu[
+def benchmark_cpu[
     OBS_DIM: Int, HIDDEN_DIM: Int, OUT_DIM: Int, BATCH: Int
 ](num_iters: Int) -> Float64:
     """Benchmark CPU forward pass."""
@@ -108,7 +108,7 @@ fn benchmark_cpu[
 # =============================================================================
 
 
-fn gpu_forward_kernel[
+def gpu_forward_kernel[
     dtype: DType,
     BATCH: Int,
     OBS_DIM: Int,
@@ -150,7 +150,7 @@ fn gpu_forward_kernel[
         output[batch_idx * OUT_DIM + j] = out_val
 
 
-fn benchmark_gpu[
+def benchmark_gpu[
     OBS_DIM: Int, HIDDEN_DIM: Int, OUT_DIM: Int, BATCH: Int
 ](ctx: DeviceContext, num_iters: Int) raises -> Float64:
     """Benchmark GPU forward pass."""

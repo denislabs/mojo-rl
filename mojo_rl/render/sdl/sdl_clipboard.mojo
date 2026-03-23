@@ -75,7 +75,7 @@ it doesn't support a primary selection.
 """
 
 
-fn set_clipboard_text(var text: String) raises:
+def set_clipboard_text(var text: String) raises:
     """Put UTF-8 text into the clipboard.
 
     Args:
@@ -100,7 +100,7 @@ fn set_clipboard_text(var text: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_clipboard_text(out ret: Ptr[c_char, MutAnyOrigin]) raises:
+def get_clipboard_text(out ret: Ptr[c_char, MutAnyOrigin]) raises:
     """Get UTF-8 text from the clipboard.
 
     This function returns an empty string if there is not enough memory left
@@ -124,7 +124,7 @@ fn get_clipboard_text(out ret: Ptr[c_char, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn has_clipboard_text() raises -> Bool:
+def has_clipboard_text() raises -> Bool:
     """Query whether the clipboard exists and contains a non-empty text string.
 
     Returns:
@@ -139,7 +139,7 @@ fn has_clipboard_text() raises -> Bool:
     return _get_dylib_function[lib, "SDL_HasClipboardText", fn() -> Bool]()()
 
 
-fn set_primary_selection_text(var text: String) raises:
+def set_primary_selection_text(var text: String) raises:
     """Put UTF-8 text into the primary selection.
 
     Args:
@@ -164,7 +164,7 @@ fn set_primary_selection_text(var text: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_primary_selection_text() raises -> Ptr[c_char, MutAnyOrigin]:
+def get_primary_selection_text() raises -> Ptr[c_char, MutAnyOrigin]:
     """Get UTF-8 text from the primary selection.
 
     This function returns an empty string if there is not enough memory left
@@ -186,7 +186,7 @@ fn get_primary_selection_text() raises -> Ptr[c_char, MutAnyOrigin]:
     ]()()
 
 
-fn has_primary_selection_text() raises -> Bool:
+def has_primary_selection_text() raises -> Bool:
     """Query whether the primary selection exists and contains a non-empty text
     string.
 
@@ -247,7 +247,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_ClipboardCleanupCallback.
 """
 
 
-fn set_clipboard_data(
+def set_clipboard_data(
     callback: ClipboardDataCallback,
     cleanup: ClipboardCleanupCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
@@ -299,7 +299,7 @@ fn set_clipboard_data(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn clear_clipboard_data() raises:
+def clear_clipboard_data() raises:
     """Clear the clipboard data.
 
     Raises:
@@ -317,7 +317,7 @@ fn clear_clipboard_data() raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_clipboard_data(
+def get_clipboard_data(
     var mime_type: String,
     size: Ptr[c_size_t, MutAnyOrigin],
     out ret: Ptr[NoneType, MutAnyOrigin],
@@ -354,7 +354,7 @@ fn get_clipboard_data(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn has_clipboard_data(var mime_type: String) raises -> Bool:
+def has_clipboard_data(var mime_type: String) raises -> Bool:
     """Query whether there is data in the clipboard for the provided mime type.
 
     Args:
@@ -377,7 +377,7 @@ fn has_clipboard_data(var mime_type: String) raises -> Bool:
     ]()(mime_type.as_c_string_slice().unsafe_ptr())
 
 
-fn get_clipboard_mime_types(
+def get_clipboard_mime_types(
     num_mime_types: Ptr[c_size_t, MutAnyOrigin]
 ) raises -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin]:
     """Retrieve the list of mime types available in the clipboard.

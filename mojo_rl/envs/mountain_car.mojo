@@ -53,13 +53,13 @@ struct MountainCarState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -69,22 +69,22 @@ struct MountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod
-    fn left() -> Self:
+    def left() -> Self:
         return Self(direction=0)
 
     @staticmethod
-    fn no_push() -> Self:
+    def no_push() -> Self:
         return Self(direction=1)
 
     @staticmethod
-    fn right() -> Self:
+    def right() -> Self:
         return Self(direction=2)
 
 
@@ -135,7 +135,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
     var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
     var _renderer_initialized: Bool
 
-    fn __init__(out self, num_bins: Int = 20):
+    def __init__(out self, num_bins: Int = 20):
         """Initialize MountainCar with default physics parameters."""
         # Physics constants from Gymnasium
         self.min_position = -1.2
@@ -167,7 +167,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> MountainCarState:
+    def reset(mut self) -> MountainCarState:
         """Reset environment to random initial state.
 
         Initial position is uniformly random in [-0.6, -0.4].
@@ -185,7 +185,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return MountainCarState(index=self._discretize_obs())
 
-    fn step(
+    def step(
         mut self, action: MountainCarAction, verbose: Bool = False
     ) -> Tuple[MountainCarState, Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done).
@@ -247,7 +247,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
             self.done,
         )
 
-    fn _get_obs(self) -> SIMD[DType.float64, 4]:
+    def _get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current observation."""
         var obs = SIMD[DType.float64, 4]()
         obs[0] = Float64(self.position)
@@ -256,7 +256,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs[3] = 0.0
         return obs
 
-    fn _discretize_obs(self) -> Int:
+    def _discretize_obs(self) -> Int:
         """Discretize current continuous observation into a single state index.
         """
         var pos_low: Float64 = -1.2
@@ -264,7 +264,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var vel_low: Float64 = -0.07
         var vel_high: Float64 = 0.07
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -283,7 +283,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return b0 * self.num_bins + b1
 
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
+    def get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation as SIMD (optimized, padded to 4D).
         """
         return self._get_obs()
@@ -292,7 +292,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ContinuousStateEnv / BoxDiscreteActionEnv trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list (trait method).
 
         Returns true 2D observation without padding.
@@ -302,13 +302,13 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(self.velocity)
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial observation as list (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take action and return (obs_list, reward, done) - trait method.
@@ -323,15 +323,15 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn get_state(self) -> MountainCarState:
+    def get_state(self) -> MountainCarState:
         """Return current discretized state."""
         return MountainCarState(index=self._discretize_obs())
 
-    fn state_to_index(self, state: MountainCarState) -> Int:
+    def state_to_index(self, state: MountainCarState) -> Int:
         """Convert a MountainCarState to an index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> MountainCarAction:
+    def action_from_index(self, action_idx: Int) -> MountainCarAction:
         """Create a MountainCarAction from an index."""
         return MountainCarAction(direction=action_idx)
 
@@ -339,7 +339,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Raw observation API (for function approximation methods)
     # ========================================================================
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+    def reset_obs(mut self) -> SIMD[DType.float64, 4]:
         """Reset environment and return raw continuous observation.
 
         Use this for function approximation methods (tile coding, linear FA)
@@ -351,7 +351,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         _ = self.reset()  # Reset internal state
         return self._get_obs()
 
-    fn step_raw(
+    def step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[DType.float64, 4], Scalar[Self.dtype], Bool]:
         """Take action and return raw continuous observation.
@@ -372,13 +372,13 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Internal helpers
     # ========================================================================
 
-    fn _height(self, position: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
+    def _height(self, position: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
         """Get terrain height at a given position."""
         return Scalar[Self.dtype](sin(3.0 * Float64(position))) * Scalar[
             Self.dtype
         ](0.45) + Scalar[Self.dtype](0.55)
 
-    fn render(mut self, mut renderer: Renderer2D):
+    def render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.
 
         MountainCar uses custom coordinate conversion due to the terrain function.
@@ -419,15 +419,15 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var flag_height = 50
 
         # Helper functions for coordinate conversion
-        fn world_to_screen_x(
+        def world_to_screen_x(
             pos: Float64, min_pos: Float64, sx: Float64
         ) -> Int:
             return Int((pos - min_pos) * sx)
 
-        fn world_to_screen_y(h: Float64, gy: Int, sy: Float64) -> Int:
+        def world_to_screen_y(h: Float64, gy: Int, sy: Float64) -> Int:
             return gy - Int(h * sy)
 
-        fn height_f64(position: Float64) -> Float64:
+        def height_f64(position: Float64) -> Float64:
             """Get terrain height at a given position for rendering."""
             return sin(3.0 * position) * 0.45 + 0.55
 
@@ -557,30 +557,30 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Update display
         renderer.flip()
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer[].close()
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (3)."""
         return 3
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension (2)."""
         return 2
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of discrete states."""
         return self.num_bins * self.num_bins
 
-    fn get_height(self, position: Float64) -> Float64:
+    def get_height(self, position: Float64) -> Float64:
         """Get the height of the car at a given position.
 
         Used for visualization. The mountain shape is sin(3*x).
@@ -592,12 +592,12 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ========================================================================
 
     @staticmethod
-    fn get_num_states(num_bins: Int = 20) -> Int:
+    def get_num_states(num_bins: Int = 20) -> Int:
         """Get the number of discrete states for MountainCar with given bins."""
         return num_bins * num_bins
 
     @staticmethod
-    fn discretize_obs(obs: SIMD[DType.float64, 2], num_bins: Int = 20) -> Int:
+    def discretize_obs(obs: SIMD[DType.float64, 2], num_bins: Int = 20) -> Int:
         """Discretize continuous observation into a single state index.
 
         Args:
@@ -612,7 +612,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var vel_low: Float64 = -0.07
         var vel_high: Float64 = 0.07
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -628,7 +628,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         return b0 * num_bins + b1
 
     @staticmethod
-    fn make_tile_coding(
+    def make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
     ) -> TileCoding[Self.dtype]:
@@ -667,7 +667,7 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # RenderableEnv Trait Implementation
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
@@ -676,13 +676,13 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
         self.render(self._renderer[])
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
@@ -690,26 +690,26 @@ struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False

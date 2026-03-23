@@ -155,7 +155,7 @@ struct Equalities[*E: EqualitySpec]:
     comptime N: Int = Variadic.size(Self.eq_types)
 
     @staticmethod
-    fn _sum_rows() -> Int:
+    def _sum_rows() -> Int:
         """Sum NUM_ROWS across all equality constraints (total constraint rows).
         """
         var total = 0
@@ -165,7 +165,7 @@ struct Equalities[*E: EqualitySpec]:
         return total
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

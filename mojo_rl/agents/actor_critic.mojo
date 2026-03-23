@@ -74,7 +74,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
     var discount_factor: Float64
     var entropy_coef: Float64  # Entropy bonus for exploration
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -116,7 +116,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         for _ in range(self.num_tiles):
             self.critic_weights.append(init_value)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.num_actions = copy.num_actions
         self.num_tiles = copy.num_tiles
         self.num_tilings = copy.num_tilings
@@ -127,7 +127,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         self.theta = copy.theta.copy()
         self.critic_weights = copy.critic_weights.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.num_actions = take.num_actions
         self.num_tiles = take.num_tiles
         self.num_tilings = take.num_tilings
@@ -138,7 +138,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         self.theta = take.theta^
         self.critic_weights = take.critic_weights^
 
-    fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
+    def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits).
 
         h(s, a) = θ_a · φ(s)
@@ -151,7 +151,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
+    def get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities π(·|s).
 
         Args:
@@ -163,7 +163,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
 
-    fn get_value(self, tiles: List[Int]) -> Float64:
+    def get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate V(s).
 
         Args:
@@ -177,7 +177,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             value += self.critic_weights[tiles[i]]
         return value
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Sample action from policy π(a|s).
 
         Args:
@@ -189,7 +189,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         var probs = self.get_action_probs(tiles)
         return sample_from_probs(probs)
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action (highest probability).
 
         Args:
@@ -201,7 +201,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         var probs = self.get_action_probs(tiles)
         return argmax_probs(probs)
 
-    fn update(
+    def update(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -264,11 +264,11 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             for i in range(len(tiles)):
                 self.theta[a][tiles[i]] += actor_step * total_grad
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset for new episode (no-op for basic actor-critic)."""
         pass
 
-    fn get_policy_entropy(self, tiles: List[Int]) -> Float64:
+    def get_policy_entropy(self, tiles: List[Int]) -> Float64:
         """Compute policy entropy at given state.
 
         Args:
@@ -284,7 +284,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -352,7 +352,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -450,7 +450,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
     var lambda_: Float64  # Trace decay parameter
     var entropy_coef: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -501,7 +501,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             self.critic_weights.append(init_value)
             self.critic_traces.append(0.0)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.num_actions = copy.num_actions
         self.num_tiles = copy.num_tiles
         self.num_tilings = copy.num_tilings
@@ -526,7 +526,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             self.critic_weights.append(copy.critic_weights[t])
             self.critic_traces.append(0.0)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.num_actions = take.num_actions
         self.num_tiles = take.num_tiles
         self.num_tilings = take.num_tilings
@@ -540,7 +540,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
         self.critic_weights = take.critic_weights^
         self.critic_traces = take.critic_traces^
 
-    fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
+    def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""
         var preferences = List[Float64]()
         for a in range(self.num_actions):
@@ -550,7 +550,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn _softmax(self, preferences: List[Float64]) -> List[Float64]:
+    def _softmax(self, preferences: List[Float64]) -> List[Float64]:
         """Compute softmax probabilities."""
         var max_pref = preferences[0]
         for i in range(1, len(preferences)):
@@ -569,19 +569,19 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             probs.append(exp_prefs[i] / sum_exp)
         return probs^
 
-    fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
+    def get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities."""
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
 
-    fn get_value(self, tiles: List[Int]) -> Float64:
+    def get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate."""
         var value: Float64 = 0.0
         for i in range(len(tiles)):
             value += self.critic_weights[tiles[i]]
         return value
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Sample action from policy."""
         var probs = self.get_action_probs(tiles)
         var rand = random_float64()
@@ -592,7 +592,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
                 return a
         return self.num_actions - 1
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action."""
         var probs = self.get_action_probs(tiles)
         var best_action = 0
@@ -603,7 +603,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
                 best_action = a
         return best_action
 
-    fn update(
+    def update(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -694,7 +694,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
         if done:
             self._reset_traces()
 
-    fn _reset_traces(mut self):
+    def _reset_traces(mut self):
         """Reset all eligibility traces to zero."""
         for a in range(self.num_actions):
             for t in range(self.num_tiles):
@@ -702,11 +702,11 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
         for t in range(self.num_tiles):
             self.critic_traces[t] = 0.0
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset traces for new episode."""
         self._reset_traces()
 
-    fn get_policy_entropy(self, tiles: List[Int]) -> Float64:
+    def get_policy_entropy(self, tiles: List[Int]) -> Float64:
         """Compute policy entropy."""
         var probs = self.get_action_probs(tiles)
         var entropy: Float64 = 0.0
@@ -715,7 +715,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -784,7 +784,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -884,7 +884,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
     var buffer_actions: List[Int]
     var buffer_rewards: List[Float64]
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -934,7 +934,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_actions = List[Int]()
         self.buffer_rewards = List[Float64]()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.num_actions = copy.num_actions
         self.num_tiles = copy.num_tiles
         self.num_tilings = copy.num_tilings
@@ -956,7 +956,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_actions = List[Int]()
         self.buffer_rewards = List[Float64]()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.num_actions = take.num_actions
         self.num_tiles = take.num_tiles
         self.num_tilings = take.num_tilings
@@ -971,7 +971,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_actions = take.buffer_actions^
         self.buffer_rewards = take.buffer_rewards^
 
-    fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
+    def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""
         var preferences = List[Float64]()
         for a in range(self.num_actions):
@@ -981,7 +981,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn _softmax(self, preferences: List[Float64]) -> List[Float64]:
+    def _softmax(self, preferences: List[Float64]) -> List[Float64]:
         """Compute softmax probabilities."""
         var max_pref = preferences[0]
         for i in range(1, len(preferences)):
@@ -1000,19 +1000,19 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
             probs.append(exp_prefs[i] / sum_exp)
         return probs^
 
-    fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
+    def get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities."""
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
 
-    fn get_value(self, tiles: List[Int]) -> Float64:
+    def get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate."""
         var value: Float64 = 0.0
         for i in range(len(tiles)):
             value += self.critic_weights[tiles[i]]
         return value
 
-    fn _get_value_idx(self, buffer_idx: Int) -> Float64:
+    def _get_value_idx(self, buffer_idx: Int) -> Float64:
         """Get state value for buffer step by index."""
         var value: Float64 = 0.0
         var num_tiles = len(self.buffer_tiles[buffer_idx])
@@ -1021,7 +1021,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
             value += self.critic_weights[tile_idx]
         return value
 
-    fn _get_action_probs_idx(self, buffer_idx: Int) -> List[Float64]:
+    def _get_action_probs_idx(self, buffer_idx: Int) -> List[Float64]:
         """Get action probabilities for buffer step by index."""
         var preferences = List[Float64]()
         var num_tiles = len(self.buffer_tiles[buffer_idx])
@@ -1033,7 +1033,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return self._softmax(preferences^)
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Sample action from policy."""
         var probs = self.get_action_probs(tiles)
         var rand = random_float64()
@@ -1044,7 +1044,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
                 return a
         return self.num_actions - 1
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action."""
         var probs = self.get_action_probs(tiles)
         var best_action = 0
@@ -1055,7 +1055,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
                 best_action = a
         return best_action
 
-    fn store_transition(
+    def store_transition(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -1076,7 +1076,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_actions.append(action)
         self.buffer_rewards.append(reward)
 
-    fn update(
+    def update(
         mut self,
         next_tiles: List[Int],
         done: Bool,
@@ -1161,13 +1161,13 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_actions.clear()
         self.buffer_rewards.clear()
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset buffer for new episode."""
         self.buffer_tiles.clear()
         self.buffer_actions.clear()
         self.buffer_rewards.clear()
 
-    fn get_policy_entropy(self, tiles: List[Int]) -> Float64:
+    def get_policy_entropy(self, tiles: List[Int]) -> Float64:
         """Compute policy entropy."""
         var probs = self.get_action_probs(tiles)
         var entropy: Float64 = 0.0
@@ -1176,7 +1176,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -1247,7 +1247,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -1323,7 +1323,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
 # ============================================================================
 
 
-fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
+def _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     """Convert a List[Scalar[DTYPE]] to SIMD[DTYPE, 4].
 
     Pads with zeros if the list has fewer than 4 elements.
@@ -1335,7 +1335,7 @@ fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     return result
 
 
-fn _list_to_simd4_f64[
+def _list_to_simd4_f64[
     DTYPE: DType
 ](obs: List[Scalar[DTYPE]]) -> SIMD[DType.float64, 4]:
     """Convert a List[Scalar[DTYPE]] to SIMD[DType.float64, 4].

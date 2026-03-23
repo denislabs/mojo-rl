@@ -6,7 +6,7 @@ from mojo_rl.nn.constants import dtype
 from mojo_rl.deep_agents.dreamer_v3 import DreamerV3Agent
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("DreamerV3 GPU Tests")
     print("=" * 60)

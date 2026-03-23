@@ -9,7 +9,7 @@ from std.math import sin, cos, sqrt
 from .gpu_types import GPUVertex, MeshData
 
 
-fn generate_sphere(segments: Int = 16, rings: Int = 12) -> MeshData:
+def generate_sphere(segments: Int = 16, rings: Int = 12) -> MeshData:
     """Generate a unit sphere centered at origin.
 
     UV sphere with normals = position (unit sphere).
@@ -63,7 +63,7 @@ fn generate_sphere(segments: Int = 16, rings: Int = 12) -> MeshData:
     return mesh^
 
 
-fn generate_box() -> MeshData:
+def generate_box() -> MeshData:
     """Generate a unit box from [-0.5, 0.5] per axis with face normals.
 
     Each face has 4 unique vertices (for flat normals), 6 indices.
@@ -144,7 +144,7 @@ fn generate_box() -> MeshData:
     return mesh^
 
 
-fn _add_box_face(
+def _add_box_face(
     mut mesh: MeshData,
     nx: Float32,
     ny: Float32,
@@ -186,7 +186,7 @@ fn _add_box_face(
     mesh.indices.append(base + 3)
 
 
-fn generate_capsule(
+def generate_capsule(
     radius: Float32,
     half_height: Float32,
     segments: Int = 16,
@@ -372,7 +372,7 @@ fn generate_capsule(
     return mesh^
 
 
-fn generate_ground(size: Float32 = 10.0) -> MeshData:
+def generate_ground(size: Float32 = 10.0) -> MeshData:
     """Generate a large ground quad at Z=0.
 
     The quad lies in the XY plane with normal pointing up (+Z).

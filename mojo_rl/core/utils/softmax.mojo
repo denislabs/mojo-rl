@@ -23,7 +23,7 @@ Example usage:
 from std.math import exp
 
 
-fn softmax(logits: List[Float64]) -> List[Float64]:
+def softmax(logits: List[Float64]) -> List[Float64]:
     """Compute numerically stable softmax probabilities.
 
     Computes: probs[i] = exp(logits[i] - max) / sum(exp(logits[j] - max))
@@ -70,7 +70,7 @@ fn softmax(logits: List[Float64]) -> List[Float64]:
     return probs^
 
 
-fn softmax_inline[
+def softmax_inline[
     dtype: DType, N: Int
 ](logits: InlineArray[Scalar[dtype], N]) -> InlineArray[Scalar[dtype], N]:
     """Compute numerically stable softmax probabilities for InlineArray.
@@ -116,7 +116,7 @@ fn softmax_inline[
     return probs^
 
 
-fn log_softmax(logits: List[Float64]) -> List[Float64]:
+def log_softmax(logits: List[Float64]) -> List[Float64]:
     """Compute numerically stable log-softmax.
 
     Computes: log_probs[i] = logits[i] - max - log(sum(exp(logits[j] - max)))
@@ -161,14 +161,14 @@ fn log_softmax(logits: List[Float64]) -> List[Float64]:
     return log_probs^
 
 
-fn log(x: Float64) -> Float64:
+def log(x: Float64) -> Float64:
     """Natural logarithm (wrapper for math.log)."""
     from std.math import log as math_log
 
     return math_log(x)
 
 
-fn sample_from_probs(probs: List[Float64]) -> Int:
+def sample_from_probs(probs: List[Float64]) -> Int:
     """Sample an action index from a probability distribution.
 
     Args:
@@ -195,7 +195,7 @@ fn sample_from_probs(probs: List[Float64]) -> Int:
     return n - 1  # Fallback for numerical precision
 
 
-fn sample_from_probs_inline[
+def sample_from_probs_inline[
     dtype: DType, N: Int
 ](probs: InlineArray[Scalar[dtype], N]) -> Int:
     """Sample an action index from a probability distribution (InlineArray).
@@ -223,7 +223,7 @@ fn sample_from_probs_inline[
     return N - 1  # Fallback for numerical precision
 
 
-fn argmax_probs(probs: List[Float64]) -> Int:
+def argmax_probs(probs: List[Float64]) -> Int:
     """Get the action with highest probability (greedy selection).
 
     Args:
@@ -246,7 +246,7 @@ fn argmax_probs(probs: List[Float64]) -> Int:
     return best_idx
 
 
-fn argmax_probs_inline[
+def argmax_probs_inline[
     dtype: DType, N: Int
 ](probs: InlineArray[Scalar[dtype], N]) -> Int:
     """Get the action with highest probability (greedy selection, InlineArray).

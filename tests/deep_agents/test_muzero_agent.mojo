@@ -4,14 +4,21 @@ from mojo_rl.deep_agents.muzero import GenericMuZeroAgent, MuZeroMLPConfig
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main():
+def main():
     print("=== MuZero Agent Test (Config-Driven) ===")
 
     # Config defines everything: networks, dims, hyperparams
     comptime Config = MuZeroMLPConfig[
-        4, 2,  # obs_dim, action_dim
-        LATENT=32, HIDDEN=32, BINS=21,
-        SIMS=5, K=3, N=5, BS=16, CAP=10000,
+        4,
+        2,  # obs_dim, action_dim
+        LATENT=32,
+        HIDDEN=32,
+        BINS=21,
+        SIMS=5,
+        K=3,
+        N=5,
+        BS=16,
+        CAP=10000,
     ]
 
     var agent = GenericMuZeroAgent[Config](

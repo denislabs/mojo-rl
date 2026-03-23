@@ -75,7 +75,7 @@ trait AtariGame:
 
     @staticmethod
     @always_inline
-    fn step_env[BATCH_SIZE: Int, STATE_SIZE: Int](
+    def step_env[BATCH_SIZE: Int, STATE_SIZE: Int](
         states: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
         action: Int,
         env: Int,
@@ -87,7 +87,7 @@ trait AtariGame:
 
     @staticmethod
     @always_inline
-    fn reset_env[BATCH_SIZE: Int, STATE_SIZE: Int](
+    def reset_env[BATCH_SIZE: Int, STATE_SIZE: Int](
         states: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
         env: Int,
         rng_seed: UInt32,
@@ -97,7 +97,7 @@ trait AtariGame:
 
     @staticmethod
     @always_inline
-    fn extract_clean_obs[BATCH_SIZE: Int, STATE_SIZE: Int, OBS_DIM: Int](
+    def extract_clean_obs[BATCH_SIZE: Int, STATE_SIZE: Int, OBS_DIM: Int](
         states: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
         obs: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin],
         env: Int,
@@ -107,7 +107,7 @@ trait AtariGame:
 
     @staticmethod
     @always_inline
-    fn render_frame_gpu[BATCH_SIZE: Int, STATE_SIZE: Int](
+    def render_frame_gpu[BATCH_SIZE: Int, STATE_SIZE: Int](
         states: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
         frame_buf: UnsafePointer[UInt8, MutAnyOrigin],  # 160×210 grayscale
         env: Int,
@@ -242,7 +242,7 @@ For `OBS_MODE=1`, the pixel pipeline runs per-step after `step_env`:
 
 ```mojo
 @always_inline
-fn draw_filled_rect(
+def draw_filled_rect(
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     x: Int, y: Int, w: Int, h: Int,
     color: UInt8,  # grayscale 0-255
@@ -253,11 +253,11 @@ fn draw_filled_rect(
             buf[row * 160 + col] = color
 
 @always_inline
-fn draw_circle(buf, cx, cy, radius, color):
+def draw_circle(buf, cx, cy, radius, color):
     """Draw a filled circle (for ball, bullets)."""
 
 @always_inline
-fn clear_frame(buf):
+def clear_frame(buf):
     """Fill with black (0)."""
 
 # Each game's render_frame_gpu calls these to compose its display.
@@ -284,18 +284,18 @@ struct AtariGameEnv[
     comptime STEP_WS_PER_ENV: Int = 0 if Self.OBS_MODE == 0 else PIXEL_WS_SIZE
 
     # ---- CPU path (BoxDiscreteActionEnv) ----
-    fn reset_obs_list(mut self) -> List[Scalar[dtype]]
-    fn step_obs(mut self, action: Int) -> Tuple[List[Scalar[dtype]], Scalar[dtype], Bool]
+    def reset_obs_list(mut self) -> List[Scalar[dtype]]
+    def step_obs(mut self, action: Int) -> Tuple[List[Scalar[dtype]], Scalar[dtype], Bool]
 
     # ---- GPU path (GPUDiscreteEnv) ----
-    @staticmethod fn step_kernel_gpu[...](...) raises   # Dispatches to G.step_env
-    @staticmethod fn reset_kernel_gpu[...](...) raises  # Dispatches to G.reset_env
-    @staticmethod fn selective_reset_kernel_gpu[...](...) raises
+    @staticmethod def step_kernel_gpu[...](...) raises   # Dispatches to G.step_env
+    @staticmethod def reset_kernel_gpu[...](...) raises  # Dispatches to G.reset_env
+    @staticmethod def selective_reset_kernel_gpu[...](...) raises
 
     # ---- Rendering (RenderableEnv) ----
-    fn init_renderer(mut self) raises -> Bool      # SDL3 window
-    fn render_frame(mut self) raises               # Draw game state
-    fn close_renderer(mut self) raises
+    def init_renderer(mut self) raises -> Bool      # SDL3 window
+    def render_frame(mut self) raises               # Draw game state
+    def close_renderer(mut self) raises
 ```
 
 **This means each new game is ONLY the physics + rendering — all boilerplate is shared.**

@@ -31,7 +31,7 @@ from std.math import abs
 # =============================================================================
 
 
-fn grad_check[
+def grad_check[
     M: Model,
     BATCH: Int,
 ](
@@ -71,9 +71,7 @@ fn grad_check[
     var grad_in_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
     ](grad_in_arr.unsafe_ptr())
-    var grads_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](
-        uninitialized=True
-    )
+    var grads_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](uninitialized=True)
     for i in range(M.PARAM_SIZE):
         grads_arr[i] = Scalar[dtype](0.0)
     var grads_t = LayoutTensor[
@@ -194,7 +192,7 @@ fn grad_check[
 # For testing we use small dims: LATENT=8, ACTION=3, BINS=5
 
 
-fn test_tdmpc2_single_step() raises:
+def test_tdmpc2_single_step() raises:
     """TD-MPC2 world model forward: multi-head fan-out from za."""
     print("Test 1: TD-MPC2 world model single-step...")
 
@@ -220,30 +218,48 @@ fn test_tdmpc2_single_step() raises:
 
     comptime TDMPC2Step = ComputeGraph[
         # Multi-head fan-out from za
-        GNode["dynamics",    Dynamics],                # 0: za → z_pred(8)
-        GNode["rew_logits",  RewardHead],              # 1: za → rew_logits(5)  (fan-out)
-        GNode["q1_logits",   Q1],                      # 2: za → q1_logits(5)   (fan-out)
-        GNode["q2_logits",   Q2],                      # 3: za → q2_logits(5)   (fan-out)
-        GNode["z_extract",   Slice[ZA, 0, LATENT]],    # 4: extract z_t(8) from za  (fan-out)
-        GNode["term_prob",   TermHead, "z_extract"],    # 5: z_t → term_prob(1)
-
+        GNode["dynamics", Dynamics],  # 0: za → z_pred(8)
+        GNode["rew_logits", RewardHead],  # 1: za → rew_logits(5)  (fan-out)
+        GNode["q1_logits", Q1],  # 2: za → q1_logits(5)   (fan-out)
+        GNode["q2_logits", Q2],  # 3: za → q2_logits(5)   (fan-out)
+        GNode[
+            "z_extract", Slice[ZA, 0, LATENT]
+        ],  # 4: extract z_t(8) from za  (fan-out)
+        GNode["term_prob", TermHead, "z_extract"],  # 5: z_t → term_prob(1)
         # Concat chain: merge all outputs → single output tensor
-        GNode["cat_dr",      Identity[D_PLUS_R], "dynamics", "rew_logits"],     # 6: [z_pred, rew](13)
-        GNode["cat_drq1",    Identity[D_R_Q1], "cat_dr", "q1_logits"],         # 7: [z_pred, rew, q1](18)
-        GNode["cat_drq1q2",  Identity[D_R_Q1_Q2], "cat_drq1", "q2_logits"],   # 8: [z_pred, rew, q1, q2](23)
-        GNode["output",      Identity[ALL_OUT], "cat_drq1q2", "term_prob"],    # 9: [z_pred, rew, q1, q2, term](24)
+        GNode[
+            "cat_dr", Identity[D_PLUS_R], "dynamics", "rew_logits"
+        ],  # 6: [z_pred, rew](13)
+        GNode[
+            "cat_drq1", Identity[D_R_Q1], "cat_dr", "q1_logits"
+        ],  # 7: [z_pred, rew, q1](18)
+        GNode[
+            "cat_drq1q2", Identity[D_R_Q1_Q2], "cat_drq1", "q2_logits"
+        ],  # 8: [z_pred, rew, q1, q2](23)
+        GNode[
+            "output", Identity[ALL_OUT], "cat_drq1q2", "term_prob"
+        ],  # 9: [z_pred, rew, q1, q2, term](24)
     ]
 
     print(
-        "  TDMPC2Step: IN=", TDMPC2Step.IN_DIM, "OUT=",
-        TDMPC2Step.OUT_DIM, "PARAM=", TDMPC2Step.PARAM_SIZE,
+        "  TDMPC2Step: IN=",
+        TDMPC2Step.IN_DIM,
+        "OUT=",
+        TDMPC2Step.OUT_DIM,
+        "PARAM=",
+        TDMPC2Step.PARAM_SIZE,
     )
 
     # Verify dimensions
     if TDMPC2Step.IN_DIM != ZA:
         raise Error("IN_DIM mismatch")
     if TDMPC2Step.OUT_DIM != ALL_OUT:
-        raise Error("OUT_DIM mismatch: expected " + String(ALL_OUT) + " got " + String(TDMPC2Step.OUT_DIM))
+        raise Error(
+            "OUT_DIM mismatch: expected "
+            + String(ALL_OUT)
+            + " got "
+            + String(TDMPC2Step.OUT_DIM)
+        )
 
     # Initialize
     var params = InlineArray[Scalar[dtype], TDMPC2Step.PARAM_SIZE](
@@ -255,9 +271,7 @@ fn test_tdmpc2_single_step() raises:
     TDMPC2Step.initialize_params[Xavier[]](params_t)
 
     # Input: za = [z_t, a_t]
-    var input_arr = InlineArray[Scalar[dtype], BATCH * ZA](
-        uninitialized=True
-    )
+    var input_arr = InlineArray[Scalar[dtype], BATCH * ZA](uninitialized=True)
     for i in range(BATCH * ZA):
         input_arr[i] = Scalar[dtype](Float64(i + 1) * 0.05)
 
@@ -268,9 +282,9 @@ fn test_tdmpc2_single_step() raises:
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, ALL_OUT), MutAnyOrigin
     ](output_arr.unsafe_ptr())
-    var cache_arr = InlineArray[
-        Scalar[dtype], BATCH * TDMPC2Step.CACHE_SIZE
-    ](uninitialized=True)
+    var cache_arr = InlineArray[Scalar[dtype], BATCH * TDMPC2Step.CACHE_SIZE](
+        uninitialized=True
+    )
     var cache_t = LayoutTensor[
         dtype,
         Layout.row_major(BATCH, TDMPC2Step.CACHE_SIZE),
@@ -303,7 +317,9 @@ fn test_tdmpc2_single_step() raises:
     var max_rel_p = result[0]
     var max_rel_i = result[1]
 
-    print("  Grad check: params rel_err=", max_rel_p, "input rel_err=", max_rel_i)
+    print(
+        "  Grad check: params rel_err=", max_rel_p, "input rel_err=", max_rel_i
+    )
     if max_rel_p > 0.05:
         raise Error("Param gradient check failed")
     if max_rel_i > 0.05:
@@ -326,7 +342,7 @@ fn test_tdmpc2_single_step() raises:
 # 3-way fan-out from feat. The combined gradient flows back through all heads.
 
 
-fn test_dreamer_heads() raises:
+def test_dreamer_heads() raises:
     """Dreamer prediction heads: 3-way fan-out from feat."""
     print("Test 2: Dreamer prediction heads...")
 
@@ -345,17 +361,25 @@ fn test_dreamer_heads() raises:
     comptime ALL_OUT = DEC_REW + 1  # = 12
 
     comptime DreamerHeads = ComputeGraph[
-        GNode["decoder",   Decoder],              # 0: feat → obs_hat(6)
-        GNode["rew_head",  RewardHead],           # 1: feat → rew_logits(5)  (fan-out)
-        GNode["cont_head", ContinueHead],         # 2: feat → cont(1)        (fan-out)
+        GNode["decoder", Decoder],  # 0: feat → obs_hat(6)
+        GNode["rew_head", RewardHead],  # 1: feat → rew_logits(5)  (fan-out)
+        GNode["cont_head", ContinueHead],  # 2: feat → cont(1)        (fan-out)
         # Concat all outputs
-        GNode["cat_dr",    Identity[DEC_REW], "decoder", "rew_head"],   # 3: [obs_hat, rew](11)
-        GNode["output",    Identity[ALL_OUT], "cat_dr", "cont_head"],   # 4: [obs_hat, rew, cont](12)
+        GNode[
+            "cat_dr", Identity[DEC_REW], "decoder", "rew_head"
+        ],  # 3: [obs_hat, rew](11)
+        GNode[
+            "output", Identity[ALL_OUT], "cat_dr", "cont_head"
+        ],  # 4: [obs_hat, rew, cont](12)
     ]
 
     print(
-        "  DreamerHeads: IN=", DreamerHeads.IN_DIM, "OUT=",
-        DreamerHeads.OUT_DIM, "PARAM=", DreamerHeads.PARAM_SIZE,
+        "  DreamerHeads: IN=",
+        DreamerHeads.IN_DIM,
+        "OUT=",
+        DreamerHeads.OUT_DIM,
+        "PARAM=",
+        DreamerHeads.PARAM_SIZE,
     )
 
     if DreamerHeads.IN_DIM != FEAT:
@@ -372,9 +396,7 @@ fn test_dreamer_heads() raises:
     ](params.unsafe_ptr())
     DreamerHeads.initialize_params[Xavier[]](params_t)
 
-    var input_arr = InlineArray[Scalar[dtype], BATCH * FEAT](
-        uninitialized=True
-    )
+    var input_arr = InlineArray[Scalar[dtype], BATCH * FEAT](uninitialized=True)
     for i in range(BATCH * FEAT):
         input_arr[i] = Scalar[dtype](Float64(i + 1) * 0.03)
 
@@ -385,9 +407,9 @@ fn test_dreamer_heads() raises:
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, ALL_OUT), MutAnyOrigin
     ](output_arr.unsafe_ptr())
-    var cache_arr = InlineArray[
-        Scalar[dtype], BATCH * DreamerHeads.CACHE_SIZE
-    ](uninitialized=True)
+    var cache_arr = InlineArray[Scalar[dtype], BATCH * DreamerHeads.CACHE_SIZE](
+        uninitialized=True
+    )
     var cache_t = LayoutTensor[
         dtype,
         Layout.row_major(BATCH, DreamerHeads.CACHE_SIZE),
@@ -416,7 +438,9 @@ fn test_dreamer_heads() raises:
         grad_out_arr.unsafe_ptr(),
     )
 
-    print("  Grad check: params rel_err=", result[0], "input rel_err=", result[1])
+    print(
+        "  Grad check: params rel_err=", result[0], "input rel_err=", result[1]
+    )
     # float32 + fan-out can amplify numerical noise; 0.05 is appropriate
     if result[0] > 0.25:
         raise Error("Param gradient check failed")
@@ -450,7 +474,7 @@ fn test_dreamer_heads() raises:
 #   Concat(min_Q, log_prob) → output
 
 
-fn test_sac_actor_loss() raises:
+def test_sac_actor_loss() raises:
     """SAC actor loss as ComputeGraph — fan-out + fan-in."""
     print("Test 3: SAC actor loss graph...")
 
@@ -462,28 +486,40 @@ fn test_sac_actor_loss() raises:
     comptime CRITIC_IN = OBS + ACT  # = 6
 
     # Small networks
-    comptime ActorModel = Sequential[
-        LinearReLU[OBS, 8], Linear[8, ACTOR_OUT]
-    ]
-    comptime CriticModel = Sequential[
-        LinearReLU[CRITIC_IN, 8], Linear[8, 1]
-    ]
+    comptime ActorModel = Sequential[LinearReLU[OBS, 8], Linear[8, ACTOR_OUT]]
+    comptime CriticModel = Sequential[LinearReLU[CRITIC_IN, 8], Linear[8, 1]]
 
     comptime SACGraph = ComputeGraph[
-        GNode["actor",    ActorModel],                              # 0: obs → [mean, log_std](4)
-        GNode["rsample",  RSample[ACT], "actor"],                  # 1: → [action(2), log_prob(1)]
-        GNode["action",   Slice[RSAMPLE_OUT, 0, ACT], "rsample"],            # 2: → action(2)  (fan-out from 1)
-        GNode["log_prob", Slice[RSAMPLE_OUT, ACT, RSAMPLE_OUT], "rsample"],  # 3: → log_prob(1) (fan-out from 1)
-        GNode["Q1",       CriticModel, "input", "action"],        # 4: [obs(4), action(2)] → Q1
-        GNode["Q2",       CriticModel, "input", "action"],        # 5: [obs(4), action(2)] → Q2 (fan-out from concat)
-        GNode["min_q",    Min[1], "Q1", "Q2"],                    # 6: → min_Q(1)
+        GNode["actor", ActorModel],  # 0: obs → [mean, log_std](4)
+        GNode[
+            "rsample", RSample[ACT], "actor"
+        ],  # 1: → [action(2), log_prob(1)]
+        GNode[
+            "action", Slice[RSAMPLE_OUT, 0, ACT], "rsample"
+        ],  # 2: → action(2)  (fan-out from 1)
+        GNode[
+            "log_prob", Slice[RSAMPLE_OUT, ACT, RSAMPLE_OUT], "rsample"
+        ],  # 3: → log_prob(1) (fan-out from 1)
+        GNode[
+            "Q1", CriticModel, "input", "action"
+        ],  # 4: [obs(4), action(2)] → Q1
+        GNode[
+            "Q2", CriticModel, "input", "action"
+        ],  # 5: [obs(4), action(2)] → Q2 (fan-out from concat)
+        GNode["min_q", Min[1], "Q1", "Q2"],  # 6: → min_Q(1)
         # Concat min_Q and log_prob for final output
-        GNode["output",   Identity[2], "min_q", "log_prob"],      # 7: [min_Q(1), log_prob(1)] = output(2)
+        GNode[
+            "output", Identity[2], "min_q", "log_prob"
+        ],  # 7: [min_Q(1), log_prob(1)] = output(2)
     ]
 
     print(
-        "  SACGraph: IN=", SACGraph.IN_DIM, "OUT=",
-        SACGraph.OUT_DIM, "PARAM=", SACGraph.PARAM_SIZE,
+        "  SACGraph: IN=",
+        SACGraph.IN_DIM,
+        "OUT=",
+        SACGraph.OUT_DIM,
+        "PARAM=",
+        SACGraph.PARAM_SIZE,
     )
 
     if SACGraph.IN_DIM != OBS:
@@ -500,24 +536,20 @@ fn test_sac_actor_loss() raises:
     ](params.unsafe_ptr())
     SACGraph.initialize_params[Xavier[]](params_t)
 
-    var input_arr = InlineArray[Scalar[dtype], BATCH * OBS](
-        uninitialized=True
-    )
+    var input_arr = InlineArray[Scalar[dtype], BATCH * OBS](uninitialized=True)
     input_arr[0] = Scalar[dtype](0.5)
     input_arr[1] = Scalar[dtype](-0.3)
     input_arr[2] = Scalar[dtype](0.8)
     input_arr[3] = Scalar[dtype](-0.1)
 
     # Forward
-    var output_arr = InlineArray[Scalar[dtype], BATCH * 2](
-        uninitialized=True
-    )
+    var output_arr = InlineArray[Scalar[dtype], BATCH * 2](uninitialized=True)
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
     ](output_arr.unsafe_ptr())
-    var cache_arr = InlineArray[
-        Scalar[dtype], BATCH * SACGraph.CACHE_SIZE
-    ](uninitialized=True)
+    var cache_arr = InlineArray[Scalar[dtype], BATCH * SACGraph.CACHE_SIZE](
+        uninitialized=True
+    )
     var cache_t = LayoutTensor[
         dtype,
         Layout.row_major(BATCH, SACGraph.CACHE_SIZE),
@@ -532,18 +564,14 @@ fn test_sac_actor_loss() raises:
     print("  Output [min_Q, log_prob]:", output_arr[0], output_arr[1])
 
     # Backward with SAC-style gradient seed: [-1, alpha]
-    var grad_out = InlineArray[Scalar[dtype], BATCH * 2](
-        uninitialized=True
-    )
+    var grad_out = InlineArray[Scalar[dtype], BATCH * 2](uninitialized=True)
     grad_out[0] = Scalar[dtype](-1.0)  # maximize Q → minimize -Q
-    grad_out[1] = Scalar[dtype](0.2)   # alpha * log_prob
+    grad_out[1] = Scalar[dtype](0.2)  # alpha * log_prob
 
     var grad_out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
     ](grad_out.unsafe_ptr())
-    var grad_in = InlineArray[Scalar[dtype], BATCH * OBS](
-        uninitialized=True
-    )
+    var grad_in = InlineArray[Scalar[dtype], BATCH * OBS](uninitialized=True)
     var grad_in_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
     ](grad_in.unsafe_ptr())
@@ -556,13 +584,14 @@ fn test_sac_actor_loss() raises:
         dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    SACGraph.backward[BATCH](
-        grad_out_t, grad_in_t, params_t, cache_t, grads_t
-    )
+    SACGraph.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
 
     print(
-        "  Backward grad_input:", grad_in[0], grad_in[1],
-        grad_in[2], grad_in[3],
+        "  Backward grad_input:",
+        grad_in[0],
+        grad_in[1],
+        grad_in[2],
+        grad_in[3],
     )
 
     # Verify non-zero gradients (actor params should have grads from both
@@ -583,7 +612,7 @@ fn test_sac_actor_loss() raises:
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("ComputeGraph RL Algorithm Tests")
     print("=" * 60)

@@ -68,7 +68,7 @@ struct ConstraintRow[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         Self.DTYPE
     ]  # MuJoCo body_invweight0 diagonal approximation for D/R
 
-    fn __init__(out self):
+    def __init__(out self):
         self.K = Scalar[Self.DTYPE](1)
         self.bias = Scalar[Self.DTYPE](0)
         self.inv_K_imp = Scalar[Self.DTYPE](0)
@@ -120,7 +120,7 @@ struct ConstraintData[DTYPE: DType, MAX_ROWS: Int, NV: Int]:
     var num_limits: Int  # Limit rows [num_normals+num_friction..)
     var num_equality: Int  # Equality rows [after limits..)
 
-    fn __init__(out self):
+    def __init__(out self):
         comptime MR = _max_one[Self.MAX_ROWS]()
         comptime JSize = _max_one[Self.MAX_ROWS * Self.NV]()
         comptime MSize = _max_one[Self.NV * Self.NV]()

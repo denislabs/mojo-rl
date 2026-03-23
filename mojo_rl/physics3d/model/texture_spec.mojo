@@ -126,13 +126,13 @@ trait TexturesLike:
     comptime N: Int
 
     @staticmethod
-    fn get_skybox_colors() -> List[Float64]:
+    def get_skybox_colors() -> List[Float64]:
         """Return [top_r, top_g, top_b, bottom_r, bottom_g, bottom_b] from
         the first GradientTexture, or empty list if none."""
         ...
 
     @staticmethod
-    fn get_checker_colors() -> List[Float64]:
+    def get_checker_colors() -> List[Float64]:
         """Return [rgb2_r, rgb2_g, rgb2_b] from the first CheckerTexture,
         or empty list if none."""
         ...
@@ -150,7 +150,7 @@ struct Textures[*T: TextureSpec](TexturesLike):
     comptime N: Int = Variadic.size(Self.tex_types)
 
     @staticmethod
-    fn get_skybox_colors() -> List[Float64]:
+    def get_skybox_colors() -> List[Float64]:
         var result = List[Float64]()
 
         comptime for i in range(Self.N):
@@ -167,7 +167,7 @@ struct Textures[*T: TextureSpec](TexturesLike):
         return result^
 
     @staticmethod
-    fn get_checker_colors() -> List[Float64]:
+    def get_checker_colors() -> List[Float64]:
         var result = List[Float64]()
 
         comptime for i in range(Self.N):
@@ -186,9 +186,9 @@ struct _EmptyTextures(TexturesLike):
     comptime N: Int = 0
 
     @staticmethod
-    fn get_skybox_colors() -> List[Float64]:
+    def get_skybox_colors() -> List[Float64]:
         return List[Float64]()
 
     @staticmethod
-    fn get_checker_colors() -> List[Float64]:
+    def get_checker_colors() -> List[Float64]:
         return List[Float64]()

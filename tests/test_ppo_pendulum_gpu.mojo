@@ -52,7 +52,7 @@ comptime dtype = DType.float32
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Agent GPU Test on Pendulum")

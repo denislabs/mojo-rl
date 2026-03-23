@@ -54,7 +54,7 @@ struct CarPhysicsKernel:
 
     @always_inline
     @staticmethod
-    fn _step_kernel[
+    def _step_kernel[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,
@@ -102,7 +102,7 @@ struct CarPhysicsKernel:
     # =========================================================================
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,
@@ -142,7 +142,7 @@ struct CarPhysicsKernel:
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, STATE_SIZE),
@@ -181,7 +181,7 @@ struct CarPhysicsKernel:
     # =========================================================================
 
     @staticmethod
-    fn step_gpu_with_layout[
+    def step_gpu_with_layout[
         BATCH: Int,
         Layout: CarRacingLayout,
         MAX_TILES: Int = MAX_TRACK_TILES,

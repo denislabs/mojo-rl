@@ -20,7 +20,7 @@ trait QTarget:
     comptime IS_DOUBLE: Bool
 
     @staticmethod
-    fn compute_targets_cpu[
+    def compute_targets_cpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
@@ -34,14 +34,18 @@ trait QTarget:
         ...
 
     @staticmethod
-    fn compute_targets_gpu[
+    def compute_targets_gpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
         ctx: DeviceContext,
         targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        online_next_q: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
-        target_next_q: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
+        online_next_q: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
+        target_next_q: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
@@ -63,7 +67,7 @@ struct StandardQTarget(QTarget):
     comptime IS_DOUBLE: Bool = False
 
     @staticmethod
-    fn compute_targets_cpu[
+    def compute_targets_cpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
@@ -82,19 +86,21 @@ struct StandardQTarget(QTarget):
                 if q > max_nq:
                     max_nq = q
             var dm = Scalar[dtype](1.0) - dones[b]
-            targets[b] = (
-                rewards[b] + Scalar[dtype](gamma) * max_nq * dm
-            )
+            targets[b] = rewards[b] + Scalar[dtype](gamma) * max_nq * dm
 
     @staticmethod
-    fn compute_targets_gpu[
+    def compute_targets_gpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
         ctx: DeviceContext,
         targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        online_next_q: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
-        target_next_q: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
+        online_next_q: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
+        target_next_q: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
@@ -105,9 +111,11 @@ struct StandardQTarget(QTarget):
         var gamma_s = Scalar[dtype](gamma)
 
         @always_inline
-        fn td_wrapper(
+        def td_wrapper(
             tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            nq: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
+            nq: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
             rew: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             don: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             g: Scalar[dtype],
@@ -140,7 +148,7 @@ struct DoubleQTarget(QTarget):
     comptime IS_DOUBLE: Bool = True
 
     @staticmethod
-    fn compute_targets_cpu[
+    def compute_targets_cpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
@@ -151,7 +159,8 @@ struct DoubleQTarget(QTarget):
         mut targets: InlineArray[Scalar[dtype], BATCH],
         gamma: Float64,
     ) -> None:
-        """Compute Double DQN TD targets using online Q-values for action selection."""
+        """Compute Double DQN TD targets using online Q-values for action selection.
+        """
         for b in range(BATCH):
             var best_a = 0
             var best_q = online_next_q[b * ACTIONS]
@@ -165,14 +174,18 @@ struct DoubleQTarget(QTarget):
             targets[b] = rewards[b] + Scalar[dtype](gamma) * nq * dm
 
     @staticmethod
-    fn compute_targets_gpu[
+    def compute_targets_gpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
         ctx: DeviceContext,
         targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        online_next_q: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
-        target_next_q: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
+        online_next_q: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
+        target_next_q: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
@@ -183,10 +196,14 @@ struct DoubleQTarget(QTarget):
         var gamma_s = Scalar[dtype](gamma)
 
         @always_inline
-        fn double_td_wrapper(
+        def double_td_wrapper(
             tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            onq: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
-            tnq: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
+            onq: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
+            tnq: LayoutTensor[
+                dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+            ],
             rew: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             don: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             g: Scalar[dtype],

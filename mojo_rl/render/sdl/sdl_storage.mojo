@@ -342,7 +342,7 @@ struct Storage(ImplicitlyCopyable, Movable):
     pass
 
 
-fn open_title_storage(
+def open_title_storage(
     var override: String,
     props: PropertiesID,
     out ret: Ptr[Storage, MutAnyOrigin],
@@ -371,7 +371,7 @@ fn open_title_storage(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn open_user_storage(
+def open_user_storage(
     var org: String,
     var app: String,
     props: PropertiesID,
@@ -413,7 +413,7 @@ fn open_user_storage(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn open_file_storage(
+def open_file_storage(
     var path: String, out ret: Ptr[Storage, MutAnyOrigin]
 ) raises:
     """Opens up a container for local filesystem storage.
@@ -442,7 +442,7 @@ fn open_file_storage(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn open_storage(
+def open_storage(
     iface: Ptr[StorageInterface, ImmutAnyOrigin],
     userdata: Ptr[NoneType, MutAnyOrigin],
     out ret: Ptr[Storage, MutAnyOrigin],
@@ -481,7 +481,7 @@ fn open_storage(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn close_storage(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
+def close_storage(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     """Closes and frees a storage container.
 
     Args:
@@ -501,7 +501,7 @@ fn close_storage(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     ]()(storage)
 
 
-fn storage_ready(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
+def storage_ready(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     """Checks if the storage container is ready to use.
 
     This function should be called in regular intervals until it returns true -
@@ -523,7 +523,7 @@ fn storage_ready(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     ]()(storage)
 
 
-fn get_storage_file_size(
+def get_storage_file_size(
     storage: Ptr[Storage, MutAnyOrigin],
     var path: String,
     length: Ptr[UInt64, MutAnyOrigin],
@@ -553,7 +553,7 @@ fn get_storage_file_size(
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), length)
 
 
-fn read_storage_file(
+def read_storage_file(
     storage: Ptr[Storage, MutAnyOrigin],
     var path: String,
     destination: Ptr[NoneType, MutAnyOrigin],
@@ -591,7 +591,7 @@ fn read_storage_file(
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), destination, length)
 
 
-fn write_storage_file(
+def write_storage_file(
     storage: Ptr[Storage, MutAnyOrigin],
     var path: String,
     source: Ptr[NoneType, ImmutAnyOrigin],
@@ -624,7 +624,7 @@ fn write_storage_file(
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), source, length)
 
 
-fn create_storage_directory(
+def create_storage_directory(
     storage: Ptr[Storage, MutAnyOrigin], var path: String
 ) raises:
     """Create a directory in a writable storage container.
@@ -652,7 +652,7 @@ fn create_storage_directory(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn enumerate_storage_directory(
+def enumerate_storage_directory(
     storage: Ptr[Storage, MutAnyOrigin],
     var path: String,
     callback: EnumerateDirectoryCallback,
@@ -700,7 +700,7 @@ fn enumerate_storage_directory(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn remove_storage_path(
+def remove_storage_path(
     storage: Ptr[Storage, MutAnyOrigin], var path: String
 ) raises:
     """Remove a file or an empty directory in a writable storage container.
@@ -728,7 +728,7 @@ fn remove_storage_path(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn rename_storage_path(
+def rename_storage_path(
     storage: Ptr[Storage, MutAnyOrigin],
     var oldpath: String,
     var newpath: String,
@@ -764,7 +764,7 @@ fn rename_storage_path(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn copy_storage_file(
+def copy_storage_file(
     storage: Ptr[Storage, MutAnyOrigin],
     var oldpath: String,
     var newpath: String,
@@ -800,7 +800,7 @@ fn copy_storage_file(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_storage_path_info(
+def get_storage_path_info(
     storage: Ptr[Storage, MutAnyOrigin],
     var path: String,
     info: Ptr[PathInfo, MutAnyOrigin],
@@ -833,7 +833,7 @@ fn get_storage_path_info(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_storage_space_remaining(
+def get_storage_space_remaining(
     storage: Ptr[Storage, MutAnyOrigin]
 ) raises -> UInt64:
     """Queries the remaining space in a storage container.
@@ -854,7 +854,7 @@ fn get_storage_space_remaining(
     ]()(storage)
 
 
-fn glob_storage_directory(
+def glob_storage_directory(
     storage: Ptr[Storage, MutAnyOrigin],
     var path: String,
     var pattern: String,

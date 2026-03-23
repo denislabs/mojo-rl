@@ -20,20 +20,20 @@ struct PendulumV2Action[DTYPE: DType](
 
     var torque: Scalar[Self.DTYPE]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.torque = 0.0
 
-    fn __init__(out self, torque: Scalar[Self.DTYPE]):
+    def __init__(out self, torque: Scalar[Self.DTYPE]):
         self.torque = torque
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.torque = copy.torque
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.torque = take.torque
 
     @staticmethod
-    fn from_list(
+    def from_list(
         values: List[Scalar[Self.DTYPE]],
     ) -> PendulumV2Action[Self.DTYPE]:
         """Create action from list (for agent interface)."""
@@ -42,14 +42,14 @@ struct PendulumV2Action[DTYPE: DType](
             action.torque = values[0]
         return action^
 
-    fn to_list(self) -> List[Scalar[Self.DTYPE]]:
+    def to_list(self) -> List[Scalar[Self.DTYPE]]:
         """Convert to list (for agent interface)."""
         var result = List[Scalar[Self.DTYPE]]()
         result.append(self.torque)
         return result^
 
     @staticmethod
-    fn from_discrete(action_idx: Int) -> PendulumV2Action[Self.DTYPE]:
+    def from_discrete(action_idx: Int) -> PendulumV2Action[Self.DTYPE]:
         """Create action from discrete action index.
 
         Discrete mapping (3 actions):
@@ -73,21 +73,21 @@ struct PendulumV2Action[DTYPE: DType](
         return action^
 
     @staticmethod
-    fn left() -> PendulumV2Action[Self.DTYPE]:
+    def left() -> PendulumV2Action[Self.DTYPE]:
         """Maximum negative torque (-2.0)."""
         return PendulumV2Action[Self.DTYPE](torque=-2.0)
 
     @staticmethod
-    fn none() -> PendulumV2Action[Self.DTYPE]:
+    def none() -> PendulumV2Action[Self.DTYPE]:
         """No torque (0.0)."""
         return PendulumV2Action[Self.DTYPE](torque=0.0)
 
     @staticmethod
-    fn right() -> PendulumV2Action[Self.DTYPE]:
+    def right() -> PendulumV2Action[Self.DTYPE]:
         """Maximum positive torque (+2.0)."""
         return PendulumV2Action[Self.DTYPE](torque=2.0)
 
-    fn clamp(
+    def clamp(
         self, max_torque: Scalar[Self.DTYPE] = 2.0
     ) -> PendulumV2Action[Self.DTYPE]:
         """Return a new action with torque clamped to [-max_torque, max_torque].

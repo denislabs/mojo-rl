@@ -38,19 +38,19 @@ trait FeatureExtractor:
 
     comptime DTYPE: DType
 
-    fn get_features_simd4(
+    def get_features_simd4(
         self, state: SIMD[Self.DTYPE, 4]
     ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 4D SIMD state (e.g., CartPole)."""
         ...
 
-    fn get_features(
+    def get_features(
         self, state: List[Scalar[Self.DTYPE]]
     ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from state."""
         ...
 
-    fn get_num_features(self) -> Int:
+    def get_num_features(self) -> Int:
         """Return the number of features."""
         ...
 
@@ -71,7 +71,7 @@ struct LinearWeights[DTYPE: DType]:
     var num_actions: Int
     var num_features: Int
 
-    fn __init__(
+    def __init__(
         out self,
         num_features: Int,
         num_actions: Int,
@@ -103,7 +103,7 @@ struct LinearWeights[DTYPE: DType]:
                     action_weights.append(0.0)
             self.weights.append(action_weights^)
 
-    fn get_value(
+    def get_value(
         self, features: List[Scalar[Self.DTYPE]], action: Int
     ) -> Scalar[Self.DTYPE]:
         """Compute Q-value for a state-action pair.
@@ -122,7 +122,7 @@ struct LinearWeights[DTYPE: DType]:
             value += self.weights[action][i] * features[i]
         return value
 
-    fn get_all_values(
+    def get_all_values(
         self, features: List[Scalar[Self.DTYPE]]
     ) -> List[Scalar[Self.DTYPE]]:
         """Compute Q-values for all actions given a state.
@@ -138,7 +138,7 @@ struct LinearWeights[DTYPE: DType]:
             values.append(self.get_value(features, a))
         return values^
 
-    fn get_best_action(self, features: List[Scalar[Self.DTYPE]]) -> Int:
+    def get_best_action(self, features: List[Scalar[Self.DTYPE]]) -> Int:
         """Get action with highest Q-value.
 
         Args:
@@ -158,7 +158,7 @@ struct LinearWeights[DTYPE: DType]:
 
         return best_action
 
-    fn get_max_value(
+    def get_max_value(
         self, features: List[Scalar[Self.DTYPE]]
     ) -> Scalar[Self.DTYPE]:
         """Get maximum Q-value over all actions.
@@ -172,7 +172,7 @@ struct LinearWeights[DTYPE: DType]:
         var best_action = self.get_best_action(features)
         return self.get_value(features, best_action)
 
-    fn update(
+    def update(
         mut self,
         features: List[Scalar[Self.DTYPE]],
         action: Int,
@@ -205,7 +205,7 @@ struct LinearWeights[DTYPE: DType]:
         for i in range(self.num_features):
             self.weights[action][i] += step_size * td_error * features[i]
 
-    fn update_with_eligibility(
+    def update_with_eligibility(
         mut self,
         traces: List[List[Scalar[Self.DTYPE]]],
         td_error: Scalar[Self.DTYPE],
@@ -251,7 +251,7 @@ struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
     var state_high: List[Scalar[Self.DTYPE]]
     var normalize: Bool
 
-    fn __init__(
+    def __init__(
         out self,
         state_dim: Int,
         degree: Int = 2,
@@ -304,7 +304,7 @@ struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
 
         self.num_features = count
 
-    fn _normalize_state(
+    def _normalize_state(
         self, state: List[Scalar[Self.DTYPE]]
     ) -> List[Scalar[Self.DTYPE]]:
         """Normalize state to [-1, 1] range."""
@@ -330,7 +330,7 @@ struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
                 normalized.append(state[i])
         return normalized^
 
-    fn get_features(
+    def get_features(
         self, state: List[Scalar[Self.DTYPE]]
     ) -> List[Scalar[Self.DTYPE]]:
         """Extract polynomial features from state.
@@ -412,7 +412,7 @@ struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
 
         return features^
 
-    fn get_features_simd2(
+    def get_features_simd2(
         self, state: SIMD[Self.DTYPE, 2]
     ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 2D SIMD state (e.g., MountainCar)."""
@@ -421,7 +421,7 @@ struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
         state_list.append(state[1])
         return self.get_features(state_list^)
 
-    fn get_features_simd4(
+    def get_features_simd4(
         self, state: SIMD[Self.DTYPE, 4]
     ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 4D SIMD state (e.g., CartPole)."""
@@ -432,12 +432,12 @@ struct PolynomialFeatures[dtype: DType where dtype.is_floating_point()](
         state_list.append(state[3])
         return self.get_features(state_list^)
 
-    fn get_num_features(self) -> Int:
+    def get_num_features(self) -> Int:
         """Return the number of features."""
         return self.num_features
 
     @staticmethod
-    fn _power(x: Scalar[Self.DTYPE], n: Int) -> Scalar[Self.DTYPE]:
+    def _power(x: Scalar[Self.DTYPE], n: Int) -> Scalar[Self.DTYPE]:
         """Compute x^n."""
         if n == 0:
             return 1.0
@@ -466,7 +466,7 @@ struct RBFFeatures[dtype: DType where dtype.is_floating_point()](
     var num_features: Int
     var state_dim: Int
 
-    fn __init__(
+    def __init__(
         out self,
         var centers: List[List[Scalar[Self.DTYPE]]],
         sigma: Scalar[Self.DTYPE] = 1.0,
@@ -485,7 +485,7 @@ struct RBFFeatures[dtype: DType where dtype.is_floating_point()](
             self.state_dim = 0
         self.centers = centers^
 
-    fn get_features(
+    def get_features(
         self, state: List[Scalar[Self.DTYPE]]
     ) -> List[Scalar[Self.DTYPE]]:
         """Extract RBF features from state.
@@ -512,7 +512,7 @@ struct RBFFeatures[dtype: DType where dtype.is_floating_point()](
 
         return features^
 
-    fn get_features_simd2(
+    def get_features_simd2(
         self, state: SIMD[Self.DTYPE, 2]
     ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 2D SIMD state."""
@@ -521,7 +521,7 @@ struct RBFFeatures[dtype: DType where dtype.is_floating_point()](
         state_list.append(state[1])
         return self.get_features(state_list^)
 
-    fn get_features_simd4(
+    def get_features_simd4(
         self, state: SIMD[Self.DTYPE, 4]
     ) -> List[Scalar[Self.DTYPE]]:
         """Extract features from 4D SIMD state."""
@@ -532,12 +532,12 @@ struct RBFFeatures[dtype: DType where dtype.is_floating_point()](
         state_list.append(state[3])
         return self.get_features(state_list^)
 
-    fn get_num_features(self) -> Int:
+    def get_num_features(self) -> Int:
         """Return number of RBF features."""
         return self.num_features
 
     @staticmethod
-    fn _exp(x: Scalar[Self.DTYPE]) -> Scalar[Self.DTYPE]:
+    def _exp(x: Scalar[Self.DTYPE]) -> Scalar[Self.DTYPE]:
         """Compute e^x using Taylor series approximation."""
         # For x < 0 (which is always the case for RBF), we can use
         # exp(x) ≈ 1 + x + x²/2 + x³/6 + x⁴/24 + x⁵/120
@@ -547,7 +547,7 @@ struct RBFFeatures[dtype: DType where dtype.is_floating_point()](
         return exp(x)
 
 
-fn make_grid_rbf_centers[
+def make_grid_rbf_centers[
     DTYPE: DType
 ](
     state_low: List[Scalar[DTYPE]],
@@ -672,7 +672,7 @@ fn make_grid_rbf_centers[
     return centers^
 
 
-fn make_mountain_car_poly_features[
+def make_mountain_car_poly_features[
     DTYPE: DType where DTYPE.is_floating_point()
 ](degree: Int = 3) -> PolynomialFeatures[DTYPE]:
     """Create polynomial features for MountainCar (2D state) with normalization.

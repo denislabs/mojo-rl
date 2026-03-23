@@ -30,11 +30,14 @@ comptime TPB = 256
 # Helper alias for scalar type
 comptime S = Scalar[dtype]
 
+
 # Helper: read element from 2D LayoutTensor as Scalar[dtype]
 @always_inline
-fn _rd2[
+def _rd2[
     R: Int, C: Int
-](t: LayoutTensor[dtype, Layout.row_major(R, C), MutAnyOrigin], r: Int, c: Int) -> Scalar[dtype]:
+](
+    t: LayoutTensor[dtype, Layout.row_major(R, C), MutAnyOrigin], r: Int, c: Int
+) -> Scalar[dtype]:
     return rebind[Scalar[dtype]](t[r, c])
 
 
@@ -44,7 +47,7 @@ fn _rd2[
 
 
 @always_inline
-fn symlog_kernel[
+def symlog_kernel[
     SIZE: Int,
 ](
     output: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -62,7 +65,7 @@ fn symlog_kernel[
 
 
 @always_inline
-fn symexp_kernel[
+def symexp_kernel[
     SIZE: Int,
 ](
     output: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -90,7 +93,7 @@ fn symexp_kernel[
 
 
 @always_inline
-fn gru_gate_kernel[
+def gru_gate_kernel[
     BATCH: Int,
     DETER: Int,
 ](
@@ -154,7 +157,7 @@ fn gru_gate_kernel[
 
 
 @always_inline
-fn gru_gate_backward_kernel[
+def gru_gate_backward_kernel[
     BATCH: Int,
     DETER: Int,
 ](
@@ -246,7 +249,7 @@ fn gru_gate_backward_kernel[
 
 
 @always_inline
-fn accumulate_kernel[
+def accumulate_kernel[
     SIZE: Int,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -260,7 +263,7 @@ fn accumulate_kernel[
 
 
 @always_inline
-fn min_max_reduce_kernel[
+def min_max_reduce_kernel[
     SIZE: Int,
     BLOCK_SIZE: Int,
 ](
@@ -273,11 +276,15 @@ fn min_max_reduce_kernel[
     var tid = Int(thread_idx.x)
 
     var shared_min = LayoutTensor[
-        dtype, Layout.row_major(BLOCK_SIZE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
     var shared_max = LayoutTensor[
-        dtype, Layout.row_major(BLOCK_SIZE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
@@ -316,12 +323,10 @@ fn min_max_reduce_kernel[
 
 
 @always_inline
-fn normalize_advantages_kernel[
+def normalize_advantages_kernel[
     SIZE: Int,
     BLOCK_SIZE: Int,
-](
-    adv: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-):
+](adv: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],):
     """Normalize advantages in-place: (adv - mean) / max(std, 1.0).
 
     Single block kernel. Computes mean/std via shared memory reduction,
@@ -330,11 +335,15 @@ fn normalize_advantages_kernel[
     var tid = Int(thread_idx.x)
 
     var shared_sum = LayoutTensor[
-        dtype, Layout.row_major(BLOCK_SIZE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
     var shared_sq = LayoutTensor[
-        dtype, Layout.row_major(BLOCK_SIZE), MutAnyOrigin,
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
@@ -356,8 +365,12 @@ fn normalize_advantages_kernel[
     var stride = BLOCK_SIZE // 2
     while stride > 0:
         if tid < stride:
-            shared_sum[tid] = rebind[S](shared_sum[tid]) + rebind[S](shared_sum[tid + stride])
-            shared_sq[tid] = rebind[S](shared_sq[tid]) + rebind[S](shared_sq[tid + stride])
+            shared_sum[tid] = rebind[S](shared_sum[tid]) + rebind[S](
+                shared_sum[tid + stride]
+            )
+            shared_sq[tid] = rebind[S](shared_sq[tid]) + rebind[S](
+                shared_sq[tid + stride]
+            )
         barrier()
         stride = stride // 2
 
@@ -385,7 +398,7 @@ fn normalize_advantages_kernel[
 
 
 @always_inline
-fn reparam_tanh_backward_kernel[
+def reparam_tanh_backward_kernel[
     BATCH: Int,
     ACTION_DIM: Int,
 ](
@@ -450,7 +463,7 @@ fn reparam_tanh_backward_kernel[
 
 
 @always_inline
-fn clamp_kernel[
+def clamp_kernel[
     SIZE: Int,
 ](
     buf: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -473,7 +486,7 @@ fn clamp_kernel[
 
 
 @always_inline
-fn concat_feat_backward_kernel[
+def concat_feat_backward_kernel[
     BATCH: Int,
     DETER: Int,
     STOCH: Int,
@@ -498,7 +511,7 @@ fn concat_feat_backward_kernel[
 
 
 @always_inline
-fn concat_deter_embed_backward_kernel[
+def concat_deter_embed_backward_kernel[
     BATCH: Int,
     DETER: Int,
     STOCH: Int,
@@ -523,20 +536,27 @@ fn concat_deter_embed_backward_kernel[
 
 
 @always_inline
-fn concat_gru_input_backward_kernel[
+def concat_gru_input_backward_kernel[
     BATCH: Int,
     DETER: Int,
     HIDDEN: Int,
 ](
     d_deter: LayoutTensor[dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin],
-    d_proj_d: LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin],
-    d_proj_s: LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin],
-    d_proj_a: LayoutTensor[dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin],
+    d_proj_d: LayoutTensor[
+        dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
+    ],
+    d_proj_s: LayoutTensor[
+        dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
+    ],
+    d_proj_a: LayoutTensor[
+        dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
+    ],
     d_concat: LayoutTensor[
         dtype, Layout.row_major(BATCH, DETER + 3 * HIDDEN), MutAnyOrigin
     ],
 ):
-    """Split GRU input gradient into d_deter, d_proj_d, d_proj_s, d_proj_a (overwrite)."""
+    """Split GRU input gradient into d_deter, d_proj_d, d_proj_s, d_proj_a (overwrite).
+    """
     comptime TOTAL = DETER + 3 * HIDDEN
     var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
     if tid >= BATCH * TOTAL:
@@ -559,7 +579,7 @@ fn concat_gru_input_backward_kernel[
 
 
 @always_inline
-fn concat_feat_kernel[
+def concat_feat_kernel[
     BATCH: Int,
     DETER: Int,
     STOCH: Int,
@@ -584,7 +604,7 @@ fn concat_feat_kernel[
 
 
 @always_inline
-fn concat_gru_input_kernel[
+def concat_gru_input_kernel[
     BATCH: Int,
     DETER: Int,
     HIDDEN: Int,
@@ -611,11 +631,13 @@ fn concat_gru_input_kernel[
     elif j < DETER + 2 * HIDDEN:
         concat_out[b, j] = _rd2[BATCH, HIDDEN](proj_s, b, j - DETER - HIDDEN)
     else:
-        concat_out[b, j] = _rd2[BATCH, HIDDEN](proj_a, b, j - DETER - 2 * HIDDEN)
+        concat_out[b, j] = _rd2[BATCH, HIDDEN](
+            proj_a, b, j - DETER - 2 * HIDDEN
+        )
 
 
 @always_inline
-fn concat_deter_embed_kernel[
+def concat_deter_embed_kernel[
     BATCH: Int,
     DETER: Int,
     STOCH: Int,
@@ -645,7 +667,7 @@ fn concat_deter_embed_kernel[
 
 
 @always_inline
-fn action_normalize_kernel[
+def action_normalize_kernel[
     BATCH: Int,
     ACTION_DIM: Int,
 ](
@@ -676,7 +698,7 @@ fn action_normalize_kernel[
 
 
 @always_inline
-fn categorical_sample_kernel[
+def categorical_sample_kernel[
     BATCH: Int,
     STOCH_DIM: Int,
     CLASSES: Int,
@@ -728,7 +750,9 @@ fn categorical_sample_kernel[
     # Normalize + unimix
     for c in range(CLASSES):
         var softmax_p = _rd2[BATCH, SC](probs, b, base + c) / sum_exp
-        probs[b, base + c] = one_minus_unimix * softmax_p + unimix_val * uniform_prob
+        probs[b, base + c] = (
+            one_minus_unimix * softmax_p + unimix_val * uniform_prob
+        )
 
     # Sample
     var best_idx = 0
@@ -738,7 +762,9 @@ fn categorical_sample_kernel[
         for c in range(CLASSES):
             var p = _rd2[BATCH, SC](probs, b, base + c)
             var philox = PhiloxRandom(
-                seed=UInt64(rng_seed) + UInt64(tid) * UInt64(CLASSES) + UInt64(c),
+                seed=UInt64(rng_seed)
+                + UInt64(tid) * UInt64(CLASSES)
+                + UInt64(c),
                 offset=0,
             )
             var rand_vals = philox.step_uniform()
@@ -773,7 +799,7 @@ fn categorical_sample_kernel[
 
 
 @always_inline
-fn kl_divergence_kernel[
+def kl_divergence_kernel[
     BATCH: Int,
     STOCH_DIM: Int,
     CLASSES: Int,
@@ -804,7 +830,7 @@ fn kl_divergence_kernel[
 
 
 @always_inline
-fn kl_categorical_gradient_kernel[
+def kl_categorical_gradient_kernel[
     BATCH: Int,
     STOCH_DIM: Int,
     CLASSES: Int,
@@ -895,7 +921,7 @@ fn kl_categorical_gradient_kernel[
 
 
 @always_inline
-fn straight_through_softmax_vjp_kernel[
+def straight_through_softmax_vjp_kernel[
     BATCH: Int,
     STOCH_DIM: Int,
     CLASSES: Int,
@@ -961,7 +987,7 @@ fn straight_through_softmax_vjp_kernel[
 
 
 @always_inline
-fn lambda_returns_kernel[
+def lambda_returns_kernel[
     HORIZON: Int,
     BATCH: Int,
 ](
@@ -971,9 +997,7 @@ fn lambda_returns_kernel[
     rewards: LayoutTensor[
         dtype, Layout.row_major(HORIZON, BATCH), MutAnyOrigin
     ],
-    values: LayoutTensor[
-        dtype, Layout.row_major(HORIZON, BATCH), MutAnyOrigin
-    ],
+    values: LayoutTensor[dtype, Layout.row_major(HORIZON, BATCH), MutAnyOrigin],
     continues: LayoutTensor[
         dtype, Layout.row_major(HORIZON, BATCH), MutAnyOrigin
     ],
@@ -1011,7 +1035,7 @@ fn lambda_returns_kernel[
 
 
 @always_inline
-fn normalize_returns_elementwise_kernel[
+def normalize_returns_elementwise_kernel[
     SIZE: Int,
 ](
     returns: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -1031,7 +1055,7 @@ fn normalize_returns_elementwise_kernel[
 
 
 @always_inline
-fn two_hot_ce_grad_kernel[
+def two_hot_ce_grad_kernel[
     BATCH: Int,
     NUM_BINS: Int,
 ](
@@ -1062,8 +1086,12 @@ fn two_hot_ce_grad_kernel[
         sum_exp += exp(_rd2[BATCH, NUM_BINS](logits, b, k) - max_val)
 
     for k in range(NUM_BINS):
-        var softmax_k = exp(_rd2[BATCH, NUM_BINS](logits, b, k) - max_val) / sum_exp
-        grad_out[b, k] = (softmax_k - _rd2[BATCH, NUM_BINS](targets, b, k)) * inv_batch
+        var softmax_k = (
+            exp(_rd2[BATCH, NUM_BINS](logits, b, k) - max_val) / sum_exp
+        )
+        grad_out[b, k] = (
+            softmax_k - _rd2[BATCH, NUM_BINS](targets, b, k)
+        ) * inv_batch
 
 
 # =============================================================================
@@ -1072,7 +1100,7 @@ fn two_hot_ce_grad_kernel[
 
 
 @always_inline
-fn mse_grad_kernel[
+def mse_grad_kernel[
     SIZE: Int,
 ](
     grad: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -1093,7 +1121,7 @@ fn mse_grad_kernel[
 
 
 @always_inline
-fn bce_grad_kernel[
+def bce_grad_kernel[
     BATCH: Int,
 ](
     grad: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
@@ -1120,7 +1148,7 @@ fn bce_grad_kernel[
 
 
 @always_inline
-fn tanh_normal_sample_kernel[
+def tanh_normal_sample_kernel[
     BATCH: Int,
     ACTION_DIM: Int,
 ](
@@ -1214,7 +1242,7 @@ fn tanh_normal_sample_kernel[
 
 
 @always_inline
-fn reinforce_grad_kernel[
+def reinforce_grad_kernel[
     BATCH: Int,
     ACTION_DIM: Int,
 ](
@@ -1279,7 +1307,9 @@ fn reinforce_grad_kernel[
         var policy_weight = -advantage * inv_batch
         grad_out[b, a] = policy_weight * grad_mean
         # Entropy bonus only affects log_std: d(entropy)/d(log_std) = 1
-        grad_out[b, ACTION_DIM + a] = policy_weight * grad_log_std - entropy_coef * inv_batch
+        grad_out[b, ACTION_DIM + a] = (
+            policy_weight * grad_log_std - entropy_coef * inv_batch
+        )
 
 
 # =============================================================================
@@ -1288,7 +1318,7 @@ fn reinforce_grad_kernel[
 
 
 @always_inline
-fn decode_value_kernel[
+def decode_value_kernel[
     BATCH: Int,
     NUM_BINS: Int,
 ](
@@ -1341,7 +1371,7 @@ fn decode_value_kernel[
 
 
 @always_inline
-fn two_hot_encode_kernel[
+def two_hot_encode_kernel[
     BATCH: Int,
     NUM_BINS: Int,
 ](
@@ -1400,7 +1430,7 @@ fn two_hot_encode_kernel[
 
 
 @always_inline
-fn sigmoid_kernel[
+def sigmoid_kernel[
     SIZE: Int,
 ](
     output: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -1425,7 +1455,7 @@ fn sigmoid_kernel[
 
 
 @always_inline
-fn copy_kernel[
+def copy_kernel[
     SIZE: Int,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -1444,11 +1474,9 @@ fn copy_kernel[
 
 
 @always_inline
-fn zero_kernel[
+def zero_kernel[
     SIZE: Int,
-](
-    buf: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
-):
+](buf: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],):
     """Zero a buffer."""
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= SIZE:
@@ -1462,7 +1490,7 @@ fn zero_kernel[
 
 
 @always_inline
-fn advantage_kernel[
+def advantage_kernel[
     SIZE: Int,
 ](
     adv: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -1482,7 +1510,7 @@ fn advantage_kernel[
 
 
 @always_inline
-fn gradient_norm_kernel[
+def gradient_norm_kernel[
     dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
 ](
     partial_sums: LayoutTensor[
@@ -1522,7 +1550,7 @@ fn gradient_norm_kernel[
 
 
 @always_inline
-fn gradient_reduce_apply_fused_kernel[
+def gradient_reduce_apply_fused_kernel[
     dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
 ](
     grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -1584,8 +1612,12 @@ fn gradient_reduce_apply_fused_kernel[
 # Layout: each sample b has TOTAL contiguous values, we extract DIM at OFFSET.
 
 
-fn deinterleave_kernel[
-    FLAT: Int, DIM: Int, TOTAL: Int, OFFSET: Int, SRC_FLAT: Int,
+def deinterleave_kernel[
+    FLAT: Int,
+    DIM: Int,
+    TOTAL: Int,
+    OFFSET: Int,
+    SRC_FLAT: Int,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(FLAT), MutAnyOrigin],
     src: LayoutTensor[dtype, Layout.row_major(SRC_FLAT), MutAnyOrigin],
@@ -1603,11 +1635,11 @@ fn deinterleave_kernel[
     dst[i] = src[b * TOTAL + OFFSET + d]
 
 
-fn zero_strided_kernel[
-    B: Int, BL: Int, DIM: Int,
-](
-    buf: LayoutTensor[dtype, Layout.row_major(B * BL * DIM), MutAnyOrigin],
-):
+def zero_strided_kernel[
+    B: Int,
+    BL: Int,
+    DIM: Int,
+](buf: LayoutTensor[dtype, Layout.row_major(B * BL * DIM), MutAnyOrigin],):
     """Zero t=0 slice for each batch element in [B*BL, DIM] buffer.
 
     Zeros buf[b*BL*DIM + d] for b=0..B-1, d=0..DIM-1.
@@ -1621,11 +1653,16 @@ fn zero_strided_kernel[
     buf[b * BL * DIM + d] = Scalar[dtype](0)
 
 
-fn batch_gather_obs_kernel[
-    B: Int, BL: Int, OBS: Int, OFFSET: Int = 0,
+def batch_gather_obs_kernel[
+    B: Int,
+    BL: Int,
+    OBS: Int,
+    OFFSET: Int = 0,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(B * BL * OBS), MutAnyOrigin],
-    src: LayoutTensor[dtype, Layout.row_major(B * (BL + 1) * OBS), MutAnyOrigin],
+    src: LayoutTensor[
+        dtype, Layout.row_major(B * (BL + 1) * OBS), MutAnyOrigin
+    ],
 ):
     """Gather obs[:,OFFSET:OFFSET+BL,:] from [B,(BL+1),OBS] to [B*BL,OBS].
 
@@ -1643,7 +1680,7 @@ fn batch_gather_obs_kernel[
     dst[i] = src[b * (BL + 1) * OBS + (t + OFFSET) * OBS + d]
 
 
-fn one_minus_kernel[
+def one_minus_kernel[
     SIZE: Int,
 ](
     output: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -1656,8 +1693,12 @@ fn one_minus_kernel[
     output[i] = Scalar[dtype](1.0) - input[i]
 
 
-fn interleave_kernel[
-    FLAT: Int, DIM: Int, TOTAL: Int, OFFSET: Int, DST_FLAT: Int,
+def interleave_kernel[
+    FLAT: Int,
+    DIM: Int,
+    TOTAL: Int,
+    OFFSET: Int,
+    DST_FLAT: Int,
 ](
     dst: LayoutTensor[dtype, Layout.row_major(DST_FLAT), MutAnyOrigin],
     src: LayoutTensor[dtype, Layout.row_major(FLAT), MutAnyOrigin],

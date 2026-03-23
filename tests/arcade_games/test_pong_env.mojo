@@ -3,7 +3,7 @@
 from mojo_rl.envs.arcade_games.pong import PongEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Testing PongEnv (CPU) ===")
 
     var env = PongEnv[DType.float64]()

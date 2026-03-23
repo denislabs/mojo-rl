@@ -25,13 +25,13 @@ struct GymFrozenLakeState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -41,26 +41,26 @@ struct GymFrozenLakeAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod
-    fn left() -> Self:
+    def left() -> Self:
         return Self(direction=0)
 
     @staticmethod
-    fn down() -> Self:
+    def down() -> Self:
         return Self(direction=1)
 
     @staticmethod
-    fn right() -> Self:
+    def right() -> Self:
         return Self(direction=2)
 
     @staticmethod
-    fn up() -> Self:
+    def up() -> Self:
         return Self(direction=3)
 
 
@@ -75,13 +75,13 @@ struct GymTaxiState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -92,34 +92,34 @@ struct GymTaxiAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var action: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.action = copy.action
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.action = take.action
 
     @staticmethod
-    fn south() -> Self:
+    def south() -> Self:
         return Self(action=0)
 
     @staticmethod
-    fn north() -> Self:
+    def north() -> Self:
         return Self(action=1)
 
     @staticmethod
-    fn east() -> Self:
+    def east() -> Self:
         return Self(action=2)
 
     @staticmethod
-    fn west() -> Self:
+    def west() -> Self:
         return Self(action=3)
 
     @staticmethod
-    fn pickup() -> Self:
+    def pickup() -> Self:
         return Self(action=4)
 
     @staticmethod
-    fn dropoff() -> Self:
+    def dropoff() -> Self:
         return Self(action=5)
 
 
@@ -134,13 +134,13 @@ struct GymCliffWalkingState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -150,26 +150,26 @@ struct GymCliffWalkingAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod
-    fn up() -> Self:
+    def up() -> Self:
         return Self(direction=0)
 
     @staticmethod
-    fn right() -> Self:
+    def right() -> Self:
         return Self(direction=1)
 
     @staticmethod
-    fn down() -> Self:
+    def down() -> Self:
         return Self(direction=2)
 
     @staticmethod
-    fn left() -> Self:
+    def left() -> Self:
         return Self(direction=3)
 
 
@@ -185,13 +185,13 @@ struct GymBlackjackState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -201,18 +201,18 @@ struct GymBlackjackAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var action: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.action = copy.action
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.action = take.action
 
     @staticmethod
-    fn stick() -> Self:
+    def stick() -> Self:
         return Self(action=0)
 
     @staticmethod
-    fn hit() -> Self:
+    def hit() -> Self:
         return Self(action=1)
 
 
@@ -257,7 +257,7 @@ struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    fn __init__(
+    def __init__(
         out self,
         map_name: String = "4x4",
         is_slippery: Bool = True,
@@ -302,7 +302,7 @@ struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> GymFrozenLakeState:
+    def reset(mut self) -> GymFrozenLakeState:
         """Reset environment and return initial state."""
         try:
             var result = self.env.reset()
@@ -315,7 +315,7 @@ struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
         self.episode_length = 0
         return GymFrozenLakeState(index=self.current_state)
 
-    fn step(
+    def step(
         mut self, action: GymFrozenLakeAction, verbose: Bool = False
     ) -> Tuple[GymFrozenLakeState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
@@ -335,23 +335,23 @@ struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
 
         return (GymFrozenLakeState(index=self.current_state), reward, self.done)
 
-    fn get_state(self) -> GymFrozenLakeState:
+    def get_state(self) -> GymFrozenLakeState:
         """Return current state."""
         return GymFrozenLakeState(index=self.current_state)
 
-    fn state_to_index(self, state: GymFrozenLakeState) -> Int:
+    def state_to_index(self, state: GymFrozenLakeState) -> Int:
         """Convert state to index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> GymFrozenLakeAction:
+    def action_from_index(self, action_idx: Int) -> GymFrozenLakeAction:
         """Create action from index."""
         return GymFrozenLakeAction(direction=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of states."""
         return self.map_size
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (4)."""
         return 4
 
@@ -359,13 +359,13 @@ struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Mark renderer as initialized (Gymnasium renders via its own window).
         """
         self._render_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render via Gymnasium's built-in renderer."""
         if not self._render_initialized:
             return
@@ -374,7 +374,7 @@ struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
         except:
             pass
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the Gymnasium environment (and its render window)."""
         if not self._render_initialized:
             return
@@ -384,36 +384,36 @@ struct GymFrozenLakeEnv(DiscreteEnv & RenderableEnv):
             pass
         self._render_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if renderer has been initialized."""
         return self._render_initialized
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Gymnasium manages its own window; always returns False."""
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
     # Additional methods
     # ========================================================================
 
-    fn close(mut self):
+    def close(mut self):
         """Close the environment."""
         try:
             _ = self.env.close()
         except:
             pass
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
@@ -459,7 +459,7 @@ struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    fn __init__(out self, render_mode: String = "") raises:
+    def __init__(out self, render_mode: String = "") raises:
         """Initialize Taxi environment.
 
         Args:
@@ -484,7 +484,7 @@ struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> GymTaxiState:
+    def reset(mut self) -> GymTaxiState:
         """Reset environment and return initial state."""
         try:
             var result = self.env.reset()
@@ -497,7 +497,7 @@ struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
         self.episode_length = 0
         return GymTaxiState(index=self.current_state)
 
-    fn step(
+    def step(
         mut self, action: GymTaxiAction, verbose: Bool = False
     ) -> Tuple[GymTaxiState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
@@ -517,23 +517,23 @@ struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
 
         return (GymTaxiState(index=self.current_state), reward, self.done)
 
-    fn get_state(self) -> GymTaxiState:
+    def get_state(self) -> GymTaxiState:
         """Return current state."""
         return GymTaxiState(index=self.current_state)
 
-    fn state_to_index(self, state: GymTaxiState) -> Int:
+    def state_to_index(self, state: GymTaxiState) -> Int:
         """Convert state to index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> GymTaxiAction:
+    def action_from_index(self, action_idx: Int) -> GymTaxiAction:
         """Create action from index."""
         return GymTaxiAction(action=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of states (500)."""
         return 500
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (6)."""
         return 6
 
@@ -541,13 +541,13 @@ struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Mark renderer as initialized (Gymnasium renders via its own window).
         """
         self._render_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render via Gymnasium's built-in renderer."""
         if not self._render_initialized:
             return
@@ -556,7 +556,7 @@ struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
         except:
             pass
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the Gymnasium environment (and its render window)."""
         if not self._render_initialized:
             return
@@ -566,36 +566,36 @@ struct GymTaxiEnv(DiscreteEnv & RenderableEnv):
             pass
         self._render_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if renderer has been initialized."""
         return self._render_initialized
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Gymnasium manages its own window; always returns False."""
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
     # Additional methods
     # ========================================================================
 
-    fn close(mut self):
+    def close(mut self):
         """Close the environment."""
         try:
             _ = self.env.close()
         except:
             pass
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
@@ -642,7 +642,7 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    fn __init__(
+    def __init__(
         out self,
         natural: Bool = False,
         sab: Bool = False,
@@ -683,7 +683,7 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> GymBlackjackState:
+    def reset(mut self) -> GymBlackjackState:
         """Reset environment and return initial state."""
         try:
             var result = self.env.reset()
@@ -701,7 +701,7 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
         self.episode_reward = 0.0
         return GymBlackjackState(index=self.current_state)
 
-    fn step(
+    def step(
         mut self, action: GymBlackjackAction, verbose: Bool = False
     ) -> Tuple[GymBlackjackState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
@@ -725,23 +725,23 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
 
         return (GymBlackjackState(index=self.current_state), reward, self.done)
 
-    fn get_state(self) -> GymBlackjackState:
+    def get_state(self) -> GymBlackjackState:
         """Return current state."""
         return GymBlackjackState(index=self.current_state)
 
-    fn state_to_index(self, state: GymBlackjackState) -> Int:
+    def state_to_index(self, state: GymBlackjackState) -> Int:
         """Convert state to index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> GymBlackjackAction:
+    def action_from_index(self, action_idx: Int) -> GymBlackjackAction:
         """Create action from index."""
         return GymBlackjackAction(action=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of states (360)."""
         return 18 * 10 * 2  # player_sum (4-21) * dealer (1-10) * ace (0-1)
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (2)."""
         return 2
 
@@ -749,13 +749,13 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Mark renderer as initialized (Gymnasium renders via its own window).
         """
         self._render_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render via Gymnasium's built-in renderer."""
         if not self._render_initialized:
             return
@@ -764,7 +764,7 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
         except:
             pass
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the Gymnasium environment (and its render window)."""
         if not self._render_initialized:
             return
@@ -774,29 +774,29 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
             pass
         self._render_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if renderer has been initialized."""
         return self._render_initialized
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Gymnasium manages its own window; always returns False."""
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
     # Additional methods
     # ========================================================================
 
-    fn _obs_to_index(self) -> Int:
+    def _obs_to_index(self) -> Int:
         """Convert observation to flat state index."""
         # player_sum: 4-21 (18 values), dealer: 1-10 (10 values), ace: 0-1 (2 values)
         var ps = self.player_sum - 4  # 0-17
@@ -804,26 +804,26 @@ struct GymBlackjackEnv(DiscreteEnv & RenderableEnv):
         var ua = 1 if self.usable_ace else 0
         return ps * 20 + dc * 2 + ua
 
-    fn close(mut self):
+    def close(mut self):
         """Close the environment."""
         try:
             _ = self.env.close()
         except:
             pass
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
-    fn get_player_sum(self) -> Int:
+    def get_player_sum(self) -> Int:
         """Get current player sum."""
         return self.player_sum
 
-    fn get_dealer_card(self) -> Int:
+    def get_dealer_card(self) -> Int:
         """Get dealer's visible card."""
         return self.dealer_card
 
-    fn has_usable_ace(self) -> Bool:
+    def has_usable_ace(self) -> Bool:
         """Check if player has usable ace."""
         return self.usable_ace
 
@@ -864,7 +864,7 @@ struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    fn __init__(out self, render_mode: String = "") raises:
+    def __init__(out self, render_mode: String = "") raises:
         """Initialize CliffWalking environment.
 
         Args:
@@ -889,7 +889,7 @@ struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> GymCliffWalkingState:
+    def reset(mut self) -> GymCliffWalkingState:
         """Reset environment and return initial state."""
         try:
             var result = self.env.reset()
@@ -902,7 +902,7 @@ struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
         self.episode_length = 0
         return GymCliffWalkingState(index=self.current_state)
 
-    fn step(
+    def step(
         mut self, action: GymCliffWalkingAction, verbose: Bool = False
     ) -> Tuple[GymCliffWalkingState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
@@ -926,23 +926,23 @@ struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
             self.done,
         )
 
-    fn get_state(self) -> GymCliffWalkingState:
+    def get_state(self) -> GymCliffWalkingState:
         """Return current state."""
         return GymCliffWalkingState(index=self.current_state)
 
-    fn state_to_index(self, state: GymCliffWalkingState) -> Int:
+    def state_to_index(self, state: GymCliffWalkingState) -> Int:
         """Convert state to index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> GymCliffWalkingAction:
+    def action_from_index(self, action_idx: Int) -> GymCliffWalkingAction:
         """Create action from index."""
         return GymCliffWalkingAction(direction=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of states (48)."""
         return 48
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (4)."""
         return 4
 
@@ -950,13 +950,13 @@ struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Mark renderer as initialized (Gymnasium renders via its own window).
         """
         self._render_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render via Gymnasium's built-in renderer."""
         if not self._render_initialized:
             return
@@ -965,7 +965,7 @@ struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
         except:
             pass
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the Gymnasium environment (and its render window)."""
         if not self._render_initialized:
             return
@@ -975,35 +975,35 @@ struct GymCliffWalkingEnv(DiscreteEnv & RenderableEnv):
             pass
         self._render_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if renderer has been initialized."""
         return self._render_initialized
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Gymnasium manages its own window; always returns False."""
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
     # Additional methods
     # ========================================================================
 
-    fn close(mut self):
+    def close(mut self):
         """Close the environment."""
         try:
             _ = self.env.close()
         except:
             pass
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done

@@ -20,12 +20,15 @@ Usage (CPU, with MuZero):
 """
 
 from mojo_rl.core import TrainingMetrics, TwoPlayerDiscreteEnv
-from mojo_rl.deep_agents.core.utils import print_progress_bar, clear_progress_bar
+from mojo_rl.deep_agents.core.utils import (
+    print_progress_bar,
+    clear_progress_bar,
+)
 from mojo_rl.nn.constants import dtype
 from std.random import random_float64
 
 
-fn self_play_train_cpu[
+def self_play_train_cpu[
     E: TwoPlayerDiscreteEnv,
 ](
     mut env: E,

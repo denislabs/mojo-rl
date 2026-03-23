@@ -79,7 +79,7 @@ comptime M_REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
-fn mass_matrix_kernel[
+def mass_matrix_kernel[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -164,7 +164,7 @@ fn mass_matrix_kernel[
 # =============================================================================
 
 
-fn compare_mass_matrix(
+def compare_mass_matrix(
     ctx: DeviceContext,
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
@@ -241,7 +241,7 @@ fn compare_mass_matrix(
         DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
     ](workspace_buf.unsafe_ptr())
 
-    comptime kernel_fn = mass_matrix_kernel[
+    comptime kernel_def = mass_matrix_kernel[
         DTYPE,
         NQ,
         NV,
@@ -345,7 +345,7 @@ fn compare_mass_matrix(
 # =============================================================================
 
 
-fn test_default_qpos() raises:
+def test_default_qpos() raises:
     print("=" * 60)
     print("Mass Matrix Validation: CPU vs GPU")
     print("=" * 60)
@@ -365,7 +365,7 @@ fn test_default_qpos() raises:
     print()
 
 
-fn test_zero_qpos() raises:
+def test_zero_qpos() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -376,7 +376,7 @@ fn test_zero_qpos() raises:
     print()
 
 
-fn test_nonzero_joints() raises:
+def test_nonzero_joints() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -396,7 +396,7 @@ fn test_nonzero_joints() raises:
     print()
 
 
-fn test_extreme_joints() raises:
+def test_extreme_joints() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -414,7 +414,7 @@ fn test_extreme_joints() raises:
     print()
 
 
-fn main() raises:
+def main() raises:
     test_default_qpos()
     test_zero_qpos()
     test_nonzero_joints()

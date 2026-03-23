@@ -96,11 +96,11 @@ trait CamerasLike:
     comptime N: Int
 
     @staticmethod
-    fn setup_cameras(width: Int, height: Int) -> List[Camera3D]:
+    def setup_cameras(width: Int, height: Int) -> List[Camera3D]:
         ...
 
     @staticmethod
-    fn setup_camera_modes() -> List[Int]:
+    def setup_camera_modes() -> List[Int]:
         ...
 
 
@@ -116,7 +116,7 @@ struct Cameras[*C: CameraSpec](CamerasLike):
     comptime N: Int = Variadic.size(Self.cam_types)
 
     @staticmethod
-    fn setup_cameras(width: Int, height: Int) -> List[Camera3D]:
+    def setup_cameras(width: Int, height: Int) -> List[Camera3D]:
         var cameras = List[Camera3D]()
 
         comptime for i in range(Self.N):
@@ -136,7 +136,7 @@ struct Cameras[*C: CameraSpec](CamerasLike):
         return cameras^
 
     @staticmethod
-    fn setup_camera_modes() -> List[Int]:
+    def setup_camera_modes() -> List[Int]:
         var modes = List[Int]()
 
         comptime for i in range(Self.N):
@@ -150,9 +150,9 @@ struct _EmptyCameras(CamerasLike):
     comptime N: Int = 0
 
     @staticmethod
-    fn setup_cameras(width: Int, height: Int) -> List[Camera3D]:
+    def setup_cameras(width: Int, height: Int) -> List[Camera3D]:
         return []
 
     @staticmethod
-    fn setup_camera_modes() -> List[Int]:
+    def setup_camera_modes() -> List[Int]:
         return []

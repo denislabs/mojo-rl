@@ -88,13 +88,13 @@ struct CartPoleState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -104,18 +104,18 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod
-    fn left() -> Self:
+    def left() -> Self:
         return Self(direction=0)
 
     @staticmethod
-    fn right() -> Self:
+    def right() -> Self:
         return Self(direction=1)
 
 
@@ -173,7 +173,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
     var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
     var _renderer_initialized: Bool
 
-    fn __init__(out self, num_bins: Int = 10):
+    def __init__(out self, num_bins: Int = 10):
         """Initialize CartPole environment."""
         # State
         self.x = 0.0
@@ -197,7 +197,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> CartPoleState:
+    def reset(mut self) -> CartPoleState:
         """Reset environment to random initial state.
 
         Returns CartPoleState with discretized state index.
@@ -214,7 +214,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return CartPoleState(index=self._discretize_obs())
 
-    fn step(
+    def step(
         mut self, action: CartPoleAction, verbose: Bool = False
     ) -> Tuple[CartPoleState, Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done).
@@ -288,15 +288,15 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return (CartPoleState(index=self._discretize_obs()), reward, self.done)
 
-    fn get_state(self) -> CartPoleState:
+    def get_state(self) -> CartPoleState:
         """Return current discretized state."""
         return CartPoleState(index=self._discretize_obs())
 
-    fn state_to_index(self, state: CartPoleState) -> Int:
+    def state_to_index(self, state: CartPoleState) -> Int:
         """Convert a CartPoleState to an index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> CartPoleAction:
+    def action_from_index(self, action_idx: Int) -> CartPoleAction:
         """Create a CartPoleAction from an index."""
         return CartPoleAction(direction=action_idx)
 
@@ -305,7 +305,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ========================================================================
 
     @always_inline
-    fn _get_obs(self) -> SIMD[DType.float64, 4]:
+    def _get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation."""
         var obs = SIMD[DType.float64, 4]()
         obs[0] = Float64(self.x)
@@ -315,7 +315,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         return obs
 
     @always_inline
-    fn _discretize_obs(self) -> Int:
+    def _discretize_obs(self) -> Int:
         """Discretize current continuous observation into a single state index.
         """
         # Inline bin calculation for each dimension
@@ -356,7 +356,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         ) * self.num_bins + b3
 
     @always_inline
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
+    def get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation as SIMD (optimized)."""
         return self._get_obs()
 
@@ -364,7 +364,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ContinuousStateEnv / BoxDiscreteActionEnv trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list (trait method).
         """
         var obs = List[Scalar[Self.dtype]](capacity=4)
@@ -374,13 +374,13 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(self.theta_dot)
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial observation as list (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take action and return (obs_list, reward, done) - trait method.
@@ -395,7 +395,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # SIMD-optimized observation API (for performance)
     # ========================================================================
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+    def reset_obs(mut self) -> SIMD[DType.float64, 4]:
         """Reset environment and return raw continuous observation.
 
         Use this for function approximation methods (tile coding, linear FA)
@@ -408,7 +408,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         return self._get_obs()
 
     @always_inline
-    fn step_raw(
+    def step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[DType.float64, 4], Scalar[Self.dtype], Bool]:
         """Take action and return raw continuous observation.
@@ -480,7 +480,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return (self._get_obs(), reward, self.done)
 
-    fn render(mut self, mut renderer: Renderer2D):
+    def render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.
 
         Uses Camera for world-to-screen coordinate conversion.
@@ -570,7 +570,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Update display
         renderer.flip()
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer[].close()
@@ -581,7 +581,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # RenderableEnv Trait Implementation
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
@@ -589,56 +589,56 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self.render(self._renderer[])
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].close()
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     @always_inline
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
     @always_inline
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (2)."""
         return 2
 
     @always_inline
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension (4)."""
         return 4
 
     @always_inline
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of discrete states."""
         return self.num_bins * self.num_bins * self.num_bins * self.num_bins
 
@@ -647,12 +647,12 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ========================================================================
 
     @staticmethod
-    fn get_num_states(num_bins: Int = 10) -> Int:
+    def get_num_states(num_bins: Int = 10) -> Int:
         """Get the number of discrete states for CartPole with given bins."""
         return num_bins * num_bins * num_bins * num_bins
 
     @staticmethod
-    fn discretize_obs(obs: SIMD[DType.float64, 4], num_bins: Int = 10) -> Int:
+    def discretize_obs(obs: SIMD[DType.float64, 4], num_bins: Int = 10) -> Int:
         """Discretize continuous observation into a single state index.
 
         Args:
@@ -671,7 +671,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var pole_vel_low: Float64 = -3.0
         var pole_vel_high: Float64 = 3.0
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -689,7 +689,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         return ((b0 * num_bins + b1) * num_bins + b2) * num_bins + b3
 
     @staticmethod
-    fn make_tile_coding(
+    def make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
     ) -> TileCoding[Self.dtype]:
@@ -731,7 +731,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
+    def make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
         """Create polynomial features for CartPole (4D state) with normalization.
 
         CartPole state: [cart_position, cart_velocity, pole_angle, pole_angular_velocity]
@@ -768,7 +768,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
     @staticmethod
     @always_inline
-    fn step_kernel[
+    def step_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -859,7 +859,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
     @staticmethod
     @always_inline
-    fn reset_kernel[
+    def reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -878,19 +878,29 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         if i >= BATCH_SIZE:
             return
 
-        var rng = PhiloxRandom(seed=UInt64(i) * UInt64(2654435761) + 12345, offset=0)
+        var rng = PhiloxRandom(
+            seed=UInt64(i) * UInt64(2654435761) + 12345, offset=0
+        )
         var rand_vals = rng.step_uniform()
 
         # Map [0, 1) → [-0.05, 0.05]
-        state[i, 0] = Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
-        state[i, 1] = Scalar[gpu_dtype](rand_vals[1]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
-        state[i, 2] = Scalar[gpu_dtype](rand_vals[2]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
-        state[i, 3] = Scalar[gpu_dtype](rand_vals[3]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 0] = Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](
+            0.1
+        ) - Scalar[gpu_dtype](0.05)
+        state[i, 1] = Scalar[gpu_dtype](rand_vals[1]) * Scalar[gpu_dtype](
+            0.1
+        ) - Scalar[gpu_dtype](0.05)
+        state[i, 2] = Scalar[gpu_dtype](rand_vals[2]) * Scalar[gpu_dtype](
+            0.1
+        ) - Scalar[gpu_dtype](0.05)
+        state[i, 3] = Scalar[gpu_dtype](rand_vals[3]) * Scalar[gpu_dtype](
+            0.1
+        ) - Scalar[gpu_dtype](0.05)
         state[i, 4] = Scalar[gpu_dtype](0.0)  # Reset step counter
 
     @staticmethod
     @always_inline
-    fn selective_reset_kernel[
+    def selective_reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -930,10 +940,18 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var rand_vals = rng.step_uniform()
 
         # Map [0, 1) → [-0.05, 0.05]
-        state[i, 0] = Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
-        state[i, 1] = Scalar[gpu_dtype](rand_vals[1]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
-        state[i, 2] = Scalar[gpu_dtype](rand_vals[2]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
-        state[i, 3] = Scalar[gpu_dtype](rand_vals[3]) * Scalar[gpu_dtype](0.1) - Scalar[gpu_dtype](0.05)
+        state[i, 0] = Scalar[gpu_dtype](rand_vals[0]) * Scalar[gpu_dtype](
+            0.1
+        ) - Scalar[gpu_dtype](0.05)
+        state[i, 1] = Scalar[gpu_dtype](rand_vals[1]) * Scalar[gpu_dtype](
+            0.1
+        ) - Scalar[gpu_dtype](0.05)
+        state[i, 2] = Scalar[gpu_dtype](rand_vals[2]) * Scalar[gpu_dtype](
+            0.1
+        ) - Scalar[gpu_dtype](0.05)
+        state[i, 3] = Scalar[gpu_dtype](rand_vals[3]) * Scalar[gpu_dtype](
+            0.1
+        ) - Scalar[gpu_dtype](0.05)
         state[i, 4] = Scalar[gpu_dtype](0.0)  # Reset step counter
 
         # Clear done flag for next episode
@@ -946,7 +964,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
     comptime TPB = 256  # Threads per block
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -1004,7 +1022,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Define kernel wrapper that calls the impl and extracts obs
         @always_inline
-        fn step_wrapper(
+        def step_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -1058,7 +1076,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1086,7 +1104,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Note: MutAnyOrigin allows mutation, no `mut` keyword needed on wrapper params
         # CartPole doesn't have terrain - initial states are deterministic per env index
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -1102,7 +1120,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1137,7 +1155,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Define kernel wrapper
         @always_inline
-        fn selective_reset_wrapper(
+        def selective_reset_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -1162,14 +1180,14 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype]) raises:
         """No-op: CartPole doesn't need pre-allocated workspace."""
         pass
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[gpu_dtype],
         curriculum_values: List[Scalar[gpu_dtype]],

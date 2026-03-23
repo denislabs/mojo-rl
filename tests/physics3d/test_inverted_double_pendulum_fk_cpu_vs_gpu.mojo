@@ -64,7 +64,7 @@ comptime QUAT_TOL: Float64 = 1e-4
 # =============================================================================
 
 
-fn fk_kernel[
+def fk_kernel[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -101,7 +101,7 @@ fn fk_kernel[
 # =============================================================================
 
 
-fn compare_fk(
+def compare_fk(
     ctx: DeviceContext,
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
@@ -156,7 +156,7 @@ fn compare_fk(
         DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
     ](model_buf.unsafe_ptr())
 
-    comptime kernel_fn = fk_kernel[
+    comptime kernel_def = fk_kernel[
         DTYPE,
         NQ,
         NV,
@@ -265,7 +265,7 @@ fn compare_fk(
 # =============================================================================
 
 
-fn test_fk_idp() raises:
+def test_fk_idp() raises:
     print("=" * 60)
     print("FK Validation: CPU vs GPU — InvertedDoublePendulum")
     print("=" * 60)
@@ -314,5 +314,5 @@ fn test_fk_idp() raises:
     print("All InvertedDoublePendulum FK CPU vs GPU tests passed.")
 
 
-fn main() raises:
+def main() raises:
     test_fk_idp()

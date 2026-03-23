@@ -103,7 +103,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
     # Pre-allocated storage for performance
     var _critic_features: List[Float64]
 
-    fn __init__(
+    def __init__(
         out self,
         num_state_features: Int,
         action_scale: Float64 = 2.0,
@@ -168,7 +168,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             self.critic_weights.append(w)
             self.target_critic_weights.append(w)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.num_state_features = copy.num_state_features
         self.num_critic_features = copy.num_critic_features
         self.actor_lr = copy.actor_lr
@@ -199,7 +199,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
         for _ in range(self.num_critic_features):
             self._critic_features.append(0.0)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.num_state_features = take.num_state_features
         self.num_critic_features = take.num_critic_features
         self.actor_lr = take.actor_lr
@@ -222,7 +222,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
     # Actor (Policy) Methods
     # ========================================================================
 
-    fn _compute_actor_output(
+    def _compute_actor_output(
         self, features: List[Float64], weights: List[Float64]
     ) -> Float64:
         """Compute raw actor output (before tanh and scaling).
@@ -240,7 +240,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             output += weights[i] * features[i]
         return output
 
-    fn select_action(self, features: List[Float64]) -> Float64:
+    def select_action(self, features: List[Float64]) -> Float64:
         """Select action using deterministic policy (no noise).
 
         μ(s) = tanh(w · φ(s)) * action_scale
@@ -256,7 +256,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
         )
         return tanh(raw_output) * self.action_scale
 
-    fn select_action_with_noise(self, features: List[Float64]) -> Float64:
+    def select_action_with_noise(self, features: List[Float64]) -> Float64:
         """Select action with Gaussian exploration noise.
 
         a = μ(s) + N(0, σ²)
@@ -288,7 +288,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
 
         return action
 
-    fn _select_action_target(self, features: List[Float64]) -> Float64:
+    def _select_action_target(self, features: List[Float64]) -> Float64:
         """Select action using target actor (for TD target computation)."""
         var raw_output = self._compute_actor_output(
             features, self.target_actor_weights
@@ -299,7 +299,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
     # Critic (Q-function) Methods
     # ========================================================================
 
-    fn _build_critic_features(
+    def _build_critic_features(
         self, state_features: List[Float64], action: Float64
     ) -> List[Float64]:
         """Build critic input features by concatenating state features with action features.
@@ -326,7 +326,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
 
         return critic_features^
 
-    fn _fill_critic_features(
+    def _fill_critic_features(
         mut self, state_features: List[Float64], action: Float64
     ):
         """Fill pre-allocated critic features (faster, no allocation).
@@ -345,13 +345,13 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
         self._critic_features[n] = a_normalized
         self._critic_features[n + 1] = a_normalized * a_normalized
 
-    fn decay_noise(mut self):
+    def decay_noise(mut self):
         """Decay exploration noise (call once per episode)."""
         self.noise_std *= self.noise_decay
         if self.noise_std < self.noise_std_min:
             self.noise_std = self.noise_std_min
 
-    fn get_q_value(
+    def get_q_value(
         self, state_features: List[Float64], action: Float64
     ) -> Float64:
         """Compute Q-value using online critic.
@@ -374,7 +374,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             q_value += self.critic_weights[i] * critic_features[i]
         return q_value
 
-    fn _get_q_value_target(
+    def _get_q_value_target(
         self, state_features: List[Float64], action: Float64
     ) -> Float64:
         """Compute Q-value using target critic."""
@@ -391,7 +391,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
     # Update Methods
     # ========================================================================
 
-    fn update(mut self, batch: List[ContinuousTransition[DType.float64]]):
+    def update(mut self, batch: List[ContinuousTransition[DType.float64]]):
         """Update actor and critic from a batch of transitions.
 
         1. Update critic using TD error
@@ -413,7 +413,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
         # Soft update target networks
         self._soft_update_targets()
 
-    fn _update_critic(
+    def _update_critic(
         mut self, batch: List[ContinuousTransition[DType.float64]]
     ):
         """Update critic using TD error.
@@ -461,7 +461,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
                         step_size * td_error * critic_features[j]
                     )
 
-    fn _update_actor(
+    def _update_actor(
         mut self, batch: List[ContinuousTransition[DType.float64]]
     ):
         """Update actor using deterministic policy gradient.
@@ -520,7 +520,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
                     )
                     self.actor_weights[j] += step_size * grad_theta
 
-    fn _soft_update_targets(mut self):
+    def _soft_update_targets(mut self):
         """Soft update target networks.
 
         θ_target = τ * θ + (1 - τ) * θ_target
@@ -539,7 +539,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
                 + (1.0 - self.tau) * self.target_critic_weights[i]
             )
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset for new episode (no-op for DDPG)."""
         pass
 
@@ -547,7 +547,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
     # Training and Evaluation
     # ========================================================================
 
-    fn train[
+    def train[
         E: BoxContinuousActionEnv
     ](
         mut self,
@@ -704,7 +704,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxContinuousActionEnv & RenderableEnv
     ](
         self,
@@ -780,14 +780,14 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
 # ============================================================================
 
 
-fn _log(x: Float64) -> Float64:
+def _log(x: Float64) -> Float64:
     """Natural logarithm."""
     from std.math import log
 
     return log(x)
 
 
-fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
+def _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     """Convert a List[Scalar[DTYPE]] to SIMD[DTYPE, 4].
 
     Pads with zeros if the list has fewer than 4 elements.
@@ -799,7 +799,7 @@ fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     return result
 
 
-fn _list_to_simd4_f64[
+def _list_to_simd4_f64[
     DTYPE: DType
 ](obs: List[Scalar[DTYPE]]) -> SIMD[DType.float64, 4]:
     """Convert a List[Scalar[DTYPE]] to SIMD[DType.float64, 4].

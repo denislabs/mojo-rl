@@ -43,7 +43,7 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     var t: Int  # Current timestep in episode
     var T: Int  # Terminal timestep (infinity until episode ends)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.q_table = copy.q_table
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
@@ -58,7 +58,7 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.t = copy.t
         self.T = copy.T
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.q_table = take.q_table^
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
@@ -73,7 +73,7 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.t = take.t
         self.T = take.T
 
-    fn __init__(
+    def __init__(
         out self,
         num_states: Int,
         num_actions: Int,
@@ -100,7 +100,7 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.t = 0
         self.T = 1000000  # Large number representing infinity
 
-    fn _reset_episode(mut self):
+    def _reset_episode(mut self):
         """Reset episode buffers."""
         self.states = List[Int]()
         self.actions = List[Int]()
@@ -108,7 +108,7 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.t = 0
         self.T = 1000000
 
-    fn select_action(self, state_idx: Int) -> Int:
+    def select_action(self, state_idx: Int) -> Int:
         """Select action using epsilon-greedy policy."""
         var rand = random_float64()
         if rand < self.epsilon:
@@ -117,7 +117,7 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         else:
             return self.q_table.get_best_action(state_idx)
 
-    fn update(
+    def update(
         mut self,
         state_idx: Int,
         action: Int,
@@ -161,7 +161,7 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 self._update_at_tau(remaining_tau)
             self._reset_episode()
 
-    fn _update_at_tau(mut self, tau: Int):
+    def _update_at_tau(mut self, tau: Int):
         """Perform the n-step update for time tau."""
         # Compute n-step return G
         var G: Float64 = 0.0
@@ -196,7 +196,7 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         var new_q = current_q + self.learning_rate * (G - current_q)
         self.q_table.set(state, action, new_q)
 
-    fn _power(self, base: Float64, exp: Int) -> Float64:
+    def _power(self, base: Float64, exp: Int) -> Float64:
         """Compute base^exp for non-negative integer exponents."""
         if exp == 0:
             return 1.0
@@ -205,19 +205,19 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
             result *= base
         return result
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay epsilon after each episode."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current epsilon value."""
         return self.epsilon
 
-    fn get_best_action(self, state_idx: Int) -> Int:
+    def get_best_action(self, state_idx: Int) -> Int:
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
 
-    fn train[
+    def train[
         E: DiscreteEnv
     ](
         mut self,
@@ -281,7 +281,7 @@ struct NStepSARSAAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: DiscreteEnv & RenderableEnv
     ](
         self,

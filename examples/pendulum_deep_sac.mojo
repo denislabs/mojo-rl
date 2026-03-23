@@ -29,7 +29,7 @@ from mojo_rl.envs import PendulumEnv
 from mojo_rl.deep_agents.core.agents import DeepSACAgent
 
 
-fn main() raises:
+def main() raises:
     print("\n" + "=" * 60)
     print("    Deep SAC on Pendulum - Neural Network")
     print("=" * 60 + "\n")

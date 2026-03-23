@@ -49,7 +49,7 @@ trait ActorLoss:
     comptime HAS_ALPHA: Bool
 
     @staticmethod
-    fn gpu_lp_offset[
+    def gpu_lp_offset[
         BATCH: Int,
         ACTIONS: Int,
         ACTOR_OUT: Int,
@@ -64,7 +64,7 @@ trait ActorLoss:
         ...
 
     @staticmethod
-    fn ws_size[
+    def ws_size[
         BATCH: Int,
         OBS: Int,
         ACTIONS: Int,
@@ -77,7 +77,7 @@ trait ActorLoss:
         ...
 
     @staticmethod
-    fn update_actor_cpu[
+    def update_actor_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -112,7 +112,7 @@ trait ActorLoss:
         ...
 
     @staticmethod
-    fn update_actor_gpu[
+    def update_actor_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -158,7 +158,7 @@ trait ActorLoss:
 # =============================================================================
 
 
-fn _concat_obs_act_inline[
+def _concat_obs_act_inline[
     BATCH: Int, OBS: Int, ACTIONS: Int, CRITIC_IN: Int
 ](
     dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -173,7 +173,7 @@ fn _concat_obs_act_inline[
             dst[row * CRITIC_IN + OBS + c] = act_p[row * ACTIONS + c]
 
 
-fn _extract_action_grad[
+def _extract_action_grad[
     BATCH: Int, OBS: Int, ACTIONS: Int, CRITIC_IN: Int
 ](
     d_actions: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -202,7 +202,7 @@ struct DPGLoss(ActorLoss):
     comptime HAS_ALPHA: Bool = False
 
     @staticmethod
-    fn gpu_lp_offset[
+    def gpu_lp_offset[
         BATCH: Int,
         ACTIONS: Int,
         ACTOR_OUT: Int,
@@ -212,7 +212,7 @@ struct DPGLoss(ActorLoss):
         return 0
 
     @staticmethod
-    fn ws_size[
+    def ws_size[
         BATCH: Int,
         OBS: Int,
         ACTIONS: Int,
@@ -235,7 +235,7 @@ struct DPGLoss(ActorLoss):
         )
 
     @staticmethod
-    fn update_actor_cpu[
+    def update_actor_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -365,7 +365,7 @@ struct DPGLoss(ActorLoss):
         return 0.0  # No log_probs for DPG
 
     @staticmethod
-    fn update_actor_gpu[
+    def update_actor_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -461,7 +461,7 @@ struct DPGLoss(ActorLoss):
         ](ws_ptr + W_ACT)
 
         @always_inline
-        fn concat_new_ci(
+        def concat_new_ci(
             d: LayoutTensor[
                 dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
             ],
@@ -518,7 +518,7 @@ struct DPGLoss(ActorLoss):
         ](ws_ptr + W_DACT)
 
         @always_inline
-        fn extract_act_grad(
+        def extract_act_grad(
             da: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
             ],
@@ -580,7 +580,7 @@ struct MaxEntLoss[
     comptime HAS_ALPHA: Bool = True
 
     @staticmethod
-    fn gpu_lp_offset[
+    def gpu_lp_offset[
         BATCH: Int,
         ACTIONS: Int,
         ACTOR_OUT: Int,
@@ -590,7 +590,7 @@ struct MaxEntLoss[
         return BATCH * ACTOR_OUT + BATCH * ACTOR_CS + BATCH * ACTIONS
 
     @staticmethod
-    fn ws_size[
+    def ws_size[
         BATCH: Int,
         OBS: Int,
         ACTIONS: Int,
@@ -601,32 +601,32 @@ struct MaxEntLoss[
         CRITIC_CS: Int,
     ]() -> Int:
         return (
-            BATCH * ACTOR_OUT       # raw_out
-            + BATCH * ACTOR_CS      # actor_cache
-            + BATCH * ACTIONS       # mean
-            + BATCH * ACTIONS       # log_std
-            + BATCH * ACTIONS       # noise
-            + BATCH * ACTIONS       # act
-            + BATCH                 # log_probs
-            + BATCH * ACTIONS       # z_cache
-            + BATCH * CRITIC_IN     # critic_input
-            + BATCH * CRITIC_OUT    # Q1
-            + BATCH * CRITIC_CS     # Q1 cache
-            + BATCH * CRITIC_OUT    # Q2
-            + BATCH * CRITIC_CS     # Q2 cache
-            + BATCH * CRITIC_OUT    # dq1
-            + BATCH * CRITIC_OUT    # dq2
-            + BATCH * CRITIC_IN     # d_ci1
-            + BATCH * CRITIC_IN     # d_ci2
-            + BATCH * ACTIONS       # d_act
-            + BATCH * ACTIONS       # grad_mean
-            + BATCH * ACTIONS       # grad_log_std
-            + BATCH * ACTOR_OUT     # actor_grad
-            + BATCH * OBS           # d_obs
+            BATCH * ACTOR_OUT  # raw_out
+            + BATCH * ACTOR_CS  # actor_cache
+            + BATCH * ACTIONS  # mean
+            + BATCH * ACTIONS  # log_std
+            + BATCH * ACTIONS  # noise
+            + BATCH * ACTIONS  # act
+            + BATCH  # log_probs
+            + BATCH * ACTIONS  # z_cache
+            + BATCH * CRITIC_IN  # critic_input
+            + BATCH * CRITIC_OUT  # Q1
+            + BATCH * CRITIC_CS  # Q1 cache
+            + BATCH * CRITIC_OUT  # Q2
+            + BATCH * CRITIC_CS  # Q2 cache
+            + BATCH * CRITIC_OUT  # dq1
+            + BATCH * CRITIC_OUT  # dq2
+            + BATCH * CRITIC_IN  # d_ci1
+            + BATCH * CRITIC_IN  # d_ci2
+            + BATCH * ACTIONS  # d_act
+            + BATCH * ACTIONS  # grad_mean
+            + BATCH * ACTIONS  # grad_log_std
+            + BATCH * ACTOR_OUT  # actor_grad
+            + BATCH * OBS  # d_obs
         )
 
     @staticmethod
-    fn update_actor_cpu[
+    def update_actor_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -763,7 +763,9 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CRITIC_OUT), MutAnyOrigin
         ](ws + W_Q)
         var critic_cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, CRITIC_CS),
+            MutAnyOrigin,
         ](ws + W_CCACHE)
         Network[CriticModel, CriticOpt].forward_with_cache[BATCH](
             ci_t, q_t, critic_params, critic_cache_t
@@ -773,7 +775,9 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CRITIC_OUT), MutAnyOrigin
         ](ws + W_Q2)
         var critic2_cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, CRITIC_CS),
+            MutAnyOrigin,
         ](ws + W_C2CACHE)
         Network[CriticModel, CriticOpt].forward_with_cache[BATCH](
             ci_t, q2_t, critic2_params, critic2_cache_t
@@ -888,7 +892,7 @@ struct MaxEntLoss[
         return mean_lp
 
     @staticmethod
-    fn update_actor_gpu[
+    def update_actor_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -1011,7 +1015,7 @@ struct MaxEntLoss[
         var rng_seed_s = Scalar[DType.uint32](rng_seed)
 
         @always_inline
-        fn curr_rsample(
+        def curr_rsample(
             acts: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
@@ -1050,7 +1054,7 @@ struct MaxEntLoss[
         ](ws_ptr + W_CI)
 
         @always_inline
-        fn concat_new_ci(
+        def concat_new_ci(
             d: LayoutTensor[
                 dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
             ],
@@ -1074,7 +1078,9 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CRITIC_OUT), MutAnyOrigin
         ](ws_ptr + W_Q)
         var critic_cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, CRITIC_CS),
+            MutAnyOrigin,
         ](ws_ptr + W_CCACHE)
         Network[CriticModel, CriticOpt].forward_gpu_with_cache[BATCH](
             ctx, new_ci_t, new_q_t, critic_params, critic_cache_t, critic_ws
@@ -1084,7 +1090,9 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CRITIC_OUT), MutAnyOrigin
         ](ws_ptr + W_Q2)
         var critic2_cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, CRITIC_CS), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, CRITIC_CS),
+            MutAnyOrigin,
         ](ws_ptr + W_C2CACHE)
         Network[CriticModel, CriticOpt].forward_gpu_with_cache[BATCH](
             ctx, new_ci_t, new_q2_t, critic2_params, critic2_cache_t, critic2_ws
@@ -1099,19 +1107,11 @@ struct MaxEntLoss[
         ](ws_ptr + W_DQ2)
 
         @always_inline
-        fn min_q_mask(
-            dq1: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
-            dq2: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
-            q1: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
-            q2: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
+        def min_q_mask(
+            dq1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            dq2: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            q1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            q2: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
         ):
             min_q_dq_kernel[dtype, BATCH](dq1, dq2, q1, q2)
 
@@ -1129,21 +1129,31 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
         ](ws_ptr + W_DCI)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
-            ctx, dq_t, d_ci_t, critic_params, critic_cache_t,
-            critic_grads, critic_ws,
+            ctx,
+            dq_t,
+            d_ci_t,
+            critic_params,
+            critic_cache_t,
+            critic_grads,
+            critic_ws,
         )
 
         var d_ci2_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
         ](ws_ptr + W_DCI2)
         Network[CriticModel, CriticOpt].backward_gpu[BATCH](
-            ctx, dq2_t, d_ci2_t, critic2_params, critic2_cache_t,
-            critic2_grads, critic2_ws,
+            ctx,
+            dq2_t,
+            d_ci2_t,
+            critic2_params,
+            critic2_cache_t,
+            critic2_grads,
+            critic2_ws,
         )
 
         # 6b. Combine d_ci from both critics: d_ci += d_ci2
         @always_inline
-        fn add_grads(
+        def add_grads(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, CRITIC_IN), MutAnyOrigin
             ],
@@ -1166,7 +1176,7 @@ struct MaxEntLoss[
         ](ws_ptr + W_DACT)
 
         @always_inline
-        fn extract_act_grad(
+        def extract_act_grad(
             da: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
@@ -1190,7 +1200,7 @@ struct MaxEntLoss[
         var alpha_per_sample = Scalar[dtype](alpha / Float64(BATCH))
 
         @always_inline
-        fn rsample_bwd(
+        def rsample_bwd(
             agrad: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, ACTIONS + ACTIONS),
@@ -1268,7 +1278,7 @@ from mojo_rl.nn.autodiff.composite_params import CompositeParams
 
 # GPU matmul requires 16-byte alignment = 4 float32 elements
 @always_inline
-fn _align4(x: Int) -> Int:
+def _align4(x: Int) -> Int:
     """Round up to next multiple of 4 for GPU alignment."""
     return (x + 3) & ~3
 
@@ -1292,7 +1302,7 @@ struct AutodiffMaxEntLoss[
     comptime HAS_ALPHA: Bool = True
 
     @staticmethod
-    fn gpu_lp_offset[
+    def gpu_lp_offset[
         BATCH: Int,
         ACTIONS: Int,
         ACTOR_OUT: Int,
@@ -1302,7 +1312,7 @@ struct AutodiffMaxEntLoss[
         return BATCH * ACTOR_OUT + BATCH * ACTOR_CS + BATCH * ACTIONS
 
     @staticmethod
-    fn ws_size[
+    def ws_size[
         BATCH: Int,
         OBS: Int,
         ACTIONS: Int,
@@ -1342,7 +1352,7 @@ struct AutodiffMaxEntLoss[
         )
 
     @staticmethod
-    fn update_actor_cpu[
+    def update_actor_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -1440,9 +1450,7 @@ struct AutodiffMaxEntLoss[
         # =====================================================================
         # output[:, 0] = min_Q → maximize → gradient = -1/BS
         # output[:, 1] = log_prob → entropy regularization → gradient = alpha/BS
-        var grad_out = InlineArray[Scalar[dtype], BATCH * 2](
-            uninitialized=True
-        )
+        var grad_out = InlineArray[Scalar[dtype], BATCH * 2](uninitialized=True)
         var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
         var alpha_inv_batch = Scalar[dtype](alpha / Float64(BATCH))
         for b in range(BATCH):
@@ -1496,7 +1504,7 @@ struct AutodiffMaxEntLoss[
         return mean_lp
 
     @staticmethod
-    fn update_actor_gpu[
+    def update_actor_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -1603,19 +1611,11 @@ struct AutodiffMaxEntLoss[
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
         @always_inline
-        fn concat_params_kernel(
-            dst: LayoutTensor[
-                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-            ],
-            ap: LayoutTensor[
-                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
-            ],
-            cp: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
-            c2p: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
+        def concat_params_kernel(
+            dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
+            ap: LayoutTensor[dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin],
+            cp: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
+            c2p: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= TOTAL_PS:
@@ -1690,10 +1690,8 @@ struct AutodiffMaxEntLoss[
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn fill_seed_k(
-            seed: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
-            ],
+        def fill_seed_k(
+            seed: LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin],
             neg_inv_batch: Scalar[dtype],
             alpha_inv_batch: Scalar[dtype],
         ):
@@ -1720,10 +1718,8 @@ struct AutodiffMaxEntLoss[
         ](ws_ptr + W_GRADS)
 
         @always_inline
-        fn zero_grads_k(
-            dst: LayoutTensor[
-                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-            ],
+        def zero_grads_k(
+            dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i < TOTAL_PS:
@@ -1756,19 +1752,11 @@ struct AutodiffMaxEntLoss[
         ](critic2_grads.ptr)
 
         @always_inline
-        fn scatter_grads_kernel(
-            src: LayoutTensor[
-                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-            ],
-            ag: LayoutTensor[
-                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
-            ],
-            cg: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
-            c2g: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
+        def scatter_grads_kernel(
+            src: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
+            ag: LayoutTensor[dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin],
+            cg: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
+            c2g: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= TOTAL_PS:
@@ -1802,11 +1790,9 @@ struct AutodiffMaxEntLoss[
         ](strat_ws.unsafe_ptr() + LP_OFF)
 
         @always_inline
-        fn extract_lp_k(
+        def extract_lp_k(
             dst: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            src: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
-            ],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin],
         ):
             var b = Int(block_dim.x * block_idx.x + thread_idx.x)
             if b < BATCH:
@@ -1844,7 +1830,7 @@ struct AutodiffDPGLoss(ActorLoss):
     comptime HAS_ALPHA: Bool = False
 
     @staticmethod
-    fn gpu_lp_offset[
+    def gpu_lp_offset[
         BATCH: Int,
         ACTIONS: Int,
         ACTOR_OUT: Int,
@@ -1854,7 +1840,7 @@ struct AutodiffDPGLoss(ActorLoss):
         return 0
 
     @staticmethod
-    fn ws_size[
+    def ws_size[
         BATCH: Int,
         OBS: Int,
         ACTIONS: Int,
@@ -1878,7 +1864,7 @@ struct AutodiffDPGLoss(ActorLoss):
         )
 
     @staticmethod
-    fn update_actor_cpu[
+    def update_actor_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -2007,7 +1993,7 @@ struct AutodiffDPGLoss(ActorLoss):
         return 0.0  # No log_probs for DPG
 
     @staticmethod
-    fn update_actor_gpu[
+    def update_actor_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -2099,16 +2085,10 @@ struct AutodiffDPGLoss(ActorLoss):
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
         @always_inline
-        fn concat_params_kernel(
-            dst: LayoutTensor[
-                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-            ],
-            ap: LayoutTensor[
-                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
-            ],
-            cp: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
+        def concat_params_kernel(
+            dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
+            ap: LayoutTensor[dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin],
+            cp: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= TOTAL_PS:
@@ -2171,10 +2151,8 @@ struct AutodiffDPGLoss(ActorLoss):
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn fill_seed_k(
-            seed: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
+        def fill_seed_k(
+            seed: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
             inv_batch: Scalar[dtype],
         ):
             var b = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -2198,10 +2176,8 @@ struct AutodiffDPGLoss(ActorLoss):
         ](ws_ptr + W_GRADS)
 
         @always_inline
-        fn zero_grads_k(
-            dst: LayoutTensor[
-                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-            ],
+        def zero_grads_k(
+            dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i < TOTAL_PS:
@@ -2231,16 +2207,10 @@ struct AutodiffDPGLoss(ActorLoss):
         ](ws_ptr + W_GRADS)
 
         @always_inline
-        fn scatter_grads_kernel(
-            src: LayoutTensor[
-                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-            ],
-            ag: LayoutTensor[
-                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
-            ],
-            cg: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
+        def scatter_grads_kernel(
+            src: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
+            ag: LayoutTensor[dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin],
+            cg: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= TOTAL_PS:
@@ -2283,7 +2253,7 @@ struct AutodiffTD3Loss(ActorLoss):
     comptime HAS_ALPHA: Bool = False
 
     @staticmethod
-    fn gpu_lp_offset[
+    def gpu_lp_offset[
         BATCH: Int,
         ACTIONS: Int,
         ACTOR_OUT: Int,
@@ -2293,7 +2263,7 @@ struct AutodiffTD3Loss(ActorLoss):
         return 0
 
     @staticmethod
-    fn ws_size[
+    def ws_size[
         BATCH: Int,
         OBS: Int,
         ACTIONS: Int,
@@ -2317,7 +2287,7 @@ struct AutodiffTD3Loss(ActorLoss):
         )
 
     @staticmethod
-    fn update_actor_cpu[
+    def update_actor_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -2451,7 +2421,7 @@ struct AutodiffTD3Loss(ActorLoss):
         return 0.0  # No log_probs for TD3
 
     @staticmethod
-    fn update_actor_gpu[
+    def update_actor_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
@@ -2550,19 +2520,11 @@ struct AutodiffTD3Loss(ActorLoss):
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
         @always_inline
-        fn concat_params_kernel(
-            dst: LayoutTensor[
-                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-            ],
-            ap: LayoutTensor[
-                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
-            ],
-            cp: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
-            c2p: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
+        def concat_params_kernel(
+            dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
+            ap: LayoutTensor[dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin],
+            cp: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
+            c2p: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= TOTAL_PS:
@@ -2635,10 +2597,8 @@ struct AutodiffTD3Loss(ActorLoss):
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn fill_seed_k(
-            seed: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
+        def fill_seed_k(
+            seed: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
             inv_batch: Scalar[dtype],
         ):
             var b = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -2662,10 +2622,8 @@ struct AutodiffTD3Loss(ActorLoss):
         ](ws_ptr + W_GRADS)
 
         @always_inline
-        fn zero_grads_k(
-            dst: LayoutTensor[
-                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-            ],
+        def zero_grads_k(
+            dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i < TOTAL_PS:
@@ -2698,19 +2656,11 @@ struct AutodiffTD3Loss(ActorLoss):
         ](critic2_grads.ptr)
 
         @always_inline
-        fn scatter_grads_kernel(
-            src: LayoutTensor[
-                dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
-            ],
-            ag: LayoutTensor[
-                dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin
-            ],
-            cg: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
-            c2g: LayoutTensor[
-                dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
-            ],
+        def scatter_grads_kernel(
+            src: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
+            ag: LayoutTensor[dtype, Layout.row_major(ACTOR_PS), MutAnyOrigin],
+            cg: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
+            c2g: LayoutTensor[dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin],
         ):
             var i = Int(block_dim.x * block_idx.x + thread_idx.x)
             if i >= TOTAL_PS:

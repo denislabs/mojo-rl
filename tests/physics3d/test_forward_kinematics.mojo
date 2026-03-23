@@ -16,7 +16,7 @@ from mojo_rl.physics3d.kinematics.quat_math import quat_rotate
 from std.testing import assert_true, TestSuite
 
 
-fn test_fk_identity() raises:
+def test_fk_identity() raises:
     """Test that qpos=0 gives xpos at pivot + body_pos offset."""
     print("Test FK identity (qpos=0)...")
 
@@ -82,7 +82,7 @@ fn test_fk_identity() raises:
     print("  PASS: xpos =", x, y, z)
 
 
-fn test_fk_hinge_90deg() raises:
+def test_fk_hinge_90deg() raises:
     """Test that a 90-degree hinge rotation is computed correctly."""
     print("Test FK HINGE 90deg...")
 
@@ -118,7 +118,7 @@ fn test_fk_hinge_90deg() raises:
     print("  xpos =", x, y, z, "(validated by MuJoCo comparison tests)")
 
 
-fn test_fk_double_pendulum() raises:
+def test_fk_double_pendulum() raises:
     """Test FK with two bodies in a chain."""
     print("Test FK double pendulum...")
 
@@ -201,5 +201,5 @@ fn test_fk_double_pendulum() raises:
         print("  PASS: body2 xpos =", x1, y1, z1)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

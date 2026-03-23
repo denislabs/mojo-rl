@@ -32,12 +32,12 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # =========================================================================
 
     @staticmethod
-    fn identity() -> Self:
+    def identity() -> Self:
         """Return the identity quaternion (no rotation)."""
         return Self(1.0, 0.0, 0.0, 0.0)
 
     @staticmethod
-    fn from_axis_angle(
+    def from_axis_angle(
         axis: Vec3[Self.DTYPE], angle: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Create quaternion from axis-angle representation.
@@ -56,7 +56,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         return Self(c, n.x * s, n.y * s, n.z * s)
 
     @staticmethod
-    fn from_euler_xyz(
+    def from_euler_xyz(
         x: Scalar[Self.DTYPE], y: Scalar[Self.DTYPE], z: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Create quaternion from Euler angles (XYZ rotation order).
@@ -84,7 +84,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         )
 
     @staticmethod
-    fn from_euler_zyx(
+    def from_euler_zyx(
         z: Scalar[Self.DTYPE], y: Scalar[Self.DTYPE], x: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Create quaternion from Euler angles (ZYX rotation order).
@@ -114,7 +114,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         )
 
     @staticmethod
-    fn from_two_vectors(
+    def from_two_vectors(
         from_vec: Vec3[Self.DTYPE], to_vec: Vec3[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Create quaternion that rotates from_vec to to_vec.
@@ -150,7 +150,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Quaternion Operations
     # =========================================================================
 
-    fn __mul__(self, other: Self) -> Self:
+    def __mul__(self, other: Self) -> Self:
         """Quaternion multiplication (combines rotations).
 
         Note: Multiplication order is right-to-left:
@@ -175,15 +175,15 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.z * other.w,
         )
 
-    fn __neg__(self) -> Self:
+    def __neg__(self) -> Self:
         """Negate quaternion (represents same rotation)."""
         return Self(-self.w, -self.x, -self.y, -self.z)
 
-    fn conjugate(self) -> Self:
+    def conjugate(self) -> Self:
         """Return conjugate (inverse rotation for unit quaternion)."""
         return Self(self.w, -self.x, -self.y, -self.z)
 
-    fn inverse(self) -> Self:
+    def inverse(self) -> Self:
         """Return inverse quaternion.
 
         For unit quaternions, this is the same as conjugate.
@@ -199,7 +199,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             -self.z * inv_len_sq,
         )
 
-    fn length_squared(self) -> Scalar[Self.DTYPE]:
+    def length_squared(self) -> Scalar[Self.DTYPE]:
         """Squared norm of quaternion."""
         return (
             self.w * self.w
@@ -208,11 +208,11 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             + self.z * self.z
         )
 
-    fn length(self) -> Scalar[Self.DTYPE] where Self.DTYPE.is_floating_point():
+    def length(self) -> Scalar[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Norm of quaternion (should be 1 for unit quaternion)."""
         return sqrt(self.length_squared())
 
-    fn normalized(self) -> Self where Self.DTYPE.is_floating_point():
+    def normalized(self) -> Self where Self.DTYPE.is_floating_point():
         """Return normalized quaternion (unit length)."""
         var len = self.length()
         if len > 1e-10:
@@ -220,7 +220,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             return Self(self.w * inv, self.x * inv, self.y * inv, self.z * inv)
         return Self.identity()
 
-    fn normalize(mut self) where Self.DTYPE.is_floating_point():
+    def normalize(mut self) where Self.DTYPE.is_floating_point():
         """Normalize in place."""
         var len = self.length()
         if len > 1e-10:
@@ -234,7 +234,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Rotation Operations
     # =========================================================================
 
-    fn rotate_vec(self, v: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
+    def rotate_vec(self, v: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
         """Rotate a vector by this quaternion.
 
         Uses optimized formula: v' = v + 2*w*(q_vec × v) + 2*(q_vec × (q_vec × v))
@@ -254,7 +254,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         # v' = v + w*t + q_vec × t
         return v + t * self.w + qv.cross(t)
 
-    fn rotate_vec_inverse(self, v: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
+    def rotate_vec_inverse(self, v: Vec3[Self.DTYPE]) -> Vec3[Self.DTYPE]:
         """Rotate a vector by inverse of this quaternion.
 
         Args:
@@ -269,7 +269,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Conversion to Other Representations
     # =========================================================================
 
-    fn to_axis_angle(
+    def to_axis_angle(
         self,
     ) -> Tuple[
         Vec3[Self.DTYPE], Scalar[Self.DTYPE]
@@ -292,7 +292,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
 
         return (axis, angle)
 
-    fn to_euler_xyz(
+    def to_euler_xyz(
         self,
     ) -> Vec3[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Convert to Euler angles (XYZ rotation order).
@@ -324,15 +324,15 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
 
         return Vec3(roll, pitch, yaw)
 
-    fn get_forward(self) -> Vec3[Self.DTYPE]:
+    def get_forward(self) -> Vec3[Self.DTYPE]:
         """Get the forward direction (positive Z after rotation)."""
         return self.rotate_vec(Vec3[Self.DTYPE].unit_z())
 
-    fn get_right(self) -> Vec3[Self.DTYPE]:
+    def get_right(self) -> Vec3[Self.DTYPE]:
         """Get the right direction (positive X after rotation)."""
         return self.rotate_vec(Vec3[Self.DTYPE].unit_x())
 
-    fn get_up(self) -> Vec3[Self.DTYPE]:
+    def get_up(self) -> Vec3[Self.DTYPE]:
         """Get the up direction (positive Y after rotation)."""
         return self.rotate_vec(Vec3[Self.DTYPE].unit_y())
 
@@ -340,7 +340,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Interpolation
     # =========================================================================
 
-    fn slerp(
+    def slerp(
         self, other: Self, t: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Spherical linear interpolation.
@@ -391,7 +391,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.z * s0 + other_adj.z * s1,
         )
 
-    fn nlerp(
+    def nlerp(
         self, other: Self, t: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Normalized linear interpolation.
@@ -427,7 +427,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Comparison
     # =========================================================================
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         """Equality check."""
         return (
             self.w == other.w
@@ -436,11 +436,11 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             and self.z == other.z
         )
 
-    fn __ne__(self, other: Self) -> Bool:
+    def __ne__(self, other: Self) -> Bool:
         """Inequality check."""
         return not (self == other)
 
-    fn approx_eq(
+    def approx_eq(
         self, other: Self, tolerance: Scalar[Self.DTYPE] = 1e-10
     ) -> Bool:
         """Approximate equality (accounting for q and -q being same rotation).
@@ -457,7 +457,7 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # String Conversion
     # =========================================================================
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         """String representation."""
         return (
             "Quat("
@@ -477,12 +477,12 @@ struct Quat[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
 # =========================================================================
 
 
-fn quat_identity[DTYPE: DType]() -> Quat[DTYPE]:
+def quat_identity[DTYPE: DType]() -> Quat[DTYPE]:
     """Return identity quaternion."""
     return Quat[DTYPE].identity()
 
 
-fn quat_from_axis_angle[
+def quat_from_axis_angle[
     DTYPE: DType
 ](axis: Vec3[DTYPE], angle: Scalar[DTYPE]) -> Quat[
     DTYPE
@@ -491,7 +491,7 @@ fn quat_from_axis_angle[
     return Quat.from_axis_angle(axis, angle)
 
 
-fn slerp[
+def slerp[
     DTYPE: DType
 ](a: Quat[DTYPE], b: Quat[DTYPE], t: Scalar[DTYPE]) -> Quat[
     DTYPE

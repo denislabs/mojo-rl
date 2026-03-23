@@ -26,7 +26,7 @@ comptime SHEET_BYTES: Int = SHEET_WIDTH * SHEET_HEIGHT * BYTES_PER_PIXEL
 # ---------------------------------------------------------------------------
 
 
-fn _set_pixel(
+def _set_pixel(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
@@ -43,7 +43,7 @@ fn _set_pixel(
     pixels[offset + 3] = a
 
 
-fn _fill_rect(
+def _fill_rect(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     x0: Int,
     y0: Int,
@@ -60,7 +60,7 @@ fn _fill_rect(
             _set_pixel(pixels, x, y, r, g, b, a)
 
 
-fn _is_filled(
+def _is_filled(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
@@ -70,7 +70,7 @@ fn _is_filled(
     return pixels[offset] > 0
 
 
-fn _add_outline(
+def _add_outline(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     piece_idx: Int,
     or_: UInt8,
@@ -113,7 +113,7 @@ fn _add_outline(
 # ---------------------------------------------------------------------------
 
 
-fn _draw_king(
+def _draw_king(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
@@ -141,7 +141,7 @@ fn _draw_king(
     _fill_rect(pixels, ox + 5, 20, ox + 19, 24, r, g, b, 255)
 
 
-fn _draw_queen(
+def _draw_queen(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
@@ -168,7 +168,7 @@ fn _draw_queen(
     _fill_rect(pixels, ox + 5, 20, ox + 19, 24, r, g, b, 255)
 
 
-fn _draw_rook(
+def _draw_rook(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
@@ -188,7 +188,7 @@ fn _draw_rook(
     _fill_rect(pixels, ox + 4, 20, ox + 20, 24, r, g, b, 255)
 
 
-fn _draw_bishop(
+def _draw_bishop(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
@@ -219,7 +219,7 @@ fn _draw_bishop(
     _fill_rect(pixels, ox + 6, 20, ox + 18, 24, r, g, b, 255)
 
 
-fn _draw_knight(
+def _draw_knight(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
@@ -252,7 +252,7 @@ fn _draw_knight(
     _fill_rect(pixels, ox + 5, 20, ox + 19, 24, r, g, b, 255)
 
 
-fn _draw_pawn(
+def _draw_pawn(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     ox: Int,
     r: UInt8,
@@ -286,7 +286,7 @@ fn _draw_pawn(
 # ---------------------------------------------------------------------------
 
 
-fn _draw_piece(
+def _draw_piece(
     mut pixels: UnsafePointer[UInt8, MutAnyOrigin],
     piece_idx: Int,
     r: UInt8,
@@ -319,7 +319,7 @@ fn _draw_piece(
 # ---------------------------------------------------------------------------
 
 
-fn create_sprite_sheet() -> UnsafePointer[UInt8, MutAnyOrigin]:
+def create_sprite_sheet() -> UnsafePointer[UInt8, MutAnyOrigin]:
     """Create and return a sprite sheet with all 12 chess piece sprites.
 
     Returns a heap-allocated RGBA pixel buffer (288x24, 27648 bytes).

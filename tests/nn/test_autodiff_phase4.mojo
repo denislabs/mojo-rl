@@ -30,13 +30,13 @@ from mojo_rl.nn.model.sequential import Sequential
 from layout import Layout, LayoutTensor
 
 
-fn print_header(name: String):
+def print_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
 
 
-fn check(cond: Bool, msg: String, mut fails: Int):
+def check(cond: Bool, msg: String, mut fails: Int):
     if cond:
         print("  PASS: " + msg)
     else:
@@ -44,21 +44,21 @@ fn check(cond: Bool, msg: String, mut fails: Int):
         fails += 1
 
 
-fn make_list(size: Int) -> List[Scalar[dtype]]:
+def make_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(0)
     return lst^
 
 
-fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
+def make_rand_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(Scalar[dtype](random_float64(-1.0, 1.0)))
     return lst^
 
 
-fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
+def max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
     var md: Float64 = 0
     for i in range(n):
         var d = math_abs(Float64(a[i]) - Float64(b[i]))
@@ -72,7 +72,7 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # =============================================================================
 
 
-fn fd_grad_check_model[
+def fd_grad_check_model[
     BATCH: Int, IN_DIM: Int, OUT_DIM: Int, PARAM_SIZE: Int, CACHE_SIZE: Int
 ](
     fwd_fn: fn(
@@ -181,7 +181,7 @@ fn fd_grad_check_model[
 
 
 # FD check for parameter gradients
-fn fd_param_grad_check[
+def fd_param_grad_check[
     BATCH: Int, IN_DIM: Int, OUT_DIM: Int, PARAM_SIZE: Int, CACHE_SIZE: Int
 ](
     fwd_fn: fn(
@@ -293,7 +293,7 @@ fn fd_param_grad_check[
 # =============================================================================
 
 
-fn test_residual_dims_and_forward() -> Int:
+def test_residual_dims_and_forward() -> Int:
     print_header("Residual[Dense[4,4]] — dimensions + forward")
     var fails = 0
 
@@ -362,7 +362,7 @@ fn test_residual_dims_and_forward() -> Int:
 # =============================================================================
 
 
-fn test_residual_grad() -> Int:
+def test_residual_grad() -> Int:
     print_header("Residual[Dense[4,4]] — gradient check")
     var fails = 0
 
@@ -396,7 +396,7 @@ fn test_residual_grad() -> Int:
 # =============================================================================
 
 
-fn test_parallel_dims_and_forward() -> Int:
+def test_parallel_dims_and_forward() -> Int:
     print_header("Parallel[Dense[2,3], Dense[2,2]] — dimensions + forward")
     var fails = 0
 
@@ -486,7 +486,7 @@ fn test_parallel_dims_and_forward() -> Int:
 # =============================================================================
 
 
-fn test_parallel_grad() -> Int:
+def test_parallel_grad() -> Int:
     print_header("Parallel[Dense[2,3], Dense[2,2]] — gradient check")
     var fails = 0
 
@@ -518,7 +518,7 @@ fn test_parallel_grad() -> Int:
 # =============================================================================
 
 
-fn test_repeat_dims_and_forward() -> Int:
+def test_repeat_dims_and_forward() -> Int:
     print_header("Repeat[3, Dense[4,4]] — dimensions + forward")
     var fails = 0
 
@@ -601,7 +601,7 @@ fn test_repeat_dims_and_forward() -> Int:
 # =============================================================================
 
 
-fn test_repeat_grad() -> Int:
+def test_repeat_grad() -> Int:
     print_header("Repeat[3, Dense[4,4]] — gradient check (shared weights)")
     var fails = 0
 
@@ -638,7 +638,7 @@ fn test_repeat_grad() -> Int:
 # =============================================================================
 
 
-fn test_composition_training() -> Int:
+def test_composition_training() -> Int:
     print_header("Composition: Sequential + Residual — XOR convergence")
     var fails = 0
 
@@ -748,7 +748,7 @@ fn test_composition_training() -> Int:
 # =============================================================================
 
 
-fn test_nested_residual() -> Int:
+def test_nested_residual() -> Int:
     print_header(
         "Residual[Sequential[DenseReLU[4,4], Dense[4,4]]] — grad check"
     )
@@ -785,7 +785,7 @@ fn test_nested_residual() -> Int:
 # =============================================================================
 
 
-fn test_repeat_one() -> Int:
+def test_repeat_one() -> Int:
     print_header("Repeat[1, Dense[4,4]] — matches Dense directly")
     var fails = 0
 
@@ -840,7 +840,7 @@ fn test_repeat_one() -> Int:
 # =============================================================================
 
 
-fn test_parallel_3branch_dims_and_forward() -> Int:
+def test_parallel_3branch_dims_and_forward() -> Int:
     print_header(
         "Parallel[Dense[2,3], Dense[2,2], Dense[2,1]] — dimensions + forward"
     )
@@ -955,7 +955,7 @@ fn test_parallel_3branch_dims_and_forward() -> Int:
 # =============================================================================
 
 
-fn test_parallel_3branch_grad() -> Int:
+def test_parallel_3branch_grad() -> Int:
     print_header(
         "Parallel[Dense[2,3], Dense[2,2], Dense[2,1]] — gradient check"
     )
@@ -989,7 +989,7 @@ fn test_parallel_3branch_grad() -> Int:
 # =============================================================================
 
 
-fn main():
+def main():
     print("=" * 70)
     print("Phase 4 AutoDiff Combinators — Verification Tests")
     print("=" * 70)

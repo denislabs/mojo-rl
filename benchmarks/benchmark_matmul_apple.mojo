@@ -25,7 +25,7 @@ from mojo_rl.nn.gpu.matmul_apple import (
 from mojo_rl.nn.constants import dtype, TILE
 
 
-fn benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
+def benchmark_size[M: Int, N: Int, K: Int](ctx: DeviceContext) raises:
     """Benchmark all kernels for a given matrix size."""
     print("\n" + "=" * 70)
     print("Matrix size: ", M, " x ", K, " @ ", K, " x ", N)

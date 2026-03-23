@@ -38,7 +38,7 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
     var W2: InlineArray[Float32, Self.W2_SIZE]
     var b2: InlineArray[Float32, Self.out_dim]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.W1 = InlineArray[Float32, Self.W1_SIZE](fill=0)
         self.b1 = InlineArray[Float32, Self.hidden_dim](fill=0)
         self.W2 = InlineArray[Float32, Self.W2_SIZE](fill=0)
@@ -57,7 +57,7 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
         for i in range(Self.out_dim):
             self.b2[i] = 0
 
-    fn forward_single(
+    def forward_single(
         self,
         obs: InlineArray[Float32, Self.obs_dim],
     ) -> InlineArray[Float32, Self.out_dim]:
@@ -80,7 +80,7 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
 
         return out^
 
-    fn forward_batch[
+    def forward_batch[
         batch_size: Int
     ](
         self,
@@ -113,7 +113,7 @@ struct CPUNetwork[obs_dim: Int, hidden_dim: Int, out_dim: Int]:
 # =============================================================================
 
 
-fn forward_kernel_simple[
+def forward_kernel_simple[
     dtype: DType,
     batch_size: Int,
     obs_dim: Int,
@@ -170,7 +170,7 @@ fn forward_kernel_simple[
 # =============================================================================
 
 
-fn benchmark_cpu_single[
+def benchmark_cpu_single[
     obs_dim: Int, hidden_dim: Int, out_dim: Int
 ](num_iters: Int) -> Float64:
     """Benchmark single-observation CPU forward pass."""
@@ -194,7 +194,7 @@ fn benchmark_cpu_single[
     return Float64(num_iters) / elapsed_sec
 
 
-fn benchmark_cpu_batch[
+def benchmark_cpu_batch[
     obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: Int
 ](num_iters: Int) -> Float64:
     """Benchmark batched CPU forward pass."""
@@ -219,7 +219,7 @@ fn benchmark_cpu_batch[
     return Float64(num_iters) / elapsed_sec
 
 
-fn benchmark_gpu_batch[
+def benchmark_gpu_batch[
     obs_dim: Int, hidden_dim: Int, out_dim: Int, batch_size: Int
 ](ctx: DeviceContext, num_iters: Int) raises -> Float64:
     """Benchmark GPU forward pass."""
@@ -313,7 +313,7 @@ fn benchmark_gpu_batch[
     return Float64(num_iters) / elapsed_sec
 
 
-fn benchmark_kernel_launch_overhead(
+def benchmark_kernel_launch_overhead(
     ctx: DeviceContext, num_iters: Int
 ) raises -> Float64:
     """Measure pure kernel launch overhead with a trivial kernel."""
@@ -327,7 +327,7 @@ fn benchmark_kernel_launch_overhead(
     var buf_t = LayoutTensor[dtype, Layout.row_major(size), MutAnyOrigin](buf)
 
     # Simple kernel that does almost nothing
-    fn trivial_kernel(
+    def trivial_kernel(
         buf: LayoutTensor[dtype, Layout.row_major(size), MutAnyOrigin]
     ):
         var i = Int(thread_idx.x)

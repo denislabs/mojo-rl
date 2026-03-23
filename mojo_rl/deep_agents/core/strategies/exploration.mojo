@@ -23,7 +23,7 @@ trait Explore:
     comptime INITIAL_STD: Float64
 
     @staticmethod
-    fn explore[
+    def explore[
         DTYPE: DType
     ](
         action: List[Scalar[DTYPE]],
@@ -33,11 +33,11 @@ trait Explore:
         ...
 
     @staticmethod
-    fn decay(mut noise_std: Float64):
+    def decay(mut noise_std: Float64):
         ...
 
     @staticmethod
-    fn get_rate(noise_std: Float64) -> Float64:
+    def get_rate(noise_std: Float64) -> Float64:
         ...
 
 
@@ -64,7 +64,7 @@ struct GaussianNoise[
     comptime INITIAL_STD: Float64 = Self.initial_std
 
     @staticmethod
-    fn explore[
+    def explore[
         DTYPE: DType
     ](
         action: List[Scalar[DTYPE]],
@@ -84,14 +84,14 @@ struct GaussianNoise[
         return result^
 
     @staticmethod
-    fn decay(mut noise_std: Float64):
+    def decay(mut noise_std: Float64):
         """Decay noise_std by decay_rate (clamped to min_std)."""
         noise_std *= Self.decay_rate
         if noise_std < Self.min_std:
             noise_std = Self.min_std
 
     @staticmethod
-    fn get_rate(noise_std: Float64) -> Float64:
+    def get_rate(noise_std: Float64) -> Float64:
         """Return current noise std for logging."""
         return noise_std
 
@@ -117,7 +117,7 @@ struct StochasticSample(Explore):
     comptime INITIAL_STD: Float64 = 0.0
 
     @staticmethod
-    fn explore[
+    def explore[
         DTYPE: DType
     ](
         action: List[Scalar[DTYPE]],
@@ -128,11 +128,11 @@ struct StochasticSample(Explore):
         return action.copy()
 
     @staticmethod
-    fn decay(mut noise_std: Float64):
+    def decay(mut noise_std: Float64):
         """No-op: SAC exploration is via entropy regularization."""
         pass
 
     @staticmethod
-    fn get_rate(noise_std: Float64) -> Float64:
+    def get_rate(noise_std: Float64) -> Float64:
         """Return 0.0 — SAC uses entropy, not an explicit explore rate."""
         return 0.0

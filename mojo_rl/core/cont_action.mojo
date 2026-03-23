@@ -18,24 +18,24 @@ struct ContAction[N: Int](Action, Copyable, Movable):
 
     var data: InlineArray[Float64, Self.N]
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize with zeros."""
         self.data = InlineArray[Float64, Self.N](fill=0.0)
 
-    fn __init__(out self, data: InlineArray[Float64, Self.N]):
+    def __init__(out self, data: InlineArray[Float64, Self.N]):
         """Initialize from an existing InlineArray."""
         self.data = data.copy()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor."""
         self.data = copy.data.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.data = take.data^
 
     @staticmethod
-    fn from_list(actions: List[Float64]) -> Self:
+    def from_list(actions: List[Float64]) -> Self:
         """Create action from a list of N values.
 
         Args:
@@ -49,14 +49,14 @@ struct ContAction[N: Int](Action, Copyable, Movable):
             result.data[i] = actions[i]
         return result^
 
-    fn to_list(self) -> List[Float64]:
+    def to_list(self) -> List[Float64]:
         """Convert action to a list of N float values."""
         var result = List[Float64](capacity=Self.N)
         for i in range(Self.N):
             result.append(self.data[i])
         return result^
 
-    fn clamp(self) -> Self:
+    def clamp(self) -> Self:
         """Return action clamped to [-1, 1]."""
         var result = Self()
         for i in range(Self.N):
@@ -69,17 +69,17 @@ struct ContAction[N: Int](Action, Copyable, Movable):
                 result.data[i] = v
         return result^
 
-    fn squared_sum(self) -> Float64:
+    def squared_sum(self) -> Float64:
         """Compute sum of squared action values (for control cost)."""
         var total: Float64 = 0.0
         for i in range(Self.N):
             total += self.data[i] * self.data[i]
         return total
 
-    fn __getitem__(self, idx: Int) -> Float64:
+    def __getitem__(self, idx: Int) -> Float64:
         """Access action by index."""
         return self.data[idx]
 
-    fn __setitem__(mut self, idx: Int, val: Float64):
+    def __setitem__(mut self, idx: Int, val: Float64):
         """Set action by index."""
         self.data[idx] = val

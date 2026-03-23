@@ -91,59 +91,59 @@ struct HopperParams[DTYPE: DType = DType.float64]:
     # GPU layout helper methods
     @staticmethod
     @always_inline
-    fn get_qpos_offset() -> Int:
+    def get_qpos_offset() -> Int:
         return qpos_offset[Self.NQ, Self.NV]()
 
     @staticmethod
     @always_inline
-    fn get_qvel_offset() -> Int:
+    def get_qvel_offset() -> Int:
         return qvel_offset[Self.NQ, Self.NV]()
 
     @staticmethod
     @always_inline
-    fn get_qacc_offset() -> Int:
+    def get_qacc_offset() -> Int:
         return qacc_offset[Self.NQ, Self.NV]()
 
     @staticmethod
     @always_inline
-    fn get_qfrc_offset() -> Int:
+    def get_qfrc_offset() -> Int:
         return qfrc_offset[Self.NQ, Self.NV]()
 
     @staticmethod
     @always_inline
-    fn get_xpos_offset() -> Int:
+    def get_xpos_offset() -> Int:
         return xpos_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
 
     @staticmethod
     @always_inline
-    fn get_xquat_offset() -> Int:
+    def get_xquat_offset() -> Int:
         return xquat_offset[Self.NQ, Self.NV, Self.NUM_BODIES]()
 
     @staticmethod
     @always_inline
-    fn get_metadata_offset() -> Int:
+    def get_metadata_offset() -> Int:
         return metadata_offset[
             Self.NQ, Self.NV, Self.NUM_BODIES, Self.MAX_CONTACTS
         ]()
 
     @staticmethod
     @always_inline
-    fn get_model_body_offset(body_idx: Int) -> Int:
+    def get_model_body_offset(body_idx: Int) -> Int:
         return model_body_offset(body_idx)
 
     @staticmethod
     @always_inline
-    fn get_model_joint_offset(joint_idx: Int) -> Int:
+    def get_model_joint_offset(joint_idx: Int) -> Int:
         return model_joint_offset[Self.NUM_BODIES](joint_idx)
 
     @staticmethod
     @always_inline
-    fn get_model_metadata_offset() -> Int:
+    def get_model_metadata_offset() -> Int:
         return model_metadata_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
 
     @staticmethod
     @always_inline
-    fn get_model_curriculum_offset() -> Int:
+    def get_model_curriculum_offset() -> Int:
         return model_curriculum_offset[Self.NUM_BODIES, Self.NUM_JOINTS]()
 
 

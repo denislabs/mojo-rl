@@ -82,7 +82,7 @@ comptime NORMAL_DOT_MIN: Float64 = 0.999
 # =============================================================================
 
 
-fn contact_kernel[
+def contact_kernel[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -136,7 +136,7 @@ fn contact_kernel[
 # =============================================================================
 
 
-fn compare_contacts(
+def compare_contacts(
     ctx: DeviceContext,
     test_name: String,
     test_qpos: InlineArray[Float64, NQ],
@@ -184,7 +184,7 @@ fn compare_contacts(
     ctx.enqueue_copy(state_buf, state_host.unsafe_ptr())
     ctx.synchronize()
 
-    comptime kernel_fn = contact_kernel[
+    comptime kernel_def = contact_kernel[
         DTYPE,
         NQ,
         NV,
@@ -376,7 +376,7 @@ fn compare_contacts(
     assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 
 
-fn test_high_above_ground() raises:
+def test_high_above_ground() raises:
     print("=" * 60)
     print("Contact Detection: CPU vs GPU")
     print("=" * 60)
@@ -432,7 +432,7 @@ fn test_high_above_ground() raises:
     print()
 
 
-fn test_default_pose() raises:
+def test_default_pose() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -472,7 +472,7 @@ fn test_default_pose() raises:
     print()
 
 
-fn test_low_static() raises:
+def test_low_static() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -513,7 +513,7 @@ fn test_low_static() raises:
     print()
 
 
-fn test_very_low() raises:
+def test_very_low() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -554,7 +554,7 @@ fn test_very_low() raises:
     print()
 
 
-fn test_bent_legs() raises:
+def test_bent_legs() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -599,7 +599,7 @@ fn test_bent_legs() raises:
     print()
 
 
-fn test_tilted() raises:
+def test_tilted() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -641,7 +641,7 @@ fn test_tilted() raises:
     print()
 
 
-fn main() raises:
+def main() raises:
     test_high_above_ground()
     test_default_pose()
     test_low_static()

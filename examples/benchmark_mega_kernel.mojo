@@ -30,7 +30,7 @@ from layout import Layout, LayoutTensor
 # =============================================================================
 
 
-fn fused_dqn_train_kernel[
+def fused_dqn_train_kernel[
     dtype: DType,
     BATCH: Int,  # Number of transitions in batch
     OBS_DIM: Int,  # Observation dimension
@@ -317,7 +317,7 @@ fn fused_dqn_train_kernel[
 # =============================================================================
 
 
-fn benchmark_mega_kernel[
+def benchmark_mega_kernel[
     BATCH: Int, OBS_DIM: Int, HIDDEN_DIM: Int, OUT_DIM: Int
 ](ctx: DeviceContext, num_iters: Int) raises -> Float64:
     """Benchmark the fused mega-kernel."""
@@ -522,7 +522,7 @@ fn benchmark_mega_kernel[
     return Float64(end - start) / Float64(num_iters)
 
 
-fn benchmark_kernel_launch_overhead(
+def benchmark_kernel_launch_overhead(
     ctx: DeviceContext, num_iters: Int
 ) raises -> Float64:
     """Measure pure kernel launch overhead."""
@@ -535,7 +535,7 @@ fn benchmark_kernel_launch_overhead(
 
     var buf_t = LayoutTensor[dtype, Layout.row_major(size), MutAnyOrigin](buf)
 
-    fn trivial_kernel(
+    def trivial_kernel(
         buf: LayoutTensor[dtype, Layout.row_major(size), MutAnyOrigin]
     ):
         var i = Int(thread_idx.x)

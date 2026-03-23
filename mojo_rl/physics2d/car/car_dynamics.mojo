@@ -79,7 +79,7 @@ struct CarDynamics:
 
     @staticmethod
     @always_inline
-    fn update_steering[
+    def update_steering[
         BATCH: Int,
         STATE_SIZE: Int,
         WHEELS_OFFSET: Int,
@@ -141,7 +141,7 @@ struct CarDynamics:
 
     @staticmethod
     @always_inline
-    fn _update_steering_angle(
+    def _update_steering_angle(
         current: Scalar[dtype],
         target: Scalar[dtype],
         dt: Scalar[dtype],
@@ -185,7 +185,7 @@ struct CarDynamics:
 
     @staticmethod
     @always_inline
-    fn integrate_hull[
+    def integrate_hull[
         BATCH: Int,
         STATE_SIZE: Int,
         HULL_OFFSET: Int,
@@ -295,7 +295,7 @@ struct CarDynamics:
 
     @staticmethod
     @always_inline
-    fn step_single_env[
+    def step_single_env[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,
@@ -367,7 +367,7 @@ struct CarDynamics:
 
     @staticmethod
     @always_inline
-    fn update_observation[
+    def update_observation[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,
@@ -434,7 +434,7 @@ struct CarDynamics:
 
     @staticmethod
     @always_inline
-    fn step_with_obs[
+    def step_with_obs[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,
@@ -488,7 +488,7 @@ struct CarDynamics:
 
     @staticmethod
     @always_inline
-    fn step_trackless[
+    def step_trackless[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,
@@ -553,7 +553,7 @@ struct CarDynamics:
 
     @staticmethod
     @always_inline
-    fn step_with_embedded_track[
+    def step_with_embedded_track[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,
@@ -623,7 +623,7 @@ struct CarDynamics:
 
     @staticmethod
     @always_inline
-    fn _get_wheel_friction_limits_embedded[
+    def _get_wheel_friction_limits_embedded[
         BATCH: Int,
         STATE_SIZE: Int,
         HULL_OFFSET: Int,
@@ -699,7 +699,7 @@ struct CarDynamics:
     # =========================================================================
 
     @staticmethod
-    fn step_batch_cpu[
+    def step_batch_cpu[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,

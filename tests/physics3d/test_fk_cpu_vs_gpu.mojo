@@ -62,7 +62,7 @@ comptime QUAT_TOL: Float64 = 1e-4
 # =============================================================================
 
 
-fn fk_kernel[
+def fk_kernel[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -99,7 +99,7 @@ fn fk_kernel[
 # =============================================================================
 
 
-fn compare_fk(
+def compare_fk(
     ctx: DeviceContext,
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
@@ -152,7 +152,7 @@ fn compare_fk(
         DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
     ](model_buf.unsafe_ptr())
 
-    comptime kernel_fn = fk_kernel[
+    comptime kernel_def = fk_kernel[
         DTYPE,
         NQ,
         NV,
@@ -281,7 +281,7 @@ fn compare_fk(
 # =============================================================================
 
 
-fn test_fk_default_qpos() raises:
+def test_fk_default_qpos() raises:
     print("=" * 60)
     print("FK Validation: CPU vs GPU")
     print("=" * 60)
@@ -301,7 +301,7 @@ fn test_fk_default_qpos() raises:
     print()
 
 
-fn test_fk_zero_qpos() raises:
+def test_fk_zero_qpos() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -312,7 +312,7 @@ fn test_fk_zero_qpos() raises:
     print()
 
 
-fn test_fk_nonzero_joints() raises:
+def test_fk_nonzero_joints() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -332,7 +332,7 @@ fn test_fk_nonzero_joints() raises:
     print()
 
 
-fn test_fk_extreme_joints() raises:
+def test_fk_extreme_joints() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -350,7 +350,7 @@ fn test_fk_extreme_joints() raises:
     print()
 
 
-fn test_fk_large_rootx() raises:
+def test_fk_large_rootx() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -365,7 +365,7 @@ fn test_fk_large_rootx() raises:
     print()
 
 
-fn main() raises:
+def main() raises:
     test_fk_default_qpos()
     test_fk_zero_qpos()
     test_fk_nonzero_joints()

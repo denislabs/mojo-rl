@@ -93,7 +93,7 @@ from ..joint_types import (
 # =============================================================================
 
 
-fn compute_cdof[
+def compute_cdof[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -351,7 +351,7 @@ fn compute_cdof[
                 acc_qw = free_qw
 
 
-fn compute_contact_jacobian_row[
+def compute_contact_jacobian_row[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -480,7 +480,7 @@ fn compute_contact_jacobian_row[
                 J_row[dof_idx] = J_row[dof_idx] - val
 
 
-fn _joint_affects_body[
+def _joint_affects_body[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -530,7 +530,7 @@ fn _joint_affects_body[
 # =============================================================================
 
 
-fn compute_composite_inertia[
+def compute_composite_inertia[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -756,7 +756,7 @@ fn compute_composite_inertia[
 
 
 @always_inline
-fn compute_composite_inertia_gpu[
+def compute_composite_inertia_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -983,7 +983,7 @@ fn compute_composite_inertia_gpu[
 
 
 @always_inline
-fn compute_cdof_gpu[
+def compute_cdof_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1311,7 +1311,7 @@ fn compute_cdof_gpu[
 
 
 @always_inline
-fn compute_contact_jacobian_row_gpu[
+def compute_contact_jacobian_row_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1464,7 +1464,7 @@ fn compute_contact_jacobian_row_gpu[
 
 
 @always_inline
-fn compute_angular_jacobian_row_gpu[
+def compute_angular_jacobian_row_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

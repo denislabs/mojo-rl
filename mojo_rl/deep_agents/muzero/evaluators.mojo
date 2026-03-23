@@ -20,20 +20,23 @@ from std.random import random_float64
 trait Evaluator(Movable):
     """An opponent strategy for evaluating agent strength."""
 
-    fn name(self) -> String:
+    def name(self) -> String:
         """Human-readable name."""
         ...
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset internal state for a new game."""
         ...
 
-    fn select_action(mut self, legal_mask: List[Bool], num_actions: Int) -> Int:
+    def select_action(
+        mut self, legal_mask: List[Bool], num_actions: Int
+    ) -> Int:
         """Select an action given legal mask. May update internal state."""
         ...
 
-    fn observe_action(mut self, action: Int, player: Int):
-        """Observe an action played (by either player). Updates internal state."""
+    def observe_action(mut self, action: Int, player: Int):
+        """Observe an action played (by either player). Updates internal state.
+        """
         ...
 
 
@@ -45,19 +48,21 @@ trait Evaluator(Movable):
 struct RandomOpponent(Evaluator):
     """Uniformly random legal action selection. Weakest baseline."""
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn name(self) -> String:
+    def name(self) -> String:
         return "Random"
 
-    fn reset(mut self):
+    def reset(mut self):
         pass
 
-    fn select_action(mut self, legal_mask: List[Bool], num_actions: Int) -> Int:
+    def select_action(
+        mut self, legal_mask: List[Bool], num_actions: Int
+    ) -> Int:
         var n_legal = 0
         for a in range(num_actions):
             if a < len(legal_mask) and legal_mask[a]:
@@ -75,7 +80,7 @@ struct RandomOpponent(Evaluator):
                 count += 1
         return 0
 
-    fn observe_action(mut self, action: Int, player: Int):
+    def observe_action(mut self, action: Int, player: Int):
         pass
 
 
@@ -94,23 +99,25 @@ struct MinimaxTicTacToe(Evaluator):
     var board: InlineArray[Int, 9]
     var current_player: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.board = InlineArray[Int, 9](fill=0)
         self.current_player = 0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.board = take.board
         self.current_player = take.current_player
 
-    fn name(self) -> String:
+    def name(self) -> String:
         return "Minimax"
 
-    fn reset(mut self):
+    def reset(mut self):
         for i in range(9):
             self.board[i] = 0
         self.current_player = 0
 
-    fn select_action(mut self, legal_mask: List[Bool], num_actions: Int) -> Int:
+    def select_action(
+        mut self, legal_mask: List[Bool], num_actions: Int
+    ) -> Int:
         var is_max = self.current_player == 0
         var best_action = -1
         var best_score = -2 if is_max else 2
@@ -124,7 +131,9 @@ struct MinimaxTicTacToe(Evaluator):
                 child[i] = self.board[i]
             child[a] = self.current_player + 1
 
-            var score = self._minimax(child, 1 - self.current_player, not is_max)
+            var score = self._minimax(
+                child, 1 - self.current_player, not is_max
+            )
 
             if is_max and score > best_score:
                 best_score = score
@@ -139,13 +148,15 @@ struct MinimaxTicTacToe(Evaluator):
                     return a
         return best_action
 
-    fn observe_action(mut self, action: Int, player: Int):
+    def observe_action(mut self, action: Int, player: Int):
         """Track the move on internal board."""
         if action >= 0 and action < 9:
             self.board[action] = player + 1
         self.current_player = 1 - player
 
-    fn _minimax(self, board: InlineArray[Int, 9], next_player: Int, is_maximizing: Bool) -> Int:
+    def _minimax(
+        self, board: InlineArray[Int, 9], next_player: Int, is_maximizing: Bool
+    ) -> Int:
         var winner = self._check_winner(board)
         if winner == 1:
             return 1
@@ -187,14 +198,22 @@ struct MinimaxTicTacToe(Evaluator):
                     best = score
             return best
 
-    fn _check_winner(self, board: InlineArray[Int, 9]) -> Int:
+    def _check_winner(self, board: InlineArray[Int, 9]) -> Int:
         # Rows
         for r in range(3):
-            if board[r * 3] != 0 and board[r * 3] == board[r * 3 + 1] and board[r * 3 + 1] == board[r * 3 + 2]:
+            if (
+                board[r * 3] != 0
+                and board[r * 3] == board[r * 3 + 1]
+                and board[r * 3 + 1] == board[r * 3 + 2]
+            ):
                 return board[r * 3]
         # Columns
         for c in range(3):
-            if board[c] != 0 and board[c] == board[c + 3] and board[c + 3] == board[c + 6]:
+            if (
+                board[c] != 0
+                and board[c] == board[c + 3]
+                and board[c + 3] == board[c + 6]
+            ):
                 return board[c]
         # Diagonals
         if board[0] != 0 and board[0] == board[4] and board[4] == board[8]:

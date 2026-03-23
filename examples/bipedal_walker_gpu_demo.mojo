@@ -24,7 +24,7 @@ from mojo_rl.envs.bipedal_walker import BipedalWalker, BWConstants
 from mojo_rl.physics2d import dtype
 
 
-fn main() raises:
+def main() raises:
     print("=== BipedalWalker v2 GPU Batch Demo ===")
     print()
 

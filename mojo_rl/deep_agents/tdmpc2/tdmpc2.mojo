@@ -259,7 +259,7 @@ struct TDMPC2Agent[
     var _prev_mean: List[Float64]
     var _episode_t0: Bool
 
-    fn __init__(
+    def __init__(
         out self,
         gamma: Float64 = 0.99,
         rho: Float64 = 0.5,
@@ -340,7 +340,7 @@ struct TDMPC2Agent[
     # Action Selection
     # =========================================================================
 
-    fn select_action(
+    def select_action(
         mut self,
         obs: InlineArray[Scalar[dtype], Self.OBS],
         deterministic: Bool = False,
@@ -418,7 +418,7 @@ struct TDMPC2Agent[
     # Store Transition
     # =========================================================================
 
-    fn observe(
+    def observe(
         mut self,
         obs: InlineArray[Scalar[dtype], Self.OBS],
         action: InlineArray[Scalar[dtype], Self.ACT],
@@ -440,7 +440,7 @@ struct TDMPC2Agent[
     # Training Update
     # =========================================================================
 
-    fn update(mut self) -> Float64:
+    def update(mut self) -> Float64:
         """Perform one TDMPC2 gradient update step.
 
         Returns:
@@ -469,7 +469,7 @@ struct TDMPC2Agent[
         self.train_step_count += 1
         return wm_loss
 
-    fn _update_world_model(mut self) -> Float64:
+    def _update_world_model(mut self) -> Float64:
         """Compute and apply world model gradient update.
 
         Uses pre-allocated scratch buffers from self.state instead of
@@ -870,7 +870,7 @@ struct TDMPC2Agent[
 
         return total_loss
 
-    fn _update_policy(mut self):
+    def _update_policy(mut self):
         """Update policy to maximize Q-value + entropy.
 
         Uses pre-allocated scratch buffers from self.state instead of
@@ -1092,7 +1092,7 @@ struct TDMPC2Agent[
     # Phase 3: Single encoder backward with total gradient on z_0.
     # =========================================================================
 
-    fn _wm_bptt_gpu[
+    def _wm_bptt_gpu[
         n_envs: Int,
         env_state_size: Int,
     ](
@@ -1877,7 +1877,7 @@ struct TDMPC2Agent[
     # GPU Training Loop (Fully GPU with N_ENVS Parallel Environments)
     # =========================================================================
 
-    fn train_gpu[
+    def train_gpu[
         ENV: GPUContinuousEnv,
         n_envs: Int = 32,
     ](
@@ -2208,19 +2208,29 @@ struct TDMPC2Agent[
         # Target Q networks (params only — soft-updated on GPU, no optimizer state)
         # Reuse single pre-allocated host buffer for all 5 uploads sequentially
         for i in range(Self.Q_P):
-            gs.qt_upload_host[i] = (self.state.world_model.q1_target.params + i)[]
+            gs.qt_upload_host[i] = (
+                self.state.world_model.q1_target.params + i
+            )[]
         ctx.enqueue_copy(gs.q1t_params_buf, gs.qt_upload_host)
         for i in range(Self.Q_P):
-            gs.qt_upload_host[i] = (self.state.world_model.q2_target.params + i)[]
+            gs.qt_upload_host[i] = (
+                self.state.world_model.q2_target.params + i
+            )[]
         ctx.enqueue_copy(gs.q2t_params_buf, gs.qt_upload_host)
         for i in range(Self.Q_P):
-            gs.qt_upload_host[i] = (self.state.world_model.q3_target.params + i)[]
+            gs.qt_upload_host[i] = (
+                self.state.world_model.q3_target.params + i
+            )[]
         ctx.enqueue_copy(gs.q3t_params_buf, gs.qt_upload_host)
         for i in range(Self.Q_P):
-            gs.qt_upload_host[i] = (self.state.world_model.q4_target.params + i)[]
+            gs.qt_upload_host[i] = (
+                self.state.world_model.q4_target.params + i
+            )[]
         ctx.enqueue_copy(gs.q4t_params_buf, gs.qt_upload_host)
         for i in range(Self.Q_P):
-            gs.qt_upload_host[i] = (self.state.world_model.q5_target.params + i)[]
+            gs.qt_upload_host[i] = (
+                self.state.world_model.q5_target.params + i
+            )[]
         ctx.enqueue_copy(gs.q5t_params_buf, gs.qt_upload_host)
 
         # Upload fixed bins to GPU
@@ -2460,7 +2470,6 @@ struct TDMPC2Agent[
             ctx.enqueue_copy(gs.env_done_host, gs.env_done_buf)
             ctx.synchronize()
 
-
             var nb_done = 0
             var sum_rew = 0.0
 
@@ -2471,7 +2480,6 @@ struct TDMPC2Agent[
 
                 # Accumulate per-env episode reward on CPU
                 cpu_ep_rewards[env_idx] += Float64(rew_val)
-
 
                 if done_val:
                     # Episode completed — log and reset accumulator
@@ -2488,7 +2496,7 @@ struct TDMPC2Agent[
                     if use_mppi:
                         env_t0_flags[env_idx] = True
                         env_prev_means[env_idx] = List[Float64]()
-            
+
             if self.logger and nb_done > 0:
                 try:
                     self.logger[].log_scalar(
@@ -3029,7 +3037,7 @@ struct TDMPC2Agent[
             var adam_bc2 = Scalar[dtype](1.0 - (0.999**gpu_wm_step))
 
             @always_inline
-            fn adam_5q_wrapper(
+            def adam_5q_wrapper(
                 params1: LayoutTensor[
                     dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
                 ],
@@ -3480,7 +3488,7 @@ struct TDMPC2Agent[
             var total_ms = Float64(total_ns) / 1e6
 
             @always_inline
-            fn _pct(ns: Int, tot: Int) -> Float64:
+            def _pct(ns: Int, tot: Int) -> Float64:
                 if tot == 0:
                     return 0.0
                 return Float64(ns) / Float64(tot) * 100.0
@@ -3586,7 +3594,7 @@ struct TDMPC2Agent[
     # Training Loop (CPU)
     # =========================================================================
 
-    fn train[
+    def train[
         ENV: BoxContinuousActionEnv
     ](
         mut self,
@@ -3714,7 +3722,7 @@ struct TDMPC2Agent[
         var total_ms = Float64(total_ns) / 1e6
 
         @always_inline
-        fn _cpu_pct(ns: Int, tot: Int) -> Float64:
+        def _cpu_pct(ns: Int, tot: Int) -> Float64:
             if tot == 0:
                 return 0.0
             return Float64(ns) / Float64(tot) * 100.0
@@ -3764,7 +3772,7 @@ struct TDMPC2Agent[
 
 
 @always_inline
-fn _gaussian_sample() -> Float64:
+def _gaussian_sample() -> Float64:
     """Box-Muller transform for standard normal sample."""
     from std.math import log as mlog, cos as mcos, sqrt as msqrt
 
@@ -3776,7 +3784,7 @@ fn _gaussian_sample() -> Float64:
 
 
 @always_inline
-fn _tanh(x: Float64) -> Float64:
+def _tanh(x: Float64) -> Float64:
     from std.math import exp as mexp
 
     if x > 20.0:

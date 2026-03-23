@@ -13,7 +13,7 @@ from layout import Layout, LayoutTensor
 from std.math import abs
 
 
-fn test_heads_forward() raises:
+def test_heads_forward() raises:
     """Verify predict_all_heads matches individual head outputs."""
     print("Test 1: Heads forward consistency...")
 
@@ -28,16 +28,16 @@ fn test_heads_forward() raises:
     comptime BINS = 15
     comptime BATCH = 2
 
-    comptime RSSMType = RSSM[OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS]
+    comptime RSSMType = RSSM[
+        OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS
+    ]
     comptime FEAT = RSSMType.FEAT_DIM  # DETER + STOCH*CLASSES = 32+16 = 48
     comptime HEADS_OUT = RSSMType.HEADS_OUT_DIM  # OBS + BINS + 1 = 22
 
     var rssm = RSSMType()
 
     # Create feat input
-    var feat_arr = InlineArray[Scalar[dtype], BATCH * FEAT](
-        uninitialized=True
-    )
+    var feat_arr = InlineArray[Scalar[dtype], BATCH * FEAT](uninitialized=True)
     for i in range(BATCH * FEAT):
         feat_arr[i] = Scalar[dtype](Float64(i + 1) * 0.01)
     var feat_t = LayoutTensor[
@@ -45,17 +45,13 @@ fn test_heads_forward() raises:
     ](feat_arr.unsafe_ptr())
 
     # Forward via individual heads
-    var dec_out = InlineArray[Scalar[dtype], BATCH * OBS](
-        uninitialized=True
+    var dec_out = InlineArray[Scalar[dtype], BATCH * OBS](uninitialized=True)
+    var dec_t = LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin](
+        dec_out.unsafe_ptr()
     )
-    var dec_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
-    ](dec_out.unsafe_ptr())
     rssm.decode[BATCH](feat_t, dec_t)
 
-    var rew_out = InlineArray[Scalar[dtype], BATCH * BINS](
-        uninitialized=True
-    )
+    var rew_out = InlineArray[Scalar[dtype], BATCH * BINS](uninitialized=True)
     var rew_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, BINS), MutAnyOrigin
     ](rew_out.unsafe_ptr())
@@ -63,12 +59,10 @@ fn test_heads_forward() raises:
 
     # Note: predict_continue applies sigmoid, but HeadsGraph outputs raw logit
     # So we compare with ContModel forward directly
-    var cont_out = InlineArray[Scalar[dtype], BATCH * 1](
-        uninitialized=True
+    var cont_out = InlineArray[Scalar[dtype], BATCH * 1](uninitialized=True)
+    var cont_t = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](
+        cont_out.unsafe_ptr()
     )
-    var cont_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-    ](cont_out.unsafe_ptr())
     RSSMType.ContNet.forward[BATCH](
         feat_t, cont_t, rssm.continue_head.params_view()
     )
@@ -130,7 +124,7 @@ fn test_heads_forward() raises:
     print("  PASSED")
 
 
-fn test_heads_backward_produces_grad_feat() raises:
+def test_heads_backward_produces_grad_feat() raises:
     """Verify backward produces non-zero grad_feat from all 3 heads."""
     print("Test 2: Heads backward produces grad_feat...")
 
@@ -144,16 +138,16 @@ fn test_heads_backward_produces_grad_feat() raises:
     comptime BINS = 15
     comptime BATCH = 2
 
-    comptime RSSMType = RSSM[OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS]
+    comptime RSSMType = RSSM[
+        OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS
+    ]
     comptime FEAT = RSSMType.FEAT_DIM
     comptime HEADS_OUT = RSSMType.HEADS_OUT_DIM
 
     var rssm = RSSMType()
 
     # Feat input
-    var feat_arr = InlineArray[Scalar[dtype], BATCH * FEAT](
-        uninitialized=True
-    )
+    var feat_arr = InlineArray[Scalar[dtype], BATCH * FEAT](uninitialized=True)
     for i in range(BATCH * FEAT):
         feat_arr[i] = Scalar[dtype](Float64(i + 1) * 0.01)
     var feat_t = LayoutTensor[
@@ -201,9 +195,7 @@ fn test_heads_backward_produces_grad_feat() raises:
     # Zero grads before backward
     rssm.zero_all_grads()
 
-    var grad_feat = InlineArray[Scalar[dtype], BATCH * FEAT](
-        uninitialized=True
-    )
+    var grad_feat = InlineArray[Scalar[dtype], BATCH * FEAT](uninitialized=True)
     var grad_feat_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, FEAT), MutAnyOrigin
     ](grad_feat.unsafe_ptr())
@@ -261,14 +253,14 @@ fn test_heads_backward_produces_grad_feat() raises:
     print("  PASSED (all 3 heads have non-zero grads)")
 
 
-fn sqrt(x: Float64) -> Float64:
+def sqrt(x: Float64) -> Float64:
     """Simple sqrt via std.math."""
     from std.math import sqrt as _sqrt
 
     return _sqrt(x)
 
 
-fn test_heads_grad_check() raises:
+def test_heads_grad_check() raises:
     """Finite-difference gradient check for prediction heads."""
     print("Test 3: Heads gradient check...")
 
@@ -282,7 +274,9 @@ fn test_heads_grad_check() raises:
     comptime BINS = 5
     comptime BATCH = 1
 
-    comptime RSSMType = RSSM[OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS]
+    comptime RSSMType = RSSM[
+        OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS
+    ]
     comptime FEAT = RSSMType.FEAT_DIM  # 16 + 8 = 24
     comptime HEADS_OUT = RSSMType.HEADS_OUT_DIM  # 4 + 5 + 1 = 10
     comptime M = RSSMType.HeadsGraph
@@ -292,9 +286,7 @@ fn test_heads_grad_check() raises:
     # Use the heads graph directly for grad check
     # Assemble params
     comptime CP = RSSMType.HeadsCP
-    var combined = InlineArray[Scalar[dtype], CP.TOTAL_SIZE](
-        uninitialized=True
-    )
+    var combined = InlineArray[Scalar[dtype], CP.TOTAL_SIZE](uninitialized=True)
     CP.assemble(
         combined.unsafe_ptr(),
         rssm.decoder.params_view().ptr,
@@ -302,9 +294,7 @@ fn test_heads_grad_check() raises:
         rssm.continue_head.params_view().ptr,
     )
 
-    var feat_arr = InlineArray[Scalar[dtype], BATCH * FEAT](
-        uninitialized=True
-    )
+    var feat_arr = InlineArray[Scalar[dtype], BATCH * FEAT](uninitialized=True)
     for i in range(FEAT):
         feat_arr[i] = Scalar[dtype](Float64(i + 1) * 0.05)
     var feat_t = LayoutTensor[
@@ -346,9 +336,7 @@ fn test_heads_grad_check() raises:
     var grad_feat_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, FEAT), MutAnyOrigin
     ](grad_feat_arr.unsafe_ptr())
-    var grads_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](
-        uninitialized=True
-    )
+    var grads_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](uninitialized=True)
     for i in range(M.PARAM_SIZE):
         grads_arr[i] = Scalar[dtype](0.0)
     var grads_t = LayoutTensor[
@@ -403,7 +391,7 @@ fn test_heads_grad_check() raises:
     print("  PASSED")
 
 
-fn test_backward_feat_to_encoder() raises:
+def test_backward_feat_to_encoder() raises:
     """Verify backward_feat_to_encoder produces encoder + posterior grads."""
     print("Test 4: Backward feat → encoder...")
 
@@ -417,7 +405,9 @@ fn test_backward_feat_to_encoder() raises:
     comptime BINS = 15
     comptime BATCH = 2
 
-    comptime RSSMType = RSSM[OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS]
+    comptime RSSMType = RSSM[
+        OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS
+    ]
     comptime FEAT = RSSMType.FEAT_DIM
     comptime HEADS_OUT = RSSMType.HEADS_OUT_DIM
     comptime STOCH_FLAT = STOCH * CLASSES
@@ -425,14 +415,12 @@ fn test_backward_feat_to_encoder() raises:
     var rssm = RSSMType()
 
     # Create inputs: obs, deter, post_probs
-    var obs_arr = InlineArray[Scalar[dtype], BATCH * OBS](
-        uninitialized=True
-    )
+    var obs_arr = InlineArray[Scalar[dtype], BATCH * OBS](uninitialized=True)
     for i in range(BATCH * OBS):
         obs_arr[i] = Scalar[dtype](Float64(i + 1) * 0.1)
-    var obs_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
-    ](obs_arr.unsafe_ptr())
+    var obs_t = LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin](
+        obs_arr.unsafe_ptr()
+    )
 
     var deter_arr = InlineArray[Scalar[dtype], BATCH * DETER](
         uninitialized=True
@@ -486,9 +474,7 @@ fn test_backward_feat_to_encoder() raises:
     var prior_probs_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, STOCH_FLAT), MutAnyOrigin
     ](prior_probs.unsafe_ptr())
-    var feat = InlineArray[Scalar[dtype], BATCH * FEAT](
-        uninitialized=True
-    )
+    var feat = InlineArray[Scalar[dtype], BATCH * FEAT](uninitialized=True)
     var feat_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, FEAT), MutAnyOrigin
     ](feat.unsafe_ptr())
@@ -536,9 +522,7 @@ fn test_backward_feat_to_encoder() raises:
         dtype, Layout.row_major(BATCH, HEADS_OUT), MutAnyOrigin
     ](grad_out.unsafe_ptr())
 
-    var grad_feat = InlineArray[Scalar[dtype], BATCH * FEAT](
-        uninitialized=True
-    )
+    var grad_feat = InlineArray[Scalar[dtype], BATCH * FEAT](uninitialized=True)
     var grad_feat_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, FEAT), MutAnyOrigin
     ](grad_feat.unsafe_ptr())
@@ -595,7 +579,7 @@ fn test_backward_feat_to_encoder() raises:
     print("  PASSED (encoder + posterior have grads, grad_deter non-zero)")
 
 
-fn test_backward_kl_loss() raises:
+def test_backward_kl_loss() raises:
     """Verify backward_kl_loss produces prior + posterior + encoder grads."""
     print("Test 5: Backward KL loss...")
 
@@ -609,21 +593,21 @@ fn test_backward_kl_loss() raises:
     comptime BINS = 15
     comptime BATCH = 2
 
-    comptime RSSMType = RSSM[OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS]
+    comptime RSSMType = RSSM[
+        OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS
+    ]
     comptime FEAT = RSSMType.FEAT_DIM
     comptime STOCH_FLAT = STOCH * CLASSES
 
     var rssm = RSSMType()
 
     # Run observe_step to get realistic probs
-    var obs_arr = InlineArray[Scalar[dtype], BATCH * OBS](
-        uninitialized=True
-    )
+    var obs_arr = InlineArray[Scalar[dtype], BATCH * OBS](uninitialized=True)
     for i in range(BATCH * OBS):
         obs_arr[i] = Scalar[dtype](Float64(i + 1) * 0.1)
-    var obs_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
-    ](obs_arr.unsafe_ptr())
+    var obs_t = LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin](
+        obs_arr.unsafe_ptr()
+    )
 
     var prev_deter = InlineArray[Scalar[dtype], BATCH * DETER](
         uninitialized=True
@@ -676,9 +660,7 @@ fn test_backward_kl_loss() raises:
     var prior_probs_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, STOCH_FLAT), MutAnyOrigin
     ](prior_probs.unsafe_ptr())
-    var feat = InlineArray[Scalar[dtype], BATCH * FEAT](
-        uninitialized=True
-    )
+    var feat = InlineArray[Scalar[dtype], BATCH * FEAT](uninitialized=True)
     var feat_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, FEAT), MutAnyOrigin
     ](feat.unsafe_ptr())
@@ -778,45 +760,91 @@ fn test_backward_kl_loss() raises:
 
         # Test with a zero free_nats RSSM to confirm gradient flow works
         comptime RSSMType0 = RSSM[
-            OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS,
+            OBS,
+            ACT,
+            DETER,
+            HIDDEN,
+            STOCH,
+            CLASSES,
+            UNITS,
+            BINS,
             FREE_NATS=0.0,
         ]
         var rssm0 = RSSMType0()
 
         # Copy params from original rssm
         for i in range(RSSMType0.EncModel.PARAM_SIZE):
-            rssm0.encoder.params_view().ptr[i] = rssm.encoder.params_view().ptr[i]
+            rssm0.encoder.params_view().ptr[i] = rssm.encoder.params_view().ptr[
+                i
+            ]
         for i in range(RSSMType0.PostModel.PARAM_SIZE):
-            rssm0.posterior.params_view().ptr[i] = rssm.posterior.params_view().ptr[i]
+            rssm0.posterior.params_view().ptr[
+                i
+            ] = rssm.posterior.params_view().ptr[i]
         for i in range(RSSMType0.PriorModel.PARAM_SIZE):
             rssm0.prior.params_view().ptr[i] = rssm.prior.params_view().ptr[i]
         # Copy GRU params too
         for i in range(RSSMType0.DeterProj.PARAM_SIZE):
-            rssm0.deter_proj.params_view().ptr[i] = rssm.deter_proj.params_view().ptr[i]
+            rssm0.deter_proj.params_view().ptr[
+                i
+            ] = rssm.deter_proj.params_view().ptr[i]
         for i in range(RSSMType0.StochProj.PARAM_SIZE):
-            rssm0.stoch_proj.params_view().ptr[i] = rssm.stoch_proj.params_view().ptr[i]
+            rssm0.stoch_proj.params_view().ptr[
+                i
+            ] = rssm.stoch_proj.params_view().ptr[i]
         for i in range(RSSMType0.ActionProj.PARAM_SIZE):
-            rssm0.action_proj.params_view().ptr[i] = rssm.action_proj.params_view().ptr[i]
+            rssm0.action_proj.params_view().ptr[
+                i
+            ] = rssm.action_proj.params_view().ptr[i]
         for i in range(RSSMType0.GRUHiddenModel.PARAM_SIZE):
-            rssm0.gru_hidden.params_view().ptr[i] = rssm.gru_hidden.params_view().ptr[i]
+            rssm0.gru_hidden.params_view().ptr[
+                i
+            ] = rssm.gru_hidden.params_view().ptr[i]
         for i in range(RSSMType0.GRUGateModel.PARAM_SIZE):
-            rssm0.gru_gates.params_view().ptr[i] = rssm.gru_gates.params_view().ptr[i]
+            rssm0.gru_gates.params_view().ptr[
+                i
+            ] = rssm.gru_gates.params_view().ptr[i]
 
         # Re-run observe_step with new rssm
-        var new_deter0 = InlineArray[Scalar[dtype], BATCH * DETER](uninitialized=True)
-        var new_deter0_t = LayoutTensor[dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin](new_deter0.unsafe_ptr())
-        var new_stoch0 = InlineArray[Scalar[dtype], BATCH * STOCH_FLAT](uninitialized=True)
-        var new_stoch0_t = LayoutTensor[dtype, Layout.row_major(BATCH, STOCH_FLAT), MutAnyOrigin](new_stoch0.unsafe_ptr())
-        var post_probs0 = InlineArray[Scalar[dtype], BATCH * STOCH_FLAT](uninitialized=True)
-        var post_probs0_t = LayoutTensor[dtype, Layout.row_major(BATCH, STOCH_FLAT), MutAnyOrigin](post_probs0.unsafe_ptr())
-        var prior_probs0 = InlineArray[Scalar[dtype], BATCH * STOCH_FLAT](uninitialized=True)
-        var prior_probs0_t = LayoutTensor[dtype, Layout.row_major(BATCH, STOCH_FLAT), MutAnyOrigin](prior_probs0.unsafe_ptr())
+        var new_deter0 = InlineArray[Scalar[dtype], BATCH * DETER](
+            uninitialized=True
+        )
+        var new_deter0_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin
+        ](new_deter0.unsafe_ptr())
+        var new_stoch0 = InlineArray[Scalar[dtype], BATCH * STOCH_FLAT](
+            uninitialized=True
+        )
+        var new_stoch0_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, STOCH_FLAT), MutAnyOrigin
+        ](new_stoch0.unsafe_ptr())
+        var post_probs0 = InlineArray[Scalar[dtype], BATCH * STOCH_FLAT](
+            uninitialized=True
+        )
+        var post_probs0_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, STOCH_FLAT), MutAnyOrigin
+        ](post_probs0.unsafe_ptr())
+        var prior_probs0 = InlineArray[Scalar[dtype], BATCH * STOCH_FLAT](
+            uninitialized=True
+        )
+        var prior_probs0_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, STOCH_FLAT), MutAnyOrigin
+        ](prior_probs0.unsafe_ptr())
         var feat0 = InlineArray[Scalar[dtype], BATCH * FEAT](uninitialized=True)
-        var feat0_t = LayoutTensor[dtype, Layout.row_major(BATCH, FEAT), MutAnyOrigin](feat0.unsafe_ptr())
+        var feat0_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, FEAT), MutAnyOrigin
+        ](feat0.unsafe_ptr())
 
         rssm0.observe_step[BATCH](
-            obs_t, prev_deter_t, prev_stoch_t, prev_action_t,
-            new_deter0_t, new_stoch0_t, post_probs0_t, prior_probs0_t, feat0_t,
+            obs_t,
+            prev_deter_t,
+            prev_stoch_t,
+            prev_action_t,
+            new_deter0_t,
+            new_stoch0_t,
+            post_probs0_t,
+            prior_probs0_t,
+            feat0_t,
             training=False,
         )
 
@@ -824,11 +852,18 @@ fn test_backward_kl_loss() raises:
         var gd0 = InlineArray[Scalar[dtype], BATCH * DETER](uninitialized=True)
         for i in range(BATCH * DETER):
             gd0[i] = Scalar[dtype](0.0)
-        var gd0_t = LayoutTensor[dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin](gd0.unsafe_ptr())
+        var gd0_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, DETER), MutAnyOrigin
+        ](gd0.unsafe_ptr())
 
         rssm0.backward_kl_loss[BATCH](
-            obs_t, new_deter0_t, post_probs0_t, prior_probs0_t,
-            0.5, 0.1, gd0_t,
+            obs_t,
+            new_deter0_t,
+            post_probs0_t,
+            prior_probs0_t,
+            0.5,
+            0.1,
+            gd0_t,
         )
 
         var prior_gn0: Float64 = 0.0
@@ -849,9 +884,12 @@ fn test_backward_kl_loss() raises:
             gd0_norm += v * v
 
         print(
-            "  FREE_NATS=0 — prior:", sqrt(prior_gn0),
-            "posterior:", sqrt(post_gn0),
-            "grad_deter:", sqrt(gd0_norm),
+            "  FREE_NATS=0 — prior:",
+            sqrt(prior_gn0),
+            "posterior:",
+            sqrt(post_gn0),
+            "grad_deter:",
+            sqrt(gd0_norm),
         )
 
         if prior_gn0 < 1e-20:
@@ -862,7 +900,7 @@ fn test_backward_kl_loss() raises:
         print("  PASSED (KL gradient flow verified with FREE_NATS=0)")
 
 
-fn test_backward_gru_core() raises:
+def test_backward_gru_core() raises:
     """Verify backward_gru_core produces grads for all GRU sub-networks."""
     print("Test 6: Backward GRU core...")
 
@@ -876,7 +914,9 @@ fn test_backward_gru_core() raises:
     comptime BINS = 15
     comptime BATCH = 2
 
-    comptime RSSMType = RSSM[OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS]
+    comptime RSSMType = RSSM[
+        OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS
+    ]
     comptime STOCH_FLAT = STOCH * CLASSES
 
     var rssm = RSSMType()
@@ -938,8 +978,12 @@ fn test_backward_gru_core() raises:
     ](grad_prev_stoch.unsafe_ptr())
 
     rssm.backward_gru_core[BATCH](
-        grad_nd_t, prev_deter_t, prev_stoch_t, prev_action_t,
-        grad_pd_t, grad_ps_t,
+        grad_nd_t,
+        prev_deter_t,
+        prev_stoch_t,
+        prev_action_t,
+        grad_pd_t,
+        grad_ps_t,
     )
 
     # Check grad_prev_deter non-zero
@@ -955,8 +999,10 @@ fn test_backward_gru_core() raises:
         gps_norm += v * v
 
     print(
-        "  grad_prev_deter L2:", sqrt(gpd_norm),
-        "grad_prev_stoch L2:", sqrt(gps_norm),
+        "  grad_prev_deter L2:",
+        sqrt(gpd_norm),
+        "grad_prev_stoch L2:",
+        sqrt(gps_norm),
     )
 
     # Check all 5 GRU sub-network param grads
@@ -991,13 +1037,18 @@ fn test_backward_gru_core() raises:
         gg_norm += v * v
 
     print(
-        "  Param grads — deter_proj:", sqrt(dp_norm),
-        "stoch_proj:", sqrt(sp_norm),
-        "action_proj:", sqrt(ap_norm),
+        "  Param grads — deter_proj:",
+        sqrt(dp_norm),
+        "stoch_proj:",
+        sqrt(sp_norm),
+        "action_proj:",
+        sqrt(ap_norm),
     )
     print(
-        "              gru_hidden:", sqrt(gh_norm),
-        "gru_gates:", sqrt(gg_norm),
+        "              gru_hidden:",
+        sqrt(gh_norm),
+        "gru_gates:",
+        sqrt(gg_norm),
     )
 
     if gpd_norm < 1e-20:
@@ -1018,7 +1069,7 @@ fn test_backward_gru_core() raises:
     print("  PASSED (all 5 GRU networks + prev_deter/stoch have grads)")
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Dreamer V3 Autodiff Backward Tests")
     print("=" * 60)

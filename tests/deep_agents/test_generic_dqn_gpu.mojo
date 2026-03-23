@@ -36,7 +36,7 @@ comptime SYNC_EVERY = 10_000
 comptime TARGET_UPDATE_FREQ = 50
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("Generic DQN Agent GPU Test on CartPole")
@@ -44,16 +44,26 @@ fn main() raises:
     print()
 
     with DeviceContext() as ctx:
-
         # =================================================================
         # Test 1: Standard DQN (GPU)
         # =================================================================
 
-        print("1. GenericDQNAgent[DQNConfig] GPU (" + String(NUM_STEPS) + " steps)...")
+        print(
+            "1. GenericDQNAgent[DQNConfig] GPU ("
+            + String(NUM_STEPS)
+            + " steps)..."
+        )
 
         seed(42)
         var dqn = GenericDQNAgent[
-            DQNConfig[OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, HIDDEN_DIM2, BUFFER_CAPACITY, BATCH_SIZE],
+            DQNConfig[
+                OBS_DIM,
+                NUM_ACTIONS,
+                HIDDEN_DIM,
+                HIDDEN_DIM2,
+                BUFFER_CAPACITY,
+                BATCH_SIZE,
+            ],
             N_ENVS,
         ](
             gamma=0.99,
@@ -75,14 +85,15 @@ fn main() raises:
         var elapsed = Float64(t1 - t0) / 1e9
 
         print(
-            "   steps: " + String(dqn.train_step_count)
-            + "  episodes: " + String(len(m1.episodes))
-            + "  time: " + String(elapsed)[:5] + "s"
+            "   steps: "
+            + String(dqn.train_step_count)
+            + "  episodes: "
+            + String(len(m1.episodes))
+            + "  time: "
+            + String(elapsed)[:5]
+            + "s"
         )
-        print(
-            "   last-20 avg reward: "
-            + String(m1.mean_reward_last_n(20))[:7]
-        )
+        print("   last-20 avg reward: " + String(m1.mean_reward_last_n(20))[:7])
 
         if dqn.train_step_count > 0:
             print("   OK: Standard DQN GPU trained")
@@ -94,11 +105,22 @@ fn main() raises:
         # =================================================================
 
         print()
-        print("2. GenericDQNAgent[DoubleDQNConfig] GPU (" + String(NUM_STEPS) + " steps)...")
+        print(
+            "2. GenericDQNAgent[DoubleDQNConfig] GPU ("
+            + String(NUM_STEPS)
+            + " steps)..."
+        )
 
         seed(42)
         var ddqn = GenericDQNAgent[
-            DoubleDQNConfig[OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, HIDDEN_DIM2, BUFFER_CAPACITY, BATCH_SIZE],
+            DoubleDQNConfig[
+                OBS_DIM,
+                NUM_ACTIONS,
+                HIDDEN_DIM,
+                HIDDEN_DIM2,
+                BUFFER_CAPACITY,
+                BATCH_SIZE,
+            ],
             N_ENVS,
         ](
             gamma=0.99,
@@ -120,14 +142,15 @@ fn main() raises:
         elapsed = Float64(t1 - t0) / 1e9
 
         print(
-            "   steps: " + String(ddqn.train_step_count)
-            + "  episodes: " + String(len(m2.episodes))
-            + "  time: " + String(elapsed)[:5] + "s"
+            "   steps: "
+            + String(ddqn.train_step_count)
+            + "  episodes: "
+            + String(len(m2.episodes))
+            + "  time: "
+            + String(elapsed)[:5]
+            + "s"
         )
-        print(
-            "   last-20 avg reward: "
-            + String(m2.mean_reward_last_n(20))[:7]
-        )
+        print("   last-20 avg reward: " + String(m2.mean_reward_last_n(20))[:7])
 
         if ddqn.train_step_count > 0:
             print("   OK: Double DQN GPU trained")
@@ -139,11 +162,22 @@ fn main() raises:
         # =================================================================
 
         print()
-        print("3. GenericDQNAgent[DuelingDQNConfig] GPU (" + String(NUM_STEPS) + " steps)...")
+        print(
+            "3. GenericDQNAgent[DuelingDQNConfig] GPU ("
+            + String(NUM_STEPS)
+            + " steps)..."
+        )
 
         seed(42)
         var dueling = GenericDQNAgent[
-            DuelingDQNConfig[OBS_DIM, NUM_ACTIONS, HIDDEN_DIM, HIDDEN_DIM2, BUFFER_CAPACITY, BATCH_SIZE],
+            DuelingDQNConfig[
+                OBS_DIM,
+                NUM_ACTIONS,
+                HIDDEN_DIM,
+                HIDDEN_DIM2,
+                BUFFER_CAPACITY,
+                BATCH_SIZE,
+            ],
             N_ENVS,
         ](
             gamma=0.99,
@@ -165,14 +199,15 @@ fn main() raises:
         elapsed = Float64(t1 - t0) / 1e9
 
         print(
-            "   steps: " + String(dueling.train_step_count)
-            + "  episodes: " + String(len(m3.episodes))
-            + "  time: " + String(elapsed)[:5] + "s"
+            "   steps: "
+            + String(dueling.train_step_count)
+            + "  episodes: "
+            + String(len(m3.episodes))
+            + "  time: "
+            + String(elapsed)[:5]
+            + "s"
         )
-        print(
-            "   last-20 avg reward: "
-            + String(m3.mean_reward_last_n(20))[:7]
-        )
+        print("   last-20 avg reward: " + String(m3.mean_reward_last_n(20))[:7])
 
         if dueling.train_step_count > 0:
             print("   OK: Dueling DQN GPU trained")
@@ -187,15 +222,18 @@ fn main() raises:
         print("=" * 70)
         print("Summary:")
         print(
-            "  DQN      : " + String(m1.mean_reward_last_n(20))[:7]
+            "  DQN      : "
+            + String(m1.mean_reward_last_n(20))[:7]
             + " avg (last 20)"
         )
         print(
-            "  Double   : " + String(m2.mean_reward_last_n(20))[:7]
+            "  Double   : "
+            + String(m2.mean_reward_last_n(20))[:7]
             + " avg (last 20)"
         )
         print(
-            "  Dueling  : " + String(m3.mean_reward_last_n(20))[:7]
+            "  Dueling  : "
+            + String(m3.mean_reward_last_n(20))[:7]
             + " avg (last 20)"
         )
         print("=" * 70)

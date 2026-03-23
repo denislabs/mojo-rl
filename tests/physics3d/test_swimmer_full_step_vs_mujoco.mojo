@@ -58,7 +58,7 @@ comptime QVEL_REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -268,7 +268,7 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_zero_state_zero_action() raises:
+def test_zero_state_zero_action() raises:
     """All-zero qpos/qvel with no actions — pure gravity effect.
     The swimmer is planar (z=0), gravity acts but joints are zero."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -277,7 +277,7 @@ fn test_zero_state_zero_action() raises:
     compare_step("Zero state, zero actions", qpos, qvel, actions)
 
 
-fn test_bent_joints_no_action() raises:
+def test_bent_joints_no_action() raises:
     """Non-zero joint angles, zero velocity, no actions.
     Tests dynamics starting from a curved configuration."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -288,7 +288,7 @@ fn test_bent_joints_no_action() raises:
     compare_step("Bent joints, no action", qpos, qvel, actions)
 
 
-fn test_with_motor_actions() raises:
+def test_with_motor_actions() raises:
     """Straight swimmer with both motors at max action.
     Tests actuator gear (150) application through RK4 stages."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -299,7 +299,7 @@ fn test_with_motor_actions() raises:
     compare_step("Max motor actions (1.0, -1.0)", qpos, qvel, actions)
 
 
-fn test_already_moving_with_actions() raises:
+def test_already_moving_with_actions() raises:
     """Swimmer already undulating (nonzero joint velocities) + actions.
     Tests velocity-dependent forces (Coriolis/centripetal) in the swimmer chain.
     """
@@ -319,7 +319,7 @@ fn test_already_moving_with_actions() raises:
     compare_step("Moving swimmer + actions", qpos, qvel, actions)
 
 
-fn test_10_steps_undulating() raises:
+def test_10_steps_undulating() raises:
     """10 steps of undulation — tests multi-step drift in the planar body chain.
     """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -332,5 +332,5 @@ fn test_10_steps_undulating() raises:
     )
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

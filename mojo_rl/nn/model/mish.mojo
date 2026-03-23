@@ -27,17 +27,19 @@ struct Mish[dim: Int](Model):
     comptime CACHE_SIZE: Int = 2 * Self.dim  # [tanh_sp | x] per sample
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -45,7 +47,7 @@ struct Mish[dim: Int](Model):
         pass
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -84,7 +86,7 @@ struct Mish[dim: Int](Model):
                 output[batch, i] = Scalar[dtype](y)
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -112,7 +114,7 @@ struct Mish[dim: Int](Model):
                 output[batch, i] = Scalar[dtype](x_val * tanh_sp)
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -154,7 +156,7 @@ struct Mish[dim: Int](Model):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl[
+    def forward_kernel_impl[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -205,7 +207,7 @@ struct Mish[dim: Int](Model):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl_no_cache[
+    def forward_kernel_impl_no_cache[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -246,7 +248,7 @@ struct Mish[dim: Int](Model):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int,
     ](
         grad_input: LayoutTensor[
@@ -282,7 +284,7 @@ struct Mish[dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -314,7 +316,7 @@ struct Mish[dim: Int](Model):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -336,7 +338,7 @@ struct Mish[dim: Int](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -362,7 +364,7 @@ struct Mish[dim: Int](Model):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -380,7 +382,7 @@ struct Mish[dim: Int](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -400,7 +402,7 @@ struct Mish[dim: Int](Model):
         Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -435,7 +437,7 @@ struct Mish[dim: Int](Model):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],

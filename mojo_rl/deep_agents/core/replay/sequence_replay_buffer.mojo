@@ -56,7 +56,7 @@ struct SequenceReplayBuffer[
     var size: Int  # current number of stored transitions
     var current_episode: Int  # incremented on each done
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor — transfers ownership of all heap storage."""
         self.obs = take.obs^
         self.actions = take.actions^
@@ -67,7 +67,7 @@ struct SequenceReplayBuffer[
         self.size = take.size
         self.current_episode = take.current_episode
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Deep copy — duplicates all underlying storage."""
         self.obs = copy.obs.copy()
         self.actions = copy.actions.copy()
@@ -78,7 +78,7 @@ struct SequenceReplayBuffer[
         self.size = copy.size
         self.current_episode = copy.current_episode
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize empty sequence replay buffer."""
         self.obs = List[Scalar[Self.dtype]](
             capacity=Self.capacity * Self.OBS_DIM
@@ -104,7 +104,7 @@ struct SequenceReplayBuffer[
         self.size = 0
         self.current_episode = 0
 
-    fn add(
+    def add(
         mut self,
         obs: InlineArray[Scalar[Self.dtype], Self.OBS_DIM],
         action: InlineArray[Scalar[Self.dtype], Self.ACTION_DIM],
@@ -143,7 +143,7 @@ struct SequenceReplayBuffer[
         if done:
             self.current_episode += 1
 
-    fn _is_valid_sequence_start(self, start: Int, horizon: Int) -> Bool:
+    def _is_valid_sequence_start(self, start: Int, horizon: Int) -> Bool:
         """Check whether a sequence of length horizon starting at 'start' is valid.
 
         A sequence is valid if:
@@ -169,15 +169,15 @@ struct SequenceReplayBuffer[
                 return False
         return True
 
-    fn is_ready[min_size: Int](self) -> Bool:
+    def is_ready[min_size: Int](self) -> Bool:
         """Check if the buffer has enough samples."""
         return self.size >= min_size
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return the current number of stored transitions."""
         return self.size
 
-    fn sample_sequences[
+    def sample_sequences[
         BATCH: Int, H: Int
     ](
         self,

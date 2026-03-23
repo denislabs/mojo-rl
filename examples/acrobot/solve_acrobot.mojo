@@ -28,7 +28,7 @@ from mojo_rl.agents import QLearningAgent, SARSALambdaAgent
 from mojo_rl.render import Renderer2D
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("    Solving Acrobot - Tabular RL with Discretization")
     print("=" * 60)

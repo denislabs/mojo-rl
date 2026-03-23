@@ -38,7 +38,7 @@ comptime MAX_STEPS = 1000
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Agent GPU Evaluation (on GPU environment)")

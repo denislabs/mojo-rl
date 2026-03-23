@@ -9,7 +9,7 @@ comptime STATE_SIZE = BreakoutEnv[DType.float64].STATE_SIZE
 comptime OBS_DIM = BreakoutEnv[DType.float64].OBS_DIM
 
 
-fn main() raises:
+def main() raises:
     print("=== Testing BreakoutEnv ===")
     print("STATE_SIZE:", STATE_SIZE, ", OBS_DIM:", OBS_DIM)
 

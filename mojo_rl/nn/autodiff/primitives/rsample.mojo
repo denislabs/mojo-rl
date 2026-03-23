@@ -35,7 +35,7 @@ from std.gpu.host import DeviceContext
 
 # Box-Muller transform for Gaussian noise (CPU only)
 @always_inline
-fn _gaussian_noise() -> Float64:
+def _gaussian_noise() -> Float64:
     var u1 = random_float64()
     var u2 = random_float64()
     if u1 < 1e-10:
@@ -72,17 +72,15 @@ struct RSampleOp[
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
     # Derivative of the affine rescaling: d(log_std)/d(tanh_val)
-    comptime AFFINE_DERIV: Float64 = 0.5 * (
-        Self.log_std_max - Self.log_std_min
-    )
+    comptime AFFINE_DERIV: Float64 = 0.5 * (Self.log_std_max - Self.log_std_min)
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -90,7 +88,7 @@ struct RSampleOp[
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -117,14 +115,10 @@ struct RSampleOp[
 
             for j in range(A):
                 var mean = Float64(rebind[Scalar[dtype]](input[b, j]))
-                var tanh_raw = Float64(
-                    rebind[Scalar[dtype]](input[b, A + j])
-                )
+                var tanh_raw = Float64(rebind[Scalar[dtype]](input[b, A + j]))
 
                 # Affine rescaling: log_std in [log_std_min, log_std_max]
-                var ls = Self.log_std_min + Self.AFFINE_DERIV * (
-                    tanh_raw + 1.0
-                )
+                var ls = Self.log_std_min + Self.AFFINE_DERIV * (tanh_raw + 1.0)
 
                 # Sample noise
                 var noise = _gaussian_noise()
@@ -161,7 +155,7 @@ struct RSampleOp[
     # =========================================================================
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -232,7 +226,7 @@ struct RSampleOp[
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -265,9 +259,7 @@ struct RSampleOp[
 
             # Simple hash-based PRNG for noise (Box-Muller)
             # Real implementation would use a proper GPU RNG
-            var seed_idx = rng_seed + Scalar[DType.uint32](
-                UInt32(b * A + j)
-            )
+            var seed_idx = rng_seed + Scalar[DType.uint32](UInt32(b * A + j))
             var hash1 = seed_idx * Scalar[DType.uint32](
                 2654435761
             )  # Knuth multiplicative hash
@@ -291,9 +283,7 @@ struct RSampleOp[
 
             # Log probability
             var log_gaussian = Scalar[dtype](-0.5) * (
-                Scalar[dtype](LOG_2PI)
-                + Scalar[dtype](2.0) * ls
-                + noise * noise
+                Scalar[dtype](LOG_2PI) + Scalar[dtype](2.0) * ls + noise * noise
             )
             var squash_corr = log(
                 Scalar[dtype](1.0) - action * action + Scalar[dtype](EPS)
@@ -308,7 +298,7 @@ struct RSampleOp[
         output[b, A] = total_log_prob
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -335,7 +325,7 @@ struct RSampleOp[
         var rng_seed = Scalar[DType.uint32](42)
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -364,7 +354,7 @@ struct RSampleOp[
 
     @always_inline
     @staticmethod
-    fn vjp_kernel_impl[
+    def vjp_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -399,8 +389,11 @@ struct RSampleOp[
         var dtanh_dz = one - a * a
 
         # d(log_prob)/d(z)
-        var dlogprob_dz = Scalar[dtype](2.0) * a * dtanh_dz / (
-            one - a * a + Scalar[dtype](EPS)
+        var dlogprob_dz = (
+            Scalar[dtype](2.0)
+            * a
+            * dtanh_dz
+            / (one - a * a + Scalar[dtype](EPS))
         )
 
         var grad_z = ga * dtanh_dz + glp * dlogprob_dz
@@ -413,7 +406,7 @@ struct RSampleOp[
         grad_input[b, A + j] = grad_ls * Scalar[dtype](Self.AFFINE_DERIV)
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -444,7 +437,7 @@ struct RSampleOp[
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             gi: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],

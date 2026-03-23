@@ -36,7 +36,7 @@ comptime BENCHMARK_ITERS = 100
 # =============================================================================
 
 
-fn matmul_kernel_tile8[
+def matmul_kernel_tile8[
     M: Int, K: Int, N: Int
 ](
     A: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
@@ -99,7 +99,7 @@ fn matmul_kernel_tile8[
     C[row, col] = acc
 
 
-fn matmul_kernel_tile16[
+def matmul_kernel_tile16[
     M: Int, K: Int, N: Int
 ](
     A: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
@@ -157,7 +157,7 @@ fn matmul_kernel_tile16[
     C[row, col] = acc
 
 
-fn matmul_kernel_tile32[
+def matmul_kernel_tile32[
     M: Int, K: Int, N: Int
 ](
     A: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
@@ -220,7 +220,7 @@ fn matmul_kernel_tile32[
 # =============================================================================
 
 
-fn relu_kernel[
+def relu_kernel[
     SIZE: Int, TPB: Int
 ](
     x: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -234,7 +234,7 @@ fn relu_kernel[
     y[idx] = val if val > 0 else Scalar[dtype](0)
 
 
-fn add_kernel[
+def add_kernel[
     SIZE: Int, TPB: Int
 ](
     a: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -253,7 +253,7 @@ fn add_kernel[
 # =============================================================================
 
 
-fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
+def benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
     """Benchmark matmul with specific TILE size."""
     comptime M = BATCH
     comptime K = IN_DIM
@@ -294,7 +294,7 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
     comptime if TILE == 8:
 
         @always_inline
-        fn kernel8(
+        def kernel8(
             a: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
             b: LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin],
             c: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
@@ -328,7 +328,7 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
     elif TILE == 16:
 
         @always_inline
-        fn kernel16(
+        def kernel16(
             a: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
             b: LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin],
             c: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
@@ -362,7 +362,7 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
     else:  # TILE == 32
 
         @always_inline
-        fn kernel32(
+        def kernel32(
             a: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
             b: LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin],
             c: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
@@ -394,7 +394,7 @@ fn benchmark_matmul_tile[TILE: Int](ctx: DeviceContext) raises -> Float64:
         return Float64(end - start) / 1_000_000.0 / BENCHMARK_ITERS
 
 
-fn benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
+def benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
     """Benchmark elementwise ops with specific TPB."""
     comptime SIZE = BATCH * HIDDEN_DIM
     comptime BLOCKS = (SIZE + TPB - 1) // TPB
@@ -427,14 +427,14 @@ fn benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
     )
 
     @always_inline
-    fn relu_wrapper(
+    def relu_wrapper(
         x: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
         y: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     ):
         relu_kernel[SIZE, TPB](x, y)
 
     @always_inline
-    fn add_wrapper(
+    def add_wrapper(
         a: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
         b: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
         c: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -481,7 +481,7 @@ fn benchmark_elementwise_tpb[TPB: Int](ctx: DeviceContext) raises -> Float64:
     return Float64(end - start) / 1_000_000.0 / BENCHMARK_ITERS
 
 
-fn benchmark_combined[
+def benchmark_combined[
     TILE: Int, TPB: Int
 ](ctx: DeviceContext) raises -> Float64:
     """Benchmark combined matmul + elementwise pipeline."""
@@ -530,7 +530,7 @@ fn benchmark_combined[
     comptime ELEM_BLOCKS = (SIZE + TPB - 1) // TPB
 
     @always_inline
-    fn matmul_wrapper(
+    def matmul_wrapper(
         a: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
         b: LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin],
         c: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
@@ -543,7 +543,7 @@ fn benchmark_combined[
             matmul_kernel_tile32[M, K, N](a, b, c)
 
     @always_inline
-    fn relu_wrapper(
+    def relu_wrapper(
         x: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
         y: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     ):

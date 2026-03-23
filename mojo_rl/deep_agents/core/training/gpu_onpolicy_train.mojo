@@ -30,21 +30,21 @@ Usage:
         var rollout_obs: DeviceBuffer[dtype]
         var rollout_step: Int
         ...
-        fn gpu_store_pre_step[N](mut self, ctx, obs, actions, log_probs, values): ...
-        fn gpu_store_post_step[N](mut self, ctx, rewards, dones): ...
-        fn gpu_rollout_is_full(self) -> Bool: ...
+        def gpu_store_pre_step[N](mut self, ctx, obs, actions, log_probs, values): ...
+        def gpu_store_post_step[N](mut self, ctx, rewards, dones): ...
+        def gpu_rollout_is_full(self) -> Bool: ...
 
     # 2. Make your agent implement GPUOnPolicyDiscreteAgent
     struct MyAgent[..., max_n_envs: Int = 1024](OnPolicyDiscreteAgent & GPUOnPolicyDiscreteAgent):
         comptime MAX_N_ENVS: Int = max_n_envs
         comptime GPUStateType = MyGPUState[...]
         ...
-        fn make_gpu_state(self, ctx) raises -> MyGPUState[...]: ...
-        fn upload_to_gpu(self, mut gpu_state: MyGPUState[...], ctx) raises: ...
-        fn download_from_gpu(mut self, gpu_state: MyGPUState[...], ctx) raises: ...
-        fn select_actions_with_meta_gpu[N](mut self, ctx, mut gpu_state, obs, actions, log_probs, values) raises: ...
-        fn compute_advantages_gpu(mut self, ctx, mut gpu_state) raises: ...
-        fn update_epochs_gpu(mut self, ctx, mut gpu_state) raises: ...
+        def make_gpu_state(self, ctx) raises -> MyGPUState[...]: ...
+        def upload_to_gpu(self, mut gpu_state: MyGPUState[...], ctx) raises: ...
+        def download_from_gpu(mut self, gpu_state: MyGPUState[...], ctx) raises: ...
+        def select_actions_with_meta_gpu[N](mut self, ctx, mut gpu_state, obs, actions, log_probs, values) raises: ...
+        def compute_advantages_gpu(mut self, ctx, mut gpu_state) raises: ...
+        def update_epochs_gpu(mut self, ctx, mut gpu_state) raises: ...
 
     # 3. Train
     var metrics = run_onpolicy_discrete_train_gpu[MyEnv, MyAgent](
@@ -98,11 +98,11 @@ trait GPUOnPolicyState(ImplicitlyDestructible):
     Algorithm-specific logic (advantages, epochs) lives on the agent.
     """
 
-    fn gpu_rollout_reset(mut self) -> None:
+    def gpu_rollout_reset(mut self) -> None:
         """Reset the rollout write pointer to 0 for the next update cycle."""
         ...
 
-    fn gpu_store_pre_step[
+    def gpu_store_pre_step[
         N_ENVS: Int
     ](
         mut self,
@@ -127,7 +127,7 @@ trait GPUOnPolicyState(ImplicitlyDestructible):
         """
         ...
 
-    fn gpu_store_post_step[
+    def gpu_store_post_step[
         N_ENVS: Int
     ](
         mut self,
@@ -147,7 +147,7 @@ trait GPUOnPolicyState(ImplicitlyDestructible):
         """
         ...
 
-    fn gpu_rollout_is_full(self) -> Bool:
+    def gpu_rollout_is_full(self) -> Bool:
         """Return True when rollout_len steps have been stored.
 
         Typically: rollout_step >= ROLLOUT_LEN.
@@ -191,7 +191,7 @@ trait GPUOnPolicyDiscreteAgent:
     comptime GPUStateType: GPUOnPolicyState
     """Concrete GPU state type holding all device buffers for this algorithm."""
 
-    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+    def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         """Allocate all GPU buffers for this agent (networks, rollout, scratch).
 
         Called once at the start of GPU training. Does NOT upload CPU weights —
@@ -205,7 +205,7 @@ trait GPUOnPolicyDiscreteAgent:
         """
         ...
 
-    fn upload_to_gpu(
+    def upload_to_gpu(
         self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -218,7 +218,7 @@ trait GPUOnPolicyDiscreteAgent:
         """
         ...
 
-    fn download_from_gpu(
+    def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -231,7 +231,7 @@ trait GPUOnPolicyDiscreteAgent:
         """
         ...
 
-    fn select_actions_with_meta_gpu[
+    def select_actions_with_meta_gpu[
         N_ENVS: Int
     ](
         mut self,
@@ -260,7 +260,7 @@ trait GPUOnPolicyDiscreteAgent:
         """
         ...
 
-    fn compute_advantages_gpu(
+    def compute_advantages_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -278,7 +278,7 @@ trait GPUOnPolicyDiscreteAgent:
         """
         ...
 
-    fn update_epochs_gpu(
+    def update_epochs_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -325,11 +325,11 @@ trait GPUOnPolicyContinuousAgent:
     comptime GPUStateType: GPUOnPolicyState
     """Concrete GPU state type."""
 
-    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+    def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         """Allocate all GPU buffers for this agent."""
         ...
 
-    fn upload_to_gpu(
+    def upload_to_gpu(
         self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -337,7 +337,7 @@ trait GPUOnPolicyContinuousAgent:
         """Upload CPU network weights to GPU state."""
         ...
 
-    fn download_from_gpu(
+    def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -345,7 +345,7 @@ trait GPUOnPolicyContinuousAgent:
         """Download trained GPU weights back to CPU network states."""
         ...
 
-    fn select_actions_with_meta_gpu[
+    def select_actions_with_meta_gpu[
         N_ENVS: Int
     ](
         mut self,
@@ -364,7 +364,7 @@ trait GPUOnPolicyContinuousAgent:
         """
         ...
 
-    fn compute_advantages_gpu(
+    def compute_advantages_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -373,7 +373,7 @@ trait GPUOnPolicyContinuousAgent:
         """Compute GAE advantages from the collected rollout."""
         ...
 
-    fn update_epochs_gpu(
+    def update_epochs_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -388,7 +388,7 @@ trait GPUOnPolicyContinuousAgent:
 # =============================================================================
 
 
-fn run_onpolicy_discrete_train_gpu[
+def run_onpolicy_discrete_train_gpu[
     E: GPUDiscreteEnv,
     A: GPUOnPolicyDiscreteAgent & Checkpointable,
     PROFILE: Int = 0,
@@ -839,7 +839,7 @@ fn run_onpolicy_discrete_train_gpu[
 # =============================================================================
 
 
-fn run_onpolicy_continuous_train_gpu[
+def run_onpolicy_continuous_train_gpu[
     E: GPUContinuousEnv,
     A: GPUOnPolicyContinuousAgent & Checkpointable,
     CurriculumType: CurriculumScheduler = NoCurriculumScheduler,

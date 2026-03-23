@@ -26,11 +26,11 @@ comptime DRIFT_CHECK_INTERVAL: Int = 25
 comptime gpu_dtype = DType.float32
 
 
-fn abs_val(x: Float32) -> Float32:
+def abs_val(x: Float32) -> Float32:
     return x if x >= 0 else -x
 
 
-fn run_gpu_single_step(
+def run_gpu_single_step(
     ctx: DeviceContext,
     initial_state: List[Scalar[DType.float32]],
     action: Int,
@@ -96,7 +96,7 @@ fn run_gpu_single_step(
     return result^
 
 
-fn compare_states(
+def compare_states(
     cpu_state: List[Scalar[DType.float32]],
     gpu_state: List[Scalar[DType.float32]],
     step_num: Int,
@@ -168,7 +168,7 @@ fn compare_states(
     return (all_passed, msg)
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("CPU vs GPU V2 LunarLander Physics Comparison Test")
     print("=" * 60)

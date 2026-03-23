@@ -144,7 +144,7 @@ struct GenericCPUState[
     # Workspace storage + view
     var ws_data: List[Scalar[dtype]]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.actor = NetworkPair[Self.ActorModel, Self.ActorOpt]()
         self.actor.initialize[Xavier[]]()
         self.critics = CriticGroup[
@@ -157,7 +157,7 @@ struct GenericCPUState[
         self.ws_data = Self.WS.alloc_cpu()
 
     # OffPolicyState trait
-    fn store[
+    def store[
         d: DType
     ](
         mut self,
@@ -185,7 +185,7 @@ struct GenericCPUState[
             obs_arr, act_arr, Scalar[Self.BUFFER_DTYPE](reward), next_arr, done
         )
 
-    fn is_ready(self) -> Bool:
+    def is_ready(self) -> Bool:
         return self.buffer.is_ready[Self.batch_size]()
 
 
@@ -195,7 +195,7 @@ struct GenericCPUState[
 
 
 @always_inline
-fn _concat_obs_act[
+def _concat_obs_act[
     BATCH: Int, OBS: Int, ACTIONS: Int, CRITIC_IN: Int
 ](
     dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -253,7 +253,9 @@ struct GenericGPUState[
 
     # GPU networks
     var actor: GPUNetworkPair[Self.ActorModel, Self.ActorOpt]
-    var critics: GPUCriticGroup[Self.CriticModel, Self.CriticOpt, Self.num_critics]
+    var critics: GPUCriticGroup[
+        Self.CriticModel, Self.CriticOpt, Self.num_critics
+    ]
 
     # GPU replay buffer
     var buffer: GPUReplayBuffer[
@@ -311,16 +313,16 @@ struct GenericGPUState[
     var grad_clip_ps: DeviceBuffer[dtype]
 
     # Diagnostic host buffers for GPU→CPU readback (pre-allocated)
-    var diag_q_host: HostBuffer[dtype]    # [batch_size]
+    var diag_q_host: HostBuffer[dtype]  # [batch_size]
     var diag_tgt_host: HostBuffer[dtype]  # [batch_size]
     var diag_rew_host: HostBuffer[dtype]  # [batch_size]
-    var diag_done_host: HostBuffer[dtype] # [batch_size]
+    var diag_done_host: HostBuffer[dtype]  # [batch_size]
     var diag_act_host: HostBuffer[dtype]  # [batch_size * action_dim]
-    var diag_nq_host: HostBuffer[dtype]   # [batch_size]
-    var diag_ag_host: HostBuffer[dtype]   # [ActorModel.PARAM_SIZE]
-    var diag_lp_host: HostBuffer[dtype]   # [batch_size]
+    var diag_nq_host: HostBuffer[dtype]  # [batch_size]
+    var diag_ag_host: HostBuffer[dtype]  # [ActorModel.PARAM_SIZE]
+    var diag_lp_host: HostBuffer[dtype]  # [batch_size]
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         self.actor = GPUNetworkPair[Self.ActorModel, Self.ActorOpt](ctx)
         self.critics = GPUCriticGroup[
             Self.CriticModel, Self.CriticOpt, Self.num_critics
@@ -417,7 +419,7 @@ struct GenericGPUState[
     # LayoutTensor views via workspace (backward-compatible API)
     # =========================================================================
 
-    fn obs_view[
+    def obs_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.OBS), MutAnyOrigin
@@ -426,7 +428,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.OBS), MutAnyOrigin
         ](self.s_obs.unsafe_ptr())
 
-    fn nobs_view[
+    def nobs_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.OBS), MutAnyOrigin
@@ -435,7 +437,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.OBS), MutAnyOrigin
         ](self.s_nobs.unsafe_ptr())
 
-    fn act_view[
+    def act_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
@@ -444,21 +446,21 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
         ](self.s_act.unsafe_ptr())
 
-    fn rew_view[
+    def rew_view[
         BS: Int
     ](self) -> LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin]:
         return LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin](
             self.s_rew.unsafe_ptr()
         )
 
-    fn done_view[
+    def done_view[
         BS: Int
     ](self) -> LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin]:
         return LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin](
             self.s_done.unsafe_ptr()
         )
 
-    fn next_act_view[
+    def next_act_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
@@ -467,14 +469,14 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
         ](self.next_act.unsafe_ptr())
 
-    fn next_lp_view[
+    def next_lp_view[
         BS: Int
     ](self) -> LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin]:
         return LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin](
             self.next_lp.unsafe_ptr()
         )
 
-    fn next_ci_view[
+    def next_ci_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
@@ -483,7 +485,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
         ](self.next_ci.unsafe_ptr())
 
-    fn next_q_view[
+    def next_q_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
@@ -492,7 +494,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
         ](self.next_q.unsafe_ptr())
 
-    fn nq2_view[
+    def nq2_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
@@ -501,14 +503,14 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
         ](self.nq2.unsafe_ptr())
 
-    fn targets_view[
+    def targets_view[
         BS: Int
     ](self) -> LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin]:
         return LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin](
             self.targets.unsafe_ptr()
         )
 
-    fn ci_view[
+    def ci_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
@@ -517,7 +519,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
         ](self.ci.unsafe_ptr())
 
-    fn q_out_view[
+    def q_out_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
@@ -526,7 +528,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
         ](self.q_out.unsafe_ptr())
 
-    fn q_cache_view[
+    def q_cache_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_CS), MutAnyOrigin
@@ -535,7 +537,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.CRITIC_CS), MutAnyOrigin
         ](self.q_cache.unsafe_ptr())
 
-    fn q_grad_view[
+    def q_grad_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
@@ -544,7 +546,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
         ](self.q_grad.unsafe_ptr())
 
-    fn d_ci_view[
+    def d_ci_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
@@ -553,7 +555,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
         ](self.d_ci.unsafe_ptr())
 
-    fn q2_out_view[
+    def q2_out_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
@@ -562,7 +564,7 @@ struct GenericGPUState[
             dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
         ](self.q2_out.unsafe_ptr())
 
-    fn q2_cache_view[
+    def q2_cache_view[
         BS: Int
     ](self) -> LayoutTensor[
         dtype, Layout.row_major(BS, Self.CRITIC_CS), MutAnyOrigin
@@ -575,7 +577,7 @@ struct GenericGPUState[
     # GPUOffPolicyState trait
     # =========================================================================
 
-    fn gpu_store[
+    def gpu_store[
         N_ENVS: Int
     ](
         mut self,
@@ -590,7 +592,7 @@ struct GenericGPUState[
             ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
         )
 
-    fn gpu_buffer_is_ready(self) -> Bool:
+    def gpu_buffer_is_ready(self) -> Bool:
         return self.buffer.is_ready[Self.batch_size]()
 
 
@@ -725,7 +727,7 @@ struct GenericOffPolicyAgent[
     var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
-    fn __init__(
+    def __init__(
         out self,
         gamma: Float64 = 0.99,
         tau: Float64 = 0.005,
@@ -766,7 +768,9 @@ struct GenericOffPolicyAgent[
         self.auto_alpha = auto_alpha
         self.alpha = alpha
         self.log_alpha = log(alpha)
-        self.target_entropy = target_entropy if target_entropy != 0.0 else -Float64(Self.ACTIONS)
+        self.target_entropy = (
+            target_entropy if target_entropy != 0.0 else -Float64(Self.ACTIONS)
+        )
         self.alpha_lr = alpha_lr
         self.alpha_adam_m = 0.0
         self.alpha_adam_v = 0.0
@@ -803,10 +807,10 @@ struct GenericOffPolicyAgent[
     # OffPolicyContinuousAgent trait
     # =========================================================================
 
-    fn make_cpu_state(self) -> Self.CPUStateType:
+    def make_cpu_state(self) -> Self.CPUStateType:
         return Self.CPUStateType()
 
-    fn select_action[
+    def select_action[
         d: DType
     ](mut self, mut cpu_state: Self.CPUStateType, obs: List[Scalar[d]]) -> List[
         Scalar[d]
@@ -899,7 +903,7 @@ struct GenericOffPolicyAgent[
                 raw, self.action_scale, self.noise_std
             )
 
-    fn store_transition[
+    def store_transition[
         d: DType
     ](
         mut self,
@@ -916,7 +920,9 @@ struct GenericOffPolicyAgent[
         cpu_state.store[d](obs, normalized, reward, next_obs, done)
         self.total_steps += 1
 
-    fn do_cpu_train_step(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
+    def do_cpu_train_step(
+        mut self, mut cpu_state: Self.CPUStateType
+    ) -> Float64:
         if not cpu_state.buffer.is_ready[Self.BATCH]():
             return 0.0
 
@@ -1036,7 +1042,9 @@ struct GenericOffPolicyAgent[
             for b in range(Self.BATCH):
                 var td_err = qio_p[b] - tgt_p[b]
                 ci_loss += Float64(td_err * td_err)
-                qg_p[b] = Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
+                qg_p[b] = (
+                    Scalar[dtype](2.0) * td_err / Scalar[dtype](Self.BATCH)
+                )
             ci_loss /= Float64(Self.BATCH)
 
             var g_ci = cpu_state.critics.online_grads_view(i)
@@ -1053,8 +1061,7 @@ struct GenericOffPolicyAgent[
 
         # Diagnostic logging
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
@@ -1137,16 +1144,16 @@ struct GenericOffPolicyAgent[
         self.train_step_count += 1
         return critic_loss
 
-    fn decay_explore(mut self) -> None:
+    def decay_explore(mut self) -> None:
         Self.Config.Explore.decay(self.noise_std)
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         comptime if Self.Config.Explore.IS_STOCHASTIC:
             return self.alpha
         else:
             return Self.Config.Explore.get_rate(self.noise_std)
 
-    fn random_action[d: DType](self) -> List[Scalar[d]]:
+    def random_action[d: DType](self) -> List[Scalar[d]]:
         var result = List[Scalar[d]](capacity=Self.ACTIONS)
         for _ in range(Self.ACTIONS):
             result.append(
@@ -1154,7 +1161,7 @@ struct GenericOffPolicyAgent[
             )
         return result^
 
-    fn select_greedy_action(
+    def select_greedy_action(
         self, cpu_state: Self.CPUStateType, obs: List[Float64]
     ) -> List[Float64]:
         var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
@@ -1223,19 +1230,19 @@ struct GenericOffPolicyAgent[
     # GPUOffPolicyAgent trait
     # =========================================================================
 
-    fn get_action_scale(self) -> Float64:
+    def get_action_scale(self) -> Float64:
         return self.action_scale
 
-    fn get_total_steps(self) -> Int:
+    def get_total_steps(self) -> Int:
         return self.total_steps
 
-    fn set_total_steps(mut self, steps: Int):
+    def set_total_steps(mut self, steps: Int):
         self.total_steps = steps
 
-    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+    def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         return Self.GPUStateType(ctx)
 
-    fn upload_to_gpu(
+    def upload_to_gpu(
         self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1244,7 +1251,7 @@ struct GenericOffPolicyAgent[
         gpu_state.actor.upload_from(self.state.actor, ctx)
         gpu_state.critics.upload_from(self.state.critics, ctx)
 
-    fn download_from_gpu(
+    def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1253,7 +1260,7 @@ struct GenericOffPolicyAgent[
         gpu_state.actor.download_to(self.state.actor, ctx)
         gpu_state.critics.download_to(self.state.critics, ctx)
 
-    fn select_actions_gpu[
+    def select_actions_gpu[
         N_ENVS: Int
     ](
         mut self,
@@ -1312,7 +1319,7 @@ struct GenericOffPolicyAgent[
                 block_dim=(TPB,),
             )
 
-    fn do_gpu_train_step(
+    def do_gpu_train_step(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -1351,7 +1358,9 @@ struct GenericOffPolicyAgent[
         var p_critic_t = gpu_state.critics.target_params_view(0)
         var p_actor = gpu_state.actor.online.params_view()
         var p_critic = gpu_state.critics.online_params_view(0)
-        var rng_seed = UInt32(self.train_step_count) * UInt32(BS * Self.ACTIONS + 7)
+        var rng_seed = UInt32(self.train_step_count) * UInt32(
+            BS * Self.ACTIONS + 7
+        )
 
         comptime if Self.profile >= 2:
             self.train_timer.sync_and_accumulate(0, ctx)
@@ -1526,7 +1535,11 @@ struct GenericOffPolicyAgent[
                 self.train_timer.mark()
 
         # GPU Diagnostic logging (every diag_every train steps)
-        if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+        if (
+            self.logger
+            and self.diag_every > 0
+            and self.train_step_count % self.diag_every == 0
+        ):
             try:
                 # Reuse pre-allocated host buffers
                 ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
@@ -1562,7 +1575,7 @@ struct GenericOffPolicyAgent[
                     critic_loss += (q_val - tgt_val) * (q_val - tgt_val)
                 for i in range(BS * Self.ACTIONS):
                     var a = Float64(diag_act_host[i])
-                    mean_abs_act += (a if a >= 0.0 else -a)
+                    mean_abs_act += a if a >= 0.0 else -a
                 mean_q /= Float64(BS)
                 mean_tgt /= Float64(BS)
                 mean_rew /= Float64(BS)
@@ -1627,13 +1640,15 @@ struct GenericOffPolicyAgent[
                 UInt32(self.train_step_count),
             )
             # Log actor grad norm before optimizer step overwrites grads
-            if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+            if (
+                self.logger
+                and self.diag_every > 0
+                and self.train_step_count % self.diag_every == 0
+            ):
                 try:
                     comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
                     var ag_host = gpu_state.diag_ag_host
-                    ctx.enqueue_copy(
-                        ag_host, gpu_state.actor.online.grads_buf
-                    )
+                    ctx.enqueue_copy(ag_host, gpu_state.actor.online.grads_buf)
                     ctx.synchronize()
                     var grad_norm: Float64 = 0.0
                     for i in range(A_PS):
@@ -1652,19 +1667,28 @@ struct GenericOffPolicyAgent[
             if self.max_grad_norm > 0.0:
                 comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
                 comptime A_BLOCKS = (A_PS + TPB - 1) // TPB
-                comptime norm_k = gradient_norm_kernel[dtype, A_PS, A_BLOCKS, TPB]
-                comptime clip_k = gradient_reduce_apply_fused_kernel[dtype, A_PS, A_BLOCKS, TPB]
+                comptime norm_k = gradient_norm_kernel[
+                    dtype, A_PS, A_BLOCKS, TPB
+                ]
+                comptime clip_k = gradient_reduce_apply_fused_kernel[
+                    dtype, A_PS, A_BLOCKS, TPB
+                ]
                 var ps_t = LayoutTensor[
                     dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
                 ](gpu_state.grad_clip_ps.unsafe_ptr())
 
                 ctx.enqueue_function[norm_k, norm_k](
-                    ps_t, a_grads,
-                    grid_dim=(A_BLOCKS,), block_dim=(TPB,),
+                    ps_t,
+                    a_grads,
+                    grid_dim=(A_BLOCKS,),
+                    block_dim=(TPB,),
                 )
                 ctx.enqueue_function[clip_k, clip_k](
-                    a_grads, ps_t, Scalar[dtype](self.max_grad_norm),
-                    grid_dim=(A_BLOCKS,), block_dim=(TPB,),
+                    a_grads,
+                    ps_t,
+                    Scalar[dtype](self.max_grad_norm),
+                    grid_dim=(A_BLOCKS,),
+                    block_dim=(TPB,),
                 )
 
             gpu_state.actor.online.optimizer_step(ctx)
@@ -1687,7 +1711,7 @@ struct GenericOffPolicyAgent[
                     ](gpu_state.curr_lp.unsafe_ptr())
 
                     @always_inline
-                    fn copy_lp(
+                    def copy_lp(
                         d: LayoutTensor[
                             dtype, Layout.row_major(BS), MutAnyOrigin
                         ],
@@ -1742,7 +1766,7 @@ struct GenericOffPolicyAgent[
                 comptime ACTOR_SLOT = 4 if Self.Config.NUM_CRITICS == 1 else 5
                 self.train_timer.sync_and_accumulate(ACTOR_SLOT, ctx)
 
-    fn soft_update_targets_gpu(
+    def soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -1754,7 +1778,7 @@ struct GenericOffPolicyAgent[
                 gpu_state.actor.soft_update(self.tau, ctx)
             gpu_state.critics.soft_update_all(self.tau, ctx)
 
-    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+    def decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
         """No-op for DDPG/TD3 (Gaussian noise decay is per-episode, not per-step).
         """
         pass
@@ -1762,7 +1786,7 @@ struct GenericOffPolicyAgent[
     # Checkpointable — saves agent hyperparameters and training state.
     # Network weights require save_cpu_state(cpu_state, path) separately
     # because the Checkpointable trait doesn't include state access.
-    fn save_checkpoint(self, path: String) raises -> None:
+    def save_checkpoint(self, path: String) raises -> None:
         from mojo_rl.nn.checkpoint import (
             write_checkpoint_header,
             write_metadata_section,
@@ -1795,7 +1819,7 @@ struct GenericOffPolicyAgent[
         content += write_metadata_section(metadata)
         save_checkpoint_file(path, content)
 
-    fn load_checkpoint(mut self, path: String) raises -> None:
+    def load_checkpoint(mut self, path: String) raises -> None:
         var content = read_checkpoint_file(path)
         self.state.actor.read_sections(content, "actor_")
         self.state.critics.pairs[0].read_sections(content, "critic_")
@@ -1809,12 +1833,14 @@ struct GenericOffPolicyAgent[
         set_metadata_value_int(metadata, "policy_delay", self.policy_delay)
         set_metadata_value_int(metadata, "update_count", self.update_count)
         set_metadata_value_int(metadata, "total_steps", self.total_steps)
-        set_metadata_value_int(metadata, "train_step_count", self.train_step_count)
+        set_metadata_value_int(
+            metadata, "train_step_count", self.train_step_count
+        )
         set_metadata_value_float(metadata, "alpha", self.alpha)
         set_metadata_value_float(metadata, "log_alpha", self.log_alpha)
         set_metadata_value_int(metadata, "alpha_adam_t", self.alpha_adam_t)
 
-    fn save_cpu_state(self, cpu_state: Self.CPUStateType, path: String) raises:
+    def save_cpu_state(self, cpu_state: Self.CPUStateType, path: String) raises:
         """Save network weights and optimizer state from cpu_state.
 
         Saves actor (online+target) and critic(s) (online+target)
@@ -1833,7 +1859,7 @@ struct GenericOffPolicyAgent[
             content += cpu_state.critics.pairs[1].write_sections("critic2_")
         save_checkpoint_file(path, content)
 
-    fn load_cpu_state(
+    def load_cpu_state(
         self, mut cpu_state: Self.CPUStateType, path: String
     ) raises:
         """Load network weights and optimizer state into cpu_state."""
@@ -1848,7 +1874,7 @@ struct GenericOffPolicyAgent[
     # CPU Convenience training
     # =========================================================================
 
-    fn train[
+    def train[
         E: BoxContinuousActionEnv
     ](
         mut self,
@@ -1910,7 +1936,7 @@ struct GenericOffPolicyAgent[
     # Evaluation
     # =========================================================================
 
-    fn evaluate[
+    def evaluate[
         E: BoxContinuousActionEnv & RenderableEnv
     ](
         self,
@@ -1950,7 +1976,7 @@ struct GenericOffPolicyAgent[
     # GPU Training
     # =========================================================================
 
-    fn train_gpu[
+    def train_gpu[
         E: GPUContinuousEnv,
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](

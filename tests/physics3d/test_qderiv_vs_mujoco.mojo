@@ -45,7 +45,7 @@ comptime CDOF_SIZE = NV * 6
 comptime CRB_SIZE = NBODY * 10
 
 
-fn compare_qderiv(
+def compare_qderiv(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -242,7 +242,7 @@ fn compare_qderiv(
         assert_true(False, "compare_qderiv failed for: " + test_name)
 
 
-fn test_zero_velocity() raises:
+def test_zero_velocity() raises:
     """Zero velocities (qDeriv should just be -damping diagonal)."""
     var qpos0 = InlineArray[Float64, NQ](fill=0.0)
     qpos0[1] = 1.5
@@ -250,7 +250,7 @@ fn test_zero_velocity() raises:
     compare_qderiv("Zero velocity", qpos0, qvel0)
 
 
-fn test_moving_moderate_vel() raises:
+def test_moving_moderate_vel() raises:
     """Nonzero velocities (RNE derivative should add off-diagonal terms)."""
     var qpos1 = InlineArray[Float64, NQ](fill=0.0)
     qpos1[1] = 1.5
@@ -265,7 +265,7 @@ fn test_moving_moderate_vel() raises:
     compare_qderiv("Moving (moderate vel)", qpos1, qvel1)
 
 
-fn test_fast_spinning() raises:
+def test_fast_spinning() raises:
     """High angular velocities."""
     var qpos2 = InlineArray[Float64, NQ](fill=0.0)
     qpos2[1] = 1.5
@@ -284,5 +284,5 @@ fn test_fast_spinning() raises:
     compare_qderiv("Fast spinning", qpos2, qvel2)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

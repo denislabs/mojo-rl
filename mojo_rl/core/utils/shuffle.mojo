@@ -19,7 +19,7 @@ Example usage:
 from std.random import random_float64
 
 
-fn shuffle_indices(n: Int, mut indices: List[Int]):
+def shuffle_indices(n: Int, mut indices: List[Int]):
     """Generate shuffled indices [0, n) using Fisher-Yates algorithm.
 
     Resizes the list and fills with a random permutation of [0, n).
@@ -48,7 +48,7 @@ fn shuffle_indices(n: Int, mut indices: List[Int]):
         indices[j] = temp
 
 
-fn shuffle_indices_inline[N: Int](n: Int, mut indices: InlineArray[Int, N]):
+def shuffle_indices_inline[N: Int](n: Int, mut indices: InlineArray[Int, N]):
     """Generate shuffled indices [0, n) into an InlineArray using Fisher-Yates.
 
     Fills the first `n` elements with a random permutation of [0, n).

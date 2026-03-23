@@ -140,13 +140,13 @@ comptime OP_KIL: UInt8 = 74  # halt CPU
 # ============================================================================
 
 
-struct OpcodeEntry(Copyable, Movable, ImplicitlyCopyable, RegisterPassable):
+struct OpcodeEntry(Copyable, ImplicitlyCopyable, Movable, RegisterPassable):
     var instruction: UInt8
     var addr_mode: UInt8
     var cycles: UInt8
     var size: UInt8
 
-    fn __init__(
+    def __init__(
         out self,
         instruction: UInt8,
         addr_mode: UInt8,
@@ -161,13 +161,13 @@ struct OpcodeEntry(Copyable, Movable, ImplicitlyCopyable, RegisterPassable):
 
 # Helper to create entries
 @always_inline
-fn _op(inst: UInt8, mode: UInt8, cyc: UInt8, sz: UInt8) -> OpcodeEntry:
+def _op(inst: UInt8, mode: UInt8, cyc: UInt8, sz: UInt8) -> OpcodeEntry:
     return OpcodeEntry(inst, mode, cyc, sz)
 
 
 # Addressing mode sizes
 @always_inline
-fn addr_mode_size(mode: UInt8) -> UInt8:
+def addr_mode_size(mode: UInt8) -> UInt8:
     if mode == ADDR_IMPLIED or mode == ADDR_ACCUMULATOR:
         return 1
     elif (
@@ -190,7 +190,7 @@ fn addr_mode_size(mode: UInt8) -> UInt8:
 # ============================================================================
 
 
-fn _build_opcode_table() -> InlineArray[OpcodeEntry, 256]:
+def _build_opcode_table() -> InlineArray[OpcodeEntry, 256]:
     var t = InlineArray[OpcodeEntry, 256](uninitialized=True)
 
     # Initialize all as KIL (illegal halt) — catches unimplemented opcodes

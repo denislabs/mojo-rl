@@ -12,7 +12,7 @@ from mojo_rl.envs.pendulum import PendulumEnv
 from mojo_rl.nn.constants import dtype
 
 
-fn main() raises:
+def main() raises:
     print("=== AutodiffSAC Training Test ===")
     print()
 

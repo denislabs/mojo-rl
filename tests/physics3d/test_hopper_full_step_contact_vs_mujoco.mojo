@@ -46,7 +46,7 @@ comptime QVEL_REL_TOL: Float64 = 2e-4
 # =============================================================================
 
 
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -305,7 +305,7 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_ground_contact() raises:
+def test_ground_contact() raises:
     """Robot low enough to have ground contact (foot touching).
     Hopper default: torso at 1.25, foot about 0.6m below. rootz=-0.8 pushes down.
     """
@@ -316,7 +316,7 @@ fn test_ground_contact() raises:
     compare_step("Ground contact (low rootz)", qpos, qvel, actions)
 
 
-fn test_ground_contact_with_action() raises:
+def test_ground_contact_with_action() raises:
     """Robot on ground with actions — full constraint solver test."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.8  # rootz — pushes robot down
@@ -328,5 +328,5 @@ fn test_ground_contact_with_action() raises:
     compare_step("Ground contact with action", qpos, qvel, actions)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

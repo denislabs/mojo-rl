@@ -107,12 +107,12 @@ struct IslandPGSSolver(ConstraintSolver):
     comptime NEEDS_M_INV: Bool = True
 
     @staticmethod
-    fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
+    def solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """Same workspace footprint as PGSSolver."""
         return PGSSolver.solver_workspace_size[NV, MAX_CONTACTS]()
 
     @staticmethod
-    fn solver_threads[
+    def solver_threads[
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -123,7 +123,7 @@ struct IslandPGSSolver(ConstraintSolver):
         return PGSSolver.solver_threads[NQ, NV, NBODY, NJOINT, MAX_CONTACTS]()
 
     @staticmethod
-    fn solve[
+    def solve[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -178,7 +178,7 @@ struct IslandPGSSolver(ConstraintSolver):
 
     @staticmethod
     @always_inline
-    fn solve_gpu[
+    def solve_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

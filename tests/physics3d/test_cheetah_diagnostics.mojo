@@ -34,7 +34,7 @@ from mojo_rl.physics3d.solver import NewtonSolver
 from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 
 
-fn body_name(id: Int) -> String:
+def body_name(id: Int) -> String:
     if id == 0:
         return "torso "
     elif id == 1:
@@ -54,7 +54,7 @@ fn body_name(id: Int) -> String:
     return "???"
 
 
-fn main():
+def main():
     print("")
     print("=" * 80)
     print("HalfCheetah Physics Diagnostic — Free Fall (zero actions)")

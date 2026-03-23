@@ -15,7 +15,7 @@ from mojo_rl.envs.car_racing.constants import CRConstants
 from mojo_rl.render import Renderer2D
 
 
-fn main() raises:
+def main() raises:
     print("=== CarRacing V2 Demo ===")
     print("Testing GPU-accelerated CarRacing environment with rendering")
     print()

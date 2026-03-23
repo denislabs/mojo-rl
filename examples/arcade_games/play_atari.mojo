@@ -21,7 +21,7 @@ from mojo_rl.envs.atari.games.pong import PongDef
 from mojo_rl.envs.atari.flags import ACTION_NOOP, ACTION_RESET
 
 
-fn main() raises:
+def main() raises:
     # Load ROM
     var rom_path = "roms/pong.bin"
     print("Loading ROM: " + rom_path)

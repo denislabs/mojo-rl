@@ -8,13 +8,13 @@ struct FrozenState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var position: Int  # Flat index (0 to size*size - 1)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.position = copy.position
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.position = take.position
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.position == other.position
 
 
@@ -24,26 +24,26 @@ struct FrozenAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod
-    fn left() -> Self:
+    def left() -> Self:
         return Self(direction=0)
 
     @staticmethod
-    fn down() -> Self:
+    def down() -> Self:
         return Self(direction=1)
 
     @staticmethod
-    fn right() -> Self:
+    def right() -> Self:
         return Self(direction=2)
 
     @staticmethod
-    fn up() -> Self:
+    def up() -> Self:
         return Self(direction=3)
 
 
@@ -73,7 +73,7 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
     var is_slippery: Bool
     var _renderer_initialized: Bool
 
-    fn __init__(out self, size: Int = 4, is_slippery: Bool = True):
+    def __init__(out self, size: Int = 4, is_slippery: Bool = True):
         self.size = size
         self.state = FrozenState(0)  # Start at top-left
         self.goal = size * size - 1  # Goal at bottom-right
@@ -97,30 +97,30 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
                     if (row + col) % 3 == 2 and row > 0:
                         self.holes.append(i)
 
-    fn state_to_index(self, state: FrozenState) -> Int:
+    def state_to_index(self, state: FrozenState) -> Int:
         """Convert a FrozenState to a flat index."""
         return state.position
 
-    fn action_from_index(self, action_idx: Int) -> FrozenAction:
+    def action_from_index(self, action_idx: Int) -> FrozenAction:
         """Create a FrozenAction from an index."""
         return FrozenAction(direction=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of states (size * size)."""
         return self.size * self.size
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (4 directions)."""
         return 4
 
-    fn _is_hole(self, position: Int) -> Bool:
+    def _is_hole(self, position: Int) -> Bool:
         """Check if position is a hole."""
         for i in range(len(self.holes)):
             if self.holes[i] == position:
                 return True
         return False
 
-    fn _move(self, position: Int, action: Int) -> Int:
+    def _move(self, position: Int, action: Int) -> Int:
         """Get new position after taking action from position."""
         var row = position // self.size
         var col = position % self.size
@@ -136,7 +136,7 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
 
         return row * self.size + col
 
-    fn step(
+    def step(
         mut self, action: FrozenAction, verbose: Bool = False
     ) -> Tuple[FrozenState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done).
@@ -166,16 +166,16 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
 
         return (self.state, reward, done)
 
-    fn reset(mut self) -> FrozenState:
+    def reset(mut self) -> FrozenState:
         """Reset agent to starting position."""
         self.state = FrozenState(0)
         return self.state
 
-    fn get_state(self) -> FrozenState:
+    def get_state(self) -> FrozenState:
         """Return current state."""
         return self.state
 
-    fn close(mut self):
+    def close(mut self):
         """No resources to clean up."""
         pass
 
@@ -183,11 +183,11 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
     # RenderableEnv Trait Implementation (text-only stubs)
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         for row in range(self.size):
             var line = String("")
             for col in range(self.size):
@@ -205,20 +205,20 @@ struct FrozenLakeEnv(DiscreteEnv, RenderableEnv):
             print(line)
         print("")
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         return False
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False

@@ -14,7 +14,7 @@ from mojo_rl.physics3d.types import Model, Data
 from std.testing import assert_true, TestSuite
 
 
-fn test_lu_factorization() raises:
+def test_lu_factorization() raises:
     """Test LU factorization with a simple 3x3 system."""
     print("Test LU factorization...")
 
@@ -77,7 +77,7 @@ fn test_lu_factorization() raises:
         )
 
 
-fn test_implicit_integrator_import() raises:
+def test_implicit_integrator_import() raises:
     """Test that ImplicitIntegrator can be instantiated."""
     print("Test implicit integrator import...")
 
@@ -88,7 +88,7 @@ fn test_implicit_integrator_import() raises:
     print("  PASS")
 
 
-fn test_zero_velocity_qderiv() raises:
+def test_zero_velocity_qderiv() raises:
     """Test that qDeriv RNE contribution is zero when velocities are zero.
 
     At zero velocity, there are no Coriolis/centrifugal effects, so the
@@ -162,5 +162,5 @@ fn test_zero_velocity_qderiv() raises:
         )
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

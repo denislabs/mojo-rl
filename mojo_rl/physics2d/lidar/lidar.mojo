@@ -22,7 +22,7 @@ struct Lidar:
 
     @staticmethod
     @always_inline
-    fn _ray_edge_intersection(
+    def _ray_edge_intersection(
         ray_ox: Scalar[dtype],
         ray_oy: Scalar[dtype],
         ray_dx: Scalar[dtype],
@@ -79,7 +79,7 @@ struct Lidar:
         return Scalar[dtype](-1.0)
 
     @staticmethod
-    fn raycast_single[
+    def raycast_single[
         STATE_SIZE: Int,
         EDGES_OFFSET: Int,
         EDGE_COUNT_OFFSET: Int,
@@ -160,7 +160,7 @@ struct Lidar:
 
     @staticmethod
     @always_inline
-    fn raycast_env_gpu[
+    def raycast_env_gpu[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -245,7 +245,7 @@ struct Lidar:
             obs[env, LIDAR_START_IDX + i] = min_t
 
     @staticmethod
-    fn _raycast_kernel[
+    def _raycast_kernel[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -277,7 +277,9 @@ struct Lidar:
         var hull_off = BODIES_OFFSET  # Hull is body 0
         var hull_x = rebind[Scalar[dtype]](state[env, hull_off + 0])  # IDX_X
         var hull_y = rebind[Scalar[dtype]](state[env, hull_off + 1])  # IDX_Y
-        var hull_angle = rebind[Scalar[dtype]](state[env, hull_off + 2])  # IDX_ANGLE
+        var hull_angle = rebind[Scalar[dtype]](
+            state[env, hull_off + 2]
+        )  # IDX_ANGLE
 
         Lidar.raycast_env_gpu[
             BATCH,
@@ -291,7 +293,7 @@ struct Lidar:
         ](env, state, obs, hull_x, hull_y, hull_angle, lidar_range)
 
     @staticmethod
-    fn raycast_gpu[
+    def raycast_gpu[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -326,7 +328,7 @@ struct Lidar:
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],

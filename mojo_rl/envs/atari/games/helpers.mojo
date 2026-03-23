@@ -10,7 +10,7 @@ from ..flags import RAM_SIZE
 
 
 @always_inline
-fn get_decimal_score(ram: InlineArray[UInt8, RAM_SIZE], idx: Int) -> Int:
+def get_decimal_score(ram: InlineArray[UInt8, RAM_SIZE], idx: Int) -> Int:
     """Decode a 2-digit BCD score from one RAM byte.
 
     Returns: 10 * upper_nibble + lower_nibble (0-99)
@@ -22,7 +22,7 @@ fn get_decimal_score(ram: InlineArray[UInt8, RAM_SIZE], idx: Int) -> Int:
 
 
 @always_inline
-fn get_decimal_score_2(
+def get_decimal_score_2(
     ram: InlineArray[UInt8, RAM_SIZE], lower_idx: Int, higher_idx: Int
 ) -> Int:
     """Decode a 4-digit BCD score from two RAM bytes.
@@ -49,7 +49,7 @@ fn get_decimal_score_2(
 
 
 @always_inline
-fn get_decimal_score_3(
+def get_decimal_score_3(
     ram: InlineArray[UInt8, RAM_SIZE],
     lower_idx: Int,
     middle_idx: Int,

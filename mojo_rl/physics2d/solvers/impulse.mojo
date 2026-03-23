@@ -67,7 +67,7 @@ struct ImpulseSolver(ConstraintSolver):
     var baumgarte: Scalar[dtype]
     var slop: Scalar[dtype]
 
-    fn __init__(
+    def __init__(
         out self,
         friction: Float64 = DEFAULT_FRICTION,
         restitution: Float64 = DEFAULT_RESTITUTION,
@@ -91,7 +91,7 @@ struct ImpulseSolver(ConstraintSolver):
     # CPU Implementation
     # =========================================================================
 
-    fn solve_velocity[
+    def solve_velocity[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -330,7 +330,7 @@ struct ImpulseSolver(ConstraintSolver):
                             * inv_inertia_b
                         )
 
-    fn solve_position[
+    def solve_position[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -416,7 +416,7 @@ struct ImpulseSolver(ConstraintSolver):
 
     @always_inline
     @staticmethod
-    fn solve_velocity_single_env[
+    def solve_velocity_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -632,7 +632,7 @@ struct ImpulseSolver(ConstraintSolver):
 
     @always_inline
     @staticmethod
-    fn solve_velocity_single_env_sparse[
+    def solve_velocity_single_env_sparse[
         BATCH: Int,
         NUM_BODIES: Int,
         TOTAL_CONTACT_SLOTS: Int,
@@ -848,7 +848,7 @@ struct ImpulseSolver(ConstraintSolver):
 
     @always_inline
     @staticmethod
-    fn solve_position_single_env_sparse[
+    def solve_position_single_env_sparse[
         BATCH: Int,
         NUM_BODIES: Int,
         TOTAL_CONTACT_SLOTS: Int,
@@ -929,7 +929,7 @@ struct ImpulseSolver(ConstraintSolver):
 
     @always_inline
     @staticmethod
-    fn solve_velocity_kernel[
+    def solve_velocity_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -964,7 +964,7 @@ struct ImpulseSolver(ConstraintSolver):
 
     @always_inline
     @staticmethod
-    fn solve_position_single_env[
+    def solve_position_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -1043,7 +1043,7 @@ struct ImpulseSolver(ConstraintSolver):
 
     @always_inline
     @staticmethod
-    fn solve_position_kernel[
+    def solve_position_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -1077,7 +1077,7 @@ struct ImpulseSolver(ConstraintSolver):
         ](env, state, contacts, count, baumgarte, slop)
 
     @staticmethod
-    fn solve_velocity_gpu[
+    def solve_velocity_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -1109,7 +1109,7 @@ struct ImpulseSolver(ConstraintSolver):
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, STATE_SIZE),
@@ -1141,7 +1141,7 @@ struct ImpulseSolver(ConstraintSolver):
         )
 
     @staticmethod
-    fn solve_position_gpu[
+    def solve_position_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -1173,7 +1173,7 @@ struct ImpulseSolver(ConstraintSolver):
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, STATE_SIZE),

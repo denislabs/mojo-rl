@@ -51,7 +51,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 # =============================================================================
 
 
-fn compare_fk(
+def compare_fk(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
 ) raises:
@@ -201,20 +201,20 @@ fn compare_fk(
 # =============================================================================
 
 
-fn test_fk_default_qpos() raises:
+def test_fk_default_qpos() raises:
     """FK at default qpos (all zeros): cart at origin, pendulums upright."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     compare_fk("Default qpos (cart at origin, pendulums upright)", qpos)
 
 
-fn test_fk_displaced_cart() raises:
+def test_fk_displaced_cart() raises:
     """FK with cart displaced to x=0.5 — tests slide joint translation."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 0.5  # slider displacement
     compare_fk("Displaced cart (x=0.5)", qpos)
 
 
-fn test_fk_first_hinge_only() raises:
+def test_fk_first_hinge_only() raises:
     """FK with only the first hinge bent — pole tilted ~17 deg, pole2 follows.
     """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -222,7 +222,7 @@ fn test_fk_first_hinge_only() raises:
     compare_fk("First hinge only (hinge=0.3 rad)", qpos)
 
 
-fn test_fk_both_hinges_bent() raises:
+def test_fk_both_hinges_bent() raises:
     """FK with both hinges bent in opposite directions.
     Tests quaternion accumulation for a two-link chain."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -232,7 +232,7 @@ fn test_fk_both_hinges_bent() raises:
     compare_fk("Both hinges bent (hinge=0.4, hinge2=-0.3)", qpos)
 
 
-fn test_fk_large_tilt() raises:
+def test_fk_large_tilt() raises:
     """FK with large first hinge tilt near the observation limit.
     Tests nonlinear rotation accumulation in the double pendulum chain."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -242,5 +242,5 @@ fn test_fk_large_tilt() raises:
     compare_fk("Large tilt (hinge=1.0, hinge2=-0.6)", qpos)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

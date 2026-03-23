@@ -31,7 +31,7 @@ from mojo_rl.envs.gymnasium import (
 )
 
 
-fn train_mountain_car() raises:
+def train_mountain_car() raises:
     """Train Q-learning agent on MountainCar-v0."""
     print("\n" + "=" * 60)
     print("MountainCar-v0 Training (TiledQLearning)")
@@ -91,7 +91,7 @@ fn train_mountain_car() raises:
     env.close()
 
 
-fn train_acrobot() raises:
+def train_acrobot() raises:
     """Train Q-learning agent on Acrobot-v1."""
     print("\n" + "=" * 60)
     print("Acrobot-v1 Training (TiledQLearning)")
@@ -164,7 +164,7 @@ fn train_acrobot() raises:
     env.close()
 
 
-fn demo_pendulum() raises:
+def demo_pendulum() raises:
     """Demo Pendulum-v1 with heuristic policy (continuous action space)."""
     print("\n" + "=" * 60)
     print("Pendulum-v1 Demo (Heuristic Controller)")
@@ -210,7 +210,7 @@ fn demo_pendulum() raises:
     env.close()
 
 
-fn train_lunar_lander() raises:
+def train_lunar_lander() raises:
     """Train Q-learning agent on LunarLander-v3."""
     print("\n" + "=" * 60)
     print("LunarLander-v3 Training (TiledQLearning)")
@@ -290,7 +290,7 @@ fn train_lunar_lander() raises:
     env.close()
 
 
-fn train_frozenlake() raises:
+def train_frozenlake() raises:
     """Train Q-learning agent on FrozenLake-v1."""
     print("\n" + "=" * 60)
     print("FrozenLake-v1 Training (Q-Learning)")
@@ -343,7 +343,7 @@ fn train_frozenlake() raises:
     env.close()
 
 
-fn train_taxi() raises:
+def train_taxi() raises:
     """Train Q-learning agent on Taxi-v3."""
     print("\n" + "=" * 60)
     print("Taxi-v3 Training (Q-Learning)")
@@ -396,7 +396,7 @@ fn train_taxi() raises:
     env.close()
 
 
-fn demo_blackjack() raises:
+def demo_blackjack() raises:
     """Demo Blackjack-v1 with simple strategy."""
     print("\n" + "=" * 60)
     print("Blackjack-v1 Demo (Simple Strategy)")
@@ -443,7 +443,7 @@ fn demo_blackjack() raises:
     env.close()
 
 
-fn train_cliffwalking() raises:
+def train_cliffwalking() raises:
     """Train Q-learning agent on CliffWalking-v0."""
     print("\n" + "=" * 60)
     print("CliffWalking-v0 Training (Q-Learning)")
@@ -497,7 +497,7 @@ fn train_cliffwalking() raises:
     env.close()
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Gymnasium Environment Training Demo")
     print("=" * 60)

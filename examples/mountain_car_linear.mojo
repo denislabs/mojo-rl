@@ -36,7 +36,7 @@ from mojo_rl.agents.linear_qlearning import (
 from mojo_rl.envs.mountain_car_native import MountainCarNative
 
 
-fn train_mountain_car_poly(
+def train_mountain_car_poly(
     num_episodes: Int = 1000,
     max_steps: Int = 200,
     degree: Int = 3,
@@ -145,7 +145,7 @@ fn train_mountain_car_poly(
     return episode_rewards^
 
 
-fn train_mountain_car_rbf(
+def train_mountain_car_rbf(
     num_episodes: Int = 1000,
     max_steps: Int = 200,
     num_centers_per_dim: Int = 10,
@@ -273,7 +273,7 @@ fn train_mountain_car_rbf(
     return episode_rewards^
 
 
-fn train_mountain_car_linear_sarsa_lambda(
+def train_mountain_car_linear_sarsa_lambda(
     num_episodes: Int = 1000,
     max_steps: Int = 200,
     degree: Int = 3,
@@ -389,7 +389,7 @@ fn train_mountain_car_linear_sarsa_lambda(
     return episode_rewards^
 
 
-fn main() raises:
+def main() raises:
     """Run MountainCar linear function approximation comparison."""
     print("=" * 60)
     print("MountainCar - Linear Function Approximation")

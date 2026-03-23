@@ -48,17 +48,17 @@ struct Muon[
     comptime NS_B: Float64 = -4.7750
     comptime NS_C: Float64 = 2.0315
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn step[
+    def step[
         PARAM_SIZE: Int
     ](
         mut params: LayoutTensor[
@@ -109,7 +109,7 @@ struct Muon[
     # =========================================================================
 
     @staticmethod
-    fn _frobenius_norm[
+    def _frobenius_norm[
         ROWS: Int, COLS: Int
     ](
         mat: LayoutTensor[dtype, Layout.row_major(ROWS, COLS), MutAnyOrigin],
@@ -125,7 +125,7 @@ struct Muon[
     # 2D Matrix step (for weight matrices with known dimensions)
     # =========================================================================
 
-    fn step_2d[
+    def step_2d[
         ROWS: Int, COLS: Int
     ](
         self,
@@ -283,7 +283,7 @@ struct Muon[
 
     @always_inline
     @staticmethod
-    fn step_kernel_impl[
+    def step_kernel_impl[
         PARAM_SIZE: Int
     ](
         params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -318,7 +318,7 @@ struct Muon[
     # =========================================================================
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         PARAM_SIZE: Int
     ](
         ctx: DeviceContext,
@@ -355,7 +355,7 @@ struct Muon[
         var inv_norm = Scalar[dtype](1.0) / (sqrt(norm_sq) + eps)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             params: LayoutTensor[
                 dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
             ],

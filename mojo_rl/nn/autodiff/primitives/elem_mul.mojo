@@ -20,13 +20,13 @@ struct ElemMul[dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = Self.dim
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -34,7 +34,7 @@ struct ElemMul[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -57,7 +57,7 @@ struct ElemMul[dim: Int](DiffOp):
                 output[b, i] = x * params[i]
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -91,7 +91,7 @@ struct ElemMul[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -116,7 +116,7 @@ struct ElemMul[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dx_kernel_impl[
+    def backward_dx_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -138,7 +138,7 @@ struct ElemMul[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dgamma_kernel_impl[
+    def backward_dgamma_kernel_impl[
         BATCH: Int
     ](
         dgamma: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
@@ -176,7 +176,7 @@ struct ElemMul[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -204,7 +204,7 @@ struct ElemMul[dim: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -230,7 +230,7 @@ struct ElemMul[dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -269,7 +269,7 @@ struct ElemMul[dim: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn dx_wrapper(
+        def dx_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -292,7 +292,7 @@ struct ElemMul[dim: Int](DiffOp):
 
         # Kernel 2: dgamma = sum(grad * x, axis=0)
         @always_inline
-        fn dgamma_wrapper(
+        def dgamma_wrapper(
             dgamma: LayoutTensor[
                 dtype, Layout.row_major(Self.dim), MutAnyOrigin
             ],

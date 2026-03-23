@@ -54,7 +54,7 @@ struct TiledQLearningAgent:
     var epsilon_decay: Float64
     var epsilon_min: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -90,7 +90,7 @@ struct TiledQLearningAgent:
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Select action using epsilon-greedy policy.
 
         Args:
@@ -106,7 +106,7 @@ struct TiledQLearningAgent:
             # Exploit: best action
             return self.weights.get_best_action(tiles)
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action (no exploration).
 
         Args:
@@ -117,7 +117,7 @@ struct TiledQLearningAgent:
         """
         return self.weights.get_best_action(tiles)
 
-    fn get_value(self, tiles: List[Int], action: Int) -> Float64:
+    def get_value(self, tiles: List[Int], action: Int) -> Float64:
         """Get Q-value for state-action pair.
 
         Args:
@@ -129,7 +129,7 @@ struct TiledQLearningAgent:
         """
         return self.weights.get_value(tiles, action)
 
-    fn get_max_value(self, tiles: List[Int]) -> Float64:
+    def get_max_value(self, tiles: List[Int]) -> Float64:
         """Get maximum Q-value over all actions.
 
         Args:
@@ -141,7 +141,7 @@ struct TiledQLearningAgent:
         var best_action = self.weights.get_best_action(tiles)
         return self.weights.get_value(tiles, best_action)
 
-    fn update(
+    def update(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -171,19 +171,19 @@ struct TiledQLearningAgent:
 
         self.weights.update(tiles, action, target, self.learning_rate)
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay exploration rate."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current exploration rate."""
         return self.epsilon
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset for new episode (no-op, kept for interface compatibility)."""
         pass
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -246,7 +246,7 @@ struct TiledQLearningAgent:
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -328,7 +328,7 @@ struct TiledSARSAAgent:
     var epsilon_decay: Float64
     var epsilon_min: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -353,22 +353,22 @@ struct TiledSARSAAgent:
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Select action using epsilon-greedy policy."""
         if random_float64() < self.epsilon:
             return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.weights.get_best_action(tiles)
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action."""
         return self.weights.get_best_action(tiles)
 
-    fn get_value(self, tiles: List[Int], action: Int) -> Float64:
+    def get_value(self, tiles: List[Int], action: Int) -> Float64:
         """Get Q-value for state-action pair."""
         return self.weights.get_value(tiles, action)
 
-    fn update(
+    def update(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -397,19 +397,19 @@ struct TiledSARSAAgent:
 
         self.weights.update(tiles, action, target, self.learning_rate)
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay exploration rate."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current exploration rate."""
         return self.epsilon
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset for new episode."""
         pass
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -481,7 +481,7 @@ struct TiledSARSAAgent:
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -566,7 +566,7 @@ struct TiledSARSALambdaAgent:
     var epsilon_decay: Float64
     var epsilon_min: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -614,22 +614,22 @@ struct TiledSARSALambdaAgent:
                 action_traces.append(0.0)
             self.traces.append(action_traces^)
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Select action using epsilon-greedy policy."""
         if random_float64() < self.epsilon:
             return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.weights.get_best_action(tiles)
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action."""
         return self.weights.get_best_action(tiles)
 
-    fn get_value(self, tiles: List[Int], action: Int) -> Float64:
+    def get_value(self, tiles: List[Int], action: Int) -> Float64:
         """Get Q-value for state-action pair."""
         return self.weights.get_value(tiles, action)
 
-    fn update(
+    def update(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -676,21 +676,21 @@ struct TiledSARSALambdaAgent:
             for t in range(self.num_tiles):
                 self.traces[a][t] *= decay
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay exploration rate."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current exploration rate."""
         return self.epsilon
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset eligibility traces for new episode."""
         for a in range(self.num_actions):
             for t in range(self.num_tiles):
                 self.traces[a][t] = 0.0
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -763,7 +763,7 @@ struct TiledSARSALambdaAgent:
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -829,7 +829,7 @@ struct TiledSARSALambdaAgent:
         return total_reward / Float64(num_episodes)
 
 
-fn _obs_to_f64[
+def _obs_to_f64[
     DTYPE: DType
 ](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
     """Convert observation list to Float64."""

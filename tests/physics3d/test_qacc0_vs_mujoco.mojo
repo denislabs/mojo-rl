@@ -79,7 +79,7 @@ comptime REL_TOL: Float64 = 1e-3
 # =============================================================================
 
 
-fn compare_qacc0(
+def compare_qacc0(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
@@ -366,7 +366,7 @@ fn compare_qacc0(
 # =============================================================================
 
 
-fn test_gravity_only() raises:
+def test_gravity_only() raises:
     """Default pose, zero vel, zero actions — qacc0 = M^{-1} * gravity_bias."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
@@ -375,7 +375,7 @@ fn test_gravity_only() raises:
     compare_qacc0("Gravity only (default pose)", qpos, qvel, actions)
 
 
-fn test_with_actions() raises:
+def test_with_actions() raises:
     """Default pose, zero vel, with actions — qacc0 includes actuator forces."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7  # rootz
@@ -390,7 +390,7 @@ fn test_with_actions() raises:
     compare_qacc0("With actions", qpos, qvel, actions)
 
 
-fn test_nonzero_vel() raises:
+def test_nonzero_vel() raises:
     """Non-zero joints + velocity — qacc0 includes Coriolis + damping."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # rootx
@@ -409,7 +409,7 @@ fn test_nonzero_vel() raises:
     compare_qacc0("Nonzero vel (Coriolis + damping)", qpos, qvel, actions)
 
 
-fn test_full_combo() raises:
+def test_full_combo() raises:
     """Nonzero joints + velocity + actions — tests everything together."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
@@ -438,7 +438,7 @@ fn test_full_combo() raises:
     compare_qacc0("Full combo (vel + actions)", qpos, qvel, actions)
 
 
-fn test_ground_contact_pose() raises:
+def test_ground_contact_pose() raises:
     """Ground contact pose — qacc0 should not be affected by contacts.
     (contacts affect qacc via solver, but qacc0 = unconstrained acceleration).
     """
@@ -449,5 +449,5 @@ fn test_ground_contact_pose() raises:
     compare_qacc0("Ground contact pose (qacc0 unaffected)", qpos, qvel, actions)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

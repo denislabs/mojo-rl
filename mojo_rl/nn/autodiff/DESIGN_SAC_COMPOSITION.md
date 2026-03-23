@@ -207,11 +207,11 @@ trait GraphNode:
 
     # Delegate to inner Model
     @staticmethod
-    fn initialize_params[INIT](mut params): ...
+    def initialize_params[INIT](mut params): ...
     @staticmethod
-    fn forward[BATCH](input, mut output, params, mut cache): ...
+    def forward[BATCH](input, mut output, params, mut cache): ...
     @staticmethod
-    fn backward[BATCH](grad_output, mut grad_input, params, cache, mut grads): ...
+    def backward[BATCH](grad_output, mut grad_input, params, cache, mut grads): ...
     # + GPU variants
 
 
@@ -281,7 +281,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # --- Offset helpers (same pattern as Sequential/AutoDiffChain) ---
 
     @staticmethod
-    fn _act_offset[idx: Int]() -> Int:
+    def _act_offset[idx: Int]() -> Int:
         """Per-sample offset to node idx's activation in cache."""
         var total = 0
         comptime for j in range(idx):
@@ -289,7 +289,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return total
 
     @staticmethod
-    fn _cache_offset[idx: Int]() -> Int:
+    def _cache_offset[idx: Int]() -> Int:
         """Per-sample offset to node idx's op cache in cache."""
         var total = Self._total_act_size()  # After all activations
         comptime for j in range(idx):
@@ -297,7 +297,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return total
 
     @staticmethod
-    fn _param_offset[idx: Int]() -> Int:
+    def _param_offset[idx: Int]() -> Int:
         """Aligned offset to node idx's params."""
         var total = 0
         comptime for j in range(idx):
@@ -453,14 +453,14 @@ struct CompositeParams[*MODELS: Model]:
     comptime N = Variadic.size(Self.model_types)
 
     @staticmethod
-    fn _offset[idx: Int]() -> Int:
+    def _offset[idx: Int]() -> Int:
         var total = 0
         comptime for j in range(idx):
             total += _align4(Self.model_types[j].PARAM_SIZE)
         return total
 
     @staticmethod
-    fn _total_size() -> Int:
+    def _total_size() -> Int:
         var total = 0
         comptime for j in range(Self.N - 1):
             total += _align4(Self.model_types[j].PARAM_SIZE)
@@ -470,7 +470,7 @@ struct CompositeParams[*MODELS: Model]:
     comptime TOTAL_SIZE: Int = Self._total_size()
 
     @staticmethod
-    fn assemble(
+    def assemble(
         mut dst: InlineArray[Scalar[dtype], Self.TOTAL_SIZE],
         *sources: UnsafePointer[Scalar[dtype]],
     ):
@@ -484,7 +484,7 @@ struct CompositeParams[*MODELS: Model]:
                 dst[off + i] = sources[m][i]
 
     @staticmethod
-    fn scatter(
+    def scatter(
         src: InlineArray[Scalar[dtype], Self.TOTAL_SIZE],
         *dsts: UnsafePointer[Scalar[dtype]],
     ):

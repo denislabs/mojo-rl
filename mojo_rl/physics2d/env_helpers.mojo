@@ -79,7 +79,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn init_body[
+    def init_body[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -144,7 +144,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn init_body_full[
+    def init_body_full[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -180,7 +180,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn set_body_position[
+    def set_body_position[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -200,7 +200,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn set_body_velocity[
+    def set_body_velocity[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -226,7 +226,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_body_x[
+    def get_body_x[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -243,7 +243,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_body_y[
+    def get_body_y[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -260,7 +260,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_body_angle[
+    def get_body_angle[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -277,7 +277,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_body_vx[
+    def get_body_vx[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -294,7 +294,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_body_vy[
+    def get_body_vy[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -311,7 +311,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_body_omega[
+    def get_body_omega[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -328,7 +328,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_body_state[
+    def get_body_state[
         BATCH: Int,
         STATE_SIZE: Int,
         BODIES_OFFSET: Int,
@@ -363,7 +363,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn apply_force[
+    def apply_force[
         BATCH: Int,
         STATE_SIZE: Int,
         FORCES_OFFSET: Int,
@@ -388,7 +388,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn set_force[
+    def set_force[
         BATCH: Int,
         STATE_SIZE: Int,
         FORCES_OFFSET: Int,
@@ -410,7 +410,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn clear_forces[
+    def clear_forces[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -434,7 +434,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_joint_count[
+    def get_joint_count[
         BATCH: Int,
         STATE_SIZE: Int,
         JOINT_COUNT_OFFSET: Int,
@@ -449,7 +449,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn set_joint_count[
+    def set_joint_count[
         BATCH: Int,
         STATE_SIZE: Int,
         JOINT_COUNT_OFFSET: Int,
@@ -465,7 +465,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn add_revolute_joint[
+    def add_revolute_joint[
         BATCH: Int,
         MAX_JOINTS: Int,
         STATE_SIZE: Int,
@@ -553,7 +553,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_edge_count[
+    def get_edge_count[
         BATCH: Int,
         STATE_SIZE: Int,
         EDGE_COUNT_OFFSET: Int,
@@ -568,7 +568,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn set_edge_count[
+    def set_edge_count[
         BATCH: Int,
         STATE_SIZE: Int,
         EDGE_COUNT_OFFSET: Int,
@@ -584,7 +584,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn set_edge[
+    def set_edge[
         BATCH: Int,
         STATE_SIZE: Int,
         EDGES_OFFSET: Int,
@@ -612,7 +612,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn set_flat_terrain[
+    def set_flat_terrain[
         BATCH: Int,
         STATE_SIZE: Int,
         EDGES_OFFSET: Int,
@@ -641,7 +641,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_metadata[
+    def get_metadata[
         BATCH: Int,
         STATE_SIZE: Int,
         METADATA_OFFSET: Int,
@@ -657,7 +657,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn set_metadata[
+    def set_metadata[
         BATCH: Int,
         STATE_SIZE: Int,
         METADATA_OFFSET: Int,
@@ -678,7 +678,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn get_observation[
+    def get_observation[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,
@@ -694,7 +694,7 @@ struct PhysicsEnvHelpers:
 
     @staticmethod
     @always_inline
-    fn set_observation[
+    def set_observation[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,

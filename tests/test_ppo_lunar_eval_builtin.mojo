@@ -33,7 +33,7 @@ comptime GPU_MINIBATCH_SIZE = 512
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Continuous - Built-in evaluate_gpu Test")

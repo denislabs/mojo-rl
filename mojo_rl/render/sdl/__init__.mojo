@@ -65,7 +65,7 @@ from std.ffi import (
 comptime lib = _Global["SDL", _init_sdl_handle]()
 
 
-fn _init_sdl_handle() -> OwnedDLHandle:
+def _init_sdl_handle() -> OwnedDLHandle:
     try:
         comptime if CompilationTarget.is_macos():
             return OwnedDLHandle(".pixi/envs/default/lib/libSDL3.dylib")
@@ -80,7 +80,7 @@ fn _init_sdl_handle() -> OwnedDLHandle:
 
 
 @always_inline
-fn _uninit[T: AnyType](out value: T):
+def _uninit[T: AnyType](out value: T):
     """Returns uninitialized data."""
     __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(value))
 

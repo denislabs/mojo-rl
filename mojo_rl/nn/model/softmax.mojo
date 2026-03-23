@@ -24,19 +24,21 @@ struct Softmax[dim: Int](Model):
     comptime CACHE_SIZE: Int = Self.dim  # Cache softmax output for backward
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer, no workspace needed
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor for Sequential composition."""
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor for Copyable trait."""
         pass
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -44,7 +46,7 @@ struct Softmax[dim: Int](Model):
         pass
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -89,7 +91,7 @@ struct Softmax[dim: Int](Model):
                 cache[batch, i] = softmax_val  # Cache for backward
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -128,7 +130,7 @@ struct Softmax[dim: Int](Model):
                 output[batch, i] = exp_val / sum_exp
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -184,7 +186,7 @@ struct Softmax[dim: Int](Model):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl[
+    def forward_kernel_impl[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -237,7 +239,7 @@ struct Softmax[dim: Int](Model):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl_no_cache[
+    def forward_kernel_impl_no_cache[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -281,7 +283,7 @@ struct Softmax[dim: Int](Model):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int,
     ](
         grad_input: LayoutTensor[
@@ -324,7 +326,7 @@ struct Softmax[dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -350,7 +352,7 @@ struct Softmax[dim: Int](Model):
         ](input.ptr)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -373,7 +375,7 @@ struct Softmax[dim: Int](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -396,7 +398,7 @@ struct Softmax[dim: Int](Model):
         ](input.ptr)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -414,7 +416,7 @@ struct Softmax[dim: Int](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -434,7 +436,7 @@ struct Softmax[dim: Int](Model):
         Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -466,7 +468,7 @@ struct Softmax[dim: Int](Model):
         ](cache.ptr)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],

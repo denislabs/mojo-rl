@@ -215,7 +215,7 @@ trait ModelDefLike:
 
     # === CPU: Model setup (calls Bodies/Joints/Geoms/Defaults internally) ===
     @staticmethod
-    fn setup_model_and_data[
+    def setup_model_and_data[
         DTYPE: DType
     ](
         mut model: Model[
@@ -245,7 +245,7 @@ trait ModelDefLike:
 
     # === CPU: Joints/Actuators delegates ===
     @staticmethod
-    fn reset_data[
+    def reset_data[
         DTYPE: DType
     ](
         mut data: Data[
@@ -261,7 +261,7 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    fn extract_obs[
+    def extract_obs[
         DTYPE: DType
     ](
         data: Data[
@@ -278,7 +278,7 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    fn enforce_limits[
+    def enforce_limits[
         DTYPE: DType
     ](
         mut data: Data[
@@ -294,7 +294,7 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    fn apply_actions[
+    def apply_actions[
         DTYPE: DType
     ](
         mut data: Data[
@@ -314,14 +314,14 @@ trait ModelDefLike:
 
     # === GPU: Model init ===
     @staticmethod
-    fn init_model_gpu[
+    def init_model_gpu[
         DTYPE: DType
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
         ...
 
     # === GPU: Joints/Actuators kernel delegates ===
     @staticmethod
-    fn apply_actions_kernel_gpu[
+    def apply_actions_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -334,7 +334,7 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    fn enforce_limits_kernel_gpu[
+    def enforce_limits_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -342,7 +342,7 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -357,7 +357,7 @@ trait ModelDefLike:
     # === GPU inline: Per-env methods (called from inside GPU kernels) ===
     @always_inline
     @staticmethod
-    fn reset_env_gpu[
+    def reset_env_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -373,7 +373,7 @@ trait ModelDefLike:
 
     @always_inline
     @staticmethod
-    fn extract_obs_gpu[
+    def extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -390,7 +390,7 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    fn render_ground_geoms(
+    def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,
         follow: Bool,
@@ -399,7 +399,7 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    fn render_body_geoms(
+    def render_body_geoms(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -408,27 +408,27 @@ trait ModelDefLike:
         ...
 
     @staticmethod
-    fn setup_lights() raises -> List[Light]:
+    def setup_lights() raises -> List[Light]:
         ...
 
     @staticmethod
-    fn setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
+    def setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
         ...
 
     @staticmethod
-    fn setup_camera_modes() raises -> List[Int]:
+    def setup_camera_modes() raises -> List[Int]:
         ...
 
     @staticmethod
-    fn get_skybox_colors() -> List[Float64]:
+    def get_skybox_colors() -> List[Float64]:
         ...
 
     @staticmethod
-    fn get_checker_colors() -> List[Float64]:
+    def get_checker_colors() -> List[Float64]:
         ...
 
     @staticmethod
-    fn render_sites(
+    def render_sites(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -497,7 +497,7 @@ struct ModelDef[
     # =========================================================================
 
     @staticmethod
-    fn setup_solver_params[
+    def setup_solver_params[
         DTYPE: DType,
         MAX_CONTACTS: Int,
     ](
@@ -560,7 +560,7 @@ struct ModelDef[
         model.opt_viscosity = Scalar[DTYPE](Self.Defaults.OPT_VISCOSITY)
 
     @staticmethod
-    fn finalize[
+    def finalize[
         DTYPE: DType,
         MAX_CONTACTS: Int,
     ](
@@ -625,7 +625,7 @@ struct ModelDef[
         compute_body_invweight0(model, data)
 
     @staticmethod
-    fn setup_model_and_data[
+    def setup_model_and_data[
         DTYPE: DType
     ](
         mut model: Model[
@@ -661,7 +661,7 @@ struct ModelDef[
 
     # === GPU: Model init ===
     @staticmethod
-    fn init_model_gpu[
+    def init_model_gpu[
         DTYPE: DType
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
         """Initialize GPU model buffer by writing directly to HostBuffer.
@@ -725,7 +725,7 @@ struct ModelDef[
         Self._compute_invweight0_gpu[DTYPE](ctx, model_buf)
 
     @staticmethod
-    fn _write_metadata_to_buffer[
+    def _write_metadata_to_buffer[
         DTYPE: DType,
     ](buffer: HostBuffer[DTYPE]):
         """Write model metadata directly to GPU HostBuffer."""
@@ -801,7 +801,7 @@ struct ModelDef[
         )
 
     @staticmethod
-    fn _settotalmass_buffer[
+    def _settotalmass_buffer[
         DTYPE: DType,
     ](buffer: HostBuffer[DTYPE]):
         """Rescale body masses/inertias so total matches target (buffer version).
@@ -824,7 +824,7 @@ struct ModelDef[
                 buffer[off + BODY_IDX_INV_IZZ] /= scale
 
     @staticmethod
-    fn _compute_invweight0_gpu[
+    def _compute_invweight0_gpu[
         DTYPE: DType,
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE]) raises:
         """Compute invweight0 on GPU via a single-thread kernel.
@@ -863,7 +863,7 @@ struct ModelDef[
 
         # Kernel: init state to zero, run FK + mass matrix + LDL, compute invweight0
         @always_inline
-        fn invweight0_kernel(
+        def invweight0_kernel(
             state: LayoutTensor[
                 DTYPE, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
             ],
@@ -1247,7 +1247,7 @@ struct ModelDef[
 
     # === CPU: Joints/Actuators delegates ===
     @staticmethod
-    fn reset_data[
+    def reset_data[
         DTYPE: DType
     ](
         mut data: Data[
@@ -1263,7 +1263,7 @@ struct ModelDef[
         Self.Joints.reset_data(data)
 
     @staticmethod
-    fn extract_obs[
+    def extract_obs[
         DTYPE: DType
     ](
         data: Data[
@@ -1280,7 +1280,7 @@ struct ModelDef[
         Self.Joints.extract_obs(data, obs)
 
     @staticmethod
-    fn enforce_limits[
+    def enforce_limits[
         DTYPE: DType
     ](
         mut data: Data[
@@ -1296,7 +1296,7 @@ struct ModelDef[
         Self.Joints.enforce_limits(data)
 
     @staticmethod
-    fn apply_actions[
+    def apply_actions[
         DTYPE: DType
     ](
         mut data: Data[
@@ -1314,7 +1314,7 @@ struct ModelDef[
 
     # === GPU: Joints/Actuators kernel delegates ===
     @staticmethod
-    fn apply_actions_kernel_gpu[
+    def apply_actions_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1329,7 +1329,7 @@ struct ModelDef[
         ](ctx, states_buf, actions_buf)
 
     @staticmethod
-    fn enforce_limits_kernel_gpu[
+    def enforce_limits_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1339,7 +1339,7 @@ struct ModelDef[
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1356,7 +1356,7 @@ struct ModelDef[
     # === GPU inline: Per-env delegates ===
     @always_inline
     @staticmethod
-    fn reset_env_gpu[
+    def reset_env_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1374,7 +1374,7 @@ struct ModelDef[
 
     @always_inline
     @staticmethod
-    fn extract_obs_gpu[
+    def extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1393,7 +1393,7 @@ struct ModelDef[
         )
 
     @staticmethod
-    fn create_gpu_model_buffer[
+    def create_gpu_model_buffer[
         DTYPE: DType,
         MAX_CONTACTS: Int,
     ](
@@ -1437,7 +1437,7 @@ struct ModelDef[
         return host_buf^
 
     @staticmethod
-    fn render_ground_geoms(
+    def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,
         follow: Bool,
@@ -1448,7 +1448,7 @@ struct ModelDef[
         )
 
     @staticmethod
-    fn render_body_geoms(
+    def render_body_geoms(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -1459,27 +1459,27 @@ struct ModelDef[
         )
 
     @staticmethod
-    fn setup_lights() raises -> List[Light]:
+    def setup_lights() raises -> List[Light]:
         return Self.Lights.setup_lights()
 
     @staticmethod
-    fn setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
+    def setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
         return Self.Cameras.setup_cameras(width, height)
 
     @staticmethod
-    fn setup_camera_modes() raises -> List[Int]:
+    def setup_camera_modes() raises -> List[Int]:
         return Self.Cameras.setup_camera_modes()
 
     @staticmethod
-    fn get_skybox_colors() -> List[Float64]:
+    def get_skybox_colors() -> List[Float64]:
         return Self.Textures.get_skybox_colors()
 
     @staticmethod
-    fn get_checker_colors() -> List[Float64]:
+    def get_checker_colors() -> List[Float64]:
         return Self.Textures.get_checker_colors()
 
     @staticmethod
-    fn render_sites(
+    def render_sites(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],

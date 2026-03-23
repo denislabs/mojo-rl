@@ -47,7 +47,7 @@ from mojo_rl.nn.constants import (
 from linalg.matmul import matmul as max_matmul
 
 
-fn main() raises:
+def main() raises:
     seed(42)
 
     # ── Test all 3 Atari DQN conv layers ──
@@ -74,7 +74,7 @@ fn main() raises:
     print("=" * 70)
 
 
-fn benchmark_dW[
+def benchmark_dW[
     M: Int,  # out_channels
     N: Int,  # col_size
     K: Int,  # BATCH * spatial_out
@@ -90,10 +90,21 @@ fn benchmark_dW[
     var flops = 2.0 * Float64(M) * Float64(N) * Float64(K)
 
     print(
-        "  " + name + ": dW = ("
-        + String(M) + ", " + String(K) + ") @ ("
-        + String(K) + ", " + String(N) + ") → ("
-        + String(M) + ", " + String(N) + ")"
+        "  "
+        + name
+        + ": dW = ("
+        + String(M)
+        + ", "
+        + String(K)
+        + ") @ ("
+        + String(K)
+        + ", "
+        + String(N)
+        + ") → ("
+        + String(M)
+        + ", "
+        + String(N)
+        + ")"
     )
 
     # Allocate
@@ -115,18 +126,18 @@ fn benchmark_dW[
     ctx.enqueue_memset(c_buf2, 0)
     ctx.synchronize()
 
-    var a_tensor = LayoutTensor[
-        dtype, Layout.row_major(M, K), MutAnyOrigin
-    ](a_buf.unsafe_ptr())
-    var b_tensor = LayoutTensor[
-        dtype, Layout.row_major(K, N), MutAnyOrigin
-    ](b_buf.unsafe_ptr())
-    var c1_tensor = LayoutTensor[
-        dtype, Layout.row_major(M, N), MutAnyOrigin
-    ](c_buf1.unsafe_ptr())
-    var c2_tensor = LayoutTensor[
-        dtype, Layout.row_major(M, N), MutAnyOrigin
-    ](c_buf2.unsafe_ptr())
+    var a_tensor = LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin](
+        a_buf.unsafe_ptr()
+    )
+    var b_tensor = LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin](
+        b_buf.unsafe_ptr()
+    )
+    var c1_tensor = LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin](
+        c_buf1.unsafe_ptr()
+    )
+    var c2_tensor = LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin](
+        c_buf2.unsafe_ptr()
+    )
 
     # ── Warmup ──
     max_matmul[target="gpu"](c1_tensor, a_tensor, b_tensor, ctx)
@@ -156,9 +167,11 @@ fn benchmark_dW[
     comptime dW_grid_y = (M + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
     @always_inline
-    fn dW_mma_wrapper(
+    def dW_mma_wrapper(
         c: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
-        a: LayoutTensor[dtype, Layout.row_major(K, M), MutAnyOrigin],  # transposed for cache.T
+        a: LayoutTensor[
+            dtype, Layout.row_major(K, M), MutAnyOrigin
+        ],  # transposed for cache.T
         b: LayoutTensor[dtype, Layout.row_major(K, N), MutAnyOrigin],
     ):
         # Simulates backward_dW_kernel_mma: dW = A.T @ B
@@ -173,11 +186,15 @@ fn benchmark_dW[
             var block_col = Int(block_idx.x) * MMA_BLOCK_N
 
             var a_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_BLOCK_M, MMA_K), MutAnyOrigin,
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
                 address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
-                dtype, Layout.row_major(MMA_K, MMA_BLOCK_N), MutAnyOrigin,
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
                 address_space=AddressSpace.SHARED,
             ].stack_allocation()
 
@@ -194,7 +211,9 @@ fn benchmark_dW[
                 var a_r = tid // MMA_K
                 var a_c = tid % MMA_K
                 if k_off + a_c < K and block_row + a_r < M:
-                    a_smem[a_r, a_c] = a[k_off + a_c, block_row + a_r]  # transposed load
+                    a_smem[a_r, a_c] = a[
+                        k_off + a_c, block_row + a_r
+                    ]  # transposed load
                 else:
                     a_smem[a_r, a_c] = 0
 
@@ -209,15 +228,29 @@ fn benchmark_dW[
 
                 var warp_row = warp_m * MMA_M
                 var a_frag = SIMD[DType.float32, 4](
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id), Int(group_lane) + 4]),
-                    rebind[Scalar[DType.float32]](a_smem[warp_row + Int(group_id) + 8, Int(group_lane) + 4]),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id) + 8, Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane) + 4]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane) + 4
+                        ]
+                    ),
                 )
                 var warp_col = warp_n * MMA_N
                 var b_frag = SIMD[DType.float32, 2](
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane), warp_col + Int(group_id)]),
-                    rebind[Scalar[DType.float32]](b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane) + 4, warp_col + Int(group_id)]
+                    ),
                 )
 
                 mma(acc, a_frag, b_frag, acc)
@@ -244,7 +277,9 @@ fn benchmark_dW[
     ](a_buf.unsafe_ptr())
 
     ctx.enqueue_function[dW_mma_wrapper, dW_mma_wrapper](
-        c2_tensor, a_transposed, b_tensor,
+        c2_tensor,
+        a_transposed,
+        b_tensor,
         grid_dim=(dW_grid_x, dW_grid_y),
         block_dim=(MMA_BLOCK_THREADS, 1),
     )
@@ -254,7 +289,9 @@ fn benchmark_dW[
     var t2 = perf_counter_ns()
     for _ in range(N_ITERS):
         ctx.enqueue_function[dW_mma_wrapper, dW_mma_wrapper](
-            c2_tensor, a_transposed, b_tensor,
+            c2_tensor,
+            a_transposed,
+            b_tensor,
             grid_dim=(dW_grid_x, dW_grid_y),
             block_dim=(MMA_BLOCK_THREADS, 1),
         )
@@ -276,5 +313,6 @@ fn benchmark_dW[
     print(
         "    >>> max_matmul is "
         + String(speedup)[:5]
-        + "x " + ("faster" if speedup > 1.0 else "slower")
+        + "x "
+        + ("faster" if speedup > 1.0 else "slower")
     )

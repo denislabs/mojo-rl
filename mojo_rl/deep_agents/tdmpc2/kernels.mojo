@@ -46,7 +46,7 @@ from std.math import abs as math_abs
 
 
 @always_inline
-fn _symlog[
+def _symlog[
     dtype: DType
 ](x: Scalar[dtype]) -> Scalar[dtype] where dtype.is_floating_point():
     """Symmetric logarithm: sign(x) * ln(1 + |x|).
@@ -61,7 +61,7 @@ fn _symlog[
 
 
 @always_inline
-fn _symexp[
+def _symexp[
     dtype: DType
 ](x: Scalar[dtype]) -> Scalar[dtype] where dtype.is_floating_point():
     """Inverse of symlog: sign(x) * (exp(|x|) - 1).
@@ -81,7 +81,7 @@ fn _symexp[
 
 
 @always_inline
-fn tdmpc2_random_actions_kernel[
+def tdmpc2_random_actions_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
@@ -115,7 +115,7 @@ fn tdmpc2_random_actions_kernel[
 
 
 @always_inline
-fn tdmpc2_sample_actions_kernel[
+def tdmpc2_sample_actions_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
@@ -188,7 +188,7 @@ fn tdmpc2_sample_actions_kernel[
 
 
 @always_inline
-fn tdmpc2_build_za_kernel[
+def tdmpc2_build_za_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     LATENT_DIM: Int,
@@ -226,7 +226,7 @@ fn tdmpc2_build_za_kernel[
 
 
 @always_inline
-fn tdmpc2_extract_z_from_za_grad_kernel[
+def tdmpc2_extract_z_from_za_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     LATENT_DIM: Int,
@@ -260,7 +260,7 @@ fn tdmpc2_extract_z_from_za_grad_kernel[
 
 
 @always_inline
-fn tdmpc2_extract_obs_step_kernel[
+def tdmpc2_extract_obs_step_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     OBS_DIM: Int,
@@ -297,7 +297,7 @@ fn tdmpc2_extract_obs_step_kernel[
 
 
 @always_inline
-fn tdmpc2_extract_act_step_kernel[
+def tdmpc2_extract_act_step_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
@@ -334,7 +334,7 @@ fn tdmpc2_extract_act_step_kernel[
 
 
 @always_inline
-fn tdmpc2_extract_scalar_step_kernel[
+def tdmpc2_extract_scalar_step_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     HORIZON: Int,
@@ -371,7 +371,7 @@ fn tdmpc2_extract_scalar_step_kernel[
 
 
 @always_inline
-fn tdmpc2_consistency_loss_grad_kernel[
+def tdmpc2_consistency_loss_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     LATENT_DIM: Int,
@@ -413,7 +413,7 @@ fn tdmpc2_consistency_loss_grad_kernel[
 
 
 @always_inline
-fn tdmpc2_two_hot_loss_grad_kernel[
+def tdmpc2_two_hot_loss_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     BINS: Int,
@@ -465,7 +465,7 @@ fn tdmpc2_two_hot_loss_grad_kernel[
 
 
 @always_inline
-fn tdmpc2_bce_loss_grad_kernel[
+def tdmpc2_bce_loss_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
 ](
@@ -517,7 +517,7 @@ fn tdmpc2_bce_loss_grad_kernel[
 
 
 @always_inline
-fn tdmpc2_q_decode_kernel[
+def tdmpc2_q_decode_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     BINS: Int,
@@ -566,7 +566,7 @@ fn tdmpc2_q_decode_kernel[
 
 
 @always_inline
-fn tdmpc2_compute_td_targets_kernel[
+def tdmpc2_compute_td_targets_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     BINS: Int,
@@ -636,7 +636,7 @@ fn tdmpc2_compute_td_targets_kernel[
 
 
 @always_inline
-fn tdmpc2_compute_reward_targets_kernel[
+def tdmpc2_compute_reward_targets_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     BINS: Int,
@@ -699,7 +699,7 @@ fn tdmpc2_compute_reward_targets_kernel[
 
 
 @always_inline
-fn tdmpc2_q_decode_backward_kernel[
+def tdmpc2_q_decode_backward_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     BINS: Int,
@@ -764,7 +764,7 @@ fn tdmpc2_q_decode_backward_kernel[
 
 
 @always_inline
-fn tdmpc2_action_tanh_chain_kernel[
+def tdmpc2_action_tanh_chain_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
@@ -864,7 +864,7 @@ fn tdmpc2_action_tanh_chain_kernel[
 
 # Legacy kernel kept for compatibility but replaced by proper DPG chain above
 @always_inline
-fn tdmpc2_policy_grad_kernel[
+def tdmpc2_policy_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
@@ -886,7 +886,7 @@ fn tdmpc2_policy_grad_kernel[
 
 
 @always_inline
-fn tdmpc2_apply_tanh_kernel[
+def tdmpc2_apply_tanh_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
@@ -925,7 +925,7 @@ fn tdmpc2_apply_tanh_kernel[
 
 
 @always_inline
-fn tdmpc2_q_min_reduce_kernel[
+def tdmpc2_q_min_reduce_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
 ](
@@ -959,7 +959,7 @@ fn tdmpc2_q_min_reduce_kernel[
 
 
 @always_inline
-fn tdmpc2_zero_kernel[
+def tdmpc2_zero_kernel[
     dtype: DType,
     SIZE: Int,
 ](
@@ -982,7 +982,7 @@ fn tdmpc2_zero_kernel[
 
 
 @always_inline
-fn tdmpc2_add_into_kernel[
+def tdmpc2_add_into_kernel[
     dtype: DType,
     SIZE: Int,
 ](
@@ -1010,7 +1010,7 @@ fn tdmpc2_add_into_kernel[
 
 
 @always_inline
-fn tdmpc2_extract_rew_done_kernel[
+def tdmpc2_extract_rew_done_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     HORIZON: Int,
@@ -1049,7 +1049,7 @@ fn tdmpc2_extract_rew_done_kernel[
 
 
 @always_inline
-fn tdmpc2_decode_and_min_kernel[
+def tdmpc2_decode_and_min_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     BINS: Int,
@@ -1104,7 +1104,7 @@ fn tdmpc2_decode_and_min_kernel[
 
 
 @always_inline
-fn tdmpc2_extract_all_build_za_kernel[
+def tdmpc2_extract_all_build_za_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     OBS_DIM: Int,
@@ -1183,7 +1183,7 @@ fn tdmpc2_extract_all_build_za_kernel[
 
 
 @always_inline
-fn tdmpc2_extract_obs_rew_done_kernel[
+def tdmpc2_extract_obs_rew_done_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     OBS_DIM: Int,
@@ -1227,7 +1227,7 @@ fn tdmpc2_extract_obs_rew_done_kernel[
 
 
 @always_inline
-fn tdmpc2_apply_tanh_build_za_kernel[
+def tdmpc2_apply_tanh_build_za_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
@@ -1301,7 +1301,7 @@ fn tdmpc2_apply_tanh_build_za_kernel[
 
 
 @always_inline
-fn tdmpc2_apply_tanh_build_za_deterministic_kernel[
+def tdmpc2_apply_tanh_build_za_deterministic_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
@@ -1339,7 +1339,7 @@ fn tdmpc2_apply_tanh_build_za_deterministic_kernel[
 
 
 @always_inline
-fn tdmpc2_soft_update_5q_kernel[
+def tdmpc2_soft_update_5q_kernel[
     dtype: DType,
     SIZE: Int,
 ](
@@ -1373,7 +1373,7 @@ fn tdmpc2_soft_update_5q_kernel[
 
 
 @always_inline
-fn tdmpc2_add_two_into_kernel[
+def tdmpc2_add_two_into_kernel[
     dtype: DType,
     SIZE: Int,
 ](
@@ -1404,7 +1404,7 @@ fn tdmpc2_add_two_into_kernel[
 
 
 @always_inline
-fn tdmpc2_gradient_norm_5q_kernel[
+def tdmpc2_gradient_norm_5q_kernel[
     dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
 ](
     partial_sums_5q: LayoutTensor[
@@ -1517,7 +1517,7 @@ fn tdmpc2_gradient_norm_5q_kernel[
 
 
 @always_inline
-fn tdmpc2_gradient_reduce_apply_5q_kernel[
+def tdmpc2_gradient_reduce_apply_5q_kernel[
     dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
 ](
     grads1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -1690,7 +1690,7 @@ fn tdmpc2_gradient_reduce_apply_5q_kernel[
 
 
 @always_inline
-fn tdmpc2_adam_step_5q_kernel[
+def tdmpc2_adam_step_5q_kernel[
     dtype: DType, PARAM_SIZE: Int
 ](
     params1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -1795,7 +1795,7 @@ fn tdmpc2_adam_step_5q_kernel[
 
 
 @always_inline
-fn mppi_broadcast_z0_kernel[
+def mppi_broadcast_z0_kernel[
     dtype: DType,
     TOTAL_SAMPLES: Int,
     LATENT_DIM: Int,
@@ -1822,7 +1822,7 @@ fn mppi_broadcast_z0_kernel[
 
 
 @always_inline
-fn mppi_sample_actions_kernel[
+def mppi_sample_actions_kernel[
     dtype: DType,
     TOTAL_SAMPLES: Int,
     NUM_PI_TRAJS: Int,
@@ -1904,7 +1904,7 @@ fn mppi_sample_actions_kernel[
 
 
 @always_inline
-fn mppi_accumulate_reward_kernel[
+def mppi_accumulate_reward_kernel[
     dtype: DType,
     TOTAL_SAMPLES: Int,
     BINS: Int,
@@ -1952,7 +1952,7 @@ fn mppi_accumulate_reward_kernel[
 
 
 @always_inline
-fn mppi_add_terminal_value_kernel[
+def mppi_add_terminal_value_kernel[
     dtype: DType,
     TOTAL_SAMPLES: Int,
 ](
@@ -1977,7 +1977,7 @@ fn mppi_add_terminal_value_kernel[
 
 
 @always_inline
-fn mppi_copy_z_kernel[
+def mppi_copy_z_kernel[
     dtype: DType,
     TOTAL_SAMPLES: Int,
     LATENT_DIM: Int,
@@ -2009,7 +2009,7 @@ fn mppi_copy_z_kernel[
 
 
 @always_inline
-fn mppi_broadcast_z0_batched_kernel[
+def mppi_broadcast_z0_batched_kernel[
     dtype: DType,
     BATCH_TOTAL: Int,
     N_ENVS: Int,
@@ -2036,7 +2036,7 @@ fn mppi_broadcast_z0_batched_kernel[
 
 
 @always_inline
-fn mppi_sample_actions_batched_kernel[
+def mppi_sample_actions_batched_kernel[
     dtype: DType,
     BATCH_TOTAL: Int,
     N_ENVS: Int,
@@ -2118,7 +2118,7 @@ fn mppi_sample_actions_batched_kernel[
 
 
 @always_inline
-fn mppi_softmax_weights_kernel[
+def mppi_softmax_weights_kernel[
     dtype: DType,
     N_ENVS: Int,
     TOTAL_SAMPLES: Int,
@@ -2214,7 +2214,7 @@ fn mppi_softmax_weights_kernel[
 
 
 @always_inline
-fn mppi_weighted_mean_std_kernel[
+def mppi_weighted_mean_std_kernel[
     dtype: DType,
     N_ENVS: Int,
     TOTAL_SAMPLES: Int,
@@ -2295,7 +2295,7 @@ fn mppi_weighted_mean_std_kernel[
 
 
 @always_inline
-fn tdmpc2_min5_q_values_kernel[
+def tdmpc2_min5_q_values_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
 ](
@@ -2337,28 +2337,16 @@ fn tdmpc2_min5_q_values_kernel[
 
 
 @always_inline
-fn q5_concat_params_kernel[
+def q5_concat_params_kernel[
     dtype: DType,
     PARAM_SIZE: Int,
 ](
-    dst: LayoutTensor[
-        dtype, Layout.row_major(5 * PARAM_SIZE), MutAnyOrigin
-    ],
-    src1: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
-    ],
-    src2: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
-    ],
-    src3: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
-    ],
-    src4: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
-    ],
-    src5: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
-    ],
+    dst: LayoutTensor[dtype, Layout.row_major(5 * PARAM_SIZE), MutAnyOrigin],
+    src1: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    src2: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    src3: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    src4: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+    src5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
 ) where dtype.is_floating_point():
     """Concatenate 5 Q-network param buffers into one contiguous buffer.
 
@@ -2375,7 +2363,7 @@ fn q5_concat_params_kernel[
 
 
 @always_inline
-fn q5_replicate_input_kernel[
+def q5_replicate_input_kernel[
     dtype: DType,
     GROUP_SIZE: Int,
     DIM: Int,
@@ -2384,9 +2372,7 @@ fn q5_replicate_input_kernel[
     output: LayoutTensor[
         dtype, Layout.row_major(NUM_Q * GROUP_SIZE, DIM), MutAnyOrigin
     ],
-    input: LayoutTensor[
-        dtype, Layout.row_major(GROUP_SIZE, DIM), MutAnyOrigin
-    ],
+    input: LayoutTensor[dtype, Layout.row_major(GROUP_SIZE, DIM), MutAnyOrigin],
 ) where dtype.is_floating_point():
     """Replicate input NUM_Q times: output[g*GROUP_SIZE + i, :] = input[i, :].
 
@@ -2402,7 +2388,7 @@ fn q5_replicate_input_kernel[
 
 
 @always_inline
-fn q5_grouped_matmul_bias_kernel[
+def q5_grouped_matmul_bias_kernel[
     dtype: DType,
     NUM_Q: Int,
     GROUP_SIZE: Int,
@@ -2447,14 +2433,14 @@ fn q5_grouped_matmul_bias_kernel[
         dtype,
         Layout.row_major(_TILE, _TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_shared = LayoutTensor[
         dtype,
         Layout.row_major(_TILE, _TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # Initialize accumulator with bias
@@ -2489,7 +2475,7 @@ fn q5_grouped_matmul_bias_kernel[
 
 
 @always_inline
-fn q5_grouped_ln_mish_kernel[
+def q5_grouped_ln_mish_kernel[
     dtype: DType,
     NUM_Q: Int,
     GROUP_SIZE: Int,
@@ -2563,7 +2549,7 @@ fn q5_grouped_ln_mish_kernel[
 
 
 @always_inline
-fn q5_decode_min_kernel[
+def q5_decode_min_kernel[
     dtype: DType,
     NUM_Q: Int,
     GROUP_SIZE: Int,
@@ -2598,18 +2584,12 @@ fn q5_decode_min_kernel[
 
         var sum_exp = Scalar[dtype](0.0)
         for k in range(BINS):
-            sum_exp = sum_exp + exp(
-                Scalar[dtype](logits[row, k][0]) - max_l
-            )
+            sum_exp = sum_exp + exp(Scalar[dtype](logits[row, k][0]) - max_l)
 
         var expected_val = Scalar[dtype](0.0)
         for k in range(BINS):
-            var sm_k = exp(
-                Scalar[dtype](logits[row, k][0]) - max_l
-            ) / sum_exp
-            expected_val = expected_val + sm_k * Scalar[dtype](
-                bins[k][0]
-            )
+            var sm_k = exp(Scalar[dtype](logits[row, k][0]) - max_l) / sum_exp
+            expected_val = expected_val + sm_k * Scalar[dtype](bins[k][0])
 
         var val = _symexp[dtype](expected_val)
         if val < min_val:
@@ -2623,16 +2603,14 @@ fn q5_decode_min_kernel[
 # =============================================================================
 
 
-fn mppi_broadcast_z0_zero_returns_batched_kernel[
+def mppi_broadcast_z0_zero_returns_batched_kernel[
     dtype: DType,
     BATCH_TOTAL: Int,
     N_ENVS: Int,
     TOTAL_SAMPLES: Int,
     LATENT_DIM: Int,
 ](
-    z0: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin
-    ],
+    z0: LayoutTensor[dtype, Layout.row_major(N_ENVS, LATENT_DIM), MutAnyOrigin],
     z_all: LayoutTensor[
         dtype, Layout.row_major(BATCH_TOTAL, LATENT_DIM), MutAnyOrigin
     ],
@@ -2653,7 +2631,7 @@ fn mppi_broadcast_z0_zero_returns_batched_kernel[
 
 
 @always_inline
-fn mppi_sample_actions_build_za_batched_kernel[
+def mppi_sample_actions_build_za_batched_kernel[
     dtype: DType,
     BATCH_TOTAL: Int,
     N_ENVS: Int,
@@ -2744,7 +2722,7 @@ fn mppi_sample_actions_build_za_batched_kernel[
         all_actions[i * HORIZON * ACTION_DIM + step * ACTION_DIM + j] = act
 
 
-fn mppi_accum_reward_copy_z_kernel[
+def mppi_accum_reward_copy_z_kernel[
     dtype: DType,
     TOTAL_SAMPLES: Int,
     BINS: Int,
@@ -2796,7 +2774,7 @@ fn mppi_accum_reward_copy_z_kernel[
         z_dst[i, k] = z_src[i, k]
 
 
-fn q5_decode_min_add_terminal_kernel[
+def q5_decode_min_add_terminal_kernel[
     dtype: DType,
     NUM_Q: Int,
     GROUP_SIZE: Int,
@@ -2831,18 +2809,12 @@ fn q5_decode_min_add_terminal_kernel[
 
         var sum_exp = Scalar[dtype](0.0)
         for k in range(BINS):
-            sum_exp = sum_exp + exp(
-                Scalar[dtype](logits[row, k][0]) - max_l
-            )
+            sum_exp = sum_exp + exp(Scalar[dtype](logits[row, k][0]) - max_l)
 
         var expected_val = Scalar[dtype](0.0)
         for k in range(BINS):
-            var sm_k = exp(
-                Scalar[dtype](logits[row, k][0]) - max_l
-            ) / sum_exp
-            expected_val = expected_val + sm_k * Scalar[dtype](
-                bins[k][0]
-            )
+            var sm_k = exp(Scalar[dtype](logits[row, k][0]) - max_l) / sum_exp
+            expected_val = expected_val + sm_k * Scalar[dtype](bins[k][0])
 
         var val = _symexp[dtype](expected_val)
         if val < min_val:

@@ -54,7 +54,7 @@ struct FlatTerrainCollision(CollisionSystem):
 
     var ground_y: Scalar[dtype]
 
-    fn __init__(out self, ground_y: Float64):
+    def __init__(out self, ground_y: Float64):
         """Initialize with ground height.
 
         Args:
@@ -66,7 +66,7 @@ struct FlatTerrainCollision(CollisionSystem):
     # CPU Implementation
     # =========================================================================
 
-    fn detect[
+    def detect[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -209,7 +209,7 @@ struct FlatTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_kernel[
+    def detect_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -331,7 +331,7 @@ struct FlatTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_kernel[
+    def detect_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -449,7 +449,7 @@ struct FlatTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_single_env[
+    def detect_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -575,7 +575,7 @@ struct FlatTerrainCollision(CollisionSystem):
         contact_counts[env] = Scalar[dtype](count)
 
     @staticmethod
-    fn detect_gpu[
+    def detect_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -611,7 +611,7 @@ struct FlatTerrainCollision(CollisionSystem):
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, STATE_SIZE),

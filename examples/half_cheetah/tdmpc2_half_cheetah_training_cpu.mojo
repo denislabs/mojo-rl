@@ -74,7 +74,7 @@ comptime dtype = DType.float64  # Physics precision
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("TD-MPC2 Agent CPU Training on HalfCheetah")

@@ -18,7 +18,7 @@ from mojo_rl.deep_agents.muzero.configs import AlphaZeroConfig
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
-fn main() raises:
+def main() raises:
     print("╔══════════════════════════════════════════════════╗")
     print("║  MuZero Self-Play on TicTacToe (GPU)            ║")
     print("║  With live evaluation vs Random + Minimax        ║")
@@ -30,14 +30,22 @@ fn main() raises:
     comptime TTTCPU = TicTacToeEnv[DType.float64]
 
     comptime Config = AlphaZeroConfig[
-        TTT.OBS_DIM, TTT.NUM_ACTIONS,
-        HIDDEN=128, LR=1e-3, BS=64, SIMS=25, NODES=64,
+        TTT.OBS_DIM,
+        TTT.NUM_ACTIONS,
+        HIDDEN=128,
+        LR=1e-3,
+        BS=64,
+        SIMS=25,
+        NODES=64,
     ]
     comptime N_ENVS = 64
 
     var agent = GenericMuZeroAgent[Config, N_ENVS](
-        gamma=1.0, v_min=-1.0, v_max=1.0,
-        temperature=1.0, temperature_decay_steps=0,
+        gamma=1.0,
+        v_min=-1.0,
+        v_max=1.0,
+        temperature=1.0,
+        temperature_decay_steps=0,
     )
 
     # Evaluators

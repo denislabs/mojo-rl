@@ -10,7 +10,7 @@ struct Particle[dtype: DType](TrivialRegisterPassable):
     var vy: Scalar[Self.dtype]
     var ttl: Scalar[Self.dtype]  # Time to live in seconds
 
-    fn __init__(
+    def __init__(
         out self,
         x: Scalar[Self.dtype],
         y: Scalar[Self.dtype],

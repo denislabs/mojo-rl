@@ -26,13 +26,13 @@ from mojo_rl.nn.autodiff.auto_fused import AutoFused
 from layout import Layout, LayoutTensor
 
 
-fn print_header(name: String):
+def print_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
 
 
-fn check(cond: Bool, msg: String, mut fails: Int):
+def check(cond: Bool, msg: String, mut fails: Int):
     if cond:
         print("  PASS: " + msg)
     else:
@@ -40,21 +40,21 @@ fn check(cond: Bool, msg: String, mut fails: Int):
         fails += 1
 
 
-fn make_list(size: Int) -> List[Scalar[dtype]]:
+def make_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size if size > 0 else 1)
     for _ in range(size if size > 0 else 1):
         lst.append(0)
     return lst^
 
 
-fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
+def make_rand_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(Scalar[dtype](random_float64(-1.0, 1.0)))
     return lst^
 
 
-fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
+def max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
     var md: Float64 = 0
     for i in range(n):
         var d = math_abs(Float64(a[i]) - Float64(b[i]))
@@ -68,7 +68,7 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # =============================================================================
 
 
-fn test_dimensions() -> Int:
+def test_dimensions() -> Int:
     print_header("Compile-time dimensions")
     var fails = 0
 
@@ -116,7 +116,7 @@ fn test_dimensions() -> Int:
 # =============================================================================
 
 
-fn test_forward_5op() -> Int:
+def test_forward_5op() -> Int:
     print_header("Forward: 5-op AutoFused vs AutoDiffChain[FusedMBR, FusedMB]")
     var fails = 0
     seed(42)
@@ -191,7 +191,7 @@ fn test_forward_5op() -> Int:
 # =============================================================================
 
 
-fn test_backward_5op() -> Int:
+def test_backward_5op() -> Int:
     print_header("Backward: 5-op AutoFused vs AutoDiffChain[FusedMBR, FusedMB]")
     var fails = 0
     seed(123)
@@ -293,7 +293,7 @@ fn test_backward_5op() -> Int:
 # =============================================================================
 
 
-fn test_forward_8op() -> Int:
+def test_forward_8op() -> Int:
     print_header("Forward: 8-op M+B+R + M+B+T + M+B")
     var fails = 0
     seed(77)
@@ -370,7 +370,7 @@ fn test_forward_8op() -> Int:
 # =============================================================================
 
 
-fn test_backward_8op() -> Int:
+def test_backward_8op() -> Int:
     print_header("Backward: 8-op M+B+R + M+B+T + M+B")
     var fails = 0
     seed(88)
@@ -477,7 +477,7 @@ fn test_backward_8op() -> Int:
 # =============================================================================
 
 
-fn test_xor_training() -> Int:
+def test_xor_training() -> Int:
     print_header("XOR training with AutoFused MLP")
     var fails = 0
     seed(42)
@@ -580,7 +580,7 @@ fn test_xor_training() -> Int:
 # =============================================================================
 
 
-fn test_single_op() -> Int:
+def test_single_op() -> Int:
     print_header("Single op: AutoFused[MatMul[3,5]] passthrough")
     var fails = 0
     seed(99)
@@ -641,7 +641,7 @@ fn test_single_op() -> Int:
 # =============================================================================
 
 
-fn test_sigmoid_fusion() -> Int:
+def test_sigmoid_fusion() -> Int:
     print_header("Sigmoid: AutoFused[M,B,S] vs FusedMatMulBiasSigmoid")
     var fails = 0
     seed(55)
@@ -701,7 +701,7 @@ fn test_sigmoid_fusion() -> Int:
 # =============================================================================
 
 
-fn test_mish_fusion() -> Int:
+def test_mish_fusion() -> Int:
     print_header("Mish: AutoFused[M,B,Mish] vs FusedMatMulBiasMish")
     var fails = 0
     seed(77)
@@ -798,7 +798,7 @@ fn test_mish_fusion() -> Int:
 # =============================================================================
 
 
-fn test_deep_chain() -> Int:
+def test_deep_chain() -> Int:
     print_header("Deep: 11-op M+B+R x3 + M+B → 4 fused groups")
     var fails = 0
     seed(111)
@@ -910,7 +910,7 @@ fn test_deep_chain() -> Int:
 # =============================================================================
 
 
-fn main():
+def main():
     print()
     var total_fails = 0
     total_fails += test_dimensions()

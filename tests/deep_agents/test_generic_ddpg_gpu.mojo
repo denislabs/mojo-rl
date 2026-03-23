@@ -7,7 +7,7 @@ from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, DDPGConfig
 from mojo_rl.envs.pendulum import PendulumV2
 
 
-fn main() raises:
+def main() raises:
     print("=== Generic DDPG GPU Test ===\n")
 
     seed(42)

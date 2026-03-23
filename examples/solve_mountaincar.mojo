@@ -36,7 +36,7 @@ from mojo_rl.agents.tiled_qlearning import (
 )
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("    Solving MountainCar - Tile-Coded Function Approximation")
     print("=" * 60)

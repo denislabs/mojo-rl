@@ -22,13 +22,13 @@ struct BiasAdd[dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = 0
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -36,7 +36,7 @@ struct BiasAdd[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -58,7 +58,7 @@ struct BiasAdd[dim: Int](DiffOp):
                 output[b, i] = input[b, i] + params[i]
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -93,7 +93,7 @@ struct BiasAdd[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -114,11 +114,13 @@ struct BiasAdd[dim: Int](DiffOp):
             return
         var row = idx // Self.dim
         var col = idx % Self.dim
-        output[row, col] = rebind[Scalar[dtype]](input[row, col]) + rebind[Scalar[dtype]](bias[col])
+        output[row, col] = rebind[Scalar[dtype]](input[row, col]) + rebind[
+            Scalar[dtype]
+        ](bias[col])
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -142,7 +144,7 @@ struct BiasAdd[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_db_kernel_impl[
+    def backward_db_kernel_impl[
         BATCH: Int
     ](
         db: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
@@ -176,7 +178,7 @@ struct BiasAdd[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -205,7 +207,7 @@ struct BiasAdd[dim: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -227,7 +229,7 @@ struct BiasAdd[dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -260,7 +262,7 @@ struct BiasAdd[dim: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn dx_wrapper(
+        def dx_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -279,7 +281,7 @@ struct BiasAdd[dim: Int](DiffOp):
 
         # Kernel 2: db = sum(dy, axis=0)
         @always_inline
-        fn db_wrapper(
+        def db_wrapper(
             db: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
             grad_output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin

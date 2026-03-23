@@ -13,22 +13,48 @@ Ported from CuLE (BSD-3): cule/atari/tia.hpp
 
 from .atari_state import AtariState
 from .flags import (
-    TIA_VBLANK, TIA_VSYNC, TIA_HMOVE, TIA_PADDLE_GROUND,
-    TIA_M0_LOCK, TIA_M1_LOCK,
-    TIA_P0_REFLECT, TIA_P1_REFLECT,
-    TIA_PF_REFLECT, TIA_PF_SCORE, TIA_PF_PRIORITY,
-    TIA_VDELP0, TIA_VDELP1, TIA_VDELBL,
-    CLOCKS_PER_LINE, HBLANK_CLOCKS, TOTAL_SCANLINES,
-    FRAME_HEIGHT, FRAME_WIDTH,
-    CX_M0P1, CX_M0P0, CX_M1P0, CX_M1P1,
-    CX_P0PF, CX_P0BL, CX_P1PF, CX_P1BL,
-    CX_M0PF, CX_M0BL, CX_M1PF, CX_M1BL,
-    CX_BLPF, CX_P0P1, CX_M0M1,
+    TIA_VBLANK,
+    TIA_VSYNC,
+    TIA_HMOVE,
+    TIA_PADDLE_GROUND,
+    TIA_M0_LOCK,
+    TIA_M1_LOCK,
+    TIA_P0_REFLECT,
+    TIA_P1_REFLECT,
+    TIA_PF_REFLECT,
+    TIA_PF_SCORE,
+    TIA_PF_PRIORITY,
+    TIA_VDELP0,
+    TIA_VDELP1,
+    TIA_VDELBL,
+    CLOCKS_PER_LINE,
+    HBLANK_CLOCKS,
+    TOTAL_SCANLINES,
+    FRAME_HEIGHT,
+    FRAME_WIDTH,
+    CX_M0P1,
+    CX_M0P0,
+    CX_M1P0,
+    CX_M1P1,
+    CX_P0PF,
+    CX_P0BL,
+    CX_P1PF,
+    CX_P1BL,
+    CX_M0PF,
+    CX_M0BL,
+    CX_M1PF,
+    CX_M1BL,
+    CX_BLPF,
+    CX_P0P1,
+    CX_M0M1,
     FLAG_CON_FIRE,
 )
 from .tables import (
-    player_mask, missile_mask, ball_mask,
-    playfield_mask, collision_mask,
+    player_mask,
+    missile_mask,
+    ball_mask,
+    playfield_mask,
+    collision_mask,
 )
 
 
@@ -36,50 +62,66 @@ from .tables import (
 # TIA Register Read
 # ============================================================================
 
+
 @always_inline
-fn tia_read(state: AtariState, addr: UInt8) -> UInt8:
+def tia_read(state: AtariState, addr: UInt8) -> UInt8:
     """Read a TIA register. Only collision and input registers are readable."""
     var reg = addr & 0x0F
 
     # Collision registers (0x00-0x07)
     if reg == 0x00:  # CXM0P
         var val: UInt8 = 0
-        if (state.collision & CX_M0P1) != 0: val = val | 0x80
-        if (state.collision & CX_M0P0) != 0: val = val | 0x40
+        if (state.collision & CX_M0P1) != 0:
+            val = val | 0x80
+        if (state.collision & CX_M0P0) != 0:
+            val = val | 0x40
         return val
     elif reg == 0x01:  # CXM1P
         var val: UInt8 = 0
-        if (state.collision & CX_M1P0) != 0: val = val | 0x80
-        if (state.collision & CX_M1P1) != 0: val = val | 0x40
+        if (state.collision & CX_M1P0) != 0:
+            val = val | 0x80
+        if (state.collision & CX_M1P1) != 0:
+            val = val | 0x40
         return val
     elif reg == 0x02:  # CXP0FB
         var val: UInt8 = 0
-        if (state.collision & CX_P0PF) != 0: val = val | 0x80
-        if (state.collision & CX_P0BL) != 0: val = val | 0x40
+        if (state.collision & CX_P0PF) != 0:
+            val = val | 0x80
+        if (state.collision & CX_P0BL) != 0:
+            val = val | 0x40
         return val
     elif reg == 0x03:  # CXP1FB
         var val: UInt8 = 0
-        if (state.collision & CX_P1PF) != 0: val = val | 0x80
-        if (state.collision & CX_P1BL) != 0: val = val | 0x40
+        if (state.collision & CX_P1PF) != 0:
+            val = val | 0x80
+        if (state.collision & CX_P1BL) != 0:
+            val = val | 0x40
         return val
     elif reg == 0x04:  # CXM0FB
         var val: UInt8 = 0
-        if (state.collision & CX_M0PF) != 0: val = val | 0x80
-        if (state.collision & CX_M0BL) != 0: val = val | 0x40
+        if (state.collision & CX_M0PF) != 0:
+            val = val | 0x80
+        if (state.collision & CX_M0BL) != 0:
+            val = val | 0x40
         return val
     elif reg == 0x05:  # CXM1FB
         var val: UInt8 = 0
-        if (state.collision & CX_M1PF) != 0: val = val | 0x80
-        if (state.collision & CX_M1BL) != 0: val = val | 0x40
+        if (state.collision & CX_M1PF) != 0:
+            val = val | 0x80
+        if (state.collision & CX_M1BL) != 0:
+            val = val | 0x40
         return val
     elif reg == 0x06:  # CXBLPF
         var val: UInt8 = 0
-        if (state.collision & CX_BLPF) != 0: val = val | 0x80
+        if (state.collision & CX_BLPF) != 0:
+            val = val | 0x80
         return val
     elif reg == 0x07:  # CXPPMM
         var val: UInt8 = 0
-        if (state.collision & CX_P0P1) != 0: val = val | 0x80
-        if (state.collision & CX_M0M1) != 0: val = val | 0x40
+        if (state.collision & CX_P0P1) != 0:
+            val = val | 0x80
+        if (state.collision & CX_M0M1) != 0:
+            val = val | 0x40
         return val
 
     # Input ports (0x08-0x0D)
@@ -111,8 +153,9 @@ fn tia_read(state: AtariState, addr: UInt8) -> UInt8:
 # TIA Register Write
 # ============================================================================
 
+
 @always_inline
-fn _resp_pos(clock: Int) -> UInt8:
+def _resp_pos(clock: Int) -> UInt8:
     """Convert TIA clock to pixel position (0-159) for RESPx strobe.
 
     state.clock is set at instruction START, but the RESP write happens
@@ -130,7 +173,7 @@ fn _resp_pos(clock: Int) -> UInt8:
 
 
 @always_inline
-fn tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
+def tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
     """Write a TIA register."""
     var reg = addr & 0x3F
 
@@ -304,7 +347,7 @@ fn tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
 
 
 @always_inline
-fn _hm_to_signed(hm: UInt8) -> Int:
+def _hm_to_signed(hm: UInt8) -> Int:
     """Convert 4-bit horizontal motion value to signed displacement.
 
     The 4-bit value is in the upper nibble format:
@@ -318,7 +361,7 @@ fn _hm_to_signed(hm: UInt8) -> Int:
 
 
 @always_inline
-fn _clamp_pos(pos: Int) -> UInt8:
+def _clamp_pos(pos: Int) -> UInt8:
     """Clamp position to [0, 159] with wrapping."""
     var p = pos % FRAME_WIDTH
     if p < 0:
@@ -327,7 +370,7 @@ fn _clamp_pos(pos: Int) -> UInt8:
 
 
 @always_inline
-fn _apply_hmove(mut state: AtariState):
+def _apply_hmove(mut state: AtariState):
     """Apply horizontal motion (HMOVE register write)."""
     state.pos_p0 = _clamp_pos(Int(state.pos_p0) - _hm_to_signed(state.hm_p0))
     state.pos_p1 = _clamp_pos(Int(state.pos_p1) - _hm_to_signed(state.hm_p1))
@@ -341,9 +384,10 @@ fn _apply_hmove(mut state: AtariState):
 # TIA Collision Detection (per-scanline)
 # ============================================================================
 
+
 @always_inline
 @always_inline
-fn tia_update_collision(mut state: AtariState, clock_pos: Int):
+def tia_update_collision(mut state: AtariState, clock_pos: Int):
     """Update collision registers for one pixel position.
 
     This is called during frame emulation for each visible pixel.
@@ -358,25 +402,40 @@ fn tia_update_collision(mut state: AtariState, clock_pos: Int):
     var bl = ball_mask(state, clock_pos)
 
     # Update collision bits
-    if m0 and p1: state.collision = state.collision | CX_M0P1
-    if m0 and p0: state.collision = state.collision | CX_M0P0
-    if m1 and p0: state.collision = state.collision | CX_M1P0
-    if m1 and p1: state.collision = state.collision | CX_M1P1
-    if p0 and pf: state.collision = state.collision | CX_P0PF
-    if p0 and bl: state.collision = state.collision | CX_P0BL
-    if p1 and pf: state.collision = state.collision | CX_P1PF
-    if p1 and bl: state.collision = state.collision | CX_P1BL
-    if m0 and pf: state.collision = state.collision | CX_M0PF
-    if m0 and bl: state.collision = state.collision | CX_M0BL
-    if m1 and pf: state.collision = state.collision | CX_M1PF
-    if m1 and bl: state.collision = state.collision | CX_M1BL
-    if bl and pf: state.collision = state.collision | CX_BLPF
-    if p0 and p1: state.collision = state.collision | CX_P0P1
-    if m0 and m1: state.collision = state.collision | CX_M0M1
+    if m0 and p1:
+        state.collision = state.collision | CX_M0P1
+    if m0 and p0:
+        state.collision = state.collision | CX_M0P0
+    if m1 and p0:
+        state.collision = state.collision | CX_M1P0
+    if m1 and p1:
+        state.collision = state.collision | CX_M1P1
+    if p0 and pf:
+        state.collision = state.collision | CX_P0PF
+    if p0 and bl:
+        state.collision = state.collision | CX_P0BL
+    if p1 and pf:
+        state.collision = state.collision | CX_P1PF
+    if p1 and bl:
+        state.collision = state.collision | CX_P1BL
+    if m0 and pf:
+        state.collision = state.collision | CX_M0PF
+    if m0 and bl:
+        state.collision = state.collision | CX_M0BL
+    if m1 and pf:
+        state.collision = state.collision | CX_M1PF
+    if m1 and bl:
+        state.collision = state.collision | CX_M1BL
+    if bl and pf:
+        state.collision = state.collision | CX_BLPF
+    if p0 and p1:
+        state.collision = state.collision | CX_P0P1
+    if m0 and m1:
+        state.collision = state.collision | CX_M0M1
 
 
 @always_inline
-fn tia_update_frame_scanline(mut state: AtariState):
+def tia_update_frame_scanline(mut state: AtariState):
     """Process collision detection for one scanline.
 
     During visible scanlines, check all 160 pixel positions for collisions.

@@ -6,7 +6,7 @@ from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, TD3Config
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== TD3 Delayed Actor Update Test ===\n")
 
     seed(42)

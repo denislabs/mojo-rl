@@ -64,7 +64,7 @@ trait RenderableEnv:
     - Environments can use whatever renderer is appropriate (2D or 3D)
 
     Usage in algorithms:
-        fn evaluate[E: BoxContinuousActionEnv & RenderableEnv](
+        def evaluate[E: BoxContinuousActionEnv & RenderableEnv](
             self, mut env: E, render: Bool = False
         ):
             if render:
@@ -83,7 +83,7 @@ trait RenderableEnv:
     Environments that don't support rendering can implement these as no-ops.
     """
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Initialize the renderer.
 
         Creates and initializes the internal renderer. Should be called
@@ -95,7 +95,7 @@ trait RenderableEnv:
         """
         ...
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render the current environment state.
 
         No-op if renderer is not initialized. This method handles all
@@ -103,14 +103,14 @@ trait RenderableEnv:
         """
         ...
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the renderer and release resources.
 
         Safe to call multiple times or if renderer was never initialized.
         """
         ...
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Check if renderer is currently initialized and open.
 
         Returns:
@@ -118,7 +118,7 @@ trait RenderableEnv:
         """
         ...
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Check if user requested to close the renderer window.
 
         Returns:
@@ -126,7 +126,7 @@ trait RenderableEnv:
         """
         ...
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """Delay for specified milliseconds (for frame rate control).
 
         No-op if renderer is not initialized.
@@ -136,7 +136,7 @@ trait RenderableEnv:
         """
         ...
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         """Check if the renderer is currently paused (Space key).
 
         Returns:
@@ -144,7 +144,7 @@ trait RenderableEnv:
         """
         ...
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         """Check if the user requested a single step while paused (Right arrow).
 
         This flag is consumed each frame by check_renderer_quit().
@@ -169,11 +169,11 @@ trait DiscreteStateEnv(Env):
     Examples: GridWorld, FrozenLake, Taxi, discretized CartPole
     """
 
-    fn state_to_index(self, state: Self.StateType) -> Int:
+    def state_to_index(self, state: Self.StateType) -> Int:
         """Convert a state to an integer index for tabular methods."""
         ...
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return the total number of discrete states."""
         ...
 
@@ -191,15 +191,15 @@ trait ContinuousStateEnv(Env):
     Examples: CartPole (4D), MountainCar (2D), Acrobot (6D), MuJoCo environments.
     """
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list."""
         ...
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial continuous observation."""
         ...
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return the dimension of the observation vector."""
         ...
 
@@ -218,11 +218,11 @@ trait DiscreteActionEnv(Env):
     Examples: CartPole (left/right), GridWorld (up/down/left/right)
     """
 
-    fn action_from_index(self, action_idx: Int) -> Self.ActionType:
+    def action_from_index(self, action_idx: Int) -> Self.ActionType:
         """Create an action from an integer index."""
         ...
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return the number of discrete actions available."""
         ...
 
@@ -236,11 +236,11 @@ trait ContinuousActionEnv(Env):
     Examples: Pendulum (torque), HalfCheetah (joint torques)
     """
 
-    fn action_dim(self) -> Int:
+    def action_dim(self) -> Int:
         """Return the dimension of the action vector."""
         ...
 
-    fn action_low(self) -> Scalar[Self.dtype]:
+    def action_low(self) -> Scalar[Self.dtype]:
         """Return the lower bound for action values.
 
         Note: Assumes symmetric bounds. For asymmetric bounds,
@@ -248,7 +248,7 @@ trait ContinuousActionEnv(Env):
         """
         ...
 
-    fn action_high(self) -> Scalar[Self.dtype]:
+    def action_high(self) -> Scalar[Self.dtype]:
         """Return the upper bound for action values."""
         ...
 
@@ -285,7 +285,7 @@ trait BoxDiscreteActionEnv(ContinuousStateEnv, DiscreteActionEnv):
     Examples: CartPole (4D), MountainCar (2D), Acrobot (6D), LunarLander.
     """
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take discrete action and return (continuous_obs, reward, done).
@@ -306,7 +306,7 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
     Examples: Pendulum (3D obs, 1D action), BipedalWalker (24D obs, 4D action).
     """
 
-    fn step_continuous[
+    def step_continuous[
         DTYPE: DType
     ](mut self, action: Scalar[DTYPE]) -> Tuple[
         List[Scalar[DTYPE]], Scalar[DTYPE], Bool
@@ -318,7 +318,7 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
         """
         ...
 
-    fn step_continuous_vec[
+    def step_continuous_vec[
         DTYPE: DType
     ](mut self, action: List[Scalar[DTYPE]], verbose: Bool = False) -> Tuple[
         List[Scalar[DTYPE]], Scalar[DTYPE], Bool
@@ -360,7 +360,7 @@ trait GPUDiscreteEnv:
     comptime STEP_WS_PER_ENV: Int  # Per-env buffer (e.g. physics workspace)
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -396,7 +396,7 @@ trait GPUDiscreteEnv:
         ...
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -415,7 +415,7 @@ trait GPUDiscreteEnv:
         ...
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -445,7 +445,7 @@ trait GPUDiscreteEnv:
         ...
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype],) raises:
         """Initialize pre-allocated step workspace (call once at setup).
@@ -455,7 +455,7 @@ trait GPUDiscreteEnv:
         ...
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[dtype],
         curriculum_values: List[Scalar[dtype]],
@@ -489,7 +489,7 @@ trait GPUContinuousEnv:
     comptime NAME: String
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -529,7 +529,7 @@ trait GPUContinuousEnv:
         ...
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -548,7 +548,7 @@ trait GPUContinuousEnv:
         ...
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -578,7 +578,7 @@ trait GPUContinuousEnv:
         ...
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -606,7 +606,7 @@ trait GPUContinuousEnv:
         ...
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype],) raises:
         """Initialize pre-allocated step workspace (call once at setup).
@@ -624,7 +624,7 @@ trait GPUContinuousEnv:
         ...
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[dtype],
         curriculum_values: List[Scalar[dtype]],
@@ -651,7 +651,9 @@ trait CurriculumScheduler(Copyable, Movable):
     """
 
     @staticmethod
-    fn get_params[DTYPE: DType](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
+    def get_params[
+        DTYPE: DType
+    ](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
         """Get curriculum parameters for given training progress.
 
         Uses linear interpolation from initial to final values.
@@ -666,7 +668,7 @@ trait CurriculumScheduler(Copyable, Movable):
         ...
 
     @staticmethod
-    fn get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
+    def get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
         """Get human-readable curriculum stage name.
 
         Used for logging stage transitions during training.
@@ -687,11 +689,13 @@ struct NoCurriculumScheduler(CurriculumScheduler):
     """
 
     @staticmethod
-    fn get_params[DTYPE: DType](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
+    def get_params[
+        DTYPE: DType
+    ](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
         return []
 
     @staticmethod
-    fn get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
+    def get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
         return ""
 
 
@@ -718,7 +722,7 @@ trait DataAugmentable:
     """Total number of symmetries including identity. E.g., 8 for 3×3 board."""
 
     @staticmethod
-    fn augment_obs[
+    def augment_obs[
         OBS_DIM: Int,
     ](
         obs: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -737,7 +741,7 @@ trait DataAugmentable:
         ...
 
     @staticmethod
-    fn augment_policy[
+    def augment_policy[
         ACT: Int,
     ](
         policy: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -779,11 +783,11 @@ trait TwoPlayerDiscreteEnv(BoxDiscreteActionEnv):
     Examples: TicTacToe, ConnectFour, Go, Chess.
     """
 
-    fn current_player(self) -> Int:
+    def current_player(self) -> Int:
         """Return which player is about to move (0 or 1)."""
         ...
 
-    fn legal_action_mask(self) -> List[Bool]:
+    def legal_action_mask(self) -> List[Bool]:
         """Return mask of legal actions (length = num_actions()).
 
         True = legal, False = illegal. Used for action masking in
@@ -791,7 +795,7 @@ trait TwoPlayerDiscreteEnv(BoxDiscreteActionEnv):
         """
         ...
 
-    fn game_result(self) -> Int:
+    def game_result(self) -> Int:
         """Return game outcome.
 
         Returns:
@@ -817,7 +821,7 @@ trait GPUTwoPlayerDiscreteEnv:
     comptime NUM_ACTIONS: Int
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -848,7 +852,7 @@ trait GPUTwoPlayerDiscreteEnv:
         ...
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -866,7 +870,7 @@ trait GPUTwoPlayerDiscreteEnv:
         ...
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -886,7 +890,7 @@ trait GPUTwoPlayerDiscreteEnv:
         ...
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,

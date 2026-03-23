@@ -78,7 +78,7 @@ struct FRect(ImplicitlyCopyable, Movable):
     var h: c_float
 
 
-fn has_rect_intersection(
+def has_rect_intersection(
     a: Ptr[Rect, ImmutAnyOrigin], b: Ptr[Rect, ImmutAnyOrigin]
 ) raises -> Bool:
     """Determine whether two rectangles intersect.
@@ -105,7 +105,7 @@ fn has_rect_intersection(
     ]()(a, b)
 
 
-fn get_rect_intersection(
+def get_rect_intersection(
     a: Ptr[Rect, ImmutAnyOrigin],
     b: Ptr[Rect, ImmutAnyOrigin],
     result: Ptr[Rect, MutAnyOrigin],
@@ -137,7 +137,7 @@ fn get_rect_intersection(
     ]()(a, b, result)
 
 
-fn get_rect_union(
+def get_rect_union(
     a: Ptr[Rect, ImmutAnyOrigin],
     b: Ptr[Rect, ImmutAnyOrigin],
     result: Ptr[Rect, MutAnyOrigin],
@@ -170,7 +170,7 @@ fn get_rect_union(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_rect_enclosing_points(
+def get_rect_enclosing_points(
     points: Ptr[Point, ImmutAnyOrigin],
     count: c_int,
     clip: Ptr[Rect, ImmutAnyOrigin],
@@ -208,7 +208,7 @@ fn get_rect_enclosing_points(
     ]()(points, count, clip, result)
 
 
-fn get_rect_and_line_intersection(
+def get_rect_and_line_intersection(
     rect: Ptr[Rect, ImmutAnyOrigin],
     x1: Ptr[c_int, MutAnyOrigin],
     y1: Ptr[c_int, MutAnyOrigin],
@@ -249,7 +249,7 @@ fn get_rect_and_line_intersection(
     ]()(rect, x1, y1, x2, y2)
 
 
-fn has_rect_intersection_float(
+def has_rect_intersection_float(
     a: Ptr[FRect, ImmutAnyOrigin], b: Ptr[FRect, ImmutAnyOrigin]
 ) raises -> Bool:
     """Determine whether two rectangles intersect with float precision.
@@ -275,7 +275,7 @@ fn has_rect_intersection_float(
     ]()(a, b)
 
 
-fn get_rect_intersection_float(
+def get_rect_intersection_float(
     a: Ptr[FRect, ImmutAnyOrigin],
     b: Ptr[FRect, ImmutAnyOrigin],
     result: Ptr[FRect, MutAnyOrigin],
@@ -307,7 +307,7 @@ fn get_rect_intersection_float(
     ]()(a, b, result)
 
 
-fn get_rect_union_float(
+def get_rect_union_float(
     a: Ptr[FRect, ImmutAnyOrigin],
     b: Ptr[FRect, ImmutAnyOrigin],
     result: Ptr[FRect, MutAnyOrigin],
@@ -340,7 +340,7 @@ fn get_rect_union_float(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_rect_enclosing_points_float(
+def get_rect_enclosing_points_float(
     points: Ptr[FPoint, ImmutAnyOrigin],
     count: c_int,
     clip: Ptr[FRect, ImmutAnyOrigin],
@@ -379,7 +379,7 @@ fn get_rect_enclosing_points_float(
     ]()(points, count, clip, result)
 
 
-fn get_rect_and_line_intersection_float(
+def get_rect_and_line_intersection_float(
     rect: Ptr[FRect, ImmutAnyOrigin],
     x1: Ptr[c_float, MutAnyOrigin],
     y1: Ptr[c_float, MutAnyOrigin],

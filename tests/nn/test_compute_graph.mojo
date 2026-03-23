@@ -29,7 +29,7 @@ from std.math import abs
 # =============================================================================
 
 
-fn assert_close(
+def assert_close(
     actual: Float64, expected: Float64, tol: Float64, msg: String
 ) raises:
     var diff = abs(actual - expected)
@@ -47,7 +47,7 @@ fn assert_close(
         raise Error("Assertion failed: " + msg)
 
 
-fn fill_sequential(ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin], n: Int):
+def fill_sequential(ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin], n: Int):
     for i in range(n):
         ptr[i] = Scalar[dtype](Float64(i + 1) * 0.1)
 
@@ -57,7 +57,7 @@ fn fill_sequential(ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin], n: Int):
 # =============================================================================
 
 
-fn test_simple_chain() raises:
+def test_simple_chain() raises:
     """ComputeGraph with a linear chain should match Sequential."""
     print("Test 1: Simple chain (ComputeGraph vs Sequential)...")
 
@@ -235,7 +235,7 @@ fn test_simple_chain() raises:
 # =============================================================================
 
 
-fn test_fan_out() raises:
+def test_fan_out() raises:
     """Test fan-out: node 0 feeds both node 1 and node 2.
 
     Graph:
@@ -360,7 +360,7 @@ fn test_fan_out() raises:
 # =============================================================================
 
 
-fn test_dual_input_concat() raises:
+def test_dual_input_concat() raises:
     """Test dual-input: graph input feeds into both node 0 and concat node.
 
     Graph (simplified DDPG):
@@ -378,7 +378,9 @@ fn test_dual_input_concat() raises:
     # Using a Linear[6,1] that takes the concat as input
     comptime DDPGGraph = ComputeGraph[
         GNode["actor", Linear[4, 2]],  # 0: obs → action
-        GNode["critic", Linear[6, 1], "input", "actor"],  # 1: [obs, action] → Q (dual input)
+        GNode[
+            "critic", Linear[6, 1], "input", "actor"
+        ],  # 1: [obs, action] → Q (dual input)
         GNode["neg_q", Negate[1], "critic"],  # 2: → -Q
     ]
 
@@ -472,7 +474,7 @@ fn test_dual_input_concat() raises:
 # =============================================================================
 
 
-fn test_grad_check_simple_chain() raises:
+def test_grad_check_simple_chain() raises:
     """Finite-difference gradient check for a simple chain graph."""
     print("Test 4: Gradient check (simple chain)...")
 
@@ -589,7 +591,7 @@ fn test_grad_check_simple_chain() raises:
 # =============================================================================
 
 
-fn test_grad_check_fan_out() raises:
+def test_grad_check_fan_out() raises:
     """Finite-difference gradient check for fan-out graph.
 
     Uses Linear[2,1] instead of Min to combine branches — Min is
@@ -604,7 +606,9 @@ fn test_grad_check_fan_out() raises:
         GNode["trunk", LinearReLU[3, 4]],  # 0: shared trunk
         GNode["branch_a", Linear[4, 1], "trunk"],  # 1: branch A (fan-out)
         GNode["branch_b", Linear[4, 1], "trunk"],  # 2: branch B (fan-out)
-        GNode["merge", Linear[2, 1], "branch_a", "branch_b"],  # 3: concat(A,B) → weighted sum
+        GNode[
+            "merge", Linear[2, 1], "branch_a", "branch_b"
+        ],  # 3: concat(A,B) → weighted sum
     ]
 
     var params_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](
@@ -703,14 +707,16 @@ fn test_grad_check_fan_out() raises:
 # =============================================================================
 
 
-fn test_grad_check_dual_input() raises:
+def test_grad_check_dual_input() raises:
     """Finite-difference gradient check for dual-input (DDPG-like) graph."""
     print("Test 6: Gradient check (dual-input concat)...")
 
     comptime BATCH = 1
     comptime M = ComputeGraph[
         GNode["actor", Linear[3, 2]],  # 0: obs → action
-        GNode["critic", Linear[5, 1], "input", "actor"],  # 1: [obs(3), action(2)] → Q
+        GNode[
+            "critic", Linear[5, 1], "input", "actor"
+        ],  # 1: [obs(3), action(2)] → Q
         GNode["neg_q", Negate[1], "critic"],  # 2: → -Q
     ]
 
@@ -847,7 +853,7 @@ fn test_grad_check_dual_input() raises:
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("ComputeGraph Tests")
     print("=" * 60)

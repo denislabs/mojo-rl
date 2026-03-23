@@ -51,7 +51,7 @@ struct ContinuousTransition[DTYPE: DType](
     var next_state: List[Scalar[Self.DTYPE]]
     var done: Bool
 
-    fn __init__(
+    def __init__(
         out self,
         var state: List[Scalar[Self.DTYPE]],
         action: Scalar[Self.DTYPE],
@@ -65,14 +65,14 @@ struct ContinuousTransition[DTYPE: DType](
         self.next_state = next_state^
         self.done = done
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.state = copy.state.copy()
         self.action = copy.action
         self.reward = copy.reward
         self.next_state = copy.next_state.copy()
         self.done = copy.done
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.state = take.state^
         self.action = take.action
         self.reward = take.reward
@@ -119,7 +119,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
     var size: Int
     var position: Int  # Write position (circular)
 
-    fn __init__(out self, capacity: Int, feature_dim: Int):
+    def __init__(out self, capacity: Int, feature_dim: Int):
         """Initialize buffer with given capacity and feature dimension.
 
         Args:
@@ -153,7 +153,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
             self.next_states.append(empty_features_copy^)
             self.dones.append(False)
 
-    fn push(
+    def push(
         mut self,
         state: List[Scalar[Self.DTYPE]],
         action: Scalar[Self.DTYPE],
@@ -187,7 +187,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
         if self.size < self.capacity:
             self.size += 1
 
-    fn sample(self, batch_size: Int) -> List[ContinuousTransition[Self.DTYPE]]:
+    def sample(self, batch_size: Int) -> List[ContinuousTransition[Self.DTYPE]]:
         """Sample a random batch of transitions.
 
         Args:
@@ -228,7 +228,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
 
         return batch^
 
-    fn sample_indices(self, batch_size: Int) -> List[Int]:
+    def sample_indices(self, batch_size: Int) -> List[Int]:
         """Sample random indices for batch processing.
 
         Useful when you want to process transitions without copying.
@@ -249,7 +249,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
 
         return indices^
 
-    fn get(self, idx: Int) -> ContinuousTransition[Self.DTYPE]:
+    def get(self, idx: Int) -> ContinuousTransition[Self.DTYPE]:
         """Get transition at index.
 
         Args:
@@ -276,7 +276,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
             self.dones[idx],
         )
 
-    fn get_state(self, idx: Int) -> List[Scalar[Self.DTYPE]]:
+    def get_state(self, idx: Int) -> List[Scalar[Self.DTYPE]]:
         """Get state features at index (without copying next_state).
 
         Args:
@@ -290,7 +290,7 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
             state_copy.append(self.states[idx][i])
         return state_copy^
 
-    fn get_next_state(self, idx: Int) -> List[Scalar[Self.DTYPE]]:
+    def get_next_state(self, idx: Int) -> List[Scalar[Self.DTYPE]]:
         """Get next_state features at index.
 
         Args:
@@ -304,27 +304,27 @@ struct ContinuousReplayBuffer[DTYPE: DType]:
             next_state_copy.append(self.next_states[idx][i])
         return next_state_copy^
 
-    fn get_action(self, idx: Int) -> Scalar[Self.DTYPE]:
+    def get_action(self, idx: Int) -> Scalar[Self.DTYPE]:
         """Get action at index."""
         return self.actions[idx]
 
-    fn get_reward(self, idx: Int) -> Scalar[Self.DTYPE]:
+    def get_reward(self, idx: Int) -> Scalar[Self.DTYPE]:
         """Get reward at index."""
         return self.rewards[idx]
 
-    fn get_done(self, idx: Int) -> Bool:
+    def get_done(self, idx: Int) -> Bool:
         """Get done flag at index."""
         return self.dones[idx]
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return number of transitions in buffer."""
         return self.size
 
-    fn is_full(self) -> Bool:
+    def is_full(self) -> Bool:
         """Check if buffer is at capacity."""
         return self.size == self.capacity
 
-    fn clear(mut self):
+    def clear(mut self):
         """Clear all transitions from buffer."""
         self.size = 0
         self.position = 0
@@ -351,7 +351,7 @@ struct PrioritizedContinuousTransition[DTYPE: DType](
     var done: Bool
     var weight: Scalar[Self.DTYPE]
 
-    fn __init__(
+    def __init__(
         out self,
         var state: List[Scalar[Self.DTYPE]],
         action: Scalar[Self.DTYPE],
@@ -367,7 +367,7 @@ struct PrioritizedContinuousTransition[DTYPE: DType](
         self.done = done
         self.weight = weight
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.state = copy.state.copy()
         self.action = copy.action
         self.reward = copy.reward
@@ -375,7 +375,7 @@ struct PrioritizedContinuousTransition[DTYPE: DType](
         self.done = copy.done
         self.weight = copy.weight
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.state = take.state^
         self.action = take.action
         self.reward = take.reward
@@ -442,7 +442,7 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
     var epsilon: Scalar[Self.DTYPE]
     var max_priority: Scalar[Self.DTYPE]
 
-    fn __init__(
+    def __init__(
         out self,
         capacity: Int,
         feature_dim: Int,
@@ -491,7 +491,7 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
             self.next_states.append(empty_features_copy^)
             self.dones.append(False)
 
-    fn _compute_priority(
+    def _compute_priority(
         self, td_error: Scalar[Self.DTYPE]
     ) -> Scalar[Self.DTYPE]:
         """Compute priority from TD error: (|δ| + ε)^α."""
@@ -499,7 +499,7 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
         var p = abs_error + self.epsilon
         return p**self.alpha
 
-    fn push(
+    def push(
         mut self,
         state: List[Scalar[Self.DTYPE]],
         action: Scalar[Self.DTYPE],
@@ -533,7 +533,7 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
         if self.size < self.capacity:
             self.size += 1
 
-    fn update_priority(mut self, idx: Int, td_error: Scalar[Self.DTYPE]):
+    def update_priority(mut self, idx: Int, td_error: Scalar[Self.DTYPE]):
         """Update priority for a transition after computing TD error.
 
         Args:
@@ -548,14 +548,14 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
         if raw_priority > self.max_priority:
             self.max_priority = raw_priority
 
-    fn update_priorities(
+    def update_priorities(
         mut self, indices: List[Int], td_errors: List[Scalar[Self.DTYPE]]
     ):
         """Batch update priorities for multiple transitions."""
         for i in range(len(indices)):
             self.update_priority(indices[i], td_errors[i])
 
-    fn sample(
+    def sample(
         self, batch_size: Int, beta: Scalar[Self.DTYPE] = -1.0
     ) -> Tuple[List[Int], List[PrioritizedContinuousTransition[Self.DTYPE]]]:
         """Sample batch with importance sampling weights.
@@ -626,11 +626,11 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
 
         return (indices^, batch^)
 
-    fn set_beta(mut self, beta: Scalar[Self.DTYPE]):
+    def set_beta(mut self, beta: Scalar[Self.DTYPE]):
         """Set IS exponent (should be annealed from initial to 1.0)."""
         self.beta = beta
 
-    fn anneal_beta(
+    def anneal_beta(
         mut self,
         progress: Scalar[Self.DTYPE],
         beta_start: Scalar[Self.DTYPE] = 0.4,
@@ -643,15 +643,15 @@ struct PrioritizedContinuousReplayBuffer[DTYPE: DType]:
         """
         self.beta = beta_start + progress * (1.0 - beta_start)
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return number of transitions in buffer."""
         return self.size
 
-    fn is_full(self) -> Bool:
+    def is_full(self) -> Bool:
         """Check if buffer is at capacity."""
         return self.size == self.capacity
 
-    fn clear(mut self):
+    def clear(mut self):
         """Clear all transitions from buffer."""
         self.size = 0
         self.position = 0

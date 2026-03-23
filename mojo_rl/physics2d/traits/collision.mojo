@@ -37,7 +37,7 @@ trait CollisionSystem(Movable & ImplicitlyCopyable):
     # CPU Methods
     # =========================================================================
 
-    fn detect[
+    def detect[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,

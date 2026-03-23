@@ -56,15 +56,15 @@ struct PropertiesID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -77,19 +77,19 @@ struct PropertyType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime PROPERTY_TYPE_INVALID = Self(0)
@@ -100,7 +100,7 @@ struct PropertyType(Indexer, Intable, TrivialRegisterPassable):
     comptime PROPERTY_TYPE_BOOLEAN = Self(5)
 
 
-fn get_global_properties() raises -> PropertiesID:
+def get_global_properties() raises -> PropertiesID:
     """Get the global SDL properties.
 
     Returns:
@@ -115,7 +115,7 @@ fn get_global_properties() raises -> PropertiesID:
     ]()()
 
 
-fn create_properties() raises -> PropertiesID:
+def create_properties() raises -> PropertiesID:
     """Create a group of properties.
 
     All properties are automatically destroyed when SDL_Quit() is called.
@@ -135,7 +135,7 @@ fn create_properties() raises -> PropertiesID:
     ]()()
 
 
-fn copy_properties(src: PropertiesID, dst: PropertiesID) raises:
+def copy_properties(src: PropertiesID, dst: PropertiesID) raises:
     """Copy a group of properties.
 
     Copy all the properties from one group of properties to another, with the
@@ -166,7 +166,7 @@ fn copy_properties(src: PropertiesID, dst: PropertiesID) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn lock_properties(props: PropertiesID) raises:
+def lock_properties(props: PropertiesID) raises:
     """Lock a group of properties.
 
     Obtain a multi-threaded lock for these properties. Other threads will wait
@@ -198,7 +198,7 @@ fn lock_properties(props: PropertiesID) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn unlock_properties(props: PropertiesID) raises -> None:
+def unlock_properties(props: PropertiesID) raises -> None:
     """Unlock a group of properties.
 
     Args:
@@ -242,7 +242,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_CleanupPropertyCallback.
 """
 
 
-fn set_pointer_property_with_cleanup(
+def set_pointer_property_with_cleanup(
     props: PropertiesID,
     var name: String,
     value: Ptr[NoneType, MutAnyOrigin],
@@ -293,7 +293,7 @@ fn set_pointer_property_with_cleanup(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_pointer_property(
+def set_pointer_property(
     props: PropertiesID, var name: String, value: Ptr[NoneType, MutAnyOrigin]
 ) raises:
     """Set a pointer property in a group of properties.
@@ -326,7 +326,7 @@ fn set_pointer_property(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_string_property(
+def set_string_property(
     props: PropertiesID, var name: String, var value: String
 ) raises:
     """Set a string property in a group of properties.
@@ -366,7 +366,7 @@ fn set_string_property(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_number_property(
+def set_number_property(
     props: PropertiesID, var name: String, value: Int64
 ) raises:
     """Set an integer property in a group of properties.
@@ -399,7 +399,7 @@ fn set_number_property(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_float_property(
+def set_float_property(
     props: PropertiesID, var name: String, value: c_float
 ) raises:
     """Set a floating point property in a group of properties.
@@ -432,7 +432,7 @@ fn set_float_property(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_boolean_property(
+def set_boolean_property(
     props: PropertiesID, var name: String, value: Bool
 ) raises:
     """Set a boolean property in a group of properties.
@@ -465,7 +465,7 @@ fn set_boolean_property(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn has_property(props: PropertiesID, var name: String) raises -> Bool:
+def has_property(props: PropertiesID, var name: String) raises -> Bool:
     """Return whether a property exists in a group of properties.
 
     Args:
@@ -488,7 +488,7 @@ fn has_property(props: PropertiesID, var name: String) raises -> Bool:
     ]()(props, name.as_c_string_slice().unsafe_ptr())
 
 
-fn get_property_type(
+def get_property_type(
     props: PropertiesID, var name: String
 ) raises -> PropertyType:
     """Get the type of a property in a group of properties.
@@ -516,7 +516,7 @@ fn get_property_type(
     ]()(props, name.as_c_string_slice().unsafe_ptr())
 
 
-fn get_pointer_property(
+def get_pointer_property(
     props: PropertiesID,
     var name: String,
     default_value: Ptr[NoneType, MutAnyOrigin],
@@ -559,7 +559,7 @@ fn get_pointer_property(
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
-fn get_string_property(
+def get_string_property(
     props: PropertiesID, var name: String, var default_value: String
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get a string property from a group of properties.
@@ -599,7 +599,7 @@ fn get_string_property(
     )
 
 
-fn get_number_property(
+def get_number_property(
     props: PropertiesID, var name: String, default_value: Int64
 ) raises -> Int64:
     """Get a number property from a group of properties.
@@ -633,7 +633,7 @@ fn get_number_property(
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
-fn get_float_property(
+def get_float_property(
     props: PropertiesID, var name: String, default_value: c_float
 ) raises -> c_float:
     """Get a floating point property from a group of properties.
@@ -667,7 +667,7 @@ fn get_float_property(
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
-fn get_boolean_property(
+def get_boolean_property(
     props: PropertiesID, var name: String, default_value: Bool
 ) raises -> Bool:
     """Get a boolean property from a group of properties.
@@ -701,7 +701,7 @@ fn get_boolean_property(
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
-fn clear_property(props: PropertiesID, var name: String) raises:
+def clear_property(props: PropertiesID, var name: String) raises:
     """Clear a property from a group of properties.
 
     Args:
@@ -750,7 +750,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EnumeratePropertiesCallback.
 """
 
 
-fn enumerate_properties(
+def enumerate_properties(
     props: PropertiesID,
     callback: EnumeratePropertiesCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
@@ -788,7 +788,7 @@ fn enumerate_properties(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_properties(props: PropertiesID) raises -> None:
+def destroy_properties(props: PropertiesID) raises -> None:
     """Destroy a group of properties.
 
     All properties are deleted and their cleanup functions will be called, if

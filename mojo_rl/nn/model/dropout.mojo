@@ -34,7 +34,9 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -42,7 +44,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         pass
 
     @staticmethod
-    fn _random_from_seed(seed: UInt64) -> Float64:
+    def _random_from_seed(seed: UInt64) -> Float64:
         """Generate random float in [0, 1) using xorshift64."""
         var x = seed
         x ^= x << 13
@@ -52,7 +54,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         return Float64(x & 0xFFFFFFFFFFFF) / Float64(0xFFFFFFFFFFFF)
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -94,7 +96,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                     output[batch, i] = rebind[Scalar[dtype]](input[batch, i])
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -132,7 +134,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                     output[batch, i] = rebind[Scalar[dtype]](input[batch, i])
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -178,7 +180,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl[
+    def forward_kernel_impl[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -232,7 +234,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl_no_cache[
+    def forward_kernel_impl_no_cache[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -257,7 +259,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int,
     ](
         grad_input: LayoutTensor[
@@ -299,7 +301,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -334,7 +336,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             ](cache.ptr)
 
             @always_inline
-            fn kernel_wrapper(
+            def kernel_wrapper(
                 output: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
                 ],
@@ -359,7 +361,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         else:
 
             @always_inline
-            fn kernel_wrapper_infer(
+            def kernel_wrapper_infer(
                 output: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
                 ],
@@ -377,7 +379,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             )
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -400,7 +402,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         ](input.ptr)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -421,7 +423,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -441,7 +443,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -479,7 +481,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             ](cache.ptr)
 
             @always_inline
-            fn kernel_wrapper(
+            def kernel_wrapper(
                 grad_input: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
                 ],
@@ -502,7 +504,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         else:
 
             @always_inline
-            fn kernel_wrapper_infer(
+            def kernel_wrapper_infer(
                 grad_input: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
                 ],

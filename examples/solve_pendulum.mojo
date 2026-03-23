@@ -37,7 +37,7 @@ from mojo_rl.core import (
 from mojo_rl.agents import DDPGAgent, TD3Agent
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("    Solving Pendulum - Continuous Control")
     print("=" * 60)

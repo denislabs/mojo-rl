@@ -4,7 +4,8 @@ from std.gpu.host import DeviceContext
 from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, SACConfig
 from mojo_rl.envs.pendulum import PendulumV2
 
-fn main() raises:
+
+def main() raises:
     print("=== Generic SAC GPU Test ===")
     seed(42)
     var agent = GenericOffPolicyAgent[SACConfig[3, 1, 64, 1000, 32]](

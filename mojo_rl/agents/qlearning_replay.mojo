@@ -55,7 +55,7 @@ struct QLearningReplayAgent(
     var batch_size: Int
     var min_buffer_size: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.q_table = copy.q_table
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
@@ -68,7 +68,7 @@ struct QLearningReplayAgent(
         self.batch_size = copy.batch_size
         self.min_buffer_size = copy.min_buffer_size
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.q_table = take.q_table^
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
@@ -81,7 +81,7 @@ struct QLearningReplayAgent(
         self.batch_size = take.batch_size
         self.min_buffer_size = take.min_buffer_size
 
-    fn __init__(
+    def __init__(
         out self,
         num_states: Int,
         num_actions: Int,
@@ -107,7 +107,7 @@ struct QLearningReplayAgent(
         self.batch_size = batch_size
         self.min_buffer_size = min_buffer_size
 
-    fn select_action(self, state_idx: Int) -> Int:
+    def select_action(self, state_idx: Int) -> Int:
         """Select action using epsilon-greedy policy."""
         var rand = random_float64()
         if rand < self.epsilon:
@@ -116,7 +116,7 @@ struct QLearningReplayAgent(
         else:
             return self.q_table.get_best_action(state_idx)
 
-    fn _q_update(
+    def _q_update(
         mut self,
         state: Int,
         action: Int,
@@ -136,7 +136,7 @@ struct QLearningReplayAgent(
         var new_q = current_q + self.learning_rate * (target - current_q)
         self.q_table.set(state, action, new_q)
 
-    fn update(
+    def update(
         mut self,
         state_idx: Int,
         action: Int,
@@ -158,19 +158,19 @@ struct QLearningReplayAgent(
             var t = batch[i]
             self._q_update(t.state, t.action, t.reward, t.next_state, t.done)
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay epsilon after each episode."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current epsilon value."""
         return self.epsilon
 
-    fn get_best_action(self, state_idx: Int) -> Int:
+    def get_best_action(self, state_idx: Int) -> Int:
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
 
-    fn train[
+    def train[
         E: DiscreteEnv
     ](
         mut self,
@@ -234,7 +234,7 @@ struct QLearningReplayAgent(
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: DiscreteEnv & RenderableEnv
     ](
         self,

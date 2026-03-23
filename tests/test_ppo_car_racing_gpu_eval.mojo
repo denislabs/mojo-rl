@@ -46,7 +46,7 @@ comptime dtype = DType.float32
 # =============================================================================
 
 
-fn format_obs(obs: List[Scalar[dtype]]) -> String:
+def format_obs(obs: List[Scalar[dtype]]) -> String:
     """Format observation for debug printing."""
     return (
         "x="
@@ -64,7 +64,7 @@ fn format_obs(obs: List[Scalar[dtype]]) -> String:
     )
 
 
-fn format_action(steering: Float32, gas: Float32, brake: Float32) -> String:
+def format_action(steering: Float32, gas: Float32, brake: Float32) -> String:
     """Format action for debug printing."""
     return (
         "steer="
@@ -76,7 +76,7 @@ fn format_action(steering: Float32, gas: Float32, brake: Float32) -> String:
     )
 
 
-fn format_actor_output(
+def format_actor_output(
     means: InlineArray[Scalar[dtype], NUM_ACTIONS],
     log_stds: InlineArray[Scalar[dtype], NUM_ACTIONS],
 ) -> String:
@@ -103,7 +103,7 @@ fn format_actor_output(
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Agent Evaluation on CarRacing (CPU)")

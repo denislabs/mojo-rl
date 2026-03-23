@@ -50,7 +50,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 # =============================================================================
 
 
-fn compare_fk(
+def compare_fk(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
 ) raises:
@@ -200,14 +200,14 @@ fn compare_fk(
 # =============================================================================
 
 
-fn test_fk_all_zeros() raises:
+def test_fk_all_zeros() raises:
     """FK at all-zero qpos: torso at origin, all joints at 0.
     Swimmer torso capsule extends along x-axis with body at z=0."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     compare_fk("All-zero qpos", qpos)
 
 
-fn test_fk_nonzero_position() raises:
+def test_fk_nonzero_position() raises:
     """FK with the swimmer displaced in the x-y plane.
     Slide joints move the body; body orientations should be unchanged."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -216,7 +216,7 @@ fn test_fk_nonzero_position() raises:
     compare_fk("Nonzero x-y position (slider1=3, slider2=-2)", qpos)
 
 
-fn test_fk_bent_joints() raises:
+def test_fk_bent_joints() raises:
     """FK with motor joints bent — exercises the 3-body chain FK.
     motor1_rot bends mid relative to torso, motor2_rot bends back relative to mid.
     """
@@ -226,7 +226,7 @@ fn test_fk_bent_joints() raises:
     compare_fk("Bent joints (motor1=0.5, motor2=-0.5 rad)", qpos)
 
 
-fn test_fk_rotated_and_bent() raises:
+def test_fk_rotated_and_bent() raises:
     """FK with torso rotated + both motor joints bent.
     Tests composition of rotation through the full body chain."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -238,7 +238,7 @@ fn test_fk_rotated_and_bent() raises:
     compare_fk("Rotated torso + bent joints (45 deg + 0.3/0.3 rad)", qpos)
 
 
-fn test_fk_large_position() raises:
+def test_fk_large_position() raises:
     """FK with large x displacement — tests FK locality (position offset
     should not affect body orientations)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -248,7 +248,7 @@ fn test_fk_large_position() raises:
     compare_fk("Large x position (100m) + C-curve joints", qpos)
 
 
-fn test_fk_near_joint_limits() raises:
+def test_fk_near_joint_limits() raises:
     """FK near the joint limits of motor1_rot and motor2_rot (±100 degrees).
     Range is ±100 deg = ±1.745 rad."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -257,5 +257,5 @@ fn test_fk_near_joint_limits() raises:
     compare_fk("Near joint limits (±1.5 rad)", qpos)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -7,7 +7,7 @@ from mojo_rl.deep_agents.core.agents import DeepSACAgent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Unified SAC vs Old SAC Comparison ===\n")
 
     # 1. Unified agent

@@ -16,20 +16,20 @@ trait Env:
     comptime StateType: State
     comptime ActionType: Action
 
-    fn step(
+    def step(
         mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         ...
 
-    fn reset(mut self) -> Self.StateType:
+    def reset(mut self) -> Self.StateType:
         """Reset the environment and return initial state."""
         ...
 
-    fn get_state(self) -> Self.StateType:
+    def get_state(self) -> Self.StateType:
         """Return current state representation."""
         ...
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up resources."""
         ...

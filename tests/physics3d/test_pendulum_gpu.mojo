@@ -45,7 +45,7 @@ comptime MAX_CONTACTS: Int = 5
 comptime BATCH: Int = 1
 
 
-fn test_pendulum_gpu() raises:
+def test_pendulum_gpu() raises:
     print("=" * 60)
     print("    GPU Pendulum Test")
     print("=" * 60)
@@ -317,11 +317,11 @@ fn test_pendulum_gpu() raises:
     print("=" * 60)
 
 
-fn main() raises:
+def main() raises:
     test_pendulum_gpu()
 
 
-fn abs_f32(x: Float32) -> Float32:
+def abs_f32(x: Float32) -> Float32:
     if x < 0:
         return -x
     return x

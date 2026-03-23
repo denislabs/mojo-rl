@@ -88,7 +88,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
     var buffer_log_probs: List[Float64]  # Old log probabilities
     var buffer_values: List[Float64]  # Old value estimates
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -152,7 +152,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.num_actions = copy.num_actions
         self.num_tiles = copy.num_tiles
         self.num_tilings = copy.num_tilings
@@ -180,7 +180,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.num_actions = take.num_actions
         self.num_tiles = take.num_tiles
         self.num_tilings = take.num_tilings
@@ -201,7 +201,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = take.buffer_log_probs^
         self.buffer_values = take.buffer_values^
 
-    fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
+    def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits).
 
         h(s, a) = θ_a · φ(s)
@@ -214,7 +214,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
+    def get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities π(·|s).
 
         Args:
@@ -226,7 +226,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
 
-    fn get_value(self, tiles: List[Int]) -> Float64:
+    def get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate V(s).
 
         Args:
@@ -240,7 +240,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             value += self.critic_weights[tiles[i]]
         return value
 
-    fn get_log_prob(self, tiles: List[Int], action: Int) -> Float64:
+    def get_log_prob(self, tiles: List[Int], action: Int) -> Float64:
         """Get log probability of action under current policy.
 
         Args:
@@ -255,7 +255,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             return log(probs[action])
         return -23.0  # log(1e-10) ≈ -23
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Sample action from policy π(a|s).
 
         Args:
@@ -267,7 +267,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         var probs = self.get_action_probs(tiles)
         return sample_from_probs(probs)
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action (highest probability).
 
         Args:
@@ -279,7 +279,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         var probs = self.get_action_probs(tiles)
         return argmax_probs(probs)
 
-    fn store_transition(
+    def store_transition(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -306,7 +306,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs.append(log_prob)
         self.buffer_values.append(value)
 
-    fn _get_value_idx(self, buffer_idx: Int) -> Float64:
+    def _get_value_idx(self, buffer_idx: Int) -> Float64:
         """Get current value estimate for buffer step."""
         var value: Float64 = 0.0
         var num_tiles = len(self.buffer_tiles[buffer_idx])
@@ -315,7 +315,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             value += self.critic_weights[tile_idx]
         return value
 
-    fn _get_action_probs_idx(self, buffer_idx: Int) -> List[Float64]:
+    def _get_action_probs_idx(self, buffer_idx: Int) -> List[Float64]:
         """Get current action probabilities for buffer step."""
         var preferences = List[Float64]()
         var num_tiles = len(self.buffer_tiles[buffer_idx])
@@ -327,14 +327,14 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return softmax(preferences^)
 
-    fn _get_log_prob_idx(self, buffer_idx: Int, action: Int) -> Float64:
+    def _get_log_prob_idx(self, buffer_idx: Int, action: Int) -> Float64:
         """Get current log probability for buffer step."""
         var probs = self._get_action_probs_idx(buffer_idx)
         if probs[action] > 1e-10:
             return log(probs[action])
         return -23.0
 
-    fn update(
+    def update(
         mut self,
         next_tiles: List[Int],
         done: Bool,
@@ -473,7 +473,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs.clear()
         self.buffer_values.clear()
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset buffer for new episode."""
         self.buffer_tiles.clear()
         self.buffer_actions.clear()
@@ -481,7 +481,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs.clear()
         self.buffer_values.clear()
 
-    fn get_policy_entropy(self, tiles: List[Int]) -> Float64:
+    def get_policy_entropy(self, tiles: List[Int]) -> Float64:
         """Compute policy entropy at given state.
 
         Args:
@@ -497,7 +497,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -569,7 +569,7 @@ struct PPOAgent(Copyable, ImplicitlyCopyable, Movable):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -668,7 +668,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
     var buffer_log_probs: List[Float64]
     var buffer_values: List[Float64]
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -735,7 +735,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.num_actions = copy.num_actions
         self.num_tiles = copy.num_tiles
         self.num_tilings = copy.num_tilings
@@ -764,7 +764,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = List[Float64]()
         self.buffer_values = List[Float64]()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.num_actions = take.num_actions
         self.num_tiles = take.num_tiles
         self.num_tilings = take.num_tilings
@@ -786,7 +786,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs = take.buffer_log_probs^
         self.buffer_values = take.buffer_values^
 
-    fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
+    def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""
         var preferences = List[Float64]()
         for a in range(self.num_actions):
@@ -796,36 +796,36 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
+    def get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities."""
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
 
-    fn get_value(self, tiles: List[Int]) -> Float64:
+    def get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate."""
         var value: Float64 = 0.0
         for i in range(len(tiles)):
             value += self.critic_weights[tiles[i]]
         return value
 
-    fn get_log_prob(self, tiles: List[Int], action: Int) -> Float64:
+    def get_log_prob(self, tiles: List[Int], action: Int) -> Float64:
         """Get log probability of action."""
         var probs = self.get_action_probs(tiles)
         if probs[action] > 1e-10:
             return log(probs[action])
         return -23.0
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Sample action from policy."""
         var probs = self.get_action_probs(tiles)
         return sample_from_probs(probs)
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action."""
         var probs = self.get_action_probs(tiles)
         return argmax_probs(probs)
 
-    fn store_transition(
+    def store_transition(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -844,7 +844,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs.append(log_prob)
         self.buffer_values.append(value)
 
-    fn _get_value_idx(self, buffer_idx: Int) -> Float64:
+    def _get_value_idx(self, buffer_idx: Int) -> Float64:
         """Get current value for buffer step."""
         var value: Float64 = 0.0
         var num_tiles = len(self.buffer_tiles[buffer_idx])
@@ -853,7 +853,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
             value += self.critic_weights[tile_idx]
         return value
 
-    fn _get_action_probs_idx(self, buffer_idx: Int) -> List[Float64]:
+    def _get_action_probs_idx(self, buffer_idx: Int) -> List[Float64]:
         """Get current action probabilities for buffer step."""
         var preferences = List[Float64]()
         var num_tiles = len(self.buffer_tiles[buffer_idx])
@@ -865,14 +865,14 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return softmax(preferences^)
 
-    fn _get_log_prob_idx(self, buffer_idx: Int, action: Int) -> Float64:
+    def _get_log_prob_idx(self, buffer_idx: Int, action: Int) -> Float64:
         """Get current log probability for buffer step."""
         var probs = self._get_action_probs_idx(buffer_idx)
         if probs[action] > 1e-10:
             return log(probs[action])
         return -23.0
 
-    fn update(
+    def update(
         mut self,
         next_tiles: List[Int],
         done: Bool,
@@ -994,7 +994,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs.clear()
         self.buffer_values.clear()
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset buffer."""
         self.buffer_tiles.clear()
         self.buffer_actions.clear()
@@ -1002,7 +1002,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         self.buffer_log_probs.clear()
         self.buffer_values.clear()
 
-    fn get_policy_entropy(self, tiles: List[Int]) -> Float64:
+    def get_policy_entropy(self, tiles: List[Int]) -> Float64:
         """Compute policy entropy."""
         var probs = self.get_action_probs(tiles)
         var entropy: Float64 = 0.0
@@ -1011,7 +1011,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -1083,7 +1083,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -1148,7 +1148,7 @@ struct PPOAgentWithMinibatch(Copyable, ImplicitlyCopyable, Movable):
         return total_reward / Float64(num_episodes)
 
 
-fn _ppo_obs_to_f64[
+def _ppo_obs_to_f64[
     DTYPE: DType
 ](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
     """Convert observation list to Float64."""

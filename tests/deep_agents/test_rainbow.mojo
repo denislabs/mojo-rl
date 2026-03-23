@@ -1,10 +1,14 @@
 """Test Rainbow DQN agent on CartPole."""
 
-from mojo_rl.deep_agents.core.agents import RainbowAgent, RainbowConfig, GenericRainbowAgent
+from mojo_rl.deep_agents.core.agents import (
+    RainbowAgent,
+    RainbowConfig,
+    GenericRainbowAgent,
+)
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Rainbow DQN Test ===")
 
     var agent = RainbowAgent[

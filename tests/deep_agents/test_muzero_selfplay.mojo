@@ -28,21 +28,21 @@ from mojo_rl.deep_agents.muzero.gpu_mcts import (
 from mojo_rl.deep_agents.muzero.kernels import extract_hidden_kernel
 
 
-fn main() raises:
+def main() raises:
     print("=== MuZero Self-Play on TicTacToe (GPU) ===")
 
     var ctx = DeviceContext()
 
     # ── Environment constants ────────────────────────────────────
     comptime TTT = TicTacToeEnv[DType.float32]
-    comptime OBS = TTT.OBS_DIM         # 27
-    comptime ACT = TTT.NUM_ACTIONS     # 9
+    comptime OBS = TTT.OBS_DIM  # 27
+    comptime ACT = TTT.NUM_ACTIONS  # 9
     comptime STATE_SIZE = TTT.STATE_SIZE  # 12
     comptime N_ENVS = 32
     comptime MAX_NODES = 32
     comptime NUM_SIMS = 10
     comptime LATENT = 64
-    comptime BINS = 1   # Scalar value for board games
+    comptime BINS = 1  # Scalar value for board games
     comptime HIDDEN = 64
     comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
 
@@ -52,7 +52,7 @@ fn main() raises:
         LinearReLU[OBS, HIDDEN],
         LinearReLU[HIDDEN, HIDDEN],
         Parallel[
-            Linear[HIDDEN, ACT],   # Policy head
+            Linear[HIDDEN, ACT],  # Policy head
             Linear[HIDDEN, BINS],  # Scalar value head
         ],
     ]
@@ -77,6 +77,7 @@ fn main() raises:
     # Initialize with random weights (CPU side)
     from mojo_rl.nn.training import NetworkState
     from mojo_rl.nn.initializer import Xavier
+
     var cpu_pred = NetworkState[PredModel, OptType]()
     cpu_pred.initialize[Xavier[]]()
     gpu_pred.upload_from(cpu_pred, ctx)
@@ -164,116 +165,262 @@ fn main() raises:
         )
 
         # 1c. Initialize root nodes
-        var vc_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](mcts.visit_count.unsafe_ptr())
-        var tv_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](mcts.total_value.unsafe_ptr())
-        var pr_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](mcts.prior.unsafe_ptr())
-        var rw_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](mcts.reward.unsafe_ptr())
-        var ci_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin](mcts.child_idx.unsafe_ptr())
-        var tvis_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin](mcts.total_visits.unsafe_ptr())
-        var nc_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](mcts.node_count.unsafe_ptr())
-        var po_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin](mcts.pred_output.unsafe_ptr())
-        var miq_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](mcts.min_q.unsafe_ptr())
-        var mxq_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](mcts.max_q.unsafe_ptr())
+        var vc_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+        ](mcts.visit_count.unsafe_ptr())
+        var tv_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+        ](mcts.total_value.unsafe_ptr())
+        var pr_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+        ](mcts.prior.unsafe_ptr())
+        var rw_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+        ](mcts.reward.unsafe_ptr())
+        var ci_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+        ](mcts.child_idx.unsafe_ptr())
+        var tvis_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+        ](mcts.total_visits.unsafe_ptr())
+        var nc_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            mcts.node_count.unsafe_ptr()
+        )
+        var po_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
+        ](mcts.pred_output.unsafe_ptr())
+        var miq_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            mcts.min_q.unsafe_ptr()
+        )
+        var mxq_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            mcts.max_q.unsafe_ptr()
+        )
 
-        comptime run_init = gpu_mcts_init_root_kernel[N_ENVS, MAX_NODES, ACT, LATENT, PRED_OUT, dtype]
+        comptime run_init = gpu_mcts_init_root_kernel[
+            N_ENVS, MAX_NODES, ACT, LATENT, PRED_OUT, dtype
+        ]
         ctx.enqueue_function[run_init, run_init](
-            vc_t, tv_t, pr_t, rw_t, ci_t, tvis_t, nc_t, po_t, miq_t, mxq_t,
-            Scalar[dtype](0.25), Scalar[DType.uint32](UInt32(step * 137)),
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            vc_t,
+            tv_t,
+            pr_t,
+            rw_t,
+            ci_t,
+            tvis_t,
+            nc_t,
+            po_t,
+            miq_t,
+            mxq_t,
+            Scalar[dtype](0.25),
+            Scalar[DType.uint32](UInt32(step * 137)),
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # 1d. Apply legal mask to root prior (SELF-PLAY KEY STEP)
-        var lm_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin](legal_masks_buf.unsafe_ptr())
-        comptime run_mask = gpu_mcts_apply_legal_mask_kernel[N_ENVS, MAX_NODES, ACT, dtype]
+        var lm_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+        ](legal_masks_buf.unsafe_ptr())
+        comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
+            N_ENVS, MAX_NODES, ACT, dtype
+        ]
         ctx.enqueue_function[run_mask, run_mask](
-            pr_t, lm_t,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            pr_t,
+            lm_t,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # 1e. Run MCTS simulations with NEGATED backup
-        var pp_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](mcts.pending_parent.unsafe_ptr())
-        var pa_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](mcts.pending_action.unsafe_ptr())
-        var sp_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin](mcts.search_paths.unsafe_ptr())
-        var ap_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin](mcts.action_paths.unsafe_ptr())
-        var pl_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](mcts.path_lengths.unsafe_ptr())
-        var lv_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](mcts.leaf_values.unsafe_ptr())
-        var hs_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin](mcts.hidden_states.unsafe_ptr())
+        var pp_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            mcts.pending_parent.unsafe_ptr()
+        )
+        var pa_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            mcts.pending_action.unsafe_ptr()
+        )
+        var sp_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
+        ](mcts.search_paths.unsafe_ptr())
+        var ap_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
+        ](mcts.action_paths.unsafe_ptr())
+        var pl_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            mcts.path_lengths.unsafe_ptr()
+        )
+        var lv_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            mcts.leaf_values.unsafe_ptr()
+        )
+        var hs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
+        ](mcts.hidden_states.unsafe_ptr())
 
         comptime DYN_IN_DIM = DynModel.IN_DIM
         comptime DYN_OUT_DIM = DynModel.OUT_DIM
 
         for _sim in range(NUM_SIMS):
             # Selection
-            comptime run_sel = gpu_mcts_select_kernel[N_ENVS, MAX_NODES, ACT, dtype]
+            comptime run_sel = gpu_mcts_select_kernel[
+                N_ENVS, MAX_NODES, ACT, dtype
+            ]
             ctx.enqueue_function[run_sel, run_sel](
-                vc_t, tv_t, pr_t, ci_t, tvis_t, nc_t, miq_t, mxq_t,
-                pp_t, pa_t, sp_t, ap_t, pl_t,
-                Scalar[dtype](19652.0), Scalar[dtype](2.5),  # AlphaGo-style c
-                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+                vc_t,
+                tv_t,
+                pr_t,
+                ci_t,
+                tvis_t,
+                nc_t,
+                miq_t,
+                mxq_t,
+                pp_t,
+                pa_t,
+                sp_t,
+                ap_t,
+                pl_t,
+                Scalar[dtype](19652.0),
+                Scalar[dtype](2.5),  # AlphaGo-style c
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             # Build dynamics input
-            var di_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * DYN_IN), MutAnyOrigin](mcts.dyn_input.unsafe_ptr())
-            comptime run_bld = gpu_mcts_build_dyn_input_kernel[N_ENVS, MAX_NODES, ACT, LATENT, DYN_IN, dtype]
+            var di_t = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS * DYN_IN), MutAnyOrigin
+            ](mcts.dyn_input.unsafe_ptr())
+            comptime run_bld = gpu_mcts_build_dyn_input_kernel[
+                N_ENVS, MAX_NODES, ACT, LATENT, DYN_IN, dtype
+            ]
             ctx.enqueue_function[run_bld, run_bld](
-                di_t, hs_t, pp_t, pa_t,
-                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+                di_t,
+                hs_t,
+                pp_t,
+                pa_t,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             # Dynamics forward
-            var dyn_in_net = LayoutTensor[dtype, Layout.row_major(N_ENVS, DYN_IN_DIM), MutAnyOrigin](mcts.dyn_input.unsafe_ptr())
-            var dyn_out_net = LayoutTensor[dtype, Layout.row_major(N_ENVS, DYN_OUT_DIM), MutAnyOrigin](mcts.dyn_output.unsafe_ptr())
-            DynNet.forward_gpu[N_ENVS](ctx, dyn_in_net, dyn_out_net, gpu_dyn.params_view(), workspace)
+            var dyn_in_net = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, DYN_IN_DIM), MutAnyOrigin
+            ](mcts.dyn_input.unsafe_ptr())
+            var dyn_out_net = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, DYN_OUT_DIM), MutAnyOrigin
+            ](mcts.dyn_output.unsafe_ptr())
+            DynNet.forward_gpu[N_ENVS](
+                ctx, dyn_in_net, dyn_out_net, gpu_dyn.params_view(), workspace
+            )
 
             # Extract hidden → pred input
-            var pred_in_flat = LayoutTensor[dtype, Layout.row_major(N_ENVS * LATENT), MutAnyOrigin](mcts.pred_input.unsafe_ptr())
-            var dyn_out_flat = LayoutTensor[dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin](mcts.dyn_output.unsafe_ptr())
+            var pred_in_flat = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS * LATENT), MutAnyOrigin
+            ](mcts.pred_input.unsafe_ptr())
+            var dyn_out_flat = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin
+            ](mcts.dyn_output.unsafe_ptr())
             comptime EXTR_BLK = (N_ENVS * LATENT + TPB - 1) // TPB
-            comptime run_extr = extract_hidden_kernel[N_ENVS, LATENT, DYN_OUT, dtype]
+            comptime run_extr = extract_hidden_kernel[
+                N_ENVS, LATENT, DYN_OUT, dtype
+            ]
             ctx.enqueue_function[run_extr, run_extr](
-                pred_in_flat, dyn_out_flat,
-                grid_dim=(EXTR_BLK,), block_dim=(TPB,),
+                pred_in_flat,
+                dyn_out_flat,
+                grid_dim=(EXTR_BLK,),
+                block_dim=(TPB,),
             )
 
             # Prediction forward
             # Note: for child nodes, pred runs on latent (not obs)
             # This is a simplification — full AlphaZero would use game rules
-            var pred_in_lat = LayoutTensor[dtype, Layout.row_major(N_ENVS, PRED_IN_DIM), MutAnyOrigin](mcts.pred_input.unsafe_ptr())
-            var pred_out_sim = LayoutTensor[dtype, Layout.row_major(N_ENVS, PRED_OUT_DIM), MutAnyOrigin](mcts.pred_output.unsafe_ptr())
-            PredNet.forward_gpu[N_ENVS](ctx, pred_in_lat, pred_out_sim, gpu_pred.params_view(), workspace)
+            var pred_in_lat = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, PRED_IN_DIM), MutAnyOrigin
+            ](mcts.pred_input.unsafe_ptr())
+            var pred_out_sim = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS, PRED_OUT_DIM), MutAnyOrigin
+            ](mcts.pred_output.unsafe_ptr())
+            PredNet.forward_gpu[N_ENVS](
+                ctx,
+                pred_in_lat,
+                pred_out_sim,
+                gpu_pred.params_view(),
+                workspace,
+            )
 
             # Expand
-            var do_t = LayoutTensor[dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin](mcts.dyn_output.unsafe_ptr())
-            var po_exp = LayoutTensor[dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin](mcts.pred_output.unsafe_ptr())
-            comptime run_exp = gpu_mcts_expand_kernel[N_ENVS, MAX_NODES, ACT, LATENT, PRED_OUT, DYN_OUT, dtype]
+            var do_t = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin
+            ](mcts.dyn_output.unsafe_ptr())
+            var po_exp = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
+            ](mcts.pred_output.unsafe_ptr())
+            comptime run_exp = gpu_mcts_expand_kernel[
+                N_ENVS, MAX_NODES, ACT, LATENT, PRED_OUT, DYN_OUT, dtype
+            ]
             ctx.enqueue_function[run_exp, run_exp](
-                vc_t, tv_t, pr_t, rw_t, ci_t, tvis_t, nc_t,
-                hs_t, pp_t, pa_t, do_t, po_exp,
-                Scalar[dtype](-1.0), Scalar[dtype](1.0), lv_t,
-                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+                vc_t,
+                tv_t,
+                pr_t,
+                rw_t,
+                ci_t,
+                tvis_t,
+                nc_t,
+                hs_t,
+                pp_t,
+                pa_t,
+                do_t,
+                po_exp,
+                Scalar[dtype](-1.0),
+                Scalar[dtype](1.0),
+                lv_t,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
 
             # Backup with NEGATION (zero-sum two-player)
-            comptime run_bk = gpu_mcts_backup_negated_kernel[N_ENVS, MAX_NODES, ACT, dtype]
+            comptime run_bk = gpu_mcts_backup_negated_kernel[
+                N_ENVS, MAX_NODES, ACT, dtype
+            ]
             ctx.enqueue_function[run_bk, run_bk](
-                vc_t, tv_t, rw_t, tvis_t, miq_t, mxq_t,
-                sp_t, ap_t, pl_t, lv_t,
-                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+                vc_t,
+                tv_t,
+                rw_t,
+                tvis_t,
+                miq_t,
+                mxq_t,
+                sp_t,
+                ap_t,
+                pl_t,
+                lv_t,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
 
         # 1f. Extract actions (only legal ones)
-        var act_out = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](actions_buf.unsafe_ptr())
-        var pol_out = LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin](mcts.policies_out.unsafe_ptr())
-        comptime run_act = gpu_mcts_extract_actions_masked_kernel[N_ENVS, MAX_NODES, ACT, dtype]
+        var act_out = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var pol_out = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+        ](mcts.policies_out.unsafe_ptr())
+        comptime run_act = gpu_mcts_extract_actions_masked_kernel[
+            N_ENVS, MAX_NODES, ACT, dtype
+        ]
         ctx.enqueue_function[run_act, run_act](
-            vc_t, lm_t, act_out, pol_out,
-            grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            vc_t,
+            lm_t,
+            act_out,
+            pol_out,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # ── 2. GPU environment step ──────────────────────────────
         TTT.step_kernel_gpu[N_ENVS, STATE_SIZE, OBS](
-            ctx, states_buf, actions_buf, rewards_buf, dones_buf,
-            terminated_buf, obs_buf, legal_masks_buf,
+            ctx,
+            states_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            terminated_buf,
+            obs_buf,
+            legal_masks_buf,
             rng_seed=UInt64(step),
         )
 
@@ -300,20 +447,31 @@ fn main() raises:
 
         if step_dones > 0:
             print(
-                "Step", step,
-                "| Games done:", step_dones,
-                "| Wins:", step_wins,
-                "| Draws:", step_draws,
-                "| Total done:", total_games_done,
+                "Step",
+                step,
+                "| Games done:",
+                step_dones,
+                "| Wins:",
+                step_wins,
+                "| Draws:",
+                step_draws,
+                "| Total done:",
+                total_games_done,
             )
 
         # ── 4. Selective reset done games ────────────────────────
         TTT.selective_reset_kernel_gpu[N_ENVS, STATE_SIZE](
-            ctx, states_buf, dones_buf, rng_seed=UInt64(step * 7 + 1),
+            ctx,
+            states_buf,
+            dones_buf,
+            rng_seed=UInt64(step * 7 + 1),
         )
         # Re-extract obs + legal masks for reset games
         TTT.extract_obs_kernel_gpu[N_ENVS, STATE_SIZE, OBS](
-            ctx, states_buf, obs_buf, legal_masks_buf,
+            ctx,
+            states_buf,
+            obs_buf,
+            legal_masks_buf,
         )
 
         # Stop early once enough games played
@@ -338,7 +496,9 @@ fn main() raises:
         for a in range(ACT):
             if a > 0:
                 pol_str += ", "
-            pol_str += String(Int(Float64(policies_host[e * ACT + a]) * 100)) + "%"
+            pol_str += (
+                String(Int(Float64(policies_host[e * ACT + a]) * 100)) + "%"
+            )
         pol_str += "]"
         print(pol_str)
 

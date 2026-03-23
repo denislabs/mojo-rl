@@ -3,12 +3,12 @@
 from mojo_rl.envs.board_games.go import GoEnv
 
 
-fn pos(row: Int, col: Int, size: Int) -> Int:
+def pos(row: Int, col: Int, size: Int) -> Int:
     """Convert (row, col) to board index."""
     return row * size + col
 
 
-fn test_reset() raises:
+def test_reset() raises:
     print("test_reset...", end="")
     var env = GoEnv[9, DType.float64]()
     _ = env.reset()
@@ -30,7 +30,7 @@ fn test_reset() raises:
     print(" OK")
 
 
-fn test_stone_placement() raises:
+def test_stone_placement() raises:
     """Test basic stone placement and player alternation."""
     print("test_stone_placement...", end="")
     var env = GoEnv[9, DType.float64]()
@@ -59,7 +59,7 @@ fn test_stone_placement() raises:
     print(" OK")
 
 
-fn test_simple_capture() raises:
+def test_simple_capture() raises:
     """Test capturing a single stone surrounded on all 4 sides."""
     print("test_simple_capture...", end="")
     var env = GoEnv[9, DType.float64]()
@@ -84,7 +84,7 @@ fn test_simple_capture() raises:
     print(" OK")
 
 
-fn test_suicide_illegal() raises:
+def test_suicide_illegal() raises:
     """Test that suicide is illegal."""
     print("test_suicide_illegal...", end="")
     var env = GoEnv[9, DType.float64]()
@@ -107,7 +107,7 @@ fn test_suicide_illegal() raises:
     print(" OK")
 
 
-fn test_ko_rule() raises:
+def test_ko_rule() raises:
     """Test simple ko — cannot immediately recapture."""
     print("test_ko_rule...", end="")
     var env = GoEnv[9, DType.float64]()
@@ -150,7 +150,12 @@ fn test_ko_rule() raises:
 
     # Ko point should be set to (0,0)
     if Int(env2.state[env2.S_KO_POINT]) != pos(0, 0, 9):
-        print(" FAIL: ko point should be", pos(0, 0, 9), "got", Int(env2.state[env2.S_KO_POINT]))
+        print(
+            " FAIL: ko point should be",
+            pos(0, 0, 9),
+            "got",
+            Int(env2.state[env2.S_KO_POINT]),
+        )
         return
 
     # White should not be able to play at (0,0) immediately
@@ -162,7 +167,7 @@ fn test_ko_rule() raises:
     print(" OK")
 
 
-fn test_pass_and_game_end() raises:
+def test_pass_and_game_end() raises:
     """Test that two consecutive passes end the game."""
     print("test_pass_and_game_end...", end="")
     var env = GoEnv[9, DType.float64]()
@@ -182,7 +187,7 @@ fn test_pass_and_game_end() raises:
     print(" OK")
 
 
-fn test_scoring_empty_board() raises:
+def test_scoring_empty_board() raises:
     """Test scoring on empty board — white wins by komi."""
     print("test_scoring_empty_board...", end="")
     var env = GoEnv[9, DType.float64]()
@@ -193,13 +198,16 @@ fn test_scoring_empty_board() raises:
 
     # Empty board: 0 - 0 - 7.5 = -7.5 → white wins
     if env.game_result() != 2:
-        print(" FAIL: white should win on empty board (komi), got result", env.game_result())
+        print(
+            " FAIL: white should win on empty board (komi), got result",
+            env.game_result(),
+        )
         return
 
     print(" OK")
 
 
-fn test_obs_dim_9x9() raises:
+def test_obs_dim_9x9() raises:
     print("test_obs_dim_9x9...", end="")
     var env = GoEnv[9, DType.float64]()
     if env.obs_dim() != 324:
@@ -213,16 +221,18 @@ fn test_obs_dim_9x9() raises:
     print(" OK")
 
 
-fn test_num_actions_9x9() raises:
+def test_num_actions_9x9() raises:
     print("test_num_actions_9x9...", end="")
     var env = GoEnv[9, DType.float64]()
     if env.num_actions() != 82:
-        print(" FAIL: num_actions should be 82 (81+pass), got", env.num_actions())
+        print(
+            " FAIL: num_actions should be 82 (81+pass), got", env.num_actions()
+        )
         return
     print(" OK")
 
 
-fn test_canonical_obs() raises:
+def test_canonical_obs() raises:
     """Test canonical observation flipping."""
     print("test_canonical_obs...", end="")
     var env = GoEnv[9, DType.float64]()
@@ -248,7 +258,7 @@ fn test_canonical_obs() raises:
     print(" OK")
 
 
-fn test_legal_mask_occupied() raises:
+def test_legal_mask_occupied() raises:
     """Test that occupied cells are marked illegal."""
     print("test_legal_mask_occupied...", end="")
     var env = GoEnv[9, DType.float64]()
@@ -270,7 +280,7 @@ fn test_legal_mask_occupied() raises:
     print(" OK")
 
 
-fn test_parameterized_sizes() raises:
+def test_parameterized_sizes() raises:
     """Test that different board sizes compile and work."""
     print("test_parameterized_sizes...", end="")
 
@@ -301,7 +311,7 @@ fn test_parameterized_sizes() raises:
     print(" OK")
 
 
-fn test_random_game_completion() raises:
+def test_random_game_completion() raises:
     """Test that random 9x9 games always terminate."""
     print("test_random_game_completion...", end="")
     from std.random import random_float64
@@ -344,7 +354,7 @@ fn test_random_game_completion() raises:
     print(" OK")
 
 
-fn main() raises:
+def main() raises:
     print("=== Testing GoEnv ===\n")
 
     test_reset()

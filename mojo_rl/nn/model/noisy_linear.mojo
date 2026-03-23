@@ -38,7 +38,7 @@ from std.random.philox import Random as PhiloxRandom
 
 
 @always_inline
-fn _noise_transform(x: Scalar[dtype]) -> Scalar[dtype]:
+def _noise_transform(x: Scalar[dtype]) -> Scalar[dtype]:
     """Factorized noise transform: f(x) = sign(x) * sqrt(|x|)."""
     var ax = abs(x)
     var s = sqrt(ax)
@@ -53,7 +53,7 @@ fn _noise_transform(x: Scalar[dtype]) -> Scalar[dtype]:
 
 
 @always_inline
-fn _gaussian_sample() -> Scalar[dtype]:
+def _gaussian_sample() -> Scalar[dtype]:
     """Generate a single N(0,1) sample using Box-Muller."""
     var u1 = Scalar[dtype](random_float64(0.0, 1.0))
     var u2 = Scalar[dtype](random_float64(0.0, 1.0))
@@ -101,13 +101,13 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     comptime CACHE_NOISE_P_OFFSET: Int = Self.in_dim
     comptime CACHE_NOISE_Q_OFFSET: Int = 2 * Self.in_dim
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -115,7 +115,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[
+    def initialize_params[
         INIT: Initializer
     ](
         mut params: LayoutTensor[
@@ -148,7 +148,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -206,7 +206,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -259,7 +259,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -278,7 +278,8 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Backward: compute grad_input and accumulate grads for mu and sigma."""
+        """Backward: compute grad_input and accumulate grads for mu and sigma.
+        """
         # Read noise from cache (same for all samples, use sample 0)
         var noise_p = InlineArray[Scalar[dtype], Self.in_dim](
             uninitialized=True
@@ -344,7 +345,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -376,11 +377,13 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         ](noise_ptr + Self.in_dim)
 
         # Generate a varying seed on CPU (different each forward call)
-        var seed_base = UInt64(random_float64(0.0, Float64(UInt32.MAX))) * UInt64(2654435761)
+        var seed_base = UInt64(
+            random_float64(0.0, Float64(UInt32.MAX))
+        ) * UInt64(2654435761)
 
         # Step 1: Generate noise in workspace
         @always_inline
-        fn gen_noise_kernel(
+        def gen_noise_kernel(
             np: LayoutTensor[
                 dtype, Layout.row_major(Self.in_dim), MutAnyOrigin
             ],
@@ -436,7 +439,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
         # Step 2: Forward pass + cache
         @always_inline
-        fn fwd_kernel(
+        def fwd_kernel(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -507,7 +510,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -535,11 +538,13 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         ](noise_ptr + Self.in_dim)
 
         # Generate a varying seed on CPU
-        var seed_base_nc = UInt64(random_float64(0.0, Float64(UInt32.MAX))) * UInt64(2654435761) + UInt64(99991)
+        var seed_base_nc = UInt64(
+            random_float64(0.0, Float64(UInt32.MAX))
+        ) * UInt64(2654435761) + UInt64(99991)
 
         # Generate noise
         @always_inline
-        fn gen_noise_nc(
+        def gen_noise_nc(
             np: LayoutTensor[
                 dtype, Layout.row_major(Self.in_dim), MutAnyOrigin
             ],
@@ -593,7 +598,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
         # Noisy forward
         @always_inline
-        fn fwd_noisy_nc_kernel(
+        def fwd_noisy_nc_kernel(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -644,7 +649,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -667,7 +672,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -691,9 +696,10 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         perf_slot: Int = 0,
     ) raises:
         """GPU backward. Kernel 1: grad_input. Kernel 2: param grads."""
+
         # Kernel 1: Compute grad_input — one thread per (batch, in_dim)
         @always_inline
-        fn grad_input_kernel(
+        def grad_input_kernel(
             gi: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -746,7 +752,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         # Kernel 2: Accumulate param grads — one thread per (i, j) pair
         # Each thread loops over batch dimension to accumulate
         @always_inline
-        fn param_grad_kernel(
+        def param_grad_kernel(
             go: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -786,8 +792,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                     dmu_acc += xdy
                     dsigma_acc += xdy * noise_ij
                 grd[Self.MU_W_OFFSET + idx] = (
-                    rebind[Scalar[dtype]](grd[Self.MU_W_OFFSET + idx])
-                    + dmu_acc
+                    rebind[Scalar[dtype]](grd[Self.MU_W_OFFSET + idx]) + dmu_acc
                 )
                 grd[Self.SIGMA_W_OFFSET + idx] = (
                     rebind[Scalar[dtype]](grd[Self.SIGMA_W_OFFSET + idx])
@@ -807,8 +812,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                     dmu_b_acc += dy_j
                     dsigma_b_acc += dy_j * nq_j
                 grd[Self.MU_B_OFFSET + j] = (
-                    rebind[Scalar[dtype]](grd[Self.MU_B_OFFSET + j])
-                    + dmu_b_acc
+                    rebind[Scalar[dtype]](grd[Self.MU_B_OFFSET + j]) + dmu_b_acc
                 )
                 grd[Self.SIGMA_B_OFFSET + j] = (
                     rebind[Scalar[dtype]](grd[Self.SIGMA_B_OFFSET + j])

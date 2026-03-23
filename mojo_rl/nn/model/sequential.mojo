@@ -10,9 +10,10 @@ from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 # GPU matmul requires 16-byte alignment = 4 float32 elements
 @always_inline
-fn _seq_align4(x: Int) -> Int:
+def _seq_align4(x: Int) -> Int:
     """Round up to next multiple of 4 for GPU alignment."""
     return (x + 3) & ~3
+
 
 # =============================================================================
 # Variadic Sequential Container
@@ -48,7 +49,7 @@ struct Sequential[*LAYERS: Model](Model):
     # --- Sum helpers ---
 
     @staticmethod
-    fn _sum_param_size() -> Int:
+    def _sum_param_size() -> Int:
         """Total param size with alignment padding between layers.
 
         Each layer except the last is padded to 4-element alignment so that
@@ -65,7 +66,7 @@ struct Sequential[*LAYERS: Model](Model):
         return total
 
     @staticmethod
-    fn _sum_cache_size() -> Int:
+    def _sum_cache_size() -> Int:
         var total = 0
 
         comptime for i in range(Self.N):
@@ -73,7 +74,7 @@ struct Sequential[*LAYERS: Model](Model):
         return total
 
     @staticmethod
-    fn _total_inter() -> Int:
+    def _total_inter() -> Int:
         """Per-sample intermediate buffer size (sum of OUT_DIM for layers 0..N-2).
         """
         var total = 0
@@ -83,7 +84,7 @@ struct Sequential[*LAYERS: Model](Model):
         return total
 
     @staticmethod
-    fn _sum_ws() -> Int:
+    def _sum_ws() -> Int:
         var total = 0
 
         comptime for i in range(Self.N):
@@ -97,7 +98,7 @@ struct Sequential[*LAYERS: Model](Model):
     # --- Offset helpers (all per-sample) ---
 
     @staticmethod
-    fn _param_offset[idx: Int]() -> Int:
+    def _param_offset[idx: Int]() -> Int:
         """Aligned param offset for layer idx.
 
         Each preceding layer's PARAM_SIZE is rounded up to 4-element alignment.
@@ -109,7 +110,7 @@ struct Sequential[*LAYERS: Model](Model):
         return total
 
     @staticmethod
-    fn _cache_offset[idx: Int]() -> Int:
+    def _cache_offset[idx: Int]() -> Int:
         var total = 0
 
         comptime for j in range(idx):
@@ -117,7 +118,7 @@ struct Sequential[*LAYERS: Model](Model):
         return total
 
     @staticmethod
-    fn _inter_offset[idx: Int]() -> Int:
+    def _inter_offset[idx: Int]() -> Int:
         """Offset of intermediate slot idx (per sample)."""
         var total = 0
 
@@ -126,7 +127,7 @@ struct Sequential[*LAYERS: Model](Model):
         return total
 
     @staticmethod
-    fn _ws_layer_offset[idx: Int]() -> Int:
+    def _ws_layer_offset[idx: Int]() -> Int:
         """Offset for layer idx's workspace (per sample), after all inter buffers.
         """
         var total = Self._total_inter()
@@ -136,7 +137,7 @@ struct Sequential[*LAYERS: Model](Model):
         return total
 
     @staticmethod
-    fn initialize_params[
+    def initialize_params[
         INIT: Initializer
     ](
         mut params: LayoutTensor[
@@ -165,7 +166,7 @@ struct Sequential[*LAYERS: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -272,7 +273,7 @@ struct Sequential[*LAYERS: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -359,7 +360,7 @@ struct Sequential[*LAYERS: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -485,7 +486,7 @@ struct Sequential[*LAYERS: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -642,7 +643,7 @@ struct Sequential[*LAYERS: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -778,7 +779,7 @@ struct Sequential[*LAYERS: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -845,9 +846,7 @@ struct Sequential[*LAYERS: Model](Model):
                     var in_rb = rebind[
                         LayoutTensor[
                             dtype,
-                            Layout.row_major(
-                                BATCH, Self.model_types[i].IN_DIM
-                            ),
+                            Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                             MutAnyOrigin,
                         ]
                     ](input)
@@ -892,7 +891,7 @@ struct Sequential[*LAYERS: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1066,11 +1065,9 @@ struct Sequential[*LAYERS: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn register_forward_slots[
+    def register_forward_slots[
         ENABLED: Bool
-    ](
-        mut timer: PerfTimer[ENABLED], parent: Int = -1
-    ) -> Int:
+    ](mut timer: PerfTimer[ENABLED], parent: Int = -1) -> Int:
         """Add N slots for forward-pass layers. Returns base slot index."""
         var base = len(timer.accum_ns)
         comptime for i in range(Self.N):
@@ -1087,12 +1084,11 @@ struct Sequential[*LAYERS: Model](Model):
         return base
 
     @staticmethod
-    fn register_backward_slots[
+    def register_backward_slots[
         ENABLED: Bool
-    ](
-        mut timer: PerfTimer[ENABLED], parent: Int = -1
-    ) -> Int:
-        """Add N slots for backward-pass layers (reverse order). Returns base slot index."""
+    ](mut timer: PerfTimer[ENABLED], parent: Int = -1) -> Int:
+        """Add N slots for backward-pass layers (reverse order). Returns base slot index.
+        """
         var base = len(timer.accum_ns)
         comptime for _ri in range(Self.N):
             comptime i = Self.N - 1 - _ri
@@ -1107,4 +1103,3 @@ struct Sequential[*LAYERS: Model](Model):
                 parent=parent,
             )
         return base
-

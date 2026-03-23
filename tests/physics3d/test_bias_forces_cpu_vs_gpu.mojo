@@ -76,7 +76,7 @@ comptime REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
-fn bias_forces_kernel[
+def bias_forces_kernel[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -147,7 +147,7 @@ fn bias_forces_kernel[
 # =============================================================================
 
 
-fn compare_bias_forces(
+def compare_bias_forces(
     ctx: DeviceContext,
     test_name: String,
     test_qpos: List[Float64],
@@ -209,7 +209,7 @@ fn compare_bias_forces(
     ctx.enqueue_copy(workspace_buf, ws_host.unsafe_ptr())
     ctx.synchronize()
 
-    comptime kernel_fn = bias_forces_kernel[
+    comptime kernel_def = bias_forces_kernel[
         DTYPE,
         NQ,
         NV,
@@ -312,7 +312,7 @@ fn compare_bias_forces(
     assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 
 
-fn test_default_qpos_zero_vel() raises:
+def test_default_qpos_zero_vel() raises:
     print("=" * 60)
     print("Bias Forces (RNE) Validation: CPU vs GPU")
     print("=" * 60)
@@ -371,7 +371,7 @@ fn test_default_qpos_zero_vel() raises:
     print()
 
 
-fn test_zero_qpos_zero_vel() raises:
+def test_zero_qpos_zero_vel() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -421,7 +421,7 @@ fn test_zero_qpos_zero_vel() raises:
     print()
 
 
-fn test_nonzero_joints_zero_vel() raises:
+def test_nonzero_joints_zero_vel() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -480,7 +480,7 @@ fn test_nonzero_joints_zero_vel() raises:
     print()
 
 
-fn test_nonzero_vel_gravity_coriolis() raises:
+def test_nonzero_vel_gravity_coriolis() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -540,7 +540,7 @@ fn test_nonzero_vel_gravity_coriolis() raises:
     print()
 
 
-fn test_extreme_velocities() raises:
+def test_extreme_velocities() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -602,7 +602,7 @@ fn test_extreme_velocities() raises:
     print()
 
 
-fn main() raises:
+def main() raises:
     test_default_qpos_zero_vel()
     test_zero_qpos_zero_vel()
     test_nonzero_joints_zero_vel()

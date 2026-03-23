@@ -24,12 +24,26 @@ from .atari_state import AtariState
 from .palette import NTSC_PALETTE, palette_r, palette_g, palette_b
 from .tables import player_mask, missile_mask, ball_mask, playfield_mask
 from .flags import (
-    FRAME_WIDTH, FRAME_HEIGHT,
-    TIA_PF_PRIORITY, TIA_PF_SCORE, TIA_VBLANK,
-    CX_M0P1, CX_M0P0, CX_M1P0, CX_M1P1,
-    CX_P0PF, CX_P0BL, CX_P1PF, CX_P1BL,
-    CX_M0PF, CX_M0BL, CX_M1PF, CX_M1BL,
-    CX_BLPF, CX_P0P1, CX_M0M1,
+    FRAME_WIDTH,
+    FRAME_HEIGHT,
+    TIA_PF_PRIORITY,
+    TIA_PF_SCORE,
+    TIA_VBLANK,
+    CX_M0P1,
+    CX_M0P0,
+    CX_M1P0,
+    CX_M1P1,
+    CX_P0PF,
+    CX_P0BL,
+    CX_P1PF,
+    CX_P1BL,
+    CX_M0PF,
+    CX_M0BL,
+    CX_M1PF,
+    CX_M1BL,
+    CX_BLPF,
+    CX_P0P1,
+    CX_M0M1,
 )
 
 # Frame buffer size: 160x210 pixels, 4 bytes per pixel (BGRA)
@@ -37,7 +51,7 @@ comptime FRAME_BUF_SIZE: Int = FRAME_WIDTH * FRAME_HEIGHT * 4
 
 
 @always_inline
-fn _get_pixel_color(state: AtariState, pixel: Int) -> UInt8:
+def _get_pixel_color(state: AtariState, pixel: Int) -> UInt8:
     """Determine the TIA color index for a single pixel position.
 
     Applies TIA object priority rules to determine which object's
@@ -87,7 +101,7 @@ fn _get_pixel_color(state: AtariState, pixel: Int) -> UInt8:
 
 
 @always_inline
-fn _write_pixel_bgra(
+def _write_pixel_bgra(
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     offset: Int,
     color_idx: UInt8,
@@ -95,14 +109,14 @@ fn _write_pixel_bgra(
 ):
     """Write one BGRA pixel using a pre-materialized palette."""
     var rgb = palette[Int(color_idx)]
-    buf[offset + 0] = UInt8(rgb & 0xFF)           # B
-    buf[offset + 1] = UInt8((rgb >> 8) & 0xFF)    # G
-    buf[offset + 2] = UInt8((rgb >> 16) & 0xFF)   # R
-    buf[offset + 3] = 0xFF                         # A
+    buf[offset + 0] = UInt8(rgb & 0xFF)  # B
+    buf[offset + 1] = UInt8((rgb >> 8) & 0xFF)  # G
+    buf[offset + 2] = UInt8((rgb >> 16) & 0xFF)  # R
+    buf[offset + 3] = 0xFF  # A
 
 
 @always_inline
-fn render_scanline_bgra(
+def render_scanline_bgra(
     state: AtariState,
     scanline: Int,
     buf: UnsafePointer[UInt8, MutAnyOrigin],
@@ -139,7 +153,7 @@ fn render_scanline_bgra(
 
 
 @always_inline
-fn render_scanline_with_collision_bgra(
+def render_scanline_with_collision_bgra(
     mut state: AtariState,
     scanline: Int,
     buf: UnsafePointer[UInt8, MutAnyOrigin],
@@ -169,21 +183,36 @@ fn render_scanline_with_collision_bgra(
         var bl = ball_mask(state, x)
 
         # --- Collision detection (reuse masks) ---
-        if m0 and p1: state.collision = state.collision | CX_M0P1
-        if m0 and p0: state.collision = state.collision | CX_M0P0
-        if m1 and p0: state.collision = state.collision | CX_M1P0
-        if m1 and p1: state.collision = state.collision | CX_M1P1
-        if p0 and pf: state.collision = state.collision | CX_P0PF
-        if p0 and bl: state.collision = state.collision | CX_P0BL
-        if p1 and pf: state.collision = state.collision | CX_P1PF
-        if p1 and bl: state.collision = state.collision | CX_P1BL
-        if m0 and pf: state.collision = state.collision | CX_M0PF
-        if m0 and bl: state.collision = state.collision | CX_M0BL
-        if m1 and pf: state.collision = state.collision | CX_M1PF
-        if m1 and bl: state.collision = state.collision | CX_M1BL
-        if bl and pf: state.collision = state.collision | CX_BLPF
-        if p0 and p1: state.collision = state.collision | CX_P0P1
-        if m0 and m1: state.collision = state.collision | CX_M0M1
+        if m0 and p1:
+            state.collision = state.collision | CX_M0P1
+        if m0 and p0:
+            state.collision = state.collision | CX_M0P0
+        if m1 and p0:
+            state.collision = state.collision | CX_M1P0
+        if m1 and p1:
+            state.collision = state.collision | CX_M1P1
+        if p0 and pf:
+            state.collision = state.collision | CX_P0PF
+        if p0 and bl:
+            state.collision = state.collision | CX_P0BL
+        if p1 and pf:
+            state.collision = state.collision | CX_P1PF
+        if p1 and bl:
+            state.collision = state.collision | CX_P1BL
+        if m0 and pf:
+            state.collision = state.collision | CX_M0PF
+        if m0 and bl:
+            state.collision = state.collision | CX_M0BL
+        if m1 and pf:
+            state.collision = state.collision | CX_M1PF
+        if m1 and bl:
+            state.collision = state.collision | CX_M1BL
+        if bl and pf:
+            state.collision = state.collision | CX_BLPF
+        if p0 and p1:
+            state.collision = state.collision | CX_P0P1
+        if m0 and m1:
+            state.collision = state.collision | CX_M0M1
 
         # --- Rendering (reuse masks) ---
         var color_idx: UInt8
@@ -218,7 +247,7 @@ fn render_scanline_with_collision_bgra(
 
 
 @always_inline
-fn render_pixel_range_bgra(
+def render_pixel_range_bgra(
     state: AtariState,
     scanline: Int,
     start_pixel: Int,
@@ -248,7 +277,7 @@ fn render_pixel_range_bgra(
         _write_pixel_bgra(buf, row_offset + x * 4, color_idx, palette)
 
 
-fn render_frame_bgra(
+def render_frame_bgra(
     state: AtariState,
     buf: UnsafePointer[UInt8, MutAnyOrigin],
 ):
@@ -263,7 +292,7 @@ fn render_frame_bgra(
         render_scanline_bgra(state, y, buf)
 
 
-fn render_frame_rgb(
+def render_frame_rgb(
     state: AtariState,
     buf: UnsafePointer[UInt8, MutAnyOrigin],
 ):
@@ -284,7 +313,7 @@ fn render_frame_rgb(
             buf[offset + 2] = UInt8(rgb & 0xFF)
 
 
-fn render_frame_grayscale(
+def render_frame_grayscale(
     state: AtariState,
     buf: UnsafePointer[UInt8, MutAnyOrigin],
 ):

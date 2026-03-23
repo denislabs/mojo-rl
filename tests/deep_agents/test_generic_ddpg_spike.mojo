@@ -7,7 +7,7 @@ from mojo_rl.deep_agents.core.agents import (
 )
 
 
-fn main():
+def main():
     print("=== Generic Off-Policy Agent with Config Trait ===")
 
     # Test 1: DDPG

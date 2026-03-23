@@ -134,7 +134,7 @@ struct MPPIGPUBuffers[
     var mean_host: HostBuffer[dtype]  # [H * ACT]
     var std_host: HostBuffer[dtype]  # [H * ACT]
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all MPPI GPU and host buffers."""
 
         # Network workspaces
@@ -295,7 +295,7 @@ struct BatchedMPPIGPUBuffers[
     var std_host: HostBuffer[dtype]
     var weights_host: HostBuffer[dtype]  # [BATCH_TOTAL]
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all batched MPPI GPU and host buffers."""
 
         # Network workspaces
@@ -583,7 +583,9 @@ struct TDMPC2GPUState[
     var z_buf: DeviceBuffer[dtype]  # [B_LATENT] current z_t
     var z_next_buf: DeviceBuffer[dtype]  # [B_LATENT] enc(obs_{t+1}) stop-grad
     var z_pred_buf: DeviceBuffer[dtype]  # [B_LATENT] dynamics(za_t)
-    var z_history_buf: DeviceBuffer[dtype]  # [H * B_LATENT] z at each horizon step
+    var z_history_buf: DeviceBuffer[
+        dtype
+    ]  # [H * B_LATENT] z at each horizon step
     var za_buf: DeviceBuffer[dtype]  # [B_ZA] [z_t, a_t]
     var pi_out_buf: DeviceBuffer[dtype]  # [BATCH * 2 * ACT]
     var pi_act_buf: DeviceBuffer[dtype]  # [B_ACT] tanh(mean) actions
@@ -643,10 +645,14 @@ struct TDMPC2GPUState[
     var env_done_host: HostBuffer[dtype]
 
     # ── Reusable host buffers (avoid per-step allocations) ──
-    var qt_upload_host: HostBuffer[dtype]  # [Q_P] reused for each Q-target upload
-    var q_vals_host: HostBuffer[dtype]  # [BATCH] for Q-value diagnostic readback
+    var qt_upload_host: HostBuffer[
+        dtype
+    ]  # [Q_P] reused for each Q-target upload
+    var q_vals_host: HostBuffer[
+        dtype
+    ]  # [BATCH] for Q-value diagnostic readback
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU and host buffers."""
 
         # ── Network states ──
@@ -985,7 +991,7 @@ struct TDMPC2CPUState[
     var _a_pi: List[Scalar[dtype]]  # [B_ACT]
     var _q_logits2: List[Scalar[dtype]]  # [B_BINS] second Q for min(Q1, Q2)
 
-    fn __init__(out self):
+    def __init__(out self):
         """Allocate world model, replay buffer, and all scratch buffers."""
 
         # ── Core state ────────────────────────────────────────────────────
@@ -1107,7 +1113,7 @@ struct TDMPC2CPUState[
 
     # ── Helper methods ────────────────────────────────────────────────────
 
-    fn observe(
+    def observe(
         mut self,
         obs: InlineArray[Scalar[dtype], Self.OBS],
         action: InlineArray[Scalar[dtype], Self.ACT],
@@ -1124,7 +1130,7 @@ struct TDMPC2CPUState[
         """
         self.buffer.add(obs, action, reward, done)
 
-    fn is_ready(self) -> Bool:
+    def is_ready(self) -> Bool:
         """Return True if buffer has enough samples for one training batch.
 
         Requires at least BATCH + H + 1 samples so that

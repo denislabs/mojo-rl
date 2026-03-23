@@ -25,7 +25,7 @@ from layout.layout_tensor import copy_dram_to_sram_async
 
 
 @always_inline
-fn tiled_matmul_kernel_idiomatic[
+def tiled_matmul_kernel_idiomatic[
     dtype: DType,
     M: Int,
     N: Int,
@@ -57,14 +57,14 @@ fn tiled_matmul_kernel_idiomatic[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: output.element_type = 0
@@ -112,7 +112,7 @@ fn tiled_matmul_kernel_idiomatic[
 
 
 @always_inline
-fn tiled_matmul_kernel_general[
+def tiled_matmul_kernel_general[
     dtype: DType,
     M: Int,
     N: Int,
@@ -141,14 +141,14 @@ fn tiled_matmul_kernel_general[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: output.element_type = 0
@@ -193,7 +193,7 @@ fn tiled_matmul_kernel_general[
 
 
 @always_inline
-fn linear_forward_kernel[
+def linear_forward_kernel[
     dtype: DType,
     BATCH: Int,
     IN_DIM: Int,
@@ -223,14 +223,14 @@ fn linear_forward_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # Start with bias
@@ -270,7 +270,7 @@ fn linear_forward_kernel[
 
 
 @always_inline
-fn linear_backward_dx_kernel[
+def linear_backward_dx_kernel[
     dtype: DType,
     BATCH: Int,
     IN_DIM: Int,
@@ -299,14 +299,14 @@ fn linear_backward_dx_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var W_T_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: grad_input.element_type = 0
@@ -340,7 +340,7 @@ fn linear_backward_dx_kernel[
 
 
 @always_inline
-fn linear_backward_dW_kernel[
+def linear_backward_dW_kernel[
     dtype: DType,
     BATCH: Int,
     IN_DIM: Int,
@@ -367,14 +367,14 @@ fn linear_backward_dW_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var dy_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: dW.element_type = 0

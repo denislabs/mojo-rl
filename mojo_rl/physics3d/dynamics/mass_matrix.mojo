@@ -67,13 +67,13 @@ from ..joint_types import (
 
 
 # Helper to ensure positive size (avoid zero-size arrays)
-fn _ensure_positive[n: Int]() -> Int:
+def _ensure_positive[n: Int]() -> Int:
     if n > 0:
         return n
     return 1
 
 
-fn _is_descendant[
+def _is_descendant[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -119,7 +119,7 @@ fn _is_descendant[
 # =============================================================================
 
 
-fn compute_mass_matrix[
+def compute_mass_matrix[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -368,7 +368,7 @@ fn compute_mass_matrix[
 # =============================================================================
 
 
-fn compute_body_invweight0[
+def compute_body_invweight0[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -603,7 +603,7 @@ fn compute_body_invweight0[
 # =============================================================================
 
 
-fn ldl_factor[
+def ldl_factor[
     DTYPE: DType, NV: Int
 ](
     M: List[Scalar[DTYPE]],
@@ -631,7 +631,7 @@ fn ldl_factor[
                 L[i * NV + j] = l_ij / d_j
 
 
-fn ldl_solve[
+def ldl_solve[
     DTYPE: DType, NV: Int
 ](
     L: List[Scalar[DTYPE]],
@@ -668,7 +668,7 @@ fn ldl_solve[
         x[i] = s
 
 
-fn compute_M_inv_from_ldl[
+def compute_M_inv_from_ldl[
     DTYPE: DType, NV: Int
 ](
     L: List[Scalar[DTYPE]],
@@ -698,7 +698,7 @@ fn compute_M_inv_from_ldl[
 # =============================================================================
 
 
-fn compute_mass_matrix_full[
+def compute_mass_matrix_full[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -923,7 +923,7 @@ struct SparseMassMatrix[
     # 1/D[i] — set by ldl_factor_sparse for fast solve
     var diag_inv: InlineArray[Scalar[Self.DTYPE], _ensure_positive[Self.NV]()]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.row_nnz = InlineArray[Int, _ensure_positive[Self.NV]()](fill=0)
         self.row_adr = InlineArray[Int, _ensure_positive[Self.NV]()](fill=0)
         self.col_ind = InlineArray[Int, _ensure_positive[Self.NM]()](fill=0)
@@ -936,12 +936,12 @@ struct SparseMassMatrix[
         ](fill=Scalar[Self.DTYPE](0))
 
     @always_inline
-    fn diag_pos(self, row: Int) -> Int:
+    def diag_pos(self, row: Int) -> Int:
         """Flat index of the diagonal entry M[row, row] in values/col_ind."""
         return self.row_adr[row] + self.row_nnz[row] - 1
 
     @always_inline
-    fn find_col(self, row: Int, col: Int) -> Int:
+    def find_col(self, row: Int, col: Int) -> Int:
         """Return flat index of M[row, col], or -1 if not in pattern."""
         var adr = self.row_adr[row]
         var nnz = self.row_nnz[row]
@@ -954,7 +954,7 @@ struct SparseMassMatrix[
         return -1
 
 
-fn build_sparse_pattern[
+def build_sparse_pattern[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1028,7 +1028,7 @@ fn build_sparse_pattern[
     sM.actual_nnz = total_nnz
 
 
-fn count_sparse_nnz[
+def count_sparse_nnz[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1088,7 +1088,7 @@ fn count_sparse_nnz[
     return total
 
 
-fn compute_mass_matrix_sparse[
+def compute_mass_matrix_sparse[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1284,7 +1284,7 @@ fn compute_mass_matrix_sparse[
             sM.values[adr_i + k_idx] = mij
 
 
-fn ldl_factor_sparse[
+def ldl_factor_sparse[
     DTYPE: DType,
     NV: Int,
     NM: Int,
@@ -1340,7 +1340,7 @@ fn ldl_factor_sparse[
             sM.values[adr_off] *= invD_k
 
 
-fn ldl_solve_sparse[
+def ldl_solve_sparse[
     DTYPE: DType,
     NV: Int,
     NM: Int,
@@ -1395,7 +1395,7 @@ fn ldl_solve_sparse[
             x[i] -= sM.values[adr_i + t] * x[j]
 
 
-fn build_sparse_pattern_gpu[
+def build_sparse_pattern_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1471,7 +1471,7 @@ fn build_sparse_pattern_gpu[
     return actual_nnz
 
 
-fn sparse_to_dense[
+def sparse_to_dense[
     DTYPE: DType,
     NV: Int,
     NM: Int,
@@ -1505,7 +1505,7 @@ fn sparse_to_dense[
 
 
 @always_inline
-fn compute_mass_matrix_full_gpu[
+def compute_mass_matrix_full_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1735,7 +1735,7 @@ fn compute_mass_matrix_full_gpu[
 
 
 @always_inline
-fn compute_mass_matrix_full_gpu_mt[
+def compute_mass_matrix_full_gpu_mt[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1969,7 +1969,7 @@ fn compute_mass_matrix_full_gpu_mt[
 
 
 @always_inline
-fn ldl_factor_gpu[
+def ldl_factor_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -2018,7 +2018,7 @@ fn ldl_factor_gpu[
 
 
 @always_inline
-fn ldl_solve_gpu[
+def ldl_solve_gpu[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -2052,7 +2052,7 @@ fn ldl_solve_gpu[
 
 
 @always_inline
-fn ldl_solve_workspace_gpu[
+def ldl_solve_workspace_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -2108,7 +2108,7 @@ fn ldl_solve_workspace_gpu[
 
 
 @always_inline
-fn compute_M_inv_from_ldl_gpu[
+def compute_M_inv_from_ldl_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -2174,7 +2174,7 @@ fn compute_M_inv_from_ldl_gpu[
 
 
 @always_inline
-fn compute_mass_matrix_sparse_gpu[
+def compute_mass_matrix_sparse_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -2407,7 +2407,7 @@ fn compute_mass_matrix_sparse_gpu[
 
 
 @always_inline
-fn ldl_factor_sparse_gpu[
+def ldl_factor_sparse_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -2471,7 +2471,7 @@ fn ldl_factor_sparse_gpu[
 
 
 @always_inline
-fn ldl_solve_sparse_gpu[
+def ldl_solve_sparse_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -2546,7 +2546,7 @@ fn ldl_solve_sparse_gpu[
 
 
 @always_inline
-fn compute_M_inv_from_sparse_ldl_gpu[
+def compute_M_inv_from_sparse_ldl_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -2626,7 +2626,7 @@ fn compute_M_inv_from_sparse_ldl_gpu[
 # =============================================================================
 
 
-fn solve_linear_1x1[
+def solve_linear_1x1[
     DTYPE: DType
 ](M: Scalar[DTYPE], b: Scalar[DTYPE],) -> Scalar[DTYPE]:
     """Solve 1x1 system: M * x = b."""
@@ -2635,7 +2635,7 @@ fn solve_linear_1x1[
     return Scalar[DTYPE](0)
 
 
-fn solve_linear_diagonal[
+def solve_linear_diagonal[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -2663,7 +2663,7 @@ fn solve_linear_diagonal[
 
 
 @always_inline
-fn _is_descendant_gpu[
+def _is_descendant_gpu[
     DTYPE: DType,
     NBODY: Int,
     MODEL_SIZE: Int,
@@ -2686,7 +2686,7 @@ fn _is_descendant_gpu[
 
 
 @always_inline
-fn compute_mass_matrix_diagonal_gpu[
+def compute_mass_matrix_diagonal_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

@@ -18,7 +18,7 @@ from ..types import _max_one
 
 
 @always_inline
-fn qcqp2[
+def qcqp2[
     DTYPE: DType
 ](
     mut f1: Scalar[DTYPE],
@@ -51,7 +51,7 @@ fn qcqp2[
 
 
 @always_inline
-fn qcqp3[
+def qcqp3[
     DTYPE: DType
 ](
     mut f1: Scalar[DTYPE],
@@ -147,7 +147,7 @@ fn qcqp3[
 
 
 @always_inline
-fn qcqp5[
+def qcqp5[
     DTYPE: DType
 ](
     mut f1: Scalar[DTYPE],
@@ -286,7 +286,7 @@ fn qcqp5[
 
 
 @always_inline
-fn mj_qcqp2[
+def mj_qcqp2[
     DTYPE: DType
 ](
     mut res0: Scalar[DTYPE],
@@ -357,7 +357,7 @@ fn mj_qcqp2[
 
 
 @always_inline
-fn mj_qcqp3[
+def mj_qcqp3[
     DTYPE: DType
 ](
     mut res0: Scalar[DTYPE],
@@ -440,7 +440,7 @@ fn mj_qcqp3[
 
 
 @always_inline
-fn mj_qcqp5[
+def mj_qcqp5[
     DTYPE: DType
 ](
     mut res: InlineArray[Scalar[DTYPE], 5],
@@ -552,7 +552,7 @@ fn mj_qcqp5[
 
 
 @always_inline
-fn cost_change[
+def cost_change[
     DTYPE: DType, MAX_DIM: Int, AR_SIZE: Int
 ](
     force: InlineArray[Scalar[DTYPE], MAX_DIM],

@@ -10,7 +10,7 @@ comptime OBS_DIM = PongEnv[DType.float64].OBS_DIM
 comptime NUM_ACTIONS = PongEnv[DType.float64].NUM_ACTIONS
 
 
-fn main() raises:
+def main() raises:
     print("=== Testing PongEnv (GPU) ===")
     print("BATCH_SIZE:", BATCH_SIZE)
     print("STATE_SIZE:", STATE_SIZE)

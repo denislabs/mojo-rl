@@ -35,13 +35,13 @@ struct GymCartPoleState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -51,18 +51,18 @@ struct GymCartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod
-    fn left() -> Self:
+    def left() -> Self:
         return Self(direction=0)
 
     @staticmethod
-    fn right() -> Self:
+    def right() -> Self:
         return Self(direction=1)
 
 
@@ -77,13 +77,13 @@ struct GymMountainCarState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -93,22 +93,22 @@ struct GymMountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var direction: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.direction = take.direction
 
     @staticmethod
-    fn left() -> Self:
+    def left() -> Self:
         return Self(direction=0)
 
     @staticmethod
-    fn neutral() -> Self:
+    def neutral() -> Self:
         return Self(direction=1)
 
     @staticmethod
-    fn right() -> Self:
+    def right() -> Self:
         return Self(direction=2)
 
 
@@ -123,13 +123,13 @@ struct GymAcrobotState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -139,10 +139,10 @@ struct GymAcrobotAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var torque: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.torque = copy.torque
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.torque = take.torque
 
 
@@ -186,7 +186,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    fn __init__(out self, num_bins: Int = 10, render_mode: String = "") raises:
+    def __init__(out self, num_bins: Int = 10, render_mode: String = "") raises:
         """Initialize CartPole environment from Gymnasium.
 
         Args:
@@ -212,7 +212,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> GymCartPoleState:
+    def reset(mut self) -> GymCartPoleState:
         """Reset environment and return discretized initial state."""
         try:
             var result = self.env.reset()
@@ -229,7 +229,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         self.episode_length = 0
         return GymCartPoleState(index=self._discretize_obs())
 
-    fn step(
+    def step(
         mut self, action: GymCartPoleAction, verbose: Bool = False
     ) -> Tuple[GymCartPoleState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
@@ -259,23 +259,23 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             self.done,
         )
 
-    fn get_state(self) -> GymCartPoleState:
+    def get_state(self) -> GymCartPoleState:
         """Return current discretized state."""
         return GymCartPoleState(index=self._discretize_obs())
 
-    fn state_to_index(self, state: GymCartPoleState) -> Int:
+    def state_to_index(self, state: GymCartPoleState) -> Int:
         """Convert state to index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> GymCartPoleAction:
+    def action_from_index(self, action_idx: Int) -> GymCartPoleAction:
         """Create action from index."""
         return GymCartPoleAction(direction=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of discrete states."""
         return self.num_bins * self.num_bins * self.num_bins * self.num_bins
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (2)."""
         return 2
 
@@ -283,38 +283,38 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # BoxDiscreteActionEnv (ContinuousStateEnv) trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Float64]:
+    def get_obs_list(self) -> List[Float64]:
         """Return current observation as List for trait conformance."""
         var obs = List[Float64](capacity=4)
         for i in range(4):
             obs.append(self.current_obs[i])
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    def reset_obs_list(mut self) -> List[Float64]:
         """Reset environment and return continuous observation as List."""
         _ = self.reset()
         return self.get_obs_list()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension (4)."""
         return 4
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+    def step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
         """Take action and return (continuous_obs, reward, done)."""
         var result = self.step(GymCartPoleAction(direction=action))
         return (self.get_obs_list(), result[1], result[2])
 
     # SIMD convenience methods (not required by trait)
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
+    def get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation as SIMD."""
         return self.current_obs
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+    def reset_obs(mut self) -> SIMD[DType.float64, 4]:
         """Reset environment and return SIMD observation."""
         _ = self.reset()
         return self.current_obs
 
-    fn step_raw(
+    def step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
         """Take action and return (SIMD_obs, reward, done)."""
@@ -325,13 +325,13 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Mark renderer as initialized (Gymnasium renders via its own window).
         """
         self._render_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render via Gymnasium's built-in renderer."""
         if not self._render_initialized:
             return
@@ -340,7 +340,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         except:
             pass
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the Gymnasium environment (and its render window)."""
         if not self._render_initialized:
             return
@@ -350,40 +350,40 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             pass
         self._render_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if renderer has been initialized."""
         return self._render_initialized
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Gymnasium manages its own window; always returns False."""
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
     # Additional methods
     # ========================================================================
 
-    fn close(mut self):
+    def close(mut self):
         """Close the environment."""
         try:
             _ = self.env.close()
         except:
             pass
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
-    fn _discretize_obs(self) -> Int:
+    def _discretize_obs(self) -> Int:
         """Discretize current continuous observation into a single state index.
         """
         var cart_pos_low: Float64 = -2.4
@@ -395,7 +395,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         var pole_vel_low: Float64 = -3.0
         var pole_vel_high: Float64 = 3.0
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -423,7 +423,7 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         ) * self.num_bins + b3
 
     @staticmethod
-    fn make_tile_coding(
+    def make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
     ) -> TileCoding[DType.float64]:
@@ -454,7 +454,9 @@ struct GymCartPoleEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[DType.float64]:
+    def make_poly_features(
+        degree: Int = 2,
+    ) -> PolynomialFeatures[DType.float64]:
         """Create polynomial features for CartPole (4D state) with normalization.
         """
         var state_low = List[Float64]()
@@ -524,7 +526,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    fn __init__(out self, num_bins: Int = 20, render_mode: String = "") raises:
+    def __init__(out self, num_bins: Int = 20, render_mode: String = "") raises:
         """Initialize MountainCar environment.
 
         Args:
@@ -550,7 +552,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> GymMountainCarState:
+    def reset(mut self) -> GymMountainCarState:
         """Reset environment and return discretized initial state."""
         try:
             var result = self.env.reset()
@@ -565,7 +567,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         self.episode_length = 0
         return GymMountainCarState(index=self._discretize_obs())
 
-    fn step(
+    def step(
         mut self, action: GymMountainCarAction, verbose: Bool = False
     ) -> Tuple[GymMountainCarState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
@@ -593,23 +595,23 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             self.done,
         )
 
-    fn get_state(self) -> GymMountainCarState:
+    def get_state(self) -> GymMountainCarState:
         """Return current discretized state."""
         return GymMountainCarState(index=self._discretize_obs())
 
-    fn state_to_index(self, state: GymMountainCarState) -> Int:
+    def state_to_index(self, state: GymMountainCarState) -> Int:
         """Convert state to index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> GymMountainCarAction:
+    def action_from_index(self, action_idx: Int) -> GymMountainCarAction:
         """Create action from index."""
         return GymMountainCarAction(direction=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of discrete states."""
         return self.num_bins * self.num_bins
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (3)."""
         return 3
 
@@ -617,39 +619,39 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # BoxDiscreteActionEnv (ContinuousStateEnv) trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Float64]:
+    def get_obs_list(self) -> List[Float64]:
         """Return current observation as List for trait conformance."""
         var obs = List[Float64](capacity=2)
         obs.append(self.current_obs[0])
         obs.append(self.current_obs[1])
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    def reset_obs_list(mut self) -> List[Float64]:
         """Reset environment and return continuous observation as List."""
         _ = self.reset()
         return self.get_obs_list()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension (2)."""
         return 2
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+    def step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
         """Take action and return (continuous_obs, reward, done)."""
         var result = self.step(GymMountainCarAction(direction=action))
         return (self.get_obs_list(), result[1], result[2])
 
     # SIMD convenience methods (not required by trait)
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
+    def get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation (only first 2 elements used).
         """
         return self.current_obs
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+    def reset_obs(mut self) -> SIMD[DType.float64, 4]:
         """Reset environment and return continuous observation."""
         _ = self.reset()
         return self.current_obs
 
-    fn step_raw(
+    def step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
         """Take action and return (continuous_obs, reward, done)."""
@@ -660,13 +662,13 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Mark renderer as initialized (Gymnasium renders via its own window).
         """
         self._render_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render via Gymnasium's built-in renderer."""
         if not self._render_initialized:
             return
@@ -675,7 +677,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         except:
             pass
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the Gymnasium environment (and its render window)."""
         if not self._render_initialized:
             return
@@ -685,47 +687,47 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             pass
         self._render_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if renderer has been initialized."""
         return self._render_initialized
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Gymnasium manages its own window; always returns False."""
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
     # Additional methods
     # ========================================================================
 
-    fn close(mut self):
+    def close(mut self):
         """Close the environment."""
         try:
             _ = self.env.close()
         except:
             pass
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
-    fn _discretize_obs(self) -> Int:
+    def _discretize_obs(self) -> Int:
         """Discretize current observation into a state index."""
         var pos_low: Float64 = -1.2
         var pos_high: Float64 = 0.6
         var vel_low: Float64 = -0.07
         var vel_high: Float64 = 0.07
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -745,7 +747,7 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         return b0 * self.num_bins + b1
 
     @staticmethod
-    fn make_tile_coding(
+    def make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
     ) -> TileCoding[DType.float64]:
@@ -770,7 +772,9 @@ struct GymMountainCarEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 3) -> PolynomialFeatures[DType.float64]:
+    def make_poly_features(
+        degree: Int = 3,
+    ) -> PolynomialFeatures[DType.float64]:
         """Create polynomial features for MountainCar (2D state)."""
         var state_low = List[Float64]()
         state_low.append(-1.2)
@@ -834,7 +838,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    fn __init__(out self, num_bins: Int = 6, render_mode: String = "") raises:
+    def __init__(out self, num_bins: Int = 6, render_mode: String = "") raises:
         """Initialize Acrobot environment.
 
         Args:
@@ -861,7 +865,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> GymAcrobotState:
+    def reset(mut self) -> GymAcrobotState:
         """Reset environment and return discretized initial state."""
         try:
             var result = self.env.reset()
@@ -880,7 +884,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         self.episode_length = 0
         return GymAcrobotState(index=self._discretize_obs())
 
-    fn step(
+    def step(
         mut self, action: GymAcrobotAction, verbose: Bool = False
     ) -> Tuple[GymAcrobotState, Float64, Bool]:
         """Take action and return (state, reward, done)."""
@@ -910,26 +914,26 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             self.done,
         )
 
-    fn get_state(self) -> GymAcrobotState:
+    def get_state(self) -> GymAcrobotState:
         """Return current discretized state."""
         return GymAcrobotState(index=self._discretize_obs())
 
-    fn state_to_index(self, state: GymAcrobotState) -> Int:
+    def state_to_index(self, state: GymAcrobotState) -> Int:
         """Convert state to index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> GymAcrobotAction:
+    def action_from_index(self, action_idx: Int) -> GymAcrobotAction:
         """Create action from index."""
         return GymAcrobotAction(torque=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of discrete states."""
         var total = 1
         for _ in range(6):
             total *= self.num_bins
         return total
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (3)."""
         return 3
 
@@ -937,38 +941,38 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # BoxDiscreteActionEnv (ContinuousStateEnv) trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Float64]:
+    def get_obs_list(self) -> List[Float64]:
         """Return full 6D observation as List for trait conformance."""
         var obs = List[Float64](capacity=6)
         for i in range(6):
             obs.append(self.current_obs[i])
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    def reset_obs_list(mut self) -> List[Float64]:
         """Reset environment and return continuous observation as List."""
         _ = self.reset()
         return self.get_obs_list()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension (6)."""
         return 6
 
-    fn step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
+    def step_obs(mut self, action: Int) -> Tuple[List[Float64], Float64, Bool]:
         """Take action and return (continuous_obs, reward, done)."""
         var result = self.step(GymAcrobotAction(torque=action))
         return (self.get_obs_list(), result[1], result[2])
 
     # SIMD convenience methods (not required by trait)
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
+    def get_obs(self) -> SIMD[DType.float64, 4]:
         """Return first 4 dims of observation for trait conformance."""
         return self.current_obs_4d
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+    def reset_obs(mut self) -> SIMD[DType.float64, 4]:
         """Reset environment and return continuous observation."""
         _ = self.reset()
         return self.current_obs_4d
 
-    fn step_raw(
+    def step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
         """Take action and return (continuous_obs, reward, done)."""
@@ -979,7 +983,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # Additional methods - full observation access
     # ========================================================================
 
-    fn get_full_obs(self) -> SIMD[DType.float64, 8]:
+    def get_full_obs(self) -> SIMD[DType.float64, 8]:
         """Return full 6D observation (in 8-element SIMD)."""
         return self.current_obs
 
@@ -987,13 +991,13 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Mark renderer as initialized (Gymnasium renders via its own window).
         """
         self._render_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render via Gymnasium's built-in renderer."""
         if not self._render_initialized:
             return
@@ -1002,7 +1006,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
         except:
             pass
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the Gymnasium environment (and its render window)."""
         if not self._render_initialized:
             return
@@ -1012,40 +1016,40 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             pass
         self._render_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if renderer has been initialized."""
         return self._render_initialized
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Gymnasium manages its own window; always returns False."""
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
     # Additional methods
     # ========================================================================
 
-    fn close(mut self):
+    def close(mut self):
         """Close the environment."""
         try:
             _ = self.env.close()
         except:
             pass
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
-    fn _discretize_obs(self) -> Int:
+    def _discretize_obs(self) -> Int:
         """Discretize current observation into a state index."""
         var bounds_low = SIMD[DType.float64, 8](
             -1.0, -1.0, -1.0, -1.0, -12.566, -28.274, 0.0, 0.0
@@ -1054,7 +1058,7 @@ struct GymAcrobotEnv(BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv):
             1.0, 1.0, 1.0, 1.0, 12.566, 28.274, 0.0, 0.0
         )
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -1090,13 +1094,13 @@ struct GymPendulumState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -1106,10 +1110,10 @@ struct GymPendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var torque: Float64
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.torque = copy.torque
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.torque = take.torque
 
 
@@ -1144,7 +1148,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    fn __init__(out self, render_mode: String = "") raises:
+    def __init__(out self, render_mode: String = "") raises:
         """Initialize Pendulum environment.
 
         Args:
@@ -1168,7 +1172,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     # Env base trait methods
     # ========================================================================
 
-    fn reset(mut self) -> GymPendulumState:
+    def reset(mut self) -> GymPendulumState:
         """Reset environment and return state."""
         try:
             var result = self.env.reset()
@@ -1185,7 +1189,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
         self.episode_length = 0
         return GymPendulumState(index=self._discretize_obs())
 
-    fn step(
+    def step(
         mut self, action: GymPendulumAction, verbose: Bool = False
     ) -> Tuple[GymPendulumState, Float64, Bool]:
         """Take continuous action and return (state, reward, done)."""
@@ -1219,7 +1223,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
             self.done,
         )
 
-    fn get_state(self) -> GymPendulumState:
+    def get_state(self) -> GymPendulumState:
         """Return current state."""
         return GymPendulumState(index=self._discretize_obs())
 
@@ -1227,11 +1231,11 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     # ContinuousStateEnv trait methods
     # ========================================================================
 
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
+    def get_obs(self) -> SIMD[DType.float64, 4]:
         """Return current continuous observation as SIMD."""
         return self.current_obs
 
-    fn get_obs_list(self) -> List[Float64]:
+    def get_obs_list(self) -> List[Float64]:
         """Return current continuous observation as List (trait method)."""
         var obs = List[Float64](capacity=3)
         obs.append(self.current_obs[0])
@@ -1239,18 +1243,18 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
         obs.append(self.current_obs[2])
         return obs^
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+    def reset_obs(mut self) -> SIMD[DType.float64, 4]:
         """Reset environment and return continuous observation as SIMD."""
         _ = self.reset()
         return self.current_obs
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    def reset_obs_list(mut self) -> List[Float64]:
         """Reset environment and return continuous observation as List (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension (3)."""
         return 3
 
@@ -1258,15 +1262,15 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     # ContinuousActionEnv trait methods
     # ========================================================================
 
-    fn action_dim(self) -> Int:
+    def action_dim(self) -> Int:
         """Return action dimension (1)."""
         return 1
 
-    fn action_low(self) -> Float64:
+    def action_low(self) -> Float64:
         """Return action lower bound."""
         return -2.0
 
-    fn action_high(self) -> Float64:
+    def action_high(self) -> Float64:
         """Return action upper bound."""
         return 2.0
 
@@ -1274,7 +1278,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     # BoxContinuousActionEnv trait methods
     # ========================================================================
 
-    fn step_continuous[
+    def step_continuous[
         DTYPE: DType
     ](mut self, action: Scalar[DTYPE]) -> Tuple[
         List[Scalar[DTYPE]], Scalar[DTYPE], Bool
@@ -1287,7 +1291,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
         obs.append(Scalar[DTYPE](self.current_obs[2]))
         return (obs^, Scalar[DTYPE](result[1]), result[2])
 
-    fn step_continuous_vec[
+    def step_continuous_vec[
         DTYPE: DType
     ](mut self, action: List[Scalar[DTYPE]], verbose: Bool = False) -> Tuple[
         List[Scalar[DTYPE]], Scalar[DTYPE], Bool
@@ -1307,7 +1311,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     # Additional SIMD methods (for performance)
     # ========================================================================
 
-    fn step_continuous_simd(
+    def step_continuous_simd(
         mut self, torque: Float64
     ) -> Tuple[SIMD[DType.float64, 4], Float64, Bool]:
         """Convenience method for continuous action step returning SIMD."""
@@ -1318,13 +1322,13 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Mark renderer as initialized (Gymnasium renders via its own window).
         """
         self._render_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render via Gymnasium's built-in renderer."""
         if not self._render_initialized:
             return
@@ -1333,7 +1337,7 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
         except:
             pass
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the Gymnasium environment (and its render window)."""
         if not self._render_initialized:
             return
@@ -1343,44 +1347,44 @@ struct GymPendulumEnv(BoxContinuousActionEnv & RenderableEnv):
             pass
         self._render_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if renderer has been initialized."""
         return self._render_initialized
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Gymnasium manages its own window; always returns False."""
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
     # Additional methods
     # ========================================================================
 
-    fn close(mut self):
+    def close(mut self):
         """Close the environment."""
         try:
             _ = self.env.close()
         except:
             pass
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
-    fn _discretize_obs(self) -> Int:
+    def _discretize_obs(self) -> Int:
         """Discretize observation for optional tabular use."""
         var num_bins = 10
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)

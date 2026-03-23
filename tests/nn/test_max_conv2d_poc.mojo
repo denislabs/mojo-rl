@@ -28,7 +28,7 @@ from mojo_rl.nn.autodiff.primitives.conv2d import Conv2D
 from nn.conv import conv_gpu, conv2d_gpu_naive_nhwc_rscf
 
 
-fn main() raises:
+def main() raises:
     seed(42)
 
     # ── Dimensions matching Atari DQN first layer: Conv2D[4, 32, 8, 4, 0, 84, 84]
@@ -85,8 +85,18 @@ fn main() raises:
         + String(OUT_W)
         + "]"
     )
-    print("Our Conv2D dims: IN_DIM=" + String(OurConv.IN_DIM) + " OUT_DIM=" + String(OurConv.OUT_DIM))
-    print("  PARAM_SIZE=" + String(OurConv.PARAM_SIZE) + " CACHE_SIZE=" + String(OurConv.CACHE_SIZE))
+    print(
+        "Our Conv2D dims: IN_DIM="
+        + String(OurConv.IN_DIM)
+        + " OUT_DIM="
+        + String(OurConv.OUT_DIM)
+    )
+    print(
+        "  PARAM_SIZE="
+        + String(OurConv.PARAM_SIZE)
+        + " CACHE_SIZE="
+        + String(OurConv.CACHE_SIZE)
+    )
     print("Iterations: " + String(N_ITERS))
     print()
 
@@ -146,8 +156,15 @@ fn main() raises:
             for h in range(IN_H):
                 for w in range(IN_W):
                     for c in range(IC):
-                        var nhwc_idx = b * IN_H * IN_W * IC + h * IN_W * IC + w * IC + c
-                        var chw_idx = b * (IC * IN_H * IN_W) + c * IN_H * IN_W + h * IN_W + w
+                        var nhwc_idx = (
+                            b * IN_H * IN_W * IC + h * IN_W * IC + w * IC + c
+                        )
+                        var chw_idx = (
+                            b * (IC * IN_H * IN_W)
+                            + c * IN_H * IN_W
+                            + h * IN_W
+                            + w
+                        )
                         input_host_chw[chw_idx] = input_host_nhwc[nhwc_idx]
 
         # Fill filter: RSCF (KS, KS, IC, OC) for Max
@@ -161,8 +178,12 @@ fn main() raises:
             for c in range(IC):
                 for kh in range(KS):
                     for kw in range(KS):
-                        var rscf_idx = kh * KS * IC * OC + kw * IC * OC + c * OC + oc
-                        var our_idx = oc * (IC * KS * KS) + c * KS * KS + kh * KS + kw
+                        var rscf_idx = (
+                            kh * KS * IC * OC + kw * IC * OC + c * OC + oc
+                        )
+                        var our_idx = (
+                            oc * (IC * KS * KS) + c * KS * KS + kh * KS + kw
+                        )
                         params_host[our_idx] = filter_host_rscf[rscf_idx]
 
         # Zero bias in our params
@@ -183,30 +204,46 @@ fn main() raises:
         # ── Create LayoutTensors ──
         # Max NHWC tensors
         var input_nhwc = LayoutTensor[
-            dtype, Layout.row_major(BATCH, IN_H, IN_W, IC), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, IN_H, IN_W, IC),
+            MutAnyOrigin,
         ](input_buf_nhwc.unsafe_ptr())
         var filter_rscf = LayoutTensor[
-            dtype, Layout.row_major(KS, KS, IC, OC), MutAnyOrigin,
+            dtype,
+            Layout.row_major(KS, KS, IC, OC),
+            MutAnyOrigin,
         ](filter_buf_rscf.unsafe_ptr())
         var out_gpu = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_H, OUT_W, OC), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, OUT_H, OUT_W, OC),
+            MutAnyOrigin,
         ](out_buf_gpu.unsafe_ptr())
         var out_naive = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT_H, OUT_W, OC), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, OUT_H, OUT_W, OC),
+            MutAnyOrigin,
         ](out_buf_naive.unsafe_ptr())
 
         # Our flattened tensors
         var input_chw = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OurConv.IN_DIM), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, OurConv.IN_DIM),
+            MutAnyOrigin,
         ](input_buf_chw.unsafe_ptr())
         var params_t = LayoutTensor[
-            dtype, Layout.row_major(OurConv.PARAM_SIZE), MutAnyOrigin,
+            dtype,
+            Layout.row_major(OurConv.PARAM_SIZE),
+            MutAnyOrigin,
         ](params_buf.unsafe_ptr())
         var cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OurConv.CACHE_SIZE), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, OurConv.CACHE_SIZE),
+            MutAnyOrigin,
         ](cache_buf.unsafe_ptr())
         var out_ours = LayoutTensor[
-            dtype, Layout.row_major(BATCH, OurConv.OUT_DIM), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BATCH, OurConv.OUT_DIM),
+            MutAnyOrigin,
         ](out_buf_ours.unsafe_ptr())
 
         # ── Warmup ──
@@ -214,11 +251,14 @@ fn main() raises:
 
         # conv_gpu
         conv_gpu(
-            input_nhwc, filter_rscf, out_gpu,
+            input_nhwc,
+            filter_rscf,
+            out_gpu,
             IndexList[2](STRIDE, STRIDE),
             IndexList[2](1, 1),
             IndexList[4](PAD, PAD, PAD, PAD),
-            num_groups=1, ctx=ctx,
+            num_groups=1,
+            ctx=ctx,
         )
 
         # naive kernel
@@ -227,13 +267,21 @@ fn main() raises:
         comptime grid_y_naive = (OUT_H + BS - 1) // BS
 
         @always_inline
-        fn naive_kernel_wrapper(
-            input: LayoutTensor[dtype, Layout.row_major(BATCH, IN_H, IN_W, IC), MutAnyOrigin],
-            filter: LayoutTensor[dtype, Layout.row_major(KS, KS, IC, OC), MutAnyOrigin],
-            output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_H, OUT_W, OC), MutAnyOrigin],
+        def naive_kernel_wrapper(
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, IN_H, IN_W, IC), MutAnyOrigin
+            ],
+            filter: LayoutTensor[
+                dtype, Layout.row_major(KS, KS, IC, OC), MutAnyOrigin
+            ],
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, OUT_H, OUT_W, OC), MutAnyOrigin
+            ],
         ):
             conv2d_gpu_naive_nhwc_rscf[block_size=BS, maybe_epilogue_func=None](
-                input, filter, output,
+                input,
+                filter,
+                output,
                 IndexList[2](STRIDE, STRIDE),
                 IndexList[2](1, 1),
                 IndexList[2](PAD, PAD),
@@ -241,7 +289,9 @@ fn main() raises:
             )
 
         ctx.enqueue_function[naive_kernel_wrapper, naive_kernel_wrapper](
-            input_nhwc, filter_rscf, out_naive,
+            input_nhwc,
+            filter_rscf,
+            out_naive,
             grid_dim=(grid_x_naive, grid_y_naive, BATCH),
             block_dim=(BS, BS),
         )
@@ -260,11 +310,14 @@ fn main() raises:
         var t0 = perf_counter_ns()
         for _ in range(N_ITERS):
             conv_gpu(
-                input_nhwc, filter_rscf, out_gpu,
+                input_nhwc,
+                filter_rscf,
+                out_gpu,
                 IndexList[2](STRIDE, STRIDE),
                 IndexList[2](1, 1),
                 IndexList[4](PAD, PAD, PAD, PAD),
-                num_groups=1, ctx=ctx,
+                num_groups=1,
+                ctx=ctx,
             )
         ctx.synchronize()
         var t1 = perf_counter_ns()
@@ -286,7 +339,9 @@ fn main() raises:
         var t2 = perf_counter_ns()
         for _ in range(N_ITERS):
             ctx.enqueue_function[naive_kernel_wrapper, naive_kernel_wrapper](
-                input_nhwc, filter_rscf, out_naive,
+                input_nhwc,
+                filter_rscf,
+                out_naive,
                 grid_dim=(grid_x_naive, grid_y_naive, BATCH),
                 block_dim=(BS, BS),
             )
@@ -328,8 +383,12 @@ fn main() raises:
         print("Verifying consistency...")
 
         # Read outputs back
-        var out_gpu_host = ctx.enqueue_create_host_buffer[dtype](BATCH * OUT_H * OUT_W * OC)
-        var out_ours_host = ctx.enqueue_create_host_buffer[dtype](BATCH * OurConv.OUT_DIM)
+        var out_gpu_host = ctx.enqueue_create_host_buffer[dtype](
+            BATCH * OUT_H * OUT_W * OC
+        )
+        var out_ours_host = ctx.enqueue_create_host_buffer[dtype](
+            BATCH * OurConv.OUT_DIM
+        )
         ctx.enqueue_copy(out_gpu_host, out_buf_gpu)
         ctx.enqueue_copy(out_ours_host, out_buf_ours)
         ctx.synchronize()
@@ -342,24 +401,45 @@ fn main() raises:
             for oh in range(OUT_H):
                 for ow in range(OUT_W):
                     for oc in range(OC):
-                        var nhwc_idx = b * OUT_H * OUT_W * OC + oh * OUT_W * OC + ow * OC + oc
-                        var chw_idx = b * OurConv.OUT_DIM + oc * OUT_H * OUT_W + oh * OUT_W + ow
-                        var diff = abs(Float64(out_gpu_host[nhwc_idx]) - Float64(out_ours_host[chw_idx]))
+                        var nhwc_idx = (
+                            b * OUT_H * OUT_W * OC
+                            + oh * OUT_W * OC
+                            + ow * OC
+                            + oc
+                        )
+                        var chw_idx = (
+                            b * OurConv.OUT_DIM
+                            + oc * OUT_H * OUT_W
+                            + oh * OUT_W
+                            + ow
+                        )
+                        var diff = abs(
+                            Float64(out_gpu_host[nhwc_idx])
+                            - Float64(out_ours_host[chw_idx])
+                        )
                         if diff > max_diff:
                             max_diff = diff
 
-        print("Max diff (conv_gpu vs ours, first 4 batches): " + String(max_diff)[:10])
+        print(
+            "Max diff (conv_gpu vs ours, first 4 batches): "
+            + String(max_diff)[:10]
+        )
 
         # Sample values
         print()
         print("Sample values (batch=0, oc=0, oh=0, ow=0..2):")
         for ow in range(3):
             var nhwc_idx = 0 * OUT_H * OUT_W * OC + 0 * OUT_W * OC + ow * OC + 0
-            var chw_idx = 0 * OurConv.OUT_DIM + 0 * OUT_H * OUT_W + 0 * OUT_W + ow
+            var chw_idx = (
+                0 * OurConv.OUT_DIM + 0 * OUT_H * OUT_W + 0 * OUT_W + ow
+            )
             print(
-                "  ow=" + String(ow)
-                + ": conv_gpu=" + String(Float64(out_gpu_host[nhwc_idx]))[:8]
-                + "  ours=" + String(Float64(out_ours_host[chw_idx]))[:8]
+                "  ow="
+                + String(ow)
+                + ": conv_gpu="
+                + String(Float64(out_gpu_host[nhwc_idx]))[:8]
+                + "  ours="
+                + String(Float64(out_ours_host[chw_idx]))[:8]
             )
 
         # Summary

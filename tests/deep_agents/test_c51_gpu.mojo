@@ -5,7 +5,7 @@ from mojo_rl.deep_agents.core.agents import C51Agent, C51Config, GenericC51Agent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== C51 GPU Agent Test ===")
 
     comptime N_ENVS = 256
@@ -16,15 +16,15 @@ fn main() raises:
 
     var agent = GenericC51Agent[
         C51Config[
-            4,    # obs_dim
-            2,    # num_actions
-            51,   # num_atoms
-            -10.0, # v_min
-            200.0, # v_max
+            4,  # obs_dim
+            2,  # num_actions
+            51,  # num_atoms
+            -10.0,  # v_min
+            200.0,  # v_max
             128,  # hidden
             128,  # hidden2
             100_000,  # buffer_capacity
-            64,   # batch_size
+            64,  # batch_size
             2.5e-4,  # lr
         ],
         N_ENVS,

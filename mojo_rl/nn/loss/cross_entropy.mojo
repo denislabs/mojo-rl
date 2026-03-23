@@ -30,17 +30,17 @@ struct CrossEntropyLoss(LossFunction):
     - target: one-hot encoded action or action probabilities [num_actions]
     """
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -81,7 +81,7 @@ struct CrossEntropyLoss(LossFunction):
         return total_loss / Float64(BATCH)
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -127,7 +127,7 @@ struct CrossEntropyLoss(LossFunction):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl[
+    def forward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -185,7 +185,7 @@ struct CrossEntropyLoss(LossFunction):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -239,7 +239,7 @@ struct CrossEntropyLoss(LossFunction):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -255,7 +255,7 @@ struct CrossEntropyLoss(LossFunction):
         """Launch forward pass on GPU to compute Cross-Entropy loss."""
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
             predictions: LayoutTensor[
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -275,7 +275,7 @@ struct CrossEntropyLoss(LossFunction):
         )
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -293,7 +293,7 @@ struct CrossEntropyLoss(LossFunction):
         """Launch backward pass on GPU to compute loss gradient."""
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             grad_output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
             ],

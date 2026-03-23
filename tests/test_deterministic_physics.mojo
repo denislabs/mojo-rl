@@ -35,11 +35,11 @@ comptime HELIPAD_X: Float64 = W_UNITS / 2.0
 comptime LEG_DOWN: Float64 = 18.0 / 30.0
 
 
-fn abs_f64(x: Float64) -> Float64:
+def abs_f64(x: Float64) -> Float64:
     return x if x >= 0 else -x
 
 
-fn format_float(val: Float64, width: Int = 10) -> String:
+def format_float(val: Float64, width: Int = 10) -> String:
     var s = String(val)
     if len(s) > width:
         return String(s[:width])
@@ -56,7 +56,7 @@ struct SimplifiedPhysics:
     var angle: Float64
     var angular_vel: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         x_obs: Float64,
         y_obs: Float64,
@@ -73,7 +73,7 @@ struct SimplifiedPhysics:
         self.angle = angle
         self.angular_vel = angular_vel_obs / (20.0 / Float64(FPS))
 
-    fn step(mut self, action: Int):
+    def step(mut self, action: Int):
         """Step physics with NO random dispersion."""
         var tip_x = sin(self.angle)
         var tip_y = cos(self.angle)
@@ -137,7 +137,7 @@ struct SimplifiedPhysics:
         while self.angle < -pi:
             self.angle += 2.0 * pi
 
-    fn get_obs(self) -> List[Float64]:
+    def get_obs(self) -> List[Float64]:
         """Return normalized observation."""
         var obs = List[Float64]()
         obs.append((self.x - HELIPAD_X) / (W_UNITS / 2.0))
@@ -151,7 +151,7 @@ struct SimplifiedPhysics:
         return obs^
 
 
-fn main() raises:
+def main() raises:
     print("=" * 70)
     print("DETERMINISTIC PHYSICS TEST")
     print("=" * 70)

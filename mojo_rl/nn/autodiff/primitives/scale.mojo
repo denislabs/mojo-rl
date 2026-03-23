@@ -21,25 +21,27 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
     comptime CACHE_SIZE: Int = 0
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
-    fn _scale() -> Scalar[dtype]:
-        return Scalar[dtype](Float64(Self.numerator) / Float64(Self.denominator))
+    def _scale() -> Scalar[dtype]:
+        return Scalar[dtype](
+            Float64(Self.numerator) / Float64(Self.denominator)
+        )
 
     # =========================================================================
     # CPU eval / vjp
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -61,7 +63,7 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
                 output[b, i] = input[b, i] * s
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -91,7 +93,7 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -106,12 +108,14 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
             return
         var row = idx // Self.dim
         var col = idx % Self.dim
-        var s = Scalar[dtype](Float64(Self.numerator) / Float64(Self.denominator))
+        var s = Scalar[dtype](
+            Float64(Self.numerator) / Float64(Self.denominator)
+        )
         output[row, col] = rebind[Scalar[dtype]](input[row, col]) * s
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -126,7 +130,9 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
             return
         var row = idx // Self.dim
         var col = idx % Self.dim
-        var s = Scalar[dtype](Float64(Self.numerator) / Float64(Self.denominator))
+        var s = Scalar[dtype](
+            Float64(Self.numerator) / Float64(Self.denominator)
+        )
         grad_input[row, col] = rebind[Scalar[dtype]](grad_output[row, col]) * s
 
     # =========================================================================
@@ -134,7 +140,7 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -159,7 +165,7 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -177,7 +183,7 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -205,7 +211,7 @@ struct Scale[dim: Int, numerator: Int, denominator: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],

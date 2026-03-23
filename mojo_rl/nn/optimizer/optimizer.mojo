@@ -26,7 +26,7 @@ trait Optimizer(Movable & ImplicitlyCopyable):
     comptime STATE_PER_PARAM: Int
 
     @staticmethod
-    fn step[
+    def step[
         PARAM_SIZE: Int
     ](
         mut params: LayoutTensor[
@@ -57,7 +57,7 @@ trait Optimizer(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         PARAM_SIZE: Int
     ](
         ctx: DeviceContext,

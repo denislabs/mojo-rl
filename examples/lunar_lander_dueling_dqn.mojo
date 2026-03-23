@@ -36,7 +36,7 @@ from mojo_rl.envs.lunar_lander import LunarLanderEnv
 from mojo_rl.deep_agents.core.agents import DuelingDQNAgent
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Deep Dueling DQN on LunarLander")
     print("=" * 60)

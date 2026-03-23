@@ -40,7 +40,7 @@ struct AtariEnvironment(Movable):
     var frame_skip: Int
     var max_frames: Int  # Max frames per episode (0 = unlimited)
 
-    fn __init__(
+    def __init__(
         out self,
         rom: UnsafePointer[UInt8, MutAnyOrigin],
         rom_size: Int,
@@ -53,14 +53,14 @@ struct AtariEnvironment(Movable):
         self.frame_skip = frame_skip
         self.max_frames = max_frames
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.state = take.state^
         self.rom = take.rom
         self.rom_size = take.rom_size
         self.frame_skip = take.frame_skip
         self.max_frames = take.max_frames
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset the environment to initial state."""
         self.state = AtariState()
         init_bank(self.state, self.rom_size)
@@ -87,7 +87,7 @@ struct AtariEnvironment(Movable):
         self.state.terminal = False
         self.state.started = True
 
-    fn step(mut self, action: UInt8) -> Int:
+    def step(mut self, action: UInt8) -> Int:
         """Execute one step (frame_skip frames with the same action).
 
         Returns the cumulative reward over the skipped frames.
@@ -102,7 +102,7 @@ struct AtariEnvironment(Movable):
         # Return score delta as reward (game-specific extraction happens externally)
         return total_reward
 
-    fn step_with_game[GAME: GameDef](mut self, action_idx: Int) -> Int:
+    def step_with_game[GAME: GameDef](mut self, action_idx: Int) -> Int:
         """Execute one step using a game definition for reward/terminal extraction.
 
         This is the preferred interface — it handles:
@@ -134,20 +134,20 @@ struct AtariEnvironment(Movable):
 
         return reward
 
-    fn get_ram(self) -> InlineArray[UInt8, RAM_SIZE]:
+    def get_ram(self) -> InlineArray[UInt8, RAM_SIZE]:
         """Get a copy of the 128-byte RAM (for RAM observations)."""
         return self.state.ram.copy()
 
-    fn is_terminal(self) -> Bool:
+    def is_terminal(self) -> Bool:
         return self.state.terminal
 
-    fn get_score(self) -> Int:
+    def get_score(self) -> Int:
         return Int(self.state.score)
 
-    fn get_lives(self) -> Int:
+    def get_lives(self) -> Int:
         return Int(self.state.lives)
 
-    fn get_frame_number(self) -> Int:
+    def get_frame_number(self) -> Int:
         return Int(self.state.frame_number)
 
 
@@ -160,23 +160,23 @@ trait GameDef:
     comptime NUM_ACTIONS: Int
 
     @staticmethod
-    fn get_score(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_score(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
         ...
 
     @staticmethod
-    fn get_reward(ram: InlineArray[UInt8, RAM_SIZE], prev_score: Int) -> Int:
+    def get_reward(ram: InlineArray[UInt8, RAM_SIZE], prev_score: Int) -> Int:
         ...
 
     @staticmethod
-    fn get_lives(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
+    def get_lives(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
         ...
 
     @staticmethod
-    fn is_terminal(ram: InlineArray[UInt8, RAM_SIZE]) -> Bool:
+    def is_terminal(ram: InlineArray[UInt8, RAM_SIZE]) -> Bool:
         ...
 
     @staticmethod
-    fn map_action(action_idx: Int) -> UInt8:
+    def map_action(action_idx: Int) -> UInt8:
         ...
 
 
@@ -191,16 +191,16 @@ struct RomData(Movable):
     var data: UnsafePointer[UInt8, MutAnyOrigin]
     var size: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.data = UnsafePointer[UInt8, MutAnyOrigin]()
         self.size = 0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.data = take.data
         self.size = take.size
 
 
-fn load_rom(path: String) raises -> RomData:
+def load_rom(path: String) raises -> RomData:
     """Load a ROM file from disk.
 
     Atari 2600 ROMs are typically 2K, 4K, 8K, or 16K binary files.

@@ -70,7 +70,7 @@ comptime QVEL_REL_TOL: Float64 = 5e-1
 # =============================================================================
 
 
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -298,7 +298,7 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_zero_state_1_step() raises:
+def test_zero_state_1_step() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
@@ -327,7 +327,7 @@ fn test_zero_state_1_step() raises:
     print()
 
 
-fn test_bent_joints_1_step() raises:
+def test_bent_joints_1_step() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
@@ -358,7 +358,7 @@ fn test_bent_joints_1_step() raises:
     print()
 
 
-fn test_motor_actions_1_step() raises:
+def test_motor_actions_1_step() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
@@ -391,7 +391,7 @@ fn test_motor_actions_1_step() raises:
     print()
 
 
-fn test_moving_with_actions_1_step() raises:
+def test_moving_with_actions_1_step() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
@@ -433,7 +433,7 @@ fn test_moving_with_actions_1_step() raises:
     print()
 
 
-fn test_zero_state_10_steps() raises:
+def test_zero_state_10_steps() raises:
     var ctx = DeviceContext()
     var state_host = create_state_buffer[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH
@@ -464,7 +464,7 @@ fn test_zero_state_10_steps() raises:
     print()
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Full Step Validation: CPU vs GPU — Swimmer (RK4, no contacts)")
     print("=" * 60)

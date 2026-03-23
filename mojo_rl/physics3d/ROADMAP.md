@@ -671,7 +671,7 @@ For diagonal inertia `I = diag(Ixx, Iyy, Izz)`:
 
 1. Add `cdof_dot` computation to `jacobian.mojo`:
    ```mojo
-   fn compute_cdof_dot[...](model, data, cdof, mut cdof_dot):
+   def compute_cdof_dot[...](model, data, cdof, mut cdof_dot):
    ```
 
 2. Rewrite `compute_bias_forces` in `bias_forces.mojo`:
@@ -730,7 +730,7 @@ have `body_b = -1`, reducing bilateral Jacobian to original unilateral form.
 
 **Step 1**: Add `detect_body_body_contacts` function:
 ```mojo
-fn detect_body_body_contacts[...](model: Model, mut data: Data):
+def detect_body_body_contacts[...](model: Model, mut data: Data):
     """Detect contacts between all body pairs using world-space geometry."""
     for i in range(NBODY):
         for j in range(i + 1, NBODY):
@@ -756,7 +756,7 @@ fn detect_body_body_contacts[...](model: Model, mut data: Data):
 **Step 2**: Modify `compute_contact_jacobian_row` in `jacobian.mojo`:
 ```mojo
 # Add body_b parameter (currently not used for ground contacts)
-fn compute_contact_jacobian_row[...](
+def compute_contact_jacobian_row[...](
     model, data, cdof,
     body_a: Int, body_b: Int,  # body_b = -1 for ground
     contact_pos, direction,
@@ -842,7 +842,7 @@ if dist < margin:
 
 **Step 1**: Add limit detection before the solver call:
 ```mojo
-fn detect_joint_limits[...](model, data, mut limit_contacts, mut num_limits):
+def detect_joint_limits[...](model, data, mut limit_contacts, mut num_limits):
     for j in range(NJOINT):
         var jnt = model.joints[j]
         if jnt.type == JNT_HINGE or jnt.type == JNT_SLIDE:
@@ -1146,7 +1146,7 @@ struct ConstraintData[DTYPE: DType, NV: Int, MAX_ROWS: Int]:
 #### Builder Pattern
 
 ```mojo
-fn build_constraints[...](
+def build_constraints[...](
     model, data, M_inv, cdof,
     mut cdata: ConstraintData
 ):
@@ -1173,7 +1173,7 @@ All three solvers would consume `ConstraintData` uniformly:
 ```mojo
 trait ConstraintSolver:
     @staticmethod
-    fn solve[...](
+    def solve[...](
         model, data, M_diag,  # or M_full + L, D
         mut cdata: ConstraintData,
         mut qvel: InlineArray[...],

@@ -113,7 +113,7 @@ comptime REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
-fn qacc0_kernel[
+def qacc0_kernel[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -390,7 +390,7 @@ fn qacc0_kernel[
 # =============================================================================
 
 
-fn compare_qacc0(
+def compare_qacc0(
     ctx: DeviceContext,
     test_name: String,
     test_qpos: InlineArray[Float64, NQ],
@@ -561,7 +561,7 @@ fn compare_qacc0(
     ctx.enqueue_copy(workspace_buf, ws_host.unsafe_ptr())
     ctx.synchronize()
 
-    comptime kernel_fn = qacc0_kernel[
+    comptime kernel_def = qacc0_kernel[
         DTYPE,
         NQ,
         NV,
@@ -664,7 +664,7 @@ fn compare_qacc0(
     assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 
 
-fn test_gravity_only() raises:
+def test_gravity_only() raises:
     print("=" * 60)
     print("Unconstrained Acceleration (qacc0): CPU vs GPU")
     print("=" * 60)
@@ -721,7 +721,7 @@ fn test_gravity_only() raises:
     print()
 
 
-fn test_with_actions() raises:
+def test_with_actions() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -776,7 +776,7 @@ fn test_with_actions() raises:
     print()
 
 
-fn test_nonzero_vel_coriolis_damping() raises:
+def test_nonzero_vel_coriolis_damping() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -834,7 +834,7 @@ fn test_nonzero_vel_coriolis_damping() raises:
     print()
 
 
-fn test_full_combo() raises:
+def test_full_combo() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -903,7 +903,7 @@ fn test_full_combo() raises:
     print()
 
 
-fn test_extreme_velocities() raises:
+def test_extreme_velocities() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -963,7 +963,7 @@ fn test_extreme_velocities() raises:
     print()
 
 
-fn main() raises:
+def main() raises:
     test_gravity_only()
     test_with_actions()
     test_nonzero_vel_coriolis_damping()

@@ -56,7 +56,7 @@ struct PhysicsStepKernel:
 
     @always_inline
     @staticmethod
-    fn _step_kernel[
+    def _step_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -181,7 +181,7 @@ struct PhysicsStepKernel:
     # =========================================================================
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -260,7 +260,7 @@ struct PhysicsStepKernel:
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -353,7 +353,7 @@ struct PhysicsStepKernelParallel:
 
     @always_inline
     @staticmethod
-    fn _step_kernel_parallel[
+    def _step_kernel_parallel[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -468,7 +468,7 @@ struct PhysicsStepKernelParallel:
             ](env, state, n_joints, baumgarte, slop)
 
     @staticmethod
-    fn step_parallel_gpu[
+    def step_parallel_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -548,7 +548,7 @@ struct PhysicsStepKernelParallel:
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],

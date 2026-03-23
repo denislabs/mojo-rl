@@ -67,7 +67,7 @@ struct LinearQLearningAgent:
     var epsilon_decay: Float64
     var epsilon_min: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         num_features: Int,
         num_actions: Int,
@@ -103,7 +103,7 @@ struct LinearQLearningAgent:
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
 
-    fn select_action(self, features: List[Float64]) -> Int:
+    def select_action(self, features: List[Float64]) -> Int:
         """Select action using epsilon-greedy policy.
 
         Args:
@@ -119,7 +119,7 @@ struct LinearQLearningAgent:
             # Exploit: best action
             return self.weights.get_best_action(features)
 
-    fn get_best_action(self, features: List[Float64]) -> Int:
+    def get_best_action(self, features: List[Float64]) -> Int:
         """Get greedy action (no exploration).
 
         Args:
@@ -130,7 +130,7 @@ struct LinearQLearningAgent:
         """
         return self.weights.get_best_action(features)
 
-    fn get_value(self, features: List[Float64], action: Int) -> Float64:
+    def get_value(self, features: List[Float64], action: Int) -> Float64:
         """Get Q-value for state-action pair.
 
         Args:
@@ -142,7 +142,7 @@ struct LinearQLearningAgent:
         """
         return self.weights.get_value(features, action)
 
-    fn get_max_value(self, features: List[Float64]) -> Float64:
+    def get_max_value(self, features: List[Float64]) -> Float64:
         """Get maximum Q-value over all actions.
 
         Args:
@@ -153,7 +153,7 @@ struct LinearQLearningAgent:
         """
         return self.weights.get_max_value(features)
 
-    fn update(
+    def update(
         mut self,
         features: List[Float64],
         action: Int,
@@ -185,19 +185,19 @@ struct LinearQLearningAgent:
 
         self.weights.update(features, action, target, self.learning_rate)
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay exploration rate."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current exploration rate."""
         return self.epsilon
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset for new episode (no-op for Q-learning)."""
         pass
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv, F: FeatureExtractor
     ](
         mut self,
@@ -258,7 +258,7 @@ struct LinearQLearningAgent:
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv, F: FeatureExtractor
     ](
         self,
@@ -339,7 +339,7 @@ struct LinearSARSAAgent:
     var epsilon_decay: Float64
     var epsilon_min: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         num_features: Int,
         num_actions: Int,
@@ -364,22 +364,22 @@ struct LinearSARSAAgent:
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
 
-    fn select_action(self, features: List[Float64]) -> Int:
+    def select_action(self, features: List[Float64]) -> Int:
         """Select action using epsilon-greedy policy."""
         if random_float64() < self.epsilon:
             return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.weights.get_best_action(features)
 
-    fn get_best_action(self, features: List[Float64]) -> Int:
+    def get_best_action(self, features: List[Float64]) -> Int:
         """Get greedy action."""
         return self.weights.get_best_action(features)
 
-    fn get_value(self, features: List[Float64], action: Int) -> Float64:
+    def get_value(self, features: List[Float64], action: Int) -> Float64:
         """Get Q-value for state-action pair."""
         return self.weights.get_value(features, action)
 
-    fn update(
+    def update(
         mut self,
         features: List[Float64],
         action: Int,
@@ -408,19 +408,19 @@ struct LinearSARSAAgent:
 
         self.weights.update(features, action, target, self.learning_rate)
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay exploration rate."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current exploration rate."""
         return self.epsilon
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset for new episode."""
         pass
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv, F: FeatureExtractor
     ](
         mut self,
@@ -486,7 +486,7 @@ struct LinearSARSAAgent:
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv, F: FeatureExtractor
     ](
         self,
@@ -574,7 +574,7 @@ struct LinearSARSALambdaAgent:
     var epsilon_decay: Float64
     var epsilon_min: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         num_features: Int,
         num_actions: Int,
@@ -621,22 +621,22 @@ struct LinearSARSALambdaAgent:
                 action_traces.append(0.0)
             self.traces.append(action_traces^)
 
-    fn select_action(self, features: List[Float64]) -> Int:
+    def select_action(self, features: List[Float64]) -> Int:
         """Select action using epsilon-greedy policy."""
         if random_float64() < self.epsilon:
             return Int(random_si64(0, Int64(self.num_actions - 1)))
         else:
             return self.weights.get_best_action(features)
 
-    fn get_best_action(self, features: List[Float64]) -> Int:
+    def get_best_action(self, features: List[Float64]) -> Int:
         """Get greedy action."""
         return self.weights.get_best_action(features)
 
-    fn get_value(self, features: List[Float64], action: Int) -> Float64:
+    def get_value(self, features: List[Float64], action: Int) -> Float64:
         """Get Q-value for state-action pair."""
         return self.weights.get_value(features, action)
 
-    fn update(
+    def update(
         mut self,
         features: List[Float64],
         action: Int,
@@ -679,21 +679,21 @@ struct LinearSARSALambdaAgent:
             for i in range(self.num_features):
                 self.traces[a][i] *= decay
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay exploration rate."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current exploration rate."""
         return self.epsilon
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset eligibility traces for new episode."""
         for a in range(self.num_actions):
             for i in range(self.num_features):
                 self.traces[a][i] = 0.0
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv, F: FeatureExtractor
     ](
         mut self,
@@ -760,7 +760,7 @@ struct LinearSARSALambdaAgent:
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv, F: FeatureExtractor
     ](
         self,
@@ -825,7 +825,7 @@ struct LinearSARSALambdaAgent:
         return total_reward / Float64(num_episodes)
 
 
-fn _linear_obs_to_f64[
+def _linear_obs_to_f64[
     DTYPE: DType
 ](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
     """Convert observation list to Float64."""
@@ -835,7 +835,7 @@ fn _linear_obs_to_f64[
     return result^
 
 
-fn _compute_phi_f64[
+def _compute_phi_f64[
     F: FeatureExtractor
 ](obs_f64: List[Float64], features: F) -> List[Float64]:
     """Compute feature vector from Float64 obs, handling F.DTYPE conversion.

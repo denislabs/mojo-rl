@@ -128,7 +128,7 @@ struct CarRacingLayout[
 
     @staticmethod
     @always_inline
-    fn hull_field_offset(field: Int) -> Int:
+    def hull_field_offset(field: Int) -> Int:
         """Compute offset for a hull field.
 
         Args:
@@ -145,7 +145,7 @@ struct CarRacingLayout[
 
     @staticmethod
     @always_inline
-    fn wheel_offset(wheel: Int) -> Int:
+    def wheel_offset(wheel: Int) -> Int:
         """Compute offset for a wheel's state.
 
         Args:
@@ -158,7 +158,7 @@ struct CarRacingLayout[
 
     @staticmethod
     @always_inline
-    fn wheel_field_offset(wheel: Int, field: Int) -> Int:
+    def wheel_field_offset(wheel: Int, field: Int) -> Int:
         """Compute offset for a specific wheel field.
 
         Args:
@@ -176,7 +176,7 @@ struct CarRacingLayout[
 
     @staticmethod
     @always_inline
-    fn control_offset(ctrl: Int) -> Int:
+    def control_offset(ctrl: Int) -> Int:
         """Compute offset for a control input.
 
         Args:
@@ -193,7 +193,7 @@ struct CarRacingLayout[
 
     @staticmethod
     @always_inline
-    fn metadata_offset(field: Int) -> Int:
+    def metadata_offset(field: Int) -> Int:
         """Compute offset for a metadata field.
 
         Args:
@@ -210,7 +210,7 @@ struct CarRacingLayout[
 
     @staticmethod
     @always_inline
-    fn track_tile_offset(tile_idx: Int) -> Int:
+    def track_tile_offset(tile_idx: Int) -> Int:
         """Compute offset for a track tile's data.
 
         Args:
@@ -223,7 +223,7 @@ struct CarRacingLayout[
 
     @staticmethod
     @always_inline
-    fn track_tile_field_offset(tile_idx: Int, field: Int) -> Int:
+    def track_tile_field_offset(tile_idx: Int, field: Int) -> Int:
         """Compute offset for a specific field of a track tile.
 
         Args:
@@ -241,7 +241,7 @@ struct CarRacingLayout[
 
     @staticmethod
     @always_inline
-    fn visited_flag_offset(tile_idx: Int) -> Int:
+    def visited_flag_offset(tile_idx: Int) -> Int:
         """Compute offset for a visited flag.
 
         Args:

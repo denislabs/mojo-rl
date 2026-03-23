@@ -91,7 +91,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
     var _renderer_initialized: Bool
 
-    fn __init__(out self):
+    def __init__(out self):
         self.state = List[Scalar[Self.dtype]](capacity=Self.STATE_SIZE)
         for _ in range(Self.STATE_SIZE):
             self.state.append(Scalar[Self.dtype](0.0))
@@ -107,14 +107,14 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     # CPU: reset + step
     # ========================================================================
 
-    fn reset(mut self) -> BoardGameState:
+    def reset(mut self) -> BoardGameState:
         for i in range(Self.STATE_SIZE):
             self.state[i] = 0.0
         self.state[Self.S_KO_POINT] = -1.0
         self.done = False
         return BoardGameState(index=0)
 
-    fn step(
+    def step(
         mut self, action: BoardGameAction, verbose: Bool = False
     ) -> Tuple[BoardGameState, Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action.value)
@@ -124,7 +124,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
             result[1],
         )
 
-    fn _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
+    def _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
         """Execute one move. Returns (reward, done)."""
         if self.done:
             return (Scalar[Self.dtype](0.0), True)
@@ -252,7 +252,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     # Liberty computation (flood-fill)
     # ========================================================================
 
-    fn _count_liberties(mut self, start: Int) -> Int:
+    def _count_liberties(mut self, start: Int) -> Int:
         """Count liberties of the group containing the stone at `start`."""
         var color = self.state[start]
         if Float64(color) == 0.0:
@@ -296,7 +296,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
         return liberty_count
 
-    fn _remove_group(mut self, start: Int) -> Int:
+    def _remove_group(mut self, start: Int) -> Int:
         """Remove the group containing the stone at `start`. Returns count removed."""
         var color = self.state[start]
         if Float64(color) == 0.0:
@@ -345,7 +345,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     # Scoring (Tromp-Taylor area scoring)
     # ========================================================================
 
-    fn _score_area(mut self) -> Float64:
+    def _score_area(mut self) -> Float64:
         """Compute area score. Returns black_score - white_score - komi.
 
         Positive = black wins, negative = white wins.
@@ -371,7 +371,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
         return Float64(black_area) - Float64(white_area) - KOMI
 
-    fn _territory_owner(mut self, start: Int) -> Int:
+    def _territory_owner(mut self, start: Int) -> Int:
         """Determine which color (if any) encloses an empty region.
 
         Returns 1 (black), 2 (white), or 0 (neutral/both border).
@@ -423,7 +423,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     # Legal move check
     # ========================================================================
 
-    fn _is_legal(mut self, pos: Int, player: Int) -> Bool:
+    def _is_legal(mut self, pos: Int, player: Int) -> Bool:
         """Check if placing at `pos` is legal for `player`."""
         if pos < 0 or pos >= Self.BOARD_SIZE:
             return False
@@ -469,38 +469,38 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     # Env trait methods
     # ========================================================================
 
-    fn get_state(self) -> BoardGameState:
+    def get_state(self) -> BoardGameState:
         return BoardGameState(index=Int(self.state[Self.S_STEP_COUNT]))
 
-    fn close(mut self):
+    def close(mut self):
         if self._renderer_initialized:
             self._renderer[].close()
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn action_from_index(self, action_idx: Int) -> BoardGameAction:
+    def action_from_index(self, action_idx: Int) -> BoardGameAction:
         return BoardGameAction(value=action_idx)
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         return Self.NUM_ACTIONS
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         return Self.OBS_DIM
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         return 1
 
-    fn state_to_index(self, state: BoardGameState) -> Int:
+    def state_to_index(self, state: BoardGameState) -> Int:
         return state.index
 
     # ========================================================================
     # TwoPlayerDiscreteEnv trait methods
     # ========================================================================
 
-    fn current_player(self) -> Int:
+    def current_player(self) -> Int:
         return Int(self.state[Self.S_CURRENT_PLAYER])
 
-    fn legal_action_mask(self) -> List[Bool]:
+    def legal_action_mask(self) -> List[Bool]:
         var mask = List[Bool](capacity=Self.NUM_ACTIONS)
         if self.done:
             for _ in range(Self.NUM_ACTIONS):
@@ -519,7 +519,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         mask.append(True)
         return mask^
 
-    fn game_result(self) -> Int:
+    def game_result(self) -> Int:
         if not self.done:
             return RESULT_ONGOING
         # Result was stored during scoring
@@ -530,7 +530,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     # ContinuousStateEnv / BoxDiscreteActionEnv (CPU)
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs = List[Scalar[Self.dtype]](capacity=Self.OBS_DIM)
         var player = Int(self.state[Self.S_CURRENT_PLAYER])
         var my_mark = Scalar[Self.dtype](player + 1)
@@ -564,11 +564,11 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Single-agent step with random opponent."""
@@ -605,7 +605,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
         var cell_size = 50
@@ -619,12 +619,12 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._render(self._renderer[])
 
-    fn _render(self, mut renderer: Renderer2D):
+    def _render(self, mut renderer: Renderer2D):
         """Render Go board state using SDL3."""
         var board_color = SDL_Color(r=0xDE, g=0xB8, b=0x87, a=0xFF)  # tan/wooden
         if not renderer.begin_frame_with_color(board_color):
@@ -657,7 +657,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         # Draw star points (hoshi) for 9x9 board
         comptime
         if Self.SIZE == 9:
-            fn _hoshi_r(i: Int) -> Int:
+            def _hoshi_r(i: Int) -> Int:
                 if i == 0:
                     return 2
                 if i == 1:
@@ -668,7 +668,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
                     return 6
                 return 4
 
-            fn _hoshi_c(i: Int) -> Int:
+            def _hoshi_c(i: Int) -> Int:
                 if i == 0:
                     return 2
                 if i == 1:
@@ -723,32 +723,32 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
         renderer.flip()
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].close()
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
@@ -759,7 +759,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn _gpu_count_liberties[
+    def _gpu_count_liberties[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -845,7 +845,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn _gpu_remove_group[
+    def _gpu_remove_group[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -913,7 +913,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn step_kernel[
+    def step_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1068,7 +1068,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn reset_kernel[
+    def reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1087,7 +1087,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn selective_reset_kernel[
+    def selective_reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1111,7 +1111,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn extract_obs_and_masks[
+    def extract_obs_and_masks[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -1176,7 +1176,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     # ========================================================================
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -1216,7 +1216,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn step_wrapper(
+        def step_wrapper(
             states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
             actions: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin],
             rewards: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
@@ -1243,7 +1243,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1257,7 +1257,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
         ):
             GoEnv[Self.SIZE].reset_kernel[BATCH_SIZE, STATE_SIZE](states)
@@ -1267,7 +1267,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1285,7 +1285,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn sel_reset_wrapper(
+        def sel_reset_wrapper(
             states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
             dones: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
         ):
@@ -1296,7 +1296,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -1318,7 +1318,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn extract_wrapper(
+        def extract_wrapper(
             states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin],
             obs: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin],
             legal_masks: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, GoEnv[Self.SIZE].NUM_ACTIONS), MutAnyOrigin],

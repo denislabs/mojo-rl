@@ -75,7 +75,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
     var baseline_weights: List[Float64]  # V(s) approximation
     var baseline_lr: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -122,7 +122,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.num_actions = copy.num_actions
         self.num_tiles = copy.num_tiles
         self.num_tilings = copy.num_tilings
@@ -143,7 +143,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.num_actions = take.num_actions
         self.num_tiles = take.num_tiles
         self.num_tilings = take.num_tilings
@@ -157,7 +157,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = take.episode_actions^
         self.episode_rewards = take.episode_rewards^
 
-    fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
+    def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences (logits) for given state.
 
         h(s, a) = θ_a · φ(s) = sum of θ[a][tile] for active tiles
@@ -176,7 +176,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
+    def get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities for given state.
 
         Args:
@@ -188,7 +188,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Sample action from policy π(a|s).
 
         Args:
@@ -200,7 +200,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         var probs = self.get_action_probs(tiles)
         return sample_from_probs(probs)
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action (highest probability).
 
         Args:
@@ -212,7 +212,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         var probs = self.get_action_probs(tiles)
         return argmax_probs(probs)
 
-    fn _get_baseline_value(self, tiles: List[Int]) -> Float64:
+    def _get_baseline_value(self, tiles: List[Int]) -> Float64:
         """Get baseline value estimate V(s).
 
         Args:
@@ -226,7 +226,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
             value += self.baseline_weights[tiles[i]]
         return value
 
-    fn _get_baseline_value_idx(self, episode_idx: Int) -> Float64:
+    def _get_baseline_value_idx(self, episode_idx: Int) -> Float64:
         """Get baseline value for episode step by index."""
         var value: Float64 = 0.0
         var num_tiles = len(self.episode_tiles[episode_idx])
@@ -235,7 +235,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
             value += self.baseline_weights[tile_idx]
         return value
 
-    fn _get_action_probs_idx(self, episode_idx: Int) -> List[Float64]:
+    def _get_action_probs_idx(self, episode_idx: Int) -> List[Float64]:
         """Get action probabilities for episode step by index."""
         var preferences = List[Float64]()
         var num_tiles = len(self.episode_tiles[episode_idx])
@@ -247,7 +247,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return softmax(preferences^)
 
-    fn store_transition(
+    def store_transition(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -269,7 +269,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions.append(action)
         self.episode_rewards.append(reward)
 
-    fn update_from_episode(mut self):
+    def update_from_episode(mut self):
         """Update policy parameters using REINFORCE.
 
         Called at end of episode. Computes returns and updates
@@ -336,13 +336,13 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions.clear()
         self.episode_rewards.clear()
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset episode storage for new episode."""
         self.episode_tiles.clear()
         self.episode_actions.clear()
         self.episode_rewards.clear()
 
-    fn get_policy_entropy(self, tiles: List[Int]) -> Float64:
+    def get_policy_entropy(self, tiles: List[Int]) -> Float64:
         """Compute entropy of policy at given state.
 
         H(π) = -Σ_a π(a|s) log π(a|s)
@@ -362,7 +362,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -425,7 +425,7 @@ struct REINFORCEAgent(Copyable, ImplicitlyCopyable, Movable):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -516,7 +516,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
     var baseline_weights: List[Float64]
     var baseline_lr: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         tile_coding: TileCoding[DType.float64],
         num_actions: Int,
@@ -563,7 +563,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.num_actions = copy.num_actions
         self.num_tiles = copy.num_tiles
         self.num_tilings = copy.num_tilings
@@ -585,7 +585,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = List[Int]()
         self.episode_rewards = List[Float64]()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.num_actions = take.num_actions
         self.num_tiles = take.num_tiles
         self.num_tilings = take.num_tilings
@@ -600,7 +600,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions = take.episode_actions^
         self.episode_rewards = take.episode_rewards^
 
-    fn _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
+    def _get_action_preferences(self, tiles: List[Int]) -> List[Float64]:
         """Compute action preferences."""
         var preferences = List[Float64]()
         for a in range(self.num_actions):
@@ -610,29 +610,29 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return preferences^
 
-    fn get_action_probs(self, tiles: List[Int]) -> List[Float64]:
+    def get_action_probs(self, tiles: List[Int]) -> List[Float64]:
         """Get action probabilities."""
         var prefs = self._get_action_preferences(tiles)
         return softmax(prefs^)
 
-    fn select_action(self, tiles: List[Int]) -> Int:
+    def select_action(self, tiles: List[Int]) -> Int:
         """Sample action from policy."""
         var probs = self.get_action_probs(tiles)
         return sample_from_probs(probs)
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get greedy action."""
         var probs = self.get_action_probs(tiles)
         return argmax_probs(probs)
 
-    fn _get_baseline_value(self, tiles: List[Int]) -> Float64:
+    def _get_baseline_value(self, tiles: List[Int]) -> Float64:
         """Get baseline value estimate."""
         var value: Float64 = 0.0
         for i in range(len(tiles)):
             value += self.baseline_weights[tiles[i]]
         return value
 
-    fn _get_baseline_value_idx(self, episode_idx: Int) -> Float64:
+    def _get_baseline_value_idx(self, episode_idx: Int) -> Float64:
         """Get baseline value for episode step by index."""
         var value: Float64 = 0.0
         var num_tiles = len(self.episode_tiles[episode_idx])
@@ -641,7 +641,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
             value += self.baseline_weights[tile_idx]
         return value
 
-    fn _get_action_probs_idx(self, episode_idx: Int) -> List[Float64]:
+    def _get_action_probs_idx(self, episode_idx: Int) -> List[Float64]:
         """Get action probabilities for episode step by index."""
         var preferences = List[Float64]()
         var num_tiles = len(self.episode_tiles[episode_idx])
@@ -653,7 +653,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
             preferences.append(pref)
         return softmax(preferences^)
 
-    fn store_transition(
+    def store_transition(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -667,7 +667,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions.append(action)
         self.episode_rewards.append(reward)
 
-    fn update_from_episode(mut self):
+    def update_from_episode(mut self):
         """Update with entropy regularization."""
         var num_steps = len(self.episode_tiles)
         if num_steps == 0:
@@ -737,13 +737,13 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         self.episode_actions.clear()
         self.episode_rewards.clear()
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset episode storage."""
         self.episode_tiles.clear()
         self.episode_actions.clear()
         self.episode_rewards.clear()
 
-    fn get_policy_entropy(self, tiles: List[Int]) -> Float64:
+    def get_policy_entropy(self, tiles: List[Int]) -> Float64:
         """Compute policy entropy."""
         var probs = self.get_action_probs(tiles)
         var entropy: Float64 = 0.0
@@ -752,7 +752,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
                 entropy -= probs[a] * log(probs[a])
         return entropy
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -815,7 +815,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -881,7 +881,7 @@ struct REINFORCEWithEntropyAgent(Copyable, ImplicitlyCopyable, Movable):
         return total_reward / Float64(num_episodes)
 
 
-fn _reinforce_obs_to_f64[
+def _reinforce_obs_to_f64[
     DTYPE: DType
 ](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
     """Convert observation list to Float64."""

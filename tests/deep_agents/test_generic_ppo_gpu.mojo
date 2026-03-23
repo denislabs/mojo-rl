@@ -31,7 +31,7 @@ comptime GPU_MINIBATCH = 4096
 comptime NUM_UPDATES = 200
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("Generic On-Policy Agent GPU Test on CartPole (PPO + A2C)")
@@ -39,17 +39,23 @@ fn main() raises:
     print()
 
     with DeviceContext() as ctx:
-
         # =================================================================
         # Test 1: PPO (GPU)
         # =================================================================
 
-        print("1. GenericOnPolicyAgent[PPOConfig] GPU (" + String(NUM_UPDATES) + " updates)...")
+        print(
+            "1. GenericOnPolicyAgent[PPOConfig] GPU ("
+            + String(NUM_UPDATES)
+            + " updates)..."
+        )
         print(
             "   Config: ClippedSurrogate + MultiEpochMinibatch"
-            + " | n_envs=" + String(N_ENVS)
-            + " | rollout=" + String(ROLLOUT_LEN)
-            + " | mb=" + String(GPU_MINIBATCH)
+            + " | n_envs="
+            + String(N_ENVS)
+            + " | rollout="
+            + String(ROLLOUT_LEN)
+            + " | mb="
+            + String(GPU_MINIBATCH)
         )
 
         seed(42)
@@ -81,13 +87,13 @@ fn main() raises:
         var elapsed = Float64(t1 - t0) / 1e9
 
         print(
-            "   updates: " + String(ppo.train_step_count)
-            + "  time: " + String(elapsed)[:5] + "s"
+            "   updates: "
+            + String(ppo.train_step_count)
+            + "  time: "
+            + String(elapsed)[:5]
+            + "s"
         )
-        print(
-            "   last-20 avg reward: "
-            + String(m1.mean_reward_last_n(20))[:7]
-        )
+        print("   last-20 avg reward: " + String(m1.mean_reward_last_n(20))[:7])
 
         if ppo.train_step_count > 0:
             print("   OK: Generic PPO GPU trained")
@@ -99,11 +105,17 @@ fn main() raises:
         # =================================================================
 
         print()
-        print("2. GenericOnPolicyAgent[A2CConfig] GPU (" + String(NUM_UPDATES) + " updates)...")
+        print(
+            "2. GenericOnPolicyAgent[A2CConfig] GPU ("
+            + String(NUM_UPDATES)
+            + " updates)..."
+        )
         print(
             "   Config: VanillaPG + SinglePass"
-            + " | n_envs=" + String(N_ENVS)
-            + " | rollout=" + String(ROLLOUT_LEN)
+            + " | n_envs="
+            + String(N_ENVS)
+            + " | rollout="
+            + String(ROLLOUT_LEN)
         )
 
         seed(42)
@@ -131,13 +143,13 @@ fn main() raises:
         elapsed = Float64(t1 - t0) / 1e9
 
         print(
-            "   updates: " + String(a2c.train_step_count)
-            + "  time: " + String(elapsed)[:5] + "s"
+            "   updates: "
+            + String(a2c.train_step_count)
+            + "  time: "
+            + String(elapsed)[:5]
+            + "s"
         )
-        print(
-            "   last-20 avg reward: "
-            + String(m2.mean_reward_last_n(20))[:7]
-        )
+        print("   last-20 avg reward: " + String(m2.mean_reward_last_n(20))[:7])
 
         if a2c.train_step_count > 0:
             print("   OK: Generic A2C GPU trained")
@@ -152,11 +164,17 @@ fn main() raises:
         print("=" * 70)
         print("Summary:")
         print(
-            "  PPO : " + String(m1.mean_reward_last_n(20))[:7]
-            + " avg (last 20) in " + String(ppo.train_step_count) + " updates"
+            "  PPO : "
+            + String(m1.mean_reward_last_n(20))[:7]
+            + " avg (last 20) in "
+            + String(ppo.train_step_count)
+            + " updates"
         )
         print(
-            "  A2C : " + String(m2.mean_reward_last_n(20))[:7]
-            + " avg (last 20) in " + String(a2c.train_step_count) + " updates"
+            "  A2C : "
+            + String(m2.mean_reward_last_n(20))[:7]
+            + " avg (last 20) in "
+            + String(a2c.train_step_count)
+            + " updates"
         )
         print("=" * 70)

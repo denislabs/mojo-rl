@@ -37,7 +37,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
     # CPU Methods
     # =========================================================================
 
-    fn solve_velocity[
+    def solve_velocity[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -69,7 +69,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         """
         ...
 
-    fn solve_position[
+    def solve_position[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,

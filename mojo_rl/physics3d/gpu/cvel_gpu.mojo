@@ -29,7 +29,7 @@ from .constants import (
 )
 
 
-fn compute_cvel_gpu[
+def compute_cvel_gpu[
     DTYPE: DType,
     BATCH_SIZE: Int,
     STATE_SIZE: Int,
@@ -61,7 +61,7 @@ fn compute_cvel_gpu[
     comptime CVEL_OFF = cvel_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
 
     @always_inline
-    fn cvel_kernel(
+    def cvel_kernel(
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ],

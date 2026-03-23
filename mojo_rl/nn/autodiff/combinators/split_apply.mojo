@@ -29,7 +29,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 
 # GPU matmul requires 16-byte alignment = 4 float32 elements
 @always_inline
-fn _align4(x: Int) -> Int:
+def _align4(x: Int) -> Int:
     """Round up to next multiple of 4 for GPU alignment."""
     return (x + 3) & ~3
 
@@ -53,8 +53,10 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
     comptime CACHE_SIZE: Int = Self.Left.CACHE_SIZE + Self.Right.CACHE_SIZE
     # Own scratch: split/concat temporaries shared between forward and backward
     comptime _OWN_WS: Int = (
-        Self.Left.IN_DIM + Self.Right.IN_DIM  # split input / grad_input
-        + Self.Left.OUT_DIM + Self.Right.OUT_DIM  # branch outputs / grad_outputs
+        Self.Left.IN_DIM
+        + Self.Right.IN_DIM  # split input / grad_input
+        + Self.Left.OUT_DIM
+        + Self.Right.OUT_DIM  # branch outputs / grad_outputs
     )
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
         Self._OWN_WS
@@ -72,7 +74,9 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -95,7 +99,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -132,9 +136,9 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         var left_in = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_IN), MutAnyOrigin
         ](left_in_buf.unsafe_ptr())
-        var left_out_buf = InlineArray[
-            Scalar[dtype], BATCH * Self.LEFT_OUT
-        ](uninitialized=True)
+        var left_out_buf = InlineArray[Scalar[dtype], BATCH * Self.LEFT_OUT](
+            uninitialized=True
+        )
         var left_out = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_OUT), MutAnyOrigin
         ](left_out_buf.unsafe_ptr())
@@ -150,9 +154,9 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         var right_in = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_IN), MutAnyOrigin
         ](right_in_buf.unsafe_ptr())
-        var right_out_buf = InlineArray[
-            Scalar[dtype], BATCH * Self.RIGHT_OUT
-        ](uninitialized=True)
+        var right_out_buf = InlineArray[Scalar[dtype], BATCH * Self.RIGHT_OUT](
+            uninitialized=True
+        )
         var right_out = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_OUT), MutAnyOrigin
         ](right_out_buf.unsafe_ptr())
@@ -171,16 +175,16 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
                     b * Self.LEFT_OUT + i
                 ]
             for i in range(Self.RIGHT_OUT):
-                output.ptr[b * Self.OUT_DIM + Self.LEFT_OUT + i] = (
-                    right_out_buf[b * Self.RIGHT_OUT + i]
-                )
+                output.ptr[
+                    b * Self.OUT_DIM + Self.LEFT_OUT + i
+                ] = right_out_buf[b * Self.RIGHT_OUT + i]
 
     # =========================================================================
     # CPU Forward (no cache)
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -213,9 +217,9 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         var left_in = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_IN), MutAnyOrigin
         ](left_in_buf.unsafe_ptr())
-        var left_out_buf = InlineArray[
-            Scalar[dtype], BATCH * Self.LEFT_OUT
-        ](uninitialized=True)
+        var left_out_buf = InlineArray[Scalar[dtype], BATCH * Self.LEFT_OUT](
+            uninitialized=True
+        )
         var left_out = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.LEFT_OUT), MutAnyOrigin
         ](left_out_buf.unsafe_ptr())
@@ -227,9 +231,9 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         var right_in = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_IN), MutAnyOrigin
         ](right_in_buf.unsafe_ptr())
-        var right_out_buf = InlineArray[
-            Scalar[dtype], BATCH * Self.RIGHT_OUT
-        ](uninitialized=True)
+        var right_out_buf = InlineArray[Scalar[dtype], BATCH * Self.RIGHT_OUT](
+            uninitialized=True
+        )
         var right_out = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RIGHT_OUT), MutAnyOrigin
         ](right_out_buf.unsafe_ptr())
@@ -244,16 +248,16 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
                     b * Self.LEFT_OUT + i
                 ]
             for i in range(Self.RIGHT_OUT):
-                output.ptr[b * Self.OUT_DIM + Self.LEFT_OUT + i] = (
-                    right_out_buf[b * Self.RIGHT_OUT + i]
-                )
+                output.ptr[
+                    b * Self.OUT_DIM + Self.LEFT_OUT + i
+                ] = right_out_buf[b * Self.RIGHT_OUT + i]
 
     # =========================================================================
     # CPU Backward
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -347,7 +351,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -401,7 +405,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         ](left_ptr)
 
         @always_inline
-        fn extract_left(
+        def extract_left(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.LEFT_IN), MutAnyOrigin
             ],
@@ -425,7 +429,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         ](right_ptr)
 
         @always_inline
-        fn extract_right(
+        def extract_right(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.RIGHT_IN), MutAnyOrigin
             ],
@@ -459,15 +463,13 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         var cl = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.Left.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr)
-        Self.Left.forward_gpu[BATCH](
-            ctx, left_out_t, left_t, pl, cl, child_ws
-        )
+        Self.Left.forward_gpu[BATCH](ctx, left_out_t, left_t, pl, cl, child_ws)
 
         # Right: params at aligned offset — safe for direct pointer access
         comptime R_PS = Self.Right.PARAM_SIZE
-        var pr = LayoutTensor[
-            dtype, Layout.row_major(R_PS), MutAnyOrigin
-        ](params.ptr + Self._RIGHT_PARAM_OFF)  # Aligned!
+        var pr = LayoutTensor[dtype, Layout.row_major(R_PS), MutAnyOrigin](
+            params.ptr + Self._RIGHT_PARAM_OFF
+        )  # Aligned!
         var cr = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.Right.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr + BATCH * Self.Left.CACHE_SIZE)
@@ -487,7 +489,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         var o_grid = (OUT_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn concat_out(
+        def concat_out(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -506,16 +508,14 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             if c < Self.LEFT_OUT:
                 dst.ptr[idx] = sl.ptr[b * Self.LEFT_OUT + c]
             else:
-                dst.ptr[idx] = sr.ptr[
-                    b * Self.RIGHT_OUT + (c - Self.LEFT_OUT)
-                ]
+                dst.ptr[idx] = sr.ptr[b * Self.RIGHT_OUT + (c - Self.LEFT_OUT)]
 
         ctx.enqueue_function[concat_out, concat_out](
             output, lo_immut, ro_immut, grid_dim=(o_grid,), block_dim=(TPB,)
         )
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -535,7 +535,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         pass
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -554,7 +554,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         pass
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -609,7 +609,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         var gl_grid = (GL_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn extract_gl(
+        def extract_gl(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.LEFT_OUT), MutAnyOrigin
             ],
@@ -635,7 +635,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         var gr_grid = (GR_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn extract_gr(
+        def extract_gr(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.RIGHT_OUT), MutAnyOrigin
             ],
@@ -678,13 +678,17 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
 
         var pr = LayoutTensor[
             dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
-        ](params.ptr + Self._RIGHT_PARAM_OFF)  # Aligned!
+        ](
+            params.ptr + Self._RIGHT_PARAM_OFF
+        )  # Aligned!
         var cr = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.Right.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr + BATCH * Self.Left.CACHE_SIZE)
         var grads_r = LayoutTensor[
             dtype, Layout.row_major(Self.Right.PARAM_SIZE), MutAnyOrigin
-        ](grads.ptr + Self._RIGHT_PARAM_OFF)  # Aligned!
+        ](
+            grads.ptr + Self._RIGHT_PARAM_OFF
+        )  # Aligned!
         Self.Right.backward_gpu[BATCH](
             ctx, gi_r_t, gr_t, pr, cr, grads_r, child_ws
         )
@@ -700,7 +704,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn assemble_gi(
+        def assemble_gi(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -719,9 +723,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             if c < Self.split:
                 dst.ptr[idx] = sl.ptr[b * Self.LEFT_IN + c]
             else:
-                dst.ptr[idx] = sr.ptr[
-                    b * Self.RIGHT_IN + (c - Self.split)
-                ]
+                dst.ptr[idx] = sr.ptr[b * Self.RIGHT_IN + (c - Self.split)]
 
         ctx.enqueue_function[assemble_gi, assemble_gi](
             grad_input,

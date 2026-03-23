@@ -8,7 +8,7 @@ from mojo_rl.core.sum_tree import SumTree
 from mojo_rl.nn.replay import PrioritizedReplayBuffer as DeepPER
 
 
-fn test_sum_tree():
+def test_sum_tree():
     """Test basic sum-tree operations."""
     print("Testing SumTree...")
 
@@ -44,7 +44,7 @@ fn test_sum_tree():
     print("  SumTree tests passed!")
 
 
-fn test_discrete_per():
+def test_discrete_per():
     """Test discrete PrioritizedReplayBuffer."""
     print("\nTesting discrete PrioritizedReplayBuffer...")
 
@@ -89,7 +89,7 @@ fn test_discrete_per():
     print("  Discrete PER tests passed!")
 
 
-fn test_deep_per():
+def test_deep_per():
     """Test deep RL PrioritizedReplayBuffer with compile-time dimensions."""
     print("\nTesting deep RL PrioritizedReplayBuffer...")
 
@@ -148,7 +148,7 @@ fn test_deep_per():
     print("  Deep RL PER tests passed!")
 
 
-fn main():
+def main():
     """Run all PER tests."""
     print("=" * 60)
     print("Prioritized Experience Replay Demo")

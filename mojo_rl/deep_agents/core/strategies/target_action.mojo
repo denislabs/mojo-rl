@@ -35,36 +35,50 @@ trait TargetAction:
     comptime NEEDS_LOG_PROBS: Bool
 
     @staticmethod
-    fn ws_size[BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int]() -> Int:
+    def ws_size[BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int]() -> Int:
         ...
 
     @staticmethod
-    fn compute_cpu[
+    def compute_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
         ActorOpt: Optimizer,
     ](
-        next_obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        mut out_actions: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
+        next_obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        mut out_actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
         out_log_probs: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
         ...
 
     @staticmethod
-    fn compute_gpu[
+    def compute_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
         ActorOpt: Optimizer,
     ](
         ctx: DeviceContext,
-        next_obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        mut out_actions: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
-        mut out_log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
+        next_obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        mut out_actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
+        mut out_log_probs: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         rng_seed: UInt32,
@@ -87,21 +101,27 @@ struct DeterministicTarget(TargetAction):
     comptime NEEDS_LOG_PROBS: Bool = False
 
     @staticmethod
-    fn ws_size[BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int]() -> Int:
+    def ws_size[BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int]() -> Int:
         """No extra workspace needed."""
         return 0
 
     @staticmethod
-    fn compute_cpu[
+    def compute_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
         ActorOpt: Optimizer,
     ](
-        next_obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        mut out_actions: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
+        next_obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        mut out_actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
         out_log_probs: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
         """Forward target actor on next_obs -> next_actions."""
@@ -109,20 +129,30 @@ struct DeterministicTarget(TargetAction):
         var out_act = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](out_actions.ptr)
-        Network[ActorModel, ActorOpt].forward[BATCH](next_obs, out_act, actor_params)
+        Network[ActorModel, ActorOpt].forward[BATCH](
+            next_obs, out_act, actor_params
+        )
 
     @staticmethod
-    fn compute_gpu[
+    def compute_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
         ActorOpt: Optimizer,
     ](
         ctx: DeviceContext,
-        next_obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        mut out_actions: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
-        mut out_log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
+        next_obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        mut out_actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
+        mut out_log_probs: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         rng_seed: UInt32,
@@ -158,21 +188,27 @@ struct SmoothedTarget[
     comptime NEEDS_LOG_PROBS: Bool = False
 
     @staticmethod
-    fn ws_size[BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int]() -> Int:
+    def ws_size[BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int]() -> Int:
         """No extra workspace needed (noise applied in-place)."""
         return 0
 
     @staticmethod
-    fn compute_cpu[
+    def compute_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
         ActorOpt: Optimizer,
     ](
-        next_obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        mut out_actions: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
+        next_obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        mut out_actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
         out_log_probs: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
         """Forward target actor, then add clipped Gaussian noise."""
@@ -181,7 +217,9 @@ struct SmoothedTarget[
         var out_act = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](out_actions.ptr)
-        Network[ActorModel, ActorOpt].forward[BATCH](next_obs, out_act, actor_params)
+        Network[ActorModel, ActorOpt].forward[BATCH](
+            next_obs, out_act, actor_params
+        )
 
         # Target policy smoothing: add clipped noise, clip actions to [-1, 1]
         for b in range(BATCH):
@@ -200,17 +238,25 @@ struct SmoothedTarget[
                 out_actions.ptr[idx] = Scalar[dtype](noisy_a)
 
     @staticmethod
-    fn compute_gpu[
+    def compute_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
         ActorOpt: Optimizer,
     ](
         ctx: DeviceContext,
-        next_obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        mut out_actions: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
-        mut out_log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
+        next_obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        mut out_actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
+        mut out_log_probs: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         rng_seed: UInt32,
@@ -241,7 +287,7 @@ struct SmoothedTarget[
         var rng_seed_s = Scalar[DType.uint32](rng_seed)
 
         @always_inline
-        fn noise_wrapper(
+        def noise_wrapper(
             noisy: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
@@ -293,21 +339,27 @@ struct ReparamTarget(TargetAction):
     comptime NEEDS_LOG_PROBS: Bool = True
 
     @staticmethod
-    fn ws_size[BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int]() -> Int:
+    def ws_size[BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int]() -> Int:
         """Extra workspace for raw actor output (2*ACTIONS)."""
         return BATCH * ACTOR_OUT
 
     @staticmethod
-    fn compute_cpu[
+    def compute_cpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
         ActorOpt: Optimizer,
     ](
-        next_obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        mut out_actions: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
+        next_obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        mut out_actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
         out_log_probs: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
         """Forward current actor -> rsample -> actions + log_probs.
@@ -320,7 +372,9 @@ struct ReparamTarget(TargetAction):
         var raw_out = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](ws)
-        Network[ActorModel, ActorOpt].forward[BATCH](next_obs, raw_out, actor_params)
+        Network[ActorModel, ActorOpt].forward[BATCH](
+            next_obs, raw_out, actor_params
+        )
 
         # Extract mean and log_std from Parallel output
         var mean = InlineArray[Scalar[dtype], BATCH * ACTIONS](
@@ -366,17 +420,25 @@ struct ReparamTarget(TargetAction):
                 out_log_probs[b] = Scalar[dtype](-1.0)
 
     @staticmethod
-    fn compute_gpu[
+    def compute_gpu[
         BATCH: Int,
         ACTIONS: Int,
         ActorModel: Model,
         ActorOpt: Optimizer,
     ](
         ctx: DeviceContext,
-        next_obs: LayoutTensor[dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin],
-        mut out_actions: LayoutTensor[dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin],
-        mut out_log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        actor_params: LayoutTensor[dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin],
+        next_obs: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ActorModel.IN_DIM), MutAnyOrigin
+        ],
+        mut out_actions: LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
+        ],
+        mut out_log_probs: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        actor_params: LayoutTensor[
+            dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
+        ],
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         rng_seed: UInt32,
@@ -408,7 +470,7 @@ struct ReparamTarget(TargetAction):
         var rng_seed_s = Scalar[DType.uint32](rng_seed)
 
         @always_inline
-        fn rsample_wrapper(
+        def rsample_wrapper(
             acts: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],

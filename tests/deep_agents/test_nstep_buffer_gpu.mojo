@@ -5,7 +5,7 @@ from mojo_rl.deep_agents.core.replay import GPUNStepBuffer
 from mojo_rl.nn.constants import dtype
 
 
-fn main() raises:
+def main() raises:
     print("=== GPUNStepBuffer Tests ===")
 
     with DeviceContext() as ctx:
@@ -13,11 +13,11 @@ fn main() raises:
         var nstep = GPUNStepBuffer[3, 2, 4](ctx, gamma=1.0)
 
         # Create host buffers for input
-        var h_obs = ctx.enqueue_create_host_buffer[dtype](4 * 2)   # [4, 2]
-        var h_act = ctx.enqueue_create_host_buffer[dtype](4)       # [4]
-        var h_rew = ctx.enqueue_create_host_buffer[dtype](4)       # [4]
+        var h_obs = ctx.enqueue_create_host_buffer[dtype](4 * 2)  # [4, 2]
+        var h_act = ctx.enqueue_create_host_buffer[dtype](4)  # [4]
+        var h_rew = ctx.enqueue_create_host_buffer[dtype](4)  # [4]
         var h_nobs = ctx.enqueue_create_host_buffer[dtype](4 * 2)  # [4, 2]
-        var h_done = ctx.enqueue_create_host_buffer[dtype](4)      # [4]
+        var h_done = ctx.enqueue_create_host_buffer[dtype](4)  # [4]
 
         # Device buffers
         var d_obs = ctx.enqueue_create_buffer[dtype](4 * 2)

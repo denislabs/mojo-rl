@@ -1,11 +1,15 @@
 """Test DQN + PER agent with GPU training."""
 
 from std.gpu.host import DeviceContext
-from mojo_rl.deep_agents.core.agents import DQNPERAgent, DQNPERConfig, GenericDQNPERAgent
+from mojo_rl.deep_agents.core.agents import (
+    DQNPERAgent,
+    DQNPERConfig,
+    GenericDQNPERAgent,
+)
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== DQN PER GPU Test ===")
 
     comptime N_ENVS = 256

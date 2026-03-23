@@ -11,7 +11,7 @@ from mojo_rl.deep_agents.core.agents import (
 from mojo_rl.envs import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Generic DQN Test (CPU) ===\n")
 
     # Test 1: Standard DQN

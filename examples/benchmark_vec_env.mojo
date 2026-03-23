@@ -54,7 +54,7 @@ struct CPUVecCartPole[num_envs: Int]:
     var steps: InlineArray[Int, Self.num_envs]
     var max_steps: Int
 
-    fn __init__(out self, max_steps: Int = 500):
+    def __init__(out self, max_steps: Int = 500):
         self.gravity = 9.8
         self.masscart = 1.0
         self.masspole = 0.1
@@ -73,7 +73,7 @@ struct CPUVecCartPole[num_envs: Int]:
         self.theta_dot = InlineArray[Float64, Self.num_envs](fill=0)
         self.steps = InlineArray[Int, Self.num_envs](fill=0)
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset all environments."""
         for i in range(Self.num_envs):
             self.x[i] = (random_float64() - 0.5) * 0.1
@@ -82,7 +82,7 @@ struct CPUVecCartPole[num_envs: Int]:
             self.theta_dot[i] = (random_float64() - 0.5) * 0.1
             self.steps[i] = 0
 
-    fn step(
+    def step(
         mut self,
         actions: InlineArray[Int, Self.num_envs],
         mut rewards: InlineArray[Float64, Self.num_envs],
@@ -150,7 +150,7 @@ struct CPUVecCartPole[num_envs: Int]:
 # =============================================================================
 
 
-fn cartpole_step_kernel[
+def cartpole_step_kernel[
     dtype: DType,
     num_envs: Int,
     TPB: Int,
@@ -271,7 +271,7 @@ fn cartpole_step_kernel[
 # =============================================================================
 
 
-fn benchmark_cpu[num_envs: Int](num_steps: Int) -> Float64:
+def benchmark_cpu[num_envs: Int](num_steps: Int) -> Float64:
     """Benchmark CPU vectorized CartPole."""
     var env = CPUVecCartPole[num_envs]()
     env.reset()
@@ -299,7 +299,7 @@ fn benchmark_cpu[num_envs: Int](num_steps: Int) -> Float64:
     return Float64(total_env_steps) / elapsed_sec  # Steps per second
 
 
-fn benchmark_gpu[
+def benchmark_gpu[
     num_envs: Int
 ](ctx: DeviceContext, num_steps: Int) raises -> Float64:
     """Benchmark GPU vectorized CartPole."""
@@ -423,7 +423,7 @@ fn benchmark_gpu[
     return Float64(total_env_steps) / elapsed_sec
 
 
-fn benchmark_gpu_no_transfer[
+def benchmark_gpu_no_transfer[
     num_envs: Int
 ](ctx: DeviceContext, num_steps: Int) raises -> Float64:
     """Benchmark GPU vectorized CartPole WITHOUT per-step CPU-GPU transfers.

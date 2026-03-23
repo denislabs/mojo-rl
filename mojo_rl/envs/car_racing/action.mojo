@@ -23,12 +23,12 @@ struct CarRacingAction[DTYPE: DType](
     var gas: Scalar[Self.DTYPE]  # -1 to +1 (mapped to [0, 1])
     var brake: Scalar[Self.DTYPE]  # -1 to +1 (mapped to [0, 1])
 
-    fn __init__(out self):
+    def __init__(out self):
         self.steering = 0.0
         self.gas = 0.0
         self.brake = 0.0
 
-    fn __init__(
+    def __init__(
         out self,
         steering: Scalar[Self.DTYPE],
         gas: Scalar[Self.DTYPE],
@@ -38,18 +38,18 @@ struct CarRacingAction[DTYPE: DType](
         self.gas = gas
         self.brake = brake
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.steering = copy.steering
         self.gas = copy.gas
         self.brake = copy.brake
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.steering = take.steering
         self.gas = take.gas
         self.brake = take.brake
 
     @staticmethod
-    fn from_list(
+    def from_list(
         values: List[Scalar[Self.DTYPE]],
     ) -> CarRacingAction[Self.DTYPE]:
         """Create action from list."""
@@ -62,7 +62,7 @@ struct CarRacingAction[DTYPE: DType](
             action.brake = values[2]
         return action^
 
-    fn to_list(self) -> List[Scalar[Self.DTYPE]]:
+    def to_list(self) -> List[Scalar[Self.DTYPE]]:
         """Convert to list."""
         var result = List[Scalar[Self.DTYPE]]()
         result.append(self.steering)
@@ -71,7 +71,7 @@ struct CarRacingAction[DTYPE: DType](
         return result^
 
     @staticmethod
-    fn from_discrete(action_idx: Int) -> CarRacingAction[Self.DTYPE]:
+    def from_discrete(action_idx: Int) -> CarRacingAction[Self.DTYPE]:
         """Create action from discrete action index.
 
         Discrete actions:

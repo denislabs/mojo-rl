@@ -44,14 +44,14 @@ struct CheckpointHeader(Copyable, Movable):
     var state_size: Int
     var dtype_str: String
 
-    fn __init__(out self):
+    def __init__(out self):
         self.version = 1
         self.checkpoint_type = "network"
         self.param_size = 0
         self.state_size = 0
         self.dtype_str = "float32"
 
-    fn __init__(
+    def __init__(
         out self,
         version: Int,
         checkpoint_type: String,
@@ -65,14 +65,14 @@ struct CheckpointHeader(Copyable, Movable):
         self.state_size = state_size
         self.dtype_str = dtype_str
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.version = copy.version
         self.checkpoint_type = copy.checkpoint_type
         self.param_size = copy.param_size
         self.state_size = copy.state_size
         self.dtype_str = copy.dtype_str
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.version = take.version
         self.checkpoint_type = take.checkpoint_type^
         self.param_size = take.param_size
@@ -80,7 +80,7 @@ struct CheckpointHeader(Copyable, Movable):
         self.dtype_str = take.dtype_str^
 
 
-fn write_checkpoint_header(
+def write_checkpoint_header(
     checkpoint_type: String,
     param_size: Int,
     state_size: Int,
@@ -103,7 +103,7 @@ fn write_checkpoint_header(
     return header
 
 
-fn write_float_section[
+def write_float_section[
     SIZE: Int
 ](section_name: String, data: InlineArray[Scalar[dtype], SIZE]) -> String:
     """Generate string for a float array section.
@@ -121,7 +121,7 @@ fn write_float_section[
     return content
 
 
-fn write_float_section_list(
+def write_float_section_list(
     section_name: String, data: List[Scalar[dtype]]
 ) -> String:
     """Generate string for a float array section from List.
@@ -139,7 +139,7 @@ fn write_float_section_list(
     return content
 
 
-fn write_float_section_ptr(
+def write_float_section_ptr(
     section_name: String,
     data: UnsafePointer[Scalar[dtype], _],
     size: Int,
@@ -162,7 +162,7 @@ fn write_float_section_ptr(
     return content
 
 
-fn write_metadata_section(metadata: List[String]) -> String:
+def write_metadata_section(metadata: List[String]) -> String:
     """Generate string for metadata section.
 
     Args:
@@ -177,7 +177,7 @@ fn write_metadata_section(metadata: List[String]) -> String:
     return content
 
 
-fn read_checkpoint_file(filepath: String) raises -> String:
+def read_checkpoint_file(filepath: String) raises -> String:
     """Read entire checkpoint file contents.
 
     Args:
@@ -190,7 +190,7 @@ fn read_checkpoint_file(filepath: String) raises -> String:
         return f.read()
 
 
-fn split_lines(content: String) -> List[String]:
+def split_lines(content: String) -> List[String]:
     """Split content into lines.
 
     Args:
@@ -214,7 +214,7 @@ fn split_lines(content: String) -> List[String]:
     return lines^
 
 
-fn parse_checkpoint_header(content: String) raises -> CheckpointHeader:
+def parse_checkpoint_header(content: String) raises -> CheckpointHeader:
     """Parse checkpoint header from file content.
 
     Args:
@@ -252,7 +252,7 @@ fn parse_checkpoint_header(content: String) raises -> CheckpointHeader:
     return header^
 
 
-fn find_section_start(lines: List[String], section_name: String) -> Int:
+def find_section_start(lines: List[String], section_name: String) -> Int:
     """Find the line index where a section starts.
 
     Args:
@@ -268,7 +268,7 @@ fn find_section_start(lines: List[String], section_name: String) -> Int:
     return -1
 
 
-fn read_float_section[
+def read_float_section[
     SIZE: Int
 ](content: String, section_name: String) raises -> InlineArray[
     Scalar[dtype], SIZE
@@ -307,7 +307,7 @@ fn read_float_section[
     return result^
 
 
-fn read_float_section_list(
+def read_float_section_list(
     content: String, section_name: String, size: Int
 ) raises -> List[Scalar[dtype]]:
     """Read a float array section from checkpoint content into a List.
@@ -345,7 +345,7 @@ fn read_float_section_list(
     return result^
 
 
-fn read_metadata_section(content: String) raises -> List[String]:
+def read_metadata_section(content: String) raises -> List[String]:
     """Read metadata section from checkpoint content.
 
     Args:
@@ -374,7 +374,7 @@ fn read_metadata_section(content: String) raises -> List[String]:
     return result^
 
 
-fn get_metadata_value(metadata: List[String], key: String) -> String:
+def get_metadata_value(metadata: List[String], key: String) -> String:
     """Get value for a key from metadata list.
 
     Args:
@@ -391,7 +391,7 @@ fn get_metadata_value(metadata: List[String], key: String) -> String:
     return String("")
 
 
-fn set_metadata_value_float(
+def set_metadata_value_float(
     metadata: List[String], key: String, mut dest: Float64
 ) raises:
     """Get value for a key from metadata list as float.
@@ -407,7 +407,7 @@ fn set_metadata_value_float(
         dest = atof(value)
 
 
-fn set_metadata_value_int(
+def set_metadata_value_int(
     metadata: List[String], key: String, mut dest: Int
 ) raises:
     """Get value for a key from metadata list as int.
@@ -422,7 +422,7 @@ fn set_metadata_value_int(
         dest = Int(atol(value))
 
 
-fn set_metadata_value_bool(
+def set_metadata_value_bool(
     metadata: List[String], key: String, mut dest: Bool
 ) raises:
     """Get value for a key from metadata list as bool.
@@ -437,7 +437,7 @@ fn set_metadata_value_bool(
         dest = Bool(atol(value))
 
 
-fn save_checkpoint_file(filepath: String, content: String) raises:
+def save_checkpoint_file(filepath: String, content: String) raises:
     """Write checkpoint content to file.
 
     Args:

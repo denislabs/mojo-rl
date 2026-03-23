@@ -29,13 +29,13 @@ from mojo_rl.nn.autodiff import (
 from layout import Layout, LayoutTensor
 
 
-fn print_header(name: String):
+def print_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
 
 
-fn check(cond: Bool, msg: String, mut fails: Int):
+def check(cond: Bool, msg: String, mut fails: Int):
     if cond:
         print("  PASS: " + msg)
     else:
@@ -43,21 +43,21 @@ fn check(cond: Bool, msg: String, mut fails: Int):
         fails += 1
 
 
-fn make_list(size: Int) -> List[Scalar[dtype]]:
+def make_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(0)
     return lst^
 
 
-fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
+def make_rand_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(Scalar[dtype](random_float64(-1.0, 1.0)))
     return lst^
 
 
-fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
+def max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
     var md: Float64 = 0
     for i in range(n):
         var d = math_abs(Float64(a[i]) - Float64(b[i]))
@@ -71,7 +71,7 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # =============================================================================
 
 
-fn test_fused_bias() -> Int:
+def test_fused_bias() -> Int:
     print_header("FusedMatMulBias forward + vjp vs unfused MatMul->BiasAdd")
     var fails = 0
 
@@ -163,7 +163,7 @@ fn test_fused_bias() -> Int:
 # =============================================================================
 
 
-fn test_fused_relu() -> Int:
+def test_fused_relu() -> Int:
     print_header("FusedMatMulBiasReLU forward + vjp vs unfused")
     var fails = 0
 
@@ -256,7 +256,7 @@ fn test_fused_relu() -> Int:
 # =============================================================================
 
 
-fn test_fused_tanh() -> Int:
+def test_fused_tanh() -> Int:
     print_header("FusedMatMulBiasTanh forward + vjp vs unfused")
     var fails = 0
 
@@ -349,7 +349,7 @@ fn test_fused_tanh() -> Int:
 # =============================================================================
 
 
-fn test_alias_dims() -> Int:
+def test_alias_dims() -> Int:
     print_header("Fusion-aware alias dimensions")
     var fails = 0
     comptime I = 5
@@ -370,7 +370,7 @@ fn test_alias_dims() -> Int:
 # =============================================================================
 
 
-fn test_xor_fused() -> Int:
+def test_xor_fused() -> Int:
     print_header("Fused MLP XOR training convergence")
     var fails = 0
 
@@ -472,7 +472,7 @@ fn test_xor_fused() -> Int:
 # =============================================================================
 
 
-fn test_fused_sigmoid() -> Int:
+def test_fused_sigmoid() -> Int:
     print_header("FusedMatMulBiasSigmoid forward + vjp vs unfused")
     var fails = 0
 
@@ -580,7 +580,7 @@ fn test_fused_sigmoid() -> Int:
 # =============================================================================
 
 
-fn main():
+def main():
     print("=" * 70)
     print("Phase 2 Verification: Fused Autodiff Ops")
     print("=" * 70)

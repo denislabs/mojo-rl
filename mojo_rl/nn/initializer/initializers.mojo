@@ -33,7 +33,7 @@ trait Initializer(Copyable & Movable & ImplicitlyCopyable):
     """
 
     @staticmethod
-    fn init[
+    def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         """Initialize parameters.
@@ -58,17 +58,17 @@ struct Xavier[SEED: UInt64 = 0](Initializer):
     This is optimal for linear activations and works well for tanh/sigmoid.
     """
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn init[
+    def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         var rng = PhiloxRandom(seed=Self.SEED, offset=0)
@@ -87,17 +87,17 @@ struct Kaiming[SEED: UInt64 = 0](Initializer):
     ReLU zeros out half the distribution.
     """
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn init[
+    def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         var std = sqrt(2.0 / Scalar[dtype](FAN_IN))
@@ -116,17 +116,17 @@ struct LeCun[SEED: UInt64 = 0](Initializer):
     networks with tanh activations.
     """
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn init[
+    def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         var std = sqrt(1.0 / Scalar[dtype](FAN_IN))
@@ -143,17 +143,17 @@ struct Zeros(Initializer):
     Note: Using zeros for weights will cause issues with gradient flow.
     """
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn init[
+    def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         for i in range(SIZE):
@@ -163,17 +163,17 @@ struct Zeros(Initializer):
 struct Ones(Initializer):
     """Initialize all parameters to one."""
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn init[
+    def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         for i in range(SIZE):
@@ -184,7 +184,7 @@ struct Constant[VALUE: Scalar[dtype]](Initializer):
     """Initialize all parameters to a constant value."""
 
     @staticmethod
-    fn init[
+    def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         for i in range(SIZE):
@@ -195,7 +195,7 @@ struct Uniform[LOW: Float64, HIGH: Float64, SEED: UInt64 = 0](Initializer):
     """Initialize parameters from uniform distribution U(low, high)."""
 
     @staticmethod
-    fn init[
+    def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         var range_val = Scalar[dtype](Self.HIGH - Self.LOW)
@@ -214,7 +214,7 @@ struct Normal[MEAN: Float64, STD: Float64, SEED: UInt64 = 0](Initializer):
     """
 
     @staticmethod
-    fn init[
+    def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         var rng = PhiloxRandom(seed=Self.SEED, offset=0)

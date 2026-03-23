@@ -24,32 +24,32 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # =========================================================================
 
     @staticmethod
-    fn zero() -> Self:
+    def zero() -> Self:
         """Return the zero vector."""
         return Self(0.0, 0.0, 0.0)
 
     @staticmethod
-    fn one() -> Self:
+    def one() -> Self:
         """Return the unit vector (1, 1, 1)."""
         return Self(1.0, 1.0, 1.0)
 
     @staticmethod
-    fn unit_x() -> Self:
+    def unit_x() -> Self:
         """Return the X axis unit vector."""
         return Self(1.0, 0.0, 0.0)
 
     @staticmethod
-    fn unit_y() -> Self:
+    def unit_y() -> Self:
         """Return the Y axis unit vector."""
         return Self(0.0, 1.0, 0.0)
 
     @staticmethod
-    fn unit_z() -> Self:
+    def unit_z() -> Self:
         """Return the Z axis unit vector."""
         return Self(0.0, 0.0, 1.0)
 
     @staticmethod
-    fn from_scalar(s: Scalar[Self.DTYPE]) -> Self:
+    def from_scalar(s: Scalar[Self.DTYPE]) -> Self:
         """Create a vector with all components set to s."""
         return Self(s, s, s)
 
@@ -57,50 +57,50 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Arithmetic Operations
     # =========================================================================
 
-    fn __add__(self, other: Self) -> Self:
+    def __add__(self, other: Self) -> Self:
         """Vector addition."""
         return Self(self.x + other.x, self.y + other.y, self.z + other.z)
 
-    fn __sub__(self, other: Self) -> Self:
+    def __sub__(self, other: Self) -> Self:
         """Vector subtraction."""
         return Self(self.x - other.x, self.y - other.y, self.z - other.z)
 
-    fn __mul__(self, scalar: Scalar[Self.DTYPE]) -> Self:
+    def __mul__(self, scalar: Scalar[Self.DTYPE]) -> Self:
         """Scalar multiplication."""
         return Self(self.x * scalar, self.y * scalar, self.z * scalar)
 
-    fn __rmul__(self, scalar: Scalar[Self.DTYPE]) -> Self:
+    def __rmul__(self, scalar: Scalar[Self.DTYPE]) -> Self:
         """Scalar multiplication (reversed)."""
         return Self(self.x * scalar, self.y * scalar, self.z * scalar)
 
-    fn __truediv__(self, scalar: Scalar[Self.DTYPE]) -> Self:
+    def __truediv__(self, scalar: Scalar[Self.DTYPE]) -> Self:
         """Scalar division."""
         var inv = 1.0 / scalar
         return Self(self.x * inv, self.y * inv, self.z * inv)
 
-    fn __neg__(self) -> Self:
+    def __neg__(self) -> Self:
         """Negation."""
         return Self(-self.x, -self.y, -self.z)
 
-    fn __iadd__(mut self, other: Self):
+    def __iadd__(mut self, other: Self):
         """In-place addition."""
         self.x += other.x
         self.y += other.y
         self.z += other.z
 
-    fn __isub__(mut self, other: Self):
+    def __isub__(mut self, other: Self):
         """In-place subtraction."""
         self.x -= other.x
         self.y -= other.y
         self.z -= other.z
 
-    fn __imul__(mut self, scalar: Scalar[Self.DTYPE]):
+    def __imul__(mut self, scalar: Scalar[Self.DTYPE]):
         """In-place scalar multiplication."""
         self.x *= scalar
         self.y *= scalar
         self.z *= scalar
 
-    fn __itruediv__(mut self, scalar: Scalar[Self.DTYPE]):
+    def __itruediv__(mut self, scalar: Scalar[Self.DTYPE]):
         """In-place scalar division."""
         var inv = 1.0 / scalar
         self.x *= inv
@@ -111,15 +111,15 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Comparison Operations
     # =========================================================================
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         """Equality check."""
         return self.x == other.x and self.y == other.y and self.z == other.z
 
-    fn __ne__(self, other: Self) -> Bool:
+    def __ne__(self, other: Self) -> Bool:
         """Inequality check."""
         return not (self == other)
 
-    fn approx_eq(
+    def approx_eq(
         self, other: Self, tolerance: Scalar[Self.DTYPE] = 1e-10
     ) -> Bool:
         """Approximate equality with tolerance."""
@@ -133,11 +133,11 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Geometric Operations
     # =========================================================================
 
-    fn dot(self, other: Self) -> Scalar[Self.DTYPE]:
+    def dot(self, other: Self) -> Scalar[Self.DTYPE]:
         """Dot product."""
         return self.x * other.x + self.y * other.y + self.z * other.z
 
-    fn cross(self, other: Self) -> Self:
+    def cross(self, other: Self) -> Self:
         """Cross product (self × other)."""
         return Self(
             self.y * other.z - self.z * other.y,
@@ -145,15 +145,15 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.x * other.y - self.y * other.x,
         )
 
-    fn length_squared(self) -> Scalar[Self.DTYPE]:
+    def length_squared(self) -> Scalar[Self.DTYPE]:
         """Squared length (avoids sqrt)."""
         return self.x * self.x + self.y * self.y + self.z * self.z
 
-    fn length(self) -> Scalar[Self.DTYPE] where Self.DTYPE.is_floating_point():
+    def length(self) -> Scalar[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Euclidean length."""
         return sqrt(self.length_squared())
 
-    fn normalized(self) -> Self where Self.DTYPE.is_floating_point():
+    def normalized(self) -> Self where Self.DTYPE.is_floating_point():
         """Return unit vector in same direction.
 
         Returns zero vector if length is zero.
@@ -163,19 +163,19 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             return self / len
         return Self.zero()
 
-    fn normalize(mut self) where Self.DTYPE.is_floating_point():
+    def normalize(mut self) where Self.DTYPE.is_floating_point():
         """Normalize in place."""
         var len = self.length()
         if len > 1e-10:
             self /= len
 
-    fn distance_to(
+    def distance_to(
         self, other: Self
     ) -> Scalar[Self.DTYPE] where Self.DTYPE.is_floating_point():
         """Distance to another point."""
         return (self - other).length()
 
-    fn distance_squared_to(self, other: Self) -> Scalar[Self.DTYPE]:
+    def distance_squared_to(self, other: Self) -> Scalar[Self.DTYPE]:
         """Squared distance to another point (avoids sqrt)."""
         return (self - other).length_squared()
 
@@ -183,15 +183,15 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Component-wise Operations
     # =========================================================================
 
-    fn hadamard(self, other: Self) -> Self:
+    def hadamard(self, other: Self) -> Self:
         """Component-wise (Hadamard) product."""
         return Self(self.x * other.x, self.y * other.y, self.z * other.z)
 
-    fn abs(self) -> Self:
+    def abs(self) -> Self:
         """Component-wise absolute value."""
         return Self(abs(self.x), abs(self.y), abs(self.z))
 
-    fn min(self, other: Self) -> Self:
+    def min(self, other: Self) -> Self:
         """Component-wise minimum."""
         return Self(
             min(self.x, other.x),
@@ -199,7 +199,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             min(self.z, other.z),
         )
 
-    fn max(self, other: Self) -> Self:
+    def max(self, other: Self) -> Self:
         """Component-wise maximum."""
         return Self(
             max(self.x, other.x),
@@ -207,11 +207,11 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             max(self.z, other.z),
         )
 
-    fn clamp(self, min_val: Self, max_val: Self) -> Self:
+    def clamp(self, min_val: Self, max_val: Self) -> Self:
         """Component-wise clamp between min and max."""
         return self.max(min_val).min(max_val)
 
-    fn clamp_length(
+    def clamp_length(
         self, max_length: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Clamp vector to maximum length."""
@@ -224,7 +224,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Projection and Reflection
     # =========================================================================
 
-    fn project_onto(self, onto: Self) -> Self:
+    def project_onto(self, onto: Self) -> Self:
         """Project this vector onto another.
 
         Args:
@@ -238,7 +238,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             return Self.zero()
         return onto * (self.dot(onto) / onto_len_sq)
 
-    fn reject_from(self, from_vec: Self) -> Self:
+    def reject_from(self, from_vec: Self) -> Self:
         """Component of this vector perpendicular to another.
 
         Args:
@@ -249,7 +249,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         """
         return self - self.project_onto(from_vec)
 
-    fn reflect(self, normal: Self) -> Self:
+    def reflect(self, normal: Self) -> Self:
         """Reflect this vector about a normal.
 
         Args:
@@ -264,7 +264,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Interpolation
     # =========================================================================
 
-    fn lerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self:
+    def lerp(self, other: Self, t: Scalar[Self.DTYPE]) -> Self:
         """Linear interpolation between self and other.
 
         Args:
@@ -280,7 +280,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Rotation
     # =========================================================================
 
-    fn rotated_x(
+    def rotated_x(
         self, angle: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Rotate around X axis.
@@ -299,7 +299,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             self.y * s + self.z * c,
         )
 
-    fn rotated_y(
+    def rotated_y(
         self, angle: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Rotate around Y axis.
@@ -318,7 +318,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
             -self.x * s + self.z * c,
         )
 
-    fn rotated_z(
+    def rotated_z(
         self, angle: Scalar[Self.DTYPE]
     ) -> Self where Self.DTYPE.is_floating_point():
         """Rotate around Z axis.
@@ -341,7 +341,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Indexing
     # =========================================================================
 
-    fn __getitem__(self, index: Int) -> Scalar[Self.DTYPE]:
+    def __getitem__(self, index: Int) -> Scalar[Self.DTYPE]:
         """Get component by index (0=x, 1=y, 2=z)."""
         if index == 0:
             return self.x
@@ -350,7 +350,7 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
         else:
             return self.z
 
-    fn __setitem__(mut self, index: Int, value: Scalar[Self.DTYPE]):
+    def __setitem__(mut self, index: Int, value: Scalar[Self.DTYPE]):
         """Set component by index (0=x, 1=y, 2=z)."""
         if index == 0:
             self.x = value
@@ -363,16 +363,16 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
     # Conversion
     # =========================================================================
 
-    fn to_simd(self) -> SIMD[Self.DTYPE, 4]:
+    def to_simd(self) -> SIMD[Self.DTYPE, 4]:
         """Convert to SIMD vector (w component = 0)."""
         return SIMD[Self.DTYPE, 4](self.x, self.y, self.z, 0.0)
 
     @staticmethod
-    fn from_simd(v: SIMD[Self.DTYPE, 4]) -> Self:
+    def from_simd(v: SIMD[Self.DTYPE, 4]) -> Self:
         """Create from SIMD vector (ignores w component)."""
         return Self(v[0], v[1], v[2])
 
-    fn __str__(self) -> String:
+    def __str__(self) -> String:
         """String representation."""
         return (
             "Vec3("
@@ -390,38 +390,38 @@ struct Vec3[DTYPE: DType](ImplicitlyCopyable, Movable, Writable):
 # =========================================================================
 
 
-fn vec3[
+def vec3[
     DTYPE: DType
 ](x: Scalar[DTYPE], y: Scalar[DTYPE], z: Scalar[DTYPE]) -> Vec3[DTYPE]:
     """Convenience function to create a Vec3."""
     return Vec3(x, y, z)
 
 
-fn dot[DTYPE: DType](a: Vec3[DTYPE], b: Vec3[DTYPE]) -> Scalar[DTYPE]:
+def dot[DTYPE: DType](a: Vec3[DTYPE], b: Vec3[DTYPE]) -> Scalar[DTYPE]:
     """Dot product of two vectors."""
     return a.dot(b)
 
 
-fn cross[DTYPE: DType](a: Vec3[DTYPE], b: Vec3[DTYPE]) -> Vec3[DTYPE]:
+def cross[DTYPE: DType](a: Vec3[DTYPE], b: Vec3[DTYPE]) -> Vec3[DTYPE]:
     """Cross product of two vectors."""
     return a.cross(b)
 
 
-fn normalize[
+def normalize[
     DTYPE: DType
 ](v: Vec3[DTYPE]) -> Vec3[DTYPE] where DTYPE.is_floating_point():
     """Return normalized vector."""
     return v.normalized()
 
 
-fn length[
+def length[
     DTYPE: DType
 ](v: Vec3[DTYPE]) -> Scalar[DTYPE] where DTYPE.is_floating_point():
     """Return vector length."""
     return v.length()
 
 
-fn distance[
+def distance[
     DTYPE: DType
 ](a: Vec3[DTYPE], b: Vec3[DTYPE]) -> Scalar[
     DTYPE
@@ -430,7 +430,7 @@ fn distance[
     return a.distance_to(b)
 
 
-fn lerp[
+def lerp[
     DTYPE: DType
 ](a: Vec3[DTYPE], b: Vec3[DTYPE], t: Scalar[DTYPE]) -> Vec3[DTYPE]:
     """Linear interpolation."""

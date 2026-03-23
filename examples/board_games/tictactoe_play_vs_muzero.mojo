@@ -27,7 +27,7 @@ from mojo_rl.render.sdl.sdl_scancode import Scancode
 from mojo_rl.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
 
 
-fn main() raises:
+def main() raises:
     print("=== Play vs MuZero on TicTacToe ===")
     print("You are X (first player). AI is O.")
     print()
@@ -35,12 +35,19 @@ fn main() raises:
     # ── Load trained agent ───────────────────────────────────────
     comptime TTT = TicTacToeEnv[DType.float64]
     comptime Config = AlphaZeroConfig[
-        TTT.OBS_DIM, TTT.NUM_ACTIONS,
-        HIDDEN=128, LR=1e-3, BS=64, SIMS=25, NODES=64,
+        TTT.OBS_DIM,
+        TTT.NUM_ACTIONS,
+        HIDDEN=128,
+        LR=1e-3,
+        BS=64,
+        SIMS=25,
+        NODES=64,
     ]
 
     var agent = GenericMuZeroAgent[Config, 1](
-        gamma=1.0, v_min=-1.0, v_max=1.0,
+        gamma=1.0,
+        v_min=-1.0,
+        v_max=1.0,
     )
 
     var ckpt_path = "tictactoe_muzero.ckpt"
@@ -55,16 +62,18 @@ fn main() raises:
     var env = TicTacToeEnv[DType.float64]()
     _ = env.reset()
 
-    var renderer = Renderer2D(width=400, height=450, fps=30, title="TicTacToe vs MuZero")
+    var renderer = Renderer2D(
+        width=400, height=450, fps=30, title="TicTacToe vs MuZero"
+    )
 
-    var bg_color = SDL_Color(r=0x1a, g=0x5c, b=0x2a, a=0xff)
-    var grid_color = SDL_Color(r=0xff, g=0xff, b=0xff, a=0xff)
-    var x_color = SDL_Color(r=0xff, g=0x44, b=0x44, a=0xff)
-    var o_color = SDL_Color(r=0x44, g=0x88, b=0xff, a=0xff)
-    var cursor_color = SDL_Color(r=0xff, g=0xff, b=0x00, a=0xff)
-    var text_color = SDL_Color(r=0xff, g=0xff, b=0xff, a=0xff)
-    var win_color = SDL_Color(r=0xff, g=0xdd, b=0x00, a=0xff)
-    var ai_color = SDL_Color(r=0x88, g=0xff, b=0x88, a=0xff)
+    var bg_color = SDL_Color(r=0x1A, g=0x5C, b=0x2A, a=0xFF)
+    var grid_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+    var x_color = SDL_Color(r=0xFF, g=0x44, b=0x44, a=0xFF)
+    var o_color = SDL_Color(r=0x44, g=0x88, b=0xFF, a=0xFF)
+    var cursor_color = SDL_Color(r=0xFF, g=0xFF, b=0x00, a=0xFF)
+    var text_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+    var win_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
+    var ai_color = SDL_Color(r=0x88, g=0xFF, b=0x88, a=0xFF)
 
     var cursor_row = 1
     var cursor_col = 1
@@ -107,8 +116,10 @@ fn main() raises:
         var mouse_col = mouse_x // cell_size
         var mouse_row = mouse_y // cell_size
         var mouse_on_board = (
-            mouse_col >= 0 and mouse_col < 3
-            and mouse_row >= 0 and mouse_row < 3
+            mouse_col >= 0
+            and mouse_col < 3
+            and mouse_row >= 0
+            and mouse_row < 3
             and mouse_y < board_size
         )
         if mouse_on_board:
@@ -126,7 +137,9 @@ fn main() raises:
 
         # Human turn (player 0 = X)
         if not game_over and env.current_player() == 0:
-            if (cur_space and not prev_space) or (cur_return and not prev_return):
+            if (cur_space and not prev_space) or (
+                cur_return and not prev_return
+            ):
                 action = cursor_row * 3 + cursor_col
             if cur_mouse_left and not prev_mouse_left and mouse_on_board:
                 action = mouse_row * 3 + mouse_col
@@ -193,8 +206,12 @@ fn main() raises:
 
         # === Rendering ===
         for i in range(1, 3):
-            renderer.draw_line(0, i * cell_size, board_size, i * cell_size, grid_color, 3)
-            renderer.draw_line(i * cell_size, 0, i * cell_size, board_size, grid_color, 3)
+            renderer.draw_line(
+                0, i * cell_size, board_size, i * cell_size, grid_color, 3
+            )
+            renderer.draw_line(
+                i * cell_size, 0, i * cell_size, board_size, grid_color, 3
+            )
 
         for row in range(3):
             for col in range(3):
@@ -203,43 +220,71 @@ fn main() raises:
                 var cell_idx = row * 3 + col
                 var cell_val = Int(env.state[cell_idx])
 
-                if not game_over and row == cursor_row and col == cursor_col and env.current_player() == 0:
+                if (
+                    not game_over
+                    and row == cursor_row
+                    and col == cursor_col
+                    and env.current_player() == 0
+                ):
                     renderer.draw_rect(
-                        col * cell_size + 4, row * cell_size + 4,
-                        cell_size - 8, cell_size - 8,
-                        cursor_color, border_width=3,
+                        col * cell_size + 4,
+                        row * cell_size + 4,
+                        cell_size - 8,
+                        cell_size - 8,
+                        cursor_color,
+                        border_width=3,
                     )
 
                 if cell_val == 1:
                     var margin = 25
                     renderer.draw_line(
-                        col * cell_size + margin, row * cell_size + margin,
-                        (col + 1) * cell_size - margin, (row + 1) * cell_size - margin,
-                        x_color, 4,
+                        col * cell_size + margin,
+                        row * cell_size + margin,
+                        (col + 1) * cell_size - margin,
+                        (row + 1) * cell_size - margin,
+                        x_color,
+                        4,
                     )
                     renderer.draw_line(
-                        (col + 1) * cell_size - margin, row * cell_size + margin,
-                        col * cell_size + margin, (row + 1) * cell_size - margin,
-                        x_color, 4,
+                        (col + 1) * cell_size - margin,
+                        row * cell_size + margin,
+                        col * cell_size + margin,
+                        (row + 1) * cell_size - margin,
+                        x_color,
+                        4,
                     )
                 elif cell_val == 2:
-                    renderer.draw_circle(cx, cy, cell_size // 2 - 20, o_color, filled=False)
+                    renderer.draw_circle(
+                        cx, cy, cell_size // 2 - 20, o_color, filled=False
+                    )
 
         # Status bar
-        renderer.draw_rect(0, board_size, 400, 50, SDL_Color(r=0x11, g=0x33, b=0x11, a=0xff))
+        renderer.draw_rect(
+            0, board_size, 400, 50, SDL_Color(r=0x11, g=0x33, b=0x11, a=0xFF)
+        )
 
         var game_result = env.game_result()
         if game_result == 0:
             if env.current_player() == 0:
-                renderer.draw_text("Your turn (X)", 150, board_size + 20, text_color)
+                renderer.draw_text(
+                    "Your turn (X)", 150, board_size + 20, text_color
+                )
             else:
-                renderer.draw_text("AI thinking...", 150, board_size + 20, ai_color)
+                renderer.draw_text(
+                    "AI thinking...", 150, board_size + 20, ai_color
+                )
         elif game_result == 1:
-            renderer.draw_text("You win!  (R to reset)", 115, board_size + 20, win_color)
+            renderer.draw_text(
+                "You win!  (R to reset)", 115, board_size + 20, win_color
+            )
         elif game_result == 2:
-            renderer.draw_text("AI wins!  (R to reset)", 115, board_size + 20, win_color)
+            renderer.draw_text(
+                "AI wins!  (R to reset)", 115, board_size + 20, win_color
+            )
         else:
-            renderer.draw_text("Draw!  (R to reset)", 130, board_size + 20, win_color)
+            renderer.draw_text(
+                "Draw!  (R to reset)", 130, board_size + 20, win_color
+            )
 
         renderer.flip()
 

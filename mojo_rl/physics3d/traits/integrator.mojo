@@ -29,7 +29,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn step[
+    def step[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -70,7 +70,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn simulate[
+    def simulate[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -115,7 +115,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -153,7 +153,7 @@ trait Integrator(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn simulate_gpu[
+    def simulate_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

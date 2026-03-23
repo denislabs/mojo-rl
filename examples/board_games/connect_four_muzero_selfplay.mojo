@@ -13,7 +13,7 @@ from mojo_rl.deep_agents.muzero.configs import AlphaZeroConfig
 from mojo_rl.envs.board_games.connect_four import ConnectFourEnv
 
 
-fn main() raises:
+def main() raises:
     print("╔══════════════════════════════════════════════════╗")
     print("║  MuZero Self-Play on Connect Four (GPU)         ║")
     print("╚══════════════════════════════════════════════════╝")

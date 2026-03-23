@@ -68,7 +68,7 @@ struct UnifiedConstraintSolver:
 
     @always_inline
     @staticmethod
-    fn _solve_velocity_all_kernel[
+    def _solve_velocity_all_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -129,7 +129,7 @@ struct UnifiedConstraintSolver:
 
     @always_inline
     @staticmethod
-    fn _solve_position_all_kernel[
+    def _solve_position_all_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -188,7 +188,7 @@ struct UnifiedConstraintSolver:
     # =========================================================================
 
     @staticmethod
-    fn solve_velocity_gpu[
+    def solve_velocity_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -237,7 +237,7 @@ struct UnifiedConstraintSolver:
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -288,7 +288,7 @@ struct UnifiedConstraintSolver:
         )
 
     @staticmethod
-    fn solve_position_gpu[
+    def solve_position_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         MAX_CONTACTS: Int,
@@ -335,7 +335,7 @@ struct UnifiedConstraintSolver:
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],

@@ -10,7 +10,7 @@ from mojo_rl.deep_agents.core.training.self_play_training import (
 )
 
 
-fn main() raises:
+def main() raises:
     print("=== Go 9x9 Self-Play (Random vs Random) ===\n")
 
     var env = GoEnv[9, DType.float64]()

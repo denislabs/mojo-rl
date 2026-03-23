@@ -106,7 +106,7 @@ comptime PER_CONTACT_REL_TOL: Float64 = 3e-1
 # =============================================================================
 
 
-fn compare_vector(
+def compare_vector(
     label: String,
     our_vals: InlineArray[Float64, NV],
     mj_vals: InlineArray[Float64, NV],
@@ -169,7 +169,7 @@ fn compare_vector(
     return all_ok
 
 
-fn compare_scalar(
+def compare_scalar(
     label: String,
     our_val: Float64,
     mj_val: Float64,
@@ -218,7 +218,7 @@ fn compare_scalar(
 
 
 @no_inline
-fn compare_solver_forces(
+def compare_solver_forces(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
@@ -684,7 +684,7 @@ fn compare_solver_forces(
 # =============================================================================
 
 
-fn test_low_pose_static() raises:
+def test_low_pose_static() raises:
     """Low pose (rootz=-0.3), zero velocity."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
@@ -692,7 +692,7 @@ fn test_low_pose_static() raises:
     compare_solver_forces("Low pose static (rootz=-0.3)", qpos, qvel)
 
 
-fn test_low_pose_moving() raises:
+def test_low_pose_moving() raises:
     """Low pose with velocity — tests friction damping."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
@@ -703,7 +703,7 @@ fn test_low_pose_moving() raises:
     compare_solver_forces("Low pose moving", qpos, qvel)
 
 
-fn test_very_low_pose() raises:
+def test_very_low_pose() raises:
     """Very low pose (rootz=-0.45) — deeper penetration, larger forces."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45
@@ -711,7 +711,7 @@ fn test_very_low_pose() raises:
     compare_solver_forces("Very low pose (rootz=-0.45)", qpos, qvel)
 
 
-fn test_bent_legs() raises:
+def test_bent_legs() raises:
     """Bent legs — different contact geometry + joint limits active."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
@@ -723,5 +723,5 @@ fn test_bent_legs() raises:
     compare_solver_forces("Bent legs", qpos, qvel)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -14,7 +14,7 @@ from .flags import ROM_2K, ROM_4K, ROM_F8, ROM_F6
 
 
 @always_inline
-fn rom_read(
+def rom_read(
     state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -43,7 +43,7 @@ fn rom_read(
 
 
 @always_inline
-fn rom_write(
+def rom_write(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -79,7 +79,7 @@ fn rom_write(
 
 
 @always_inline
-fn rom_read_triggers_bankswitch(
+def rom_read_triggers_bankswitch(
     mut state: AtariState,
     rom_size: Int,
     addr: UInt16,
@@ -110,7 +110,7 @@ fn rom_read_triggers_bankswitch(
             state.current_bank = 3
 
 
-fn detect_rom_format(
+def detect_rom_format(
     rom: UnsafePointer[UInt8, ImmutAnyOrigin], rom_size: Int
 ) -> UInt8:
     """Auto-detect ROM format from size."""
@@ -126,7 +126,7 @@ fn detect_rom_format(
         return ROM_4K  # Fallback
 
 
-fn init_bank(mut state: AtariState, rom_size: Int):
+def init_bank(mut state: AtariState, rom_size: Int):
     """Initialize bank to the correct starting bank for the ROM format."""
     if rom_size <= 4096:
         state.current_bank = 0

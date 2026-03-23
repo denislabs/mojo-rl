@@ -75,17 +75,19 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     comptime _TANH_SP_OFFSET: Int = Self.in_dim + Self.out_dim + 2
     comptime _LN_OUT_OFFSET: Int = Self.in_dim + 2 * Self.out_dim + 2
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -97,7 +99,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -157,7 +159,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 var normalized = (z_val - mean) * inv_std
                 # Cache normalized for LN backward
                 cache[batch, Self._LN_NORM_OFFSET + j] = normalized
-                var gamma = rebind[Scalar[dtype]](params[Self._GAMMA_OFFSET + j])
+                var gamma = rebind[Scalar[dtype]](
+                    params[Self._GAMMA_OFFSET + j]
+                )
                 var beta = rebind[Scalar[dtype]](params[Self._BETA_OFFSET + j])
                 var ln_out = gamma * normalized + beta
                 # Store LN output for Mish backward
@@ -184,7 +188,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 output[batch, j] = Scalar[dtype](x_val * tanh_sp)
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -251,7 +255,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -290,9 +294,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     )
                 )
                 var x_val = Float64(
-                    rebind[Scalar[dtype]](
-                        cache[batch, Self._LN_OUT_OFFSET + j]
-                    )
+                    rebind[Scalar[dtype]](cache[batch, Self._LN_OUT_OFFSET + j])
                 )
                 var sigmoid_x = 1.0 / (1.0 + exp(-x_val))
                 var d_mish = tanh_sp + x_val * sigmoid_x * (
@@ -320,9 +322,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     grads[Self._GAMMA_OFFSET + j] + dy * normalized
                 )
                 # dbeta += dy
-                grads[Self._BETA_OFFSET + j] = (
-                    grads[Self._BETA_OFFSET + j] + dy
-                )
+                grads[Self._BETA_OFFSET + j] = grads[Self._BETA_OFFSET + j] + dy
 
             # Compute d_linear_out from LayerNorm backward
             var sum_dy_gamma: grad_output.element_type = 0.0
@@ -332,9 +332,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 var dy = grad_output[batch, j]
                 var normalized = cache[batch, Self._LN_NORM_OFFSET + j]
                 sum_dy_gamma = sum_dy_gamma + dy * gamma
-                sum_dy_gamma_norm = (
-                    sum_dy_gamma_norm + dy * gamma * normalized
-                )
+                sum_dy_gamma_norm = sum_dy_gamma_norm + dy * gamma * normalized
 
             # Now compute d_linear_out and use it for Linear backward inline
             # d_linear_out[j] = inv_std * (dy*gamma - sum_dy_gamma/n
@@ -389,7 +387,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn forward_linear_kernel_impl[
+    def forward_linear_kernel_impl[
         BATCH: Int,
     ](
         linear_out: LayoutTensor[
@@ -420,14 +418,14 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var W_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc: linear_out.element_type = 0
@@ -463,7 +461,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn forward_linear_kernel_impl_no_cache[
+    def forward_linear_kernel_impl_no_cache[
         BATCH: Int,
     ](
         linear_out: LayoutTensor[
@@ -491,14 +489,14 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var W_shared = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var acc: linear_out.element_type = 0
@@ -532,7 +530,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn _bias_add_kernel[
+    def _bias_add_kernel[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -549,9 +547,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         if idx >= BATCH * Self.OUT_DIM:
             return
         var col = idx % Self.OUT_DIM
-        output[idx // Self.OUT_DIM, col] = output[idx // Self.OUT_DIM, col] + b[
-            col
-        ]
+        output[idx // Self.OUT_DIM, col] = (
+            output[idx // Self.OUT_DIM, col] + b[col]
+        )
 
     # ─── MMA / 2x2 matmul kernels (dispatched inside GPU wrapper) ──────
     # Grid: ((OUT_DIM + 31) // 32, (BATCH + 31) // 32)
@@ -559,7 +557,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn _linear_kernel_no_cache[
+    def _linear_kernel_no_cache[
         BATCH: Int,
     ](
         linear_out: LayoutTensor[
@@ -705,15 +703,15 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 var a_r1 = (tid + 256) // SK
                 var a_c1 = (tid + 256) % SK
                 if block_row + a_r0 < BATCH and k_off + a_c0 < Self.IN_DIM:
-                    a_smem[a_r0, a_c0] = input[
-                        block_row + a_r0, k_off + a_c0
-                    ]
+                    a_smem[a_r0, a_c0] = input[block_row + a_r0, k_off + a_c0]
                 else:
                     a_smem[a_r0, a_c0] = 0
-                if a_r1 < BT and block_row + a_r1 < BATCH and k_off + a_c1 < Self.IN_DIM:
-                    a_smem[a_r1, a_c1] = input[
-                        block_row + a_r1, k_off + a_c1
-                    ]
+                if (
+                    a_r1 < BT
+                    and block_row + a_r1 < BATCH
+                    and k_off + a_c1 < Self.IN_DIM
+                ):
+                    a_smem[a_r1, a_c1] = input[block_row + a_r1, k_off + a_c1]
                 elif a_r1 < BT:
                     a_smem[a_r1, a_c1] = 0
                 # Load B tile
@@ -721,29 +719,28 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 var b_c0 = tid % BT
                 var b_r1 = (tid + 256) // BT
                 var b_c1 = (tid + 256) % BT
-                if k_off + b_r0 < Self.IN_DIM and block_col + b_c0 < Self.OUT_DIM:
-                    b_smem[b_r0, b_c0] = W[
-                        k_off + b_r0, block_col + b_c0
-                    ]
+                if (
+                    k_off + b_r0 < Self.IN_DIM
+                    and block_col + b_c0 < Self.OUT_DIM
+                ):
+                    b_smem[b_r0, b_c0] = W[k_off + b_r0, block_col + b_c0]
                 else:
                     b_smem[b_r0, b_c0] = 0
-                if b_r1 < SK and k_off + b_r1 < Self.IN_DIM and block_col + b_c1 < Self.OUT_DIM:
-                    b_smem[b_r1, b_c1] = W[
-                        k_off + b_r1, block_col + b_c1
-                    ]
+                if (
+                    b_r1 < SK
+                    and k_off + b_r1 < Self.IN_DIM
+                    and block_col + b_c1 < Self.OUT_DIM
+                ):
+                    b_smem[b_r1, b_c1] = W[k_off + b_r1, block_col + b_c1]
                 elif b_r1 < SK:
                     b_smem[b_r1, b_c1] = 0
                 barrier()
                 for k in range(SK):
                     if k_off + k < Self.IN_DIM:
                         var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
-                        var a1 = rebind[Scalar[dtype]](
-                            a_smem[sub_r * 2 + 1, k]
-                        )
+                        var a1 = rebind[Scalar[dtype]](a_smem[sub_r * 2 + 1, k])
                         var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
-                        var b1 = rebind[Scalar[dtype]](
-                            b_smem[k, sub_c * 2 + 1]
-                        )
+                        var b1 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2 + 1])
                         acc00 += a0 * b0
                         acc01 += a0 * b1
                         acc10 += a1 * b0
@@ -759,9 +756,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     b[gc0 + 1]
                 )
             if gr0 + 1 < BATCH and gc0 < Self.OUT_DIM:
-                linear_out[gr0 + 1, gc0] = acc10 + rebind[Scalar[dtype]](
-                    b[gc0]
-                )
+                linear_out[gr0 + 1, gc0] = acc10 + rebind[Scalar[dtype]](b[gc0])
             if gr0 + 1 < BATCH and gc0 + 1 < Self.OUT_DIM:
                 linear_out[gr0 + 1, gc0 + 1] = acc11 + rebind[Scalar[dtype]](
                     b[gc0 + 1]
@@ -769,7 +764,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn _linear_kernel_with_cache[
+    def _linear_kernel_with_cache[
         BATCH: Int,
     ](
         linear_out: LayoutTensor[
@@ -788,7 +783,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        """Dispatching matmul with input caching: MMA on NVIDIA, 2x2 on Apple."""
+        """Dispatching matmul with input caching: MMA on NVIDIA, 2x2 on Apple.
+        """
         comptime if is_nvidia_gpu():
             # ── MMA tensor core path with input caching ──
             var tid = Int(thread_idx.x)
@@ -941,44 +937,43 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 var a_r1 = (tid + 256) // SK
                 var a_c1 = (tid + 256) % SK
                 if block_row + a_r0 < BATCH and k_off + a_c0 < Self.IN_DIM:
-                    a_smem[a_r0, a_c0] = input[
-                        block_row + a_r0, k_off + a_c0
-                    ]
+                    a_smem[a_r0, a_c0] = input[block_row + a_r0, k_off + a_c0]
                 else:
                     a_smem[a_r0, a_c0] = 0
-                if a_r1 < BT and block_row + a_r1 < BATCH and k_off + a_c1 < Self.IN_DIM:
-                    a_smem[a_r1, a_c1] = input[
-                        block_row + a_r1, k_off + a_c1
-                    ]
+                if (
+                    a_r1 < BT
+                    and block_row + a_r1 < BATCH
+                    and k_off + a_c1 < Self.IN_DIM
+                ):
+                    a_smem[a_r1, a_c1] = input[block_row + a_r1, k_off + a_c1]
                 elif a_r1 < BT:
                     a_smem[a_r1, a_c1] = 0
                 var b_r0 = tid // BT
                 var b_c0 = tid % BT
                 var b_r1 = (tid + 256) // BT
                 var b_c1 = (tid + 256) % BT
-                if k_off + b_r0 < Self.IN_DIM and block_col + b_c0 < Self.OUT_DIM:
-                    b_smem[b_r0, b_c0] = W[
-                        k_off + b_r0, block_col + b_c0
-                    ]
+                if (
+                    k_off + b_r0 < Self.IN_DIM
+                    and block_col + b_c0 < Self.OUT_DIM
+                ):
+                    b_smem[b_r0, b_c0] = W[k_off + b_r0, block_col + b_c0]
                 else:
                     b_smem[b_r0, b_c0] = 0
-                if b_r1 < SK and k_off + b_r1 < Self.IN_DIM and block_col + b_c1 < Self.OUT_DIM:
-                    b_smem[b_r1, b_c1] = W[
-                        k_off + b_r1, block_col + b_c1
-                    ]
+                if (
+                    b_r1 < SK
+                    and k_off + b_r1 < Self.IN_DIM
+                    and block_col + b_c1 < Self.OUT_DIM
+                ):
+                    b_smem[b_r1, b_c1] = W[k_off + b_r1, block_col + b_c1]
                 elif b_r1 < SK:
                     b_smem[b_r1, b_c1] = 0
                 barrier()
                 for k in range(SK):
                     if k_off + k < Self.IN_DIM:
                         var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
-                        var a1 = rebind[Scalar[dtype]](
-                            a_smem[sub_r * 2 + 1, k]
-                        )
+                        var a1 = rebind[Scalar[dtype]](a_smem[sub_r * 2 + 1, k])
                         var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
-                        var b1 = rebind[Scalar[dtype]](
-                            b_smem[k, sub_c * 2 + 1]
-                        )
+                        var b1 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2 + 1])
                         acc00 += a0 * b0
                         acc01 += a0 * b1
                         acc10 += a1 * b0
@@ -994,9 +989,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     b[gc0 + 1]
                 )
             if gr0 + 1 < BATCH and gc0 < Self.OUT_DIM:
-                linear_out[gr0 + 1, gc0] = acc10 + rebind[Scalar[dtype]](
-                    b[gc0]
-                )
+                linear_out[gr0 + 1, gc0] = acc10 + rebind[Scalar[dtype]](b[gc0])
             if gr0 + 1 < BATCH and gc0 + 1 < Self.OUT_DIM:
                 linear_out[gr0 + 1, gc0 + 1] = acc11 + rebind[Scalar[dtype]](
                     b[gc0 + 1]
@@ -1004,7 +997,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn forward_ln_mish_kernel_impl[
+    def forward_ln_mish_kernel_impl[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -1119,9 +1112,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             cache[batch_idx, Self._TANH_SP_OFFSET + j] = rebind[
                 cache.element_type
             ](tanh_sp)
-            output[batch_idx, j] = rebind[output.element_type](
-                x_val * tanh_sp
-            )
+            output[batch_idx, j] = rebind[output.element_type](x_val * tanh_sp)
 
         # Store scalars (only thread 0)
         if tid == 0:
@@ -1130,7 +1121,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn forward_ln_mish_kernel_impl_no_cache[
+    def forward_ln_mish_kernel_impl_no_cache[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -1237,13 +1228,11 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             var exp_sp = exp(sp)
             var exp_neg_sp = exp(-sp)
             var tanh_sp = (exp_sp - exp_neg_sp) / (exp_sp + exp_neg_sp)
-            output[batch_idx, j] = rebind[output.element_type](
-                x_val * tanh_sp
-            )
+            output[batch_idx, j] = rebind[output.element_type](x_val * tanh_sp)
 
     @always_inline
     @staticmethod
-    fn backward_mish_ln_kernel_impl[
+    def backward_mish_ln_kernel_impl[
         BATCH: Int,
     ](
         d_linear_out: LayoutTensor[
@@ -1295,29 +1284,26 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 cache[batch_idx, Self._LN_OUT_OFFSET + j]
             )
             var sigmoid_x: Scalar[DType.float32] = 1.0 / (1.0 + exp(-x_val))
-            var d_mish = tanh_sp + x_val * sigmoid_x * (
-                1.0 - tanh_sp * tanh_sp
-            )
-            var dy = rebind[Scalar[DType.float32]](
-                grad_output[batch_idx, j]
-            )
+            var d_mish = tanh_sp + x_val * sigmoid_x * (1.0 - tanh_sp * tanh_sp)
+            var dy = rebind[Scalar[DType.float32]](grad_output[batch_idx, j])
             var d_ln_out = dy * d_mish  # gradient w.r.t. LN output
 
             # Accumulate dgamma, dbeta
             var normalized = cache[batch_idx, Self._LN_NORM_OFFSET + j]
-            dgamma[j] = dgamma[j] + rebind[dgamma.element_type](
-                d_ln_out
-            ) * normalized
+            dgamma[j] = (
+                dgamma[j] + rebind[dgamma.element_type](d_ln_out) * normalized
+            )
             dbeta[j] = dbeta[j] + rebind[dbeta.element_type](d_ln_out)
 
             # LN backward intermediate sums
             var g = gamma[j]
-            sum_dy_gamma = sum_dy_gamma + rebind[d_linear_out.element_type](
-                d_ln_out
-            ) * g
-            sum_dy_gamma_norm = sum_dy_gamma_norm + rebind[
-                d_linear_out.element_type
-            ](d_ln_out) * g * normalized
+            sum_dy_gamma = (
+                sum_dy_gamma + rebind[d_linear_out.element_type](d_ln_out) * g
+            )
+            sum_dy_gamma_norm = (
+                sum_dy_gamma_norm
+                + rebind[d_linear_out.element_type](d_ln_out) * g * normalized
+            )
 
         # Second pass: compute d_linear_out
         for j in range(Self.OUT_DIM):
@@ -1329,12 +1315,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 cache[batch_idx, Self._LN_OUT_OFFSET + j]
             )
             var sigmoid_x: Scalar[DType.float32] = 1.0 / (1.0 + exp(-x_val))
-            var d_mish = tanh_sp + x_val * sigmoid_x * (
-                1.0 - tanh_sp * tanh_sp
-            )
-            var dy = rebind[Scalar[DType.float32]](
-                grad_output[batch_idx, j]
-            )
+            var d_mish = tanh_sp + x_val * sigmoid_x * (1.0 - tanh_sp * tanh_sp)
+            var dy = rebind[Scalar[DType.float32]](grad_output[batch_idx, j])
             var d_ln_out = rebind[d_linear_out.element_type](dy * d_mish)
 
             var g = gamma[j]
@@ -1349,7 +1331,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn _backward_dx_kernel[
+    def _backward_dx_kernel[
         BATCH: Int,
     ](
         grad_input: LayoutTensor[
@@ -1462,11 +1444,15 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             var block_row = Int(block_idx.y) * BT
             var block_col = Int(block_idx.x) * BT
             var a_smem = LayoutTensor[
-                dtype, Layout.row_major(BT, SK), MutAnyOrigin,
+                dtype,
+                Layout.row_major(BT, SK),
+                MutAnyOrigin,
                 address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
-                dtype, Layout.row_major(SK, BT), MutAnyOrigin,
+                dtype,
+                Layout.row_major(SK, BT),
+                MutAnyOrigin,
                 address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var acc00: Scalar[dtype] = 0
@@ -1480,22 +1466,37 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 var a_r1 = (tid + 256) // SK
                 var a_c1 = (tid + 256) % SK
                 if block_row + a_r0 < BATCH and k_off + a_c0 < Self.OUT_DIM:
-                    a_smem[a_r0, a_c0] = d_linear_out[block_row + a_r0, k_off + a_c0]
+                    a_smem[a_r0, a_c0] = d_linear_out[
+                        block_row + a_r0, k_off + a_c0
+                    ]
                 else:
                     a_smem[a_r0, a_c0] = 0
-                if a_r1 < BT and block_row + a_r1 < BATCH and k_off + a_c1 < Self.OUT_DIM:
-                    a_smem[a_r1, a_c1] = d_linear_out[block_row + a_r1, k_off + a_c1]
+                if (
+                    a_r1 < BT
+                    and block_row + a_r1 < BATCH
+                    and k_off + a_c1 < Self.OUT_DIM
+                ):
+                    a_smem[a_r1, a_c1] = d_linear_out[
+                        block_row + a_r1, k_off + a_c1
+                    ]
                 elif a_r1 < BT:
                     a_smem[a_r1, a_c1] = 0
                 var b_r0 = tid // BT
                 var b_c0 = tid % BT
                 var b_r1 = (tid + 256) // BT
                 var b_c1 = (tid + 256) % BT
-                if k_off + b_r0 < Self.OUT_DIM and block_col + b_c0 < Self.IN_DIM:
+                if (
+                    k_off + b_r0 < Self.OUT_DIM
+                    and block_col + b_c0 < Self.IN_DIM
+                ):
                     b_smem[b_r0, b_c0] = W[block_col + b_c0, k_off + b_r0]
                 else:
                     b_smem[b_r0, b_c0] = 0
-                if b_r1 < SK and k_off + b_r1 < Self.OUT_DIM and block_col + b_c1 < Self.IN_DIM:
+                if (
+                    b_r1 < SK
+                    and k_off + b_r1 < Self.OUT_DIM
+                    and block_col + b_c1 < Self.IN_DIM
+                ):
                     b_smem[b_r1, b_c1] = W[block_col + b_c1, k_off + b_r1]
                 elif b_r1 < SK:
                     b_smem[b_r1, b_c1] = 0
@@ -1524,7 +1525,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn _backward_dW_kernel[
+    def _backward_dW_kernel[
         BATCH: Int,
     ](
         dW: LayoutTensor[
@@ -1635,11 +1636,15 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             var block_row = Int(block_idx.y) * BT
             var block_col = Int(block_idx.x) * BT
             var a_smem = LayoutTensor[
-                dtype, Layout.row_major(BT, SK), MutAnyOrigin,
+                dtype,
+                Layout.row_major(BT, SK),
+                MutAnyOrigin,
                 address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var b_smem = LayoutTensor[
-                dtype, Layout.row_major(SK, BT), MutAnyOrigin,
+                dtype,
+                Layout.row_major(SK, BT),
+                MutAnyOrigin,
                 address_space=AddressSpace.SHARED,
             ].stack_allocation()
             var acc00: Scalar[dtype] = 0
@@ -1653,11 +1658,19 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 var a_r1 = (tid + 256) // SK
                 var a_c1 = (tid + 256) % SK
                 if k_off + a_c0 < BATCH and block_row + a_r0 < Self.IN_DIM:
-                    a_smem[a_r0, a_c0] = cache[k_off + a_c0, Self._INPUT_OFFSET + block_row + a_r0]
+                    a_smem[a_r0, a_c0] = cache[
+                        k_off + a_c0, Self._INPUT_OFFSET + block_row + a_r0
+                    ]
                 else:
                     a_smem[a_r0, a_c0] = 0
-                if a_r1 < BT and k_off + a_c1 < BATCH and block_row + a_r1 < Self.IN_DIM:
-                    a_smem[a_r1, a_c1] = cache[k_off + a_c1, Self._INPUT_OFFSET + block_row + a_r1]
+                if (
+                    a_r1 < BT
+                    and k_off + a_c1 < BATCH
+                    and block_row + a_r1 < Self.IN_DIM
+                ):
+                    a_smem[a_r1, a_c1] = cache[
+                        k_off + a_c1, Self._INPUT_OFFSET + block_row + a_r1
+                    ]
                 elif a_r1 < BT:
                     a_smem[a_r1, a_c1] = 0
                 var b_r0 = tid // BT
@@ -1665,11 +1678,19 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 var b_r1 = (tid + 256) // BT
                 var b_c1 = (tid + 256) % BT
                 if k_off + b_r0 < BATCH and block_col + b_c0 < Self.OUT_DIM:
-                    b_smem[b_r0, b_c0] = d_linear_out[k_off + b_r0, block_col + b_c0]
+                    b_smem[b_r0, b_c0] = d_linear_out[
+                        k_off + b_r0, block_col + b_c0
+                    ]
                 else:
                     b_smem[b_r0, b_c0] = 0
-                if b_r1 < SK and k_off + b_r1 < BATCH and block_col + b_c1 < Self.OUT_DIM:
-                    b_smem[b_r1, b_c1] = d_linear_out[k_off + b_r1, block_col + b_c1]
+                if (
+                    b_r1 < SK
+                    and k_off + b_r1 < BATCH
+                    and block_col + b_c1 < Self.OUT_DIM
+                ):
+                    b_smem[b_r1, b_c1] = d_linear_out[
+                        k_off + b_r1, block_col + b_c1
+                    ]
                 elif b_r1 < SK:
                     b_smem[b_r1, b_c1] = 0
                 barrier()
@@ -1697,7 +1718,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn backward_linear_fused_kernel_impl[
+    def backward_linear_fused_kernel_impl[
         BATCH: Int,
     ](
         grad_input: LayoutTensor[
@@ -1740,14 +1761,14 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var shared_B = LayoutTensor[
             dtype,
             Layout.row_major(TILE, TILE),
             MutAnyOrigin,
-            address_space = AddressSpace.SHARED,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         if block_y < dx_grid_y:
@@ -1846,7 +1867,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1900,7 +1921,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             comptime cache_blocks = (cache_elems + TPB - 1) // TPB
 
             @always_inline
-            fn cache_input_wrapper(
+            def cache_input_wrapper(
                 cache: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.CACHE_SIZE),
@@ -1927,17 +1948,13 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             )
 
             # Vendor BLAS matmul
-            max_matmul[target="gpu"](
-                linear_out_mut, input_immut, W, ctx
-            )
+            max_matmul[target="gpu"](linear_out_mut, input_immut, W, ctx)
 
             # Bias add
-            comptime bias_blocks = (
-                BATCH * Self.OUT_DIM + TPB - 1
-            ) // TPB
+            comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
             @always_inline
-            fn bias_cache_wrapper(
+            def bias_cache_wrapper(
                 output: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.OUT_DIM),
@@ -1960,7 +1977,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
             @always_inline
-            fn linear_wrapper(
+            def linear_wrapper(
                 linear_out: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.OUT_DIM),
@@ -2001,7 +2018,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         # Kernel 2: Fused LayerNorm + Mish
         @always_inline
-        fn ln_mish_wrapper(
+        def ln_mish_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -2035,7 +2052,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -2081,16 +2098,12 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # Kernel 1: Linear matmul (vendor BLAS on NVIDIA, MMA/2x2 fallback)
         comptime if has_nvidia_gpu_accelerator():
             # Use vendor BLAS (cuBLAS) — host-side API, not a GPU kernel
-            max_matmul[target="gpu"](
-                linear_out_mut, input_immut, W, ctx
-            )
+            max_matmul[target="gpu"](linear_out_mut, input_immut, W, ctx)
             # Bias add (separate small kernel)
-            comptime bias_blocks = (
-                BATCH * Self.OUT_DIM + TPB - 1
-            ) // TPB
+            comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
             @always_inline
-            fn bias_nc_wrapper(
+            def bias_nc_wrapper(
                 output: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.OUT_DIM),
@@ -2113,7 +2126,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
             @always_inline
-            fn linear_nc_wrapper(
+            def linear_nc_wrapper(
                 linear_out: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.OUT_DIM),
@@ -2133,9 +2146,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
                 ],
             ):
-                Self._linear_kernel_no_cache[BATCH](
-                    linear_out, input, W, b
-                )
+                Self._linear_kernel_no_cache[BATCH](linear_out, input, W, b)
 
             ctx.enqueue_function[linear_nc_wrapper, linear_nc_wrapper](
                 linear_out_mut,
@@ -2148,7 +2159,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         # Kernel 2: Fused LN + Mish (no cache)
         @always_inline
-        fn ln_mish_wrapper(
+        def ln_mish_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -2178,7 +2189,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -2224,15 +2235,11 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # On NVIDIA, the stream caller (MPPI) will need to synchronize streams
         # before and after this call anyway, so this is functionally correct.
         comptime if has_nvidia_gpu_accelerator():
-            max_matmul[target="gpu"](
-                linear_out_mut, input_immut, W, ctx
-            )
-            comptime bias_blocks = (
-                BATCH * Self.OUT_DIM + TPB - 1
-            ) // TPB
+            max_matmul[target="gpu"](linear_out_mut, input_immut, W, ctx)
+            comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
             @always_inline
-            fn bias_stream_wrapper(
+            def bias_stream_wrapper(
                 output: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.OUT_DIM),
@@ -2255,7 +2262,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
             @always_inline
-            fn linear_stream_wrapper(
+            def linear_stream_wrapper(
                 linear_out: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.OUT_DIM),
@@ -2275,9 +2282,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
                 ],
             ):
-                Self._linear_kernel_no_cache[BATCH](
-                    linear_out, input, W, b
-                )
+                Self._linear_kernel_no_cache[BATCH](linear_out, input, W, b)
 
             var compiled_linear = ctx.compile_function[
                 linear_stream_wrapper, linear_stream_wrapper
@@ -2293,7 +2298,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             )
 
         @always_inline
-        fn ln_mish_wrapper(
+        def ln_mish_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -2312,7 +2317,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 output, linear_out, gamma, beta, eps
             )
 
-        var compiled_ln_mish = ctx.compile_function[ln_mish_wrapper, ln_mish_wrapper]()
+        var compiled_ln_mish = ctx.compile_function[
+            ln_mish_wrapper, ln_mish_wrapper
+        ]()
         stream.enqueue_function(
             compiled_ln_mish,
             output,
@@ -2325,7 +2332,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -2378,7 +2385,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         # Kernel 1: Fused Mish + LN backward (per-sample)
         @always_inline
-        fn mish_ln_backward_wrapper(
+        def mish_ln_backward_wrapper(
             d_linear_out: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -2432,7 +2439,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
             @always_inline
-            fn dx_wrapper(
+            def dx_wrapper(
                 grad_input: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
                 ],
@@ -2447,9 +2454,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     ImmutAnyOrigin,
                 ],
             ):
-                Self._backward_dx_kernel[BATCH](
-                    grad_input, d_linear_out, W
-                )
+                Self._backward_dx_kernel[BATCH](grad_input, d_linear_out, W)
 
             ctx.enqueue_function[dx_wrapper, dx_wrapper](
                 grad_input,
@@ -2464,7 +2469,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         comptime dW_grid_y = (Self.IN_DIM + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
         @always_inline
-        fn dW_wrapper(
+        def dW_wrapper(
             dW: LayoutTensor[
                 dtype,
                 Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
@@ -2493,7 +2498,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         comptime db_blocks = (Self.OUT_DIM + TPB - 1) // TPB
 
         @always_inline
-        fn db_wrapper(
+        def db_wrapper(
             db: LayoutTensor[
                 dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
             ],

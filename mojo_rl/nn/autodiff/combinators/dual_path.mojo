@@ -26,7 +26,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 
 # GPU matmul requires 16-byte alignment = 4 float32 elements
 @always_inline
-fn _align4(x: Int) -> Int:
+def _align4(x: Int) -> Int:
     """Round up to next multiple of 4 for GPU alignment."""
     return (x + 3) & ~3
 
@@ -63,7 +63,9 @@ struct DualPath[A: Model, B: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -87,7 +89,7 @@ struct DualPath[A: Model, B: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -144,16 +146,14 @@ struct DualPath[A: Model, B: Model](Model):
             for i in range(A_OUT):
                 output.ptr[b * Self.OUT_DIM + i] = a_buf[b * A_OUT + i]
             for i in range(B_OUT):
-                output.ptr[b * Self.OUT_DIM + A_OUT + i] = b_buf[
-                    b * B_OUT + i
-                ]
+                output.ptr[b * Self.OUT_DIM + A_OUT + i] = b_buf[b * B_OUT + i]
 
     # =========================================================================
     # CPU Forward (no cache)
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -198,16 +198,14 @@ struct DualPath[A: Model, B: Model](Model):
             for i in range(A_OUT):
                 output.ptr[b * Self.OUT_DIM + i] = a_buf[b * A_OUT + i]
             for i in range(B_OUT):
-                output.ptr[b * Self.OUT_DIM + A_OUT + i] = b_buf[
-                    b * B_OUT + i
-                ]
+                output.ptr[b * Self.OUT_DIM + A_OUT + i] = b_buf[b * B_OUT + i]
 
     # =========================================================================
     # CPU Backward
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -238,9 +236,7 @@ struct DualPath[A: Model, B: Model](Model):
         )
         for b in range(BATCH):
             for i in range(A_OUT):
-                ga_buf[b * A_OUT + i] = grad_output.ptr[
-                    b * Self.OUT_DIM + i
-                ]
+                ga_buf[b * A_OUT + i] = grad_output.ptr[b * Self.OUT_DIM + i]
             for i in range(B_OUT):
                 gb_buf[b * B_OUT + i] = grad_output.ptr[
                     b * Self.OUT_DIM + A_OUT + i
@@ -291,7 +287,7 @@ struct DualPath[A: Model, B: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -344,7 +340,9 @@ struct DualPath[A: Model, B: Model](Model):
         ](params.ptr)
         var pb = LayoutTensor[
             dtype, Layout.row_major(Self.B.PARAM_SIZE), MutAnyOrigin
-        ](params.ptr + Self._B_PARAM_OFF)  # Aligned!
+        ](
+            params.ptr + Self._B_PARAM_OFF
+        )  # Aligned!
 
         var ca = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.A.CACHE_SIZE), MutAnyOrigin
@@ -371,7 +369,7 @@ struct DualPath[A: Model, B: Model](Model):
         var grid_x = (TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn concat_k(
+        def concat_k(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -397,7 +395,7 @@ struct DualPath[A: Model, B: Model](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -417,7 +415,7 @@ struct DualPath[A: Model, B: Model](Model):
         pass
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -440,7 +438,7 @@ struct DualPath[A: Model, B: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -500,7 +498,7 @@ struct DualPath[A: Model, B: Model](Model):
         var a_grid = (A_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn extract_a(
+        def extract_a(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, A_OUT), MutAnyOrigin
             ],
@@ -524,7 +522,7 @@ struct DualPath[A: Model, B: Model](Model):
         var b_grid = (B_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn extract_b(
+        def extract_b(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, B_OUT), MutAnyOrigin
             ],
@@ -563,13 +561,17 @@ struct DualPath[A: Model, B: Model](Model):
         ](gi_b_ptr)
         var pb = LayoutTensor[
             dtype, Layout.row_major(Self.B.PARAM_SIZE), MutAnyOrigin
-        ](params.ptr + Self._B_PARAM_OFF)  # Aligned!
+        ](
+            params.ptr + Self._B_PARAM_OFF
+        )  # Aligned!
         var cb = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr + BATCH * Self.A.CACHE_SIZE)
         var grads_b = LayoutTensor[
             dtype, Layout.row_major(Self.B.PARAM_SIZE), MutAnyOrigin
-        ](grads.ptr + Self._B_PARAM_OFF)  # Aligned!
+        ](
+            grads.ptr + Self._B_PARAM_OFF
+        )  # Aligned!
         Self.B.backward_gpu[BATCH](
             ctx, gi_b_rb, gb_t, pb, cb, grads_b, child_ws
         )
@@ -582,7 +584,7 @@ struct DualPath[A: Model, B: Model](Model):
         var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn add_gi(
+        def add_gi(
             a: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],

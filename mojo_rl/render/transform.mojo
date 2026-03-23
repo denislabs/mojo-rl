@@ -15,34 +15,34 @@ struct Vec2(ImplicitlyCopyable, Movable):
     var x: Float64
     var y: Float64
 
-    fn __add__(self, other: Self) -> Self:
+    def __add__(self, other: Self) -> Self:
         return Self(self.x + other.x, self.y + other.y)
 
-    fn __sub__(self, other: Self) -> Self:
+    def __sub__(self, other: Self) -> Self:
         return Self(self.x - other.x, self.y - other.y)
 
-    fn __mul__(self, scalar: Float64) -> Self:
+    def __mul__(self, scalar: Float64) -> Self:
         return Self(self.x * scalar, self.y * scalar)
 
-    fn __neg__(self) -> Self:
+    def __neg__(self) -> Self:
         return Self(-self.x, -self.y)
 
-    fn length(self) -> Float64:
+    def length(self) -> Float64:
         return (self.x * self.x + self.y * self.y) ** 0.5
 
-    fn normalized(self) -> Self:
+    def normalized(self) -> Self:
         var len = self.length()
         if len > 0:
             return Self(self.x / len, self.y / len)
         return Self(0, 0)
 
-    fn rotated(self, angle: Float64) -> Self:
+    def rotated(self, angle: Float64) -> Self:
         """Rotate vector by angle (radians)."""
         var c = cos(angle)
         var s = sin(angle)
         return Self(self.x * c - self.y * s, self.x * s + self.y * c)
 
-    fn to_point(self) -> SDL_Point:
+    def to_point(self) -> SDL_Point:
         """Convert to SDL_Point (integer coordinates)."""
         return SDL_Point(Int32(self.x), Int32(self.y))
 
@@ -61,7 +61,7 @@ struct Transform2D(ImplicitlyCopyable, Movable):
     var scale_x: Float64
     var scale_y: Float64
 
-    fn __init__(out self, x: Float64, y: Float64, angle: Float64 = 0.0):
+    def __init__(out self, x: Float64, y: Float64, angle: Float64 = 0.0):
         """Create transform with uniform scale of 1.0."""
         self.x = x
         self.y = y
@@ -69,7 +69,7 @@ struct Transform2D(ImplicitlyCopyable, Movable):
         self.scale_x = 1.0
         self.scale_y = 1.0
 
-    fn __init__(
+    def __init__(
         out self,
         x: Float64,
         y: Float64,
@@ -83,7 +83,7 @@ struct Transform2D(ImplicitlyCopyable, Movable):
         self.scale_x = scale
         self.scale_y = scale
 
-    fn apply(self, point: Vec2) -> Vec2:
+    def apply(self, point: Vec2) -> Vec2:
         """Transform a local point to world coordinates.
 
         Args:
@@ -102,7 +102,7 @@ struct Transform2D(ImplicitlyCopyable, Movable):
             self.y + ry * self.scale_y,
         )
 
-    fn apply_direction(self, direction: Vec2) -> Vec2:
+    def apply_direction(self, direction: Vec2) -> Vec2:
         """Transform a direction vector (no translation).
 
         Args:
@@ -117,11 +117,11 @@ struct Transform2D(ImplicitlyCopyable, Movable):
         var ry = direction.x * s + direction.y * c
         return Vec2(rx * self.scale_x, ry * self.scale_y)
 
-    fn position(self) -> Vec2:
+    def position(self) -> Vec2:
         """Get position as Vec2."""
         return Vec2(self.x, self.y)
 
-    fn with_offset(self, offset: Vec2) -> Self:
+    def with_offset(self, offset: Vec2) -> Self:
         """Return new transform with position offset in world space."""
         return Self(
             self.x + offset.x,
@@ -131,7 +131,7 @@ struct Transform2D(ImplicitlyCopyable, Movable):
             self.scale_y,
         )
 
-    fn with_local_offset(self, offset: Vec2) -> Self:
+    def with_local_offset(self, offset: Vec2) -> Self:
         """Return new transform with position offset in local space."""
         var world_offset = self.apply_direction(offset)
         return Self(
@@ -158,7 +158,7 @@ struct Camera(ImplicitlyCopyable, Movable):
     var screen_height: Int
     var flip_y: Bool  # If True, Y increases upward in world space
 
-    fn __init__(
+    def __init__(
         out self,
         x: Float64,
         y: Float64,
@@ -184,7 +184,7 @@ struct Camera(ImplicitlyCopyable, Movable):
         self.screen_height = screen_height
         self.flip_y = flip_y
 
-    fn world_to_screen(self, world_x: Float64, world_y: Float64) -> SDL_Point:
+    def world_to_screen(self, world_x: Float64, world_y: Float64) -> SDL_Point:
         """Convert world coordinates to screen coordinates.
 
         Args:
@@ -209,7 +209,7 @@ struct Camera(ImplicitlyCopyable, Movable):
             ) / 2.0
         return SDL_Point(Int32(sx), Int32(sy))
 
-    fn world_to_screen_vec(self, world: Vec2) -> Vec2:
+    def world_to_screen_vec(self, world: Vec2) -> Vec2:
         """Convert world coordinates to screen coordinates as Vec2.
 
         Args:
@@ -233,7 +233,7 @@ struct Camera(ImplicitlyCopyable, Movable):
             ) / 2.0
         return Vec2(sx, sy)
 
-    fn screen_to_world(self, screen_x: Int, screen_y: Int) -> Vec2:
+    def screen_to_world(self, screen_x: Int, screen_y: Int) -> Vec2:
         """Convert screen coordinates to world coordinates.
 
         Args:
@@ -257,7 +257,7 @@ struct Camera(ImplicitlyCopyable, Movable):
             ) / self.zoom + self.y
         return Vec2(wx, wy)
 
-    fn world_to_screen_scale(self, world_size: Float64) -> Int:
+    def world_to_screen_scale(self, world_size: Float64) -> Int:
         """Convert a world-space size to screen pixels.
 
         Args:
@@ -268,7 +268,7 @@ struct Camera(ImplicitlyCopyable, Movable):
         """
         return Int(world_size * self.zoom)
 
-    fn follow(mut self, target: Vec2, smoothing: Float64 = 1.0):
+    def follow(mut self, target: Vec2, smoothing: Float64 = 1.0):
         """Move camera toward target position.
 
         Args:
@@ -278,12 +278,12 @@ struct Camera(ImplicitlyCopyable, Movable):
         self.x += (target.x - self.x) * smoothing
         self.y += (target.y - self.y) * smoothing
 
-    fn set_position(mut self, x: Float64, y: Float64):
+    def set_position(mut self, x: Float64, y: Float64):
         """Set camera position directly."""
         self.x = x
         self.y = y
 
-    fn get_viewport_bounds(self) -> Tuple[Vec2, Vec2]:
+    def get_viewport_bounds(self) -> Tuple[Vec2, Vec2]:
         """Get the world-space bounds of the visible viewport.
 
         Returns:
@@ -302,7 +302,7 @@ struct Camera(ImplicitlyCopyable, Movable):
                 Vec2(self.x + half_w, self.y + half_h),
             )
 
-    fn is_visible(self, world_pos: Vec2, margin: Float64 = 0.0) -> Bool:
+    def is_visible(self, world_pos: Vec2, margin: Float64 = 0.0) -> Bool:
         """Check if a world position is visible in the viewport.
 
         Args:
@@ -326,7 +326,7 @@ struct Camera(ImplicitlyCopyable, Movable):
 # Factory functions for common camera setups
 
 
-fn make_centered_camera(
+def make_centered_camera(
     screen_width: Int,
     screen_height: Int,
     zoom: Float64,
@@ -346,7 +346,7 @@ fn make_centered_camera(
     return Camera(0.0, 0.0, zoom, screen_width, screen_height, flip_y)
 
 
-fn make_offset_camera(
+def make_offset_camera(
     screen_width: Int,
     screen_height: Int,
     zoom: Float64,
@@ -386,7 +386,7 @@ struct RotatingCamera(ImplicitlyCopyable, Movable):
     var screen_center_x: Float64  # Screen X where camera center is drawn
     var screen_center_y: Float64  # Screen Y where camera center is drawn
 
-    fn __init__(
+    def __init__(
         out self,
         x: Float64,
         y: Float64,
@@ -424,7 +424,7 @@ struct RotatingCamera(ImplicitlyCopyable, Movable):
             >= 0 else Float64(screen_height) / 2.0
         )
 
-    fn world_to_screen(self, world_x: Float64, world_y: Float64) -> SDL_Point:
+    def world_to_screen(self, world_x: Float64, world_y: Float64) -> SDL_Point:
         """Convert world coordinates to screen coordinates with rotation.
 
         Args:
@@ -450,7 +450,7 @@ struct RotatingCamera(ImplicitlyCopyable, Movable):
 
         return SDL_Point(Int32(screen_x), Int32(screen_y))
 
-    fn world_to_screen_vec(self, world: Vec2) -> Vec2:
+    def world_to_screen_vec(self, world: Vec2) -> Vec2:
         """Convert world coordinates to screen coordinates as Vec2.
 
         Args:
@@ -470,7 +470,7 @@ struct RotatingCamera(ImplicitlyCopyable, Movable):
             self.screen_center_y - ry * self.zoom,
         )
 
-    fn world_to_screen_scale(self, world_size: Float64) -> Int:
+    def world_to_screen_scale(self, world_size: Float64) -> Int:
         """Convert a world-space size to screen pixels.
 
         Args:
@@ -481,16 +481,16 @@ struct RotatingCamera(ImplicitlyCopyable, Movable):
         """
         return Int(world_size * self.zoom)
 
-    fn set_position(mut self, x: Float64, y: Float64):
+    def set_position(mut self, x: Float64, y: Float64):
         """Set camera position directly."""
         self.x = x
         self.y = y
 
-    fn set_angle(mut self, angle: Float64):
+    def set_angle(mut self, angle: Float64):
         """Set camera rotation angle."""
         self.angle = angle
 
-    fn follow(
+    def follow(
         mut self,
         target_x: Float64,
         target_y: Float64,
@@ -510,7 +510,7 @@ struct RotatingCamera(ImplicitlyCopyable, Movable):
         self.angle += (target_angle - self.angle) * smoothing
 
 
-fn make_rotating_camera(
+def make_rotating_camera(
     screen_width: Int,
     screen_height: Int,
     zoom: Float64,

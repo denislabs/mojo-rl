@@ -17,7 +17,7 @@ from mojo_rl.render.sdl.sdl_scancode import Scancode
 from mojo_rl.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
 
 
-fn main() raises:
+def main() raises:
     print("=== Playable TicTacToe ===")
     print("Controls:")
     print("  Mouse click to place mark at clicked cell")
@@ -31,13 +31,13 @@ fn main() raises:
     var renderer = Renderer2D(width=400, height=450, fps=30, title="TicTacToe")
 
     # Colors
-    var bg_color = SDL_Color(r=0x1a, g=0x5c, b=0x2a, a=0xff)
-    var grid_color = SDL_Color(r=0xff, g=0xff, b=0xff, a=0xff)
-    var x_color = SDL_Color(r=0xff, g=0x44, b=0x44, a=0xff)
-    var o_color = SDL_Color(r=0x44, g=0x88, b=0xff, a=0xff)
-    var cursor_color = SDL_Color(r=0xff, g=0xff, b=0x00, a=0xff)
-    var text_color = SDL_Color(r=0xff, g=0xff, b=0xff, a=0xff)
-    var win_color = SDL_Color(r=0xff, g=0xdd, b=0x00, a=0xff)
+    var bg_color = SDL_Color(r=0x1A, g=0x5C, b=0x2A, a=0xFF)
+    var grid_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+    var x_color = SDL_Color(r=0xFF, g=0x44, b=0x44, a=0xFF)
+    var o_color = SDL_Color(r=0x44, g=0x88, b=0xFF, a=0xFF)
+    var cursor_color = SDL_Color(r=0xFF, g=0xFF, b=0x00, a=0xFF)
+    var text_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+    var win_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
 
     # Cursor position (row, col) -- row 0 = top visually
     var cursor_row = 1
@@ -145,7 +145,9 @@ fn main() raises:
                     cursor_col += 1
 
             # Space/Return to place mark at cursor
-            if (cur_space and not prev_space) or (cur_return and not prev_return):
+            if (cur_space and not prev_space) or (
+                cur_return and not prev_return
+            ):
                 # Convert visual (row, col) to env cell index (row-major, row 0 = top)
                 action = cursor_row * 3 + cursor_col
 
@@ -186,9 +188,13 @@ fn main() raises:
         # Draw grid lines (2 horizontal + 2 vertical)
         for i in range(1, 3):
             # Horizontal lines
-            renderer.draw_line(0, i * cell_size, board_size, i * cell_size, grid_color, 3)
+            renderer.draw_line(
+                0, i * cell_size, board_size, i * cell_size, grid_color, 3
+            )
             # Vertical lines
-            renderer.draw_line(i * cell_size, 0, i * cell_size, board_size, grid_color, 3)
+            renderer.draw_line(
+                i * cell_size, 0, i * cell_size, board_size, grid_color, 3
+            )
 
         # Draw marks and cursor highlight
         for row in range(3):
@@ -220,25 +226,39 @@ fn main() raises:
                     renderer.draw_line(x1, y0, x0, y1, x_color, 4)
                 elif cell_val == 2:
                     # Draw O: circle
-                    renderer.draw_circle(cx, cy, cell_size // 2 - 20, o_color, filled=False)
+                    renderer.draw_circle(
+                        cx, cy, cell_size // 2 - 20, o_color, filled=False
+                    )
 
         # Status bar at bottom (y=400..450)
-        renderer.draw_rect(0, board_size, 400, 50, SDL_Color(r=0x11, g=0x33, b=0x11, a=0xff))
+        renderer.draw_rect(
+            0, board_size, 400, 50, SDL_Color(r=0x11, g=0x33, b=0x11, a=0xFF)
+        )
 
         var game_result = env.game_result()
         if game_result == 0:
             # Ongoing
             var player = env.current_player()
             if player == 0:
-                renderer.draw_text("Player X's turn", 140, board_size + 20, text_color)
+                renderer.draw_text(
+                    "Player X's turn", 140, board_size + 20, text_color
+                )
             else:
-                renderer.draw_text("Player O's turn", 140, board_size + 20, text_color)
+                renderer.draw_text(
+                    "Player O's turn", 140, board_size + 20, text_color
+                )
         elif game_result == 1:
-            renderer.draw_text("X Wins!  (R to reset)", 120, board_size + 20, win_color)
+            renderer.draw_text(
+                "X Wins!  (R to reset)", 120, board_size + 20, win_color
+            )
         elif game_result == 2:
-            renderer.draw_text("O Wins!  (R to reset)", 120, board_size + 20, win_color)
+            renderer.draw_text(
+                "O Wins!  (R to reset)", 120, board_size + 20, win_color
+            )
         else:
-            renderer.draw_text("Draw!  (R to reset)", 130, board_size + 20, win_color)
+            renderer.draw_text(
+                "Draw!  (R to reset)", 130, board_size + 20, win_color
+            )
 
         renderer.flip()
 

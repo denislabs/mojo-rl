@@ -32,20 +32,20 @@ Usage:
         var buffer: GPUReplayBuffer[...]
         var scratch: DeviceBuffer[dtype]
         ...
-        fn gpu_store[N](mut self, ctx, prev_obs, act, rew, obs, done): ...
-        fn gpu_buffer_is_ready(self) -> Bool: ...
+        def gpu_store[N](mut self, ctx, prev_obs, act, rew, obs, done): ...
+        def gpu_buffer_is_ready(self) -> Bool: ...
 
     # 2. Make your agent implement GPUOffPolicyAgent
     struct MyAgent[..., max_n_envs: Int = 64](OffPolicyAgent & GPUOffPolicyAgent):
         comptime MAX_N_ENVS: Int = max_n_envs
         comptime GPUStateType = MyGPUState[...]
         ...
-        fn make_gpu_state(self, ctx) raises -> MyGPUState[...]: ...
-        fn upload_to_gpu(self, mut gpu_state: MyGPUState[...], ctx) raises: ...
-        fn download_from_gpu(mut self, gpu_state: MyGPUState[...], ctx) raises: ...
-        fn select_actions_gpu[N](mut self, ctx, mut gpu_state, obs, act) raises: ...
-        fn do_gpu_train_step(mut self, ctx, mut gpu_state) raises: ...
-        fn soft_update_targets_gpu(mut self, ctx, mut gpu_state) raises: ...
+        def make_gpu_state(self, ctx) raises -> MyGPUState[...]: ...
+        def upload_to_gpu(self, mut gpu_state: MyGPUState[...], ctx) raises: ...
+        def download_from_gpu(mut self, gpu_state: MyGPUState[...], ctx) raises: ...
+        def select_actions_gpu[N](mut self, ctx, mut gpu_state, obs, act) raises: ...
+        def do_gpu_train_step(mut self, ctx, mut gpu_state) raises: ...
+        def soft_update_targets_gpu(mut self, ctx, mut gpu_state) raises: ...
 
     # 3. Train
     var metrics = run_offpolicy_continuous_train_gpu[MyEnv, MyAgent](
@@ -96,7 +96,7 @@ trait GPUOffPolicyState(ImplicitlyDestructible):
     GPUOffPolicyAgent and receives the state as a parameter.
     """
 
-    fn gpu_store[
+    def gpu_store[
         N_ENVS: Int
     ](
         mut self,
@@ -119,7 +119,7 @@ trait GPUOffPolicyState(ImplicitlyDestructible):
         """
         ...
 
-    fn gpu_buffer_is_ready(self) -> Bool:
+    def gpu_buffer_is_ready(self) -> Bool:
         """Return True if the GPU replay buffer has enough samples to train."""
         ...
 
@@ -160,20 +160,20 @@ trait GPUOffPolicyAgent:
     comptime GPUStateType: GPUOffPolicyState
     """Concrete GPU state type holding all device buffers for this algorithm."""
 
-    fn get_action_scale(self) -> Float64:
+    def get_action_scale(self) -> Float64:
         """Return action range bound [-scale, scale] for warmup random actions.
         """
         ...
 
-    fn get_total_steps(self) -> Int:
+    def get_total_steps(self) -> Int:
         """Return total env transitions collected so far."""
         ...
 
-    fn set_total_steps(mut self, steps: Int):
+    def set_total_steps(mut self, steps: Int):
         """Set total env transitions counter (for exploration RNG seeding)."""
         ...
 
-    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+    def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         """Allocate all GPU buffers for this agent (networks, replay, scratch).
 
         Called once at the start of GPU training. Does NOT upload CPU weights —
@@ -187,7 +187,7 @@ trait GPUOffPolicyAgent:
         """
         ...
 
-    fn upload_to_gpu(
+    def upload_to_gpu(
         self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -200,7 +200,7 @@ trait GPUOffPolicyAgent:
         """
         ...
 
-    fn download_from_gpu(
+    def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -213,7 +213,7 @@ trait GPUOffPolicyAgent:
         """
         ...
 
-    fn select_actions_gpu[
+    def select_actions_gpu[
         N_ENVS: Int
     ](
         mut self,
@@ -236,7 +236,7 @@ trait GPUOffPolicyAgent:
         """
         ...
 
-    fn do_gpu_train_step(
+    def do_gpu_train_step(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -252,7 +252,7 @@ trait GPUOffPolicyAgent:
         """
         ...
 
-    fn soft_update_targets_gpu(
+    def soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -265,7 +265,7 @@ trait GPUOffPolicyAgent:
         """
         ...
 
-    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+    def decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
         """Decay exploration rate based on training progress.
 
         Called once per collection step in GPU training loops.
@@ -283,7 +283,7 @@ trait GPUOffPolicyAgent:
 # =============================================================================
 
 
-fn run_offpolicy_continuous_train_gpu[
+def run_offpolicy_continuous_train_gpu[
     E: GPUContinuousEnv,
     A: GPUOffPolicyAgent & Checkpointable,
     PROFILE: Int = 0,
@@ -760,7 +760,7 @@ fn run_offpolicy_continuous_train_gpu[
 # =============================================================================
 
 
-fn run_offpolicy_discrete_train_gpu[
+def run_offpolicy_discrete_train_gpu[
     E: GPUDiscreteEnv,
     A: GPUOffPolicyAgent & Checkpointable,
     PROFILE: Int = 0,

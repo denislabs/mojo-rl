@@ -57,7 +57,7 @@ comptime QVEL_REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -263,7 +263,7 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_freefall() raises:
+def test_freefall() raises:
     """Free fall from height — no contacts expected.
     Pure gravity, tests basic RK4 integration accuracy."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -273,7 +273,7 @@ fn test_freefall() raises:
     compare_step("Free fall (no contacts)", qpos, qvel, actions)
 
 
-fn test_standing_with_action() raises:
+def test_standing_with_action() raises:
     """High up with moderate actions — tests force integration."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 1.5
@@ -288,7 +288,7 @@ fn test_standing_with_action() raises:
     compare_step("Actions (no contacts)", qpos, qvel, actions)
 
 
-fn test_moving_with_action() raises:
+def test_moving_with_action() raises:
     """Moving with velocity + actions, no contacts.
 
     RK4 evaluates dynamics at 4 intermediate states, so nonzero velocities
@@ -313,7 +313,7 @@ fn test_moving_with_action() raises:
     compare_step("Moving with actions (no contacts)", qpos, qvel, actions)
 
 
-fn test_fast_spinning() raises:
+def test_fast_spinning() raises:
     """High angular velocities — maximizes Coriolis/gyroscopic effects.
 
     RK4 should capture these nonlinear effects more accurately than Euler
@@ -343,7 +343,7 @@ fn test_fast_spinning() raises:
     compare_step("Fast spinning (high angular vel)", qpos, qvel, actions)
 
 
-fn test_moving_10_steps() raises:
+def test_moving_10_steps() raises:
     """Moving with velocity 10 steps — multi-stage effects accumulate."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 1.5
@@ -368,7 +368,7 @@ fn test_moving_10_steps() raises:
 # =============================================================================
 
 
-fn test_ground_contact() raises:
+def test_ground_contact() raises:
     """Robot low — feet in ground contact.
     body_pos rootz=0.7, so qpos[1]=-0.3 → world rootz=0.4 → contacts.
     Tests RK4 + constraint solver interaction."""
@@ -385,5 +385,5 @@ fn test_ground_contact() raises:
     compare_step("Ground contact (with actions)", qpos, qvel, actions)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

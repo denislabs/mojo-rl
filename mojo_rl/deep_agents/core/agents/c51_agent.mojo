@@ -164,7 +164,7 @@ struct C51CPUState[
     var buffer: HeapReplayBuffer[Self.buffer_capacity, Self.obs_dim, 1, dtype]
     var bins: InlineArray[Float32, Self.num_atoms]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.online = NetworkState[Self.QModel, Self.QOpt]()
         self.online.initialize[Xavier[]]()
         self.target = NetworkState[Self.QModel, Self.QOpt]()
@@ -178,7 +178,7 @@ struct C51CPUState[
             Float32(Self.v_min), Float32(Self.v_max)
         )
 
-    fn store[
+    def store[
         d: DType
     ](
         mut self,
@@ -209,7 +209,7 @@ struct C51CPUState[
             done,
         )
 
-    fn is_ready(self) -> Bool:
+    def is_ready(self) -> Bool:
         return self.buffer.is_ready[Self.batch_size]()
 
 
@@ -249,44 +249,44 @@ struct C51GPUState[
     var buffer: GPUReplayBuffer[Self.buffer_capacity, Self.obs_dim]
 
     # Inference buffers (max_n_envs sized)
-    var env_raw_buf: DeviceBuffer[dtype]    # [max_n_envs * RAW_OUT]
-    var env_q_buf: DeviceBuffer[dtype]      # [max_n_envs * num_actions]
-    var inf_ws: DeviceBuffer[dtype]         # [max(1, max_n_envs * WS_PER_SAMPLE)]
+    var env_raw_buf: DeviceBuffer[dtype]  # [max_n_envs * RAW_OUT]
+    var env_q_buf: DeviceBuffer[dtype]  # [max_n_envs * num_actions]
+    var inf_ws: DeviceBuffer[dtype]  # [max(1, max_n_envs * WS_PER_SAMPLE)]
 
     # Training scratch -- replay sample output
-    var s_obs: DeviceBuffer[dtype]          # [batch_size * obs_dim]
-    var s_act: DeviceBuffer[dtype]          # [batch_size]
-    var s_rew: DeviceBuffer[dtype]          # [batch_size]
-    var s_nobs: DeviceBuffer[dtype]         # [batch_size * obs_dim]
-    var s_done: DeviceBuffer[dtype]         # [batch_size]
-    var s_idx: DeviceBuffer[DType.int32]    # [batch_size]
+    var s_obs: DeviceBuffer[dtype]  # [batch_size * obs_dim]
+    var s_act: DeviceBuffer[dtype]  # [batch_size]
+    var s_rew: DeviceBuffer[dtype]  # [batch_size]
+    var s_nobs: DeviceBuffer[dtype]  # [batch_size * obs_dim]
+    var s_done: DeviceBuffer[dtype]  # [batch_size]
+    var s_idx: DeviceBuffer[DType.int32]  # [batch_size]
 
     # Training scratch -- raw forward output (logits)
-    var q_raw: DeviceBuffer[dtype]          # [batch_size * RAW_OUT]
-    var next_q_raw: DeviceBuffer[dtype]     # [batch_size * RAW_OUT]
+    var q_raw: DeviceBuffer[dtype]  # [batch_size * RAW_OUT]
+    var next_q_raw: DeviceBuffer[dtype]  # [batch_size * RAW_OUT]
     var online_next_q_raw: DeviceBuffer[dtype]  # [batch_size * RAW_OUT]
 
     # Training scratch -- expected Q-values (for action selection)
-    var expected_q: DeviceBuffer[dtype]     # [batch_size * num_actions]
+    var expected_q: DeviceBuffer[dtype]  # [batch_size * num_actions]
     var next_expected_q: DeviceBuffer[dtype]  # [batch_size * num_actions]
 
     # C51-specific: target distribution + bins
-    var target_dist: DeviceBuffer[dtype]    # [batch_size * num_atoms]
-    var bins_buf: DeviceBuffer[dtype]       # [num_atoms]
+    var target_dist: DeviceBuffer[dtype]  # [batch_size * num_atoms]
+    var bins_buf: DeviceBuffer[dtype]  # [num_atoms]
 
     # Training scratch -- cache, gradients
-    var cache: DeviceBuffer[dtype]          # [batch_size * CACHE_SIZE]
-    var grad_raw: DeviceBuffer[dtype]       # [batch_size * RAW_OUT]
-    var grad_input: DeviceBuffer[dtype]     # [batch_size * obs_dim]
-    var train_ws: DeviceBuffer[dtype]       # [max(1, batch_size * WS_PER_SAMPLE)]
+    var cache: DeviceBuffer[dtype]  # [batch_size * CACHE_SIZE]
+    var grad_raw: DeviceBuffer[dtype]  # [batch_size * RAW_OUT]
+    var grad_input: DeviceBuffer[dtype]  # [batch_size * obs_dim]
+    var train_ws: DeviceBuffer[dtype]  # [max(1, batch_size * WS_PER_SAMPLE)]
 
     # Diagnostic host buffers
-    var diag_raw_host: HostBuffer[dtype]    # [batch_size * RAW_OUT]
-    var diag_act_host: HostBuffer[dtype]    # [batch_size]
-    var diag_rew_host: HostBuffer[dtype]    # [batch_size]
-    var diag_done_host: HostBuffer[dtype]   # [batch_size]
+    var diag_raw_host: HostBuffer[dtype]  # [batch_size * RAW_OUT]
+    var diag_act_host: HostBuffer[dtype]  # [batch_size]
+    var diag_rew_host: HostBuffer[dtype]  # [batch_size]
+    var diag_done_host: HostBuffer[dtype]  # [batch_size]
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers."""
         self.online = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
         self.target = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
@@ -360,7 +360,7 @@ struct C51GPUState[
 
     # GPUOffPolicyState required methods
 
-    fn gpu_store[
+    def gpu_store[
         N_ENVS: Int
     ](
         mut self,
@@ -375,7 +375,7 @@ struct C51GPUState[
             ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
         )
 
-    fn gpu_buffer_is_ready(self) -> Bool:
+    def gpu_buffer_is_ready(self) -> Bool:
         return self.buffer.is_ready[Self.batch_size]()
 
 
@@ -384,7 +384,7 @@ struct C51GPUState[
 # =============================================================================
 
 
-fn _expected_q_from_logits[
+def _expected_q_from_logits[
     BATCH: Int,
     ACTIONS: Int,
     NUM_ATOMS: Int,
@@ -497,7 +497,7 @@ struct GenericC51Agent[
     var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
-    fn __init__(
+    def __init__(
         out self,
         gamma: Float64 = 0.99,
         tau: Float64 = 1.0,
@@ -526,14 +526,14 @@ struct GenericC51Agent[
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
-    fn make_cpu_state(self) -> Self.CPUStateType:
+    def make_cpu_state(self) -> Self.CPUStateType:
         return Self.CPUStateType()
 
     # =========================================================================
     # Action selection (CPU)
     # =========================================================================
 
-    fn select_action[
+    def select_action[
         d: DType
     ](mut self, mut cpu_state: Self.CPUStateType, obs: List[Scalar[d]]) -> Int:
         # Epsilon-greedy
@@ -567,7 +567,7 @@ struct GenericC51Agent[
                 best = a
         return best
 
-    fn store_transition[
+    def store_transition[
         d: DType
     ](
         mut self,
@@ -584,8 +584,11 @@ struct GenericC51Agent[
     # CPU Training Step (C51-specific)
     # =========================================================================
 
-    fn do_cpu_train_step(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
-        """C51 training step: distributional Bellman projection + cross-entropy loss."""
+    def do_cpu_train_step(
+        mut self, mut cpu_state: Self.CPUStateType
+    ) -> Float64:
+        """C51 training step: distributional Bellman projection + cross-entropy loss.
+        """
         if not cpu_state.buffer.is_ready[Self.BATCH]():
             return 0.0
 
@@ -649,9 +652,7 @@ struct GenericC51Agent[
         var online_next_raw_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.RAW_OUT), MutAnyOrigin
         ](online_next_raw_arr.unsafe_ptr())
-        Self.QNet.forward[Self.BATCH](
-            next_obs_t, online_next_raw_t, p_online
-        )
+        Self.QNet.forward[Self.BATCH](next_obs_t, online_next_raw_t, p_online)
 
         # Compute expected Q from online_next for action selection (Double DQN)
         var online_next_q = InlineArray[
@@ -698,9 +699,10 @@ struct GenericC51Agent[
                 fill=Scalar[dtype](0.0)
             )
             for i in range(ATOMS):
-                target_probs[i] = exp(
-                    target_raw_arr[target_base + i] - target_max
-                ) / target_sum_exp
+                target_probs[i] = (
+                    exp(target_raw_arr[target_base + i] - target_max)
+                    / target_sum_exp
+                )
 
             # 3. Bellman projection: Tz_j = clip(r + gamma * z_j, v_min, v_max)
             var projected = InlineArray[Scalar[dtype], ATOMS](
@@ -754,9 +756,9 @@ struct GenericC51Agent[
             # Gradient: (softmax(logits) - projected_target) / BATCH
             for i in range(ATOMS):
                 var sm = exp(raw_arr[pred_base + i] - pred_max) / pred_sum_exp
-                grad_raw_arr[pred_base + i] = (
-                    sm - projected[i]
-                ) / Scalar[dtype](Self.BATCH)
+                grad_raw_arr[pred_base + i] = (sm - projected[i]) / Scalar[
+                    dtype
+                ](Self.BATCH)
 
         var loss = total_loss / Float64(Self.BATCH)
 
@@ -779,8 +781,7 @@ struct GenericC51Agent[
 
         # ---- Diagnostic logging ----
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 var step = self.train_step_count
@@ -854,18 +855,18 @@ struct GenericC51Agent[
                 cpu_state.target.soft_update_from(cpu_state.online, self.tau)
         return loss
 
-    fn decay_explore(mut self) -> None:
+    def decay_explore(mut self) -> None:
         self.epsilon *= self.epsilon_decay
         if self.epsilon < self.epsilon_min:
             self.epsilon = self.epsilon_min
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         return self.epsilon
 
-    fn random_action(self) -> Int:
+    def random_action(self) -> Int:
         return Int(random_float64() * Float64(Self.ACTIONS))
 
-    fn select_greedy_action(
+    def select_greedy_action(
         self, cpu_state: Self.CPUStateType, obs: List[Float64]
     ) -> Int:
         var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
@@ -898,7 +899,7 @@ struct GenericC51Agent[
     # Checkpointable
     # =========================================================================
 
-    fn save_checkpoint(self, path: String) raises -> None:
+    def save_checkpoint(self, path: String) raises -> None:
         comptime PARAM_SIZE = Self.QNet.PARAM_SIZE
         comptime STATE_SIZE = PARAM_SIZE * Self.Config.QOpt.STATE_PER_PARAM
 
@@ -919,7 +920,7 @@ struct GenericC51Agent[
 
         save_checkpoint_file(path, content)
 
-    fn load_checkpoint(mut self, path: String) raises -> None:
+    def load_checkpoint(mut self, path: String) raises -> None:
         var content = read_checkpoint_file(path)
         _ = parse_checkpoint_header(content)
 
@@ -956,7 +957,7 @@ struct GenericC51Agent[
     # CPU Convenience training
     # =========================================================================
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -1007,7 +1008,7 @@ struct GenericC51Agent[
     # Evaluation
     # =========================================================================
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -1034,19 +1035,19 @@ struct GenericC51Agent[
     # GPUOffPolicyAgent trait conformance
     # =========================================================================
 
-    fn get_action_scale(self) -> Float64:
+    def get_action_scale(self) -> Float64:
         return 1.0
 
-    fn get_total_steps(self) -> Int:
+    def get_total_steps(self) -> Int:
         return self.train_step_count
 
-    fn set_total_steps(mut self, steps: Int):
+    def set_total_steps(mut self, steps: Int):
         self.train_step_count = steps
 
-    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+    def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         return Self.GPUStateType(ctx)
 
-    fn upload_to_gpu(
+    def upload_to_gpu(
         self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1059,7 +1060,7 @@ struct GenericC51Agent[
             bins_host[i] = Scalar[dtype](self.state.bins[i])
         ctx.enqueue_copy(gpu_state.bins_buf, bins_host)
 
-    fn download_from_gpu(
+    def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1067,7 +1068,7 @@ struct GenericC51Agent[
         gpu_state.online.download_to(self.state.online, ctx)
         gpu_state.target.download_to(self.state.target, ctx)
 
-    fn select_actions_gpu[
+    def select_actions_gpu[
         N_ENVS: Int
     ](
         mut self,
@@ -1103,7 +1104,7 @@ struct GenericC51Agent[
         )
 
         @always_inline
-        fn c51_select_kernel(
+        def c51_select_kernel(
             eps: Scalar[dtype],
             raw: LayoutTensor[
                 dtype, Layout.row_major(N_ENVS, Self.RAW_OUT), MutAnyOrigin
@@ -1137,9 +1138,10 @@ struct GenericC51Agent[
                     )
                 var expected: Scalar[dtype] = 0.0
                 for i in range(Self.NUM_ATOMS):
-                    var prob = exp(
-                        rebind[Scalar[dtype]](raw[b, base + i]) - max_val
-                    ) / sum_exp
+                    var prob = (
+                        exp(rebind[Scalar[dtype]](raw[b, base + i]) - max_val)
+                        / sum_exp
+                    )
                     expected += prob * rebind[Scalar[dtype]](bins[i])
                 q_out[b, a] = expected
 
@@ -1181,12 +1183,13 @@ struct GenericC51Agent[
             block_dim=(TPB,),
         )
 
-    fn do_gpu_train_step(
+    def do_gpu_train_step(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        """C51 GPU training step: sample -> project distribution -> CE grad -> backward."""
+        """C51 GPU training step: sample -> project distribution -> CE grad -> backward.
+        """
         comptime BATCH = Self.BATCH
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
         comptime ATOMS = Self.NUM_ATOMS
@@ -1232,9 +1235,9 @@ struct GenericC51Agent[
         var next_eq_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
         ](gpu_state.next_expected_q.unsafe_ptr())
-        var bins_t = LayoutTensor[
-            dtype, Layout.row_major(ATOMS), MutAnyOrigin
-        ](gpu_state.bins_buf.unsafe_ptr())
+        var bins_t = LayoutTensor[dtype, Layout.row_major(ATOMS), MutAnyOrigin](
+            gpu_state.bins_buf.unsafe_ptr()
+        )
         var grad_raw_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin
         ](gpu_state.grad_raw.unsafe_ptr())
@@ -1250,28 +1253,39 @@ struct GenericC51Agent[
 
         # ---- Phase 2: Online forward with cache ----
         Self.QNet.forward_gpu_with_cache[BATCH](
-            ctx, obs_t, q_raw_t, p_online, cache_t, gpu_state.train_ws,
+            ctx,
+            obs_t,
+            q_raw_t,
+            p_online,
+            cache_t,
+            gpu_state.train_ws,
         )
 
         # ---- Phase 3: Target forward on next_obs ----
         Self.QNet.forward_gpu[BATCH](
-            ctx, next_obs_t, next_q_raw_t, p_target, gpu_state.train_ws,
+            ctx,
+            next_obs_t,
+            next_q_raw_t,
+            p_target,
+            gpu_state.train_ws,
         )
 
         # ---- Phase 3b: Online forward on next_obs (Double DQN) ----
         Self.QNet.forward_gpu[BATCH](
-            ctx, next_obs_t, online_next_q_raw_t, p_online, gpu_state.train_ws,
+            ctx,
+            next_obs_t,
+            online_next_q_raw_t,
+            p_online,
+            gpu_state.train_ws,
         )
 
         # ---- Phase 4: Compute expected Q from online_next for action selection ----
         @always_inline
-        fn expected_q_kernel(
+        def expected_q_kernel(
             raw: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin
             ],
-            bins: LayoutTensor[
-                dtype, Layout.row_major(ATOMS), MutAnyOrigin
-            ],
+            bins: LayoutTensor[dtype, Layout.row_major(ATOMS), MutAnyOrigin],
             eq: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
             ],
@@ -1293,9 +1307,10 @@ struct GenericC51Agent[
                     )
                 var expected: Scalar[dtype] = 0.0
                 for i in range(ATOMS):
-                    var prob = exp(
-                        rebind[Scalar[dtype]](raw[b, base + i]) - max_val
-                    ) / sum_exp
+                    var prob = (
+                        exp(rebind[Scalar[dtype]](raw[b, base + i]) - max_val)
+                        / sum_exp
+                    )
                     expected += prob * rebind[Scalar[dtype]](bins[i])
                 eq[b, a] = expected
 
@@ -1316,7 +1331,7 @@ struct GenericC51Agent[
         )
 
         @always_inline
-        fn c51_project_grad_kernel(
+        def c51_project_grad_kernel(
             online_raw: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin
             ],
@@ -1326,18 +1341,10 @@ struct GenericC51Agent[
             next_eq: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.ACTIONS), MutAnyOrigin
             ],
-            bins: LayoutTensor[
-                dtype, Layout.row_major(ATOMS), MutAnyOrigin
-            ],
-            actions: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
-            ],
-            rewards: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
-            ],
-            dones: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
-            ],
+            bins: LayoutTensor[dtype, Layout.row_major(ATOMS), MutAnyOrigin],
+            actions: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+            dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             grad: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin
             ],
@@ -1384,9 +1391,12 @@ struct GenericC51Agent[
             var dm = Scalar[dtype](1.0) - rebind[Scalar[dtype]](dones[b])
 
             for j in range(ATOMS):
-                var t_prob = exp(
-                    rebind[Scalar[dtype]](target_raw[b, t_base + j]) - t_max
-                ) / t_sum_exp
+                var t_prob = (
+                    exp(
+                        rebind[Scalar[dtype]](target_raw[b, t_base + j]) - t_max
+                    )
+                    / t_sum_exp
+                )
                 var tz = r + gamma * rebind[Scalar[dtype]](bins[j]) * dm
                 # Clamp
                 if tz < vmin:
@@ -1418,16 +1428,15 @@ struct GenericC51Agent[
                     rebind[Scalar[dtype]](online_raw[b, p_base + i]) - p_max
                 )
             for i in range(ATOMS):
-                var sm = exp(
-                    rebind[Scalar[dtype]](online_raw[b, p_base + i]) - p_max
-                ) / p_sum_exp
-                grad[b, p_base + i] = (
-                    sm - projected[i]
-                ) / Scalar[dtype](BATCH)
+                var sm = (
+                    exp(
+                        rebind[Scalar[dtype]](online_raw[b, p_base + i]) - p_max
+                    )
+                    / p_sum_exp
+                )
+                grad[b, p_base + i] = (sm - projected[i]) / Scalar[dtype](BATCH)
 
-        ctx.enqueue_function[
-            c51_project_grad_kernel, c51_project_grad_kernel
-        ](
+        ctx.enqueue_function[c51_project_grad_kernel, c51_project_grad_kernel](
             q_raw_t,
             next_q_raw_t,
             next_eq_t,
@@ -1461,7 +1470,11 @@ struct GenericC51Agent[
         self.train_step_count += 1
 
         # ---- GPU Diagnostic logging ----
-        if self.logger and self.diag_every > 0 and self.train_step_count % self.diag_every == 0:
+        if (
+            self.logger
+            and self.diag_every > 0
+            and self.train_step_count % self.diag_every == 0
+        ):
             try:
                 # Copy raw logits and sample data to host
                 ctx.enqueue_copy(gpu_state.diag_raw_host, gpu_state.q_raw)
@@ -1478,18 +1491,19 @@ struct GenericC51Agent[
                 ](uninitialized=True)
                 for i in range(BATCH * Self.RAW_OUT):
                     raw_host_arr[i] = gpu_state.diag_raw_host[i]
-                var bins_host = InlineArray[
-                    Scalar[dtype], ATOMS
-                ](uninitialized=True)
+                var bins_host = InlineArray[Scalar[dtype], ATOMS](
+                    uninitialized=True
+                )
                 for i in range(ATOMS):
                     bins_host[i] = Scalar[dtype](
                         Self.Config.v_min
-                        + Float64(i) * (Self.Config.v_max - Self.Config.v_min)
+                        + Float64(i)
+                        * (Self.Config.v_max - Self.Config.v_min)
                         / Float64(ATOMS - 1)
                     )
-                var eq_host = InlineArray[
-                    Scalar[dtype], BATCH * Self.ACTIONS
-                ](uninitialized=True)
+                var eq_host = InlineArray[Scalar[dtype], BATCH * Self.ACTIONS](
+                    uninitialized=True
+                )
                 _expected_q_from_logits[
                     BATCH, Self.ACTIONS, ATOMS, Self.RAW_OUT
                 ](raw_host_arr, bins_host, eq_host)
@@ -1506,7 +1520,9 @@ struct GenericC51Agent[
                     if v > q_max:
                         q_max = v
                 self.logger[].log_scalar(
-                    "q_mean", q_sum / Float64(BATCH * Self.ACTIONS), step,
+                    "q_mean",
+                    q_sum / Float64(BATCH * Self.ACTIONS),
+                    step,
                 )
                 self.logger[].log_scalar("q_min", q_min, step)
                 self.logger[].log_scalar("q_max", q_max, step)
@@ -1525,10 +1541,14 @@ struct GenericC51Agent[
                     if r > rew_max:
                         rew_max = r
                 self.logger[].log_scalar(
-                    "done_fraction", done_count / Float64(BATCH), step,
+                    "done_fraction",
+                    done_count / Float64(BATCH),
+                    step,
                 )
                 self.logger[].log_scalar(
-                    "reward_mean", rew_sum / Float64(BATCH), step,
+                    "reward_mean",
+                    rew_sum / Float64(BATCH),
+                    step,
                 )
                 self.logger[].log_scalar("reward_min", rew_min, step)
                 self.logger[].log_scalar("reward_max", rew_max, step)
@@ -1540,9 +1560,7 @@ struct GenericC51Agent[
                     var pred_base = b * Self.RAW_OUT + action * ATOMS
                     var pred_max2 = Float64(gpu_state.diag_raw_host[pred_base])
                     for i in range(1, ATOMS):
-                        var v = Float64(
-                            gpu_state.diag_raw_host[pred_base + i]
-                        )
+                        var v = Float64(gpu_state.diag_raw_host[pred_base + i])
                         if v > pred_max2:
                             pred_max2 = v
                     var se2: Float64 = 0.0
@@ -1553,10 +1571,13 @@ struct GenericC51Agent[
                         )
                     var h: Float64 = 0.0
                     for i in range(ATOMS):
-                        var p = exp(
-                            Float64(gpu_state.diag_raw_host[pred_base + i])
-                            - pred_max2
-                        ) / se2
+                        var p = (
+                            exp(
+                                Float64(gpu_state.diag_raw_host[pred_base + i])
+                                - pred_max2
+                            )
+                            / se2
+                        )
                         if p > 1e-8:
                             h -= p * log(p)
                     entropy_sum += h
@@ -1568,7 +1589,7 @@ struct GenericC51Agent[
             except:
                 pass
 
-    fn soft_update_targets_gpu(
+    def soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -1582,7 +1603,7 @@ struct GenericC51Agent[
             )
             self._target_update_ctr = self.train_step_count
 
-    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+    def decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
         var duration = Float64(num_steps) * self.exploration_fraction
         var slope = (self.epsilon_min - 1.0) / duration
         self.epsilon = max(self.epsilon_min, slope * Float64(total_steps) + 1.0)
@@ -1591,7 +1612,7 @@ struct GenericC51Agent[
     # GPU Training convenience
     # =========================================================================
 
-    fn train_gpu[
+    def train_gpu[
         E: GPUDiscreteEnv,
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](

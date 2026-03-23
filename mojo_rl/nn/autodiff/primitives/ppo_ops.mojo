@@ -45,13 +45,13 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
     comptime CACHE_SIZE: Int = Self.num_actions + 1
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -59,7 +59,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -78,9 +78,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
         comptime N = Self.num_actions
         for b in range(BATCH):
             # Read action index
-            var action_idx = Int(
-                Float64(rebind[Scalar[dtype]](input[b, N]))
-            )
+            var action_idx = Int(Float64(rebind[Scalar[dtype]](input[b, N])))
 
             # Find max logit for numerical stability
             var max_logit = Float64(rebind[Scalar[dtype]](input[b, 0]))
@@ -108,7 +106,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
             output[b, 0] = Scalar[dtype](log(prob_a))
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -131,9 +129,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
         comptime N = Self.num_actions
         for b in range(BATCH):
             var g = Float64(rebind[Scalar[dtype]](grad_output[b, 0]))
-            var action_idx = Int(
-                Float64(rebind[Scalar[dtype]](cache[b, N]))
-            )
+            var action_idx = Int(Float64(rebind[Scalar[dtype]](cache[b, N])))
 
             for j in range(N):
                 var prob_j = Float64(rebind[Scalar[dtype]](cache[b, j]))
@@ -149,7 +145,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -193,7 +189,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -229,7 +225,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -253,7 +249,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
         var grid_x = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -275,7 +271,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -305,7 +301,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
         var grid_x = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -354,13 +350,13 @@ struct RatioOp[dim: Int = 1](DiffOp):
     comptime CACHE_SIZE: Int = Self.dim
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -368,7 +364,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -386,9 +382,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
     ):
         for b in range(BATCH):
             for i in range(Self.dim):
-                var log_prob = Float64(
-                    rebind[Scalar[dtype]](input[b, i])
-                )
+                var log_prob = Float64(rebind[Scalar[dtype]](input[b, i]))
                 var old_log_prob = Float64(
                     rebind[Scalar[dtype]](input[b, Self.dim + i])
                 )
@@ -397,7 +391,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
                 cache[b, i] = Scalar[dtype](ratio)
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -430,7 +424,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -456,7 +450,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -484,7 +478,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -509,7 +503,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -531,7 +525,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -562,7 +556,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -616,13 +610,13 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
     comptime LO: Float64 = 1.0 - Self.eps
     comptime HI: Float64 = 1.0 + Self.eps
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -630,7 +624,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -686,7 +680,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
                     cache[b, 0] = Scalar[dtype](0.0)
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -705,7 +699,8 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Backward: grad_ratio = grad_output * cached_multiplier, grad_adv = 0."""
+        """Backward: grad_ratio = grad_output * cached_multiplier, grad_adv = 0.
+        """
         for b in range(BATCH):
             var g = Float64(rebind[Scalar[dtype]](grad_output[b, 0]))
             var grad_mult = Float64(rebind[Scalar[dtype]](cache[b, 0]))
@@ -718,7 +713,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -770,7 +765,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -797,7 +792,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -821,7 +816,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
         var grid_x = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -843,7 +838,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -873,7 +868,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
         var grid_x = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],

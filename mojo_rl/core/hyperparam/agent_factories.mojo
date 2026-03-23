@@ -28,7 +28,7 @@ from mojo_rl.core.hyperparam.param_space import (
 # ============================================================================
 
 
-fn make_qlearning_agent(
+def make_qlearning_agent(
     num_states: Int,
     num_actions: Int,
     params: TabularHyperparams,
@@ -54,7 +54,7 @@ fn make_qlearning_agent(
     )
 
 
-fn make_sarsa_agent(
+def make_sarsa_agent(
     num_states: Int,
     num_actions: Int,
     params: TabularHyperparams,
@@ -80,7 +80,7 @@ fn make_sarsa_agent(
     )
 
 
-fn make_expected_sarsa_agent(
+def make_expected_sarsa_agent(
     num_states: Int,
     num_actions: Int,
     params: TabularHyperparams,
@@ -106,7 +106,7 @@ fn make_expected_sarsa_agent(
     )
 
 
-fn make_double_qlearning_agent(
+def make_double_qlearning_agent(
     num_states: Int,
     num_actions: Int,
     params: TabularHyperparams,
@@ -132,7 +132,7 @@ fn make_double_qlearning_agent(
     )
 
 
-fn make_monte_carlo_agent(
+def make_monte_carlo_agent(
     num_states: Int,
     num_actions: Int,
     params: TabularHyperparams,
@@ -162,7 +162,7 @@ fn make_monte_carlo_agent(
 # ============================================================================
 
 
-fn make_nstep_sarsa_agent(
+def make_nstep_sarsa_agent(
     num_states: Int,
     num_actions: Int,
     params: NStepHyperparams,
@@ -194,7 +194,7 @@ fn make_nstep_sarsa_agent(
 # ============================================================================
 
 
-fn make_sarsa_lambda_agent(
+def make_sarsa_lambda_agent(
     num_states: Int,
     num_actions: Int,
     params: LambdaHyperparams,
@@ -226,7 +226,7 @@ fn make_sarsa_lambda_agent(
 # ============================================================================
 
 
-fn make_dyna_q_agent(
+def make_dyna_q_agent(
     num_states: Int,
     num_actions: Int,
     params: ModelBasedHyperparams,

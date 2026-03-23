@@ -21,7 +21,7 @@ from std.sys import simd_width_of, align_of
 from std.math import tanh, exp, max
 
 
-fn gpu_add[
+def gpu_add[
     dtype: DType,
     layout: Layout,
     size: Int,
@@ -39,11 +39,11 @@ fn gpu_add[
         b: Second input tensor.
         ctx: GPU device context.
     """
-    comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
+    comptime simd_width = simd_width_of[dtype, target=get_gpu_target()]()
     comptime rank = 1
 
     @always_inline
-    fn add_kernel[
+    def add_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
     ](indices: IndexList[r]) capturing -> None:
         idx = indices[0]
@@ -54,7 +54,7 @@ fn gpu_add[
     elementwise[add_kernel, simd_width, target="gpu"](size, ctx)
 
 
-fn gpu_mul[
+def gpu_mul[
     dtype: DType,
     layout: Layout,
     size: Int,
@@ -72,10 +72,10 @@ fn gpu_mul[
         b: Second input tensor.
         ctx: GPU device context.
     """
-    comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
+    comptime simd_width = simd_width_of[dtype, target=get_gpu_target()]()
 
     @always_inline
-    fn mul_kernel[
+    def mul_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
     ](indices: IndexList[r]) capturing -> None:
         idx = indices[0]
@@ -86,7 +86,7 @@ fn gpu_mul[
     elementwise[mul_kernel, simd_width, target="gpu"](size, ctx)
 
 
-fn gpu_scale[
+def gpu_scale[
     dtype: DType,
     layout: Layout,
     size: Int,
@@ -104,10 +104,10 @@ fn gpu_scale[
         scale: Scalar multiplier.
         ctx: GPU device context.
     """
-    comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
+    comptime simd_width = simd_width_of[dtype, target=get_gpu_target()]()
 
     @always_inline
-    fn scale_kernel[
+    def scale_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
     ](indices: IndexList[r]) capturing -> None:
         idx = indices[0]
@@ -118,7 +118,7 @@ fn gpu_scale[
     elementwise[scale_kernel, simd_width, target="gpu"](size, ctx)
 
 
-fn gpu_relu[
+def gpu_relu[
     dtype: DType,
     layout: Layout,
     size: Int,
@@ -134,11 +134,11 @@ fn gpu_relu[
         input: Input tensor.
         ctx: GPU device context.
     """
-    comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
+    comptime simd_width = simd_width_of[dtype, target=get_gpu_target()]()
     comptime rank = 1
 
     @always_inline
-    fn relu_kernel[
+    def relu_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
     ](indices: IndexList[r]) capturing -> None:
         idx = indices[0]
@@ -151,7 +151,7 @@ fn gpu_relu[
     elementwise[relu_kernel, simd_width, target="gpu"](size, ctx)
 
 
-fn gpu_tanh[
+def gpu_tanh[
     dtype: DType where dtype.is_floating_point(),
     layout: Layout,
     size: Int,
@@ -167,10 +167,10 @@ fn gpu_tanh[
         input: Input tensor.
         ctx: GPU device context.
     """
-    comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
+    comptime simd_width = simd_width_of[dtype, target=get_gpu_target()]()
 
     @always_inline
-    fn tanh_kernel[
+    def tanh_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
     ](indices: IndexList[r]) capturing -> None:
         idx = indices[0]
@@ -182,7 +182,7 @@ fn gpu_tanh[
     elementwise[tanh_kernel, simd_width, target="gpu"](size, ctx)
 
 
-fn gpu_sigmoid[
+def gpu_sigmoid[
     dtype: DType where dtype.is_floating_point(),
     layout: Layout,
     size: Int,
@@ -198,10 +198,10 @@ fn gpu_sigmoid[
         input: Input tensor.
         ctx: GPU device context.
     """
-    comptime simd_width = simd_width_of[dtype, target = get_gpu_target()]()
+    comptime simd_width = simd_width_of[dtype, target=get_gpu_target()]()
 
     @always_inline
-    fn sigmoid_kernel[
+    def sigmoid_kernel[
         sw: Int, r: Int, alignment: Int = align_of[dtype]()
     ](indices: IndexList[r]) capturing -> None:
         idx = indices[0]

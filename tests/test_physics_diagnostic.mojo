@@ -14,12 +14,12 @@ from std.math import cos, sin, sqrt
 from std.random import seed, random_float64
 
 
-fn abs_f32(x: Float32) -> Float32:
+def abs_f32(x: Float32) -> Float32:
     """Absolute value for Float32."""
     return x if x >= 0 else -x
 
 
-fn abs_scalar(x: Scalar[DType.float32]) -> Scalar[DType.float32]:
+def abs_scalar(x: Scalar[DType.float32]) -> Scalar[DType.float32]:
     """Absolute value for Scalar."""
     return x if x >= 0 else -x
 
@@ -39,7 +39,7 @@ comptime NUM_STEPS: Int = 20
 comptime TOLERANCE: Float32 = 0.01  # 1% relative tolerance
 
 
-fn format_float(val: Float32, width: Int = 10) -> String:
+def format_float(val: Float32, width: Int = 10) -> String:
     """Format float to fixed width string."""
     var s = String(val)
     if len(s) > width:
@@ -47,13 +47,13 @@ fn format_float(val: Float32, width: Int = 10) -> String:
     return s
 
 
-fn print_header(title: String):
+def print_header(title: String):
     print("\n" + "=" * 70)
     print(title)
     print("=" * 70)
 
 
-fn print_comparison_row(
+def print_comparison_row(
     name: String,
     cpu: Float32,
     gpu_v1: Float32,
@@ -89,7 +89,7 @@ fn print_comparison_row(
 # =============================================================================
 
 
-fn create_gpu_state_v1(
+def create_gpu_state_v1(
     x_obs: Float32,
     y_obs: Float32,
     vx_obs: Float32,
@@ -112,7 +112,7 @@ fn create_gpu_state_v1(
     return state^
 
 
-fn create_gpu_state_v2(
+def create_gpu_state_v2(
     x_obs: Float32,
     y_obs: Float32,
     vx_obs: Float32,
@@ -141,7 +141,7 @@ fn create_gpu_state_v2(
     return state^
 
 
-fn run_gpu_v1_step(
+def run_gpu_v1_step(
     ctx: DeviceContext,
     initial_state: List[Scalar[DType.float32]],
     action: Int,
@@ -190,7 +190,7 @@ fn run_gpu_v1_step(
     return result^
 
 
-fn run_gpu_v2_step(
+def run_gpu_v2_step(
     ctx: DeviceContext,
     initial_state: List[Scalar[DType.float32]],
     action: Int,
@@ -244,7 +244,7 @@ fn run_gpu_v2_step(
 # =============================================================================
 
 
-fn test_freefall(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
+def test_freefall(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     """Test gravity integration without engines or contact.
 
     Returns max drift for (GPU v1, GPU v2).
@@ -363,7 +363,7 @@ fn test_freefall(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 # =============================================================================
 
 
-fn test_main_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
+def test_main_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     """Test main engine impulse application.
 
     Returns max drift for (GPU v1, GPU v2).
@@ -479,7 +479,7 @@ fn test_main_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 # =============================================================================
 
 
-fn test_side_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
+def test_side_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     """Test side engine angular impulse application.
 
     Returns max drift for (GPU v1, GPU v2).
@@ -591,7 +591,7 @@ fn test_side_engine(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 # =============================================================================
 
 
-fn test_contact(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
+def test_contact(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     """Test contact physics when landing.
 
     This is the most complex test - we run until contact and then
@@ -726,7 +726,7 @@ fn test_contact(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 # =============================================================================
 
 
-fn test_landing_sequence(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
+def test_landing_sequence(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
     """Test a realistic landing sequence with control inputs.
 
     This simulates what a trained policy would do.
@@ -908,7 +908,7 @@ fn test_landing_sequence(ctx: DeviceContext) raises -> Tuple[Float32, Float32]:
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     print("=" * 70)
     print("LUNAR LANDER CPU/GPU PHYSICS DIAGNOSTIC TEST")
     print("=" * 70)
@@ -935,7 +935,7 @@ fn main() raises:
     )
     print("-" * 70)
 
-    fn drift_status(d: Float32) -> String:
+    def drift_status(d: Float32) -> String:
         if d < 0.1:
             return "OK"
         elif d < 0.5:

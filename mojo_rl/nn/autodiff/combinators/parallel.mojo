@@ -36,7 +36,7 @@ struct Parallel[*BRANCHES: Model](Model):
     # --- Sum helpers ---
 
     @staticmethod
-    fn _sum_out_dim() -> Int:
+    def _sum_out_dim() -> Int:
         var total = 0
 
         comptime for i in range(Self.N):
@@ -44,7 +44,7 @@ struct Parallel[*BRANCHES: Model](Model):
         return total
 
     @staticmethod
-    fn _sum_param_size() -> Int:
+    def _sum_param_size() -> Int:
         var total = 0
 
         comptime for i in range(Self.N):
@@ -52,7 +52,7 @@ struct Parallel[*BRANCHES: Model](Model):
         return total
 
     @staticmethod
-    fn _sum_cache_size() -> Int:
+    def _sum_cache_size() -> Int:
         var total = 0
 
         comptime for i in range(Self.N):
@@ -60,7 +60,7 @@ struct Parallel[*BRANCHES: Model](Model):
         return total
 
     @staticmethod
-    fn _sum_ws() -> Int:
+    def _sum_ws() -> Int:
         var total = 0
 
         comptime for i in range(Self.N):
@@ -78,7 +78,7 @@ struct Parallel[*BRANCHES: Model](Model):
     # --- Offset helpers ---
 
     @staticmethod
-    fn _out_offset[idx: Int]() -> Int:
+    def _out_offset[idx: Int]() -> Int:
         """Sum of OUT_DIM for branches 0..idx-1."""
         var total = 0
 
@@ -87,7 +87,7 @@ struct Parallel[*BRANCHES: Model](Model):
         return total
 
     @staticmethod
-    fn _param_offset[idx: Int]() -> Int:
+    def _param_offset[idx: Int]() -> Int:
         var total = 0
 
         comptime for j in range(idx):
@@ -95,7 +95,7 @@ struct Parallel[*BRANCHES: Model](Model):
         return total
 
     @staticmethod
-    fn _cache_offset[idx: Int]() -> Int:
+    def _cache_offset[idx: Int]() -> Int:
         var total = 0
 
         comptime for j in range(idx):
@@ -103,8 +103,9 @@ struct Parallel[*BRANCHES: Model](Model):
         return total
 
     @staticmethod
-    fn _ws_branch_offset[idx: Int]() -> Int:
-        """Workspace offset for branch idx, after own scratch + output buffers."""
+    def _ws_branch_offset[idx: Int]() -> Int:
+        """Workspace offset for branch idx, after own scratch + output buffers.
+        """
         var total = Self._OWN_WS + Self._sum_out_dim()
 
         comptime for j in range(idx):
@@ -116,7 +117,9 @@ struct Parallel[*BRANCHES: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -136,7 +139,7 @@ struct Parallel[*BRANCHES: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -153,9 +156,7 @@ struct Parallel[*BRANCHES: Model](Model):
         ],
     ):
         # Flat buffer for all branch outputs
-        var buf_storage = List[Scalar[dtype]](
-            capacity=BATCH * Self.OUT_DIM
-        )
+        var buf_storage = List[Scalar[dtype]](capacity=BATCH * Self.OUT_DIM)
         for _ in range(BATCH * Self.OUT_DIM):
             buf_storage.append(0)
         var buf_ptr = buf_storage.unsafe_ptr()
@@ -190,16 +191,20 @@ struct Parallel[*BRANCHES: Model](Model):
         for b in range(BATCH):
             comptime for i in range(Self.N):
                 for j in range(Self.branch_types[i].OUT_DIM):
-                    output.ptr[b * Self.OUT_DIM + Self._out_offset[i]() + j] = (
-                        buf_ptr[BATCH * Self._out_offset[i]() + b * Self.branch_types[i].OUT_DIM + j]
-                    )
+                    output.ptr[
+                        b * Self.OUT_DIM + Self._out_offset[i]() + j
+                    ] = buf_ptr[
+                        BATCH * Self._out_offset[i]()
+                        + b * Self.branch_types[i].OUT_DIM
+                        + j
+                    ]
 
     # =========================================================================
     # CPU Forward (no cache)
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -212,9 +217,7 @@ struct Parallel[*BRANCHES: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        var buf_storage = List[Scalar[dtype]](
-            capacity=BATCH * Self.OUT_DIM
-        )
+        var buf_storage = List[Scalar[dtype]](capacity=BATCH * Self.OUT_DIM)
         for _ in range(BATCH * Self.OUT_DIM):
             buf_storage.append(0)
         var buf_ptr = buf_storage.unsafe_ptr()
@@ -243,16 +246,20 @@ struct Parallel[*BRANCHES: Model](Model):
         for b in range(BATCH):
             comptime for i in range(Self.N):
                 for j in range(Self.branch_types[i].OUT_DIM):
-                    output.ptr[b * Self.OUT_DIM + Self._out_offset[i]() + j] = (
-                        buf_ptr[BATCH * Self._out_offset[i]() + b * Self.branch_types[i].OUT_DIM + j]
-                    )
+                    output.ptr[
+                        b * Self.OUT_DIM + Self._out_offset[i]() + j
+                    ] = buf_ptr[
+                        BATCH * Self._out_offset[i]()
+                        + b * Self.branch_types[i].OUT_DIM
+                        + j
+                    ]
 
     # =========================================================================
     # CPU Backward
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -345,7 +352,7 @@ struct Parallel[*BRANCHES: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -385,7 +392,9 @@ struct Parallel[*BRANCHES: Model](Model):
                 MutAnyOrigin,
             ](cache.ptr + BATCH * Self._cache_offset[i]())
 
-            var ws_i_size = BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            var ws_i_size = (
+                BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            )
             var ws_i = DeviceBuffer[dtype](
                 ctx,
                 ws_ptr + BATCH * Self._ws_branch_offset[i](),
@@ -417,7 +426,7 @@ struct Parallel[*BRANCHES: Model](Model):
             ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
 
             @always_inline
-            fn copy_branch_fwd(
+            def copy_branch_fwd(
                 dst: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.OUT_DIM),
@@ -449,7 +458,7 @@ struct Parallel[*BRANCHES: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -480,7 +489,9 @@ struct Parallel[*BRANCHES: Model](Model):
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
 
-            var ws_i_size = BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            var ws_i_size = (
+                BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            )
             var ws_i = DeviceBuffer[dtype](
                 ctx,
                 ws_ptr + BATCH * Self._ws_branch_offset[i](),
@@ -511,7 +522,7 @@ struct Parallel[*BRANCHES: Model](Model):
             ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
 
             @always_inline
-            fn copy_branch_fwd_nc(
+            def copy_branch_fwd_nc(
                 dst: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.OUT_DIM),
@@ -539,7 +550,7 @@ struct Parallel[*BRANCHES: Model](Model):
             )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -563,7 +574,7 @@ struct Parallel[*BRANCHES: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -605,7 +616,7 @@ struct Parallel[*BRANCHES: Model](Model):
             ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
 
             @always_inline
-            fn split_branch(
+            def split_branch(
                 gi: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
@@ -663,7 +674,9 @@ struct Parallel[*BRANCHES: Model](Model):
                 MutAnyOrigin,
             ](grads.ptr + Self._param_offset[i]())
 
-            var ws_i_size = BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            var ws_i_size = (
+                BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            )
             var ws_i = DeviceBuffer[dtype](
                 ctx,
                 ws_ptr + BATCH * Self._ws_branch_offset[i](),
@@ -693,7 +706,7 @@ struct Parallel[*BRANCHES: Model](Model):
         comptime N_BRANCHES = Self.N
 
         @always_inline
-        fn sum_gi_wrapper(
+        def sum_gi_wrapper(
             dst: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.IN_DIM),

@@ -64,7 +64,7 @@ from mojo_rl.envs.half_cheetah import (
 )
 
 
-fn main() raises:
+def main() raises:
     seed(42)
 
     comptime dtype = DType.float32
@@ -121,9 +121,7 @@ fn main() raises:
         HalfCheetahModel.init_model_gpu(ctx, model_buf)
 
         # Reset state (sets qpos to home position, zeros qvel)
-        HalfCheetah[dtype].reset_kernel_gpu[BATCH, STATE_SIZE](
-            ctx, state_buf
-        )
+        HalfCheetah[dtype].reset_kernel_gpu[BATCH, STATE_SIZE](ctx, state_buf)
 
         # Zero workspace
         ctx.enqueue_memset(workspace_buf, 0)
@@ -144,7 +142,7 @@ fn main() raises:
 
         # Phase 1: Forward Kinematics (serial, 1 thread per env)
         @always_inline
-        fn fk_kernel(
+        def fk_kernel(
             s: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -170,7 +168,7 @@ fn main() raises:
 
         # Phase 2: Body Velocities (serial)
         @always_inline
-        fn vel_kernel(
+        def vel_kernel(
             s: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -195,7 +193,7 @@ fn main() raises:
 
         # Phase 3: CDOF (serial)
         @always_inline
-        fn cdof_kernel(
+        def cdof_kernel(
             s: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -224,7 +222,7 @@ fn main() raises:
 
         # Phase 4: Composite Rigid Body Inertia (serial)
         @always_inline
-        fn crb_kernel(
+        def crb_kernel(
             s: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -253,7 +251,7 @@ fn main() raises:
 
         # Phase 5: Mass Matrix (multi-threaded)
         @always_inline
-        fn mass_matrix_kernel(
+        def mass_matrix_kernel(
             s: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -283,7 +281,7 @@ fn main() raises:
 
         # Phase 6: LDL Factorization (serial)
         @always_inline
-        fn ldl_kernel(
+        def ldl_kernel(
             w: LayoutTensor[
                 dtype, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
             ],
@@ -295,7 +293,7 @@ fn main() raises:
 
         # Phase 7: M_inv from LDL (serial)
         @always_inline
-        fn minv_kernel(
+        def minv_kernel(
             w: LayoutTensor[
                 dtype, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
             ],
@@ -307,7 +305,7 @@ fn main() raises:
 
         # Phase 8: Bias Forces RNE (serial)
         @always_inline
-        fn rne_kernel(
+        def rne_kernel(
             s: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -336,7 +334,7 @@ fn main() raises:
 
         # Phase 9: LDL Solve (serial)
         @always_inline
-        fn ldl_solve_kernel(
+        def ldl_solve_kernel(
             w: LayoutTensor[
                 dtype, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
             ],

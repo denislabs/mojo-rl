@@ -57,7 +57,7 @@ struct BodyData(Copyable, ImplicitlyCopyable, Movable):
     var iyy: Float64
     var izz: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         parent: Int = 0,
         mass: Float64 = 1.0,
@@ -120,7 +120,7 @@ struct JointData(Copyable, ImplicitlyCopyable, Movable):
     var damping: Float64
     var stiffness: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         jnt_type: Int = JNT_HINGE,
         body_id: Int = 1,
@@ -182,14 +182,14 @@ struct FlatModelDef[
     var gravity_z: Float64
     var timestep: Float64
 
-    fn __init__(out self):
+    def __init__(out self):
         # KEY TEST: does InlineArray fill constructor work with custom struct?
         self.bodies = InlineArray[BodyData, Self.NBODY](fill=BodyData())
         self.joints = InlineArray[JointData, Self.NJOINT](fill=JointData())
         self.gravity_z = -9.81
         self.timestep = 0.01
 
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         MAX_CONTACTS: Int,
         MAX_EQUALITY: Int = 0,
@@ -367,7 +367,7 @@ comptime half_cheetah_xml = """
 """
 
 
-fn test_flat_model_def() raises:
+def test_flat_model_def() raises:
     # =========================================================================
     # Q1: Does InlineArray[BodyData, N] work with a custom struct?
     # =========================================================================
@@ -466,5 +466,5 @@ fn test_flat_model_def() raises:
     )
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

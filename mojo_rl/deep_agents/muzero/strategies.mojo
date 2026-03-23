@@ -39,6 +39,7 @@ trait SearchMode:
 
 struct LearnedDynamics(SearchMode):
     """MuZero: learn dynamics from data, search in latent space."""
+
     comptime USE_LEARNED_DYNAMICS: Bool = True
     comptime NEEDS_GAME_STATE: Bool = False
 
@@ -46,6 +47,7 @@ struct LearnedDynamics(SearchMode):
 struct TrueGameRules(SearchMode):
     """AlphaZero: use true game rules, search in observation space.
     Tree nodes store actual game states. Expansion calls env.step()."""
+
     comptime USE_LEARNED_DYNAMICS: Bool = False
     comptime NEEDS_GAME_STATE: Bool = True
 
@@ -57,24 +59,28 @@ struct TrueGameRules(SearchMode):
 
 trait ValueEncoding:
     """Determines how scalar values/rewards are encoded."""
+
     comptime IS_DISTRIBUTIONAL: Bool
     comptime USE_SCALAR_TRANSFORM: Bool
 
 
 struct CategoricalEncoding(ValueEncoding):
     """Distributional: two-hot over NUM_BINS support bins."""
+
     comptime IS_DISTRIBUTIONAL: Bool = True
     comptime USE_SCALAR_TRANSFORM: Bool = True
 
 
 struct ScalarEncoding(ValueEncoding):
     """Direct scalar prediction. For bounded-reward envs."""
+
     comptime IS_DISTRIBUTIONAL: Bool = False
     comptime USE_SCALAR_TRANSFORM: Bool = False
 
 
 struct SymlogEncoding(ValueEncoding):
     """Scalar with symlog transform (DreamerV3-style)."""
+
     comptime IS_DISTRIBUTIONAL: Bool = False
     comptime USE_SCALAR_TRANSFORM: Bool = True
 
@@ -86,18 +92,21 @@ struct SymlogEncoding(ValueEncoding):
 
 trait HiddenScaling:
     """Hidden state normalization after dynamics."""
+
     comptime ENABLED: Bool
     comptime SCALE_METHOD: Int  # 0=MinMax, 1=LayerNorm, 2=SimNorm
 
 
 struct MinMaxScale(HiddenScaling):
     """Min-max normalization to [0, 1]."""
+
     comptime ENABLED: Bool = True
     comptime SCALE_METHOD: Int = 0
 
 
 struct NoScale(HiddenScaling):
     """No scaling — for AlphaZero where tree stores real game states."""
+
     comptime ENABLED: Bool = False
     comptime SCALE_METHOD: Int = 0
 
@@ -113,7 +122,8 @@ trait ExplorationNoise:
     Provides compile-time parameters for noise generation.
     Noise sampling runs inside GPU kernels using these constants.
     """
-    comptime NOISE_TYPE: Int     # 0=Dirichlet, 1=Uniform, 2=None
+
+    comptime NOISE_TYPE: Int  # 0=Dirichlet, 1=Uniform, 2=None
     comptime NOISE_FRACTION: Float64
     comptime NOISE_ALPHA: Float64
 
@@ -124,6 +134,7 @@ struct DirichletNoise[
 ](ExplorationNoise):
     """Dirichlet noise (default MuZero/AlphaZero).
     Alpha: 0.03 (Go/Chess), 0.25 (Atari/small games)."""
+
     comptime NOISE_TYPE: Int = 0
     comptime NOISE_FRACTION: Float64 = Self.fraction
     comptime NOISE_ALPHA: Float64 = Self.alpha
@@ -133,6 +144,7 @@ struct EpsilonNoise[
     fraction: Float64 = 0.25,
 ](ExplorationNoise):
     """Uniform epsilon noise — simpler alternative."""
+
     comptime NOISE_TYPE: Int = 1
     comptime NOISE_FRACTION: Float64 = Self.fraction
     comptime NOISE_ALPHA: Float64 = 0.0
@@ -140,6 +152,7 @@ struct EpsilonNoise[
 
 struct NoNoise(ExplorationNoise):
     """No noise — pure exploitation. For evaluation."""
+
     comptime NOISE_TYPE: Int = 2
     comptime NOISE_FRACTION: Float64 = 0.0
     comptime NOISE_ALPHA: Float64 = 0.0
@@ -161,7 +174,7 @@ trait PUCTFormula:
     comptime C_INIT: Float64
 
     @staticmethod
-    fn compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
+    def compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
         """Compute exploration constant c(s) from parent visit count.
 
         Called inside the MCTS selection kernel (must be @staticmethod + inline).
@@ -188,7 +201,7 @@ struct MuZeroPUCT[
     comptime C_INIT: Float64 = Self.c_init
 
     @staticmethod
-    fn compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
+    def compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
         return log((1.0 + parent_visits + cb) / cb) + ci
 
 
@@ -202,7 +215,7 @@ struct AlphaGoPUCT[
     comptime C_INIT: Float64 = Self.c_puct
 
     @staticmethod
-    fn compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
+    def compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
         return ci
 
 
@@ -215,7 +228,7 @@ struct UCB1Formula[
     comptime C_INIT: Float64 = Self.c
 
     @staticmethod
-    fn compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
+    def compute_c(parent_visits: Float64, cb: Float64, ci: Float64) -> Float64:
         return ci
 
 
@@ -231,11 +244,11 @@ trait BackupMode:
     rewards and bootstrap values.
     """
 
-    comptime BACKUP_TYPE: Int    # 0=N-step, 1=MonteCarlo, 2=Lambda
+    comptime BACKUP_TYPE: Int  # 0=N-step, 1=MonteCarlo, 2=Lambda
     comptime LAMBDA: Float64
 
     @staticmethod
-    fn should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
+    def should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
         """Whether to add bootstrap value to the return.
 
         Args:
@@ -256,7 +269,7 @@ struct NStepBootstrap(BackupMode):
     comptime LAMBDA: Float64 = 0.0
 
     @staticmethod
-    fn should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
+    def should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
         return not hit_terminal and steps_used == n
 
 
@@ -268,7 +281,7 @@ struct MonteCarloReturn(BackupMode):
     comptime LAMBDA: Float64 = 1.0
 
     @staticmethod
-    fn should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
+    def should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
         return False  # Never bootstrap — use full episode return
 
 
@@ -281,7 +294,7 @@ struct LambdaReturn[
     comptime LAMBDA: Float64 = Self.lambda_
 
     @staticmethod
-    fn should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
+    def should_bootstrap(steps_used: Int, n: Int, hit_terminal: Bool) -> Bool:
         return not hit_terminal and steps_used == n
 
 
@@ -303,7 +316,9 @@ trait PlayerMode:
     comptime USE_LEGAL_MASK: Bool
 
     @staticmethod
-    fn backup_transform(value: Float64, reward: Float64, gamma: Float64) -> Float64:
+    def backup_transform(
+        value: Float64, reward: Float64, gamma: Float64
+    ) -> Float64:
         """Transform value during MCTS backup.
 
         Called at each level when propagating values from leaf to root.
@@ -327,7 +342,9 @@ struct SinglePlayer(PlayerMode):
     comptime USE_LEGAL_MASK: Bool = False
 
     @staticmethod
-    fn backup_transform(value: Float64, reward: Float64, gamma: Float64) -> Float64:
+    def backup_transform(
+        value: Float64, reward: Float64, gamma: Float64
+    ) -> Float64:
         return reward + gamma * value
 
 
@@ -340,5 +357,7 @@ struct SelfPlay(PlayerMode):
     comptime USE_LEGAL_MASK: Bool = True
 
     @staticmethod
-    fn backup_transform(value: Float64, reward: Float64, gamma: Float64) -> Float64:
+    def backup_transform(
+        value: Float64, reward: Float64, gamma: Float64
+    ) -> Float64:
         return -value

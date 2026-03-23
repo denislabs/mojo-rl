@@ -22,7 +22,7 @@ from mojo_rl.nn.constants import dtype
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn minimax(
+def minimax(
     mut env: TicTacToeEnv[DType.float64],
     depth: Int,
     is_maximizing: Bool,
@@ -81,7 +81,7 @@ fn minimax(
         return best
 
 
-fn minimax_best_action(mut env: TicTacToeEnv[DType.float64]) -> Int:
+def minimax_best_action(mut env: TicTacToeEnv[DType.float64]) -> Int:
     """Return the best action according to minimax."""
     var legal = env.legal_action_mask()
     var player = env.current_player()
@@ -115,8 +115,10 @@ fn minimax_best_action(mut env: TicTacToeEnv[DType.float64]) -> Int:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn eval_vs_random(
-    mut agent: GenericMuZeroAgent[AlphaZeroConfig[27, 9, HIDDEN=128, LR=1e-3, BS=64, SIMS=25, NODES=64], 1],
+def eval_vs_random(
+    mut agent: GenericMuZeroAgent[
+        AlphaZeroConfig[27, 9, HIDDEN=128, LR=1e-3, BS=64, SIMS=25, NODES=64], 1
+    ],
     num_games: Int,
     agent_plays_first: Bool,
 ) -> Tuple[Int, Int, Int]:
@@ -191,8 +193,10 @@ fn eval_vs_random(
     return (wins, draws, losses)
 
 
-fn eval_vs_minimax(
-    mut agent: GenericMuZeroAgent[AlphaZeroConfig[27, 9, HIDDEN=128, LR=1e-3, BS=64, SIMS=25, NODES=64], 1],
+def eval_vs_minimax(
+    mut agent: GenericMuZeroAgent[
+        AlphaZeroConfig[27, 9, HIDDEN=128, LR=1e-3, BS=64, SIMS=25, NODES=64], 1
+    ],
     num_games: Int,
     agent_plays_first: Bool,
 ) -> Tuple[Int, Int, Int]:
@@ -257,14 +261,16 @@ fn eval_vs_minimax(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn main() raises:
+def main() raises:
     print("╔══════════════════════════════════════════════════╗")
     print("║  Evaluate MuZero on TicTacToe                   ║")
     print("╚══════════════════════════════════════════════════╝")
     print()
 
     # Load agent
-    comptime Config = AlphaZeroConfig[27, 9, HIDDEN=128, LR=1e-3, BS=64, SIMS=25, NODES=64]
+    comptime Config = AlphaZeroConfig[
+        27, 9, HIDDEN=128, LR=1e-3, BS=64, SIMS=25, NODES=64
+    ]
     var agent = GenericMuZeroAgent[Config, 1](gamma=1.0, v_min=-1.0, v_max=1.0)
 
     var ckpt_path = "tictactoe_muzero.ckpt"
@@ -278,12 +284,28 @@ fn main() raises:
     print("=== Agent vs Random ===")
 
     var r1 = eval_vs_random(agent, N_GAMES, agent_plays_first=True)
-    print("Agent as X (first): W:", r1[0], "D:", r1[1], "L:", r1[2],
-          "| Win%:", r1[0] * 100 // N_GAMES)
+    print(
+        "Agent as X (first): W:",
+        r1[0],
+        "D:",
+        r1[1],
+        "L:",
+        r1[2],
+        "| Win%:",
+        r1[0] * 100 // N_GAMES,
+    )
 
     var r2 = eval_vs_random(agent, N_GAMES, agent_plays_first=False)
-    print("Agent as O (second): W:", r2[0], "D:", r2[1], "L:", r2[2],
-          "| Win%:", r2[0] * 100 // N_GAMES)
+    print(
+        "Agent as O (second): W:",
+        r2[0],
+        "D:",
+        r2[1],
+        "L:",
+        r2[2],
+        "| Win%:",
+        r2[0] * 100 // N_GAMES,
+    )
 
     print()
 
@@ -291,12 +313,28 @@ fn main() raises:
     print("=== Agent vs Minimax (perfect) ===")
 
     var m1 = eval_vs_minimax(agent, N_GAMES, agent_plays_first=True)
-    print("Agent as X (first): W:", m1[0], "D:", m1[1], "L:", m1[2],
-          "| Draw%:", m1[1] * 100 // N_GAMES)
+    print(
+        "Agent as X (first): W:",
+        m1[0],
+        "D:",
+        m1[1],
+        "L:",
+        m1[2],
+        "| Draw%:",
+        m1[1] * 100 // N_GAMES,
+    )
 
     var m2 = eval_vs_minimax(agent, N_GAMES, agent_plays_first=False)
-    print("Agent as O (second): W:", m2[0], "D:", m2[1], "L:", m2[2],
-          "| Draw%:", m2[1] * 100 // N_GAMES)
+    print(
+        "Agent as O (second): W:",
+        m2[0],
+        "D:",
+        m2[1],
+        "L:",
+        m2[2],
+        "| Draw%:",
+        m2[1] * 100 // N_GAMES,
+    )
 
     print()
 
@@ -308,15 +346,30 @@ fn main() raises:
         print("PERFECT: Agent draws every game against minimax!")
         print("  → Optimal TicTacToe play achieved.")
     elif total_draws_vs_minimax > Int(total_games_vs_minimax * 0.9):
-        print("STRONG: Agent draws", total_draws_vs_minimax, "/", total_games_vs_minimax,
-              "games against minimax")
+        print(
+            "STRONG: Agent draws",
+            total_draws_vs_minimax,
+            "/",
+            total_games_vs_minimax,
+            "games against minimax",
+        )
         print("  → Near-optimal play. A few mistakes remain.")
     elif total_draws_vs_minimax > Int(total_games_vs_minimax * 0.5):
-        print("DECENT: Agent draws", total_draws_vs_minimax, "/", total_games_vs_minimax,
-              "games against minimax")
+        print(
+            "DECENT: Agent draws",
+            total_draws_vs_minimax,
+            "/",
+            total_games_vs_minimax,
+            "games against minimax",
+        )
         print("  → Moderate strength. Needs more training.")
     else:
-        print("WEAK: Agent draws only", total_draws_vs_minimax, "/", total_games_vs_minimax,
-              "games against minimax")
+        print(
+            "WEAK: Agent draws only",
+            total_draws_vs_minimax,
+            "/",
+            total_games_vs_minimax,
+            "games against minimax",
+        )
         print("  → Agent still makes many mistakes. Try training longer.")
     print("═══════════════════════════════════════════════════")

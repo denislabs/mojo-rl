@@ -11,7 +11,7 @@ from mojo_rl.deep_agents.core.agents import DeepTD3Agent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Generic TD3 Test ===\n")
 
     # Test 1: DDPG still works after refactor
@@ -50,11 +50,7 @@ fn main() raises:
         print("   FAIL: Generic TD3 did not train")
 
     if td3.train_step_count == old_td3.train_step_count:
-        print(
-            "   OK: Same step count ("
-            + String(td3.train_step_count)
-            + ")"
-        )
+        print("   OK: Same step count (" + String(td3.train_step_count) + ")")
     else:
         print(
             "   WARN: Step count differs (generic="

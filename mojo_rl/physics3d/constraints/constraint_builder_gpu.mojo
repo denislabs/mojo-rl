@@ -115,7 +115,7 @@ from ..gpu.constants import (
 )
 
 
-fn common_normal_size[MC: Int, NV: Int]() -> Int:
+def common_normal_size[MC: Int, NV: Int]() -> Int:
     """Size of the common normal workspace block."""
     return 13 * MC + 2 * MC * NV
 
@@ -126,7 +126,7 @@ fn common_normal_size[MC: Int, NV: Int]() -> Int:
 
 
 @always_inline
-fn init_common_normal_workspace_gpu[
+def init_common_normal_workspace_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -172,7 +172,7 @@ fn init_common_normal_workspace_gpu[
 
 
 @always_inline
-fn precompute_contact_normal_gpu[
+def precompute_contact_normal_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -390,7 +390,7 @@ fn precompute_contact_normal_gpu[
 
 
 @always_inline
-fn warmstart_normals_gpu[
+def warmstart_normals_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -430,7 +430,7 @@ fn warmstart_normals_gpu[
 
 
 @always_inline
-fn apply_solved_normals_gpu[
+def apply_solved_normals_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -493,7 +493,7 @@ fn apply_solved_normals_gpu[
 
 
 @always_inline
-fn detect_and_solve_limits_gpu[
+def detect_and_solve_limits_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -714,7 +714,7 @@ fn detect_and_solve_limits_gpu[
 
 
 @always_inline
-fn build_and_solve_equality_gpu[
+def build_and_solve_equality_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1253,7 +1253,7 @@ fn build_and_solve_equality_gpu[
 
 
 @always_inline
-fn build_and_solve_tendon_gpu[
+def build_and_solve_tendon_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

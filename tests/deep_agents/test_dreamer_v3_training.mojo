@@ -5,7 +5,7 @@ from mojo_rl.nn.constants import dtype
 from mojo_rl.deep_agents.dreamer_v3 import DreamerV3Agent
 
 
-fn main():
+def main():
     print("=" * 60)
     print("DreamerV3 Training Tests")
     print("=" * 60)

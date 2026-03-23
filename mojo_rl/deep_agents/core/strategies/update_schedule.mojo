@@ -25,11 +25,11 @@ trait Schedule:
     comptime DEFAULT_POLICY_DELAY: Int
 
     @staticmethod
-    fn should_update_actor(step_count: Int, policy_delay: Int) -> Bool:
+    def should_update_actor(step_count: Int, policy_delay: Int) -> Bool:
         ...
 
     @staticmethod
-    fn should_update_targets(step_count: Int, policy_delay: Int) -> Bool:
+    def should_update_targets(step_count: Int, policy_delay: Int) -> Bool:
         ...
 
 
@@ -49,12 +49,12 @@ struct EveryStep(Schedule):
     comptime DEFAULT_POLICY_DELAY: Int = 1
 
     @staticmethod
-    fn should_update_actor(step_count: Int, policy_delay: Int) -> Bool:
+    def should_update_actor(step_count: Int, policy_delay: Int) -> Bool:
         """Always returns True — update actor every step."""
         return True
 
     @staticmethod
-    fn should_update_targets(step_count: Int, policy_delay: Int) -> Bool:
+    def should_update_targets(step_count: Int, policy_delay: Int) -> Bool:
         """Always returns True — soft-update targets every step."""
         return True
 
@@ -77,12 +77,12 @@ struct DelayedAll(Schedule):
     comptime DEFAULT_POLICY_DELAY: Int = 2
 
     @staticmethod
-    fn should_update_actor(step_count: Int, policy_delay: Int) -> Bool:
+    def should_update_actor(step_count: Int, policy_delay: Int) -> Bool:
         """Returns True every policy_delay steps."""
         return step_count % policy_delay == 0
 
     @staticmethod
-    fn should_update_targets(step_count: Int, policy_delay: Int) -> Bool:
+    def should_update_targets(step_count: Int, policy_delay: Int) -> Bool:
         """Returns True every policy_delay steps (coupled with actor)."""
         return step_count % policy_delay == 0
 
@@ -104,11 +104,11 @@ struct DelayedActorOnly(Schedule):
     comptime DEFAULT_POLICY_DELAY: Int = 1
 
     @staticmethod
-    fn should_update_actor(step_count: Int, policy_delay: Int) -> Bool:
+    def should_update_actor(step_count: Int, policy_delay: Int) -> Bool:
         """Returns True every policy_delay steps."""
         return step_count % policy_delay == 0
 
     @staticmethod
-    fn should_update_targets(step_count: Int, policy_delay: Int) -> Bool:
+    def should_update_targets(step_count: Int, policy_delay: Int) -> Bool:
         """Always returns True — critic targets update every step."""
         return True

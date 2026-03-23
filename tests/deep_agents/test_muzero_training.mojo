@@ -4,7 +4,7 @@ from mojo_rl.deep_agents.muzero.muzero import MuZeroAgent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main():
+def main():
     print("=== MuZero Training Test ===")
     print("Testing that MuZero can learn on CartPole (5000 steps)...")
 

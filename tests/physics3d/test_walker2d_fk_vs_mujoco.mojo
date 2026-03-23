@@ -53,7 +53,7 @@ comptime QUAT_TOL: Float64 = 1e-5
 # =============================================================================
 
 
-fn compare_fk(
+def compare_fk(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
 ) raises:
@@ -201,7 +201,7 @@ fn compare_fk(
 # =============================================================================
 
 
-fn test_fk_default_qpos() raises:
+def test_fk_default_qpos() raises:
     """FK at default standing pose (qpos = qpos0).
     rootz=1.25 places torso at z=1.25m — the natural standing height.
     All joint angles are zero (straight legs)."""
@@ -210,7 +210,7 @@ fn test_fk_default_qpos() raises:
     compare_fk("Default standing pose (rootz=1.25)", qpos)
 
 
-fn test_fk_large_rootx() raises:
+def test_fk_large_rootx() raises:
     """FK with large horizontal displacement — torso moved 5m forward.
     Validates that translation doesn't accumulate floating-point errors."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -219,7 +219,7 @@ fn test_fk_large_rootx() raises:
     compare_fk("Large rootx (5m)", qpos)
 
 
-fn test_fk_bent_right_leg() raises:
+def test_fk_bent_right_leg() raises:
     """FK with right leg bent: thigh forward, leg bent back, foot angled.
     Tests off-center jnt_pos for leg_joint (pos='0 0 0.25') and
     foot_joint (pos='-0.2 0 0.1') — the same structure that exposed
@@ -232,7 +232,7 @@ fn test_fk_bent_right_leg() raises:
     compare_fk("Right leg bent (thigh=-0.5, leg=0.5, foot=-0.2)", qpos)
 
 
-fn test_fk_symmetric_gait() raises:
+def test_fk_symmetric_gait() raises:
     """FK with both legs bent symmetrically — typical walking pose.
     Tests the full body tree with all joints active."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -248,7 +248,7 @@ fn test_fk_symmetric_gait() raises:
     compare_fk("Symmetric gait pose (both legs bent)", qpos)
 
 
-fn test_fk_extreme_joints() raises:
+def test_fk_extreme_joints() raises:
     """FK near joint limits: thighs at max backward bend, feet angled.
     Tests large rotations in the multi-level hinge chain."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -265,5 +265,5 @@ fn test_fk_extreme_joints() raises:
     compare_fk("Extreme joints (near limits)", qpos)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

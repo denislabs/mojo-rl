@@ -6,7 +6,7 @@ from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
 from mojo_rl.render.sdl.sdl_scancode import Scancode
 
 
-fn main() raises:
+def main() raises:
     print("=== Playable Space Invaders ===")
     print(
         "Controls: LEFT/RIGHT arrows to move, SPACE to fire, close window to"

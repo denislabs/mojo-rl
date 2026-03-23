@@ -85,15 +85,15 @@ trait BodySpec:
 
     # Auto-computed inertia from geometry + mass
     @staticmethod
-    fn ixx() -> Float64:
+    def ixx() -> Float64:
         ...
 
     @staticmethod
-    fn iyy() -> Float64:
+    def iyy() -> Float64:
         ...
 
     @staticmethod
-    fn izz() -> Float64:
+    def izz() -> Float64:
         ...
 
 
@@ -166,31 +166,31 @@ struct CapsuleBody[
     comptime NAME: String = Self.name
 
     @staticmethod
-    fn _total_length() -> Float64:
+    def _total_length() -> Float64:
         return 2.0 * Self.HALF_LENGTH + 2.0 * Self.RADIUS
 
     @staticmethod
-    fn _auto_ixx() -> Float64:
+    def _auto_ixx() -> Float64:
         var r2 = Self.RADIUS * Self.RADIUS
         var L = Self._total_length()
         return Self.MASS * (3.0 * r2 + L * L) / 12.0
 
     @staticmethod
-    fn ixx() -> Float64:
+    def ixx() -> Float64:
         """Transverse inertia (override or auto-computed)."""
         if Self.ixx_override != 0.0:
             return Self.ixx_override
         return Self._auto_ixx()
 
     @staticmethod
-    fn iyy() -> Float64:
+    def iyy() -> Float64:
         """Transverse inertia (override or auto-computed)."""
         if Self.iyy_override != 0.0:
             return Self.iyy_override
         return Self._auto_ixx()
 
     @staticmethod
-    fn izz() -> Float64:
+    def izz() -> Float64:
         """Axial inertia (override or auto-computed)."""
         if Self.izz_override != 0.0:
             return Self.izz_override
@@ -259,15 +259,15 @@ struct SphereBody[
     comptime NAME: String = Self.name
 
     @staticmethod
-    fn ixx() -> Float64:
+    def ixx() -> Float64:
         return 0.4 * Self.MASS * Self.RADIUS * Self.RADIUS
 
     @staticmethod
-    fn iyy() -> Float64:
+    def iyy() -> Float64:
         return Self.ixx()
 
     @staticmethod
-    fn izz() -> Float64:
+    def izz() -> Float64:
         return Self.ixx()
 
 
@@ -337,19 +337,19 @@ struct BoxBody[
     comptime NAME: String = Self.name
 
     @staticmethod
-    fn ixx() -> Float64:
+    def ixx() -> Float64:
         var fy = 2.0 * Self.HALF_Y
         var fz = 2.0 * Self.HALF_Z
         return Self.MASS * (fy * fy + fz * fz) / 12.0
 
     @staticmethod
-    fn iyy() -> Float64:
+    def iyy() -> Float64:
         var fx = 2.0 * Self.HALF_X
         var fz = 2.0 * Self.HALF_Z
         return Self.MASS * (fx * fx + fz * fz) / 12.0
 
     @staticmethod
-    fn izz() -> Float64:
+    def izz() -> Float64:
         var fx = 2.0 * Self.HALF_X
         var fy = 2.0 * Self.HALF_Y
         return Self.MASS * (fx * fx + fy * fy) / 12.0
@@ -361,14 +361,14 @@ trait BodiesLike:
     comptime N: Int  # number of bodies (excluding worldbody)
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
     ](buffer: HostBuffer[DTYPE]):
         ...
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -402,14 +402,14 @@ struct _EmptyBodies(BodiesLike):
     comptime N: Int = 0
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
     ](buffer: HostBuffer[DTYPE]):
         pass
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -454,7 +454,7 @@ struct Bodies[*B: BodySpec](BodiesLike):
     comptime N: Int = Variadic.size(Self.body_types)
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -540,7 +540,7 @@ struct Bodies[*B: BodySpec](BodiesLike):
             )
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
     ](buffer: HostBuffer[DTYPE]):

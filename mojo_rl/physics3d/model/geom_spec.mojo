@@ -82,7 +82,7 @@ comptime _UNSET_INT: Int = -1
 # =============================================================================
 
 
-fn _comptime_sqrt(x: Float64) -> Float64:
+def _comptime_sqrt(x: Float64) -> Float64:
     """Newton's method sqrt for compile-time evaluation.
 
     Needed because math.sqrt may not be available at comptime.
@@ -108,19 +108,19 @@ fn _comptime_sqrt(x: Float64) -> Float64:
     return r
 
 
-fn _fromto_center_x(from_x: Float64, to_x: Float64) -> Float64:
+def _fromto_center_x(from_x: Float64, to_x: Float64) -> Float64:
     return (from_x + to_x) * 0.5
 
 
-fn _fromto_center_y(from_y: Float64, to_y: Float64) -> Float64:
+def _fromto_center_y(from_y: Float64, to_y: Float64) -> Float64:
     return (from_y + to_y) * 0.5
 
 
-fn _fromto_center_z(from_z: Float64, to_z: Float64) -> Float64:
+def _fromto_center_z(from_z: Float64, to_z: Float64) -> Float64:
     return (from_z + to_z) * 0.5
 
 
-fn _fromto_half_length(
+def _fromto_half_length(
     from_x: Float64,
     from_y: Float64,
     from_z: Float64,
@@ -134,7 +134,7 @@ fn _fromto_half_length(
     return _comptime_sqrt(dx * dx + dy * dy + dz * dz) * 0.5
 
 
-fn _fromto_quat_component(
+def _fromto_quat_component(
     from_x: Float64,
     from_y: Float64,
     from_z: Float64,
@@ -920,7 +920,7 @@ trait GeomsLike:
     comptime N: Int
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
         NJOINT: Int,
@@ -929,14 +929,14 @@ trait GeomsLike:
         ...
 
     @staticmethod
-    fn compute_geom_masses[
+    def compute_geom_masses[
         DTYPE: DType,
         Defaults: ModelDefaultsLike,
     ]() -> InlineArray[Scalar[DTYPE], Self.N]:
         ...
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -967,7 +967,7 @@ trait GeomsLike:
         ...
 
     @staticmethod
-    fn render_ground_geoms(
+    def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,
         follow: Bool,
@@ -977,7 +977,7 @@ trait GeomsLike:
         ...
 
     @staticmethod
-    fn render_body_geoms(
+    def render_body_geoms(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -992,7 +992,7 @@ struct _EmptyGeoms(GeomsLike):
     comptime N: Int = 0
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
         NJOINT: Int,
@@ -1001,14 +1001,14 @@ struct _EmptyGeoms(GeomsLike):
         pass
 
     @staticmethod
-    fn compute_geom_masses[
+    def compute_geom_masses[
         DTYPE: DType,
         Defaults: ModelDefaultsLike,
     ]() -> InlineArray[Scalar[DTYPE], Self.N]:
         return InlineArray[Scalar[DTYPE], Self.N](fill=Scalar[DTYPE](0))
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1039,7 +1039,7 @@ struct _EmptyGeoms(GeomsLike):
         pass
 
     @staticmethod
-    fn render_ground_geoms(
+    def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,
         follow: Bool,
@@ -1048,7 +1048,7 @@ struct _EmptyGeoms(GeomsLike):
         pass
 
     @staticmethod
-    fn render_body_geoms(
+    def render_body_geoms(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -1069,7 +1069,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
     comptime N: Int = Variadic.size(Self.geom_types)
 
     @staticmethod
-    fn _count_static_geoms() -> Int:
+    def _count_static_geoms() -> Int:
         """Count of static (worldbody) geoms (BODY_IDX == 0)."""
         var total = 0
 
@@ -1079,7 +1079,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         return total
 
     @staticmethod
-    fn _count_plane_geoms() -> Int:
+    def _count_plane_geoms() -> Int:
         """Count of plane geoms (GEOM_TYPE == GEOM_PLANE)."""
         var total = 0
 
@@ -1089,7 +1089,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         return total
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1251,7 +1251,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                     )
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
         NJOINT: Int,
@@ -1360,7 +1360,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                 buffer[off + _GEOM_IDX_RBOUND] = Scalar[DTYPE](1e10)
 
     @staticmethod
-    fn compute_geom_masses[
+    def compute_geom_masses[
         DTYPE: DType,
         Defaults: ModelDefaultsLike = ModelDefaults[],
     ]() -> InlineArray[Scalar[DTYPE], Self.N]:
@@ -1395,7 +1395,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
         return masses^
 
     @staticmethod
-    fn render_ground_geoms(
+    def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,
         follow: Bool,
@@ -1439,7 +1439,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
             renderer.draw_ground_grid(grid_center_x, height=ground_offset)
 
     @staticmethod
-    fn render_body_geoms(
+    def render_body_geoms(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],

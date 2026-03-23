@@ -160,7 +160,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     # Initialization
     # =========================================================================
 
-    fn __init__(
+    def __init__(
         out self,
         max_steps: Int = CRConstants.MAX_STEPS,
         lap_complete_percent: Float64 = CRConstants.LAP_COMPLETE_PERCENT,
@@ -206,7 +206,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.track = TrackGenerator[DType.float64]()
         self.track.track = copy.track.track.copy()
         self.track.track_length = copy.track.track_length
@@ -225,7 +225,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.track = take.track^
         self.state_buffer = take.state_buffer^
         self.tiles_buffer = take.tiles_buffer^
@@ -246,7 +246,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     # Env Trait Methods
     # =========================================================================
 
-    fn reset(mut self) -> Self.StateType:
+    def reset(mut self) -> Self.StateType:
         """Reset the environment and return initial state."""
         # Generate track (procedural random track)
         var seed = UInt64(self.step_count + 42)  # Different seed each reset
@@ -278,7 +278,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         self._update_cached_state()
         return self.cached_state
 
-    fn step(
+    def step(
         mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take action and return (next_state, reward, done)."""
@@ -309,11 +309,11 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         self._update_cached_state()
         return (self.cached_state, Scalar[Self.dtype](step_reward), self.done)
 
-    fn get_state(self) -> Self.StateType:
+    def get_state(self) -> Self.StateType:
         """Get current state."""
         return self.cached_state
 
-    fn render(mut self, mut renderer: Renderer2D):
+    def render(mut self, mut renderer: Renderer2D):
         """Render the environment with rotating camera following the car."""
         # Get car state from physics buffer
         var state = self._get_state_tensor()
@@ -374,7 +374,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
 
         renderer.flip()
 
-    fn _draw_grass(self, mut renderer: Renderer2D, camera: RotatingCamera):
+    def _draw_grass(self, mut renderer: Renderer2D, camera: RotatingCamera):
         """Draw grass patches in a checkerboard pattern."""
         var grass_clr = SDL_Color(68, 160, 68, 255)  # Darker grass for pattern
 
@@ -410,7 +410,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
                     vertices, camera, grass_clr, filled=True
                 )
 
-    fn _draw_track(self, mut renderer: Renderer2D, camera: RotatingCamera):
+    def _draw_track(self, mut renderer: Renderer2D, camera: RotatingCamera):
         """Draw track tiles."""
         var road_clr = SDL_Color(102, 102, 102, 255)  # Gray road
 
@@ -454,7 +454,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
                 vertices, camera, tile_color, filled=True
             )
 
-    fn _draw_car(
+    def _draw_car(
         self,
         mut renderer: Renderer2D,
         camera: RotatingCamera,
@@ -571,7 +571,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
                 wheel_verts, wheel_transform, camera, wheel_color, filled=True
             )
 
-    fn _draw_info(self, mut renderer: Renderer2D, vx: Float64, vy: Float64):
+    def _draw_info(self, mut renderer: Renderer2D, vx: Float64, vy: Float64):
         """Draw HUD info panel."""
         var W = Float64(CRConstants.WINDOW_W)
         var H = Float64(CRConstants.WINDOW_H)
@@ -624,7 +624,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             Int(H),
         )
 
-    fn _draw_vertical_indicator(
+    def _draw_vertical_indicator(
         self,
         mut renderer: Renderer2D,
         x_pos: Int,
@@ -653,7 +653,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
                 x, baseline, Int(s), Int(abs_bar_h) + 1, color, 0
             )
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer[].close()
@@ -664,7 +664,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     # RenderableEnv Trait Implementation
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
@@ -673,13 +673,13 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
         self.render(self._renderer[])
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
@@ -687,66 +687,68 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # =========================================================================
     # BoxContinuousActionEnv Trait Methods
     # =========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return observation as list."""
         return self.cached_state.to_list_typed[Self.dtype]()
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset and return initial observation."""
         var state = self.reset()
         return state.to_list_typed[Self.dtype]()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Observation dimension: 13."""
         return Self.OBS_DIM
 
-    fn action_dim(self) -> Int:
+    def action_dim(self) -> Int:
         """Action dimension: 3."""
         return Self.ACTION_DIM
 
-    fn action_low(self) -> Scalar[Self.dtype]:
+    def action_low(self) -> Scalar[Self.dtype]:
         """Action lower bound: -1.0."""
         return -1.0
 
-    fn action_high(self) -> Scalar[Self.dtype]:
+    def action_high(self) -> Scalar[Self.dtype]:
         """Action upper bound: 1.0."""
         return 1.0
 
-    fn step_continuous[
+    def step_continuous[
         DTYPE_SC: DType
-    ](
-        mut self, action: Scalar[DTYPE_SC]
-    ) -> Tuple[List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool]:
+    ](mut self, action: Scalar[DTYPE_SC]) -> Tuple[
+        List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool
+    ]:
         """Step with single action (applies to steering only)."""
-        var act = CarRacingAction[Self.dtype](Scalar[Self.dtype](action), 0.0, 0.0)
+        var act = CarRacingAction[Self.dtype](
+            Scalar[Self.dtype](action), 0.0, 0.0
+        )
         var result = self.step(act)
         var obs_typed = result[0].to_list_typed[Self.dtype]()
         var obs = List[Scalar[DTYPE_SC]](capacity=len(obs_typed))
@@ -758,7 +760,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             result[2],
         )
 
-    fn step_continuous_vec[
+    def step_continuous_vec[
         DTYPE_VEC: DType
     ](
         mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
@@ -779,7 +781,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     # Internal State Buffer Access
     # =========================================================================
 
-    fn _get_state_tensor(
+    def _get_state_tensor(
         self,
     ) -> LayoutTensor[
         dtype,
@@ -791,9 +793,13 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             dtype,
             Layout.row_major(1, Self.STATE_SIZE),
             MutAnyOrigin,
-        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](self.state_buffer.unsafe_ptr()))
+        ](
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                self.state_buffer.unsafe_ptr()
+            )
+        )
 
-    fn _get_tiles_tensor(
+    def _get_tiles_tensor(
         self,
     ) -> LayoutTensor[
         dtype,
@@ -805,9 +811,13 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             dtype,
             Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
             MutAnyOrigin,
-        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](self.tiles_buffer.unsafe_ptr()))
+        ](
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                self.tiles_buffer.unsafe_ptr()
+            )
+        )
 
-    fn _init_state_buffer(
+    def _init_state_buffer(
         mut self,
         x: Float64,
         y: Float64,
@@ -825,7 +835,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         state[0, Self.Layout.HULL_OFFSET + HULL_Y] = Scalar[dtype](y)
         state[0, Self.Layout.HULL_OFFSET + HULL_ANGLE] = Scalar[dtype](angle)
 
-    fn _set_control(
+    def _set_control(
         mut self,
         steering: Float64,
         gas: Float64,
@@ -841,7 +851,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             brake
         )
 
-    fn _update_tiles_buffer(mut self):
+    def _update_tiles_buffer(mut self):
         """Copy track tiles to tiles buffer."""
         var tiles = self._get_tiles_tensor()
         self.track.to_buffer[MAX_TRACK_TILES](tiles)
@@ -850,7 +860,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     # Physics Step
     # =========================================================================
 
-    fn _step_physics(mut self):
+    def _step_physics(mut self):
         """Step physics using CarDynamics."""
         var state = self._get_state_tensor()
         var tiles = self._get_tiles_tensor()
@@ -871,7 +881,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     # Reward and Termination
     # =========================================================================
 
-    fn _check_tiles_and_reward(mut self) -> Float64:
+    def _check_tiles_and_reward(mut self) -> Float64:
         """Check tile visits and compute reward."""
         var state = self._get_state_tensor()
         var tiles = self._get_tiles_tensor()
@@ -901,7 +911,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         self.total_reward += step_reward
         return step_reward
 
-    fn _check_termination(mut self, mut step_reward: Float64):
+    def _check_termination(mut self, mut step_reward: Float64):
         """Check termination conditions."""
         var state = self._get_state_tensor()
 
@@ -938,7 +948,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     # Observation Update
     # =========================================================================
 
-    fn _update_observation(mut self):
+    def _update_observation(mut self):
         """Update observation in state buffer (called after physics step)."""
         # Copy hull state to observation buffer
         var state = self._get_state_tensor()
@@ -990,7 +1000,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         var speed = sqrt(vx * vx + vy * vy)
         state[0, Self.Layout.OBS_OFFSET + 12] = speed
 
-    fn _update_cached_state(mut self):
+    def _update_cached_state(mut self):
         """Update cached state from buffer."""
         var state = self._get_state_tensor()
         var obs_off = Self.Layout.OBS_OFFSET
@@ -1037,7 +1047,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
     # =========================================================================
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -1105,7 +1115,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn step_embedded_wrapper(
+        def step_embedded_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -1151,7 +1161,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1178,7 +1188,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -1201,7 +1211,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1237,7 +1247,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn selective_reset_wrapper(
+        def selective_reset_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -1267,7 +1277,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
@@ -1288,7 +1298,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn extract_obs(
+        def extract_obs(
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -1312,14 +1322,14 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
         """No-op: CarRacing doesn't need pre-allocated workspace."""
         pass
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[dtype],
         curriculum_values: List[Scalar[dtype]],
@@ -1333,7 +1343,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
 
     @always_inline
     @staticmethod
-    fn _reset_env_gpu[
+    def _reset_env_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1480,7 +1490,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
 
     @always_inline
     @staticmethod
-    fn _generate_random_track_gpu[
+    def _generate_random_track_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1665,7 +1675,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         return num_tiles
 
     @staticmethod
-    fn _copy_obs_gpu[
+    def _copy_obs_gpu[
         BATCH_SIZE: Int,
         OBS_DIM: Int,
     ](
@@ -1687,7 +1697,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn copy_obs_wrapper(
+        def copy_obs_wrapper(
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, CRConstants.STATE_SIZE),
@@ -1716,7 +1726,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
 
     @always_inline
     @staticmethod
-    fn _step_env_gpu_embedded[
+    def _step_env_gpu_embedded[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -1905,7 +1915,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             obs[env, i] = states[env, CRConstants.OBS_OFFSET + i]
 
     @staticmethod
-    fn generate_track_to_buffer(
+    def generate_track_to_buffer(
         ctx: DeviceContext,
         mut tiles_buf: DeviceBuffer[dtype],
         seed: UInt64 = 42,
@@ -1952,7 +1962,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
 # =============================================================================
 
 
-fn clamp(x: Float64, low: Float64, high: Float64) -> Float64:
+def clamp(x: Float64, low: Float64, high: Float64) -> Float64:
     """Clamp value to range."""
     if x < low:
         return low

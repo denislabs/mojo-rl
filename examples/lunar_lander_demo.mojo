@@ -19,7 +19,7 @@ from std.time import sleep
 from mojo_rl.render import Renderer2D
 
 
-fn main() raises:
+def main() raises:
     print("=== LunarLander Native Rendering Demo ===")
     print("Pure Mojo implementation with custom physics engine")
     print("Close the window or press Ctrl+C to exit\n")
@@ -96,7 +96,7 @@ fn main() raises:
     print("=== Demo Complete ===")
 
 
-fn _heuristic_action(
+def _heuristic_action(
     x: Float64,
     y: Float64,
     vx: Float64,

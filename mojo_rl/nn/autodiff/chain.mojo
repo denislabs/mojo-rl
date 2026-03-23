@@ -45,7 +45,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     # --- Sum helpers ---
 
     @staticmethod
-    fn _sum_param_size() -> Int:
+    def _sum_param_size() -> Int:
         var total = 0
 
         comptime for i in range(Self.N):
@@ -53,7 +53,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         return total
 
     @staticmethod
-    fn _sum_cache_size() -> Int:
+    def _sum_cache_size() -> Int:
         var total = 0
 
         comptime for i in range(Self.N):
@@ -61,7 +61,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         return total
 
     @staticmethod
-    fn _total_inter() -> Int:
+    def _total_inter() -> Int:
         """Per-sample intermediate buffer size (sum of OUT_DIM for ops 0..N-2).
         """
         var total = 0
@@ -71,7 +71,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         return total
 
     @staticmethod
-    fn _max_op_workspace() -> Int:
+    def _max_op_workspace() -> Int:
         """Max per-sample op workspace across all ops (reused sequentially)."""
         var m = 0
 
@@ -89,7 +89,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     # --- Offset helpers ---
 
     @staticmethod
-    fn _param_offset[idx: Int]() -> Int:
+    def _param_offset[idx: Int]() -> Int:
         var total = 0
 
         comptime for j in range(idx):
@@ -97,7 +97,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         return total
 
     @staticmethod
-    fn _cache_offset[idx: Int]() -> Int:
+    def _cache_offset[idx: Int]() -> Int:
         var total = 0
 
         comptime for j in range(idx):
@@ -105,7 +105,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         return total
 
     @staticmethod
-    fn _inter_offset[idx: Int]() -> Int:
+    def _inter_offset[idx: Int]() -> Int:
         """Offset of intermediate slot idx (per sample)."""
         var total = 0
 
@@ -118,7 +118,9 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -142,7 +144,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -242,7 +244,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -274,7 +276,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -361,9 +363,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         Layout.row_major(BATCH, Self.op_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
-                    Self.op_types[i].vjp[BATCH](
-                        li_go, li_gi, li_p, li_c, li_g
-                    )
+                    Self.op_types[i].vjp[BATCH](li_go, li_gi, li_p, li_c, li_g)
                 elif i == 0:
                     # First op: grad_inter[0] -> chain grad_input
                     var li_go = LayoutTensor[
@@ -376,9 +376,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         Layout.row_major(BATCH, Self.op_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](grad_input.ptr)
-                    Self.op_types[i].vjp[BATCH](
-                        li_go, li_gi, li_p, li_c, li_g
-                    )
+                    Self.op_types[i].vjp[BATCH](li_go, li_gi, li_p, li_c, li_g)
                 else:
                     # Middle: grad_inter[i] -> grad_inter[i-1]
                     var li_go = LayoutTensor[
@@ -391,16 +389,14 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                         Layout.row_major(BATCH, Self.op_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
-                    Self.op_types[i].vjp[BATCH](
-                        li_go, li_gi, li_p, li_c, li_g
-                    )
+                    Self.op_types[i].vjp[BATCH](li_go, li_gi, li_p, li_c, li_g)
 
     # =========================================================================
     # GPU Forward (with cache)
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -501,9 +497,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                     var out_rb = rebind[
                         LayoutTensor[
                             dtype,
-                            Layout.row_major(
-                                BATCH, Self.op_types[i].OUT_DIM
-                            ),
+                            Layout.row_major(BATCH, Self.op_types[i].OUT_DIM),
                             MutAnyOrigin,
                         ]
                     ](output)
@@ -530,7 +524,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -547,7 +541,8 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        """GPU inference forward. Dummy cache carved from workspace — no allocation."""
+        """GPU inference forward. Dummy cache carved from workspace — no allocation.
+        """
 
         # Op workspace pointer: past inter + cache region
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
@@ -596,7 +591,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -620,7 +615,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -716,9 +711,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                     var go_rb = rebind[
                         LayoutTensor[
                             dtype,
-                            Layout.row_major(
-                                BATCH, Self.op_types[i].OUT_DIM
-                            ),
+                            Layout.row_major(BATCH, Self.op_types[i].OUT_DIM),
                             MutAnyOrigin,
                         ]
                     ](grad_output)

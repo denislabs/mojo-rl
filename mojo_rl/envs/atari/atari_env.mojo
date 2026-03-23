@@ -49,13 +49,13 @@ struct AtariEnvState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -65,10 +65,10 @@ struct AtariAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var action_idx: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.action_idx = copy.action_idx
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.action_idx = take.action_idx
 
 
@@ -77,7 +77,7 @@ struct AtariAction(Action, Copyable, ImplicitlyCopyable, Movable):
 # ============================================================================
 
 
-fn _resize_160x210_to_84x84(
+def _resize_160x210_to_84x84(
     src: UnsafePointer[UInt8, MutAnyOrigin],
     dst: UnsafePointer[UInt8, MutAnyOrigin],
 ):
@@ -145,7 +145,7 @@ struct AtariEnv[
     var raw_frame_b: UnsafePointer[UInt8, MutAnyOrigin]  # 160*210*4 BGRA
     var gray_buf: UnsafePointer[UInt8, MutAnyOrigin]  # 160*210 grayscale
 
-    fn __init__(
+    def __init__(
         out self,
         rom: UnsafePointer[UInt8, MutAnyOrigin],
         rom_size: Int,
@@ -192,7 +192,7 @@ struct AtariEnv[
             self.gray_buf = UnsafePointer[UInt8, MutAnyOrigin]()
             self.frame_idx = 0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.env = take.env^
         self.episode_reward = take.episode_reward
         self.done = take.done
@@ -207,7 +207,7 @@ struct AtariEnv[
     # Pixel-mode helpers
     # ========================================================================
 
-    fn _bgra_to_gray_maxpool(self):
+    def _bgra_to_gray_maxpool(self):
         """Max-pool raw_frame_a and raw_frame_b element-wise, convert to grayscale.
 
         Handles Atari sprite flickering by taking the max of 2 consecutive frames.
@@ -231,7 +231,7 @@ struct AtariEnv[
             # Luminance: Y = (77*R + 150*G + 29*B) >> 8
             self.gray_buf[i] = UInt8((77 * r + 150 * g + 29 * b) >> 8)
 
-    fn _push_frame_to_stack(mut self):
+    def _push_frame_to_stack(mut self):
         """Resize gray_buf (160×210) to 84×84 and push into frame_stack ring buffer.
         """
         var slot_offset = self.frame_idx * OBS_FRAME_SIZE
@@ -241,7 +241,7 @@ struct AtariEnv[
         )
         self.frame_idx = (self.frame_idx + 1) % 4
 
-    fn _render_current_frame(mut self):
+    def _render_current_frame(mut self):
         """Render the current emulator state into raw_frame_a using run_frame_with_video.
 
         Runs one NOOP frame with video output to capture the display.
@@ -254,7 +254,7 @@ struct AtariEnv[
     # Env trait (base)
     # ========================================================================
 
-    fn reset(mut self) -> AtariEnvState:
+    def reset(mut self) -> AtariEnvState:
         """Reset the environment."""
         self.env.reset()
         self.episode_reward = 0.0
@@ -280,7 +280,7 @@ struct AtariEnv[
 
         return AtariEnvState(index=0)
 
-    fn step(
+    def step(
         mut self, action: AtariAction, verbose: Bool = False
     ) -> Tuple[AtariEnvState, Scalar[Self.DTYPE], Bool]:
         """Take action and return (state, reward, done)."""
@@ -291,10 +291,10 @@ struct AtariEnv[
             result[2],
         )
 
-    fn get_state(self) -> AtariEnvState:
+    def get_state(self) -> AtariEnvState:
         return AtariEnvState(index=self._steps)
 
-    fn close(mut self):
+    def close(mut self):
         """Free pixel-mode buffers."""
         comptime if Self.OBS_MODE == 1:
             if self.frame_stack:
@@ -314,7 +314,7 @@ struct AtariEnv[
     # ContinuousStateEnv trait
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.DTYPE]]:
+    def get_obs_list(self) -> List[Scalar[Self.DTYPE]]:
         """Return current observation as a list of floats.
 
         RAM mode: 128 floats in [0, 1].
@@ -339,12 +339,12 @@ struct AtariEnv[
                 obs.append(Scalar[Self.DTYPE](ram[i]) / 255.0)
             return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.DTYPE]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.DTYPE]]:
         """Reset environment and return initial observation."""
         _ = self.reset()
         return self.get_obs_list()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension."""
         comptime if Self.OBS_MODE == 1:
             return FRAME_STACK_SIZE  # 4 * 84 * 84 = 28224
@@ -355,17 +355,17 @@ struct AtariEnv[
     # DiscreteActionEnv trait
     # ========================================================================
 
-    fn action_from_index(self, action_idx: Int) -> AtariAction:
+    def action_from_index(self, action_idx: Int) -> AtariAction:
         return AtariAction(action_idx=action_idx)
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         return Self.GAME.NUM_ACTIONS
 
     # ========================================================================
     # BoxDiscreteActionEnv trait — step_obs
     # ========================================================================
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
         """Take action and return (obs, reward, done).
@@ -381,7 +381,7 @@ struct AtariEnv[
         else:
             return self._step_obs_ram(action)
 
-    fn _step_obs_ram(
+    def _step_obs_ram(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
         """RAM mode step: use step_with_game, read 128 RAM bytes."""
@@ -391,7 +391,7 @@ struct AtariEnv[
         var obs = self.get_obs_list()
         return (obs^, Scalar[Self.DTYPE](reward), self.done)
 
-    fn _step_obs_pixel(
+    def _step_obs_pixel(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
         """Pixel mode step: manual frame-skip with per-scanline rendering.

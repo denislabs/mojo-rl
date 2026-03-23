@@ -19,7 +19,14 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TPB
 from mojo_rl.nn.autodiff.primitives.gather import GatherOp
-from mojo_rl.nn.model import Model, Sequential, Gather, Slice, MSELoss, HuberLoss
+from mojo_rl.nn.model import (
+    Model,
+    Sequential,
+    Gather,
+    Slice,
+    MSELoss,
+    HuberLoss,
+)
 from mojo_rl.nn.autodiff.combinators import SplitApply
 
 
@@ -45,12 +52,12 @@ trait QGradient:
     """
 
     @staticmethod
-    fn gpu_ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
+    def gpu_ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
         """GPU workspace floats needed per call (0 for ManualQGradient)."""
         ...
 
     @staticmethod
-    fn compute_grad_cpu[
+    def compute_grad_cpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
@@ -63,7 +70,7 @@ trait QGradient:
         ...
 
     @staticmethod
-    fn compute_grad_gpu[
+    def compute_grad_gpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
@@ -95,11 +102,11 @@ struct ManualQGradient(QGradient):
     """
 
     @staticmethod
-    fn gpu_ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
+    def gpu_ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
         return 0
 
     @staticmethod
-    fn compute_grad_cpu[
+    def compute_grad_cpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
@@ -118,16 +125,14 @@ struct ManualQGradient(QGradient):
             for a in range(ACTIONS):
                 if a == action:
                     grad_q[b * ACTIONS + a] = (
-                        Scalar[dtype](2.0)
-                        * td_err
-                        / Scalar[dtype](BATCH)
+                        Scalar[dtype](2.0) * td_err / Scalar[dtype](BATCH)
                     )
                 else:
                     grad_q[b * ACTIONS + a] = Scalar[dtype](0.0)
         return total_loss / Float64(BATCH)
 
     @staticmethod
-    fn compute_grad_gpu[
+    def compute_grad_gpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
@@ -145,7 +150,7 @@ struct ManualQGradient(QGradient):
         """Hand-written sparse MSE gradient on GPU. One thread per sample."""
 
         @always_inline
-        fn kernel(
+        def kernel(
             grd: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
@@ -163,9 +168,7 @@ struct ManualQGradient(QGradient):
             for a in range(ACTIONS):
                 if a == action:
                     grd[b, a] = (
-                        Scalar[dtype](2.0)
-                        * td_error
-                        / Scalar[dtype](BATCH)
+                        Scalar[dtype](2.0) * td_error / Scalar[dtype](BATCH)
                     )
                 else:
                     grd[b, a] = Scalar[dtype](0.0)
@@ -205,7 +208,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
     """
 
     @staticmethod
-    fn gpu_ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
+    def gpu_ws_size[BATCH: Int, ACTIONS: Int]() -> Int:
         """Total GPU workspace floats for compute_grad_gpu (pre-allocated once).
 
         Layout within the workspace buffer:
@@ -227,18 +230,18 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
         comptime PS = max(1, LossGraph.PARAM_SIZE)
         comptime FWD_WS = max(1, BATCH * LossGraph.WORKSPACE_SIZE_PER_SAMPLE)
         return (
-            BATCH * LOSS_IN      # loss_in
-            + BATCH              # loss_out
+            BATCH * LOSS_IN  # loss_in
+            + BATCH  # loss_out
             + max(1, BATCH * LOSS_CS)  # cache
-            + PS                 # params
-            + PS                 # grads
-            + BATCH              # grad_seed
-            + BATCH * LOSS_IN    # grad_in
-            + FWD_WS             # fwd/bwd workspace
+            + PS  # params
+            + PS  # grads
+            + BATCH  # grad_seed
+            + BATCH * LOSS_IN  # grad_in
+            + FWD_WS  # fwd/bwd workspace
         )
 
     @staticmethod
-    fn compute_grad_cpu[
+    def compute_grad_cpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
@@ -329,7 +332,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
         return loss
 
     @staticmethod
-    fn compute_grad_gpu[
+    def compute_grad_gpu[
         BATCH: Int,
         ACTIONS: Int,
     ](
@@ -401,7 +404,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
 
         # Pack: [Q_values(A) || action_idx(1) || target(1)]
         @always_inline
-        fn pack_k(
+        def pack_k(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, LOSS_IN), MutAnyOrigin
             ],
@@ -420,8 +423,12 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
             dst[b, ACTIONS + 1] = tgt[b]
 
         ctx.enqueue_function[pack_k, pack_k](
-            loss_in_t, q_values, actions, targets,
-            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+            loss_in_t,
+            q_values,
+            actions,
+            targets,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # Forward
@@ -445,7 +452,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
         ](grad_seed_ptr)
 
         @always_inline
-        fn fill_seed_k(
+        def fill_seed_k(
             seed: LayoutTensor[
                 dtype, Layout.row_major(BATCH, LossGraph.OUT_DIM), MutAnyOrigin
             ],
@@ -457,7 +464,8 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
 
         ctx.enqueue_function[fill_seed_k, fill_seed_k](
             grad_seed_t,
-            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         var grad_in_t = LayoutTensor[
@@ -474,7 +482,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
 
         # Extract first ACTIONS columns to grad_q
         @always_inline
-        fn extract_k(
+        def extract_k(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
@@ -489,6 +497,8 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
                 dst[b, a] = src[b, a]
 
         ctx.enqueue_function[extract_k, extract_k](
-            grad_q, grad_in_t,
-            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+            grad_q,
+            grad_in_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )

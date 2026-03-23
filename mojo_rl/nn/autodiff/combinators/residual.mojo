@@ -17,7 +17,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 
 # GPU kernel impl: a[i] += b[i]
 @always_inline
-fn _add_kernel_impl[
+def _add_kernel_impl[
     BATCH: Int, DIM: Int
 ](
     a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -50,7 +50,9 @@ struct Residual[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -63,7 +65,7 @@ struct Residual[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -88,7 +90,7 @@ struct Residual[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -110,7 +112,7 @@ struct Residual[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -129,7 +131,9 @@ struct Residual[Inner: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Inner.backward[BATCH](grad_output, grad_input, params, cache, grads)
+        Self.Inner.backward[BATCH](
+            grad_output, grad_input, params, cache, grads
+        )
         for i in range(BATCH * Self.IN_DIM):
             grad_input.ptr[i] = grad_input.ptr[i] + grad_output.ptr[i]
 
@@ -138,7 +142,7 @@ struct Residual[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -168,7 +172,7 @@ struct Residual[Inner: Model](Model):
         var grid_x = (BATCH * Self.IN_DIM + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             a: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -187,7 +191,7 @@ struct Residual[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -214,7 +218,7 @@ struct Residual[Inner: Model](Model):
         var grid_x = (BATCH * Self.IN_DIM + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             a: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -229,7 +233,7 @@ struct Residual[Inner: Model](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -253,7 +257,7 @@ struct Residual[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -286,7 +290,7 @@ struct Residual[Inner: Model](Model):
         var grid_x = (BATCH * Self.IN_DIM + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             a: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],

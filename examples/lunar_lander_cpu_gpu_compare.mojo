@@ -33,24 +33,24 @@ from mojo_rl.physics2d import (
 # =============================================================================
 
 
-fn print_separator():
+def print_separator():
     print("=" * 70)
 
 
-fn print_header(title: String):
+def print_header(title: String):
     print_separator()
     print(title)
     print_separator()
 
 
-fn abs_f64(x: Float64) -> Float64:
+def abs_f64(x: Float64) -> Float64:
     """Helper for absolute value."""
     if x < 0:
         return -x
     return x
 
 
-fn compare_scalar(
+def compare_scalar(
     name: String,
     cpu_val: Scalar[dtype],
     gpu_val: Scalar[dtype],
@@ -75,7 +75,7 @@ fn compare_scalar(
     return is_match
 
 
-fn compare_observation(
+def compare_observation(
     cpu_obs: InlineArray[Scalar[dtype], 8],
     gpu_obs: InlineArray[Scalar[dtype], 8],
     tolerance: Float64 = 1e-4,
@@ -107,7 +107,7 @@ fn compare_observation(
 # =============================================================================
 
 
-fn extract_gpu_observation[
+def extract_gpu_observation[
     BATCH: Int, STATE_SIZE: Int
 ](
     states_buf: DeviceBuffer[dtype],
@@ -129,7 +129,7 @@ fn extract_gpu_observation[
 
     # Copy observation portion from states buffer
     @always_inline
-    fn copy_obs_kernel(
+    def copy_obs_kernel(
         dst: LayoutTensor[dtype, Layout.row_major(8), MutAnyOrigin],
         src: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), ImmutAnyOrigin
@@ -158,7 +158,7 @@ fn extract_gpu_observation[
     return obs^
 
 
-fn extract_gpu_body_state[
+def extract_gpu_body_state[
     BATCH: Int, STATE_SIZE: Int
 ](
     states_buf: DeviceBuffer[dtype],
@@ -173,7 +173,7 @@ fn extract_gpu_body_state[
     var state_buf = ctx.enqueue_create_buffer[dtype](6)
 
     @always_inline
-    fn copy_body_kernel(
+    def copy_body_kernel(
         dst: LayoutTensor[dtype, Layout.row_major(6), MutAnyOrigin],
         src: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), ImmutAnyOrigin
@@ -213,7 +213,7 @@ fn extract_gpu_body_state[
     return state^
 
 
-fn extract_gpu_metadata[
+def extract_gpu_metadata[
     BATCH: Int, STATE_SIZE: Int
 ](
     states_buf: DeviceBuffer[dtype],
@@ -228,7 +228,7 @@ fn extract_gpu_metadata[
     var meta_buf = ctx.enqueue_create_buffer[dtype](4)
 
     @always_inline
-    fn copy_meta_kernel(
+    def copy_meta_kernel(
         dst: LayoutTensor[dtype, Layout.row_major(4), MutAnyOrigin],
         src: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), ImmutAnyOrigin
@@ -262,7 +262,7 @@ fn extract_gpu_metadata[
 # =============================================================================
 
 
-fn test_reset_comparison(ctx: DeviceContext) raises -> Bool:
+def test_reset_comparison(ctx: DeviceContext) raises -> Bool:
     """Test that CPU and GPU reset produce identical initial states."""
     print_header("TEST 1: Reset Comparison (Same Seed)")
 
@@ -345,7 +345,7 @@ fn test_reset_comparison(ctx: DeviceContext) raises -> Bool:
     return all_match
 
 
-fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
+def test_step_comparison(ctx: DeviceContext) raises -> Bool:
     """Test that CPU and GPU step produce identical results."""
     print_header("TEST 2: Step Comparison (Action Sequence)")
 
@@ -526,7 +526,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
     return all_match
 
 
-fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
+def test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
     """Test with forced flat terrain to isolate physics differences."""
     print_header("TEST 3: Flat Terrain Comparison")
 
@@ -668,7 +668,7 @@ fn test_flat_terrain_comparison(ctx: DeviceContext) raises -> Bool:
     return obs_match
 
 
-fn test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
+def test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
     """Test that reward calculation matches between CPU and GPU."""
     print_header("TEST 4: Reward Calculation Deep Dive")
 
@@ -809,7 +809,7 @@ fn test_reward_accumulation(ctx: DeviceContext) raises -> Bool:
     return all_match
 
 
-fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
+def test_contact_detection(ctx: DeviceContext) raises -> Bool:
     """Test leg contact detection over a long trajectory.
 
     NOTE: This test may fail due to precision drift between CPU (float64 internal)
@@ -1063,7 +1063,7 @@ fn test_contact_detection(ctx: DeviceContext) raises -> Bool:
     return all_match
 
 
-fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
+def test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     """Test physics with manually set identical initial conditions.
 
     This test bypasses RNG differences by:
@@ -1212,7 +1212,7 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     # Copy host buffer to GPU (only the portions we set)
     # We need a kernel to selectively copy
     @always_inline
-    fn copy_state_kernel(
+    def copy_state_kernel(
         dst: LayoutTensor[
             dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
         ],
@@ -1468,7 +1468,7 @@ fn test_deterministic_physics(ctx: DeviceContext) raises -> Bool:
     return all_match
 
 
-fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
+def test_gravity_only(ctx: DeviceContext) raises -> Bool:
     """Test pure physics (gravity only, no engines) with identical states.
 
     This test isolates the physics integration from engine dispersion RNG.
@@ -1555,7 +1555,7 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
     ctx.enqueue_copy(obs_buf_small, obs_host_buf)
 
     @always_inline
-    fn copy_state_kernel2(
+    def copy_state_kernel2(
         dst: LayoutTensor[
             dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
         ],
@@ -1729,7 +1729,7 @@ fn test_gravity_only(ctx: DeviceContext) raises -> Bool:
     return all_match
 
 
-fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
+def test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     """Deep dive into reward calculation differences.
 
     This test examines:
@@ -1785,7 +1785,7 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     # Shaping formula from helpers.mojo:
     # shaping = -100*sqrt(x^2 + y^2) - 100*sqrt(vx^2 + vy^2) - 100*abs(angle) + 10*left + 10*right
 
-    fn compute_shaping_manual(obs: InlineArray[Scalar[dtype], 8]) -> Float64:
+    def compute_shaping_manual(obs: InlineArray[Scalar[dtype], 8]) -> Float64:
         var x = Float64(obs[0])
         var y = Float64(obs[1])
         var vx = Float64(obs[2])
@@ -1879,7 +1879,7 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     ctx.enqueue_copy(obs_buf_small, obs_host_buf)
 
     @always_inline
-    fn copy_full_state_kernel(
+    def copy_full_state_kernel(
         dst: LayoutTensor[
             dtype, Layout.row_major(N_ENVS, STATE_SIZE), MutAnyOrigin
         ],
@@ -2053,7 +2053,7 @@ fn test_reward_deep_dive(ctx: DeviceContext) raises -> Bool:
     return all_match
 
 
-fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
+def test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
     """Test contact detection with synchronized states (no precision drift).
 
     This test:
@@ -2445,7 +2445,7 @@ fn test_synchronized_contact_detection(ctx: DeviceContext) raises -> Bool:
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     print_header("LUNAR LANDER CPU vs GPU COMPARISON TEST SUITE")
     print("Testing LunarLander implementation consistency...")
     print("Using dtype:", dtype)

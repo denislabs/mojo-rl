@@ -21,7 +21,7 @@ from mojo_rl.deep_agents.core.agents import DeepTD3Agent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Deep TD3 on Pendulum")
     print("=" * 60)

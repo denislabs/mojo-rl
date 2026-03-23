@@ -9,12 +9,12 @@ SAC does NOT use these because:
   - select_greedy_action_list: SAC applies tanh(mean) instead of raw actor output
 
 Usage in DDPG/TD3 (inside the struct methods):
-    fn select_action_list(mut self, obs) -> List[Float64]:
+    def select_action_list(mut self, obs) -> List[Float64]:
         return deterministic_select_action[Self.ActorModel, Self.ActorOpt](
             self.actor.online, obs, self.action_scale, self.noise_std
         )
 
-    fn store_list_transition(mut self, obs, action, reward, next_obs, done):
+    def store_list_transition(mut self, obs, action, reward, next_obs, done):
         store_continuous_transition[Self.OBS, Self.ACTIONS, Self.BUFFER_CAPACITY, dtype](
             self.buffer, obs, action, reward, next_obs, done,
             self.action_scale, self.total_steps
@@ -33,7 +33,7 @@ from mojo_rl.deep_agents.core.replay import HeapReplayBuffer
 from mojo_rl.nn.gpu.random import gaussian_noise
 
 
-fn deterministic_select_action[
+def deterministic_select_action[
     DTYPE: DType,
     ActorModel: Model,
     ActorOpt: Optimizer,
@@ -94,7 +94,7 @@ fn deterministic_select_action[
     return result^
 
 
-fn greedy_continuous_action[
+def greedy_continuous_action[
     ActorModel: Model,
     ActorOpt: Optimizer,
 ](
@@ -150,7 +150,7 @@ fn greedy_continuous_action[
     return result^
 
 
-fn store_continuous_transition[
+def store_continuous_transition[
     DTYPE: DType,
     OBS: Int,
     ACTIONS: Int,
@@ -198,7 +198,7 @@ fn store_continuous_transition[
     total_steps += 1
 
 
-fn random_continuous_action[
+def random_continuous_action[
     DTYPE: DType
 ](action_dim: Int, action_scale: Float64) -> List[Scalar[DTYPE]]:
     """Return a uniformly random action in [-action_scale, action_scale].

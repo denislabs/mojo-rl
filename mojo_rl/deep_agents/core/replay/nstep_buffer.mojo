@@ -41,7 +41,7 @@ from layout import Layout, LayoutTensor
 trait GPUReplayBufferStorable:
     """Trait for GPU replay buffers that can store batched transitions."""
 
-    fn store[
+    def store[
         N_ENVS: Int
     ](
         mut self,
@@ -70,7 +70,7 @@ struct NStepTransition[OBS_DIM: Int]:
     var next_obs: InlineArray[Scalar[dtype], Self.OBS_DIM]
     var done: Bool
 
-    fn __init__(out self):
+    def __init__(out self):
         """Empty (invalid) result."""
         self.valid = False
         self.obs = InlineArray[Scalar[dtype], Self.OBS_DIM](
@@ -83,7 +83,7 @@ struct NStepTransition[OBS_DIM: Int]:
         )
         self.done = False
 
-    fn __init__(
+    def __init__(
         out self,
         obs: InlineArray[Scalar[dtype], Self.OBS_DIM],
         action: Scalar[dtype],
@@ -112,13 +112,13 @@ struct NStepBuffer[N: Int, OBS_DIM: Int](Movable):
     """
 
     # Ring storage (flat arrays, indexed by step position)
-    var obs: List[Scalar[dtype]]      # [N * OBS_DIM]
+    var obs: List[Scalar[dtype]]  # [N * OBS_DIM]
     var actions: List[Scalar[dtype]]  # [N]
     var rewards: List[Scalar[dtype]]  # [N]
     var gamma: Scalar[dtype]
     var count: Int  # Steps currently buffered (0 to N)
 
-    fn __init__(out self, gamma: Float64 = 0.99):
+    def __init__(out self, gamma: Float64 = 0.99):
         self.obs = List[Scalar[dtype]](capacity=Self.N * Self.OBS_DIM)
         self.actions = List[Scalar[dtype]](capacity=Self.N)
         self.rewards = List[Scalar[dtype]](capacity=Self.N)
@@ -130,21 +130,21 @@ struct NStepBuffer[N: Int, OBS_DIM: Int](Movable):
         self.gamma = Scalar[dtype](gamma)
         self.count = 0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.obs = take.obs^
         self.actions = take.actions^
         self.rewards = take.rewards^
         self.gamma = take.gamma
         self.count = take.count
 
-    fn _compute_return(self, n: Int) -> Scalar[dtype]:
+    def _compute_return(self, n: Int) -> Scalar[dtype]:
         """Compute discounted return R = r_0 + γr_1 + ... + γ^{n-1}r_{n-1}."""
         var r = Scalar[dtype](0)
         for i in range(n - 1, -1, -1):
             r = r * self.gamma + self.rewards[i]
         return r
 
-    fn _shift_left(mut self):
+    def _shift_left(mut self):
         """Remove oldest entry, shift everything left by 1."""
         for i in range(Self.N - 1):
             for d in range(Self.OBS_DIM):
@@ -154,7 +154,7 @@ struct NStepBuffer[N: Int, OBS_DIM: Int](Movable):
             self.actions[i] = self.actions[i + 1]
             self.rewards[i] = self.rewards[i + 1]
 
-    fn add(
+    def add(
         mut self,
         obs: InlineArray[Scalar[dtype], Self.OBS_DIM],
         action: Scalar[dtype],
@@ -196,9 +196,7 @@ struct NStepBuffer[N: Int, OBS_DIM: Int](Movable):
                 s0[d] = self.obs[d]
             var a0 = self.actions[0]
             self.count = 0
-            return NStepTransition[Self.OBS_DIM](
-                s0, a0, r_n, next_obs, True
-            )
+            return NStepTransition[Self.OBS_DIM](s0, a0, r_n, next_obs, True)
 
         if self.count == Self.N:
             # N steps accumulated: emit and shift
@@ -211,14 +209,12 @@ struct NStepBuffer[N: Int, OBS_DIM: Int](Movable):
             var a0 = self.actions[0]
             self._shift_left()
             self.count = Self.N - 1
-            return NStepTransition[Self.OBS_DIM](
-                s0, a0, r_n, next_obs, False
-            )
+            return NStepTransition[Self.OBS_DIM](s0, a0, r_n, next_obs, False)
 
         # Not enough steps yet
         return NStepTransition[Self.OBS_DIM]()
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset the buffer (e.g., at start of new episode)."""
         self.count = 0
 
@@ -242,17 +238,17 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
     """
 
     # Per-env ring buffers on GPU
-    var obs_ring: DeviceBuffer[dtype]       # [N_ENVS * N * OBS_DIM]
-    var act_ring: DeviceBuffer[dtype]       # [N_ENVS * N]
-    var rew_ring: DeviceBuffer[dtype]       # [N_ENVS * N]
-    var counts: DeviceBuffer[DType.int32]   # [N_ENVS] step count per env
+    var obs_ring: DeviceBuffer[dtype]  # [N_ENVS * N * OBS_DIM]
+    var act_ring: DeviceBuffer[dtype]  # [N_ENVS * N]
+    var rew_ring: DeviceBuffer[dtype]  # [N_ENVS * N]
+    var counts: DeviceBuffer[DType.int32]  # [N_ENVS] step count per env
 
     # Compressed output buffers (overwritten each process() call)
-    var out_obs: DeviceBuffer[dtype]        # [N_ENVS * OBS_DIM]
-    var out_act: DeviceBuffer[dtype]        # [N_ENVS]
-    var out_rew: DeviceBuffer[dtype]        # [N_ENVS]
-    var out_nobs: DeviceBuffer[dtype]       # [N_ENVS * OBS_DIM]
-    var out_done: DeviceBuffer[dtype]       # [N_ENVS]
+    var out_obs: DeviceBuffer[dtype]  # [N_ENVS * OBS_DIM]
+    var out_act: DeviceBuffer[dtype]  # [N_ENVS]
+    var out_rew: DeviceBuffer[dtype]  # [N_ENVS]
+    var out_nobs: DeviceBuffer[dtype]  # [N_ENVS * OBS_DIM]
+    var out_done: DeviceBuffer[dtype]  # [N_ENVS]
     var out_valid: DeviceBuffer[DType.int32]  # [N_ENVS] (1=valid, 0=not ready)
 
     # CPU-side count of valid transitions (updated after process)
@@ -261,16 +257,12 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
 
     var gamma: Scalar[dtype]
 
-    fn __init__(out self, ctx: DeviceContext, gamma: Float64 = 0.99) raises:
+    def __init__(out self, ctx: DeviceContext, gamma: Float64 = 0.99) raises:
         self.obs_ring = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * Self.N * Self.OBS_DIM
         )
-        self.act_ring = ctx.enqueue_create_buffer[dtype](
-            Self.N_ENVS * Self.N
-        )
-        self.rew_ring = ctx.enqueue_create_buffer[dtype](
-            Self.N_ENVS * Self.N
-        )
+        self.act_ring = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.N)
+        self.rew_ring = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.N)
         self.counts = ctx.enqueue_create_buffer[DType.int32](Self.N_ENVS)
         ctx.enqueue_memset(self.obs_ring, 0)
         ctx.enqueue_memset(self.act_ring, 0)
@@ -295,7 +287,7 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
         self.num_valid = 0
         self.gamma = Scalar[dtype](gamma)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.obs_ring = take.obs_ring^
         self.act_ring = take.act_ring^
         self.rew_ring = take.rew_ring^
@@ -310,14 +302,14 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
         self.num_valid = take.num_valid
         self.gamma = take.gamma
 
-    fn process(
+    def process(
         mut self,
         ctx: DeviceContext,
-        obs: DeviceBuffer[dtype],       # [N_ENVS * OBS_DIM]
-        actions: DeviceBuffer[dtype],   # [N_ENVS]
-        rewards: DeviceBuffer[dtype],   # [N_ENVS]
+        obs: DeviceBuffer[dtype],  # [N_ENVS * OBS_DIM]
+        actions: DeviceBuffer[dtype],  # [N_ENVS]
+        rewards: DeviceBuffer[dtype],  # [N_ENVS]
         next_obs: DeviceBuffer[dtype],  # [N_ENVS * OBS_DIM]
-        dones: DeviceBuffer[dtype],     # [N_ENVS]
+        dones: DeviceBuffer[dtype],  # [N_ENVS]
     ) raises:
         """Process one step for all environments in parallel.
 
@@ -389,7 +381,7 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
         var gamma_s = self.gamma
 
         @always_inline
-        fn nstep_kernel(
+        def nstep_kernel(
             obs_in: LayoutTensor[
                 dtype,
                 Layout.row_major(Self.N_ENVS, Self.OBS_DIM),
@@ -460,9 +452,7 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
             r_ring[e, c] = rew_in[e]
             c += 1
 
-            var is_done = rebind[Scalar[dtype]](done_in[e]) > Scalar[dtype](
-                0.5
-            )
+            var is_done = rebind[Scalar[dtype]](done_in[e]) > Scalar[dtype](0.5)
 
             if is_done or c == Self.N:
                 # Compute R_n = r_0 + γr_1 + ... + γ^{c-1}r_{c-1}
@@ -518,13 +508,9 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
             block_dim=(TPB,),
         )
 
-    fn store_into[
+    def store_into[
         B: GPUReplayBufferStorable
-    ](
-        self,
-        ctx: DeviceContext,
-        mut buffer: B,
-    ) raises:
+    ](self, ctx: DeviceContext, mut buffer: B,) raises:
         """Store all N_ENVS compressed transitions into a GPU replay buffer.
 
         Stores all transitions (valid and invalid). Invalid ones have zero

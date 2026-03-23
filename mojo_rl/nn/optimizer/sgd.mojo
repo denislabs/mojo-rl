@@ -20,17 +20,17 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
 
     comptime STATE_PER_PARAM: Int = 1
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn step[
+    def step[
         PARAM_SIZE: Int
     ](
         mut params: LayoutTensor[
@@ -57,7 +57,7 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
 
     @always_inline
     @staticmethod
-    fn step_kernel_impl[
+    def step_kernel_impl[
         PARAM_SIZE: Int
     ](
         params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -77,7 +77,7 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
     # =========================================================================
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         PARAM_SIZE: Int
     ](
         ctx: DeviceContext,
@@ -98,7 +98,7 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
         var lr = Scalar[dtype](Self.LR * lr_scale)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             params: LayoutTensor[
                 dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
             ],

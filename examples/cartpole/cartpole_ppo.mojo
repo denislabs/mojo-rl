@@ -29,7 +29,7 @@ from mojo_rl.agents.ppo import PPOAgent, PPOAgentWithMinibatch
 from mojo_rl.envs import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     """Run PPO training on CartPole."""
     print("=" * 60)
     print("CartPole with PPO (Proximal Policy Optimization)")

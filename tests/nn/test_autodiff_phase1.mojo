@@ -43,13 +43,13 @@ from layout import Layout, LayoutTensor
 # =============================================================================
 
 
-fn print_header(name: String):
+def print_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
 
 
-fn check_close(
+def check_close(
     actual: Float64, expected: Float64, tol: Float64, msg: String
 ) -> Bool:
     var diff = math_abs(actual - expected)
@@ -75,7 +75,7 @@ fn check_close(
 # =============================================================================
 
 
-fn test_matmul() -> Int:
+def test_matmul() -> Int:
     print_header("MatMul forward + vjp")
     var fails = 0
 
@@ -185,7 +185,7 @@ fn test_matmul() -> Int:
 # =============================================================================
 
 
-fn test_bias_add() -> Int:
+def test_bias_add() -> Int:
     print_header("BiasAdd forward + vjp")
     var fails = 0
 
@@ -281,7 +281,7 @@ fn test_bias_add() -> Int:
 # =============================================================================
 
 
-fn test_relu_op() -> Int:
+def test_relu_op() -> Int:
     print_header("ReLUOp forward + vjp")
     var fails = 0
 
@@ -366,7 +366,7 @@ fn test_relu_op() -> Int:
 # =============================================================================
 
 
-fn test_tanh_op() -> Int:
+def test_tanh_op() -> Int:
     print_header("TanhOp forward + vjp")
     var fails = 0
 
@@ -451,7 +451,7 @@ fn test_tanh_op() -> Int:
 # =============================================================================
 
 
-fn test_sigmoid_op() -> Int:
+def test_sigmoid_op() -> Int:
     print_header("SigmoidOp forward + vjp")
     var fails = 0
 
@@ -535,7 +535,7 @@ fn test_sigmoid_op() -> Int:
 # =============================================================================
 
 
-fn test_chain_forward_matches_sequential() -> Int:
+def test_chain_forward_matches_sequential() -> Int:
     print_header("AutoDiffChain forward == Sequential[Linear, ReLU]")
     var fails = 0
 
@@ -645,7 +645,7 @@ fn test_chain_forward_matches_sequential() -> Int:
 # =============================================================================
 
 
-fn test_chain_backward_matches_sequential() -> Int:
+def test_chain_backward_matches_sequential() -> Int:
     print_header("AutoDiffChain backward == Sequential backward")
     var fails = 0
 
@@ -783,7 +783,7 @@ fn test_chain_backward_matches_sequential() -> Int:
 # =============================================================================
 
 
-fn test_training_convergence() -> Int:
+def test_training_convergence() -> Int:
     print_header("Training convergence — XOR with AutoDiffChain MLP")
     var fails = 0
 
@@ -921,7 +921,7 @@ fn test_training_convergence() -> Int:
 # =============================================================================
 
 
-fn test_convenience_aliases() -> Int:
+def test_convenience_aliases() -> Int:
     print_header("Convenience alias dimensions")
     var fails = 0
 

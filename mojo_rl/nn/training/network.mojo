@@ -71,7 +71,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -94,7 +94,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
         Self.MODEL.forward[BATCH](input, output, params)
 
     @staticmethod
-    fn forward_with_cache[
+    def forward_with_cache[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -125,7 +125,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -166,7 +166,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -199,7 +199,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
         )
 
     @staticmethod
-    fn forward_gpu_with_cache[
+    def forward_gpu_with_cache[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -236,7 +236,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
         )
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -273,6 +273,13 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
             perf_slot: Base slot index for per-layer timing.
         """
         Self.MODEL.backward_gpu[BATCH](
-            ctx, grad_input, grad_output, params, cache, grads, workspace_buf,
-            perf, perf_slot,
+            ctx,
+            grad_input,
+            grad_output,
+            params,
+            cache,
+            grads,
+            workspace_buf,
+            perf,
+            perf_slot,
         )

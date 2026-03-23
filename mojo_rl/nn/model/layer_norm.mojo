@@ -32,7 +32,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -40,7 +42,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         INIT.init[Self.PARAM_SIZE, Self.IN_DIM, Self.OUT_DIM](params)
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -97,7 +99,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             cache[batch, Self.dim + 1] = mean
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -141,7 +143,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
                 output[batch, i] = gamma * normalized + beta
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -220,7 +222,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl[
+    def forward_kernel_impl[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -283,7 +285,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl_no_cache[
+    def forward_kernel_impl_no_cache[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -339,7 +341,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int,
     ](
         grad_input: LayoutTensor[
@@ -405,7 +407,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -435,7 +437,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -463,7 +465,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -490,7 +492,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -514,7 +516,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -534,7 +536,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -569,7 +571,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         ](cache.ptr)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],

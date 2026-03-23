@@ -44,7 +44,9 @@ struct SkipConcat[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -56,7 +58,7 @@ struct SkipConcat[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -86,9 +88,9 @@ struct SkipConcat[Inner: Model](Model):
         # but inner expects stride INNER_OUT
         #
         # Strategy: use a temporary buffer for inner output, then copy
-        var inner_buf = InlineArray[
-            Scalar[dtype], BATCH * INNER_OUT
-        ](uninitialized=True)
+        var inner_buf = InlineArray[Scalar[dtype], BATCH * INNER_OUT](
+            uninitialized=True
+        )
         var inner_out = LayoutTensor[
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
         ](inner_buf.unsafe_ptr())
@@ -98,16 +100,16 @@ struct SkipConcat[Inner: Model](Model):
         # Copy inner output to second part of output
         for b in range(BATCH):
             for i in range(INNER_OUT):
-                output.ptr[b * Self.OUT_DIM + Self.IN_DIM + i] = (
-                    inner_buf[b * INNER_OUT + i]
-                )
+                output.ptr[b * Self.OUT_DIM + Self.IN_DIM + i] = inner_buf[
+                    b * INNER_OUT + i
+                ]
 
     # =========================================================================
     # CPU Forward (no cache — inference)
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -129,9 +131,9 @@ struct SkipConcat[Inner: Model](Model):
 
         # Forward Inner
         comptime INNER_OUT = Self.Inner.OUT_DIM
-        var inner_buf = InlineArray[
-            Scalar[dtype], BATCH * INNER_OUT
-        ](uninitialized=True)
+        var inner_buf = InlineArray[Scalar[dtype], BATCH * INNER_OUT](
+            uninitialized=True
+        )
         var inner_out = LayoutTensor[
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
         ](inner_buf.unsafe_ptr())
@@ -140,16 +142,16 @@ struct SkipConcat[Inner: Model](Model):
 
         for b in range(BATCH):
             for i in range(INNER_OUT):
-                output.ptr[b * Self.OUT_DIM + Self.IN_DIM + i] = (
-                    inner_buf[b * INNER_OUT + i]
-                )
+                output.ptr[b * Self.OUT_DIM + Self.IN_DIM + i] = inner_buf[
+                    b * INNER_OUT + i
+                ]
 
     # =========================================================================
     # CPU Backward
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -171,9 +173,9 @@ struct SkipConcat[Inner: Model](Model):
         comptime INNER_OUT = Self.Inner.OUT_DIM
 
         # Extract inner gradient from grad_output[:, IN_DIM:]
-        var grad_inner_buf = InlineArray[
-            Scalar[dtype], BATCH * INNER_OUT
-        ](uninitialized=True)
+        var grad_inner_buf = InlineArray[Scalar[dtype], BATCH * INNER_OUT](
+            uninitialized=True
+        )
         for b in range(BATCH):
             for i in range(INNER_OUT):
                 grad_inner_buf[b * INNER_OUT + i] = grad_output.ptr[
@@ -184,9 +186,7 @@ struct SkipConcat[Inner: Model](Model):
         ](grad_inner_buf.unsafe_ptr())
 
         # Backward through Inner
-        Self.Inner.backward[BATCH](
-            grad_inner, grad_input, params, cache, grads
-        )
+        Self.Inner.backward[BATCH](grad_inner, grad_input, params, cache, grads)
 
         # Add skip gradient: grad_input += grad_output[:, :IN_DIM]
         for b in range(BATCH):
@@ -201,7 +201,7 @@ struct SkipConcat[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -254,7 +254,7 @@ struct SkipConcat[Inner: Model](Model):
         var grid_x = (TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn concat_kernel(
+        def concat_kernel(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -273,9 +273,7 @@ struct SkipConcat[Inner: Model](Model):
             if c < Self.IN_DIM:
                 dst.ptr[idx] = src_skip.ptr[b * Self.IN_DIM + c]
             else:
-                dst.ptr[idx] = src_inner.ptr[
-                    b * INNER_OUT + (c - Self.IN_DIM)
-                ]
+                dst.ptr[idx] = src_inner.ptr[b * INNER_OUT + (c - Self.IN_DIM)]
 
         ctx.enqueue_function[concat_kernel, concat_kernel](
             output,
@@ -290,7 +288,7 @@ struct SkipConcat[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -338,7 +336,7 @@ struct SkipConcat[Inner: Model](Model):
         var grid_x = (TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn concat_kernel(
+        def concat_kernel(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -357,9 +355,7 @@ struct SkipConcat[Inner: Model](Model):
             if c < Self.IN_DIM:
                 dst.ptr[idx] = src_skip.ptr[b * Self.IN_DIM + c]
             else:
-                dst.ptr[idx] = src_inner.ptr[
-                    b * INNER_OUT + (c - Self.IN_DIM)
-                ]
+                dst.ptr[idx] = src_inner.ptr[b * INNER_OUT + (c - Self.IN_DIM)]
 
         ctx.enqueue_function[concat_kernel, concat_kernel](
             output,
@@ -370,7 +366,7 @@ struct SkipConcat[Inner: Model](Model):
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -393,7 +389,7 @@ struct SkipConcat[Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -438,7 +434,7 @@ struct SkipConcat[Inner: Model](Model):
         var inner_grid = (INNER_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn extract_inner_grad(
+        def extract_inner_grad(
             dst: LayoutTensor[
                 dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
             ],
@@ -480,7 +476,7 @@ struct SkipConcat[Inner: Model](Model):
         var skip_grid = (SKIP_TOTAL + TPB - 1) // TPB
 
         @always_inline
-        fn add_skip_grad(
+        def add_skip_grad(
             gi: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],

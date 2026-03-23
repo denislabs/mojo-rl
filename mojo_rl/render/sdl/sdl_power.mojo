@@ -47,19 +47,19 @@ struct PowerState(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime POWERSTATE_ERROR = Self(-1)
@@ -76,7 +76,7 @@ struct PowerState(Indexer, Intable, TrivialRegisterPassable):
     """Plugged in, battery charged."""
 
 
-fn get_power_info(
+def get_power_info(
     seconds: Ptr[c_int, MutAnyOrigin], percent: Ptr[c_int, MutAnyOrigin]
 ) raises -> PowerState:
     """Get the current power supply details.

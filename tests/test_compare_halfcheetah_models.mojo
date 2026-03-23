@@ -152,13 +152,13 @@ comptime GEOM_NAMES = [
 ]
 
 
-fn marker(a: Float32, b: Float32, tol: Float32 = 1e-4) -> String:
+def marker(a: Float32, b: Float32, tol: Float32 = 1e-4) -> String:
     if abs(a - b) > tol:
         return "  *** DIFF ***"
     return ""
 
 
-fn compare_models(xml: List[Float32], def_: List[Float32]):
+def compare_models(xml: List[Float32], def_: List[Float32]):
     var joint_names = materialize[JOINT_NAMES]()
     var geom_names = materialize[GEOM_NAMES]()
     var body_names = materialize[BODY_NAMES]()

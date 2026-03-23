@@ -14,7 +14,7 @@ from mojo_rl.deep_agents.core.agents import DQNAgent
 from mojo_rl.core.logger import CsvLogger
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Deep DQN on LunarLander (with CsvLogger)")
     print("=" * 60)

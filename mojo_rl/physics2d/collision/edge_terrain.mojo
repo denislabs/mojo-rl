@@ -63,7 +63,7 @@ struct EdgeTerrainCollision(CollisionSystem):
     var edge_counts: List[Int]  # Number of edges per environment
     var num_envs: Int
 
-    fn __init__(out self, num_envs: Int):
+    def __init__(out self, num_envs: Int):
         """Initialize with number of environments.
 
         Args:
@@ -81,7 +81,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         for _ in range(num_envs):
             self.edge_counts.append(0)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.edges = List[Scalar[dtype]]()
         self.edge_counts = List[Int]()
         self.num_envs = copy.num_envs
@@ -90,7 +90,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         for i in range(copy.num_envs):
             self.edge_counts.append(copy.edge_counts[i])
 
-    fn set_terrain_from_heights(
+    def set_terrain_from_heights(
         mut self,
         env: Int,
         heights: List[Scalar[dtype]],
@@ -146,7 +146,7 @@ struct EdgeTerrainCollision(CollisionSystem):
             self.edges[edge_offset + 4] = Scalar[dtype](nx)
             self.edges[edge_offset + 5] = Scalar[dtype](ny)
 
-    fn set_flat_terrain(
+    def set_flat_terrain(
         mut self, env: Int, ground_y: Float64, x_min: Float64, x_max: Float64
     ):
         """Set a single flat terrain edge.
@@ -171,7 +171,7 @@ struct EdgeTerrainCollision(CollisionSystem):
     # CPU Implementation
     # =========================================================================
 
-    fn detect[
+    def detect[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -431,7 +431,7 @@ struct EdgeTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_single_body_edge[
+    def detect_single_body_edge[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -635,7 +635,7 @@ struct EdgeTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_single_body[
+    def detect_single_body[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -859,7 +859,7 @@ struct EdgeTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_single_env[
+    def detect_single_env[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -1078,7 +1078,7 @@ struct EdgeTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_kernel[
+    def detect_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -1124,7 +1124,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         ](env, state, shapes, n_edges, contacts, contact_counts)
 
     @staticmethod
-    fn detect_gpu[
+    def detect_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -1163,7 +1163,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -1211,7 +1211,7 @@ struct EdgeTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_parallel_kernel[
+    def detect_parallel_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -1271,7 +1271,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         ](env, body_idx, state, shapes, n_edges, contacts, body_contact_counts)
 
     @staticmethod
-    fn detect_parallel_gpu[
+    def detect_parallel_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -1332,7 +1332,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         comptime GRID_Y = 1  # All bodies fit in one block in Y
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
@@ -1382,7 +1382,7 @@ struct EdgeTerrainCollision(CollisionSystem):
 
     @always_inline
     @staticmethod
-    fn detect_body_edge_kernel[
+    def detect_body_edge_kernel[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -1457,7 +1457,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         ](env, body_idx, edge_idx, state, shapes, contacts, contact_flags)
 
     @staticmethod
-    fn detect_body_edge_gpu[
+    def detect_body_edge_gpu[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -1521,7 +1521,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         comptime GRID_Z = (MAX_EDGES + BLOCK_Z - 1) // BLOCK_Z
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             state: LayoutTensor[
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],

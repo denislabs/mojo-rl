@@ -42,9 +42,9 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
     var prediction: NetworkState[Self.PredModel, Self.OptType]
 
     # Flat replay buffer (active region: [0, buf_size))
-    var buf_obs: UnsafePointer[Scalar[dtype], MutAnyOrigin]       # [CAP * OBS]
-    var buf_policy: UnsafePointer[Scalar[dtype], MutAnyOrigin]    # [CAP * ACT]
-    var buf_value: UnsafePointer[Scalar[dtype], MutAnyOrigin]     # [CAP]
+    var buf_obs: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [CAP * OBS]
+    var buf_policy: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [CAP * ACT]
+    var buf_value: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [CAP]
     var buf_size: Int
 
     # Iteration tracking: iter_boundaries[i] = start index of iteration i
@@ -54,7 +54,7 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
     var iter_boundaries: List[Int]
     var num_iters: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.prediction = NetworkState[Self.PredModel, Self.OptType]()
         self.prediction.initialize[Kaiming[]]()
 
@@ -74,7 +74,7 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
         self.iter_boundaries.append(0)  # First iteration starts at 0
         self.num_iters = 1
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.prediction = take.prediction^
         self.buf_obs = take.buf_obs
         self.buf_policy = take.buf_policy
@@ -83,12 +83,12 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
         self.iter_boundaries = take.iter_boundaries^
         self.num_iters = take.num_iters
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         self.buf_obs.free()
         self.buf_policy.free()
         self.buf_value.free()
 
-    fn add(
+    def add(
         mut self,
         obs: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         policy: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -112,7 +112,7 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
         self.buf_value[idx] = value
         self.buf_size += 1
 
-    fn start_new_iteration(mut self):
+    def start_new_iteration(mut self):
         """Mark the start of a new self-play iteration.
 
         If we already have history_window iterations, evict the oldest
@@ -126,7 +126,7 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
         self.iter_boundaries.append(self.buf_size)
         self.num_iters += 1
 
-    fn _evict_oldest(mut self):
+    def _evict_oldest(mut self):
         """Remove the oldest iteration by shifting data forward."""
         if self.num_iters <= 1:
             return
@@ -157,7 +157,7 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
         self.buf_size = keep_count
         self.num_iters -= 1
 
-    fn is_ready(self, batch_size: Int) -> Bool:
+    def is_ready(self, batch_size: Int) -> Bool:
         return self.buf_size >= batch_size * 2
 
 
@@ -180,35 +180,43 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
     var prediction: GPUNetworkState[Self.PredModel, Self.OptType]
 
     # Training batch (uploaded from CPU)
-    var batch_obs: DeviceBuffer[dtype]       # [BATCH * OBS]
-    var batch_policy: DeviceBuffer[dtype]    # [BATCH * ACT]
-    var batch_value: DeviceBuffer[dtype]     # [BATCH]
+    var batch_obs: DeviceBuffer[dtype]  # [BATCH * OBS]
+    var batch_policy: DeviceBuffer[dtype]  # [BATCH * ACT]
+    var batch_value: DeviceBuffer[dtype]  # [BATCH]
 
     # Forward/backward scratch
-    var pred_out: DeviceBuffer[dtype]        # [BATCH * PRED_OUT]
-    var pred_cache: DeviceBuffer[dtype]      # [BATCH * PredModel.CACHE_SIZE]
-    var grad_out: DeviceBuffer[dtype]        # [BATCH * PRED_OUT]
-    var grad_in: DeviceBuffer[dtype]         # [BATCH * OBS]
-    var workspace: DeviceBuffer[dtype]       # [BATCH * WS]
+    var pred_out: DeviceBuffer[dtype]  # [BATCH * PRED_OUT]
+    var pred_cache: DeviceBuffer[dtype]  # [BATCH * PredModel.CACHE_SIZE]
+    var grad_out: DeviceBuffer[dtype]  # [BATCH * PRED_OUT]
+    var grad_in: DeviceBuffer[dtype]  # [BATCH * OBS]
+    var workspace: DeviceBuffer[dtype]  # [BATCH * WS]
 
     # Host transfer
-    var obs_host: HostBuffer[dtype]          # [BATCH * OBS]
-    var policy_host: HostBuffer[dtype]       # [BATCH * ACT]
-    var value_host: HostBuffer[dtype]        # [BATCH]
+    var obs_host: HostBuffer[dtype]  # [BATCH * OBS]
+    var policy_host: HostBuffer[dtype]  # [BATCH * ACT]
+    var value_host: HostBuffer[dtype]  # [BATCH]
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         self.prediction = GPUNetworkState[Self.PredModel, Self.OptType](ctx)
 
         self.batch_obs = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
-        self.batch_policy = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.ACT)
+        self.batch_policy = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.ACT
+        )
         self.batch_value = ctx.enqueue_create_buffer[dtype](Self.BATCH)
 
-        self.pred_out = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.PRED_OUT)
+        self.pred_out = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.PRED_OUT
+        )
 
         comptime CACHE_SIZE = Self.PredModel.CACHE_SIZE
-        self.pred_cache = ctx.enqueue_create_buffer[dtype](Self.BATCH * CACHE_SIZE)
+        self.pred_cache = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * CACHE_SIZE
+        )
 
-        self.grad_out = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.PRED_OUT)
+        self.grad_out = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.PRED_OUT
+        )
         self.grad_in = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
 
         comptime WS = Self.PredModel.WORKSPACE_SIZE_PER_SAMPLE
@@ -216,11 +224,15 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
             Self.BATCH * WS if WS > 0 else 1
         )
 
-        self.obs_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.OBS)
-        self.policy_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.ACT)
+        self.obs_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+        self.policy_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.ACT
+        )
         self.value_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.prediction = take.prediction^
         self.batch_obs = take.batch_obs^
         self.batch_policy = take.batch_policy^
@@ -234,8 +246,12 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
         self.policy_host = take.policy_host^
         self.value_host = take.value_host^
 
-    fn upload_from(mut self, cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext) raises:
+    def upload_from(
+        mut self, cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext
+    ) raises:
         self.prediction.upload_from(cpu.prediction, ctx)
 
-    fn download_to(mut self, mut cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext) raises:
+    def download_to(
+        mut self, mut cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext
+    ) raises:
         self.prediction.download_to(cpu.prediction, ctx)

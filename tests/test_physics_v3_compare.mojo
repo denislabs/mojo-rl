@@ -13,18 +13,18 @@ from mojo_rl.envs.lunar_lander import LunarLanderEnv
 from mojo_rl.envs.lunar_lander_gpu_v3 import LunarLanderGPUv3, gpu_dtype
 
 
-fn abs_f32(x: Float32) -> Float32:
+def abs_f32(x: Float32) -> Float32:
     return x if x >= 0 else -x
 
 
-fn format_float(val: Float32, width: Int = 10) -> String:
+def format_float(val: Float32, width: Int = 10) -> String:
     var s = String(val)
     if len(s) > width:
         return String(s[:width])
     return s
 
 
-fn create_gpu_state(
+def create_gpu_state(
     obs: List[Scalar[DType.float32]],
 ) -> List[Scalar[DType.float32]]:
     """Create GPU V3 state (8 values)."""
@@ -34,7 +34,7 @@ fn create_gpu_state(
     return state^
 
 
-fn run_gpu_step(
+def run_gpu_step(
     ctx: DeviceContext,
     initial_state: List[Scalar[DType.float32]],
     action: Int,
@@ -83,7 +83,7 @@ fn run_gpu_step(
     return result^
 
 
-fn main() raises:
+def main() raises:
     print("=" * 70)
     print("CPU vs GPU V3 LunarLander Physics Comparison")
     print("=" * 70)

@@ -83,7 +83,7 @@ comptime half_cheetah_xml = """
 """
 
 
-fn test_model_def_from_xml() raises:
+def test_model_def_from_xml() raises:
     # =========================================================================
     # Step 1: Parse dimensions
     # =========================================================================
@@ -252,5 +252,5 @@ fn test_model_def_from_xml() raises:
     print("=== All CPU tests passed ===")
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

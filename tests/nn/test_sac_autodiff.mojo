@@ -25,7 +25,7 @@ from mojo_rl.nn.initializer import Xavier
 from layout import Layout, LayoutTensor
 
 
-fn test_sac_graph_shapes() raises:
+def test_sac_graph_shapes() raises:
     """Verify all compile-time shapes compose correctly."""
     comptime OBS = 17
     comptime ACT = 6
@@ -52,7 +52,9 @@ fn test_sac_graph_shapes() raises:
     ]
 
     # TwinCritic + Min: [obs, action] → min(Q1, Q2)
-    comptime TwinCriticMin = Sequential[DualPath[CriticModel, CriticModel], Min[1]]
+    comptime TwinCriticMin = Sequential[
+        DualPath[CriticModel, CriticModel], Min[1]
+    ]
 
     # SplitApply: [obs(17), action(6), log_prob(1)] →
     #   Left([obs, action](23)) → TwinCriticMin → min_Q(1)
@@ -64,8 +66,14 @@ fn test_sac_graph_shapes() raises:
     # Full graph: obs → ActorSkip → SACOutput → [min_Q, log_prob]
     comptime SACGraph = Sequential[ActorSkip, SACOutput]
 
-    print("  SACGraph: IN=", SACGraph.IN_DIM, "OUT=", SACGraph.OUT_DIM,
-          "PARAMS=", SACGraph.PARAM_SIZE)
+    print(
+        "  SACGraph: IN=",
+        SACGraph.IN_DIM,
+        "OUT=",
+        SACGraph.OUT_DIM,
+        "PARAMS=",
+        SACGraph.PARAM_SIZE,
+    )
     # Expected: IN=17 (obs), OUT=2 (min_Q + log_prob)
 
     # Verify shapes
@@ -79,7 +87,7 @@ fn test_sac_graph_shapes() raises:
     print("  [PASS] SACGraph shapes correct: IN=17, OUT=2")
 
 
-fn test_sac_graph_forward_backward() raises:
+def test_sac_graph_forward_backward() raises:
     """Test forward + backward through the full SAC graph."""
     comptime OBS = 4
     comptime ACT = 2
@@ -99,13 +107,19 @@ fn test_sac_graph_forward_backward() raises:
         LinearReLU[H, H],
         Linear[H, 1],
     ]
-    comptime TwinCriticMin = Sequential[DualPath[CriticModel, CriticModel], Min[1]]
+    comptime TwinCriticMin = Sequential[
+        DualPath[CriticModel, CriticModel], Min[1]
+    ]
     comptime LogProbPass = Slice[1, 0, 1]
     comptime SACOutput = SplitApply[TwinCriticMin, LogProbPass, OBS + ACT]
     comptime SACGraph = Sequential[ActorSkip, SACOutput]
 
-    print("  SACGraph PARAM_SIZE:", SACGraph.PARAM_SIZE,
-          "CACHE_SIZE:", SACGraph.CACHE_SIZE)
+    print(
+        "  SACGraph PARAM_SIZE:",
+        SACGraph.PARAM_SIZE,
+        "CACHE_SIZE:",
+        SACGraph.CACHE_SIZE,
+    )
 
     # Initialize state
     var state = NetworkState[SACGraph, Adam[]]()
@@ -118,15 +132,15 @@ fn test_sac_graph_forward_backward() raises:
     var obs_arr = InlineArray[Scalar[dtype], BS * OBS](uninitialized=True)
     for i in range(BS * OBS):
         obs_arr[i] = Scalar[dtype](0.1 * Float64(i % 7) - 0.3)
-    var obs_t = LayoutTensor[
-        dtype, Layout.row_major(BS, OBS), MutAnyOrigin
-    ](obs_arr.unsafe_ptr())
+    var obs_t = LayoutTensor[dtype, Layout.row_major(BS, OBS), MutAnyOrigin](
+        obs_arr.unsafe_ptr()
+    )
 
     # Forward
     var output_arr = InlineArray[Scalar[dtype], BS * 2](uninitialized=True)
-    var output_t = LayoutTensor[
-        dtype, Layout.row_major(BS, 2), MutAnyOrigin
-    ](output_arr.unsafe_ptr())
+    var output_t = LayoutTensor[dtype, Layout.row_major(BS, 2), MutAnyOrigin](
+        output_arr.unsafe_ptr()
+    )
 
     var cache_arr = InlineArray[Scalar[dtype], BS * SACGraph.CACHE_SIZE](
         uninitialized=True
@@ -144,7 +158,14 @@ fn test_sac_graph_forward_backward() raises:
         var log_prob = Float64(output_arr[b * 2 + 1])
         if min_q != min_q or log_prob != log_prob:  # NaN check
             fwd_ok = False
-            print("  [FAIL] NaN in output at b=", b, "min_q=", min_q, "lp=", log_prob)
+            print(
+                "  [FAIL] NaN in output at b=",
+                b,
+                "min_q=",
+                min_q,
+                "lp=",
+                log_prob,
+            )
 
     if fwd_ok:
         print("  [PASS] Forward: all outputs finite")
@@ -157,9 +178,9 @@ fn test_sac_graph_forward_backward() raises:
     for b in range(BS):
         grad_out_arr[b * 2] = Scalar[dtype](-1.0 / Float64(BS))
         grad_out_arr[b * 2 + 1] = Scalar[dtype](alpha / Float64(BS))
-    var grad_out_t = LayoutTensor[
-        dtype, Layout.row_major(BS, 2), MutAnyOrigin
-    ](grad_out_arr.unsafe_ptr())
+    var grad_out_t = LayoutTensor[dtype, Layout.row_major(BS, 2), MutAnyOrigin](
+        grad_out_arr.unsafe_ptr()
+    )
 
     var grad_obs_arr = InlineArray[Scalar[dtype], BS * OBS](uninitialized=True)
     var grad_obs_t = LayoutTensor[
@@ -208,7 +229,7 @@ fn test_sac_graph_forward_backward() raises:
         print("  [FAIL] Missing gradients in actor or critic")
 
 
-fn main() raises:
+def main() raises:
     print("=== SAC Autodiff Composition Tests ===")
     test_sac_graph_shapes()
     print()

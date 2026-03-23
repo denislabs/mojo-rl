@@ -85,7 +85,7 @@ struct Renderer2D(Movable):
     var recorder: VideoRecorder
     var recording_counter: Int
 
-    fn __init__(
+    def __init__(
         out self,
         width: Int = 600,
         height: Int = 400,
@@ -122,7 +122,7 @@ struct Renderer2D(Movable):
         self.recorder = VideoRecorder()
         self.recording_counter = 0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.window = take.window
         self.sdl_renderer = take.sdl_renderer
         self.screen_width = take.screen_width
@@ -141,7 +141,7 @@ struct Renderer2D(Movable):
         self.recorder = take.recorder^
         self.recording_counter = take.recording_counter
 
-    fn make_color(self, r: Int, g: Int, b: Int, a: Int = 255) -> SDL_Color:
+    def make_color(self, r: Int, g: Int, b: Int, a: Int = 255) -> SDL_Color:
         """Create an SDL color.
 
         Args:
@@ -155,7 +155,7 @@ struct Renderer2D(Movable):
         """
         return SDL_Color(UInt8(r), UInt8(g), UInt8(b), UInt8(a))
 
-    fn make_point(self, x: Int, y: Int) -> SDL_Point:
+    def make_point(self, x: Int, y: Int) -> SDL_Point:
         """Create an SDL point.
 
         Args:
@@ -167,7 +167,7 @@ struct Renderer2D(Movable):
         """
         return SDL_Point(Int32(x), Int32(y))
 
-    fn init_display(mut self) -> Bool:
+    def init_display(mut self) -> Bool:
         """Initialize SDL3 display window.
 
         Returns:
@@ -200,7 +200,7 @@ struct Renderer2D(Movable):
             print("Failed to initialize SDL3")
             return False
 
-    fn handle_events(mut self) -> Bool:
+    def handle_events(mut self) -> Bool:
         """Process SDL events and check for quit.
 
         Returns:
@@ -240,7 +240,7 @@ struct Renderer2D(Movable):
 
         return True
 
-    fn clear(mut self):
+    def clear(mut self):
         """Clear screen with background color."""
         try:
             set_render_draw_color(
@@ -254,7 +254,7 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    fn clear_with_color(mut self, color: SDL_Color):
+    def clear_with_color(mut self, color: SDL_Color):
         """Clear screen with specified color."""
         try:
             set_render_draw_color(
@@ -264,7 +264,7 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    fn _set_color(mut self, color: SDL_Color):
+    def _set_color(mut self, color: SDL_Color):
         """Set draw color on the renderer."""
         try:
             set_render_draw_color(
@@ -273,7 +273,7 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    fn _draw_line_raw(mut self, x1: Int, y1: Int, x2: Int, y2: Int):
+    def _draw_line_raw(mut self, x1: Int, y1: Int, x2: Int, y2: Int):
         """Draw a line using raw pixel coordinates (color must be set)."""
         try:
             render_line(
@@ -286,14 +286,14 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    fn _draw_point_raw(mut self, x: Int, y: Int):
+    def _draw_point_raw(mut self, x: Int, y: Int):
         """Draw a single point (color must be set)."""
         try:
             render_point(self.sdl_renderer, c_float(x), c_float(y))
         except:
             pass
 
-    fn _fill_rect_raw(mut self, x: Int, y: Int, w: Int, h: Int):
+    def _fill_rect_raw(mut self, x: Int, y: Int, w: Int, h: Int):
         """Draw a filled rectangle (color must be set)."""
         try:
             var rect = FRect(c_float(x), c_float(y), c_float(w), c_float(h))
@@ -304,7 +304,7 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    fn _draw_rect_raw(mut self, x: Int, y: Int, w: Int, h: Int):
+    def _draw_rect_raw(mut self, x: Int, y: Int, w: Int, h: Int):
         """Draw a rectangle outline (color must be set)."""
         try:
             var rect = FRect(c_float(x), c_float(y), c_float(w), c_float(h))
@@ -315,7 +315,7 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    fn _fill_circle_raw(
+    def _fill_circle_raw(
         mut self,
         center_x: Int,
         center_y: Int,
@@ -333,7 +333,7 @@ struct Renderer2D(Movable):
                     center_y + dy,
                 )
 
-    fn _draw_circle_raw(
+    def _draw_circle_raw(
         mut self,
         center_x: Int,
         center_y: Int,
@@ -361,7 +361,7 @@ struct Renderer2D(Movable):
                 x -= 1
                 err += 1 - 2 * x
 
-    fn _draw_lines_raw(mut self, points: List[SDL_Point]):
+    def _draw_lines_raw(mut self, points: List[SDL_Point]):
         """Draw connected line segments (color must be set)."""
         if len(points) < 2:
             return
@@ -373,7 +373,7 @@ struct Renderer2D(Movable):
                 Int(points[i + 1].y),
             )
 
-    fn _fill_polygon_raw(mut self, points: List[SDL_Point]):
+    def _fill_polygon_raw(mut self, points: List[SDL_Point]):
         """Draw a filled polygon using scanline algorithm (color must be set).
         """
         if len(points) < 3:
@@ -425,7 +425,7 @@ struct Renderer2D(Movable):
                 )
                 idx += 2
 
-    fn draw_line(
+    def draw_line(
         mut self,
         x1: Int,
         y1: Int,
@@ -471,7 +471,7 @@ struct Renderer2D(Movable):
                     y2 + offset_y,
                 )
 
-    fn draw_rect(
+    def draw_rect(
         mut self,
         x: Int,
         y: Int,
@@ -497,7 +497,7 @@ struct Renderer2D(Movable):
         else:
             self._draw_rect_raw(x, y, width, height)
 
-    fn draw_circle(
+    def draw_circle(
         mut self,
         center_x: Int,
         center_y: Int,
@@ -521,7 +521,7 @@ struct Renderer2D(Movable):
         else:
             self._draw_circle_raw(center_x, center_y, radius)
 
-    fn draw_polygon(
+    def draw_polygon(
         mut self,
         points: List[SDL_Point],
         color: SDL_Color,
@@ -549,7 +549,7 @@ struct Renderer2D(Movable):
                     Int(points[0].y),
                 )
 
-    fn draw_lines(
+    def draw_lines(
         mut self,
         points: List[SDL_Point],
         color: SDL_Color,
@@ -587,7 +587,7 @@ struct Renderer2D(Movable):
                 width,
             )
 
-    fn draw_text(
+    def draw_text(
         mut self,
         text: String,
         x: Int,
@@ -609,7 +609,7 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    fn draw_text_large(
+    def draw_text_large(
         mut self,
         text: String,
         x: Int,
@@ -630,7 +630,7 @@ struct Renderer2D(Movable):
         # SDL3 debug text doesn't support size scaling, use same as regular
         self.draw_text(text, x, y, color)
 
-    fn draw_info_box(
+    def draw_info_box(
         mut self,
         lines: List[String],
         x: Int = 10,
@@ -652,7 +652,7 @@ struct Renderer2D(Movable):
             var line = lines[i]
             self.draw_text(line, x, y + i * line_height, color)
 
-    fn save_screenshot(mut self, filename: String) raises:
+    def save_screenshot(mut self, filename: String) raises:
         """Save a screenshot of the current frame to a file.
 
         Args:
@@ -667,7 +667,7 @@ struct Renderer2D(Movable):
         )
         destroy_surface(surf)
 
-    fn flip(mut self):
+    def flip(mut self):
         """Update display and cap framerate."""
         try:
             # Screenshot capture BEFORE render_present (SDL3 requirement)
@@ -710,7 +710,7 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    fn start_recording(mut self, filename: String, fps: Int = 30) raises:
+    def start_recording(mut self, filename: String, fps: Int = 30) raises:
         """Start video recording to a file.
 
         Captures every rendered frame via SDL_RenderReadPixels and encodes
@@ -724,11 +724,11 @@ struct Renderer2D(Movable):
         self.recorder.start(filename, fps)
         self.recording_counter += 1
 
-    fn stop_recording(mut self) raises:
+    def stop_recording(mut self) raises:
         """Stop video recording and flush the file."""
         self.recorder.stop()
 
-    fn close(mut self):
+    def close(mut self):
         """Close the SDL window and cleanup."""
         if self.initialized:
             try:
@@ -748,24 +748,24 @@ struct Renderer2D(Movable):
     # Renderer Trait Methods
     # =========================================================================
 
-    fn get_screen_width(self) -> Int:
+    def get_screen_width(self) -> Int:
         """Return screen width in pixels."""
         return self.screen_width
 
-    fn get_screen_height(self) -> Int:
+    def get_screen_height(self) -> Int:
         """Return screen height in pixels."""
         return self.screen_height
 
-    fn get_should_quit(self) -> Bool:
+    def get_should_quit(self) -> Bool:
         """Return True if quit has been requested."""
         return self.should_quit
 
-    fn clear_rgb(mut self, r: Int, g: Int, b: Int):
+    def clear_rgb(mut self, r: Int, g: Int, b: Int):
         """Clear screen with specified RGB color."""
         var color = SDL_Color(UInt8(r), UInt8(g), UInt8(b), 255)
         self.clear_with_color(color)
 
-    fn draw_line_rgb(
+    def draw_line_rgb(
         mut self,
         x1: Int,
         y1: Int,
@@ -780,7 +780,7 @@ struct Renderer2D(Movable):
         var color = SDL_Color(UInt8(r), UInt8(g), UInt8(b), 255)
         self.draw_line(x1, y1, x2, y2, color, width)
 
-    fn draw_rect_rgb(
+    def draw_rect_rgb(
         mut self,
         x: Int,
         y: Int,
@@ -796,7 +796,7 @@ struct Renderer2D(Movable):
         var border_width = 0 if filled else 1
         self.draw_rect(x, y, width, height, color, border_width)
 
-    fn draw_circle_rgb(
+    def draw_circle_rgb(
         mut self,
         center_x: Int,
         center_y: Int,
@@ -810,7 +810,7 @@ struct Renderer2D(Movable):
         var color = SDL_Color(UInt8(r), UInt8(g), UInt8(b), 255)
         self.draw_circle(center_x, center_y, radius, color, filled)
 
-    fn draw_text_rgb(
+    def draw_text_rgb(
         mut self,
         text: String,
         x: Int,
@@ -827,7 +827,7 @@ struct Renderer2D(Movable):
     # High-Level Helper Methods (Camera/Transform-aware)
     # =========================================================================
 
-    fn begin_frame(mut self) -> Bool:
+    def begin_frame(mut self) -> Bool:
         """Start a new frame: initialize display, handle events, clear screen.
 
         This combines the common boilerplate at the start of every render() call.
@@ -843,7 +843,7 @@ struct Renderer2D(Movable):
         self.clear()
         return True
 
-    fn begin_frame_with_color(mut self, color: SDL_Color) -> Bool:
+    def begin_frame_with_color(mut self, color: SDL_Color) -> Bool:
         """Start a new frame with custom background color.
 
         Args:
@@ -860,7 +860,7 @@ struct Renderer2D(Movable):
         self.clear_with_color(color)
         return True
 
-    fn draw_line_world(
+    def draw_line_world(
         mut self,
         start: Vec2,
         end: Vec2,
@@ -888,7 +888,7 @@ struct Renderer2D(Movable):
             width,
         )
 
-    fn draw_circle_world(
+    def draw_circle_world(
         mut self,
         center: Vec2,
         radius: Float64,
@@ -915,7 +915,7 @@ struct Renderer2D(Movable):
             filled,
         )
 
-    fn draw_rect_world(
+    def draw_rect_world(
         mut self,
         position: Vec2,
         width: Float64,
@@ -956,7 +956,7 @@ struct Renderer2D(Movable):
             border_width,
         )
 
-    fn draw_polygon_world(
+    def draw_polygon_world(
         mut self,
         vertices: List[Vec2],
         camera: Camera,
@@ -977,7 +977,7 @@ struct Renderer2D(Movable):
             points.append(screen)
         self.draw_polygon(points, color, filled)
 
-    fn draw_transformed_polygon(
+    def draw_transformed_polygon(
         mut self,
         vertices: List[Vec2],
         transform: Transform2D,
@@ -1001,7 +1001,7 @@ struct Renderer2D(Movable):
             points.append(screen)
         self.draw_polygon(points, color, filled)
 
-    fn draw_transformed_line(
+    def draw_transformed_line(
         mut self,
         start: Vec2,
         end: Vec2,
@@ -1024,7 +1024,7 @@ struct Renderer2D(Movable):
         var world_end = transform.apply(end)
         self.draw_line_world(world_start, world_end, camera, color, width)
 
-    fn draw_wheel(
+    def draw_wheel(
         mut self,
         center: Vec2,
         radius: Float64,
@@ -1054,7 +1054,7 @@ struct Renderer2D(Movable):
         )
         self.draw_line_world(center, spoke_end, camera, spoke_color, 2)
 
-    fn draw_joint(
+    def draw_joint(
         mut self,
         position: Vec2,
         radius: Float64,
@@ -1071,7 +1071,7 @@ struct Renderer2D(Movable):
         """
         self.draw_circle_world(position, radius, camera, color, True)
 
-    fn draw_arrow(
+    def draw_arrow(
         mut self,
         start: Vec2,
         end: Vec2,
@@ -1121,7 +1121,7 @@ struct Renderer2D(Movable):
         self.draw_line_world(end, head1, camera, color, width)
         self.draw_line_world(end, head2, camera, color, width)
 
-    fn draw_velocity_arrow(
+    def draw_velocity_arrow(
         mut self,
         position: Vec2,
         velocity: Vec2,
@@ -1145,7 +1145,7 @@ struct Renderer2D(Movable):
         var head_size = max(0.05, velocity.length() * scale * 0.2)
         self.draw_arrow(position, end, camera, color, head_size, 2)
 
-    fn draw_link(
+    def draw_link(
         mut self,
         start: Vec2,
         end: Vec2,
@@ -1164,7 +1164,7 @@ struct Renderer2D(Movable):
         """
         self.draw_line_world(start, end, camera, color, width)
 
-    fn draw_pendulum(
+    def draw_pendulum(
         mut self,
         pivot: Vec2,
         angle: Float64,
@@ -1206,7 +1206,7 @@ struct Renderer2D(Movable):
             pivot, bob_radius * 0.4, camera, pivot_color, True
         )
 
-    fn draw_arc(
+    def draw_arc(
         mut self,
         center: Vec2,
         radius: Float64,
@@ -1244,7 +1244,7 @@ struct Renderer2D(Movable):
             self.draw_line_world(prev, curr, camera, color, width)
             prev = curr
 
-    fn draw_ground_line(
+    def draw_ground_line(
         mut self,
         y: Float64,
         camera: Camera,
@@ -1270,7 +1270,7 @@ struct Renderer2D(Movable):
             width,
         )
 
-    fn draw_grid(
+    def draw_grid(
         mut self,
         camera: Camera,
         color: SDL_Color,
@@ -1313,7 +1313,7 @@ struct Renderer2D(Movable):
             )
             y += spacing
 
-    fn make_camera(self, zoom: Float64 = 100.0, flip_y: Bool = True) -> Camera:
+    def make_camera(self, zoom: Float64 = 100.0, flip_y: Bool = True) -> Camera:
         """Create a camera centered on the screen.
 
         Args:
@@ -1332,7 +1332,7 @@ struct Renderer2D(Movable):
             flip_y,
         )
 
-    fn make_camera_at(
+    def make_camera_at(
         self,
         x: Float64,
         y: Float64,
@@ -1363,7 +1363,7 @@ struct Renderer2D(Movable):
     # RotatingCamera Methods (for top-down views with rotation)
     # =========================================================================
 
-    fn draw_line_rotating(
+    def draw_line_rotating(
         mut self,
         start: Vec2,
         end: Vec2,
@@ -1391,7 +1391,7 @@ struct Renderer2D(Movable):
             width,
         )
 
-    fn draw_circle_rotating(
+    def draw_circle_rotating(
         mut self,
         center: Vec2,
         radius: Float64,
@@ -1418,7 +1418,7 @@ struct Renderer2D(Movable):
             filled,
         )
 
-    fn draw_polygon_rotating(
+    def draw_polygon_rotating(
         mut self,
         vertices: List[Vec2],
         camera: RotatingCamera,
@@ -1439,7 +1439,7 @@ struct Renderer2D(Movable):
             points.append(screen)
         self.draw_polygon(points, color, filled)
 
-    fn draw_transformed_polygon_rotating(
+    def draw_transformed_polygon_rotating(
         mut self,
         vertices: List[Vec2],
         transform: Transform2D,
@@ -1463,7 +1463,7 @@ struct Renderer2D(Movable):
             points.append(screen)
         self.draw_polygon(points, color, filled)
 
-    fn draw_rect_rotating(
+    def draw_rect_rotating(
         mut self,
         position: Vec2,
         width: Float64,
@@ -1493,7 +1493,7 @@ struct Renderer2D(Movable):
         vertices.append(Vec2(position.x - hw, position.y + hh))
         self.draw_polygon_rotating(vertices, camera, color, filled)
 
-    fn make_rotating_camera(
+    def make_rotating_camera(
         self,
         x: Float64,
         y: Float64,
@@ -1520,7 +1520,7 @@ struct Renderer2D(Movable):
             self.screen_height,
         )
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """Delay for the given number of milliseconds (for frame rate control).
         """
         if ms <= 0:
@@ -1530,7 +1530,7 @@ struct Renderer2D(Movable):
         except:
             pass
 
-    fn make_rotating_camera_offset(
+    def make_rotating_camera_offset(
         self,
         x: Float64,
         y: Float64,

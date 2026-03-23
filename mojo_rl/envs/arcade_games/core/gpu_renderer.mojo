@@ -8,14 +8,14 @@ from .colors import SCREEN_W, SCREEN_H
 
 
 @always_inline
-fn clear_frame(buf: UnsafePointer[UInt8, MutAnyOrigin]):
+def clear_frame(buf: UnsafePointer[UInt8, MutAnyOrigin]):
     """Fill entire framebuffer with black (0)."""
     for i in range(SCREEN_W * SCREEN_H):
         buf[i] = 0
 
 
 @always_inline
-fn draw_filled_rect(
+def draw_filled_rect(
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
@@ -38,7 +38,7 @@ fn draw_filled_rect(
 
 
 @always_inline
-fn draw_hline(
+def draw_hline(
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
@@ -55,7 +55,7 @@ fn draw_hline(
 
 
 @always_inline
-fn draw_dashed_vline(
+def draw_dashed_vline(
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     x: Int,
     y_start: Int,
@@ -80,7 +80,7 @@ fn draw_dashed_vline(
 
 
 @always_inline
-fn draw_digit(
+def draw_digit(
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,
@@ -125,7 +125,7 @@ fn draw_digit(
 
 
 @always_inline
-fn draw_number(
+def draw_number(
     buf: UnsafePointer[UInt8, MutAnyOrigin],
     x: Int,
     y: Int,

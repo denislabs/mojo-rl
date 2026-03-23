@@ -18,7 +18,7 @@ Reference: MuJoCo engine_core_smooth.c: mj_rnePostConstraint (contact section).
 from ..types import Model, Data, _max_one, ConeType
 
 
-fn compute_cfrc_ext[
+def compute_cfrc_ext[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -42,7 +42,7 @@ fn compute_cfrc_ext[
         MAX_EQUALITY,
         CONE_TYPE,
         MAX_TENDON,
-    NSITE,
+        NSITE,
     ],
     mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
 ):

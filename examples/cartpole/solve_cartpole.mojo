@@ -35,7 +35,7 @@ from mojo_rl.agents.tiled_qlearning import (
 from mojo_rl.render import Renderer2D
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("    Solving CartPole - Tile-Coded Function Approximation")
     print("=" * 60)

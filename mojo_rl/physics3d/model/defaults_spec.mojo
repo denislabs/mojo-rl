@@ -8,7 +8,7 @@ comptime UNSET_F64: Float64 = -1.0
 comptime UNSET_INT: Int = -1
 
 
-fn _resolve_f64[val: Float64, default: Float64]() -> Float64:
+def _resolve_f64[val: Float64, default: Float64]() -> Float64:
     """Resolve a compile-time Float64: use val if set (>= 0), else default."""
 
     comptime if val >= 0.0:
@@ -18,7 +18,7 @@ fn _resolve_f64[val: Float64, default: Float64]() -> Float64:
     return default
 
 
-fn _resolve_int[val: Int, default: Int]() -> Int:
+def _resolve_int[val: Int, default: Int]() -> Int:
     """Resolve a compile-time Int: use val if set (>= 0), else default."""
 
     comptime if val >= 0:

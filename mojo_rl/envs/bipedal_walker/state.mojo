@@ -32,7 +32,7 @@ struct BipedalWalkerState[DTYPE: DType](
     # Lidar (10)
     var lidar: InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.hull_angle = 0.0
         self.hull_angular_velocity = 0.0
         self.vel_x = 0.0
@@ -49,7 +49,7 @@ struct BipedalWalkerState[DTYPE: DType](
         self.leg2_contact = 0.0
         self.lidar = InlineArray[Scalar[Self.DTYPE], Self.NUM_LIDAR](fill=1.0)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.hull_angle = copy.hull_angle
         self.hull_angular_velocity = copy.hull_angular_velocity
         self.vel_x = copy.vel_x
@@ -70,7 +70,7 @@ struct BipedalWalkerState[DTYPE: DType](
         for i in range(Self.NUM_LIDAR):
             self.lidar[i] = copy.lidar[i]
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.hull_angle = take.hull_angle
         self.hull_angular_velocity = take.hull_angular_velocity
         self.vel_x = take.vel_x
@@ -91,7 +91,7 @@ struct BipedalWalkerState[DTYPE: DType](
         for i in range(Self.NUM_LIDAR):
             self.lidar[i] = take.lidar[i]
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return (
             self.hull_angle == other.hull_angle
             and self.hull_angular_velocity == other.hull_angular_velocity
@@ -99,7 +99,7 @@ struct BipedalWalkerState[DTYPE: DType](
             and self.vel_y == other.vel_y
         )
 
-    fn to_list(self) -> List[Scalar[Self.DTYPE]]:
+    def to_list(self) -> List[Scalar[Self.DTYPE]]:
         """Convert to 24D list for agent interface."""
         var result = List[Scalar[Self.DTYPE]]()
         result.append(self.hull_angle)
@@ -120,7 +120,7 @@ struct BipedalWalkerState[DTYPE: DType](
             result.append(self.lidar[i])
         return result^
 
-    fn to_list_typed[dtype: DType](self) -> List[Scalar[dtype]]:
+    def to_list_typed[dtype: DType](self) -> List[Scalar[dtype]]:
         """Convert to 24D list with specified dtype."""
         var result = List[Scalar[dtype]]()
         result.append(Scalar[dtype](self.hull_angle))

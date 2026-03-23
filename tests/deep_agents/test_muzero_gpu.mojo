@@ -5,16 +5,23 @@ from mojo_rl.deep_agents.muzero import GenericMuZeroAgent, MuZeroMLPConfig
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== MuZero GPU Test (Config-Driven) ===")
 
     var ctx = DeviceContext()
     comptime CartPoleGPU = CartPoleEnv[DType.float32]
 
     comptime Config = MuZeroMLPConfig[
-        CartPoleGPU.OBS_DIM, CartPoleGPU.NUM_ACTIONS,
-        LATENT=32, HIDDEN=32, BINS=21,
-        SIMS=5, K=3, N=5, BS=16, CAP=10000,
+        CartPoleGPU.OBS_DIM,
+        CartPoleGPU.NUM_ACTIONS,
+        LATENT=32,
+        HIDDEN=32,
+        BINS=21,
+        SIMS=5,
+        K=3,
+        N=5,
+        BS=16,
+        CAP=10000,
     ]
 
     var agent = GenericMuZeroAgent[Config, 16](

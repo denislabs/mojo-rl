@@ -54,16 +54,16 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     var online: NetworkState[Self.MODEL, Self.OPTIMIZER]
     var target: NetworkState[Self.MODEL, Self.OPTIMIZER]
 
-    fn __init__(out self):
+    def __init__(out self):
         """Allocate and zero-initialize both online and target states."""
         self.online = NetworkState[Self.MODEL, Self.OPTIMIZER]()
         self.target = NetworkState[Self.MODEL, Self.OPTIMIZER]()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.online = NetworkState[Self.MODEL, Self.OPTIMIZER](copy=copy.online)
         self.target = NetworkState[Self.MODEL, Self.OPTIMIZER](copy=copy.target)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.online = take.online^
         self.target = take.target^
 
@@ -71,7 +71,7 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     # Initialization
     # =========================================================================
 
-    fn initialize[INITIALIZER: Initializer = Kaiming[]](mut self):
+    def initialize[INITIALIZER: Initializer = Kaiming[]](mut self):
         """Initialize online params with INITIALIZER, then hard-copy to target.
 
         Parameters:
@@ -84,7 +84,7 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     # Target Network Operations
     # =========================================================================
 
-    fn soft_update(mut self, tau: Float64):
+    def soft_update(mut self, tau: Float64):
         """Soft update: target = tau*online + (1-tau)*target.
 
         Args:
@@ -92,7 +92,7 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
         """
         self.target.soft_update_from(self.online, tau)
 
-    fn copy_target_from_online(mut self):
+    def copy_target_from_online(mut self):
         """Hard copy: target.params = online.params."""
         self.target.copy_params_from(self.online)
 
@@ -100,23 +100,23 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     # Delegates to online
     # =========================================================================
 
-    fn params_view(
+    def params_view(
         self,
     ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online params (zero-copy)."""
         return self.online.params_view()
 
-    fn grads_view(
+    def grads_view(
         self,
     ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online grads (zero-copy)."""
         return self.online.grads_view()
 
-    fn zero_grads(mut self):
+    def zero_grads(mut self):
         """Zero online parameter gradients."""
         self.online.zero_grads()
 
-    fn optimizer_step(mut self):
+    def optimizer_step(mut self):
         """One optimizer step on the online network."""
         self.online.optimizer_step()
 
@@ -124,7 +124,7 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     # Checkpoint helpers
     # =========================================================================
 
-    fn write_sections(self, prefix: String) -> String:
+    def write_sections(self, prefix: String) -> String:
         """Serialize both online and target as prefixed sections.
 
         Produces sections: "{prefix}online_{...}" and "{prefix}target_{...}".
@@ -139,7 +139,7 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
         content += self.target.write_sections(prefix + "target_")
         return content
 
-    fn read_sections(mut self, content: String, prefix: String) raises:
+    def read_sections(mut self, content: String, prefix: String) raises:
         """Load both online and target from prefixed sections.
 
         Args:
@@ -172,7 +172,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     var online: GPUNetworkState[Self.MODEL, Self.OPTIMIZER]
     var target: GPUNetworkState[Self.MODEL, Self.OPTIMIZER]
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate both online and target device buffers.
 
         Args:
@@ -181,7 +181,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
         self.online = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](ctx)
         self.target = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](ctx)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.online = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](
             copy=copy.online
         )
@@ -189,7 +189,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
             copy=copy.target
         )
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.online = take.online^
         self.target = take.target^
 
@@ -197,7 +197,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     # Target Network Operations
     # =========================================================================
 
-    fn soft_update(mut self, tau: Float64, ctx: DeviceContext) raises:
+    def soft_update(mut self, tau: Float64, ctx: DeviceContext) raises:
         """GPU soft update: target = tau*online + (1-tau)*target.
 
         Runs entirely on device — no CPU synchronization required.
@@ -208,7 +208,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
         """
         self.target.soft_update_from_gpu(self.online, tau, ctx)
 
-    fn copy_target_from_online(mut self, ctx: DeviceContext) raises:
+    def copy_target_from_online(mut self, ctx: DeviceContext) raises:
         """Hard copy on GPU: target.params = online.params.
 
         Args:
@@ -220,23 +220,23 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     # Delegates to online
     # =========================================================================
 
-    fn params_view(
+    def params_view(
         self,
     ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online params (zero-copy)."""
         return self.online.params_view()
 
-    fn grads_view(
+    def grads_view(
         self,
     ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online grads (zero-copy)."""
         return self.online.grads_view()
 
-    fn zero_grads(self, ctx: DeviceContext) raises:
+    def zero_grads(self, ctx: DeviceContext) raises:
         """Zero online gradients on device."""
         self.online.zero_grads(ctx)
 
-    fn optimizer_step(mut self, ctx: DeviceContext) raises:
+    def optimizer_step(mut self, ctx: DeviceContext) raises:
         """One GPU optimizer step on the online network."""
         self.online.optimizer_step(ctx)
 
@@ -244,7 +244,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     # CPU ↔ GPU Sync
     # =========================================================================
 
-    fn upload_from(
+    def upload_from(
         mut self,
         cpu: NetworkPair[Self.MODEL, Self.OPTIMIZER],
         ctx: DeviceContext,
@@ -258,7 +258,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
         self.online.upload_from(cpu.online, ctx)
         self.target.upload_from(cpu.target, ctx)
 
-    fn download_to(
+    def download_to(
         mut self,
         mut cpu: NetworkPair[Self.MODEL, Self.OPTIMIZER],
         ctx: DeviceContext,

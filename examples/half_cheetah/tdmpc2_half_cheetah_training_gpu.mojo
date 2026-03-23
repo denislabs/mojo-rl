@@ -86,7 +86,7 @@ comptime dtype = DType.float32  # GPU training uses float32
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("TD-MPC2 Agent GPU Training on HalfCheetah")

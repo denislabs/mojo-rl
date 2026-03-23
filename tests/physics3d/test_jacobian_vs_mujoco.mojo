@@ -79,7 +79,7 @@ comptime REL_TOL: Float64 = 1e-3
 # =============================================================================
 
 
-fn compare_J_row(
+def compare_J_row(
     label: String,
     our_row_idx: Int,
     mj_J_row: PythonObject,
@@ -166,7 +166,7 @@ fn compare_J_row(
 # =============================================================================
 
 
-fn compare_jacobians(
+def compare_jacobians(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
     qvel_values: InlineArray[Float64, NV],
@@ -420,7 +420,7 @@ fn compare_jacobians(
 # =============================================================================
 
 
-fn test_low_pose_static() raises:
+def test_low_pose_static() raises:
     """Low pose (rootz=-0.3), zero velocity — basic contact Jacobians."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low
@@ -428,7 +428,7 @@ fn test_low_pose_static() raises:
     compare_jacobians("Low pose static (rootz=-0.3)", qpos, qvel)
 
 
-fn test_low_pose_moving() raises:
+def test_low_pose_moving() raises:
     """Low pose with velocity — Jacobians should be same (velocity-independent).
     """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -440,7 +440,7 @@ fn test_low_pose_moving() raises:
     compare_jacobians("Low pose moving", qpos, qvel)
 
 
-fn test_very_low_pose() raises:
+def test_very_low_pose() raises:
     """Very low pose (rootz=-0.45) — more contacts."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz very low
@@ -448,7 +448,7 @@ fn test_very_low_pose() raises:
     compare_jacobians("Very low pose (rootz=-0.45)", qpos, qvel)
 
 
-fn test_bent_legs() raises:
+def test_bent_legs() raises:
     """Bent legs — different contact geometry + joint limits active."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3
@@ -460,5 +460,5 @@ fn test_bent_legs() raises:
     compare_jacobians("Bent legs", qpos, qvel)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

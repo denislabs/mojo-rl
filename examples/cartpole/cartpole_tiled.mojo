@@ -17,7 +17,7 @@ from mojo_rl.agents.tiled_qlearning import (
 from mojo_rl.envs import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     """Run CartPole tile coding example."""
     print("=" * 60)
     print("CartPole with Tile Coding - Function Approximation")

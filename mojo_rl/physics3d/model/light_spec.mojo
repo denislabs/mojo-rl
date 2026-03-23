@@ -94,7 +94,7 @@ trait LightsLike:
     comptime N: Int
 
     @staticmethod
-    fn setup_lights() -> List[Light]:
+    def setup_lights() -> List[Light]:
         ...
 
 
@@ -110,7 +110,7 @@ struct Lights[*L: LightSpec](LightsLike):
     comptime N: Int = Variadic.size(Self.light_types)
 
     @staticmethod
-    fn setup_lights() -> List[Light]:
+    def setup_lights() -> List[Light]:
         var lights = List[Light]()
 
         comptime for i in range(Self.N):
@@ -138,5 +138,5 @@ struct _EmptyLights(LightsLike):
     comptime N: Int = 0
 
     @staticmethod
-    fn setup_lights() -> List[Light]:
+    def setup_lights() -> List[Light]:
         return []

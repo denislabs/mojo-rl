@@ -42,7 +42,9 @@ struct AntCurriculum(CurriculumScheduler):
     )
 
     @staticmethod
-    fn get_params[DTYPE: DType](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
+    def get_params[
+        DTYPE: DType
+    ](progress: Scalar[DTYPE]) -> List[Scalar[DTYPE]]:
         """Get curriculum parameters for given training progress.
 
         Args:
@@ -81,7 +83,7 @@ struct AntCurriculum(CurriculumScheduler):
         return params^
 
     @staticmethod
-    fn get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
+    def get_stage_name[DTYPE: DType](progress: Scalar[DTYPE]) -> String:
         """Get human-readable curriculum stage name."""
         if progress < Scalar[DTYPE](0.25):
             return "Stage 1/4: Very Lenient"

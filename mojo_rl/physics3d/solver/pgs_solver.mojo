@@ -94,7 +94,7 @@ struct PGSSolver(ConstraintSolver):
     comptime NEEDS_M_INV: Bool = True
 
     @staticmethod
-    fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
+    def solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """PGS solver workspace: 79*MC + 12*MC*NV floats.
 
         Layout (offsets relative to solver workspace start):
@@ -113,7 +113,7 @@ struct PGSSolver(ConstraintSolver):
         return 79 * MC + 12 * MC * NV
 
     @staticmethod
-    fn solve[
+    def solve[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -627,7 +627,7 @@ struct PGSSolver(ConstraintSolver):
                     qacc[i] += constraints.MinvJT[r * NV + i] * actual
 
     @staticmethod
-    fn solver_threads[
+    def solver_threads[
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -638,7 +638,7 @@ struct PGSSolver(ConstraintSolver):
 
     @staticmethod
     @always_inline
-    fn solve_gpu[
+    def solve_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

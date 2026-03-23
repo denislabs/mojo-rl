@@ -32,7 +32,7 @@ Example usage:
 """
 
 
-fn compute_gae(
+def compute_gae(
     rewards: List[Float64],
     values: List[Float64],
     next_value: Float64,
@@ -98,7 +98,7 @@ fn compute_gae(
     return advantages^
 
 
-fn compute_returns_from_advantages(
+def compute_returns_from_advantages(
     advantages: List[Float64],
     values: List[Float64],
 ) -> List[Float64]:
@@ -127,7 +127,7 @@ fn compute_returns_from_advantages(
     return returns^
 
 
-fn compute_gae_inline[
+def compute_gae_inline[
     dtype: DType, N: Int
 ](
     rewards: InlineArray[Scalar[dtype], N],
@@ -195,7 +195,7 @@ fn compute_gae_inline[
         returns[t] = gae + values[t]
 
 
-fn compute_nstep_returns(
+def compute_nstep_returns(
     rewards: List[Float64],
     next_value: Float64,
     done: Bool,
@@ -239,7 +239,7 @@ fn compute_nstep_returns(
     return returns^
 
 
-fn compute_td_targets(
+def compute_td_targets(
     rewards: List[Float64],
     values: List[Float64],
     next_value: Float64,

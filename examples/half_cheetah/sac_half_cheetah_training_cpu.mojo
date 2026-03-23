@@ -55,7 +55,7 @@ comptime dtype = DType.float64
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("SAC Agent CPU Training on HalfCheetah")

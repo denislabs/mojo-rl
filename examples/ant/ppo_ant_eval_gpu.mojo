@@ -40,7 +40,7 @@ comptime MAX_STEPS = 1000  # Ant MAX_STEPS
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Continuous Agent GPU Evaluation on Ant")

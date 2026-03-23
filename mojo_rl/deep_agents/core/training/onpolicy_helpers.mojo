@@ -23,7 +23,7 @@ from std.random import random_float64
 from mojo_rl.nn.constants import dtype as default_dtype
 
 
-fn compute_gae_list[
+def compute_gae_list[
     DTYPE: DType
 ](
     buffer_rewards: List[Scalar[DTYPE]],
@@ -82,7 +82,7 @@ fn compute_gae_list[
         returns[t] = gae + buffer_values[t]
 
 
-fn normalize_advantages_list[
+def normalize_advantages_list[
     DTYPE: DType
 ](mut advantages: List[Scalar[DTYPE]], n: Int, eps: Float64 = 1e-8) -> None:
     """Normalize advantages to zero mean and unit variance in-place.
@@ -115,7 +115,7 @@ fn normalize_advantages_list[
         advantages[i] = (advantages[i] - mean) / std
 
 
-fn fisher_yates_shuffle(mut indices: List[Int], n: Int) -> None:
+def fisher_yates_shuffle(mut indices: List[Int], n: Int) -> None:
     """In-place Fisher-Yates shuffle of the first n elements in indices.
 
     Produces a uniformly random permutation in O(n) time. Used for

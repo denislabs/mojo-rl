@@ -18,7 +18,7 @@ from mojo_rl.agents.tiled_qlearning import (
 from mojo_rl.envs.mountain_car import MountainCarEnv
 
 
-fn main() raises:
+def main() raises:
     """Run MountainCar tile coding example with training and visualization."""
     print("=" * 60)
     print("MountainCar with Tile Coding - Function Approximation")

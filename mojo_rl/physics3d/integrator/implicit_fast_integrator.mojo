@@ -149,7 +149,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
     # =========================================================================
 
     @staticmethod
-    fn step[
+    def step[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -818,7 +818,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # (no post-step clamping needed)
 
     @staticmethod
-    fn simulate[
+    def simulate[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -876,7 +876,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn step_kernel[
+    def step_kernel[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1290,7 +1290,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn step_finalize_kernel[
+    def step_finalize_kernel[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1491,7 +1491,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         # (no post-step clamping needed)
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1632,7 +1632,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
     # =========================================================================
 
     @staticmethod
-    fn register_gpu_profile_slots(
+    def register_gpu_profile_slots(
         mut timer: PerfTimer[True], parent: Int = -1
     ) -> Int:
         """Register 3 profiling slots for ImplicitFast GPU step phases.
@@ -1655,7 +1655,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         return base
 
     @staticmethod
-    fn step_gpu_profiled[
+    def step_gpu_profiled[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1716,12 +1716,28 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         timer.sync_and_mark(ctx)
 
         comptime kernel_wrapper = Self.step_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-            MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE, NM, SPARSE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1733,12 +1749,27 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         comptime V_SIZE = _max_one[NV]()
         comptime solver_wrapper = Self.SOLVER.solve_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-            NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
         ]
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
@@ -1749,11 +1780,23 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         timer.mark()
 
         comptime finalize_kernel_wrapper = Self.step_finalize_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NM, SPARSE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[finalize_kernel_wrapper, finalize_kernel_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1761,7 +1804,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
         timer.sync_and_accumulate(base + 2, ctx)
 
     @staticmethod
-    fn simulate_gpu[
+    def simulate_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

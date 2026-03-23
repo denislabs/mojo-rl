@@ -13,7 +13,7 @@ from mojo_rl.core.hyperparam.param_space import (
 from mojo_rl.core.hyperparam.search_result import TrialResult, SearchResults
 
 
-fn create_random_search_results(
+def create_random_search_results(
     algorithm_name: String,
     environment_name: String,
     hyperparam_header: String,
@@ -36,7 +36,7 @@ fn create_random_search_results(
     )
 
 
-fn run_random_trial(
+def run_random_trial(
     trial_id: Int,
     hyperparams: TabularHyperparams,
     metrics: TrainingMetrics,
@@ -61,7 +61,7 @@ fn run_random_trial(
     )
 
 
-fn print_random_progress(
+def print_random_progress(
     trial_id: Int,
     num_trials: Int,
     hyperparams: TabularHyperparams,
@@ -91,7 +91,7 @@ fn print_random_progress(
     )
 
 
-fn print_random_search_header(
+def print_random_search_header(
     num_trials: Int, num_episodes: Int, max_steps: Int
 ):
     """Print header information for random search.

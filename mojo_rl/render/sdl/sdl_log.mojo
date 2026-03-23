@@ -82,19 +82,19 @@ struct LogCategory(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime LOG_CATEGORY_APPLICATION = Self(0)
@@ -138,19 +138,19 @@ struct LogPriority(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime LOG_PRIORITY_INVALID = Self(0)
@@ -164,7 +164,7 @@ struct LogPriority(Indexer, Intable, TrivialRegisterPassable):
     comptime LOG_PRIORITY_COUNT = Self(8)
 
 
-fn set_log_priorities(priority: LogPriority) raises -> None:
+def set_log_priorities(priority: LogPriority) raises -> None:
     """Set the priority of all log categories.
 
     Args:
@@ -181,7 +181,7 @@ fn set_log_priorities(priority: LogPriority) raises -> None:
     ]()(priority)
 
 
-fn set_log_priority(category: c_int, priority: LogPriority) raises -> None:
+def set_log_priority(category: c_int, priority: LogPriority) raises -> None:
     """Set the priority of a particular log category.
 
     Args:
@@ -201,7 +201,7 @@ fn set_log_priority(category: c_int, priority: LogPriority) raises -> None:
     ]()(category, priority)
 
 
-fn get_log_priority(category: c_int) raises -> LogPriority:
+def get_log_priority(category: c_int) raises -> LogPriority:
     """Get the priority of a particular log category.
 
     Args:
@@ -221,7 +221,7 @@ fn get_log_priority(category: c_int) raises -> LogPriority:
     ]()(category)
 
 
-fn reset_log_priorities() raises -> None:
+def reset_log_priorities() raises -> None:
     """Reset all priorities to default.
 
     This is called by SDL_Quit().
@@ -235,7 +235,7 @@ fn reset_log_priorities() raises -> None:
     return _get_dylib_function[lib, "SDL_ResetLogPriorities", fn() -> None]()()
 
 
-fn set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
+def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
     """Set the text prepended to log messages of a given priority.
 
     By default SDL_LOG_PRIORITY_INFO and below have no prefix, and
@@ -289,7 +289,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_LogOutputFunction.
 """
 
 
-fn get_default_log_output_function() raises -> LogOutputFunction:
+def get_default_log_output_function() raises -> LogOutputFunction:
     """Get the default log output function.
 
     Returns:
@@ -306,7 +306,7 @@ fn get_default_log_output_function() raises -> LogOutputFunction:
     ]()()
 
 
-fn get_log_output_function(
+def get_log_output_function(
     callback: Ptr[LogOutputFunction, MutAnyOrigin],
     userdata: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
 ) raises -> None:
@@ -334,7 +334,7 @@ fn get_log_output_function(
     ]()(callback, userdata)
 
 
-fn set_log_output_function(
+def set_log_output_function(
     callback: LogOutputFunction, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises -> None:
     """Replace the default log output function with one of your own.

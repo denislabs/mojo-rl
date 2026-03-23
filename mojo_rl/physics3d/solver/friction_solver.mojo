@@ -70,7 +70,7 @@ comptime COUPLED_PGS_ITERATIONS_GPU: Int = 50
 comptime FRICTION_K_MIN: Float64 = 1e-6
 
 
-fn friction_workspace_size[MC: Int, NV: Int]() -> Int:
+def friction_workspace_size[MC: Int, NV: Int]() -> Int:
     """Size of friction workspace block: 66*MC + 10*MC*NV.
 
     Includes 25*MC extra for pyramidal cone (lambda_edge_neg, C_nt,
@@ -86,7 +86,7 @@ fn friction_workspace_size[MC: Int, NV: Int]() -> Int:
 
 
 @always_inline
-fn _solve_friction_pgs_gpu[
+def _solve_friction_pgs_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

@@ -29,59 +29,59 @@ struct Colors:
     comptime transparent: Color = Color(0, 0, 0, 0)
 
 
-fn white() -> Color:
+def white() -> Color:
     return Color(255, 255, 255, 255)
 
 
-fn black() -> Color:
+def black() -> Color:
     return Color(0, 0, 0, 255)
 
 
-fn red() -> Color:
+def red() -> Color:
     return Color(255, 0, 0, 255)
 
 
-fn green() -> Color:
+def green() -> Color:
     return Color(0, 255, 0, 255)
 
 
-fn blue() -> Color:
+def blue() -> Color:
     return Color(0, 0, 255, 255)
 
 
-fn yellow() -> Color:
+def yellow() -> Color:
     return Color(255, 255, 0, 255)
 
 
-fn cyan() -> Color:
+def cyan() -> Color:
     return Color(0, 255, 255, 255)
 
 
-fn magenta() -> Color:
+def magenta() -> Color:
     return Color(255, 0, 255, 255)
 
 
-fn orange() -> Color:
+def orange() -> Color:
     return Color(255, 165, 0, 255)
 
 
-fn purple() -> Color:
+def purple() -> Color:
     return Color(128, 0, 128, 255)
 
 
-fn gray() -> Color:
+def gray() -> Color:
     return Color(128, 128, 128, 255)
 
 
-fn light_gray() -> Color:
+def light_gray() -> Color:
     return Color(192, 192, 192, 255)
 
 
-fn dark_gray() -> Color:
+def dark_gray() -> Color:
     return Color(64, 64, 64, 255)
 
 
-fn transparent() -> Color:
+def transparent() -> Color:
     return Color(0, 0, 0, 0)
 
 
@@ -91,162 +91,162 @@ fn transparent() -> Color:
 
 
 # Sky/Background colors
-fn sky_blue() -> Color:
+def sky_blue() -> Color:
     """Light blue sky background."""
     return Color(135, 206, 235, 255)
 
 
-fn night_sky() -> Color:
+def night_sky() -> Color:
     """Dark night sky background."""
     return Color(25, 25, 112, 255)
 
 
-fn space_black() -> Color:
+def space_black() -> Color:
     """Deep space background (LunarLander)."""
     return Color(0, 0, 0, 255)
 
 
 # Ground/Terrain colors
-fn ground_brown() -> Color:
+def ground_brown() -> Color:
     """Brown ground/terrain."""
     return Color(139, 119, 101, 255)
 
 
-fn grass_green() -> Color:
+def grass_green() -> Color:
     """Grass/field green."""
     return Color(34, 139, 34, 255)
 
 
-fn dark_grass() -> Color:
+def dark_grass() -> Color:
     """Darker grass for checkerboard patterns."""
     return Color(28, 107, 28, 255)
 
 
-fn sand() -> Color:
+def sand() -> Color:
     """Sandy/tan color."""
     return Color(210, 180, 140, 255)
 
 
-fn mountain_brown() -> Color:
+def mountain_brown() -> Color:
     """Mountain terrain (MountainCar)."""
     return Color(139, 90, 43, 255)
 
 
-fn moon_gray() -> Color:
+def moon_gray() -> Color:
     """Lunar surface gray."""
     return Color(102, 102, 102, 255)
 
 
 # Vehicle/Object colors
-fn cart_blue() -> Color:
+def cart_blue() -> Color:
     """Blue cart color (CartPole)."""
     return Color(31, 119, 180, 255)
 
 
-fn pole_tan() -> Color:
+def pole_tan() -> Color:
     """Tan pole color (CartPole)."""
     return Color(204, 153, 102, 255)
 
 
-fn axle_purple() -> Color:
+def axle_purple() -> Color:
     """Purple axle color (CartPole)."""
     return Color(127, 127, 204, 255)
 
 
-fn car_red() -> Color:
+def car_red() -> Color:
     """Red car color (MountainCar)."""
     return Color(204, 51, 51, 255)
 
 
-fn lander_gray() -> Color:
+def lander_gray() -> Color:
     """Lunar lander body gray."""
     return Color(128, 128, 128, 255)
 
 
-fn hull_purple() -> Color:
+def hull_purple() -> Color:
     """Hull/body purple (BipedalWalker)."""
     return Color(127, 51, 127, 255)
 
 
 # State indicator colors
-fn contact_green() -> Color:
+def contact_green() -> Color:
     """Green for ground contact."""
     return Color(0, 255, 0, 255)
 
 
-fn no_contact_blue() -> Color:
+def no_contact_blue() -> Color:
     """Blue for no ground contact."""
     return Color(77, 166, 255, 255)
 
 
-fn active_green() -> Color:
+def active_green() -> Color:
     """Active state indicator."""
     return Color(0, 200, 0, 255)
 
 
-fn inactive_gray() -> Color:
+def inactive_gray() -> Color:
     """Inactive state indicator."""
     return Color(128, 128, 128, 255)
 
 
-fn warning_orange() -> Color:
+def warning_orange() -> Color:
     """Warning indicator."""
     return Color(255, 165, 0, 255)
 
 
-fn danger_red() -> Color:
+def danger_red() -> Color:
     """Danger indicator."""
     return Color(255, 50, 50, 255)
 
 
 # Visualization colors
-fn velocity_orange() -> Color:
+def velocity_orange() -> Color:
     """Velocity arrow/indicator."""
     return Color(255, 165, 0, 255)
 
 
-fn force_red() -> Color:
+def force_red() -> Color:
     """Force arrow/indicator."""
     return Color(255, 0, 0, 255)
 
 
-fn torque_blue() -> Color:
+def torque_blue() -> Color:
     """Torque indicator."""
     return Color(0, 100, 255, 255)
 
 
-fn target_gold() -> Color:
+def target_gold() -> Color:
     """Goal/target marker."""
     return Color(255, 215, 0, 255)
 
 
-fn flag_red() -> Color:
+def flag_red() -> Color:
     """Flag marker."""
     return Color(255, 0, 0, 255)
 
 
-fn helipad_yellow() -> Color:
+def helipad_yellow() -> Color:
     """Helipad marker."""
     return Color(255, 255, 0, 255)
 
 
 # Track/Road colors
-fn track_gray() -> Color:
+def track_gray() -> Color:
     """Track/road surface."""
     return Color(107, 107, 107, 255)
 
 
-fn track_visited() -> Color:
+def track_visited() -> Color:
     """Visited track tile (CarRacing)."""
     return Color(107, 137, 107, 255)
 
 
-fn curb_red() -> Color:
+def curb_red() -> Color:
     """Track curb red."""
     return Color(255, 0, 0, 255)
 
 
-fn curb_white() -> Color:
+def curb_white() -> Color:
     """Track curb white."""
     return Color(255, 255, 255, 255)
 
@@ -256,7 +256,7 @@ fn curb_white() -> Color:
 # =============================================================================
 
 
-fn rgb(r: Int, g: Int, b: Int) -> Color:
+def rgb(r: Int, g: Int, b: Int) -> Color:
     """Create an opaque RGB color.
 
     Args:
@@ -270,7 +270,7 @@ fn rgb(r: Int, g: Int, b: Int) -> Color:
     return Color(UInt8(r), UInt8(g), UInt8(b), 255)
 
 
-fn rgba(r: Int, g: Int, b: Int, a: Int) -> Color:
+def rgba(r: Int, g: Int, b: Int, a: Int) -> Color:
     """Create an RGBA color.
 
     Args:
@@ -285,7 +285,7 @@ fn rgba(r: Int, g: Int, b: Int, a: Int) -> Color:
     return Color(UInt8(r), UInt8(g), UInt8(b), UInt8(a))
 
 
-fn with_alpha(color: Color, alpha: Int) -> Color:
+def with_alpha(color: Color, alpha: Int) -> Color:
     """Return color with modified alpha.
 
     Args:
@@ -298,7 +298,7 @@ fn with_alpha(color: Color, alpha: Int) -> Color:
     return Color(color.r, color.g, color.b, UInt8(alpha))
 
 
-fn lerp_color(c1: Color, c2: Color, t: Float64) -> Color:
+def lerp_color(c1: Color, c2: Color, t: Float64) -> Color:
     """Linearly interpolate between two colors.
 
     Args:
@@ -319,7 +319,7 @@ fn lerp_color(c1: Color, c2: Color, t: Float64) -> Color:
     )
 
 
-fn brighten(color: Color, factor: Float64) -> Color:
+def brighten(color: Color, factor: Float64) -> Color:
     """Brighten a color.
 
     Args:
@@ -337,7 +337,7 @@ fn brighten(color: Color, factor: Float64) -> Color:
     )
 
 
-fn darken(color: Color, factor: Float64) -> Color:
+def darken(color: Color, factor: Float64) -> Color:
     """Darken a color.
 
     Args:
@@ -355,7 +355,7 @@ fn darken(color: Color, factor: Float64) -> Color:
     )
 
 
-fn grayscale(color: Color) -> Color:
+def grayscale(color: Color) -> Color:
     """Convert color to grayscale.
 
     Args:
@@ -378,7 +378,7 @@ fn grayscale(color: Color) -> Color:
 # =============================================================================
 
 
-fn flame_color(lifetime_ratio: Float64) -> Color:
+def flame_color(lifetime_ratio: Float64) -> Color:
     """Get flame particle color based on lifetime.
 
     Transitions from yellow -> orange -> red as lifetime decreases.
@@ -398,7 +398,7 @@ fn flame_color(lifetime_ratio: Float64) -> Color:
     )
 
 
-fn smoke_color(lifetime_ratio: Float64) -> Color:
+def smoke_color(lifetime_ratio: Float64) -> Color:
     """Get smoke particle color based on lifetime.
 
     Transitions from gray -> lighter gray as lifetime decreases.
@@ -419,7 +419,7 @@ fn smoke_color(lifetime_ratio: Float64) -> Color:
     )
 
 
-fn spark_color(lifetime_ratio: Float64) -> Color:
+def spark_color(lifetime_ratio: Float64) -> Color:
     """Get spark particle color based on lifetime.
 
     Transitions from white -> yellow -> orange.
@@ -444,7 +444,7 @@ fn spark_color(lifetime_ratio: Float64) -> Color:
 # =============================================================================
 
 
-fn heat_gradient(value: Float64) -> Color:
+def heat_gradient(value: Float64) -> Color:
     """Get color from heat gradient (blue -> green -> yellow -> red).
 
     Args:
@@ -473,7 +473,7 @@ fn heat_gradient(value: Float64) -> Color:
         return lerp_color(yellow(), red(), local_t)
 
 
-fn rainbow_gradient(value: Float64) -> Color:
+def rainbow_gradient(value: Float64) -> Color:
     """Get color from rainbow gradient.
 
     Args:

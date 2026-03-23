@@ -25,29 +25,29 @@ struct PendulumV2State[DTYPE: DType where DTYPE.is_floating_point()](
     var sin_theta: Scalar[Self.DTYPE]
     var theta_dot: Scalar[Self.DTYPE]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.cos_theta = 1.0  # theta=0 (pointing up)
         self.sin_theta = 0.0
         self.theta_dot = 0.0
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.cos_theta = copy.cos_theta
         self.sin_theta = copy.sin_theta
         self.theta_dot = copy.theta_dot
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.cos_theta = take.cos_theta
         self.sin_theta = take.sin_theta
         self.theta_dot = take.theta_dot
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return (
             self.cos_theta == other.cos_theta
             and self.sin_theta == other.sin_theta
             and self.theta_dot == other.theta_dot
         )
 
-    fn to_list(self) -> List[Scalar[Self.DTYPE]]:
+    def to_list(self) -> List[Scalar[Self.DTYPE]]:
         """Convert to list for agent interface."""
         var result = List[Scalar[Self.DTYPE]]()
         result.append(self.cos_theta)
@@ -55,7 +55,7 @@ struct PendulumV2State[DTYPE: DType where DTYPE.is_floating_point()](
         result.append(self.theta_dot)
         return result^
 
-    fn to_list_typed[dtype: DType](self) -> List[Scalar[dtype]]:
+    def to_list_typed[dtype: DType](self) -> List[Scalar[dtype]]:
         """Convert to list with specified dtype."""
         var result = List[Scalar[dtype]]()
         result.append(Scalar[dtype](self.cos_theta))
@@ -64,7 +64,7 @@ struct PendulumV2State[DTYPE: DType where DTYPE.is_floating_point()](
         return result^
 
     @staticmethod
-    fn from_theta(
+    def from_theta(
         theta: Scalar[Self.DTYPE], theta_dot: Scalar[Self.DTYPE]
     ) -> PendulumV2State[Self.DTYPE]:
         """Create state from raw physics values."""
@@ -75,7 +75,7 @@ struct PendulumV2State[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn from_buffer[
+    def from_buffer[
         BATCH: Int,
         STATE_SIZE: Int,
     ](
@@ -107,7 +107,7 @@ struct PendulumV2State[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn from_obs_buffer[
+    def from_obs_buffer[
         BATCH: Int,
         OBS_DIM: Int,
     ](

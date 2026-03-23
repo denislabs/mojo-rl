@@ -32,7 +32,7 @@ from std.random import seed, random_float64
 # =============================================================================
 
 
-fn _spike_param_size[*OPS: DiffOp]() -> Int:
+def _spike_param_size[*OPS: DiffOp]() -> Int:
     """Recursively compute total PARAM_SIZE of fused groups."""
     comptime ops = Variadic.types[T=DiffOp, *OPS]
     comptime N = Variadic.size(ops)
@@ -97,7 +97,7 @@ fn _spike_param_size[*OPS: DiffOp]() -> Int:
         return ops[0].PARAM_SIZE
 
 
-fn test_spike1():
+def test_spike1():
     print("=== Spike 1: Recursive param size computation ===")
 
     # Case 1: M+B+R (3 ops) -> FusedMBR: ps = 2*4 + 4 = 12
@@ -135,7 +135,7 @@ fn test_spike1():
 # =============================================================================
 
 
-fn test_spike2():
+def test_spike2():
     print("\n=== Spike 2: Fused op construction + eval call ===")
     seed(42)
 
@@ -191,7 +191,7 @@ fn test_spike2():
 # =============================================================================
 
 
-fn _spike_forward[
+def _spike_forward[
     BATCH: Int, *OPS: DiffOp
 ](
     in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -395,7 +395,7 @@ fn _spike_forward[
         pass
 
 
-fn test_spike3():
+def test_spike3():
     print("\n=== Spike 3: Recursive forward with buffers ===")
     seed(42)
 
@@ -576,7 +576,7 @@ fn test_spike3():
         print("  FAIL")
 
 
-fn main():
+def main():
     print()
     test_spike1()
     test_spike2()

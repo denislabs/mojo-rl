@@ -40,7 +40,7 @@ SDL_SECONDS_TO_NS() and such.
 """
 
 
-fn get_ticks() raises -> UInt64:
+def get_ticks() raises -> UInt64:
     """Get the number of milliseconds since SDL library initialization.
 
     Returns:
@@ -56,7 +56,7 @@ fn get_ticks() raises -> UInt64:
     return _get_dylib_function[lib, "SDL_GetTicks", fn() -> UInt64]()()
 
 
-fn get_ticks_ns() raises -> UInt64:
+def get_ticks_ns() raises -> UInt64:
     """Get the number of nanoseconds since SDL library initialization.
 
     Returns:
@@ -72,7 +72,7 @@ fn get_ticks_ns() raises -> UInt64:
     return _get_dylib_function[lib, "SDL_GetTicksNS", fn() -> UInt64]()()
 
 
-fn get_performance_counter() raises -> UInt64:
+def get_performance_counter() raises -> UInt64:
     """Get the current value of the high resolution counter.
 
     This function is typically used for profiling.
@@ -95,7 +95,7 @@ fn get_performance_counter() raises -> UInt64:
     ]()()
 
 
-fn get_performance_frequency() raises -> UInt64:
+def get_performance_frequency() raises -> UInt64:
     """Get the count per second of the high resolution counter.
 
     Returns:
@@ -112,7 +112,7 @@ fn get_performance_frequency() raises -> UInt64:
     ]()()
 
 
-fn delay(ms: UInt32) raises -> None:
+def delay(ms: UInt32) raises -> None:
     """Wait a specified number of milliseconds before returning.
 
     This function waits a specified number of milliseconds before returning. It
@@ -131,7 +131,7 @@ fn delay(ms: UInt32) raises -> None:
     return _get_dylib_function[lib, "SDL_Delay", fn(ms: UInt32) -> None]()(ms)
 
 
-fn delay_ns(ns: UInt64) raises -> None:
+def delay_ns(ns: UInt64) raises -> None:
     """Wait a specified number of nanoseconds before returning.
 
     This function waits a specified number of nanoseconds before returning. It
@@ -150,7 +150,7 @@ fn delay_ns(ns: UInt64) raises -> None:
     return _get_dylib_function[lib, "SDL_DelayNS", fn(ns: UInt64) -> None]()(ns)
 
 
-fn delay_precise(ns: UInt64) raises -> None:
+def delay_precise(ns: UInt64) raises -> None:
     """Wait a specified number of nanoseconds before returning.
 
     This function waits a specified number of nanoseconds before returning. It
@@ -180,15 +180,15 @@ struct TimerID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -224,7 +224,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_TimerCallback.
 """
 
 
-fn add_timer(
+def add_timer(
     interval: UInt32,
     callback: TimerCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
@@ -307,7 +307,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_NSTimerCallback.
 """
 
 
-fn add_timer_ns(
+def add_timer_ns(
     interval: UInt64,
     callback: NSTimerCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
@@ -358,7 +358,7 @@ fn add_timer_ns(
     ]()(interval, callback, userdata)
 
 
-fn remove_timer(id: TimerID) raises:
+def remove_timer(id: TimerID) raises:
     """Remove a timer created with SDL_AddTimer().
 
     Args:

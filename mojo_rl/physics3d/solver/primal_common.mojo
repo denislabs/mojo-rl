@@ -42,7 +42,7 @@ comptime PRIMAL_MINVAL: Float64 = 1e-12
 
 
 @always_inline
-fn primal_D[
+def primal_D[
     DTYPE: DType
 ](inv_K_imp: Scalar[DTYPE], K: Scalar[DTYPE],) -> Scalar[DTYPE]:
     """Compute MuJoCo-matching primal D = 1/R from stored constraint values.
@@ -66,7 +66,7 @@ fn primal_D[
 
 
 @always_inline
-fn constraint_update[
+def constraint_update[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,
@@ -200,7 +200,7 @@ fn constraint_update[
 
 
 @always_inline
-fn compute_jar[
+def compute_jar[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,
@@ -221,7 +221,7 @@ fn compute_jar[
 
 
 @always_inline
-fn compute_qfrc_constraint[
+def compute_qfrc_constraint[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,
@@ -243,7 +243,7 @@ fn compute_qfrc_constraint[
 
 
 @always_inline
-fn compute_gauss_cost[
+def compute_gauss_cost[
     DTYPE: DType,
     NV: Int,
     V_SIZE: Int,
@@ -261,7 +261,7 @@ fn compute_gauss_cost[
 
 
 @always_inline
-fn compute_total_cost[
+def compute_total_cost[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,
@@ -316,7 +316,7 @@ fn compute_total_cost[
 
 
 @always_inline
-fn compute_primal_D_values[
+def compute_primal_D_values[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,
@@ -468,7 +468,7 @@ fn compute_primal_D_values[
 
 
 @always_inline
-fn constraint_update_with_D[
+def constraint_update_with_D[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,
@@ -582,7 +582,7 @@ fn constraint_update_with_D[
 
 
 @no_inline
-fn compute_total_cost_with_D[
+def compute_total_cost_with_D[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,
@@ -627,7 +627,7 @@ fn compute_total_cost_with_D[
 
 
 @no_inline
-fn primal_linesearch_with_D[
+def primal_linesearch_with_D[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,
@@ -1135,7 +1135,7 @@ fn primal_linesearch_with_D[
 
 
 @always_inline
-fn primal_linesearch[
+def primal_linesearch[
     DTYPE: DType,
     MAX_ROWS: Int,
     NV: Int,

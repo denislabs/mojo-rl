@@ -60,15 +60,15 @@ struct InitFlags(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime INIT_AUDIO = Self(0x00000010)
@@ -111,19 +111,19 @@ struct AppResult(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime APP_CONTINUE = Self(0)
@@ -218,7 +218,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppQuit_func.
 """
 
 
-fn init(flags: InitFlags) raises:
+def init(flags: InitFlags) raises:
     """Initialize the SDL library.
 
     SDL_Init() simply forwards to calling SDL_InitSubSystem(). Therefore, the
@@ -277,7 +277,7 @@ fn init(flags: InitFlags) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn init_sub_system(flags: InitFlags) raises:
+def init_sub_system(flags: InitFlags) raises:
     """Compatibility function to initialize the SDL library.
 
     This function and SDL_Init() are interchangeable.
@@ -299,7 +299,7 @@ fn init_sub_system(flags: InitFlags) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn quit_sub_system(flags: InitFlags) raises -> None:
+def quit_sub_system(flags: InitFlags) raises -> None:
     """Shut down specific SDL subsystems.
 
     You still need to call SDL_Quit() even if you close all open subsystems
@@ -316,7 +316,7 @@ fn quit_sub_system(flags: InitFlags) raises -> None:
     ]()(flags)
 
 
-fn was_init(flags: InitFlags) raises -> InitFlags:
+def was_init(flags: InitFlags) raises -> InitFlags:
     """Get a mask of the specified subsystems which are currently initialized.
 
     Args:
@@ -334,7 +334,7 @@ fn was_init(flags: InitFlags) raises -> InitFlags:
     ]()(flags)
 
 
-fn quit() raises -> None:
+def quit() raises -> None:
     """Clean up all initialized subsystems.
 
     You should call this function even if you have already shutdown each
@@ -351,7 +351,7 @@ fn quit() raises -> None:
     return _get_dylib_function[lib, "SDL_Quit", fn() -> None]()()
 
 
-fn is_main_thread() raises -> Bool:
+def is_main_thread() raises -> Bool:
     """Return whether this is the main thread.
 
     On Apple platforms, the main thread is the thread that runs your program's
@@ -383,7 +383,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_MainThreadCallback.
 """
 
 
-fn run_on_main_thread(
+def run_on_main_thread(
     callback: MainThreadCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
     wait_complete: Bool,
@@ -427,7 +427,7 @@ fn run_on_main_thread(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_app_metadata(
+def set_app_metadata(
     var appname: String, var appversion: String, var appidentifier: String
 ) raises:
     """Specify basic metadata about your app.
@@ -485,7 +485,7 @@ fn set_app_metadata(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_app_metadata_property(var name: String, var value: String) raises:
+def set_app_metadata_property(var name: String, var value: String) raises:
     """Specify metadata about your app through a set of properties.
 
     You can optionally provide metadata about your app to SDL. This is not
@@ -563,7 +563,7 @@ fn set_app_metadata_property(var name: String, var value: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_app_metadata_property(
+def get_app_metadata_property(
     var name: String,
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get metadata about your app.

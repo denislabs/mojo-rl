@@ -46,7 +46,7 @@ comptime NUM_EPISODES = 5_000  # More episodes for LunarLander (harder than Cart
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Agent GPU Test on LunarLander")

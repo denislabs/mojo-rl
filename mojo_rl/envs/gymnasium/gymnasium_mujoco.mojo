@@ -37,13 +37,13 @@ struct GymMuJoCoState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -54,10 +54,10 @@ struct GymMuJoCoAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
 
@@ -101,7 +101,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    fn __init__(out self, env_name: String, render_mode: String = "") raises:
+    def __init__(out self, env_name: String, render_mode: String = "") raises:
         """Initialize a MuJoCo environment.
 
         Args:
@@ -146,7 +146,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     # Env base trait methods
     # ========================================================================
 
-    fn reset(mut self) -> GymMuJoCoState:
+    def reset(mut self) -> GymMuJoCoState:
         """Reset environment and return state."""
         try:
             var result = self.env.reset()
@@ -167,14 +167,14 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
         self.episode_length = 0
         return GymMuJoCoState(index=0)
 
-    fn step(
+    def step(
         mut self, action: GymMuJoCoAction, verbose: Bool = False
     ) -> Tuple[GymMuJoCoState, Float64, Bool]:
         """Take action (placeholder - use step_continuous for actual control).
         """
         return (GymMuJoCoState(index=0), 0.0, self.done)
 
-    fn get_state(self) -> GymMuJoCoState:
+    def get_state(self) -> GymMuJoCoState:
         """Return current state."""
         return GymMuJoCoState(index=0)
 
@@ -182,29 +182,29 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     # ContinuousStateEnv trait methods
     # ========================================================================
 
-    fn get_obs(self) -> SIMD[DType.float64, 4]:
+    def get_obs(self) -> SIMD[DType.float64, 4]:
         """Return first 4 dims of observation for trait conformance."""
         return self.current_obs_4d
 
-    fn get_obs_list(self) -> List[Float64]:
+    def get_obs_list(self) -> List[Float64]:
         """Return current continuous observation as List (trait method)."""
         var obs = List[Float64](capacity=self._obs_dim)
         for i in range(self._obs_dim):
             obs.append(self.current_obs[i])
         return obs^
 
-    fn reset_obs(mut self) -> SIMD[DType.float64, 4]:
+    def reset_obs(mut self) -> SIMD[DType.float64, 4]:
         """Reset environment and return continuous observation."""
         _ = self.reset()
         return self.current_obs_4d
 
-    fn reset_obs_list(mut self) -> List[Float64]:
+    def reset_obs_list(mut self) -> List[Float64]:
         """Reset environment and return continuous observation as List (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension."""
         return self._obs_dim
 
@@ -212,15 +212,15 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     # ContinuousActionEnv trait methods
     # ========================================================================
 
-    fn action_dim(self) -> Int:
+    def action_dim(self) -> Int:
         """Return action dimension."""
         return self._action_dim
 
-    fn action_low(self) -> Float64:
+    def action_low(self) -> Float64:
         """Return action lower bound."""
         return self._action_low
 
-    fn action_high(self) -> Float64:
+    def action_high(self) -> Float64:
         """Return action upper bound."""
         return self._action_high
 
@@ -228,7 +228,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     # BoxContinuousActionEnv trait methods
     # ========================================================================
 
-    fn step_continuous[
+    def step_continuous[
         DTYPE: DType
     ](mut self, action: Scalar[DTYPE]) -> Tuple[
         List[Scalar[DTYPE]], Scalar[DTYPE], Bool
@@ -244,7 +244,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
             action_list.append(Scalar[DTYPE](0.0))
         return self.step_continuous_vec(action_list^)
 
-    fn step_continuous_vec[
+    def step_continuous_vec[
         DTYPE: DType
     ](mut self, action: List[Scalar[DTYPE]], verbose: Bool = False) -> Tuple[
         List[Scalar[DTYPE]], Scalar[DTYPE], Bool
@@ -269,13 +269,13 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Mark renderer as initialized (Gymnasium renders via its own window).
         """
         self._render_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render via Gymnasium's built-in renderer."""
         if not self._render_initialized:
             return
@@ -284,7 +284,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
         except:
             pass
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close the Gymnasium environment (and its render window)."""
         if not self._render_initialized:
             return
@@ -294,29 +294,29 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
             pass
         self._render_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if renderer has been initialized."""
         return self._render_initialized
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Gymnasium manages its own window; always returns False."""
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """No-op: Gymnasium controls its own frame rate."""
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
     # Additional methods - continuous control
     # ========================================================================
 
-    fn step_with_list[
+    def step_with_list[
         DTYPE: DType
     ](mut self, action: List[Scalar[DTYPE]]) -> Tuple[
         SIMD[DTYPE, 4], Scalar[DTYPE], Bool
@@ -359,7 +359,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
             new_obs_4d[i] = Scalar[DTYPE](self.current_obs_4d[i])
         return (new_obs_4d, reward, self.done)
 
-    fn sample_action(mut self, out action: List[Float64]):
+    def sample_action(mut self, out action: List[Float64]):
         """Sample random action from action space."""
         action = List[Float64]()
         try:
@@ -370,24 +370,24 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
             for _ in range(self._action_dim):
                 action.append(0.0)
 
-    fn get_full_obs(self, out obs: List[Float64]):
+    def get_full_obs(self, out obs: List[Float64]):
         """Copy full observation into output list."""
         obs = List[Float64]()
         for i in range(self._obs_dim):
             obs.append(self.current_obs[i])
 
-    fn close(mut self):
+    def close(mut self):
         """Close the environment."""
         try:
             _ = self.env.close()
         except:
             pass
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
-    fn get_info(self) -> String:
+    def get_info(self) -> String:
         """Return environment info string."""
         return (
             "MuJoCo Env: "
@@ -404,7 +404,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
 # ============================================================================
 
 
-fn make_half_cheetah(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_half_cheetah(render_mode: String = "") raises -> GymMuJoCoEnv:
     """HalfCheetah-v5: 2D cheetah running task.
 
     Obs: 17 (positions and velocities)
@@ -414,7 +414,7 @@ fn make_half_cheetah(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("HalfCheetah-v5", render_mode)
 
 
-fn make_ant(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_ant(render_mode: String = "") raises -> GymMuJoCoEnv:
     """Ant-v5: 4-legged robot running task.
 
     Obs: 27 (positions and velocities)
@@ -424,7 +424,7 @@ fn make_ant(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("Ant-v5", render_mode)
 
 
-fn make_humanoid(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_humanoid(render_mode: String = "") raises -> GymMuJoCoEnv:
     """Humanoid-v5: 3D humanoid walking/running task.
 
     Obs: 376 (positions, velocities, and COM-based features)
@@ -434,7 +434,7 @@ fn make_humanoid(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("Humanoid-v5", render_mode)
 
 
-fn make_walker2d(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_walker2d(render_mode: String = "") raises -> GymMuJoCoEnv:
     """Walker2d-v5: 2D biped walking task.
 
     Obs: 17 (positions and velocities)
@@ -444,7 +444,7 @@ fn make_walker2d(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("Walker2d-v5", render_mode)
 
 
-fn make_hopper(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_hopper(render_mode: String = "") raises -> GymMuJoCoEnv:
     """Hopper-v5: 1-legged hopping task.
 
     Obs: 11 (positions and velocities)
@@ -454,7 +454,7 @@ fn make_hopper(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("Hopper-v5", render_mode)
 
 
-fn make_swimmer(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_swimmer(render_mode: String = "") raises -> GymMuJoCoEnv:
     """Swimmer-v5: 3-link swimming task.
 
     Obs: 8 (positions and velocities)
@@ -464,7 +464,7 @@ fn make_swimmer(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("Swimmer-v5", render_mode)
 
 
-fn make_inverted_pendulum(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_inverted_pendulum(render_mode: String = "") raises -> GymMuJoCoEnv:
     """InvertedPendulum-v5: Balance a pole on a cart.
 
     Obs: 4 (cart position/velocity, pole angle/velocity)
@@ -474,7 +474,7 @@ fn make_inverted_pendulum(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("InvertedPendulum-v5", render_mode)
 
 
-fn make_inverted_double_pendulum(
+def make_inverted_double_pendulum(
     render_mode: String = "",
 ) raises -> GymMuJoCoEnv:
     """InvertedDoublePendulum-v5: Balance a double pendulum on a cart.
@@ -486,7 +486,7 @@ fn make_inverted_double_pendulum(
     return GymMuJoCoEnv("InvertedDoublePendulum-v5", render_mode)
 
 
-fn make_reacher(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_reacher(render_mode: String = "") raises -> GymMuJoCoEnv:
     """Reacher-v5: Reach a target with a 2-link arm.
 
     Obs: 11 (arm positions/velocities + target position)
@@ -496,7 +496,7 @@ fn make_reacher(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("Reacher-v5", render_mode)
 
 
-fn make_pusher(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_pusher(render_mode: String = "") raises -> GymMuJoCoEnv:
     """Pusher-v5: Push an object to a target position.
 
     Obs: 23 (arm + object + target positions/velocities)

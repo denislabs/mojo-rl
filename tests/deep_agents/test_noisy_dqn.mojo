@@ -1,10 +1,14 @@
 """Test Noisy DQN agent on CartPole."""
 
-from mojo_rl.deep_agents.core.agents import NoisyDQNAgent, NoisyDQNConfig, GenericDQNAgent
+from mojo_rl.deep_agents.core.agents import (
+    NoisyDQNAgent,
+    NoisyDQNConfig,
+    GenericDQNAgent,
+)
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Noisy DQN Agent Test ===")
 
     # Noisy DQN: epsilon=0 because noise provides exploration
@@ -18,9 +22,9 @@ fn main() raises:
         lr=0.0005,
     ](
         gamma=0.99,
-        epsilon=0.0,          # No epsilon-greedy — noise provides exploration
+        epsilon=0.0,  # No epsilon-greedy — noise provides exploration
         epsilon_min=0.0,
-        epsilon_decay=1.0,    # No decay
+        epsilon_decay=1.0,  # No decay
         target_update_freq=200,
     )
 

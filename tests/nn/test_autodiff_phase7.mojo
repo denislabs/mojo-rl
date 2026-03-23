@@ -26,13 +26,13 @@ from mojo_rl.nn.autodiff import (
 from layout import Layout, LayoutTensor
 
 
-fn print_header(name: String):
+def print_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
 
 
-fn check(cond: Bool, msg: String, mut fails: Int):
+def check(cond: Bool, msg: String, mut fails: Int):
     if cond:
         print("  PASS: " + msg)
     else:
@@ -40,14 +40,14 @@ fn check(cond: Bool, msg: String, mut fails: Int):
         fails += 1
 
 
-fn make_list(size: Int) -> List[Scalar[dtype]]:
+def make_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=max(size, 1))
     for _ in range(max(size, 1)):
         lst.append(0)
     return lst^
 
 
-fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
+def make_rand_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=max(size, 1))
     for _ in range(max(size, 1)):
         lst.append(Scalar[dtype](random_float64(-1.0, 1.0)))
@@ -59,7 +59,7 @@ fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
 # =============================================================================
 
 
-fn test_conv2d_1x1() -> Int:
+def test_conv2d_1x1() -> Int:
     print_header("Conv2D 1x1 conv = pointwise matmul")
     var fails = 0
 
@@ -126,7 +126,7 @@ fn test_conv2d_1x1() -> Int:
 # =============================================================================
 
 
-fn test_conv2d_3x3() -> Int:
+def test_conv2d_3x3() -> Int:
     print_header("Conv2D 3x3 kernel on 5x5 input")
     var fails = 0
 
@@ -197,7 +197,7 @@ fn test_conv2d_3x3() -> Int:
 # =============================================================================
 
 
-fn test_conv2d_grad() -> Int:
+def test_conv2d_grad() -> Int:
     print_header("Conv2D finite difference gradient check")
     var fails = 0
 
@@ -346,7 +346,7 @@ fn test_conv2d_grad() -> Int:
 # =============================================================================
 
 
-fn test_maxpool2d_forward() -> Int:
+def test_maxpool2d_forward() -> Int:
     print_header("MaxPool2D known output")
     var fails = 0
 
@@ -409,7 +409,7 @@ fn test_maxpool2d_forward() -> Int:
 # =============================================================================
 
 
-fn test_maxpool2d_grad() -> Int:
+def test_maxpool2d_grad() -> Int:
     print_header("MaxPool2D gradient routing")
     var fails = 0
 
@@ -480,7 +480,7 @@ fn test_maxpool2d_grad() -> Int:
 # =============================================================================
 
 
-fn test_avgpool2d_forward() -> Int:
+def test_avgpool2d_forward() -> Int:
     print_header("AvgPool2D forward")
     var fails = 0
 
@@ -542,7 +542,7 @@ fn test_avgpool2d_forward() -> Int:
 # =============================================================================
 
 
-fn test_avgpool2d_grad() -> Int:
+def test_avgpool2d_grad() -> Int:
     print_header("AvgPool2D gradient (uniform distribution)")
     var fails = 0
 
@@ -608,7 +608,7 @@ fn test_avgpool2d_grad() -> Int:
 # =============================================================================
 
 
-fn test_avgpool2d_fd() -> Int:
+def test_avgpool2d_fd() -> Int:
     print_header("AvgPool2D finite difference gradient check")
     var fails = 0
 
@@ -707,7 +707,7 @@ fn test_avgpool2d_fd() -> Int:
 # =============================================================================
 
 
-fn test_maxpool2d_fd() -> Int:
+def test_maxpool2d_fd() -> Int:
     print_header("MaxPool2D finite difference gradient check")
     var fails = 0
 
@@ -809,7 +809,7 @@ fn test_maxpool2d_fd() -> Int:
 # =============================================================================
 
 
-fn test_conv_pool_dense_composition() -> Int:
+def test_conv_pool_dense_composition() -> Int:
     print_header("Conv2D -> ReLU -> MaxPool2D -> Flatten -> Dense compiles")
     var fails = 0
 
@@ -900,7 +900,7 @@ fn test_conv_pool_dense_composition() -> Int:
 # =============================================================================
 
 
-fn test_conv2d_padding() -> Int:
+def test_conv2d_padding() -> Int:
     print_header("Conv2D with padding=1 preserves spatial dims")
     var fails = 0
 
@@ -918,7 +918,7 @@ fn test_conv2d_padding() -> Int:
 # =============================================================================
 
 
-fn main():
+def main():
     print("Phase 7: Spatial Primitives — Conv2D, MaxPool2D, AvgPool2D")
     print("=" * 70)
 

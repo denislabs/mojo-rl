@@ -186,7 +186,7 @@ struct WorldModel[
     # Fixed bin values for distributional RL
     var bins: InlineArray[Float32, Self.NUM_BINS]
 
-    fn __init__(
+    def __init__(
         out self,
     ):
         """Initialize WorldModel with all sub-networks."""
@@ -237,7 +237,7 @@ struct WorldModel[
     # Forward Methods
     # =========================================================================
 
-    fn encode[
+    def encode[
         BATCH: Int
     ](
         self,
@@ -257,7 +257,7 @@ struct WorldModel[
 
         Self.EncoderNet.forward[BATCH](obs, z, self.encoder.params_view())
 
-    fn encode_with_cache[
+    def encode_with_cache[
         BATCH: Int
     ](
         self,
@@ -285,7 +285,7 @@ struct WorldModel[
             obs, z, self.encoder.params_view(), cache
         )
 
-    fn dynamics_forward[
+    def dynamics_forward[
         BATCH: Int
     ](
         self,
@@ -306,7 +306,7 @@ struct WorldModel[
             z_a, z_next, self.dynamics.params_view()
         )
 
-    fn dynamics_forward_with_cache[
+    def dynamics_forward_with_cache[
         BATCH: Int
     ](
         self,
@@ -327,7 +327,7 @@ struct WorldModel[
             z_a, z_next, self.dynamics.params_view(), cache
         )
 
-    fn reward_forward[
+    def reward_forward[
         BATCH: Int
     ](
         self,
@@ -343,7 +343,7 @@ struct WorldModel[
             z_a, logits, self.reward_head.params_view()
         )
 
-    fn reward_forward_with_cache[
+    def reward_forward_with_cache[
         BATCH: Int
     ](
         self,
@@ -364,7 +364,7 @@ struct WorldModel[
             z_a, logits, self.reward_head.params_view(), cache
         )
 
-    fn termination_forward[
+    def termination_forward[
         BATCH: Int
     ](
         self,
@@ -393,7 +393,7 @@ struct WorldModel[
         for b in range(BATCH):
             term_prob[b, 0] = out[b]
 
-    fn policy_forward[
+    def policy_forward[
         BATCH: Int
     ](
         self,
@@ -434,7 +434,7 @@ struct WorldModel[
                     ls = 2.0
                 log_std[b, i] = Scalar[dtype](ls)
 
-    fn policy_forward_with_cache[
+    def policy_forward_with_cache[
         BATCH: Int
     ](
         self,
@@ -455,7 +455,7 @@ struct WorldModel[
             z, out, self.policy.params_view(), cache
         )
 
-    fn q_forward[
+    def q_forward[
         BATCH: Int
     ](
         self,
@@ -525,7 +525,7 @@ struct WorldModel[
             q_logits[3 * BATCH * Self.NUM_BINS + b] = logits4[b]
             q_logits[4 * BATCH * Self.NUM_BINS + b] = logits5[b]
 
-    fn q_forward_single_no_cache[
+    def q_forward_single_no_cache[
         BATCH: Int
     ](
         self,
@@ -555,7 +555,7 @@ struct WorldModel[
         else:
             Self.QNet.forward[BATCH](z_a, logits, self.q5.params_view())
 
-    fn q_min_forward[
+    def q_min_forward[
         BATCH: Int
     ](
         self,
@@ -607,7 +607,7 @@ struct WorldModel[
     # Soft Update for Target Networks
     # =========================================================================
 
-    fn soft_update_q_targets(mut self, tau: Float64):
+    def soft_update_q_targets(mut self, tau: Float64):
         """Soft update target Q-networks: θ_target ← τ*θ + (1-τ)*θ_target.
 
         Args:
@@ -623,7 +623,7 @@ struct WorldModel[
     # Gradient Zeroing
     # =========================================================================
 
-    fn zero_all_grads(mut self):
+    def zero_all_grads(mut self):
         """Zero gradients for all world model sub-networks."""
         self.encoder.zero_grads()
         self.dynamics.zero_grads()
@@ -635,7 +635,7 @@ struct WorldModel[
         self.q4.zero_grads()
         self.q5.zero_grads()
 
-    fn zero_policy_grads(mut self):
+    def zero_policy_grads(mut self):
         """Zero gradients for the policy network."""
         self.policy.zero_grads()
 
@@ -643,7 +643,7 @@ struct WorldModel[
     # Parameter Updates
     # =========================================================================
 
-    fn update_world_model_params(mut self):
+    def update_world_model_params(mut self):
         """Apply gradient updates to all world model parameters (exc. policy).
         """
         self.encoder.optimizer_step()
@@ -656,12 +656,12 @@ struct WorldModel[
         self.q4.optimizer_step()
         self.q5.optimizer_step()
 
-    fn update_policy_params(mut self):
+    def update_policy_params(mut self):
         """Apply gradient updates to policy parameters."""
         self.policy.optimizer_step()
 
 
-fn decode_value_batch_scalar[
+def decode_value_batch_scalar[
     NUM_BINS: Int
 ](
     logits: InlineArray[Float32, NUM_BINS],

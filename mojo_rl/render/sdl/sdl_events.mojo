@@ -60,19 +60,19 @@ struct EventType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime EVENT_FIRST = Self(0)
@@ -1342,15 +1342,15 @@ struct Event:
     ]
     var _impl: Self._mlir_type
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize event for polling."""
         __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(self))
 
-    fn __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
+    def __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
         return rebind[Ptr[T, origin_of(self._impl)]](Ptr(to=self._impl))[]
 
 
-fn pump_events() raises -> None:
+def pump_events() raises -> None:
     """Pump the event loop, gathering events from the input devices.
 
     This function updates the event queue and internal input device state.
@@ -1381,19 +1381,19 @@ struct EventAction(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime ADDEVENT = Self(0x0)
@@ -1404,7 +1404,7 @@ struct EventAction(Indexer, Intable, TrivialRegisterPassable):
     """Retrieve/remove events from the front of the queue."""
 
 
-fn peep_events(
+def peep_events(
     events: Ptr[Event, MutAnyOrigin],
     numevents: c_int,
     action: EventAction,
@@ -1466,7 +1466,7 @@ fn peep_events(
     ]()(events, numevents, action, min_type, max_type)
 
 
-fn has_event(type: UInt32) raises -> Bool:
+def has_event(type: UInt32) raises -> Bool:
     """Check for the existence of a certain event type in the event queue.
 
     If you need to check for a range of event types, use SDL_HasEvents()
@@ -1490,7 +1490,7 @@ fn has_event(type: UInt32) raises -> Bool:
     )
 
 
-fn has_events(min_type: UInt32, max_type: UInt32) raises -> Bool:
+def has_events(min_type: UInt32, max_type: UInt32) raises -> Bool:
     """Check for the existence of certain event types in the event queue.
 
     If you need to check for a single event type, use SDL_HasEvent() instead.
@@ -1516,7 +1516,7 @@ fn has_events(min_type: UInt32, max_type: UInt32) raises -> Bool:
     ]()(min_type, max_type)
 
 
-fn flush_event(type: UInt32) raises -> None:
+def flush_event(type: UInt32) raises -> None:
     """Clear events of a specific type from the event queue.
 
     This will unconditionally remove any events from the queue that match
@@ -1548,7 +1548,7 @@ fn flush_event(type: UInt32) raises -> None:
     ]()(type)
 
 
-fn flush_events(min_type: UInt32, max_type: UInt32) raises -> None:
+def flush_events(min_type: UInt32, max_type: UInt32) raises -> None:
     """Clear events of a range of types from the event queue.
 
     This will unconditionally remove any events from the queue that are in the
@@ -1579,7 +1579,7 @@ fn flush_events(min_type: UInt32, max_type: UInt32) raises -> None:
     ]()(min_type, max_type)
 
 
-fn poll_event(event: Ptr[Event, MutAnyOrigin]) raises -> Bool:
+def poll_event(event: Ptr[Event, MutAnyOrigin]) raises -> Bool:
     """Poll for currently pending events.
 
     If `event` is not NULL, the next event is removed from the queue and stored
@@ -1629,7 +1629,7 @@ fn poll_event(event: Ptr[Event, MutAnyOrigin]) raises -> Bool:
     ]()(event)
 
 
-fn wait_event(event: Ptr[Event, MutAnyOrigin]) raises:
+def wait_event(event: Ptr[Event, MutAnyOrigin]) raises:
     """Wait indefinitely for the next available event.
 
     If `event` is not NULL, the next event is removed from the queue and stored
@@ -1659,7 +1659,7 @@ fn wait_event(event: Ptr[Event, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn wait_event_timeout(
+def wait_event_timeout(
     event: Ptr[Event, MutAnyOrigin], timeout_ms: Int32
 ) raises -> Bool:
     """Wait until the specified timeout (in milliseconds) for the next available
@@ -1697,7 +1697,7 @@ fn wait_event_timeout(
     ]()(event, timeout_ms)
 
 
-fn push_event(event: Ptr[Event, MutAnyOrigin]) raises:
+def push_event(event: Ptr[Event, MutAnyOrigin]) raises:
     """Add an event to the event queue.
 
     The event queue can actually be used as a two way communication channel.
@@ -1761,7 +1761,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EventFilter.
 """
 
 
-fn set_event_filter(
+def set_event_filter(
     filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises -> None:
     """Set up a filter to process all events before they are added to the internal
@@ -1806,7 +1806,7 @@ fn set_event_filter(
     ]()(filter, userdata)
 
 
-fn get_event_filter(
+def get_event_filter(
     filter: Ptr[EventFilter, MutAnyOrigin],
     userdata: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
 ) raises:
@@ -1841,7 +1841,7 @@ fn get_event_filter(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn add_event_watch(
+def add_event_watch(
     filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises:
     """Add a callback to be triggered when an event is added to the event queue.
@@ -1884,7 +1884,7 @@ fn add_event_watch(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn remove_event_watch(
+def remove_event_watch(
     filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises -> None:
     """Remove an event watch callback added with SDL_AddEventWatch().
@@ -1909,7 +1909,7 @@ fn remove_event_watch(
     ]()(filter, userdata)
 
 
-fn filter_events(
+def filter_events(
     filter: EventFilter, userdata: Ptr[NoneType, MutAnyOrigin]
 ) raises -> None:
     """Run a specific filter function on the current event queue, removing any
@@ -1936,7 +1936,7 @@ fn filter_events(
     ]()(filter, userdata)
 
 
-fn set_event_enabled(type: UInt32, enabled: Bool) raises -> None:
+def set_event_enabled(type: UInt32, enabled: Bool) raises -> None:
     """Set the state of processing events by type.
 
     Args:
@@ -1954,7 +1954,7 @@ fn set_event_enabled(type: UInt32, enabled: Bool) raises -> None:
     ]()(type, enabled)
 
 
-fn event_enabled(type: UInt32) raises -> Bool:
+def event_enabled(type: UInt32) raises -> Bool:
     """Query the state of processing events by type.
 
     Args:
@@ -1974,7 +1974,7 @@ fn event_enabled(type: UInt32) raises -> Bool:
     ]()(type)
 
 
-fn register_events(numevents: c_int) raises -> UInt32:
+def register_events(numevents: c_int) raises -> UInt32:
     """Allocate a set of user-defined events, and return the beginning event
     number for that set of events.
 
@@ -1996,7 +1996,7 @@ fn register_events(numevents: c_int) raises -> UInt32:
     ]()(numevents)
 
 
-fn get_window_from_event(
+def get_window_from_event(
     event: Ptr[Event, ImmutAnyOrigin]
 ) raises -> Ptr[Window, MutAnyOrigin]:
     """Get window associated with an event.

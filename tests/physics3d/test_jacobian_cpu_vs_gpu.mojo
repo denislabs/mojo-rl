@@ -154,7 +154,7 @@ comptime REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
-fn jacobian_kernel[
+def jacobian_kernel[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -512,7 +512,7 @@ fn jacobian_kernel[
 # =============================================================================
 
 
-fn compare_jacobian(
+def compare_jacobian(
     ctx: DeviceContext,
     test_name: String,
     test_qpos: InlineArray[Float64, NQ],
@@ -638,7 +638,7 @@ fn compare_jacobian(
     ctx.enqueue_copy(result_buf, result_host.unsafe_ptr())
     ctx.synchronize()
 
-    comptime kernel_fn = jacobian_kernel[
+    comptime kernel_def = jacobian_kernel[
         DTYPE,
         NQ,
         NV,
@@ -803,7 +803,7 @@ fn compare_jacobian(
     assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 
 
-fn test_low_static() raises:
+def test_low_static() raises:
     print("=" * 60)
     print("Constraint Jacobians: CPU vs GPU")
     print("=" * 60)
@@ -862,7 +862,7 @@ fn test_low_static() raises:
     print()
 
 
-fn test_low_moving() raises:
+def test_low_moving() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -915,7 +915,7 @@ fn test_low_moving() raises:
     print()
 
 
-fn test_very_low() raises:
+def test_very_low() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,
@@ -966,7 +966,7 @@ fn test_very_low() raises:
     print()
 
 
-fn main() raises:
+def main() raises:
     test_low_static()
     test_low_moving()
     test_very_low()
@@ -974,7 +974,7 @@ fn main() raises:
     print("All jacobian CPU vs GPU tests passed.")
 
 
-fn test_bent_legs() raises:
+def test_bent_legs() raises:
     var ctx = DeviceContext()
     var model_cpu = Model[
         DTYPE,

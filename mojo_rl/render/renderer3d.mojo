@@ -210,25 +210,25 @@ struct LineColorEntry(Copyable, Movable):
     var b: Float32
     var a: Float32
 
-    fn __init__(out self, color: InlineArray[Float32, 4]):
+    def __init__(out self, color: InlineArray[Float32, 4]):
         self.r = color[0]
         self.g = color[1]
         self.b = color[2]
         self.a = color[3]
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.r = copy.r
         self.g = copy.g
         self.b = copy.b
         self.a = copy.a
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.r = take.r
         self.g = take.g
         self.b = take.b
         self.a = take.a
 
-    fn to_inline_array(self) -> InlineArray[Float32, 4]:
+    def to_inline_array(self) -> InlineArray[Float32, 4]:
         var out = InlineArray[Float32, 4](fill=Float32(0))
         out[0] = self.r
         out[1] = self.g
@@ -342,7 +342,7 @@ struct Renderer3D(Movable):
     var default_eye: Vec3
     var default_target: Vec3
 
-    fn __init__(
+    def __init__(
         out self,
         width: Int = 800,
         height: Int = 450,
@@ -460,7 +460,7 @@ struct Renderer3D(Movable):
                 )
             )
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.window = take.window
         self.device = take.device
         self.solid_pipeline = take.solid_pipeline
@@ -519,7 +519,7 @@ struct Renderer3D(Movable):
         self.draw_grid = take.draw_grid
         self.draw_axes = take.draw_axes
 
-    fn init(mut self, mut title: String) raises:
+    def init(mut self, mut title: String) raises:
         """Initialize SDL3, GPU device, pipelines, and static meshes."""
         # 1. Init SDL3
         init(InitFlags.INIT_VIDEO)
@@ -571,7 +571,7 @@ struct Renderer3D(Movable):
 
         self.initialized = True
 
-    fn _create_shader(
+    def _create_shader(
         self,
         source: String,
         stage: GPUShaderStage,
@@ -598,7 +598,7 @@ struct Renderer3D(Movable):
 
         return create_gpu_shader(self.device, Ptr(to=info))
 
-    fn _no_stencil_op(self) -> GPUStencilOpState:
+    def _no_stencil_op(self) -> GPUStencilOpState:
         """Return a zeroed-out stencil op state."""
         return GPUStencilOpState(
             fail_op=GPUStencilOp.GPU_STENCILOP_KEEP,
@@ -607,7 +607,7 @@ struct Renderer3D(Movable):
             compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
         )
 
-    fn _create_pipelines(mut self) raises:
+    def _create_pipelines(mut self) raises:
         """Create solid, ground, line, shadow, and reflection GPU pipelines."""
         # --- Solid pipeline ---
         var solid_vs = self._create_shader(
@@ -1292,7 +1292,7 @@ struct Renderer3D(Movable):
         release_gpu_shader(self.device, skybox_vs)
         release_gpu_shader(self.device, skybox_fs)
 
-    fn _create_depth_texture(mut self) raises:
+    def _create_depth_texture(mut self) raises:
         """Create the depth buffer texture."""
         var info = GPUTextureCreateInfo(
             type=GPUTextureType.GPU_TEXTURETYPE_2D,
@@ -1307,7 +1307,7 @@ struct Renderer3D(Movable):
         )
         self.depth_texture = create_gpu_texture(self.device, Ptr(to=info))
 
-    fn _create_shadow_resources(mut self) raises:
+    def _create_shadow_resources(mut self) raises:
         """Create shadow map texture and comparison sampler."""
         # Shadow map: D32_FLOAT, usable as both depth target and sampler source
         var sm_info = GPUTextureCreateInfo(
@@ -1347,7 +1347,7 @@ struct Renderer3D(Movable):
             self.device, Ptr(to=sampler_info)
         )
 
-    fn _upload_mesh(self, mesh_data: MeshData) raises -> MeshHandle:
+    def _upload_mesh(self, mesh_data: MeshData) raises -> MeshHandle:
         """Upload mesh data to GPU buffers via transfer buffer."""
         var vb_size = UInt32(mesh_data.vertex_byte_size())
         var ib_size = UInt32(mesh_data.index_byte_size())
@@ -1430,7 +1430,7 @@ struct Renderer3D(Movable):
             UInt32(len(mesh_data.vertices)),
         )
 
-    fn _upload_static_meshes(mut self) raises:
+    def _upload_static_meshes(mut self) raises:
         """Generate and upload sphere, box, and ground meshes."""
         var sphere_data = generate_sphere(16, 12)
         self.sphere_mesh = self._upload_mesh(sphere_data)
@@ -1441,7 +1441,7 @@ struct Renderer3D(Movable):
         var ground_data = generate_ground(12.0)
         self.ground_mesh = self._upload_mesh(ground_data)
 
-    fn _create_line_buffers(mut self) raises:
+    def _create_line_buffers(mut self) raises:
         """Allocate GPU and transfer buffers for dynamic line rendering."""
         var line_buf_size = UInt32(
             MAX_LINE_VERTICES * 12
@@ -1465,7 +1465,7 @@ struct Renderer3D(Movable):
             self.device, Ptr(to=tb_info)
         )
 
-    fn _create_text_resources(mut self) raises:
+    def _create_text_resources(mut self) raises:
         """Create font atlas texture, sampler, text pipeline and buffers."""
         # --- 1. Build and upload R8_UNORM font atlas (128×64) ---
         var atlas = build_font_atlas_r8()  # List[UInt8], 8192 bytes
@@ -1735,7 +1735,7 @@ struct Renderer3D(Movable):
 
     # --- Public Drawing API ---
 
-    fn begin_frame(mut self):
+    def begin_frame(mut self):
         """Begin a new frame: clear draw command lists."""
         self.solid_draws.clear()
         self.line_vertex_data.clear()
@@ -1743,7 +1743,7 @@ struct Renderer3D(Movable):
         self.text_vertex_data.clear()
         self.has_ground = False
 
-    fn draw_text(
+    def draw_text(
         mut self,
         x: Float32,
         y: Float32,
@@ -1818,7 +1818,7 @@ struct Renderer3D(Movable):
             self.text_vertex_data.append(ca)
             cx += glyph_w
 
-    fn draw_sphere(
+    def draw_sphere(
         mut self,
         center: Vec3,
         radius: Float64,
@@ -1852,7 +1852,7 @@ struct Renderer3D(Movable):
 
         self.solid_draws.append(SolidDrawCommand(0, uniforms))
 
-    fn draw_capsule(
+    def draw_capsule(
         mut self,
         center: Vec3,
         orientation: Quat,
@@ -1928,7 +1928,7 @@ struct Renderer3D(Movable):
             )
         )
 
-    fn draw_box(
+    def draw_box(
         mut self,
         center: Vec3,
         orientation: Quat,
@@ -1969,7 +1969,7 @@ struct Renderer3D(Movable):
 
         self.solid_draws.append(SolidDrawCommand(1, uniforms))
 
-    fn set_skybox(
+    def set_skybox(
         mut self,
         top_r: Float32 = 0.8,
         top_g: Float32 = 0.85,
@@ -1998,7 +1998,7 @@ struct Renderer3D(Movable):
         self.skybox_uniforms.bottom_color[2] = bottom_b
         self.skybox_uniforms.bottom_color[3] = 1.0
 
-    fn set_ground_checker_colors(
+    def set_ground_checker_colors(
         mut self,
         r: Float32 = 0.22,
         g: Float32 = 0.22,
@@ -2017,7 +2017,7 @@ struct Renderer3D(Movable):
         self.scene_uniforms.ground_params[1] = g
         self.scene_uniforms.ground_params[2] = b
 
-    fn draw_ground_grid(
+    def draw_ground_grid(
         mut self,
         center_x: Float64 = 0.0,
         size: Float64 = 10.0,
@@ -2037,7 +2037,7 @@ struct Renderer3D(Movable):
         self.has_ground = True
         self.ground_z = height
 
-    fn draw_coordinate_axes(
+    def draw_coordinate_axes(
         mut self,
         origin: Vec3 = Vec3.zero(),
         length: Float64 = 1.0,
@@ -2067,7 +2067,7 @@ struct Renderer3D(Movable):
             color_to_vec4(80, 80, 255),
         )
 
-    fn draw_line_3d(
+    def draw_line_3d(
         mut self,
         start: Vec3,
         end: Vec3,
@@ -2086,7 +2086,7 @@ struct Renderer3D(Movable):
             color_to_vec4(color),
         )
 
-    fn _add_line(
+    def _add_line(
         mut self,
         start: Vec3,
         end: Vec3,
@@ -2106,7 +2106,7 @@ struct Renderer3D(Movable):
 
         self.line_colors.append(LineColorEntry(color))
 
-    fn render_scene(mut self):
+    def render_scene(mut self):
         """Render default scene elements (grid and axes)."""
         if self.draw_grid:
             self.draw_ground_grid()
@@ -2114,7 +2114,7 @@ struct Renderer3D(Movable):
         if self.draw_axes:
             self.draw_coordinate_axes()
 
-    fn _select_and_draw(
+    def _select_and_draw(
         self,
         render_pass: Ptr[GPURenderPass, MutAnyOrigin],
         draw: SolidDrawCommand,
@@ -2148,7 +2148,7 @@ struct Renderer3D(Movable):
         )
         draw_gpu_indexed_primitives(render_pass, n_idx, 1, 0, 0, 0)
 
-    fn end_frame(mut self) raises:
+    def end_frame(mut self) raises:
         """End frame: shadow pass, then main pass with reflections, ground, solids, lines, text.
         """
         # Update ortho projection for current window size
@@ -2723,7 +2723,7 @@ struct Renderer3D(Movable):
 
     # --- Recording API ---
 
-    fn start_recording(mut self, filename: String, fps: Int = 30) raises:
+    def start_recording(mut self, filename: String, fps: Int = 30) raises:
         """Start video recording to a file.
 
         Captures every rendered frame and encodes it via Python imageio.
@@ -2735,7 +2735,7 @@ struct Renderer3D(Movable):
         """
         self.recorder.start(filename, fps)
 
-    fn stop_recording(mut self) raises:
+    def stop_recording(mut self) raises:
         """Stop video recording and flush the file."""
         self.recorder.stop()
         if self.recording_tb:
@@ -2743,7 +2743,7 @@ struct Renderer3D(Movable):
             self.recording_tb = Ptr[GPUTransferBuffer, MutAnyOrigin]()
             self.recording_tb_size = 0
 
-    fn _build_scene_uniforms(mut self):
+    def _build_scene_uniforms(mut self):
         """Build scene uniforms from current camera state."""
         var view = self.camera.get_view_matrix()
         var proj = perspective_metal(
@@ -2822,7 +2822,7 @@ struct Renderer3D(Movable):
                     1.0 if light.cast_shadow else 0.0
                 )
 
-    fn _build_light_view_proj(mut self):
+    def _build_light_view_proj(mut self):
         """Build light's orthographic view-projection matrix for shadow mapping.
 
         Uses the first shadow-casting light, or light 0 as fallback.
@@ -2877,7 +2877,7 @@ struct Renderer3D(Movable):
 
     # --- Event Handling ---
 
-    fn check_quit(mut self) -> Bool:
+    def check_quit(mut self) -> Bool:
         """Poll SDL events: quit, camera switch, mouse orbit/pan/zoom, pause, step.
 
         Keyboard:
@@ -2982,7 +2982,7 @@ struct Renderer3D(Movable):
 
     # --- Camera Controls ---
 
-    fn set_camera_position(mut self, eye: Vec3, target: Vec3):
+    def set_camera_position(mut self, eye: Vec3, target: Vec3):
         """Set camera position and target.
 
         Args:
@@ -2992,7 +2992,7 @@ struct Renderer3D(Movable):
         self.camera.eye = eye
         self.camera.target = target
 
-    fn orbit_camera(mut self, delta_theta: Float64, delta_phi: Float64):
+    def orbit_camera(mut self, delta_theta: Float64, delta_phi: Float64):
         """Orbit camera around target.
 
         Args:
@@ -3001,7 +3001,7 @@ struct Renderer3D(Movable):
         """
         self.camera.orbit(delta_theta, delta_phi)
 
-    fn zoom_camera(mut self, delta: Float64):
+    def zoom_camera(mut self, delta: Float64):
         """Zoom camera in/out.
 
         Args:
@@ -3009,7 +3009,7 @@ struct Renderer3D(Movable):
         """
         self.camera.zoom(delta)
 
-    fn pan_camera(mut self, delta_x: Float64, delta_y: Float64):
+    def pan_camera(mut self, delta_x: Float64, delta_y: Float64):
         """Pan camera (translate target and eye together).
 
         Args:
@@ -3018,12 +3018,12 @@ struct Renderer3D(Movable):
         """
         self.camera.pan(delta_x, delta_y)
 
-    fn reset_camera(mut self):
+    def reset_camera(mut self):
         """Reset camera eye and target to the values set at construction."""
         self.camera.eye = self.default_eye
         self.camera.target = self.default_target
 
-    fn delay_ms(self, ms: Int) raises:
+    def delay_ms(self, ms: Int) raises:
         """Delay for given milliseconds.
 
         Args:
@@ -3033,7 +3033,7 @@ struct Renderer3D(Movable):
 
     # --- Cleanup ---
 
-    fn close(mut self) raises:
+    def close(mut self) raises:
         """Release all GPU resources and shutdown SDL3."""
         if not self.initialized:
             return

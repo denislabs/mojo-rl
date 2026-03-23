@@ -11,7 +11,7 @@ from std.time import sleep
 from mojo_rl.render import Renderer2D
 
 
-fn main() raises:
+def main() raises:
     print("=== Acrobot Native Rendering Demo ===")
     print("Close the window or press Ctrl+C to exit\n")
 

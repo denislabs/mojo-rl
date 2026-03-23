@@ -30,13 +30,13 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
     comptime CACHE_SIZE: Int = Self.dim
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -45,7 +45,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn _scale() -> Scalar[dtype]:
+    def _scale() -> Scalar[dtype]:
         """Compute 1/(1-rate) scale factor."""
         return Scalar[dtype](
             Float64(Self.RATE_DEN) / Float64(Self.RATE_DEN - Self.RATE_NUM)
@@ -53,7 +53,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn _hash(seed: UInt64, idx: Int) -> UInt64:
+    def _hash(seed: UInt64, idx: Int) -> UInt64:
         """Simple hash for mask generation (splitmix64-inspired)."""
         var x = seed + UInt64(idx) * UInt64(0x9E3779B97F4A7C15)
         x = (x ^ (x >> 30)) * UInt64(0xBF58476D1CE4E5B9)
@@ -63,7 +63,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn _keep(seed: UInt64, idx: Int) -> Bool:
+    def _keep(seed: UInt64, idx: Int) -> Bool:
         """Returns True if this element should be kept (not dropped)."""
         var h = Self._hash(seed, idx)
         # Keep if hash mod RATE_DEN >= RATE_NUM
@@ -74,7 +74,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -104,7 +104,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
                     output[b, i] = Scalar[dtype](0)
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -134,7 +134,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -164,7 +164,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -191,7 +191,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -216,7 +216,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -238,7 +238,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -269,7 +269,7 @@ struct DropoutOp[dim: Int, RATE_NUM: Int, RATE_DEN: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],

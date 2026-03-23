@@ -242,7 +242,7 @@ struct RainbowCNNConfig[
 # =============================================================================
 
 
-fn _dueling_dist_combine[
+def _dueling_dist_combine[
     BATCH: Int,
     ACTIONS: Int,
     ATOMS: Int,
@@ -274,7 +274,7 @@ fn _dueling_dist_combine[
                 )
 
 
-fn _dueling_dist_grad_reverse[
+def _dueling_dist_grad_reverse[
     BATCH: Int,
     ACTIONS: Int,
     ATOMS: Int,
@@ -309,7 +309,7 @@ fn _dueling_dist_grad_reverse[
 # =============================================================================
 
 
-fn _rainbow_expected_q[
+def _rainbow_expected_q[
     BATCH: Int,
     ACTIONS: Int,
     ATOMS: Int,
@@ -365,7 +365,7 @@ struct RainbowCPUState[
     var nstep: NStepBuffer[Self.n_step, Self.obs_dim]
     var bins: InlineArray[Float32, Self.num_atoms]
 
-    fn __init__(
+    def __init__(
         out self,
         alpha: Float64 = 0.6,
         beta: Float64 = 0.4,
@@ -387,7 +387,7 @@ struct RainbowCPUState[
             Float32(Self.v_min), Float32(Self.v_max)
         )
 
-    fn store[
+    def store[
         d: DType
     ](
         mut self,
@@ -425,7 +425,7 @@ struct RainbowCPUState[
                 result.obs, act_arr, result.reward, result.next_obs, result.done
             )
 
-    fn is_ready(self) -> Bool:
+    def is_ready(self) -> Bool:
         return self.buffer.is_ready[Self.batch_size]()
 
 
@@ -506,7 +506,7 @@ struct RainbowGPUState[
     var diag_weights_host: HostBuffer[dtype]  # [batch] IS weights
     var diag_td_host: HostBuffer[dtype]  # [batch] CE loss per sample
 
-    fn __init__(
+    def __init__(
         out self,
         ctx: DeviceContext,
         alpha: Float64 = 0.6,
@@ -596,7 +596,7 @@ struct RainbowGPUState[
             Self.batch_size
         )
 
-    fn gpu_store[
+    def gpu_store[
         N_ENVS: Int
     ](
         mut self,
@@ -622,7 +622,7 @@ struct RainbowGPUState[
             self.nstep.out_done,
         )
 
-    fn gpu_buffer_is_ready(self) -> Bool:
+    def gpu_buffer_is_ready(self) -> Bool:
         return self.buffer.gpu_buffer_is_ready()
 
 
@@ -707,7 +707,7 @@ struct RainbowGPUStateHost[
     var diag_weights_host: HostBuffer[dtype]
     var diag_td_host: HostBuffer[dtype]
 
-    fn __init__(
+    def __init__(
         out self,
         ctx: DeviceContext,
         alpha: Float64 = 0.6,
@@ -717,12 +717,15 @@ struct RainbowGPUStateHost[
         self.online = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
         self.target = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
         self.buffer = HostPrioritizedReplayBuffer[
-            Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size,
+            Self.buffer_capacity,
+            Self.obs_dim,
+            1,
+            Self.batch_size,
             Self.max_n_envs,
         ](ctx, alpha=alpha, beta=beta)
-        self.nstep = GPUNStepBuffer[
-            Self.n_step, Self.obs_dim, Self.max_n_envs
-        ](ctx, gamma=gamma)
+        self.nstep = GPUNStepBuffer[Self.n_step, Self.obs_dim, Self.max_n_envs](
+            ctx, gamma=gamma
+        )
 
         # Inference
         self.env_raw_buf = ctx.enqueue_create_buffer[dtype](
@@ -755,9 +758,7 @@ struct RainbowGPUStateHost[
         self.next_q_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
         self.online_next_q_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
         self.q_combined = ctx.enqueue_create_buffer[dtype](batch_combined)
-        self.next_q_combined = ctx.enqueue_create_buffer[dtype](
-            batch_combined
-        )
+        self.next_q_combined = ctx.enqueue_create_buffer[dtype](batch_combined)
         self.online_next_q_combined = ctx.enqueue_create_buffer[dtype](
             batch_combined
         )
@@ -800,7 +801,7 @@ struct RainbowGPUStateHost[
             Self.batch_size
         )
 
-    fn gpu_store[
+    def gpu_store[
         N_ENVS: Int
     ](
         mut self,
@@ -824,7 +825,7 @@ struct RainbowGPUStateHost[
             self.nstep.out_done,
         )
 
-    fn gpu_buffer_is_ready(self) -> Bool:
+    def gpu_buffer_is_ready(self) -> Bool:
         return self.buffer.gpu_buffer_is_ready()
 
 
@@ -897,7 +898,7 @@ struct GenericRainbowAgent[
     var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
-    fn __init__(
+    def __init__(
         out self,
         gamma: Float64 = 0.99,
         tau: Float64 = 1.0,
@@ -923,14 +924,14 @@ struct GenericRainbowAgent[
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
-    fn make_cpu_state(self) -> Self.CPUStateType:
+    def make_cpu_state(self) -> Self.CPUStateType:
         return Self.CPUStateType(gamma=self.gamma)
 
     # =========================================================================
     # Action selection (CPU) — noisy forward + dueling combine + argmax
     # =========================================================================
 
-    fn select_action[
+    def select_action[
         d: DType
     ](mut self, mut cpu_state: Self.CPUStateType, obs: List[Scalar[d]]) -> Int:
         # No epsilon — noise provides exploration
@@ -969,7 +970,7 @@ struct GenericRainbowAgent[
                 best = a
         return best
 
-    fn store_transition[
+    def store_transition[
         d: DType
     ](
         mut self,
@@ -986,7 +987,9 @@ struct GenericRainbowAgent[
     # CPU Training Step — Rainbow distributional with all 6 components
     # =========================================================================
 
-    fn do_cpu_train_step(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
+    def do_cpu_train_step(
+        mut self, mut cpu_state: Self.CPUStateType
+    ) -> Float64:
         if not cpu_state.buffer.is_ready[Self.BATCH]():
             return 0.0
 
@@ -1346,16 +1349,16 @@ struct GenericRainbowAgent[
                 cpu_state.target.soft_update_from(cpu_state.online, self.tau)
         return loss
 
-    fn decay_explore(mut self) -> None:
+    def decay_explore(mut self) -> None:
         pass  # No epsilon — noise provides exploration
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         return 0.0
 
-    fn random_action(self) -> Int:
+    def random_action(self) -> Int:
         return Int(random_float64() * Float64(Self.ACTIONS))
 
-    fn select_greedy_action(
+    def select_greedy_action(
         self, cpu_state: Self.CPUStateType, obs: List[Float64]
     ) -> Int:
         var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
@@ -1394,7 +1397,7 @@ struct GenericRainbowAgent[
     # Checkpointable
     # =========================================================================
 
-    fn save_checkpoint(self, path: String) raises -> None:
+    def save_checkpoint(self, path: String) raises -> None:
         comptime PARAM_SIZE = Self.QNet.PARAM_SIZE
         comptime STATE_SIZE = PARAM_SIZE * Self.Config.QOpt.STATE_PER_PARAM
         var content = write_checkpoint_header(
@@ -1409,7 +1412,7 @@ struct GenericRainbowAgent[
         content += write_metadata_section(metadata)
         save_checkpoint_file(path, content)
 
-    fn load_checkpoint(mut self, path: String) raises -> None:
+    def load_checkpoint(mut self, path: String) raises -> None:
         var content = read_checkpoint_file(path)
         _ = parse_checkpoint_header(content)
         self.state.online.read_sections(content, "online_")
@@ -1426,7 +1429,7 @@ struct GenericRainbowAgent[
     # CPU Training convenience
     # =========================================================================
 
-    fn train[
+    def train[
         E: BoxDiscreteActionEnv
     ](
         mut self,
@@ -1472,7 +1475,7 @@ struct GenericRainbowAgent[
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics
 
-    fn evaluate[
+    def evaluate[
         E: BoxDiscreteActionEnv & RenderableEnv
     ](
         self,
@@ -1499,19 +1502,19 @@ struct GenericRainbowAgent[
     # GPUOffPolicyAgent trait
     # =========================================================================
 
-    fn get_action_scale(self) -> Float64:
+    def get_action_scale(self) -> Float64:
         return 1.0
 
-    fn get_total_steps(self) -> Int:
+    def get_total_steps(self) -> Int:
         return self.train_step_count
 
-    fn set_total_steps(mut self, steps: Int):
+    def set_total_steps(mut self, steps: Int):
         self.train_step_count = steps
 
-    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+    def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         return Self.GPUStateType(ctx, gamma=self.gamma)
 
-    fn upload_to_gpu(
+    def upload_to_gpu(
         self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1523,7 +1526,7 @@ struct GenericRainbowAgent[
             bins_host[i] = Scalar[dtype](self.state.bins[i])
         ctx.enqueue_copy(gpu_state.bins_buf, bins_host)
 
-    fn download_from_gpu(
+    def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1531,7 +1534,7 @@ struct GenericRainbowAgent[
         gpu_state.online.download_to(self.state.online, ctx)
         gpu_state.target.download_to(self.state.target, ctx)
 
-    fn select_actions_gpu[
+    def select_actions_gpu[
         N_ENVS: Int
     ](
         mut self,
@@ -1563,7 +1566,7 @@ struct GenericRainbowAgent[
         ](gpu_state.bins_buf.unsafe_ptr())
 
         @always_inline
-        fn rainbow_select_kernel(
+        def rainbow_select_kernel(
             raw: LayoutTensor[
                 dtype, Layout.row_major(N_ENVS, Self.RAW_OUT), MutAnyOrigin
             ],
@@ -1642,7 +1645,7 @@ struct GenericRainbowAgent[
             block_dim=(TPB,),
         )
 
-    fn do_gpu_train_step(
+    def do_gpu_train_step(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -1749,7 +1752,7 @@ struct GenericRainbowAgent[
 
         # ---- Phase 3: Dueling combine (3 kernels) ----
         @always_inline
-        fn dueling_combine_kernel(
+        def dueling_combine_kernel(
             raw: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.RAW_OUT), MutAnyOrigin
             ],
@@ -1797,7 +1800,7 @@ struct GenericRainbowAgent[
 
         # ---- Phase 4: Expected Q from online-next (for Double DQN action selection) ----
         @always_inline
-        fn expected_q_kernel(
+        def expected_q_kernel(
             comb: LayoutTensor[
                 dtype, Layout.row_major(BATCH, COMB), MutAnyOrigin
             ],
@@ -1849,7 +1852,7 @@ struct GenericRainbowAgent[
         )
 
         @always_inline
-        fn rainbow_project_grad_kernel(
+        def rainbow_project_grad_kernel(
             online_comb: LayoutTensor[
                 dtype, Layout.row_major(BATCH, COMB), MutAnyOrigin
             ],
@@ -2203,7 +2206,7 @@ struct GenericRainbowAgent[
             except:
                 pass
 
-    fn soft_update_targets_gpu(
+    def soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -2217,10 +2220,10 @@ struct GenericRainbowAgent[
             )
             self._target_update_ctr = self.train_step_count
 
-    fn decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
+    def decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
         pass  # No epsilon
 
-    fn train_gpu[
+    def train_gpu[
         E: GPUDiscreteEnv,
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](

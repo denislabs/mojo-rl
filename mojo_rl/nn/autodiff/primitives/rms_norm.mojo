@@ -25,13 +25,13 @@ struct RMSNormOp[dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = Self.dim + 1
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -39,7 +39,7 @@ struct RMSNormOp[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -77,7 +77,7 @@ struct RMSNormOp[dim: Int](DiffOp):
                 output[b, i] = Scalar[dtype](gamma * x_hat)
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -99,9 +99,7 @@ struct RMSNormOp[dim: Int](DiffOp):
         var inv_dim = 1.0 / Float64(Self.dim)
 
         for b in range(BATCH):
-            var rms_inv = Float64(
-                rebind[Scalar[dtype]](cache[b, Self.dim])
-            )
+            var rms_inv = Float64(rebind[Scalar[dtype]](cache[b, Self.dim]))
 
             # Compute mean(grad * gamma * x_hat)
             var mean_gx: Float64 = 0.0
@@ -133,7 +131,7 @@ struct RMSNormOp[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -165,13 +163,11 @@ struct RMSNormOp[dim: Int](DiffOp):
             var x = rebind[Scalar[dtype]](input[b, idx])
             my_sq += x * x
             idx += TPB
-        var mean_sq = block.sum[block_size=TPB, broadcast=True](
-            val=my_sq
-        ) * inv_dim
-
-        var rms_inv = Scalar[dtype](1.0) / sqrt(
-            mean_sq + Scalar[dtype](1e-5)
+        var mean_sq = (
+            block.sum[block_size=TPB, broadcast=True](val=my_sq) * inv_dim
         )
+
+        var rms_inv = Scalar[dtype](1.0) / sqrt(mean_sq + Scalar[dtype](1e-5))
 
         if local_i == 0:
             cache[b, Self.dim] = rms_inv
@@ -186,7 +182,7 @@ struct RMSNormOp[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -202,7 +198,8 @@ struct RMSNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """Per-sample RMSNorm backward (dx only). Grid: (BATCH,), Block: (TPB,)."""
+        """Per-sample RMSNorm backward (dx only). Grid: (BATCH,), Block: (TPB,).
+        """
         var b = Int(block_idx.x)
         var local_i = Int(thread_idx.x)
 
@@ -222,9 +219,9 @@ struct RMSNormOp[dim: Int](DiffOp):
             my_gx += g * gamma * x_hat
             idx += TPB
 
-        var mean_gx = block.sum[block_size=TPB, broadcast=True](
-            val=my_gx
-        ) * inv_dim
+        var mean_gx = (
+            block.sum[block_size=TPB, broadcast=True](val=my_gx) * inv_dim
+        )
 
         # Phase 2: dx
         idx = local_i
@@ -237,7 +234,7 @@ struct RMSNormOp[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dgamma_kernel_impl[
+    def backward_dgamma_kernel_impl[
         BATCH: Int
     ](
         dgamma: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
@@ -258,7 +255,9 @@ struct RMSNormOp[dim: Int](DiffOp):
         var my_sum: dgamma.element_type = 0
         var batch_idx = local_i
         while batch_idx < BATCH:
-            my_sum += rebind[Scalar[dtype]](grad_output[batch_idx, col]) * rebind[Scalar[dtype]](cache[batch_idx, col])
+            my_sum += rebind[Scalar[dtype]](
+                grad_output[batch_idx, col]
+            ) * rebind[Scalar[dtype]](cache[batch_idx, col])
             batch_idx += TPB
 
         var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
@@ -270,7 +269,7 @@ struct RMSNormOp[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -296,7 +295,7 @@ struct RMSNormOp[dim: Int](DiffOp):
         ](params.ptr)
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -322,7 +321,7 @@ struct RMSNormOp[dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -355,7 +354,7 @@ struct RMSNormOp[dim: Int](DiffOp):
 
         # Kernel 1: dx (per-sample reduction)
         @always_inline
-        fn dx_wrapper(
+        def dx_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -390,7 +389,7 @@ struct RMSNormOp[dim: Int](DiffOp):
         ](grad_params.ptr)
 
         @always_inline
-        fn dgamma_wrapper(
+        def dgamma_wrapper(
             dgamma: LayoutTensor[
                 dtype, Layout.row_major(Self.dim), MutAnyOrigin
             ],
@@ -403,9 +402,7 @@ struct RMSNormOp[dim: Int](DiffOp):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_dgamma_kernel_impl[BATCH](
-                dgamma, grad_output, cache
-            )
+            Self.backward_dgamma_kernel_impl[BATCH](dgamma, grad_output, cache)
 
         ctx.enqueue_function[dgamma_wrapper, dgamma_wrapper](
             dgamma,

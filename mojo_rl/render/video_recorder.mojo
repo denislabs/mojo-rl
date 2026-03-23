@@ -32,7 +32,7 @@ struct VideoRecorder(Movable):
     # Pre-built channel index [2,1,0] for BGRA→RGB reorder
     var _channel_idx: PythonObject
 
-    fn __init__(out self):
+    def __init__(out self):
         self.is_recording = False
         self.frame_count = 0
         self.fps = 30
@@ -42,7 +42,7 @@ struct VideoRecorder(Movable):
         self._ctypes = None
         self._channel_idx = None
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.is_recording = take.is_recording
         self.frame_count = take.frame_count
         self.fps = take.fps
@@ -52,7 +52,7 @@ struct VideoRecorder(Movable):
         self._ctypes = take._ctypes^
         self._channel_idx = take._channel_idx^
 
-    fn start(mut self, filename: String, fps: Int = 30) raises:
+    def start(mut self, filename: String, fps: Int = 30) raises:
         """Open a video writer.
 
         Args:
@@ -75,7 +75,7 @@ struct VideoRecorder(Movable):
         self.is_recording = True
         print("Recording started: " + filename)
 
-    fn add_frame_bgra(mut self, addr: Int, width: Int, height: Int) raises:
+    def add_frame_bgra(mut self, addr: Int, width: Int, height: Int) raises:
         """Append one frame from a BGRA pixel buffer.
 
         The buffer layout must be B8G8R8A8 (4 bytes per pixel, row-major),
@@ -100,7 +100,7 @@ struct VideoRecorder(Movable):
         self._writer.append_data(rgb)
         self.frame_count += 1
 
-    fn save_frame_bgra(
+    def save_frame_bgra(
         mut self, addr: Int, width: Int, height: Int, filename: String
     ) raises:
         """Save a single BGRA pixel buffer as an image file via imageio.
@@ -132,7 +132,7 @@ struct VideoRecorder(Movable):
         imageio.imwrite(filename, rgb)
         print("Screenshot saved: " + filename)
 
-    fn stop(mut self) raises:
+    def stop(mut self) raises:
         """Flush and close the video file."""
         if not self.is_recording:
             return

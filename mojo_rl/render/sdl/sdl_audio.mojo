@@ -136,19 +136,19 @@ struct AudioFormat(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime AUDIO_UNKNOWN = Self(0x0000)
@@ -195,15 +195,15 @@ struct AudioDeviceID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -249,7 +249,7 @@ struct AudioStream(ImplicitlyCopyable, Movable):
     pass
 
 
-fn get_num_audio_drivers() raises -> c_int:
+def get_num_audio_drivers() raises -> c_int:
     """Use this function to get the number of built-in audio drivers.
 
     This function returns a hardcoded number. This never returns a negative
@@ -274,7 +274,7 @@ fn get_num_audio_drivers() raises -> c_int:
     return _get_dylib_function[lib, "SDL_GetNumAudioDrivers", fn() -> c_int]()()
 
 
-fn get_audio_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_audio_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Use this function to get the name of a built in audio driver.
 
     The list of audio drivers is given in the order that they are normally
@@ -306,7 +306,7 @@ fn get_audio_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()(index)
 
 
-fn get_current_audio_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_current_audio_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the name of the current audio driver.
 
     The names of drivers are all simple, low-ASCII identifiers, like "alsa",
@@ -328,7 +328,7 @@ fn get_current_audio_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()()
 
 
-fn get_audio_playback_devices(
+def get_audio_playback_devices(
     count: Ptr[c_int, MutAnyOrigin]
 ) raises -> Ptr[AudioDeviceID, MutAnyOrigin]:
     """Get a list of currently-connected audio playback devices.
@@ -366,7 +366,7 @@ fn get_audio_playback_devices(
     ]()(count)
 
 
-fn get_audio_recording_devices(
+def get_audio_recording_devices(
     count: Ptr[c_int, MutAnyOrigin],
     out ret: Ptr[AudioDeviceID, MutAnyOrigin],
 ) raises:
@@ -407,7 +407,7 @@ fn get_audio_recording_devices(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_audio_device_name(
+def get_audio_device_name(
     devid: AudioDeviceID, out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the human-readable name of a specific audio device.
@@ -434,7 +434,7 @@ fn get_audio_device_name(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_audio_device_format(
+def get_audio_device_format(
     devid: AudioDeviceID,
     spec: Ptr[AudioSpec, MutAnyOrigin],
     sample_frames: Ptr[c_int, MutAnyOrigin],
@@ -489,7 +489,7 @@ fn get_audio_device_format(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_audio_device_channel_map(
+def get_audio_device_channel_map(
     devid: AudioDeviceID, count: Ptr[c_int, MutAnyOrigin]
 ) raises -> Ptr[c_int, MutAnyOrigin]:
     """Get the current channel map of an audio device.
@@ -524,7 +524,7 @@ fn get_audio_device_channel_map(
     ]()(devid, count)
 
 
-fn open_audio_device(
+def open_audio_device(
     devid: AudioDeviceID, spec: Ptr[AudioSpec, ImmutAnyOrigin]
 ) raises -> AudioDeviceID:
     """Open a specific audio device.
@@ -611,7 +611,7 @@ fn open_audio_device(
     ]()(devid, spec)
 
 
-fn is_audio_device_physical(devid: AudioDeviceID) raises -> Bool:
+def is_audio_device_physical(devid: AudioDeviceID) raises -> Bool:
     """Determine if an audio device is physical (instead of logical).
 
     An SDL_AudioDeviceID that represents physical hardware is a physical
@@ -644,7 +644,7 @@ fn is_audio_device_physical(devid: AudioDeviceID) raises -> Bool:
     ]()(devid)
 
 
-fn is_audio_device_playback(devid: AudioDeviceID) raises -> Bool:
+def is_audio_device_playback(devid: AudioDeviceID) raises -> Bool:
     """Determine if an audio device is a playback device (instead of recording).
 
     This function may return either true or false for invalid device IDs.
@@ -666,7 +666,7 @@ fn is_audio_device_playback(devid: AudioDeviceID) raises -> Bool:
     ]()(devid)
 
 
-fn pause_audio_device(devid: AudioDeviceID) raises:
+def pause_audio_device(devid: AudioDeviceID) raises:
     """Use this function to pause audio playback on a specified device.
 
     This function pauses audio processing for a given device. Any bound audio
@@ -704,7 +704,7 @@ fn pause_audio_device(devid: AudioDeviceID) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn resume_audio_device(devid: AudioDeviceID) raises:
+def resume_audio_device(devid: AudioDeviceID) raises:
     """Use this function to unpause audio playback on a specified device.
 
     This function unpauses audio processing for a given device that has
@@ -739,7 +739,7 @@ fn resume_audio_device(devid: AudioDeviceID) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn audio_device_paused(devid: AudioDeviceID) raises -> Bool:
+def audio_device_paused(devid: AudioDeviceID) raises -> Bool:
     """Use this function to query if an audio device is paused.
 
     Unlike in SDL2, audio devices start in an _unpaused_ state, since an app
@@ -766,7 +766,7 @@ fn audio_device_paused(devid: AudioDeviceID) raises -> Bool:
     ]()(devid)
 
 
-fn get_audio_device_gain(devid: AudioDeviceID) raises -> c_float:
+def get_audio_device_gain(devid: AudioDeviceID) raises -> c_float:
     """Get the gain of an audio device.
 
     The gain of a device is its volume; a larger gain means a louder output,
@@ -795,7 +795,7 @@ fn get_audio_device_gain(devid: AudioDeviceID) raises -> c_float:
     ]()(devid)
 
 
-fn set_audio_device_gain(devid: AudioDeviceID, gain: c_float) raises:
+def set_audio_device_gain(devid: AudioDeviceID, gain: c_float) raises:
     """Change the gain of an audio device.
 
     The gain of a device is its volume; a larger gain means a louder output,
@@ -840,7 +840,7 @@ fn set_audio_device_gain(devid: AudioDeviceID, gain: c_float) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn close_audio_device(devid: AudioDeviceID) raises -> None:
+def close_audio_device(devid: AudioDeviceID) raises -> None:
     """Close a previously-opened audio device.
 
     The application should close open audio devices once they are no longer
@@ -865,7 +865,7 @@ fn close_audio_device(devid: AudioDeviceID) raises -> None:
     ]()(devid)
 
 
-fn bind_audio_streams(
+def bind_audio_streams(
     devid: AudioDeviceID,
     streams: Ptr[AudioStream, MutAnyOrigin],
     num_streams: c_int,
@@ -921,7 +921,7 @@ fn bind_audio_streams(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn bind_audio_stream(
+def bind_audio_stream(
     devid: AudioDeviceID, stream: Ptr[AudioStream, MutAnyOrigin]
 ) raises:
     """Bind a single audio stream to an audio device.
@@ -954,7 +954,7 @@ fn bind_audio_stream(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn unbind_audio_streams(
+def unbind_audio_streams(
     streams: Ptr[AudioStream, MutAnyOrigin], num_streams: c_int
 ) raises -> None:
     """Unbind a list of audio streams from their audio devices.
@@ -983,7 +983,7 @@ fn unbind_audio_streams(
     ]()(streams, num_streams)
 
 
-fn unbind_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises -> None:
+def unbind_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises -> None:
     """Unbind a single audio stream from its audio device.
 
     This is a convenience function, equivalent to calling
@@ -1005,7 +1005,7 @@ fn unbind_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises -> None:
     ]()(stream)
 
 
-fn get_audio_stream_device(
+def get_audio_stream_device(
     stream: Ptr[AudioStream, MutAnyOrigin]
 ) raises -> AudioDeviceID:
     """Query an audio stream for its currently-bound device.
@@ -1034,7 +1034,7 @@ fn get_audio_stream_device(
     ]()(stream)
 
 
-fn create_audio_stream(
+def create_audio_stream(
     src_spec: Ptr[AudioSpec, ImmutAnyOrigin],
     dst_spec: Ptr[AudioSpec, ImmutAnyOrigin],
     out ret: Ptr[AudioStream, MutAnyOrigin],
@@ -1067,7 +1067,7 @@ fn create_audio_stream(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_audio_stream_properties(
+def get_audio_stream_properties(
     stream: Ptr[AudioStream, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with an audio stream.
@@ -1092,7 +1092,7 @@ fn get_audio_stream_properties(
     ]()(stream)
 
 
-fn get_audio_stream_format(
+def get_audio_stream_format(
     stream: Ptr[AudioStream, MutAnyOrigin],
     src_spec: Ptr[AudioSpec, MutAnyOrigin],
     dst_spec: Ptr[AudioSpec, MutAnyOrigin],
@@ -1128,7 +1128,7 @@ fn get_audio_stream_format(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_audio_stream_format(
+def set_audio_stream_format(
     stream: Ptr[AudioStream, MutAnyOrigin],
     src_spec: Ptr[AudioSpec, ImmutAnyOrigin],
     dst_spec: Ptr[AudioSpec, ImmutAnyOrigin],
@@ -1182,7 +1182,7 @@ fn set_audio_stream_format(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_audio_stream_frequency_ratio(
+def get_audio_stream_frequency_ratio(
     stream: Ptr[AudioStream, MutAnyOrigin]
 ) raises -> c_float:
     """Get the frequency ratio of an audio stream.
@@ -1208,7 +1208,7 @@ fn get_audio_stream_frequency_ratio(
     ]()(stream)
 
 
-fn set_audio_stream_frequency_ratio(
+def set_audio_stream_frequency_ratio(
     stream: Ptr[AudioStream, MutAnyOrigin], ratio: c_float
 ) raises:
     """Change the frequency ratio of an audio stream.
@@ -1247,7 +1247,7 @@ fn set_audio_stream_frequency_ratio(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_audio_stream_gain(
+def get_audio_stream_gain(
     stream: Ptr[AudioStream, MutAnyOrigin]
 ) raises -> c_float:
     """Get the gain of an audio stream.
@@ -1278,7 +1278,7 @@ fn get_audio_stream_gain(
     ]()(stream)
 
 
-fn set_audio_stream_gain(
+def set_audio_stream_gain(
     stream: Ptr[AudioStream, MutAnyOrigin], gain: c_float
 ) raises:
     """Change the gain of an audio stream.
@@ -1315,7 +1315,7 @@ fn set_audio_stream_gain(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_audio_stream_input_channel_map(
+def get_audio_stream_input_channel_map(
     stream: Ptr[AudioStream, MutAnyOrigin],
     count: Ptr[c_int, MutAnyOrigin],
 ) raises -> Ptr[c_int, MutAnyOrigin]:
@@ -1353,7 +1353,7 @@ fn get_audio_stream_input_channel_map(
     ]()(stream, count)
 
 
-fn get_audio_stream_output_channel_map(
+def get_audio_stream_output_channel_map(
     stream: Ptr[AudioStream, MutAnyOrigin],
     count: Ptr[c_int, MutAnyOrigin],
 ) raises -> Ptr[c_int, MutAnyOrigin]:
@@ -1391,7 +1391,7 @@ fn get_audio_stream_output_channel_map(
     ]()(stream, count)
 
 
-fn set_audio_stream_input_channel_map(
+def set_audio_stream_input_channel_map(
     stream: Ptr[AudioStream, MutAnyOrigin],
     chmap: Ptr[c_int, ImmutAnyOrigin],
     count: c_int,
@@ -1469,7 +1469,7 @@ fn set_audio_stream_input_channel_map(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_audio_stream_output_channel_map(
+def set_audio_stream_output_channel_map(
     stream: Ptr[AudioStream, MutAnyOrigin],
     chmap: Ptr[c_int, ImmutAnyOrigin],
     count: c_int,
@@ -1545,7 +1545,7 @@ fn set_audio_stream_output_channel_map(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn put_audio_stream_data(
+def put_audio_stream_data(
     stream: Ptr[AudioStream, MutAnyOrigin],
     buf: Ptr[NoneType, ImmutAnyOrigin],
     len: c_int,
@@ -1590,7 +1590,7 @@ fn put_audio_stream_data(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_audio_stream_data(
+def get_audio_stream_data(
     stream: Ptr[AudioStream, MutAnyOrigin],
     buf: Ptr[NoneType, MutAnyOrigin],
     len: c_int,
@@ -1634,7 +1634,7 @@ fn get_audio_stream_data(
     ]()(stream, buf, len)
 
 
-fn get_audio_stream_available(
+def get_audio_stream_available(
     stream: Ptr[AudioStream, MutAnyOrigin]
 ) raises -> c_int:
     """Get the number of converted/resampled bytes available.
@@ -1669,7 +1669,7 @@ fn get_audio_stream_available(
     ]()(stream)
 
 
-fn get_audio_stream_queued(
+def get_audio_stream_queued(
     stream: Ptr[AudioStream, MutAnyOrigin]
 ) raises -> c_int:
     """Get the number of bytes currently queued.
@@ -1716,7 +1716,7 @@ fn get_audio_stream_queued(
     ]()(stream)
 
 
-fn flush_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
+def flush_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     """Tell the stream that you're done sending data, and anything being buffered
     should be converted/resampled and made available immediately.
 
@@ -1746,7 +1746,7 @@ fn flush_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn clear_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
+def clear_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     """Clear any pending data in the stream.
 
     This drops any queued data, so there will be nothing to read from the
@@ -1774,7 +1774,7 @@ fn clear_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn pause_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
+def pause_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     """Use this function to pause audio playback on the audio device associated
     with an audio stream.
 
@@ -1808,7 +1808,7 @@ fn pause_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn resume_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
+def resume_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     """Use this function to unpause audio playback on the audio device associated
     with an audio stream.
 
@@ -1841,7 +1841,7 @@ fn resume_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn audio_stream_device_paused(
+def audio_stream_device_paused(
     stream: Ptr[AudioStream, MutAnyOrigin]
 ) raises -> Bool:
     """Use this function to query if an audio device associated with a stream is
@@ -1869,7 +1869,7 @@ fn audio_stream_device_paused(
     ]()(stream)
 
 
-fn lock_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
+def lock_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     """Lock an audio stream for serialized access.
 
     Each SDL_AudioStream has an internal mutex it uses to protect its data
@@ -1907,7 +1907,7 @@ fn lock_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn unlock_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
+def unlock_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     """Unlock an audio stream for serialized access.
 
     This unlocks an audio stream after a call to SDL_LockAudioStream.
@@ -1981,7 +1981,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AudioStreamCallback.
 """
 
 
-fn set_audio_stream_get_callback(
+def set_audio_stream_get_callback(
     stream: Ptr[AudioStream, MutAnyOrigin],
     callback: AudioStreamCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
@@ -2045,7 +2045,7 @@ fn set_audio_stream_get_callback(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_audio_stream_put_callback(
+def set_audio_stream_put_callback(
     stream: Ptr[AudioStream, MutAnyOrigin],
     callback: AudioStreamCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
@@ -2112,7 +2112,7 @@ fn set_audio_stream_put_callback(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises -> None:
+def destroy_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises -> None:
     """Free an audio stream.
 
     This will release all allocated data, including any audio that is still
@@ -2139,7 +2139,7 @@ fn destroy_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises -> None:
     ]()(stream)
 
 
-fn open_audio_device_stream(
+def open_audio_device_stream(
     devid: AudioDeviceID,
     spec: Ptr[AudioSpec, ImmutAnyOrigin],
     callback: AudioStreamCallback,
@@ -2263,7 +2263,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AudioPostmixCallback.
 """
 
 
-fn set_audio_postmix_callback(
+def set_audio_postmix_callback(
     devid: AudioDeviceID,
     callback: AudioPostmixCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
@@ -2337,7 +2337,7 @@ fn set_audio_postmix_callback(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn load_wav_io(
+def load_wav_io(
     src: Ptr[IOStream, MutAnyOrigin],
     closeio: Bool,
     spec: Ptr[AudioSpec, MutAnyOrigin],
@@ -2438,7 +2438,7 @@ fn load_wav_io(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn load_wav(
+def load_wav(
     var path: String,
     spec: Ptr[AudioSpec, MutAnyOrigin],
     audio_buf: Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
@@ -2493,7 +2493,7 @@ fn load_wav(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn mix_audio(
+def mix_audio(
     dst: Ptr[UInt8, MutAnyOrigin],
     src: Ptr[UInt8, ImmutAnyOrigin],
     format: AudioFormat,
@@ -2553,7 +2553,7 @@ fn mix_audio(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn convert_audio_samples(
+def convert_audio_samples(
     src_spec: Ptr[AudioSpec, ImmutAnyOrigin],
     src_data: Ptr[UInt8, ImmutAnyOrigin],
     src_len: c_int,
@@ -2609,7 +2609,7 @@ fn convert_audio_samples(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_audio_format_name(
+def get_audio_format_name(
     format: AudioFormat,
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the human readable name of an audio format.
@@ -2634,7 +2634,7 @@ fn get_audio_format_name(
     ]()(format)
 
 
-fn get_silence_value_for_format(format: AudioFormat) raises -> c_int:
+def get_silence_value_for_format(format: AudioFormat) raises -> c_int:
     """Get the appropriate memset value for silencing an audio format.
 
     The value returned by this function can be used as the second argument to

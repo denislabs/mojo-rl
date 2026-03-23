@@ -70,24 +70,31 @@ from mojo_rl.render.sdl.sdl_scancode import Scancode
 from mojo_rl.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
 
 
-fn _file_letter(c: Int) -> String:
+def _file_letter(c: Int) -> String:
     """Return file letter for column index 0-7."""
-    if c == 0: return "a"
-    if c == 1: return "b"
-    if c == 2: return "c"
-    if c == 3: return "d"
-    if c == 4: return "e"
-    if c == 5: return "f"
-    if c == 6: return "g"
+    if c == 0:
+        return "a"
+    if c == 1:
+        return "b"
+    if c == 2:
+        return "c"
+    if c == 3:
+        return "d"
+    if c == 4:
+        return "e"
+    if c == 5:
+        return "f"
+    if c == 6:
+        return "g"
     return "h"
 
 
-fn sq_name(sq: Int) -> String:
+def sq_name(sq: Int) -> String:
     """Convert a square index (0-63) to algebraic notation like 'e4'."""
     return _file_letter(_col(sq)) + String(_row(sq) + 1)
 
 
-fn piece_name(piece: Int) -> String:
+def piece_name(piece: Int) -> String:
     """Return human-readable piece name like 'White Queen'."""
     if piece == EMPTY:
         return "empty"
@@ -108,24 +115,36 @@ fn piece_name(piece: Int) -> String:
     return color + " ???"
 
 
-fn piece_to_sprite_idx(piece: Int) -> Int:
+def piece_to_sprite_idx(piece: Int) -> Int:
     """Map piece ID (1-12) to sprite sheet index (0-11)."""
-    if piece == W_KING: return 0
-    if piece == W_QUEEN: return 1
-    if piece == W_ROOK: return 2
-    if piece == W_BISHOP: return 3
-    if piece == W_KNIGHT: return 4
-    if piece == W_PAWN: return 5
-    if piece == B_KING: return 6
-    if piece == B_QUEEN: return 7
-    if piece == B_ROOK: return 8
-    if piece == B_BISHOP: return 9
-    if piece == B_KNIGHT: return 10
-    if piece == B_PAWN: return 11
+    if piece == W_KING:
+        return 0
+    if piece == W_QUEEN:
+        return 1
+    if piece == W_ROOK:
+        return 2
+    if piece == W_BISHOP:
+        return 3
+    if piece == W_KNIGHT:
+        return 4
+    if piece == W_PAWN:
+        return 5
+    if piece == B_KING:
+        return 6
+    if piece == B_QUEEN:
+        return 7
+    if piece == B_ROOK:
+        return 8
+    if piece == B_BISHOP:
+        return 9
+    if piece == B_KNIGHT:
+        return 10
+    if piece == B_PAWN:
+        return 11
     return -1
 
 
-fn piece_char(piece: Int) -> String:
+def piece_char(piece: Int) -> String:
     """Return the character for a given piece ID (fallback)."""
     if piece == W_KING:
         return "K"
@@ -154,7 +173,7 @@ fn piece_char(piece: Int) -> String:
     return ""
 
 
-fn main() raises:
+def main() raises:
     print("=== Playable Chess ===")
     print("Controls:")
     print("  Mouse click: select piece / confirm move")
@@ -175,9 +194,7 @@ fn main() raises:
     var win_w = left_margin + board_px + 4  # 536
     var win_h = top_margin + board_px + 20 + 50  # 586
 
-    var renderer = Renderer2D(
-        width=win_w, height=win_h, fps=30, title="Chess"
-    )
+    var renderer = Renderer2D(width=win_w, height=win_h, fps=30, title="Chess")
 
     # Sprite setup (lazy — created after renderer is initialized on first frame)
     var sprite_pixels = create_sprite_sheet()
@@ -233,7 +250,9 @@ fn main() raises:
                     c_int(SPRITE_SHEET_WIDTH),
                     c_int(SPRITE_SHEET_HEIGHT),
                     PixelFormat.PIXELFORMAT_RGBA32,
-                    rebind[UnsafePointer[NoneType, MutAnyOrigin]](sprite_pixels),
+                    rebind[UnsafePointer[NoneType, MutAnyOrigin]](
+                        sprite_pixels
+                    ),
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
                 )
                 sprite_texture = create_texture_from_surface(
@@ -268,8 +287,12 @@ fn main() raises:
             rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
             rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
         )
-        var cur_mouse_left = (Int(mouse_buttons.value) & 1) != 0  # SDL_BUTTON_LMASK
-        var cur_mouse_right = (Int(mouse_buttons.value) & 4) != 0  # SDL_BUTTON_RMASK
+        var cur_mouse_left = (
+            Int(mouse_buttons.value) & 1
+        ) != 0  # SDL_BUTTON_LMASK
+        var cur_mouse_right = (
+            Int(mouse_buttons.value) & 4
+        ) != 0  # SDL_BUTTON_RMASK
         var mouse_x = Int(mouse_x_ptr[])
         var mouse_y = Int(mouse_y_ptr[])
 
@@ -442,13 +465,9 @@ fn main() raises:
                             env.state[from_sq] = 0.0
                             if _piece_type(Int(saved_from)) == 6:
                                 if player == 0:
-                                    env.state[S_WK] = Scalar[
-                                        env.dtype
-                                    ](to_sq)
+                                    env.state[S_WK] = Scalar[env.dtype](to_sq)
                                 else:
-                                    env.state[S_BK] = Scalar[
-                                        env.dtype
-                                    ](to_sq)
+                                    env.state[S_BK] = Scalar[env.dtype](to_sq)
 
                             var in_check = env._in_check(player)
 
@@ -464,8 +483,7 @@ fn main() raises:
                                 )
                             else:
                                 print(
-                                    "  After move: King would be in"
-                                    " check? NO"
+                                    "  After move: King would be in check? NO"
                                 )
 
                             var wk = Int(env.state[S_WK])
@@ -509,7 +527,14 @@ fn main() raises:
 
                 # Highlight selected square (green border)
                 if env_sq == selected_sq:
-                    renderer.draw_rect(px + 1, py + 1, sq_size - 2, sq_size - 2, select_color, border_width=3)
+                    renderer.draw_rect(
+                        px + 1,
+                        py + 1,
+                        sq_size - 2,
+                        sq_size - 2,
+                        select_color,
+                        border_width=3,
+                    )
 
                 # Highlight legal target squares for selected piece
                 if selected_sq >= 0 and env_sq != selected_sq and not game_over:
@@ -522,18 +547,27 @@ fn main() raises:
                             continue
                         var test_move = Move(selected_sq, env_sq, promo_val)
                         var test_action = _encode_action(test_move, player)
-                        if test_action >= 0 and test_action < 4672 and legal_mask[test_action]:
+                        if (
+                            test_action >= 0
+                            and test_action < 4672
+                            and legal_mask[test_action]
+                        ):
                             is_legal_target = True
                             break
                     if is_legal_target:
                         renderer.draw_circle(
-                            px + sq_size // 2, py + sq_size // 2,
-                            10, legal_highlight, filled=True
+                            px + sq_size // 2,
+                            py + sq_size // 2,
+                            10,
+                            legal_highlight,
+                            filled=True,
                         )
 
                 # Cursor highlight (yellow border)
                 if row == cursor_row and col == cursor_col:
-                    renderer.draw_rect(px, py, sq_size, sq_size, cursor_color, border_width=3)
+                    renderer.draw_rect(
+                        px, py, sq_size, sq_size, cursor_color, border_width=3
+                    )
 
                 # Draw piece
                 var piece = Int(env.state[env_sq])
@@ -558,8 +592,12 @@ fn main() raises:
                             render_texture(
                                 renderer.sdl_renderer,
                                 sprite_texture,
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](src_rect),
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](dst_rect),
+                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                    src_rect
+                                ),
+                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                    dst_rect
+                                ),
                             )
                         except:
                             pass
@@ -586,9 +624,7 @@ fn main() raises:
         for col in range(8):
             var lx = left_margin + col * sq_size + sq_size // 2 - 4
             var ly = top_margin + 8 * sq_size + 4
-            renderer.draw_text(
-                _file_letter(col), lx, ly, label_color
-            )
+            renderer.draw_text(_file_letter(col), lx, ly, label_color)
 
         # Rank labels (8 down to 1) to the left of the board
         for display_row in range(8):
@@ -604,15 +640,31 @@ fn main() raises:
         var result = Int(env.state[S_RESULT])
         if result == RESULT_ONGOING:
             if player == 0:
-                renderer.draw_text("White's turn", 200, status_y + 20, text_color)
+                renderer.draw_text(
+                    "White's turn", 200, status_y + 20, text_color
+                )
             else:
-                renderer.draw_text("Black's turn", 200, status_y + 20, text_color)
+                renderer.draw_text(
+                    "Black's turn", 200, status_y + 20, text_color
+                )
         elif result == RESULT_WHITE_WINS:
-            renderer.draw_text("Checkmate! White wins  (R to reset)", 120, status_y + 20, text_color)
+            renderer.draw_text(
+                "Checkmate! White wins  (R to reset)",
+                120,
+                status_y + 20,
+                text_color,
+            )
         elif result == RESULT_BLACK_WINS:
-            renderer.draw_text("Checkmate! Black wins  (R to reset)", 120, status_y + 20, text_color)
+            renderer.draw_text(
+                "Checkmate! Black wins  (R to reset)",
+                120,
+                status_y + 20,
+                text_color,
+            )
         elif result == RESULT_DRAW:
-            renderer.draw_text("Draw!  (R to reset)", 180, status_y + 20, text_color)
+            renderer.draw_text(
+                "Draw!  (R to reset)", 180, status_y + 20, text_color
+            )
 
         renderer.flip()
 

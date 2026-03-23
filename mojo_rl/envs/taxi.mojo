@@ -13,19 +13,19 @@ struct TaxiState(Copyable, ImplicitlyCopyable, Movable, State):
     var passenger_loc: Int  # 0-3 for locations R/G/Y/B, 4 = in taxi
     var destination: Int  # 0-3 for locations R/G/Y/B
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.taxi_row = copy.taxi_row
         self.taxi_col = copy.taxi_col
         self.passenger_loc = copy.passenger_loc
         self.destination = copy.destination
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.taxi_row = take.taxi_row
         self.taxi_col = take.taxi_col
         self.passenger_loc = take.passenger_loc
         self.destination = take.destination
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return (
             self.taxi_row == other.taxi_row
             and self.taxi_col == other.taxi_col
@@ -41,34 +41,34 @@ struct TaxiAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var action: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.action = copy.action
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.action = take.action
 
     @staticmethod
-    fn south() -> Self:
+    def south() -> Self:
         return Self(action=0)
 
     @staticmethod
-    fn north() -> Self:
+    def north() -> Self:
         return Self(action=1)
 
     @staticmethod
-    fn east() -> Self:
+    def east() -> Self:
         return Self(action=2)
 
     @staticmethod
-    fn west() -> Self:
+    def west() -> Self:
         return Self(action=3)
 
     @staticmethod
-    fn pickup() -> Self:
+    def pickup() -> Self:
         return Self(action=4)
 
     @staticmethod
-    fn dropoff() -> Self:
+    def dropoff() -> Self:
         return Self(action=5)
 
 
@@ -119,7 +119,7 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
     var loc_cols: List[Int]
     var _renderer_initialized: Bool
 
-    fn __init__(out self):
+    def __init__(out self):
         # Initialize locations
         self.loc_rows = List[Int]()
         self.loc_cols = List[Int]()
@@ -140,7 +140,7 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
         # Initialize state (will be randomized on reset)
         self.state = TaxiState(0, 0, 0, 1)
 
-    fn _has_wall(self, row: Int, col: Int, action: Int) -> Bool:
+    def _has_wall(self, row: Int, col: Int, action: Int) -> Bool:
         """Check if there's a wall blocking movement.
 
         Walls in the 5x5 grid:
@@ -164,7 +164,7 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
                 return True
         return False
 
-    fn _get_location_at(self, row: Int, col: Int) -> Int:
+    def _get_location_at(self, row: Int, col: Int) -> Int:
         """Return location index (0-3) if taxi is at a designated location, else -1.
         """
         for i in range(4):
@@ -172,7 +172,7 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
                 return i
         return -1
 
-    fn state_to_index(self, state: TaxiState) -> Int:
+    def state_to_index(self, state: TaxiState) -> Int:
         """Convert a TaxiState to a flat index.
 
         Index = ((taxi_row * 5 + taxi_col) * 5 + passenger_loc) * 4 + destination
@@ -182,20 +182,20 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
             (state.taxi_row * 5 + state.taxi_col) * 5 + state.passenger_loc
         ) * 4 + state.destination
 
-    fn action_from_index(self, action_idx: Int) -> TaxiAction:
+    def action_from_index(self, action_idx: Int) -> TaxiAction:
         """Create a TaxiAction from an index."""
         return TaxiAction(action=action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of states (5 * 5 * 5 * 4 = 500)."""
         return 500
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (6: south, north, east, west, pickup, dropoff).
         """
         return 6
 
-    fn step(
+    def step(
         mut self, action: TaxiAction, verbose: Bool = False
     ) -> Tuple[TaxiState, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
@@ -240,7 +240,7 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
         )
         return (self.state, reward, done)
 
-    fn reset(mut self) -> TaxiState:
+    def reset(mut self) -> TaxiState:
         """Reset to a random initial state.
 
         For simplicity, we use a deterministic start:
@@ -255,11 +255,11 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
         )
         return self.state
 
-    fn get_state(self) -> TaxiState:
+    def get_state(self) -> TaxiState:
         """Return current state."""
         return self.state
 
-    fn close(mut self):
+    def close(mut self):
         """No resources to clean up."""
         pass
 
@@ -267,11 +267,11 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
     # RenderableEnv Trait Implementation (text-only stubs)
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Print the taxi grid (text-based, renderer argument ignored)."""
 
         var loc_chars = List[String]()
@@ -325,20 +325,20 @@ struct TaxiEnv(DiscreteEnv, RenderableEnv):
         )
         print("")
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         return False
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         return False
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         pass
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False

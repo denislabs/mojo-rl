@@ -25,7 +25,7 @@ from mojo_rl.nn.constants import dtype, TPB
 
 
 @always_inline
-fn _vanilla_pg_actor_grad_kernel[
+def _vanilla_pg_actor_grad_kernel[
     d: DType where d.is_floating_point(),
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
@@ -119,7 +119,7 @@ trait PolicyGradient:
     comptime NEEDS_CLIP_EPSILON: Bool
 
     @staticmethod
-    fn compute_d_logits[
+    def compute_d_logits[
         ACTIONS: Int,
     ](
         probs: InlineArray[Scalar[dtype], ACTIONS],
@@ -134,7 +134,7 @@ trait PolicyGradient:
         ...
 
     @staticmethod
-    fn compute_d_logits_gpu[
+    def compute_d_logits_gpu[
         BATCH_SIZE: Int,
         NUM_ACTIONS: Int,
     ](
@@ -184,7 +184,7 @@ struct VanillaPG(PolicyGradient):
     comptime NEEDS_CLIP_EPSILON: Bool = False
 
     @staticmethod
-    fn compute_d_logits[
+    def compute_d_logits[
         ACTIONS: Int,
     ](
         probs: InlineArray[Scalar[dtype], ACTIONS],
@@ -211,7 +211,7 @@ struct VanillaPG(PolicyGradient):
             )
 
     @staticmethod
-    fn compute_d_logits_gpu[
+    def compute_d_logits_gpu[
         BATCH_SIZE: Int,
         NUM_ACTIONS: Int,
     ](
@@ -280,7 +280,7 @@ struct ClippedSurrogate(PolicyGradient):
     comptime NEEDS_CLIP_EPSILON: Bool = True
 
     @staticmethod
-    fn compute_d_logits[
+    def compute_d_logits[
         ACTIONS: Int,
     ](
         probs: InlineArray[Scalar[dtype], ACTIONS],
@@ -319,7 +319,7 @@ struct ClippedSurrogate(PolicyGradient):
                 )
 
     @staticmethod
-    fn compute_d_logits_gpu[
+    def compute_d_logits_gpu[
         BATCH_SIZE: Int,
         NUM_ACTIONS: Int,
     ](
@@ -383,7 +383,7 @@ struct ClippedSurrogate(PolicyGradient):
 
 
 @always_inline
-fn _autodiff_vanilla_pg_actor_grad_kernel[
+def _autodiff_vanilla_pg_actor_grad_kernel[
     d: DType where d.is_floating_point(),
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
@@ -453,7 +453,9 @@ fn _autodiff_vanilla_pg_actor_grad_kernel[
         var prob_for_log = Float32(probs[a]) + Float32(1e-8)
         var d_ent = -probs[a] * (Scalar[d](1.0) + Scalar[d](log(prob_for_log)))
 
-        grad_logits[b, a] = (d_lp - entropy_coef * d_ent) / Scalar[d](BATCH_SIZE)
+        grad_logits[b, a] = (d_lp - entropy_coef * d_ent) / Scalar[d](
+            BATCH_SIZE
+        )
 
 
 # =============================================================================
@@ -462,7 +464,7 @@ fn _autodiff_vanilla_pg_actor_grad_kernel[
 
 
 @always_inline
-fn _autodiff_clipped_surrogate_actor_grad_kernel[
+def _autodiff_clipped_surrogate_actor_grad_kernel[
     d: DType where d.is_floating_point(),
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
@@ -574,7 +576,9 @@ fn _autodiff_clipped_surrogate_actor_grad_kernel[
         var prob_for_log = Float32(probs[a]) + Float32(1e-8)
         var d_ent = -probs[a] * (Scalar[d](1.0) + Scalar[d](log(prob_for_log)))
 
-        grad_logits[b, a] = (d_lp - entropy_coef * d_ent) / Scalar[d](BATCH_SIZE)
+        grad_logits[b, a] = (d_lp - entropy_coef * d_ent) / Scalar[d](
+            BATCH_SIZE
+        )
 
 
 # =============================================================================
@@ -595,7 +599,7 @@ struct AutodiffVanillaPG(PolicyGradient):
     comptime NEEDS_CLIP_EPSILON: Bool = False
 
     @staticmethod
-    fn compute_d_logits[
+    def compute_d_logits[
         ACTIONS: Int,
     ](
         probs: InlineArray[Scalar[dtype], ACTIONS],
@@ -618,9 +622,9 @@ struct AutodiffVanillaPG(PolicyGradient):
 
         for a in range(ACTIONS):
             # CategoricalLogProbOp.vjp: indicator - prob
-            var indicator = Scalar[dtype](1.0) if a == action else Scalar[dtype](
-                0.0
-            )
+            var indicator = Scalar[dtype](1.0) if a == action else Scalar[
+                dtype
+            ](0.0)
             var d_lp = g * (indicator - probs[a])
 
             # Entropy gradient: d(-sum(p*log(p)))/d(logit[j]) = -p[j]*(1 + log(p[j]))
@@ -631,7 +635,7 @@ struct AutodiffVanillaPG(PolicyGradient):
             d_logits[a] = d_lp - Scalar[dtype](entropy_coef) * d_ent
 
     @staticmethod
-    fn compute_d_logits_gpu[
+    def compute_d_logits_gpu[
         BATCH_SIZE: Int,
         NUM_ACTIONS: Int,
     ](
@@ -706,7 +710,7 @@ struct AutodiffClippedSurrogate[clip_eps: Float64 = 0.2](PolicyGradient):
     comptime NEEDS_CLIP_EPSILON: Bool = True
 
     @staticmethod
-    fn compute_d_logits[
+    def compute_d_logits[
         ACTIONS: Int,
     ](
         probs: InlineArray[Scalar[dtype], ACTIONS],
@@ -765,9 +769,9 @@ struct AutodiffClippedSurrogate[clip_eps: Float64 = 0.2](PolicyGradient):
 
         # --- CategoricalLogProbOp.vjp: d_logit[j] = g * (delta_ij - prob[j]) ---
         for a in range(ACTIONS):
-            var indicator = Scalar[dtype](1.0) if a == action else Scalar[dtype](
-                0.0
-            )
+            var indicator = Scalar[dtype](1.0) if a == action else Scalar[
+                dtype
+            ](0.0)
             var d_lp = grad_log_prob * (indicator - probs[a])
 
             # Entropy gradient: d(-sum(p*log(p)))/d(logit[j]) = -p[j]*(1+log(p[j]))
@@ -778,7 +782,7 @@ struct AutodiffClippedSurrogate[clip_eps: Float64 = 0.2](PolicyGradient):
             d_logits[a] = d_lp - Scalar[dtype](entropy_coef) * d_ent
 
     @staticmethod
-    fn compute_d_logits_gpu[
+    def compute_d_logits_gpu[
         BATCH_SIZE: Int,
         NUM_ACTIONS: Int,
     ](

@@ -31,7 +31,7 @@ comptime NUM_UPDATES = 500
 comptime dtype = DType.float32
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO CNN GPU Training on Pong — Pixel Observations")

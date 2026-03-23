@@ -18,7 +18,7 @@ from mojo_rl.agents.linear_qlearning import (
 from mojo_rl.envs import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     """Run CartPole linear function approximation example."""
     print("=" * 60)
     print("CartPole - Linear Function Approximation")

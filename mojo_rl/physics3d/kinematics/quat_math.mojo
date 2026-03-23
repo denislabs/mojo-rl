@@ -19,7 +19,7 @@ from std.math import sqrt, sin, cos, acos, atan2
 # =============================================================================
 
 
-fn quat_mul[
+def quat_mul[
     DTYPE: DType
 ](
     ax: Scalar[DTYPE],
@@ -59,7 +59,7 @@ fn quat_mul[
 # =============================================================================
 
 
-fn quat_conjugate[
+def quat_conjugate[
     DTYPE: DType
 ](
     qx: Scalar[DTYPE],
@@ -86,7 +86,7 @@ fn quat_conjugate[
 # =============================================================================
 
 
-fn quat_rotate[
+def quat_rotate[
     DTYPE: DType
 ](
     qx: Scalar[DTYPE],
@@ -133,7 +133,7 @@ fn quat_rotate[
 # =============================================================================
 
 
-fn quat_normalize[
+def quat_normalize[
     DTYPE: DType
 ](
     qx: Scalar[DTYPE],
@@ -162,7 +162,7 @@ fn quat_normalize[
 # =============================================================================
 
 
-fn axis_angle_to_quat[
+def axis_angle_to_quat[
     DTYPE: DType
 ](
     ax: Scalar[DTYPE],
@@ -196,7 +196,7 @@ fn axis_angle_to_quat[
 # =============================================================================
 
 
-fn quat_to_axis_angle[
+def quat_to_axis_angle[
     DTYPE: DType
 ](
     qx: Scalar[DTYPE],
@@ -237,7 +237,7 @@ fn quat_to_axis_angle[
 # =============================================================================
 
 
-fn quat_integrate[
+def quat_integrate[
     DTYPE: DType
 ](
     qx: Scalar[DTYPE],
@@ -292,7 +292,7 @@ fn quat_integrate[
 
 
 @always_inline
-fn gpu_quat_mul[
+def gpu_quat_mul[
     DTYPE: DType
 ](
     ax: Scalar[DTYPE],
@@ -314,7 +314,7 @@ fn gpu_quat_mul[
 
 
 @always_inline
-fn gpu_quat_rotate[
+def gpu_quat_rotate[
     DTYPE: DType
 ](
     qx: Scalar[DTYPE],
@@ -338,7 +338,7 @@ fn gpu_quat_rotate[
 
 
 @always_inline
-fn gpu_axis_angle_to_quat[
+def gpu_axis_angle_to_quat[
     DTYPE: DType
 ](
     axis_x: Scalar[DTYPE],
@@ -366,7 +366,7 @@ fn gpu_axis_angle_to_quat[
 
 
 @always_inline
-fn gpu_quat_normalize[
+def gpu_quat_normalize[
     DTYPE: DType
 ](
     qx: Scalar[DTYPE],

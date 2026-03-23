@@ -11,7 +11,14 @@ from std.random import random_float64
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.nn.model import Model, Sequential, GaussianLogProb, Ratio, ClipSurrogate, Slice
+from mojo_rl.nn.model import (
+    Model,
+    Sequential,
+    GaussianLogProb,
+    Ratio,
+    ClipSurrogate,
+    Slice,
+)
 from mojo_rl.nn.autodiff.combinators import SplitApply
 from mojo_rl.nn.optimizer import Optimizer, Adam
 from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
@@ -138,22 +145,26 @@ struct GenericOnPolicyContinuousAgent[
     # Autodiff loss graph for continuous PPO (pre-compute workspace size)
     comptime _LOSS_IN: Int = 3 * Self.ACTIONS + 2
     comptime _LossGraph = Sequential[
-        SplitApply[GaussianLogProb[Self.ACTIONS], Slice[2, 0, 2], 3 * Self.ACTIONS],
+        SplitApply[
+            GaussianLogProb[Self.ACTIONS], Slice[2, 0, 2], 3 * Self.ACTIONS
+        ],
         SplitApply[Ratio[1], Slice[1, 0, 1], 2],
         ClipSurrogate[0.2],
     ]
     comptime _LOSS_OUT: Int = Self._LossGraph.OUT_DIM
     comptime _LOSS_CS: Int = Self._LossGraph.CACHE_SIZE
-    comptime _LOSS_WS: Int = max(1, Self.GPU_MINIBATCH * Self._LossGraph.WORKSPACE_SIZE_PER_SAMPLE)
+    comptime _LOSS_WS: Int = max(
+        1, Self.GPU_MINIBATCH * Self._LossGraph.WORKSPACE_SIZE_PER_SAMPLE
+    )
     comptime _LOSS_WS_TOTAL: Int = (
-        Self.GPU_MINIBATCH * Self._LOSS_IN          # loss_input
-        + Self.GPU_MINIBATCH * Self._LOSS_OUT       # loss_output
+        Self.GPU_MINIBATCH * Self._LOSS_IN  # loss_input
+        + Self.GPU_MINIBATCH * Self._LOSS_OUT  # loss_output
         + max(1, Self.GPU_MINIBATCH * Self._LOSS_CS)  # loss_cache
-        + max(1, Self._LossGraph.PARAM_SIZE)        # loss_params
-        + max(1, Self._LossGraph.PARAM_SIZE)        # loss_grads
-        + Self.GPU_MINIBATCH * Self._LOSS_IN        # loss_grad_input
-        + Self.GPU_MINIBATCH * Self._LOSS_OUT       # loss_grad_output
-        + Self._LOSS_WS                             # loss_workspace
+        + max(1, Self._LossGraph.PARAM_SIZE)  # loss_params
+        + max(1, Self._LossGraph.PARAM_SIZE)  # loss_grads
+        + Self.GPU_MINIBATCH * Self._LOSS_IN  # loss_grad_input
+        + Self.GPU_MINIBATCH * Self._LOSS_OUT  # loss_grad_output
+        + Self._LOSS_WS  # loss_workspace
     )
 
     comptime GPUStateType = PPOContinuousGPUState[
@@ -200,7 +211,7 @@ struct GenericOnPolicyContinuousAgent[
     var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
-    fn __init__(
+    def __init__(
         out self,
         gamma: Float64 = 0.99,
         gae_lambda: Float64 = 0.95,
@@ -245,12 +256,12 @@ struct GenericOnPolicyContinuousAgent[
     # OnPolicyContinuousAgent trait
     # =========================================================================
 
-    fn make_cpu_state(self) -> Self.CPUStateType:
+    def make_cpu_state(self) -> Self.CPUStateType:
         var s = Self.CPUStateType()
         s.critic.initialize[Kaiming[]]()
         return s^
 
-    fn collect_rollout[
+    def collect_rollout[
         E: BoxContinuousActionEnv
     ](mut self, mut cpu_state: Self.CPUStateType, mut env: E) -> None:
         if not cpu_state._env_initialized:
@@ -361,7 +372,7 @@ struct GenericOnPolicyContinuousAgent[
                 for i in range(Self.OBS):
                     cpu_state._current_obs[i] = Scalar[dtype](next_obs[i])
 
-    fn compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
+    def compute_advantages(mut self, mut cpu_state: Self.CPUStateType) -> None:
         # Bootstrap value from critic on current obs
         var obs_arr = InlineArray[Scalar[dtype], Self.OBS](uninitialized=True)
         for i in range(Self.OBS):
@@ -396,7 +407,7 @@ struct GenericOnPolicyContinuousAgent[
                 cpu_state._advantages, Self.ROLLOUT
             )
 
-    fn update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
+    def update_epochs(mut self, mut cpu_state: Self.CPUStateType) -> Float64:
         """Multi-epoch minibatch PPO update for continuous actions."""
         var n_epochs = Self.Config.EpochSched.get_num_epochs(self.num_epochs)
         var mb_size = Self.Config.EpochSched.get_minibatch_size(
@@ -478,9 +489,9 @@ struct GenericOnPolicyContinuousAgent[
                     )
 
                     # Compute actor gradient — shared variables across branches
-                    var grad_out = InlineArray[
-                        Scalar[dtype], Self.ACTOR_OUT
-                    ](uninitialized=True)
+                    var grad_out = InlineArray[Scalar[dtype], Self.ACTOR_OUT](
+                        uninitialized=True
+                    )
                     var policy_loss: Float64 = 0.0
 
                     comptime if Self.Config.USE_AUTODIFF_GRAD:
@@ -503,9 +514,9 @@ struct GenericOnPolicyContinuousAgent[
                         var old_lp = Float64(cpu_state.buffer_log_probs[idx])
                         var advantage = Float64(cpu_state._advantages[idx])
 
-                        var loss_in_arr = InlineArray[
-                            Scalar[dtype], LOSS_IN
-                        ](uninitialized=True)
+                        var loss_in_arr = InlineArray[Scalar[dtype], LOSS_IN](
+                            uninitialized=True
+                        )
                         for j in range(2 * A):
                             loss_in_arr[j] = actor_out[j]
                         for j in range(A):
@@ -522,9 +533,9 @@ struct GenericOnPolicyContinuousAgent[
                         ](loss_in_arr.unsafe_ptr())
 
                         # Forward
-                        var loss_out_arr = InlineArray[
-                            Scalar[dtype], LOSS_OUT
-                        ](uninitialized=True)
+                        var loss_out_arr = InlineArray[Scalar[dtype], LOSS_OUT](
+                            uninitialized=True
+                        )
                         var loss_out_t = LayoutTensor[
                             dtype,
                             Layout.row_major(1, LOSS_OUT),
@@ -557,18 +568,18 @@ struct GenericOnPolicyContinuousAgent[
                         var policy_loss = Float64(loss_out_arr[0])
 
                         # Backward
-                        var loss_go_arr = InlineArray[
-                            Scalar[dtype], LOSS_OUT
-                        ](uninitialized=True)
+                        var loss_go_arr = InlineArray[Scalar[dtype], LOSS_OUT](
+                            uninitialized=True
+                        )
                         loss_go_arr[0] = Scalar[dtype](1.0)
                         var loss_go_t = LayoutTensor[
                             dtype,
                             Layout.row_major(1, LOSS_OUT),
                             MutAnyOrigin,
                         ](loss_go_arr.unsafe_ptr())
-                        var loss_gi_arr = InlineArray[
-                            Scalar[dtype], LOSS_IN
-                        ](uninitialized=True)
+                        var loss_gi_arr = InlineArray[Scalar[dtype], LOSS_IN](
+                            uninitialized=True
+                        )
                         var loss_gi_t = LayoutTensor[
                             dtype,
                             Layout.row_major(1, LOSS_IN),
@@ -599,10 +610,9 @@ struct GenericOnPolicyContinuousAgent[
                             grad_out[j] = loss_gi_arr[j]
                         for j in range(A):
                             # Add entropy bonus: d(entropy)/d(log_std) = 1
-                            grad_out[A + j] = (
-                                loss_gi_arr[A + j]
-                                - Scalar[dtype](self.entropy_coef)
-                            )
+                            grad_out[A + j] = loss_gi_arr[A + j] - Scalar[
+                                dtype
+                            ](self.entropy_coef)
 
                     else:
                         # ---- Manual gradient path ----
@@ -611,18 +621,14 @@ struct GenericOnPolicyContinuousAgent[
                         var entropy: Float64 = 0.0
                         for j in range(Self.ACTIONS):
                             var mean = Float64(actor_out[j])
-                            var raw_ls = Float64(
-                                actor_out[Self.ACTIONS + j]
-                            )
+                            var raw_ls = Float64(actor_out[Self.ACTIONS + j])
                             if raw_ls < LOG_STD_MIN:
                                 raw_ls = LOG_STD_MIN
                             elif raw_ls > LOG_STD_MAX:
                                 raw_ls = LOG_STD_MAX
                             var std = exp(raw_ls)
                             var stored_a = Float64(
-                                cpu_state.buffer_actions[
-                                    idx * Self.ACTIONS + j
-                                ]
+                                cpu_state.buffer_actions[idx * Self.ACTIONS + j]
                             )
                             var diff = (stored_a - mean) / (std + 1e-8)
                             new_lp += -0.5 * (
@@ -632,9 +638,7 @@ struct GenericOnPolicyContinuousAgent[
                                 raw_ls + 0.5 * 1.8378770664
                             )  # 0.5 * (1 + log(2*pi))
 
-                        var old_lp = Float64(
-                            cpu_state.buffer_log_probs[idx]
-                        )
+                        var old_lp = Float64(cpu_state.buffer_log_probs[idx])
                         var advantage = Float64(cpu_state._advantages[idx])
 
                         # Clipped surrogate
@@ -646,27 +650,21 @@ struct GenericOnPolicyContinuousAgent[
                         elif clipped_ratio < 1.0 - self.clip_epsilon:
                             clipped_ratio = 1.0 - self.clip_epsilon
                         var surr2 = clipped_ratio * advantage
-                        policy_loss = -(
-                            surr1 if surr1 < surr2 else surr2
-                        )
+                        policy_loss = -(surr1 if surr1 < surr2 else surr2)
 
                         # Compute actor gradient (d_loss / d_actor_out)
                         var is_clipped = ratio != clipped_ratio
 
                         for j in range(Self.ACTIONS):
                             var mean = Float64(actor_out[j])
-                            var raw_ls = Float64(
-                                actor_out[Self.ACTIONS + j]
-                            )
+                            var raw_ls = Float64(actor_out[Self.ACTIONS + j])
                             if raw_ls < LOG_STD_MIN:
                                 raw_ls = LOG_STD_MIN
                             elif raw_ls > LOG_STD_MAX:
                                 raw_ls = LOG_STD_MAX
                             var std = exp(raw_ls)
                             var stored_a = Float64(
-                                cpu_state.buffer_actions[
-                                    idx * Self.ACTIONS + j
-                                ]
+                                cpu_state.buffer_actions[idx * Self.ACTIONS + j]
                             )
                             var diff = (stored_a - mean) / (std + 1e-8)
 
@@ -775,7 +773,7 @@ struct GenericOnPolicyContinuousAgent[
             return total_loss / Float64(n_updates)
         return 0.0
 
-    fn select_greedy_action(
+    def select_greedy_action(
         self, cpu_state: Self.CPUStateType, obs: List[Float64]
     ) -> List[Float64]:
         """Select deterministic action (mean of Gaussian policy)."""
@@ -801,14 +799,14 @@ struct GenericOnPolicyContinuousAgent[
             result.append(Float64(actor_out[j]))
         return result^
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         return self.entropy_coef
 
     # =========================================================================
     # Checkpointable
     # =========================================================================
 
-    fn save_checkpoint(self, path: String) raises -> None:
+    def save_checkpoint(self, path: String) raises -> None:
         from mojo_rl.nn.checkpoint import (
             write_checkpoint_header,
             write_metadata_section,
@@ -834,7 +832,7 @@ struct GenericOnPolicyContinuousAgent[
 
         save_checkpoint_file(path, content)
 
-    fn load_checkpoint(mut self, path: String) raises -> None:
+    def load_checkpoint(mut self, path: String) raises -> None:
         from mojo_rl.nn.checkpoint import (
             read_checkpoint_file,
             parse_checkpoint_header,
@@ -868,7 +866,7 @@ struct GenericOnPolicyContinuousAgent[
     # CPU Training convenience
     # =========================================================================
 
-    fn train[
+    def train[
         E: BoxContinuousActionEnv
     ](
         mut self,
@@ -926,7 +924,7 @@ struct GenericOnPolicyContinuousAgent[
     # Evaluation
     # =========================================================================
 
-    fn evaluate[
+    def evaluate[
         E: BoxContinuousActionEnv & RenderableEnv
     ](
         mut self,
@@ -1061,7 +1059,7 @@ struct GenericOnPolicyContinuousAgent[
 
         return total_reward / Float64(num_episodes)
 
-    fn evaluate_gpu[
+    def evaluate_gpu[
         EnvType: GPUContinuousEnv
     ](
         self,
@@ -1133,9 +1131,9 @@ struct GenericOnPolicyContinuousAgent[
         EnvType.reset_kernel_gpu[N_EVAL_ENVS, EnvType.STATE_SIZE](
             ctx, env_states_buf
         )
-        EnvType.extract_obs_kernel_gpu[N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS](
-            ctx, env_states_buf, obs_buf
-        )
+        EnvType.extract_obs_kernel_gpu[
+            N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS
+        ](ctx, env_states_buf, obs_buf)
         ctx.synchronize()
 
         if verbose:
@@ -1148,7 +1146,7 @@ struct GenericOnPolicyContinuousAgent[
 
         # Deterministic action extraction kernel
         @always_inline
-        fn extract_deterministic_actions(
+        def extract_deterministic_actions(
             actions: LayoutTensor[
                 dtype, Layout.row_major(N_EVAL_ENVS, Self.ACTIONS), MutAnyOrigin
             ],
@@ -1321,10 +1319,10 @@ struct GenericOnPolicyContinuousAgent[
     # GPUOnPolicyContinuousAgent trait conformance
     # =========================================================================
 
-    fn make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
+    def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         return Self.GPUStateType(ctx)
 
-    fn upload_to_gpu(
+    def upload_to_gpu(
         self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1332,7 +1330,7 @@ struct GenericOnPolicyContinuousAgent[
         gpu_state.gpu_actor.upload_from(self.cpu_state.actor, ctx)
         gpu_state.gpu_critic.upload_from(self.cpu_state.critic, ctx)
 
-    fn download_from_gpu(
+    def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
@@ -1341,7 +1339,7 @@ struct GenericOnPolicyContinuousAgent[
         gpu_state.gpu_critic.download_to(self.cpu_state.critic, ctx)
         ctx.synchronize()
 
-    fn select_actions_with_meta_gpu[
+    def select_actions_with_meta_gpu[
         N_ENVS: Int
     ](
         mut self,
@@ -1412,7 +1410,7 @@ struct GenericOnPolicyContinuousAgent[
             block_dim=(TPB,),
         )
 
-    fn compute_advantages_gpu(
+    def compute_advantages_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -1510,7 +1508,7 @@ struct GenericOnPolicyContinuousAgent[
         ctx.enqueue_copy(gpu_state.returns_buf, gpu_state.returns_host)
         ctx.synchronize()
 
-    fn update_epochs_gpu(
+    def update_epochs_gpu(
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
@@ -1832,7 +1830,7 @@ struct GenericOnPolicyContinuousAgent[
                     ](loss_input_ptr)
 
                     @always_inline
-                    fn pack_loss_input_k(
+                    def pack_loss_input_k(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(MINIBATCH, LOSS_IN),
@@ -1859,9 +1857,7 @@ struct GenericOnPolicyContinuousAgent[
                             ImmutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= MINIBATCH:
                             return
                         # Copy mean and log_std from actor output (2*A dims)
@@ -1899,9 +1895,7 @@ struct GenericOnPolicyContinuousAgent[
                         ImmutAnyOrigin,
                     ](mb_advantages_t.ptr)
 
-                    ctx.enqueue_function[
-                        pack_loss_input_k, pack_loss_input_k
-                    ](
+                    ctx.enqueue_function[pack_loss_input_k, pack_loss_input_k](
                         loss_input_t,
                         actor_logits_immut,
                         mb_actions_immut,
@@ -1947,16 +1941,14 @@ struct GenericOnPolicyContinuousAgent[
                     ](loss_grad_output_ptr)
 
                     @always_inline
-                    fn seed_grad_k(
+                    def seed_grad_k(
                         go: LayoutTensor[
                             dtype,
                             Layout.row_major(MINIBATCH, LOSS_OUT),
                             MutAnyOrigin,
                         ],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= MINIBATCH:
                             return
                         go[idx, 0] = Scalar[dtype](1.0) / Scalar[dtype](
@@ -2000,7 +1992,7 @@ struct GenericOnPolicyContinuousAgent[
                     ](loss_grad_input_ptr)
 
                     @always_inline
-                    fn extract_and_entropy_k(
+                    def extract_and_entropy_k(
                         dst: LayoutTensor[
                             dtype,
                             Layout.row_major(MINIBATCH, Self.ACTOR_OUT),
@@ -2013,9 +2005,7 @@ struct GenericOnPolicyContinuousAgent[
                         ],
                         ent_coef: Scalar[dtype],
                     ):
-                        var idx = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if idx >= MINIBATCH:
                             return
                         # Copy mean grads
@@ -2026,9 +2016,7 @@ struct GenericOnPolicyContinuousAgent[
                         # Copy log_std grads and subtract entropy bonus
                         # d(entropy)/d(log_std) = 1 per dimension
                         for j in range(A):
-                            dst.ptr[
-                                idx * Self.ACTOR_OUT + A + j
-                            ] = src.ptr[
+                            dst.ptr[idx * Self.ACTOR_OUT + A + j] = src.ptr[
                                 idx * LOSS_IN + A + j
                             ] - ent_coef / Scalar[dtype](MINIBATCH)
 
@@ -2044,7 +2032,7 @@ struct GenericOnPolicyContinuousAgent[
 
                     # Compute diagnostics (KL, entropy, clip_flags) in separate kernel
                     @always_inline
-                    fn diag_kernel(
+                    def diag_kernel(
                         kl_out: LayoutTensor[
                             dtype,
                             Layout.row_major(MINIBATCH),
@@ -2077,9 +2065,7 @@ struct GenericOnPolicyContinuousAgent[
                         ],
                         clip_eps: Scalar[dtype],
                     ):
-                        var b = Int(
-                            block_dim.x * block_idx.x + thread_idx.x
-                        )
+                        var b = Int(block_dim.x * block_idx.x + thread_idx.x)
                         if b >= MINIBATCH:
                             return
                         comptime LOG_STD_MIN_V: Scalar[dtype] = -5.0
@@ -2090,12 +2076,8 @@ struct GenericOnPolicyContinuousAgent[
                         var new_lp = Scalar[dtype](0.0)
                         var ent = Scalar[dtype](0.0)
                         for j in range(A):
-                            var mean = actor_out.ptr[
-                                b * Self.ACTOR_OUT + j
-                            ]
-                            var ls = actor_out.ptr[
-                                b * Self.ACTOR_OUT + A + j
-                            ]
+                            var mean = actor_out.ptr[b * Self.ACTOR_OUT + j]
+                            var ls = actor_out.ptr[b * Self.ACTOR_OUT + A + j]
                             if ls < LOG_STD_MIN_V:
                                 ls = LOG_STD_MIN_V
                             elif ls > LOG_STD_MAX_V:
@@ -2106,9 +2088,7 @@ struct GenericOnPolicyContinuousAgent[
                                 std + Scalar[dtype](1e-6)
                             )
                             new_lp += Scalar[dtype](-0.5) * (
-                                log_2pi
-                                + Scalar[dtype](2.0) * ls
-                                + norm * norm
+                                log_2pi + Scalar[dtype](2.0) * ls + norm * norm
                             )
                             ent += half * (
                                 log_2pi + one + Scalar[dtype](2.0) * ls
@@ -2193,9 +2173,7 @@ struct GenericOnPolicyContinuousAgent[
                         diag_entropy_sum += Float64(
                             gpu_state.diag_entropy_host[i]
                         )
-                        diag_clip_sum += Float64(
-                            gpu_state.diag_clip_host[i]
-                        )
+                        diag_clip_sum += Float64(gpu_state.diag_clip_host[i])
                     diag_sample_count += MINIBATCH
 
                 Self.ActorModel.backward_gpu[MINIBATCH](
@@ -2353,15 +2331,9 @@ struct GenericOnPolicyContinuousAgent[
         if should_diag and diag_sample_count > 0:
             var n = Float64(diag_sample_count)
             var step = update_idx
-            self.logger[].log_scalar(
-                "approx_kl", diag_kl_sum / n, step
-            )
-            self.logger[].log_scalar(
-                "entropy", diag_entropy_sum / n, step
-            )
-            self.logger[].log_scalar(
-                "clip_fraction", diag_clip_sum / n, step
-            )
+            self.logger[].log_scalar("approx_kl", diag_kl_sum / n, step)
+            self.logger[].log_scalar("entropy", diag_entropy_sum / n, step)
+            self.logger[].log_scalar("clip_fraction", diag_clip_sum / n, step)
             self.logger[].log_scalar(
                 "value_loss", diag_value_loss_sum / n, step
             )
@@ -2373,7 +2345,7 @@ struct GenericOnPolicyContinuousAgent[
     # GPU Training convenience
     # =========================================================================
 
-    fn train_gpu[
+    def train_gpu[
         E: GPUContinuousEnv,
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     ](

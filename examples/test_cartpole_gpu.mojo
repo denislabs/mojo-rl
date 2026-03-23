@@ -20,7 +20,7 @@ from mojo_rl.envs.cartpole_gpu import (
 )
 
 
-fn main() raises:
+def main() raises:
     print("Testing GPU CartPole with", NUM_ENVS, "parallel environments")
     print("Grid:", BLOCKS_PER_GRID, "blocks x", THREADS_PER_BLOCK, "threads")
 

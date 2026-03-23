@@ -72,7 +72,7 @@ comptime QVEL_REL_TOL: Float64 = 3e-1
 # =============================================================================
 
 
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -316,7 +316,7 @@ fn compare_step(
     assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 
 
-fn test_ground_contact_1_step() raises:
+def test_ground_contact_1_step() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -348,7 +348,7 @@ fn test_ground_contact_1_step() raises:
     print()
 
 
-fn test_ground_contact_with_actions_1_step() raises:
+def test_ground_contact_with_actions_1_step() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -386,7 +386,7 @@ fn test_ground_contact_with_actions_1_step() raises:
     print()
 
 
-fn test_deep_penetration_1_step() raises:
+def test_deep_penetration_1_step() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -418,7 +418,7 @@ fn test_deep_penetration_1_step() raises:
     print()
 
 
-fn test_moving_with_contacts_1_step() raises:
+def test_moving_with_contacts_1_step() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -459,7 +459,7 @@ fn test_moving_with_contacts_1_step() raises:
     print()
 
 
-fn test_ground_contact_5_steps() raises:
+def test_ground_contact_5_steps() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -491,7 +491,7 @@ fn test_ground_contact_5_steps() raises:
     print()
 
 
-fn test_ground_contact_with_actions_5_steps() raises:
+def test_ground_contact_with_actions_5_steps() raises:
     var ctx = DeviceContext()
     var model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HalfCheetahModel.init_model_gpu(ctx, model_buf)
@@ -529,5 +529,5 @@ fn test_ground_contact_with_actions_5_steps() raises:
     print()
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

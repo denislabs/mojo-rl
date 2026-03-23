@@ -12,7 +12,7 @@ from std.math import sqrt
 
 
 @always_inline
-fn atan_gpu[dtype: DType](z: Scalar[dtype]) -> Scalar[dtype]:
+def atan_gpu[dtype: DType](z: Scalar[dtype]) -> Scalar[dtype]:
     """Compute atan(z) using polynomial approximation (GPU-compatible).
 
     Uses a Padé-like rational approximation for high accuracy across full range.
@@ -76,7 +76,9 @@ fn atan_gpu[dtype: DType](z: Scalar[dtype]) -> Scalar[dtype]:
 
 
 @always_inline
-fn atan2_gpu[dtype: DType](y: Scalar[dtype], x: Scalar[dtype]) -> Scalar[dtype]:
+def atan2_gpu[
+    dtype: DType
+](y: Scalar[dtype], x: Scalar[dtype]) -> Scalar[dtype]:
     """Compute atan2(y, x) using polynomial approximation (GPU-compatible).
 
     This is a drop-in replacement for math.atan2 that works on Metal GPU.
@@ -131,7 +133,7 @@ fn atan2_gpu[dtype: DType](y: Scalar[dtype], x: Scalar[dtype]) -> Scalar[dtype]:
 
 
 @always_inline
-fn atan2_gpu_fast[
+def atan2_gpu_fast[
     dtype: DType
 ](y: Scalar[dtype], x: Scalar[dtype]) -> Scalar[dtype]:
     """Fast atan2 approximation for GPU (less accurate but faster).

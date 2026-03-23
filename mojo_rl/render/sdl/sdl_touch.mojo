@@ -52,15 +52,15 @@ struct TouchID(Intable, TrivialRegisterPassable):
     var value: UInt64
 
     @always_inline
-    fn __init__(out self, value: UInt64):
+    def __init__(out self, value: UInt64):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -80,15 +80,15 @@ struct FingerID(Intable, TrivialRegisterPassable):
     var value: UInt64
 
     @always_inline
-    fn __init__(out self, value: UInt64):
+    def __init__(out self, value: UInt64):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -101,19 +101,19 @@ struct TouchDeviceType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime TOUCH_DEVICE_INVALID = Self(-1)
@@ -146,7 +146,7 @@ struct Finger(ImplicitlyCopyable, Movable):
     """The quantity of pressure applied, normalized (0...1)."""
 
 
-fn get_touch_devices(
+def get_touch_devices(
     count: Ptr[c_int, MutAnyOrigin], out ret: Ptr[TouchID, MutAnyOrigin]
 ) raises:
     """Get a list of registered touch devices.
@@ -176,7 +176,7 @@ fn get_touch_devices(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_touch_device_name(
+def get_touch_device_name(
     touch_id: TouchID, out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the touch device name as reported from the driver.
@@ -200,7 +200,7 @@ fn get_touch_device_name(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_touch_device_type(touch_id: TouchID) raises -> TouchDeviceType:
+def get_touch_device_type(touch_id: TouchID) raises -> TouchDeviceType:
     """Get the type of the given touch device.
 
     Args:
@@ -217,7 +217,7 @@ fn get_touch_device_type(touch_id: TouchID) raises -> TouchDeviceType:
     ]()(touch_id)
 
 
-fn get_touch_fingers(
+def get_touch_fingers(
     touch_id: TouchID,
     count: Ptr[c_int, MutAnyOrigin],
     out ret: Ptr[Ptr[Finger, MutAnyOrigin], MutAnyOrigin],

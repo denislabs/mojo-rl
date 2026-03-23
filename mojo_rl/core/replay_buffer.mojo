@@ -13,7 +13,7 @@ struct Transition(Copyable, ImplicitlyCopyable, Movable):
     var next_state: Int
     var done: Bool
 
-    fn __init__(
+    def __init__(
         out self,
         state: Int,
         action: Int,
@@ -27,14 +27,14 @@ struct Transition(Copyable, ImplicitlyCopyable, Movable):
         self.next_state = next_state
         self.done = done
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.state = copy.state
         self.action = copy.action
         self.reward = copy.reward
         self.next_state = copy.next_state
         self.done = copy.done
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.state = take.state
         self.action = take.action
         self.reward = take.reward
@@ -70,7 +70,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
     var size: Int
     var position: Int  # Write position (circular)
 
-    fn __init__(out self, capacity: Int):
+    def __init__(out self, capacity: Int):
         """Initialize buffer with given capacity."""
         self.capacity = capacity
         self.size = 0
@@ -90,7 +90,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
             self.next_states.append(0)
             self.dones.append(False)
 
-    fn copy(self) -> Self:
+    def copy(self) -> Self:
         """Explicit copy method."""
         var new_buffer = Self(self.capacity)
         for i in range(self.size):
@@ -103,7 +103,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
             )
         return new_buffer^
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.states = copy.states.copy()
         self.actions = copy.actions.copy()
         self.rewards = copy.rewards.copy()
@@ -113,7 +113,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
         self.size = copy.size
         self.position = copy.position
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.states = take.states^
         self.actions = take.actions^
         self.rewards = take.rewards^
@@ -123,7 +123,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
         self.size = take.size
         self.position = take.position
 
-    fn push(
+    def push(
         mut self,
         state: Int,
         action: Int,
@@ -142,7 +142,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
         if self.size < self.capacity:
             self.size += 1
 
-    fn sample(self, batch_size: Int) -> List[Transition]:
+    def sample(self, batch_size: Int) -> List[Transition]:
         """Sample a random batch of transitions.
 
         Returns empty list if buffer has fewer transitions than batch_size.
@@ -168,7 +168,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
 
         return batch^
 
-    fn sample_indices(self, batch_size: Int) -> List[Int]:
+    def sample_indices(self, batch_size: Int) -> List[Int]:
         """Sample random indices for batch processing.
 
         Useful when you want to process transitions without copying.
@@ -184,7 +184,7 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
 
         return indices^
 
-    fn get(self, idx: Int) -> Transition:
+    def get(self, idx: Int) -> Transition:
         """Get transition at index."""
         return Transition(
             self.states[idx],
@@ -194,15 +194,15 @@ struct ReplayBuffer(Copyable, ImplicitlyCopyable, Movable):
             self.dones[idx],
         )
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return number of transitions in buffer."""
         return self.size
 
-    fn is_full(self) -> Bool:
+    def is_full(self) -> Bool:
         """Check if buffer is at capacity."""
         return self.size == self.capacity
 
-    fn clear(mut self):
+    def clear(mut self):
         """Clear all transitions from buffer."""
         self.size = 0
         self.position = 0
@@ -218,7 +218,7 @@ struct PrioritizedTransition(Copyable, ImplicitlyCopyable, Movable):
     var done: Bool
     var weight: Float64  # Importance sampling weight
 
-    fn __init__(
+    def __init__(
         out self,
         state: Int,
         action: Int,
@@ -234,7 +234,7 @@ struct PrioritizedTransition(Copyable, ImplicitlyCopyable, Movable):
         self.done = done
         self.weight = weight
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.state = copy.state
         self.action = copy.action
         self.reward = copy.reward
@@ -242,7 +242,7 @@ struct PrioritizedTransition(Copyable, ImplicitlyCopyable, Movable):
         self.done = copy.done
         self.weight = copy.weight
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.state = take.state
         self.action = take.action
         self.reward = take.reward
@@ -306,7 +306,7 @@ struct PrioritizedReplayBuffer(Movable):
     var epsilon: Float64  # Small constant for non-zero priority
     var max_priority: Float64  # Track max priority for new transitions
 
-    fn __init__(
+    def __init__(
         out self,
         capacity: Int,
         alpha: Float64 = 0.6,
@@ -346,7 +346,7 @@ struct PrioritizedReplayBuffer(Movable):
             self.next_states.append(0)
             self.dones.append(False)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.states = take.states^
         self.actions = take.actions^
@@ -362,13 +362,13 @@ struct PrioritizedReplayBuffer(Movable):
         self.epsilon = take.epsilon
         self.max_priority = take.max_priority
 
-    fn _compute_priority(self, td_error: Float64) -> Float64:
+    def _compute_priority(self, td_error: Float64) -> Float64:
         """Compute priority from TD error: (|δ| + ε)^α."""
         var abs_error = td_error if td_error > 0 else -td_error
         var p = abs_error + self.epsilon
         return p**self.alpha
 
-    fn push(
+    def push(
         mut self,
         state: Int,
         action: Int,
@@ -395,7 +395,7 @@ struct PrioritizedReplayBuffer(Movable):
         if self.size < self.capacity:
             self.size += 1
 
-    fn update_priority(mut self, idx: Int, td_error: Float64):
+    def update_priority(mut self, idx: Int, td_error: Float64):
         """Update priority for a transition after computing TD error.
 
         Args:
@@ -411,7 +411,7 @@ struct PrioritizedReplayBuffer(Movable):
         if raw_priority > self.max_priority:
             self.max_priority = raw_priority
 
-    fn update_priorities(
+    def update_priorities(
         mut self, indices: List[Int], td_errors: List[Float64]
     ):
         """Batch update priorities for multiple transitions.
@@ -423,7 +423,7 @@ struct PrioritizedReplayBuffer(Movable):
         for i in range(len(indices)):
             self.update_priority(indices[i], td_errors[i])
 
-    fn sample(
+    def sample(
         self, batch_size: Int, beta: Float64 = -1.0
     ) -> Tuple[List[Int], List[PrioritizedTransition]]:
         """Sample batch based on priorities with importance sampling weights.
@@ -485,7 +485,7 @@ struct PrioritizedReplayBuffer(Movable):
 
         return (indices^, batch^)
 
-    fn set_beta(mut self, beta: Float64):
+    def set_beta(mut self, beta: Float64):
         """Set importance sampling exponent.
 
         Should be annealed from initial value (e.g., 0.4) to 1.0
@@ -493,7 +493,7 @@ struct PrioritizedReplayBuffer(Movable):
         """
         self.beta = beta
 
-    fn anneal_beta(mut self, progress: Float64, beta_start: Float64 = 0.4):
+    def anneal_beta(mut self, progress: Float64, beta_start: Float64 = 0.4):
         """Anneal beta from beta_start to 1.0 based on training progress.
 
         Args:
@@ -502,10 +502,10 @@ struct PrioritizedReplayBuffer(Movable):
         """
         self.beta = beta_start + progress * (1.0 - beta_start)
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return number of transitions in buffer."""
         return self.size
 
-    fn is_full(self) -> Bool:
+    def is_full(self) -> Bool:
         """Check if buffer is at capacity."""
         return self.size == self.capacity

@@ -121,7 +121,7 @@ from .cartridge import rom_read, rom_write
 
 
 @always_inline
-fn mem_read(
+def mem_read(
     state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -142,7 +142,7 @@ fn mem_read(
 
 
 @always_inline
-fn mem_write(
+def mem_write(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -169,7 +169,7 @@ fn mem_write(
 
 
 @always_inline
-fn push_byte(
+def push_byte(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -181,7 +181,7 @@ fn push_byte(
 
 
 @always_inline
-fn pull_byte(
+def pull_byte(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -192,7 +192,7 @@ fn pull_byte(
 
 
 @always_inline
-fn push_word(
+def push_word(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -204,7 +204,7 @@ fn push_word(
 
 
 @always_inline
-fn pull_word(
+def pull_word(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -221,7 +221,7 @@ fn pull_word(
 
 
 @always_inline
-fn set_flag(mut state: AtariState, flag: UInt8, value: Bool):
+def set_flag(mut state: AtariState, flag: UInt8, value: Bool):
     if value:
         state.flags = state.flags | flag
     else:
@@ -229,12 +229,12 @@ fn set_flag(mut state: AtariState, flag: UInt8, value: Bool):
 
 
 @always_inline
-fn get_flag(state: AtariState, flag: UInt8) -> Bool:
+def get_flag(state: AtariState, flag: UInt8) -> Bool:
     return (state.flags & flag) != 0
 
 
 @always_inline
-fn update_nz(mut state: AtariState, value: UInt8):
+def update_nz(mut state: AtariState, value: UInt8):
     """Update N and Z flags based on value."""
     set_flag(state, FLAG_Z, value == 0)
     set_flag(state, FLAG_N, (value & 0x80) != 0)
@@ -246,7 +246,7 @@ fn update_nz(mut state: AtariState, value: UInt8):
 
 
 @always_inline
-fn resolve_operand_addr(
+def resolve_operand_addr(
     state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -316,7 +316,7 @@ fn resolve_operand_addr(
 
 
 @always_inline
-fn execute_one(
+def execute_one(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -707,7 +707,7 @@ fn execute_one(
 
 
 @always_inline
-fn _adc(mut state: AtariState, operand: UInt8):
+def _adc(mut state: AtariState, operand: UInt8):
     """Add with carry."""
     var carry = UInt16(1) if get_flag(state, FLAG_C) else UInt16(0)
     var a16 = UInt16(state.a)
@@ -722,13 +722,13 @@ fn _adc(mut state: AtariState, operand: UInt8):
 
 
 @always_inline
-fn _sbc(mut state: AtariState, operand: UInt8):
+def _sbc(mut state: AtariState, operand: UInt8):
     """Subtract with borrow (SBC = ADC with complement)."""
     _adc(state, ~operand)
 
 
 @always_inline
-fn _compare(mut state: AtariState, reg: UInt8, operand: UInt8):
+def _compare(mut state: AtariState, reg: UInt8, operand: UInt8):
     """Compare register with memory value."""
     var result = Int(reg) - Int(operand)
     set_flag(state, FLAG_C, reg >= operand)
@@ -737,7 +737,7 @@ fn _compare(mut state: AtariState, reg: UInt8, operand: UInt8):
 
 
 @always_inline
-fn _branch(
+def _branch(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -758,7 +758,7 @@ fn _branch(
 # ============================================================================
 
 
-fn cpu_reset(
+def cpu_reset(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -776,7 +776,7 @@ fn cpu_reset(
 # ============================================================================
 
 
-fn _run_scanline(
+def _run_scanline(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -861,7 +861,7 @@ fn _run_scanline(
     return line_cycles
 
 
-fn run_frame(
+def run_frame(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -888,7 +888,7 @@ fn run_frame(
     state.frame_number += 1
 
 
-fn run_frame_with_video(
+def run_frame_with_video(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,

@@ -16,7 +16,7 @@ from mojo_rl.physics2d import (
 )
 
 
-fn test_layout_sizes():
+def test_layout_sizes():
     """Test that PhysicsLayout computes correct sizes."""
     print("=" * 60)
     print("Test: PhysicsLayout Size Computation")
@@ -55,7 +55,7 @@ fn test_layout_sizes():
     print("\n✓ TEST PASSED: Layout sizes computed")
 
 
-fn test_state_basic() raises:
+def test_state_basic() raises:
     """Test basic PhysicsState operations."""
     print("\n" + "=" * 60)
     print("Test: PhysicsState Basic Operations")
@@ -110,7 +110,7 @@ fn test_state_basic() raises:
         print("\n✗ TEST FAILED: State physics unexpected results")
 
 
-fn test_state_vs_world() raises:
+def test_state_vs_world() raises:
     """Test that PhysicsState produces same results as PhysicsWorld."""
     print("\n" + "=" * 60)
     print("Test: PhysicsState vs PhysicsWorld Equivalence")
@@ -195,7 +195,7 @@ fn test_state_vs_world() raises:
         print("\n✗ TEST FAILED: Results differ!")
 
 
-fn test_gpu_execution() raises:
+def test_gpu_execution() raises:
     """Test GPU execution with PhysicsState."""
     print("\n" + "=" * 60)
     print("Test: PhysicsState GPU Execution")
@@ -266,7 +266,7 @@ fn test_gpu_execution() raises:
         print("\n✗ TEST FAILED: Bodies didn't fall under gravity")
 
 
-fn main() raises:
+def main() raises:
     """Run all architecture tests."""
     print("\n")
     print("=" * 60)

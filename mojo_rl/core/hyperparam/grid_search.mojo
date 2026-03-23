@@ -13,7 +13,7 @@ from mojo_rl.core.hyperparam.param_space import (
 from mojo_rl.core.hyperparam.search_result import TrialResult, SearchResults
 
 
-fn grid_search_tabular(
+def grid_search_tabular(
     param_space: TabularParamSpace,
     num_states: Int,
     num_actions: Int,
@@ -71,7 +71,7 @@ fn grid_search_tabular(
     return results^
 
 
-fn create_grid_search_results(
+def create_grid_search_results(
     algorithm_name: String,
     environment_name: String,
     hyperparam_header: String,
@@ -97,7 +97,7 @@ fn create_grid_search_results(
     )
 
 
-fn run_grid_trial(
+def run_grid_trial(
     trial_id: Int,
     hyperparams: TabularHyperparams,
     metrics: TrainingMetrics,
@@ -125,7 +125,7 @@ fn run_grid_trial(
     )
 
 
-fn print_grid_progress(
+def print_grid_progress(
     trial_id: Int,
     grid_size: Int,
     hyperparams: TabularHyperparams,

@@ -9,7 +9,7 @@ from mojo_rl.agents.qlearning import QLearningAgent
 from std.random import seed
 
 
-fn main() raises:
+def main() raises:
     seed()
 
     print("=" * 60)

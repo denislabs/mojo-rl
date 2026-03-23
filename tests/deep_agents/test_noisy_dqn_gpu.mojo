@@ -5,7 +5,7 @@ from mojo_rl.deep_agents.core.agents import NoisyDQNConfig, GenericDQNAgent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Noisy DQN GPU Test ===")
 
     comptime N_ENVS = 256
@@ -16,7 +16,7 @@ fn main() raises:
     ](
         gamma=0.99,
         tau=1.0,
-        epsilon=0.0,          # No epsilon-greedy
+        epsilon=0.0,  # No epsilon-greedy
         epsilon_min=0.0,
         epsilon_decay=1.0,
         target_update_freq=500,

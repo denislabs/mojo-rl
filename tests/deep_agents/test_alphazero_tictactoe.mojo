@@ -12,7 +12,7 @@ from mojo_rl.deep_agents.muzero.evaluators import (
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== AlphaZero TicTacToe Quick Test ===")
     var ctx = DeviceContext()
 

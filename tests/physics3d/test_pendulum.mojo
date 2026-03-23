@@ -16,7 +16,7 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import forward_kinematics
 from std.testing import assert_true, TestSuite
 
 
-fn setup_pendulum(
+def setup_pendulum(
     mut model: Model[DType.float64, 1, 1, 2, 1, 5],
     L: Float64,
     m: Float64,
@@ -39,7 +39,7 @@ fn setup_pendulum(
     )
 
 
-fn test_pendulum_period() raises:
+def test_pendulum_period() raises:
     """Test that pendulum period matches analytical value.
 
     For a physical pendulum with moment of inertia I about the pivot:
@@ -133,7 +133,7 @@ fn test_pendulum_period() raises:
         )
 
 
-fn test_energy_conservation() raises:
+def test_energy_conservation() raises:
     """Test that total energy is conserved over multiple periods."""
     print("Test energy conservation...")
 
@@ -158,7 +158,7 @@ fn test_energy_conservation() raises:
     # Compute initial energy
     # PE = m*g*h where h is CoM height relative to lowest point
     # KE = 0.5 * I_pivot * omega^2 where I_pivot = I_cm + m*L^2
-    fn compute_energy(
+    def compute_energy(
         data: Data[DType.float64, 1, 1, 2, 1, 5],
         m: Float64,
         g: Float64,
@@ -209,7 +209,7 @@ fn test_energy_conservation() raises:
         )
 
 
-fn test_gravity_swinging() raises:
+def test_gravity_swinging() raises:
     """Test that gravity causes the pendulum to swing."""
     print("Test gravity causes swinging...")
 
@@ -246,5 +246,5 @@ fn test_gravity_swinging() raises:
         )
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

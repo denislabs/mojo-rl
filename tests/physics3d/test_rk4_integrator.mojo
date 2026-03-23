@@ -23,7 +23,7 @@ from std.testing import assert_true, TestSuite
 # - Body origin at (0,0,0) = pivot point
 # - CoM at (0,0,-L) via ipos (MuJoCo convention)
 # - Hinge joint at body origin
-fn setup_pendulum(
+def setup_pendulum(
     mut model: Model[DType.float64, 1, 1, 2, 1, 5],
     L: Float64,
     m: Float64,
@@ -47,7 +47,7 @@ fn setup_pendulum(
 # =========================================================================
 
 
-fn test_rk4_compiles_halfcheetah() raises:
+def test_rk4_compiles_halfcheetah() raises:
     """Test that RK4Integrator[PGSSolver] compiles and runs a single step
     with the HalfCheetah model without crashing."""
     print("Test 5.1: RK4 compiles and runs with HalfCheetah...")
@@ -118,7 +118,7 @@ fn test_rk4_compiles_halfcheetah() raises:
 # =========================================================================
 
 
-fn test_energy_conservation_rk4_vs_euler() raises:
+def test_energy_conservation_rk4_vs_euler() raises:
     """Test that RK4 conserves energy at least 10x better than Euler
     for an undamped pendulum over 1000 steps."""
     print("Test 5.2: Energy conservation RK4 vs Euler...")
@@ -131,7 +131,7 @@ fn test_energy_conservation_rk4_vs_euler() raises:
     comptime NUM_STEPS = 1000
     var initial_angle = Float64(0.5)  # ~30 degrees
 
-    fn compute_energy(
+    def compute_energy(
         data: Data[DType.float64, 1, 1, 2, 1, 5],
         m: Float64,
         g: Float64,
@@ -241,7 +241,7 @@ fn test_energy_conservation_rk4_vs_euler() raises:
 # =========================================================================
 
 
-fn test_trajectory_comparison() raises:
+def test_trajectory_comparison() raises:
     """Compare RK4 vs Euler for a pendulum at small angles.
     Both should produce similar results, but RK4 should be more accurate
     (closer to analytical solution)."""
@@ -338,5 +338,5 @@ fn test_trajectory_comparison() raises:
         )
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

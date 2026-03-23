@@ -61,7 +61,7 @@ comptime MULTI_QVEL_REL_TOL: Float64 = 5e-3
 
 
 @no_inline
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -395,7 +395,7 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_ground_contact() raises:
+def test_ground_contact() raises:
     """Robot low enough to have ground contact (feet touching)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz — pushes robot down
@@ -404,7 +404,7 @@ fn test_ground_contact() raises:
     compare_step("Ground contact (low rootz)", qpos, qvel, actions)
 
 
-fn test_ground_contact_with_action() raises:
+def test_ground_contact_with_action() raises:
     """Robot on ground with actions — full constraint solver test."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz — pushes robot down
@@ -425,7 +425,7 @@ fn test_ground_contact_with_action() raises:
 # (Avoids creating a second Model+Data on the same stack frame.)
 
 
-fn test_multi_step_accumulation() raises:
+def test_multi_step_accumulation() raises:
     """Error growth: run 1,5,10,50 steps from the same start state."""
     print("--- Test: Multi-step error accumulation ---")
     print("  Same initial conditions, increasing number of steps")
@@ -476,7 +476,7 @@ fn test_multi_step_accumulation() raises:
     )
 
 
-fn test_fast_downward_impact() raises:
+def test_fast_downward_impact() raises:
     """Robot falling fast (qvel[1]=-3 m/s) — high-velocity impact at 1 step."""
     print("--- Test: Fast downward impact (v_z=-3 m/s) ---")
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -509,7 +509,7 @@ fn test_fast_downward_impact() raises:
     )
 
 
-fn test_very_fast_impact() raises:
+def test_very_fast_impact() raises:
     """Very high velocity impact (qvel[1]=-6 m/s) — worst-case penetration."""
     print("--- Test: Very fast impact (v_z=-6 m/s) ---")
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -542,7 +542,7 @@ fn test_very_fast_impact() raises:
     )
 
 
-fn test_running_gait_impact() raises:
+def test_running_gait_impact() raises:
     """Running gait velocities — forward motion + downward foot strike."""
     print("--- Test: Running gait impact (v_forward=3, v_z=-2) ---")
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -589,7 +589,7 @@ fn test_running_gait_impact() raises:
     )
 
 
-fn test_fthigh_at_limit_impact() raises:
+def test_fthigh_at_limit_impact() raises:
     """
     Fthigh at upper limit (0.7) + fast downward impact.
 
@@ -637,5 +637,5 @@ fn test_fthigh_at_limit_impact() raises:
     )
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

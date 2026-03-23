@@ -7,7 +7,7 @@ from mojo_rl.envs import AcrobotEnv, AcrobotAction
 from std.random import random_float64
 
 
-fn main() raises:
+def main() raises:
     print("=== Acrobot Environment Demo ===\n")
 
     # Create environment

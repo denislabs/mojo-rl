@@ -16,7 +16,7 @@ trait LossFunction(Movable & ImplicitlyCopyable):
     """
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -39,7 +39,7 @@ trait LossFunction(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -67,7 +67,7 @@ trait LossFunction(Movable & ImplicitlyCopyable):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -91,7 +91,7 @@ trait LossFunction(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
     ](

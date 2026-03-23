@@ -34,7 +34,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
     comptime NEEDS_M_INV: Bool
 
     @staticmethod
-    fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
+    def solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """Solver-specific workspace size in floats per environment.
 
         This workspace is allocated after M_inv (NV*NV) in the per-environment
@@ -44,7 +44,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn solver_threads[
+    def solver_threads[
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -58,7 +58,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn solve[
+    def solve[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -104,7 +104,7 @@ trait ConstraintSolver(Movable & ImplicitlyCopyable):
         ...
 
     @staticmethod
-    fn solve_gpu[
+    def solve_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

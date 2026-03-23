@@ -97,7 +97,7 @@ struct Tendons[*T: TendonSpec]:
     comptime N: Int = Variadic.size(Self.tendon_types)
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

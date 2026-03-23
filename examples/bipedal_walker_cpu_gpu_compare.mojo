@@ -33,24 +33,24 @@ from mojo_rl.physics2d import (
 # =============================================================================
 
 
-fn print_separator():
+def print_separator():
     print("=" * 70)
 
 
-fn print_header(title: String):
+def print_header(title: String):
     print_separator()
     print(title)
     print_separator()
 
 
-fn abs_f64(x: Float64) -> Float64:
+def abs_f64(x: Float64) -> Float64:
     """Helper for absolute value."""
     if x < 0:
         return -x
     return x
 
 
-fn compare_scalar(
+def compare_scalar(
     name: String,
     cpu_val: Scalar[dtype],
     gpu_val: Scalar[dtype],
@@ -75,7 +75,7 @@ fn compare_scalar(
     return is_match
 
 
-fn compare_observation(
+def compare_observation(
     cpu_obs: List[Scalar[dtype]],
     gpu_obs: InlineArray[Scalar[dtype], 24],
     tolerance: Float64 = 1e-4,
@@ -116,7 +116,7 @@ fn compare_observation(
 # =============================================================================
 
 
-fn extract_gpu_observation[
+def extract_gpu_observation[
     BATCH: Int, STATE_SIZE: Int
 ](
     states_buf: DeviceBuffer[dtype],
@@ -130,7 +130,7 @@ fn extract_gpu_observation[
     var obs_buf = ctx.enqueue_create_buffer[dtype](24)
 
     @always_inline
-    fn copy_obs_kernel(
+    def copy_obs_kernel(
         dst: LayoutTensor[dtype, Layout.row_major(24), MutAnyOrigin],
         src: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), ImmutAnyOrigin
@@ -159,7 +159,7 @@ fn extract_gpu_observation[
     return obs^
 
 
-fn extract_gpu_body_state[
+def extract_gpu_body_state[
     BATCH: Int, STATE_SIZE: Int
 ](
     states_buf: DeviceBuffer[dtype],
@@ -174,7 +174,7 @@ fn extract_gpu_body_state[
     var state_buf = ctx.enqueue_create_buffer[dtype](6)
 
     @always_inline
-    fn copy_body_kernel(
+    def copy_body_kernel(
         dst: LayoutTensor[dtype, Layout.row_major(6), MutAnyOrigin],
         src: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), ImmutAnyOrigin
@@ -214,7 +214,7 @@ fn extract_gpu_body_state[
     return state^
 
 
-fn extract_gpu_metadata[
+def extract_gpu_metadata[
     BATCH: Int, STATE_SIZE: Int
 ](
     states_buf: DeviceBuffer[dtype],
@@ -228,7 +228,7 @@ fn extract_gpu_metadata[
     var meta_buf = ctx.enqueue_create_buffer[dtype](8)
 
     @always_inline
-    fn copy_meta_kernel(
+    def copy_meta_kernel(
         dst: LayoutTensor[dtype, Layout.row_major(8), MutAnyOrigin],
         src: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), ImmutAnyOrigin
@@ -262,7 +262,7 @@ fn extract_gpu_metadata[
 # =============================================================================
 
 
-fn test_reset_comparison(ctx: DeviceContext) raises -> Bool:
+def test_reset_comparison(ctx: DeviceContext) raises -> Bool:
     """Test that CPU and GPU reset produce similar initial states."""
     print_header("TEST 1: Reset Comparison (Same Seed)")
 
@@ -344,7 +344,7 @@ fn test_reset_comparison(ctx: DeviceContext) raises -> Bool:
     return all_match
 
 
-fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
+def test_step_comparison(ctx: DeviceContext) raises -> Bool:
     """Test that CPU and GPU step produce similar results."""
     print_header("TEST 2: Step Comparison (Action Sequence)")
 
@@ -530,7 +530,7 @@ fn test_step_comparison(ctx: DeviceContext) raises -> Bool:
     return all_match
 
 
-fn test_physics_divergence(ctx: DeviceContext) raises -> Bool:
+def test_physics_divergence(ctx: DeviceContext) raises -> Bool:
     """Test physics over many steps to see divergence."""
     print_header("TEST 3: Physics Divergence Over Time")
 
@@ -679,7 +679,7 @@ fn test_physics_divergence(ctx: DeviceContext) raises -> Bool:
     return acceptable
 
 
-fn test_termination_conditions(ctx: DeviceContext) raises -> Bool:
+def test_termination_conditions(ctx: DeviceContext) raises -> Bool:
     """Test termination conditions differ between CPU and GPU."""
     print_header("TEST 4: Termination Conditions Analysis")
 
@@ -809,7 +809,7 @@ fn test_termination_conditions(ctx: DeviceContext) raises -> Bool:
     return True
 
 
-fn test_reward_formula(ctx: DeviceContext) raises -> Bool:
+def test_reward_formula(ctx: DeviceContext) raises -> Bool:
     """Compare reward calculation formulas."""
     print_header("TEST 5: Reward Formula Analysis")
 
@@ -843,7 +843,7 @@ fn test_reward_formula(ctx: DeviceContext) raises -> Bool:
     return True
 
 
-fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
+def test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
     """Compare lidar values between CPU and GPU."""
     print_header("TEST 6: Lidar Comparison")
 
@@ -982,7 +982,7 @@ fn test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
     return lidar_match
 
 
-fn main() raises:
+def main() raises:
     print_header("BipedalWalker CPU vs GPU Comparison")
     print()
     print(

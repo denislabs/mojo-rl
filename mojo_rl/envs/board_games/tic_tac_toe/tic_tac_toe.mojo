@@ -86,7 +86,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
     var _renderer_initialized: Bool
 
-    fn __init__(out self):
+    def __init__(out self):
         self.state = InlineArray[Scalar[Self.dtype], 12](
             fill=Scalar[Self.dtype](0.0)
         )
@@ -98,13 +98,13 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     # CPU: reset + step
     # ========================================================================
 
-    fn reset(mut self) -> BoardGameState:
+    def reset(mut self) -> BoardGameState:
         for i in range(12):
             self.state[i] = 0.0
         self.done = False
         return BoardGameState(index=0)
 
-    fn step(
+    def step(
         mut self, action: BoardGameAction, verbose: Bool = False
     ) -> Tuple[BoardGameState, Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action.value)
@@ -114,7 +114,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
             result[1],
         )
 
-    fn _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
+    def _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
         """Internal step: place mark, check win/draw. Returns (reward, done)."""
         if self.done:
             return (Scalar[Self.dtype](0.0), True)
@@ -152,7 +152,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         return (Scalar[Self.dtype](0.0), False)
 
     @staticmethod
-    fn _check_win_cpu(
+    def _check_win_cpu(
         state: InlineArray[Scalar[Self.DTYPE], 12], mark: Scalar[Self.DTYPE]
     ) -> Bool:
         """Check if the given mark has won (rows, cols, diagonals)."""
@@ -181,44 +181,44 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     # Env trait methods
     # ========================================================================
 
-    fn get_state(self) -> BoardGameState:
+    def get_state(self) -> BoardGameState:
         return BoardGameState(index=Int(self.state[S_STEP_COUNT]))
 
-    fn close(mut self):
+    def close(mut self):
         if self._renderer_initialized:
             self._renderer[].close()
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn action_from_index(self, action_idx: Int) -> BoardGameAction:
+    def action_from_index(self, action_idx: Int) -> BoardGameAction:
         return BoardGameAction(value=action_idx)
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         return 9
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         return 27
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         return 1
 
-    fn state_to_index(self, state: BoardGameState) -> Int:
+    def state_to_index(self, state: BoardGameState) -> Int:
         return state.index
 
     # ========================================================================
     # TwoPlayerDiscreteEnv trait methods
     # ========================================================================
 
-    fn current_player(self) -> Int:
+    def current_player(self) -> Int:
         return Int(self.state[S_CURRENT_PLAYER])
 
-    fn legal_action_mask(self) -> List[Bool]:
+    def legal_action_mask(self) -> List[Bool]:
         var mask = List[Bool](capacity=9)
         for i in range(9):
             mask.append(self.state[i] == 0.0 and not self.done)
         return mask^
 
-    fn game_result(self) -> Int:
+    def game_result(self) -> Int:
         return Int(self.state[S_GAME_RESULT])
 
     # ========================================================================
@@ -226,7 +226,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     # Canonical observation: always from current player's perspective
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs = List[Scalar[Self.dtype]](capacity=27)
         var player = Int(self.state[S_CURRENT_PLAYER])
         var my_mark = Scalar[Self.dtype](player + 1)
@@ -255,11 +255,11 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Single-agent step: agent plays, then random opponent plays.
@@ -298,7 +298,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
@@ -308,12 +308,12 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._render(self._renderer[])
 
-    fn _render(self, mut renderer: Renderer2D):
+    def _render(self, mut renderer: Renderer2D):
         """Render TicTacToe board state."""
         var bg_color = SDL_Color(r=0x1A, g=0x5C, b=0x2A, a=0xFF)
         var grid_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
@@ -389,32 +389,32 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
         renderer.flip()
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].close()
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
@@ -424,7 +424,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     # Permutation table: 8 symmetries × 9 cells, stored flat
     # [identity, rot90, rot180, rot270, hflip, vflip, diag, antidiag]
     @staticmethod
-    fn _sym_perm(sym: Int, cell: Int) -> Int:
+    def _sym_perm(sym: Int, cell: Int) -> Int:
         """Return permuted cell index for symmetry `sym`."""
         # Hard-coded for speed — avoids alloc in hot path
         if sym == 0:  # Identity
@@ -457,7 +457,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         return nr * 3 + nc
 
     @staticmethod
-    fn augment_obs[
+    def augment_obs[
         OBS_DIM: Int,
     ](
         obs: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
@@ -476,7 +476,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
                 out[plane * 9 + cell] = obs[plane * 9 + src]
 
     @staticmethod
-    fn augment_policy[
+    def augment_policy[
         ACT: Int,
     ](
         policy: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
@@ -500,7 +500,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn _check_win_from_states[
+    def _check_win_from_states[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -569,7 +569,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn step_kernel[
+    def step_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -642,7 +642,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn reset_kernel[
+    def reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -662,7 +662,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn selective_reset_kernel[
+    def selective_reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -687,7 +687,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn extract_obs_and_masks[
+    def extract_obs_and_masks[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -745,7 +745,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     # ========================================================================
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -790,7 +790,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn step_wrapper(
+        def step_wrapper(
             states: LayoutTensor[
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -856,7 +856,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -871,7 +871,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -887,7 +887,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -906,7 +906,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn sel_reset_wrapper(
+        def sel_reset_wrapper(
             states: LayoutTensor[
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -928,7 +928,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -953,7 +953,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn extract_wrapper(
+        def extract_wrapper(
             states: LayoutTensor[
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),

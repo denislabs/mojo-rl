@@ -50,13 +50,13 @@ struct AcrobotState(Copyable, ImplicitlyCopyable, Movable, State):
 
     var index: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.index = copy.index
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.index = take.index
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.index == other.index
 
 
@@ -66,24 +66,24 @@ struct AcrobotAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
     var torque_idx: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.torque_idx = copy.torque_idx
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.torque_idx = take.torque_idx
 
     @staticmethod
-    fn negative() -> Self:
+    def negative() -> Self:
         """Apply -1 torque."""
         return Self(torque_idx=0)
 
     @staticmethod
-    fn zero() -> Self:
+    def zero() -> Self:
         """Apply 0 torque."""
         return Self(torque_idx=1)
 
     @staticmethod
-    fn positive() -> Self:
+    def positive() -> Self:
         """Apply +1 torque."""
         return Self(torque_idx=2)
 
@@ -93,7 +93,7 @@ struct AcrobotAction(Action, Copyable, ImplicitlyCopyable, Movable):
 # ============================================================================
 
 
-fn wrap(x: Float64, m: Float64, M: Float64) -> Float64:
+def wrap(x: Float64, m: Float64, M: Float64) -> Float64:
     """Wraps x so m <= x <= M using modular arithmetic.
 
     For example, m = -pi, M = pi, x = 2*pi --> returns 0.
@@ -115,7 +115,7 @@ fn wrap(x: Float64, m: Float64, M: Float64) -> Float64:
     return result
 
 
-fn bound(x: Float64, m: Float64, M: Float64) -> Float64:
+def bound(x: Float64, m: Float64, M: Float64) -> Float64:
     """Clamps x to be within [m, M].
 
     Args:
@@ -198,7 +198,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
     var _renderer_initialized: Bool
 
-    fn __init__(out self, num_bins: Int = 6, use_book_dynamics: Bool = True):
+    def __init__(out self, num_bins: Int = 6, use_book_dynamics: Bool = True):
         """Initialize Acrobot with default physics parameters.
 
         Args:
@@ -249,7 +249,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # DiscreteEnv trait methods
     # ========================================================================
 
-    fn reset(mut self) -> AcrobotState:
+    def reset(mut self) -> AcrobotState:
         """Reset environment to random initial state.
 
         Returns AcrobotState with discretized state index.
@@ -266,7 +266,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return AcrobotState(index=self._discretize_obs())
 
-    fn step(
+    def step(
         mut self, action: AcrobotAction, verbose: Bool = False
     ) -> Tuple[AcrobotState, Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done).
@@ -317,15 +317,15 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return (AcrobotState(index=self._discretize_obs()), reward, self.done)
 
-    fn get_state(self) -> AcrobotState:
+    def get_state(self) -> AcrobotState:
         """Return current discretized state."""
         return AcrobotState(index=self._discretize_obs())
 
-    fn state_to_index(self, state: AcrobotState) -> Int:
+    def state_to_index(self, state: AcrobotState) -> Int:
         """Convert an AcrobotState to an index for tabular methods."""
         return state.index
 
-    fn action_from_index(self, action_idx: Int) -> AcrobotAction:
+    def action_from_index(self, action_idx: Int) -> AcrobotAction:
         """Create an AcrobotAction from an index."""
         return AcrobotAction(torque_idx=action_idx)
 
@@ -333,7 +333,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Internal physics helpers
     # ========================================================================
 
-    fn _wrap(
+    def _wrap(
         self,
         x: Scalar[Self.dtype],
         m: Scalar[Self.dtype],
@@ -348,7 +348,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
             result = result + diff
         return result
 
-    fn _bound(
+    def _bound(
         self,
         x: Scalar[Self.dtype],
         m: Scalar[Self.dtype],
@@ -361,7 +361,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
             return M
         return x
 
-    fn _dsdt(
+    def _dsdt(
         self, s: SIMD[Self.dtype, 4], torque: Scalar[Self.dtype]
     ) -> SIMD[Self.dtype, 4]:
         """Compute derivatives for the equations of motion.
@@ -448,7 +448,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         return SIMD[Self.dtype, 4](dtheta1, dtheta2, ddtheta1, ddtheta2)
 
-    fn _rk4_step(self, torque: Scalar[Self.dtype]) -> SIMD[Self.dtype, 4]:
+    def _rk4_step(self, torque: Scalar[Self.dtype]) -> SIMD[Self.dtype, 4]:
         """Perform one RK4 integration step.
 
         Args:
@@ -476,7 +476,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
             + k4
         )
 
-    fn _terminal(self) -> Bool:
+    def _terminal(self) -> Bool:
         """Check if the free end has reached the target height."""
         return (
             -cos(Float64(self.theta1)) - cos(Float64(self.theta2 + self.theta1))
@@ -488,7 +488,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ========================================================================
 
     @always_inline
-    fn _get_obs(self) -> SIMD[Self.dtype, 8]:
+    def _get_obs(self) -> SIMD[Self.dtype, 8]:
         """Return current continuous observation.
 
         Returns [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot, 0, 0]
@@ -506,7 +506,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         return obs
 
     @always_inline
-    fn _discretize_obs(self) -> Int:
+    def _discretize_obs(self) -> Int:
         """Discretize current continuous observation into a single state index.
 
         Uses 6 dimensions: [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot]
@@ -568,7 +568,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         return ((((b0 * n + b1) * n + b2) * n + b3) * n + b4) * n + b5
 
     @always_inline
-    fn get_obs(self) -> SIMD[Self.dtype, 8]:
+    def get_obs(self) -> SIMD[Self.dtype, 8]:
         """Return current continuous observation as SIMD (optimized)."""
         return self._get_obs()
 
@@ -576,7 +576,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ContinuousStateEnv / BoxDiscreteActionEnv trait methods
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a flexible list (trait method).
 
         Returns true 6D observation without padding.
@@ -590,13 +590,13 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(self.theta2_dot)
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial observation as list (trait method).
         """
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take action and return (obs_list, reward, done) - trait method.
@@ -611,7 +611,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # SIMD-optimized observation API (for performance)
     # ========================================================================
 
-    fn reset_obs(mut self) -> SIMD[Self.dtype, 8]:
+    def reset_obs(mut self) -> SIMD[Self.dtype, 8]:
         """Reset environment and return raw continuous observation.
 
         Use this for function approximation methods (tile coding, linear FA)
@@ -624,7 +624,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         return self._get_obs()
 
     @always_inline
-    fn step_raw(
+    def step_raw(
         mut self, action: Int
     ) -> Tuple[SIMD[Self.dtype, 8], Scalar[Self.dtype], Bool]:
         """Take action and return raw continuous observation.
@@ -680,7 +680,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # Rendering
     # ========================================================================
 
-    fn render(mut self, mut renderer: Renderer2D):
+    def render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.
 
         Uses Camera for world-to-screen coordinate conversion.
@@ -751,7 +751,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Update display
         renderer.flip()
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer[].close()
@@ -759,22 +759,22 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
             self._renderer_initialized = False
 
     @always_inline
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
     @always_inline
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of actions (3)."""
         return 3
 
     @always_inline
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension (6)."""
         return 6
 
     @always_inline
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of discrete states."""
         var n = self.num_bins
         return n * n * n * n * n * n  # 6 dimensions
@@ -784,12 +784,12 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # ========================================================================
 
     @staticmethod
-    fn get_num_states(num_bins: Int = 6) -> Int:
+    def get_num_states(num_bins: Int = 6) -> Int:
         """Get the number of discrete states for Acrobot with given bins."""
         return num_bins * num_bins * num_bins * num_bins * num_bins * num_bins
 
     @staticmethod
-    fn discretize_obs(obs: SIMD[DType.float64, 8], num_bins: Int = 6) -> Int:
+    def discretize_obs(obs: SIMD[DType.float64, 8], num_bins: Int = 6) -> Int:
         """Discretize continuous observation into a single state index.
 
         Args:
@@ -803,7 +803,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var max_vel_1 = 4.0 * pi
         var max_vel_2 = 9.0 * pi
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -823,7 +823,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         return ((((b0 * n + b1) * n + b2) * n + b3) * n + b4) * n + b5
 
     @staticmethod
-    fn make_tile_coding(
+    def make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
     ) -> TileCoding[Self.dtype]:
@@ -871,7 +871,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
+    def make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
         """Create polynomial features for Acrobot (6D observation) with normalization.
 
         Acrobot observation: [cos(θ1), sin(θ1), cos(θ2), sin(θ2), θ1_dot, θ2_dot].
@@ -910,7 +910,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
     # RenderableEnv Trait Implementation
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
@@ -919,13 +919,13 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
         self.render(self._renderer[])
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
@@ -933,26 +933,26 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False

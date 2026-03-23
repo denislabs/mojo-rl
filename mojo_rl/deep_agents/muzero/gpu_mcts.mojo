@@ -59,7 +59,7 @@ comptime MAX_DEPTH: Int = 32  # Maximum tree depth for search paths
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn gpu_mcts_init_root_kernel[
+def gpu_mcts_init_root_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
@@ -68,15 +68,29 @@ fn gpu_mcts_init_root_kernel[
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    reward: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Prediction output (from representation + prediction forward on root obs)
-    pred_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin],
+    pred_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
+    ],
     # MinMax tracking
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -115,11 +129,15 @@ fn gpu_mcts_init_root_kernel[
             max_logit = v
     var sum_exp = Scalar[dtype](0.0)
     for a in range(ACT):
-        var v = exp(rebind[Scalar[dtype]](pred_output[pred_off + a]) - max_logit)
+        var v = exp(
+            rebind[Scalar[dtype]](pred_output[pred_off + a]) - max_logit
+        )
         prior[tree_off + a] = v
         sum_exp += v
     for a in range(ACT):
-        prior[tree_off + a] = rebind[Scalar[dtype]](prior[tree_off + a]) / sum_exp
+        prior[tree_off + a] = (
+            rebind[Scalar[dtype]](prior[tree_off + a]) / sum_exp
+        )
 
     # Add Dirichlet noise (approximate with Exponential(1) / sum)
     var philox = PhiloxRandom(
@@ -129,14 +147,15 @@ fn gpu_mcts_init_root_kernel[
     for a in range(ACT):
         var rand_vals = philox.step_uniform()
         var noise_val = -log(Scalar[dtype](rand_vals[0]) + Scalar[dtype](1e-8))
-        reward[tree_off + a] = noise_val  # Temporarily store noise in reward[root]
+        reward[
+            tree_off + a
+        ] = noise_val  # Temporarily store noise in reward[root]
         noise_sum += noise_val
     for a in range(ACT):
         var noise_val = rebind[Scalar[dtype]](reward[tree_off + a]) / noise_sum
-        prior[tree_off + a] = (
-            (Scalar[dtype](1.0) - noise_fraction) * rebind[Scalar[dtype]](prior[tree_off + a])
-            + noise_fraction * noise_val
-        )
+        prior[tree_off + a] = (Scalar[dtype](1.0) - noise_fraction) * rebind[
+            Scalar[dtype]
+        ](prior[tree_off + a]) + noise_fraction * noise_val
         reward[tree_off + a] = Scalar[dtype](0.0)  # Reset reward
 
     # Initialize tree state
@@ -145,18 +164,28 @@ fn gpu_mcts_init_root_kernel[
     max_q[e] = Scalar[dtype](-1e18)
 
 
-fn gpu_mcts_select_kernel[
+def gpu_mcts_select_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage (read)
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # MinMax Q normalization
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -165,8 +194,12 @@ fn gpu_mcts_select_kernel[
     pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     pending_action: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Output: search paths for backup
-    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin],
-    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin],
+    search_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
+    ],
+    action_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
+    ],
     path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # PUCT constants
     c_base: Scalar[dtype],
@@ -197,9 +230,7 @@ fn gpu_mcts_select_kernel[
         # PUCT selection
         var n_total = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
         var sqrt_total = sqrt(n_total + Scalar[dtype](1e-8))
-        var c = log(
-            (Scalar[dtype](1.0) + n_total + c_base) / c_base
-        ) + c_init
+        var c = log((Scalar[dtype](1.0) + n_total + c_base) / c_base) + c_init
 
         var best_action = 0
         var best_score = Scalar[dtype](-1e18)
@@ -249,7 +280,7 @@ fn gpu_mcts_select_kernel[
     path_lengths[e] = Scalar[dtype](depth + 1)
 
 
-fn gpu_mcts_expand_kernel[
+def gpu_mcts_expand_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
@@ -259,21 +290,39 @@ fn gpu_mcts_expand_kernel[
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage (write)
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    reward_buf: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward_buf: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Hidden state pool
-    hidden_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin],
+    hidden_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
+    ],
     # Pending expansion info
     pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     pending_action: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Network outputs
-    dyn_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin],
-    pred_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin],
+    dyn_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin
+    ],
+    pred_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
+    ],
     # Value support
     v_min: Scalar[dtype],
     v_max: Scalar[dtype],
@@ -346,17 +395,33 @@ fn gpu_mcts_expand_kernel[
                 rew_max_val = v
         var rew_sum_exp = Scalar[dtype](0.0)
         for i in range(NUM_REW_BINS):
-            rew_sum_exp += exp(rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i]) - rew_max_val)
+            rew_sum_exp += exp(
+                rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i])
+                - rew_max_val
+            )
         rew_decoded = Scalar[dtype](0.0)
         var rew_step = (v_max - v_min) / Scalar[dtype](NUM_REW_BINS - 1)
         for i in range(NUM_REW_BINS):
-            var prob = exp(rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i]) - rew_max_val) / rew_sum_exp
+            var prob = (
+                exp(
+                    rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i])
+                    - rew_max_val
+                )
+                / rew_sum_exp
+            )
             rew_decoded += prob * (v_min + Scalar[dtype](i) * rew_step)
         # Inverse scalar transform
-        var sign_r = Scalar[dtype](1.0) if rew_decoded >= Scalar[dtype](0.0) else Scalar[dtype](-1.0)
-        var abs_r = rew_decoded if rew_decoded >= Scalar[dtype](0.0) else -rew_decoded
+        var sign_r = Scalar[dtype](1.0) if rew_decoded >= Scalar[dtype](
+            0.0
+        ) else Scalar[dtype](-1.0)
+        var abs_r = (
+            rew_decoded if rew_decoded >= Scalar[dtype](0.0) else -rew_decoded
+        )
         var eps_r = Scalar[dtype](0.001)
-        var inner_r = sqrt(Scalar[dtype](1.0) + Scalar[dtype](4.0) * eps_r * (abs_r + Scalar[dtype](1.0) + eps_r))
+        var inner_r = sqrt(
+            Scalar[dtype](1.0)
+            + Scalar[dtype](4.0) * eps_r * (abs_r + Scalar[dtype](1.0) + eps_r)
+        )
         var f_r = (inner_r - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps_r)
         rew_decoded = sign_r * (f_r * f_r - Scalar[dtype](1.0))
 
@@ -377,7 +442,9 @@ fn gpu_mcts_expand_kernel[
         prior[child_tree_off + a] = v
         p_sum += v
     for a in range(ACT):
-        prior[child_tree_off + a] = rebind[Scalar[dtype]](prior[child_tree_off + a]) / p_sum
+        prior[child_tree_off + a] = (
+            rebind[Scalar[dtype]](prior[child_tree_off + a]) / p_sum
+        )
         visit_count[child_tree_off + a] = Scalar[dtype](0.0)
         total_value[child_tree_off + a] = Scalar[dtype](0.0)
         reward_buf[child_tree_off + a] = Scalar[dtype](0.0)
@@ -405,38 +472,65 @@ fn gpu_mcts_expand_kernel[
                 val_max = v
         var val_sum_exp = Scalar[dtype](0.0)
         for i in range(NUM_VAL_BINS):
-            val_sum_exp += exp(rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - val_max)
+            val_sum_exp += exp(
+                rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - val_max
+            )
         var val_step = (v_max - v_min) / Scalar[dtype](NUM_VAL_BINS - 1)
         var val_decoded = Scalar[dtype](0.0)
         for i in range(NUM_VAL_BINS):
-            var prob = exp(rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - val_max) / val_sum_exp
+            var prob = (
+                exp(
+                    rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
+                    - val_max
+                )
+                / val_sum_exp
+            )
             val_decoded += prob * (v_min + Scalar[dtype](i) * val_step)
 
         # Inverse scalar transform: h^{-1}(y)
-        var sign = Scalar[dtype](1.0) if val_decoded >= Scalar[dtype](0.0) else Scalar[dtype](-1.0)
-        var abs_y = val_decoded if val_decoded >= Scalar[dtype](0.0) else -val_decoded
+        var sign = Scalar[dtype](1.0) if val_decoded >= Scalar[dtype](
+            0.0
+        ) else Scalar[dtype](-1.0)
+        var abs_y = (
+            val_decoded if val_decoded >= Scalar[dtype](0.0) else -val_decoded
+        )
         var eps = Scalar[dtype](0.001)
-        var inner = sqrt(Scalar[dtype](1.0) + Scalar[dtype](4.0) * eps * (abs_y + Scalar[dtype](1.0) + eps))
+        var inner = sqrt(
+            Scalar[dtype](1.0)
+            + Scalar[dtype](4.0) * eps * (abs_y + Scalar[dtype](1.0) + eps)
+        )
         var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps)
         leaf_values[e] = sign * (f * f - Scalar[dtype](1.0))
 
 
-fn gpu_mcts_backup_kernel[
+def gpu_mcts_backup_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage (read/write)
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    reward_buf: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward_buf: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Search paths
-    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin],
-    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin],
+    search_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
+    ],
+    action_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
+    ],
     path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     gamma: Scalar[dtype],
@@ -466,7 +560,9 @@ fn gpu_mcts_backup_kernel[
         var na_off = tree_off + node_idx * ACT + action
         value = rebind[Scalar[dtype]](reward_buf[na_off]) + gamma * value
 
-        visit_count[na_off] = rebind[Scalar[dtype]](visit_count[na_off]) + Scalar[dtype](1.0)
+        visit_count[na_off] = rebind[Scalar[dtype]](
+            visit_count[na_off]
+        ) + Scalar[dtype](1.0)
         total_value[na_off] = rebind[Scalar[dtype]](total_value[na_off]) + value
         total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
             total_visits[tv_off + node_idx]
@@ -481,15 +577,19 @@ fn gpu_mcts_backup_kernel[
             max_q[e] = mean_q
 
 
-fn gpu_mcts_extract_actions_kernel[
+def gpu_mcts_extract_actions_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
     actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    policies_out: LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin],
+    policies_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
 ):
     """Extract action from root visit counts (argmax) and policy (normalized visits).
 
@@ -517,9 +617,9 @@ fn gpu_mcts_extract_actions_kernel[
     # Normalized policy
     if total > Scalar[dtype](0.5):
         for a in range(ACT):
-            policies_out[e * ACT + a] = rebind[Scalar[dtype]](
-                visit_count[root_off + a]
-            ) / total
+            policies_out[e * ACT + a] = (
+                rebind[Scalar[dtype]](visit_count[root_off + a]) / total
+            )
     else:
         for a in range(ACT):
             policies_out[e * ACT + a] = Scalar[dtype](1.0) / Scalar[dtype](ACT)
@@ -530,14 +630,18 @@ fn gpu_mcts_extract_actions_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn gpu_mcts_apply_legal_mask_kernel[
+def gpu_mcts_apply_legal_mask_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    legal_masks: LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    legal_masks: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
 ):
     """Mask root prior with legal action mask and renormalize.
 
@@ -564,36 +668,54 @@ fn gpu_mcts_apply_legal_mask_kernel[
     # Renormalize
     if sum_p > Scalar[dtype](1e-8):
         for a in range(ACT):
-            prior[root_off + a] = rebind[Scalar[dtype]](prior[root_off + a]) / sum_p
+            prior[root_off + a] = (
+                rebind[Scalar[dtype]](prior[root_off + a]) / sum_p
+            )
     else:
         # All actions masked — uniform over legal actions (fallback)
         var n_legal = Scalar[dtype](0.0)
         for a in range(ACT):
-            if rebind[Scalar[dtype]](legal_masks[e * ACT + a]) > Scalar[dtype](0.5):
+            if rebind[Scalar[dtype]](legal_masks[e * ACT + a]) > Scalar[dtype](
+                0.5
+            ):
                 n_legal += Scalar[dtype](1.0)
         if n_legal > Scalar[dtype](0.5):
             var inv_n = Scalar[dtype](1.0) / n_legal
             for a in range(ACT):
-                if rebind[Scalar[dtype]](legal_masks[e * ACT + a]) > Scalar[dtype](0.5):
+                if rebind[Scalar[dtype]](legal_masks[e * ACT + a]) > Scalar[
+                    dtype
+                ](0.5):
                     prior[root_off + a] = inv_n
 
 
-fn gpu_mcts_backup_negated_kernel[
+def gpu_mcts_backup_negated_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage (read/write)
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    reward_buf: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward_buf: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Search paths
-    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin],
-    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin],
+    search_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
+    ],
+    action_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
+    ],
     path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
 ):
@@ -628,7 +750,9 @@ fn gpu_mcts_backup_negated_kernel[
         value = -value
 
         var na_off = tree_off + node_idx * ACT + action
-        visit_count[na_off] = rebind[Scalar[dtype]](visit_count[na_off]) + Scalar[dtype](1.0)
+        visit_count[na_off] = rebind[Scalar[dtype]](
+            visit_count[na_off]
+        ) + Scalar[dtype](1.0)
         total_value[na_off] = rebind[Scalar[dtype]](total_value[na_off]) + value
         total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
             total_visits[tv_off + node_idx]
@@ -643,16 +767,22 @@ fn gpu_mcts_backup_negated_kernel[
             max_q[e] = mean_q
 
 
-fn gpu_mcts_extract_actions_masked_kernel[
+def gpu_mcts_extract_actions_masked_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    legal_masks: LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    legal_masks: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
     actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    policies_out: LayoutTensor[dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin],
+    policies_out: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
 ):
     """Extract actions respecting legal mask — choose only among legal actions.
 
@@ -687,9 +817,9 @@ fn gpu_mcts_extract_actions_masked_kernel[
         for a in range(ACT):
             var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
             if legal > Scalar[dtype](0.5):
-                policies_out[e * ACT + a] = rebind[Scalar[dtype]](
-                    visit_count[root_off + a]
-                ) / total
+                policies_out[e * ACT + a] = (
+                    rebind[Scalar[dtype]](visit_count[root_off + a]) / total
+                )
             else:
                 policies_out[e * ACT + a] = Scalar[dtype](0.0)
     else:
@@ -703,14 +833,18 @@ fn gpu_mcts_extract_actions_masked_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn gpu_mcts_copy_parent_state_kernel[
+def gpu_mcts_copy_parent_state_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     STATE_SIZE: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    expansion_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin],
-    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
+    expansion_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
     pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
 ):
     """Copy parent game state to expansion staging buffer.
@@ -730,14 +864,18 @@ fn gpu_mcts_copy_parent_state_kernel[
         expansion_states[dst_off + i] = game_states[src_off + i]
 
 
-fn gpu_mcts_store_child_state_kernel[
+def gpu_mcts_store_child_state_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     STATE_SIZE: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
-    expansion_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    expansion_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
 ):
     """Copy expansion result (after env.step) to child node's game state slot.
@@ -760,14 +898,18 @@ fn gpu_mcts_store_child_state_kernel[
         game_states[dst_off + i] = expansion_states[src_off + i]
 
 
-fn gpu_mcts_copy_root_state_kernel[
+def gpu_mcts_copy_root_state_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     STATE_SIZE: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
-    env_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    env_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
 ):
     """Copy current env states to root node (node 0) of each env's tree.
 
@@ -785,7 +927,7 @@ fn gpu_mcts_copy_root_state_kernel[
         game_states[dst_off + i] = env_states[src_off + i]
 
 
-fn gpu_mcts_expand_alphazero_kernel[
+def gpu_mcts_expand_alphazero_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
@@ -793,18 +935,32 @@ fn gpu_mcts_expand_alphazero_kernel[
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    reward_buf: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward_buf: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Pending expansion
     pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     pending_action: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Prediction output [N_ENVS * PRED_OUT] = (policy_logits[ACT], value[1])
-    pred_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin],
+    pred_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
+    ],
     # Reward from env.step [N_ENVS]
     step_rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Output
@@ -848,7 +1004,9 @@ fn gpu_mcts_expand_alphazero_kernel[
         prior[child_off + a] = v
         p_sum += v
     for a in range(ACT):
-        prior[child_off + a] = rebind[Scalar[dtype]](prior[child_off + a]) / p_sum
+        prior[child_off + a] = (
+            rebind[Scalar[dtype]](prior[child_off + a]) / p_sum
+        )
         visit_count[child_off + a] = Scalar[dtype](0.0)
         total_value[child_off + a] = Scalar[dtype](0.0)
         reward_buf[child_off + a] = Scalar[dtype](0.0)
@@ -862,7 +1020,9 @@ fn gpu_mcts_expand_alphazero_kernel[
     # Decode leaf value:
     # If env.step returned done (game over), use step reward directly.
     # Otherwise, use tanh(network_output) as value estimate.
-    var step_done = rebind[Scalar[dtype]](step_rewards[e])  # reward doubles as done signal
+    var step_done = rebind[Scalar[dtype]](
+        step_rewards[e]
+    )  # reward doubles as done signal
     # Actually step_rewards is the reward. We need done flag separately.
     # For now: if reward is +1 or -1 (terminal), use it. If 0, use network.
     var abs_rew = step_done if step_done >= Scalar[dtype](0.0) else -step_done
@@ -882,7 +1042,7 @@ fn gpu_mcts_expand_alphazero_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn gpu_mcts_batched_select_and_copy_kernel[
+def gpu_mcts_batched_select_and_copy_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
@@ -891,24 +1051,48 @@ fn gpu_mcts_batched_select_and_copy_kernel[
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Game states (for AlphaZero copy)
-    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
     # Output: BATCH_SIMS pending expansions per env
-    pending_parents: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
-    pending_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
-    expansion_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * STATE_SIZE), MutAnyOrigin],
+    pending_parents: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    pending_actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    expansion_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * STATE_SIZE), MutAnyOrigin
+    ],
     # Search paths for backup (only last sim's path stored for simplicity)
-    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
-    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
-    path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    search_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    action_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    path_lengths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
     # PUCT constants
     c_base: Scalar[dtype],
     c_init: Scalar[dtype],
@@ -943,7 +1127,9 @@ fn gpu_mcts_batched_select_and_copy_kernel[
         while depth < MAX_DEPTH - 1:
             var n_total = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
             var sqrt_total = sqrt(n_total + Scalar[dtype](1e-8))
-            var c = log((Scalar[dtype](1.0) + n_total + c_base) / c_base) + c_init
+            var c = (
+                log((Scalar[dtype](1.0) + n_total + c_base) / c_base) + c_init
+            )
 
             var best_action = 0
             var best_score = Scalar[dtype](-1e18)
@@ -958,14 +1144,18 @@ fn gpu_mcts_batched_select_and_copy_kernel[
                 else:
                     q_val = Scalar[dtype](0.0)
                 var p = rebind[Scalar[dtype]](prior[na_off])
-                var score = q_val + c * p * sqrt_total / (Scalar[dtype](1.0) + n_a)
+                var score = q_val + c * p * sqrt_total / (
+                    Scalar[dtype](1.0) + n_a
+                )
                 if score > best_score:
                     best_score = score
                     best_action = a
 
             action_paths[path_off + depth] = Scalar[dtype](best_action)
 
-            var child = rebind[Scalar[dtype]](child_idx[tree_off + node_idx * ACT + best_action])
+            var child = rebind[Scalar[dtype]](
+                child_idx[tree_off + node_idx * ACT + best_action]
+            )
             if child < Scalar[dtype](0.0):
                 # Leaf found
                 var sim_off = e * BATCH_SIMS + s
@@ -974,20 +1164,28 @@ fn gpu_mcts_batched_select_and_copy_kernel[
                 path_lengths[sim_off] = Scalar[dtype](depth + 1)
 
                 # Apply virtual loss
-                visit_count[tree_off + node_idx * ACT + best_action] = (
-                    rebind[Scalar[dtype]](visit_count[tree_off + node_idx * ACT + best_action])
-                    + Scalar[dtype](VIRTUAL_LOSS)
+                visit_count[tree_off + node_idx * ACT + best_action] = rebind[
+                    Scalar[dtype]
+                ](
+                    visit_count[tree_off + node_idx * ACT + best_action]
+                ) + Scalar[
+                    dtype
+                ](
+                    VIRTUAL_LOSS
                 )
-                total_visits[tv_off + node_idx] = (
-                    rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
-                    + Scalar[dtype](VIRTUAL_LOSS)
-                )
+                total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
+                    total_visits[tv_off + node_idx]
+                ) + Scalar[dtype](VIRTUAL_LOSS)
 
                 # ── Copy parent game state to expansion buffer ──
-                var parent_gs_off = e * MAX_NODES * STATE_SIZE + node_idx * STATE_SIZE
+                var parent_gs_off = (
+                    e * MAX_NODES * STATE_SIZE + node_idx * STATE_SIZE
+                )
                 var exp_off = sim_off * STATE_SIZE
                 for i in range(STATE_SIZE):
-                    expansion_states[exp_off + i] = game_states[parent_gs_off + i]
+                    expansion_states[exp_off + i] = game_states[
+                        parent_gs_off + i
+                    ]
 
                 break
 
@@ -1001,13 +1199,15 @@ fn gpu_mcts_batched_select_and_copy_kernel[
             pending_parents[sim_off] = Scalar[dtype](node_idx)
             pending_actions[sim_off] = Scalar[dtype](0)
             path_lengths[sim_off] = Scalar[dtype](depth + 1)
-            var parent_gs_off = e * MAX_NODES * STATE_SIZE + node_idx * STATE_SIZE
+            var parent_gs_off = (
+                e * MAX_NODES * STATE_SIZE + node_idx * STATE_SIZE
+            )
             var exp_off = sim_off * STATE_SIZE
             for i in range(STATE_SIZE):
                 expansion_states[exp_off + i] = game_states[parent_gs_off + i]
 
 
-fn gpu_mcts_batched_expand_backup_kernel[
+def gpu_mcts_batched_expand_backup_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
@@ -1017,29 +1217,59 @@ fn gpu_mcts_batched_expand_backup_kernel[
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    reward_buf: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward_buf: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Game states
-    game_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin],
-    expansion_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * STATE_SIZE), MutAnyOrigin],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    expansion_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * STATE_SIZE), MutAnyOrigin
+    ],
     # Pending expansions [N_ENVS * BATCH_SIMS]
-    pending_parents: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
-    pending_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    pending_parents: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    pending_actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
     # Prediction output [N_ENVS * BATCH_SIMS * PRED_OUT]
-    pred_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * PRED_OUT), MutAnyOrigin],
+    pred_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * PRED_OUT), MutAnyOrigin
+    ],
     # Rewards from env.step [N_ENVS * BATCH_SIMS]
-    step_rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    step_rewards: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
     # Search paths [N_ENVS * BATCH_SIMS * MAX_DEPTH]
-    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
-    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
-    path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    search_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    action_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    path_lengths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
 ):
     """Fused: expand BATCH_SIMS nodes + negated backup + remove virtual losses.
 
@@ -1063,19 +1293,21 @@ fn gpu_mcts_batched_expand_backup_kernel[
 
         if child_node_idx >= MAX_NODES:
             # Remove virtual loss even if we can't expand
-            visit_count[tree_off + parent * ACT + action] = (
-                rebind[Scalar[dtype]](visit_count[tree_off + parent * ACT + action])
-                - Scalar[dtype](VIRTUAL_LOSS)
+            visit_count[tree_off + parent * ACT + action] = rebind[
+                Scalar[dtype]
+            ](visit_count[tree_off + parent * ACT + action]) - Scalar[dtype](
+                VIRTUAL_LOSS
             )
-            total_visits[tv_off + parent] = (
-                rebind[Scalar[dtype]](total_visits[tv_off + parent])
-                - Scalar[dtype](VIRTUAL_LOSS)
-            )
+            total_visits[tv_off + parent] = rebind[Scalar[dtype]](
+                total_visits[tv_off + parent]
+            ) - Scalar[dtype](VIRTUAL_LOSS)
             continue
 
         # ── Store child game state ──────────────────────────
         var exp_gs_off = sim_off * STATE_SIZE
-        var child_gs_off = e * MAX_NODES * STATE_SIZE + child_node_idx * STATE_SIZE
+        var child_gs_off = (
+            e * MAX_NODES * STATE_SIZE + child_node_idx * STATE_SIZE
+        )
         for i in range(STATE_SIZE):
             game_states[child_gs_off + i] = expansion_states[exp_gs_off + i]
 
@@ -1092,11 +1324,15 @@ fn gpu_mcts_batched_expand_backup_kernel[
                 p_max = v
         var p_sum = Scalar[dtype](0.0)
         for a in range(ACT):
-            var v = exp(rebind[Scalar[dtype]](pred_output[pred_off + a]) - p_max)
+            var v = exp(
+                rebind[Scalar[dtype]](pred_output[pred_off + a]) - p_max
+            )
             prior[child_off + a] = v
             p_sum += v
         for a in range(ACT):
-            prior[child_off + a] = rebind[Scalar[dtype]](prior[child_off + a]) / p_sum
+            prior[child_off + a] = (
+                rebind[Scalar[dtype]](prior[child_off + a]) / p_sum
+            )
             visit_count[child_off + a] = Scalar[dtype](0.0)
             total_value[child_off + a] = Scalar[dtype](0.0)
             reward_buf[child_off + a] = Scalar[dtype](0.0)
@@ -1104,7 +1340,9 @@ fn gpu_mcts_batched_expand_backup_kernel[
         total_visits[tv_off + child_node_idx] = Scalar[dtype](0.0)
 
         # ── Link parent → child ─────────────────────────────
-        child_idx[tree_off + parent * ACT + action] = Scalar[dtype](child_node_idx)
+        child_idx[tree_off + parent * ACT + action] = Scalar[dtype](
+            child_node_idx
+        )
         node_count[e] = Scalar[dtype](child_node_idx + 1)
 
         # ── Decode leaf value ───────────────────────────────
@@ -1118,17 +1356,17 @@ fn gpu_mcts_batched_expand_backup_kernel[
             var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
             var ev_p = exp(raw_v)
             var ev_n = exp(-raw_v)
-            leaf_value = (ev_p - ev_n) / (ev_p + ev_n)  # Non-terminal: network estimate
+            leaf_value = (ev_p - ev_n) / (
+                ev_p + ev_n
+            )  # Non-terminal: network estimate
 
         # ── Remove virtual loss ─────────────────────────────
-        visit_count[tree_off + parent * ACT + action] = (
-            rebind[Scalar[dtype]](visit_count[tree_off + parent * ACT + action])
-            - Scalar[dtype](VIRTUAL_LOSS)
-        )
-        total_visits[tv_off + parent] = (
-            rebind[Scalar[dtype]](total_visits[tv_off + parent])
-            - Scalar[dtype](VIRTUAL_LOSS)
-        )
+        visit_count[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
+            visit_count[tree_off + parent * ACT + action]
+        ) - Scalar[dtype](VIRTUAL_LOSS)
+        total_visits[tv_off + parent] = rebind[Scalar[dtype]](
+            total_visits[tv_off + parent]
+        ) - Scalar[dtype](VIRTUAL_LOSS)
 
         # ── Negated backup ──────────────────────────────────
         var value = leaf_value
@@ -1143,9 +1381,15 @@ fn gpu_mcts_batched_expand_backup_kernel[
             value = -value  # Negate for zero-sum
 
             var na_off = tree_off + node * ACT + act
-            visit_count[na_off] = rebind[Scalar[dtype]](visit_count[na_off]) + Scalar[dtype](1.0)
-            total_value[na_off] = rebind[Scalar[dtype]](total_value[na_off]) + value
-            total_visits[tv_off + node] = rebind[Scalar[dtype]](total_visits[tv_off + node]) + Scalar[dtype](1.0)
+            visit_count[na_off] = rebind[Scalar[dtype]](
+                visit_count[na_off]
+            ) + Scalar[dtype](1.0)
+            total_value[na_off] = (
+                rebind[Scalar[dtype]](total_value[na_off]) + value
+            )
+            total_visits[tv_off + node] = rebind[Scalar[dtype]](
+                total_visits[tv_off + node]
+            ) + Scalar[dtype](1.0)
 
             var n_a = rebind[Scalar[dtype]](visit_count[na_off])
             var mean_q = rebind[Scalar[dtype]](total_value[na_off]) / n_a
@@ -1160,7 +1404,7 @@ fn gpu_mcts_batched_expand_backup_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn gpu_mcts_batched_select_and_build_dyn_kernel[
+def gpu_mcts_batched_select_and_build_dyn_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
@@ -1170,24 +1414,48 @@ fn gpu_mcts_batched_select_and_build_dyn_kernel[
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Hidden states
-    hidden_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin],
+    hidden_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
+    ],
     # Output: batched dynamics inputs [N_ENVS * BATCH_SIMS * DYN_IN]
-    dyn_inputs: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * DYN_IN), MutAnyOrigin],
+    dyn_inputs: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * DYN_IN), MutAnyOrigin
+    ],
     # Output: pending info + paths [N_ENVS * BATCH_SIMS * ...]
-    pending_parents: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
-    pending_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
-    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
-    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
-    path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    pending_parents: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    pending_actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    search_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    action_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    path_lengths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
     # PUCT
     c_base: Scalar[dtype],
     c_init: Scalar[dtype],
@@ -1219,7 +1487,9 @@ fn gpu_mcts_batched_select_and_build_dyn_kernel[
         while depth < MAX_DEPTH - 1:
             var n_total = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
             var sqrt_total = sqrt(n_total + Scalar[dtype](1e-8))
-            var c = log((Scalar[dtype](1.0) + n_total + c_base) / c_base) + c_init
+            var c = (
+                log((Scalar[dtype](1.0) + n_total + c_base) / c_base) + c_init
+            )
 
             var best_action = 0
             var best_score = Scalar[dtype](-1e18)
@@ -1234,14 +1504,18 @@ fn gpu_mcts_batched_select_and_build_dyn_kernel[
                 else:
                     q_val = Scalar[dtype](0.0)
                 var p = rebind[Scalar[dtype]](prior[na_off])
-                var score = q_val + c * p * sqrt_total / (Scalar[dtype](1.0) + n_a)
+                var score = q_val + c * p * sqrt_total / (
+                    Scalar[dtype](1.0) + n_a
+                )
                 if score > best_score:
                     best_score = score
                     best_action = a
 
             action_paths[path_off + depth] = Scalar[dtype](best_action)
 
-            var child = rebind[Scalar[dtype]](child_idx[tree_off + node_idx * ACT + best_action])
+            var child = rebind[Scalar[dtype]](
+                child_idx[tree_off + node_idx * ACT + best_action]
+            )
             if child < Scalar[dtype](0.0):
                 var sim_off = e * BATCH_SIMS + s
                 pending_parents[sim_off] = Scalar[dtype](node_idx)
@@ -1249,14 +1523,18 @@ fn gpu_mcts_batched_select_and_build_dyn_kernel[
                 path_lengths[sim_off] = Scalar[dtype](depth + 1)
 
                 # Virtual loss
-                visit_count[tree_off + node_idx * ACT + best_action] = (
-                    rebind[Scalar[dtype]](visit_count[tree_off + node_idx * ACT + best_action])
-                    + Scalar[dtype](VIRTUAL_LOSS)
+                visit_count[tree_off + node_idx * ACT + best_action] = rebind[
+                    Scalar[dtype]
+                ](
+                    visit_count[tree_off + node_idx * ACT + best_action]
+                ) + Scalar[
+                    dtype
+                ](
+                    VIRTUAL_LOSS
                 )
-                total_visits[tv_off + node_idx] = (
-                    rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
-                    + Scalar[dtype](VIRTUAL_LOSS)
-                )
+                total_visits[tv_off + node_idx] = rebind[Scalar[dtype]](
+                    total_visits[tv_off + node_idx]
+                ) + Scalar[dtype](VIRTUAL_LOSS)
 
                 # Build dynamics input: [hidden || one_hot_action]
                 var dyn_off = sim_off * DYN_IN
@@ -1285,7 +1563,7 @@ fn gpu_mcts_batched_select_and_build_dyn_kernel[
                 dyn_inputs[dyn_off + LATENT + a] = Scalar[dtype](0.0)
 
 
-fn gpu_mcts_batched_expand_backup_muzero_kernel[
+def gpu_mcts_batched_expand_backup_muzero_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
@@ -1296,28 +1574,56 @@ fn gpu_mcts_batched_expand_backup_muzero_kernel[
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage
-    visit_count: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_value: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    prior: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    reward_buf: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    child_idx: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin],
-    total_visits: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin],
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward_buf: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     # Hidden states
-    hidden_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin],
+    hidden_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
+    ],
     # Pending [N_ENVS * BATCH_SIMS]
-    pending_parents: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
-    pending_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    pending_parents: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    pending_actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
     # Dynamics output [N_ENVS * BATCH_SIMS * DYN_OUT]
-    dyn_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * DYN_OUT), MutAnyOrigin],
+    dyn_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * DYN_OUT), MutAnyOrigin
+    ],
     # Prediction output [N_ENVS * BATCH_SIMS * PRED_OUT]
-    pred_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * PRED_OUT), MutAnyOrigin],
+    pred_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * PRED_OUT), MutAnyOrigin
+    ],
     # Search paths [N_ENVS * BATCH_SIMS * MAX_DEPTH]
-    search_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
-    action_paths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin],
-    path_lengths: LayoutTensor[dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin],
+    search_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    action_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    path_lengths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
     # Value support
     v_min: Scalar[dtype],
     v_max: Scalar[dtype],
@@ -1354,14 +1660,12 @@ fn gpu_mcts_batched_expand_backup_muzero_kernel[
         var child_node_idx = Int(rebind[Scalar[dtype]](node_count[e]))
 
         # Remove virtual loss
-        visit_count[tree_off + parent * ACT + action] = (
-            rebind[Scalar[dtype]](visit_count[tree_off + parent * ACT + action])
-            - Scalar[dtype](VIRTUAL_LOSS)
-        )
-        total_visits[tv_off + parent] = (
-            rebind[Scalar[dtype]](total_visits[tv_off + parent])
-            - Scalar[dtype](VIRTUAL_LOSS)
-        )
+        visit_count[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
+            visit_count[tree_off + parent * ACT + action]
+        ) - Scalar[dtype](VIRTUAL_LOSS)
+        total_visits[tv_off + parent] = rebind[Scalar[dtype]](
+            total_visits[tv_off + parent]
+        ) - Scalar[dtype](VIRTUAL_LOSS)
 
         if child_node_idx >= MAX_NODES:
             continue
@@ -1402,11 +1706,20 @@ fn gpu_mcts_batched_expand_backup_muzero_kernel[
                     rew_max = v
             var rew_se = Scalar[dtype](0.0)
             for i in range(NUM_REW_BINS):
-                rew_se += exp(rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i]) - rew_max)
+                rew_se += exp(
+                    rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i])
+                    - rew_max
+                )
             rew_decoded = Scalar[dtype](0.0)
             var rew_step = (v_max - v_min) / Scalar[dtype](NUM_REW_BINS - 1)
             for i in range(NUM_REW_BINS):
-                var prob = exp(rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i]) - rew_max) / rew_se
+                var prob = (
+                    exp(
+                        rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i])
+                        - rew_max
+                    )
+                    / rew_se
+                )
                 rew_decoded += prob * (v_min + Scalar[dtype](i) * rew_step)
         reward_buf[tree_off + parent * ACT + action] = rew_decoded
 
@@ -1420,11 +1733,15 @@ fn gpu_mcts_batched_expand_backup_muzero_kernel[
                 p_max = v
         var p_sum = Scalar[dtype](0.0)
         for a in range(ACT):
-            var v = exp(rebind[Scalar[dtype]](pred_output[pred_off + a]) - p_max)
+            var v = exp(
+                rebind[Scalar[dtype]](pred_output[pred_off + a]) - p_max
+            )
             prior[child_off + a] = v
             p_sum += v
         for a in range(ACT):
-            prior[child_off + a] = rebind[Scalar[dtype]](prior[child_off + a]) / p_sum
+            prior[child_off + a] = (
+                rebind[Scalar[dtype]](prior[child_off + a]) / p_sum
+            )
             visit_count[child_off + a] = Scalar[dtype](0.0)
             total_value[child_off + a] = Scalar[dtype](0.0)
             reward_buf[child_off + a] = Scalar[dtype](0.0)
@@ -1432,7 +1749,9 @@ fn gpu_mcts_batched_expand_backup_muzero_kernel[
         total_visits[tv_off + child_node_idx] = Scalar[dtype](0.0)
 
         # Link
-        child_idx[tree_off + parent * ACT + action] = Scalar[dtype](child_node_idx)
+        child_idx[tree_off + parent * ACT + action] = Scalar[dtype](
+            child_node_idx
+        )
         node_count[e] = Scalar[dtype](child_node_idx + 1)
 
         # 5. Decode leaf value
@@ -1450,11 +1769,20 @@ fn gpu_mcts_batched_expand_backup_muzero_kernel[
                     val_max = v
             var val_se = Scalar[dtype](0.0)
             for i in range(NUM_VAL_BINS):
-                val_se += exp(rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - val_max)
+                val_se += exp(
+                    rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
+                    - val_max
+                )
             var val_step = (v_max - v_min) / Scalar[dtype](NUM_VAL_BINS - 1)
             leaf_value = Scalar[dtype](0.0)
             for i in range(NUM_VAL_BINS):
-                var prob = exp(rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - val_max) / val_se
+                var prob = (
+                    exp(
+                        rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
+                        - val_max
+                    )
+                    / val_se
+                )
                 leaf_value += prob * (v_min + Scalar[dtype](i) * val_step)
 
         # 6. Backup (negated or standard)
@@ -1464,18 +1792,31 @@ fn gpu_mcts_batched_expand_backup_muzero_kernel[
 
         for i in range(path_len):
             var idx = path_len - 1 - i
-            var node = Int(rebind[Scalar[dtype]](search_paths[path_off_s + idx]))
+            var node = Int(
+                rebind[Scalar[dtype]](search_paths[path_off_s + idx])
+            )
             var act = Int(rebind[Scalar[dtype]](action_paths[path_off_s + idx]))
 
             if Bool(negate):
                 value = -value
             else:
-                value = rebind[Scalar[dtype]](reward_buf[tree_off + node * ACT + act]) + gamma * value
+                value = (
+                    rebind[Scalar[dtype]](
+                        reward_buf[tree_off + node * ACT + act]
+                    )
+                    + gamma * value
+                )
 
             var na_off = tree_off + node * ACT + act
-            visit_count[na_off] = rebind[Scalar[dtype]](visit_count[na_off]) + Scalar[dtype](1.0)
-            total_value[na_off] = rebind[Scalar[dtype]](total_value[na_off]) + value
-            total_visits[tv_off + node] = rebind[Scalar[dtype]](total_visits[tv_off + node]) + Scalar[dtype](1.0)
+            visit_count[na_off] = rebind[Scalar[dtype]](
+                visit_count[na_off]
+            ) + Scalar[dtype](1.0)
+            total_value[na_off] = (
+                rebind[Scalar[dtype]](total_value[na_off]) + value
+            )
+            total_visits[tv_off + node] = rebind[Scalar[dtype]](
+                total_visits[tv_off + node]
+            ) + Scalar[dtype](1.0)
 
             var n_a = rebind[Scalar[dtype]](visit_count[na_off])
             var mean_q = rebind[Scalar[dtype]](total_value[na_off]) / n_a
@@ -1485,7 +1826,7 @@ fn gpu_mcts_batched_expand_backup_muzero_kernel[
                 max_q[e] = mean_q
 
 
-fn gpu_mcts_build_dyn_input_kernel[
+def gpu_mcts_build_dyn_input_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
@@ -1493,8 +1834,12 @@ fn gpu_mcts_build_dyn_input_kernel[
     DYN_IN: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    dyn_input: LayoutTensor[dtype, Layout.row_major(N_ENVS * DYN_IN), MutAnyOrigin],
-    hidden_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin],
+    dyn_input: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * DYN_IN), MutAnyOrigin
+    ],
+    hidden_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
+    ],
     pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     pending_action: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
 ):
@@ -1521,16 +1866,22 @@ fn gpu_mcts_build_dyn_input_kernel[
     dyn_input[d_off + LATENT + action] = Scalar[dtype](1.0)
 
 
-fn gpu_mcts_copy_pred_input_kernel[
+def gpu_mcts_copy_pred_input_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     LATENT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    pred_input: LayoutTensor[dtype, Layout.row_major(N_ENVS * LATENT), MutAnyOrigin],
-    hidden_states: LayoutTensor[dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin],
+    pred_input: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * LATENT), MutAnyOrigin
+    ],
+    hidden_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
+    ],
     node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    dyn_output: LayoutTensor[dtype, Layout.row_major(N_ENVS * (LATENT + LATENT)), MutAnyOrigin],
+    dyn_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * (LATENT + LATENT)), MutAnyOrigin
+    ],
 ):
     """Copy newly expanded child hidden states to prediction input buffer.
 
@@ -1611,25 +1962,25 @@ struct GPUMCTSState[
     # Selection output
     var pending_parent: DeviceBuffer[dtype]
     var pending_action: DeviceBuffer[dtype]
-    var search_paths: DeviceBuffer[dtype]   # [N_ENVS × MAX_DEPTH]
-    var action_paths: DeviceBuffer[dtype]   # [N_ENVS × MAX_DEPTH]
+    var search_paths: DeviceBuffer[dtype]  # [N_ENVS × MAX_DEPTH]
+    var action_paths: DeviceBuffer[dtype]  # [N_ENVS × MAX_DEPTH]
     var path_lengths: DeviceBuffer[dtype]
     var leaf_values: DeviceBuffer[dtype]
 
     # Batched network I/O
-    var dyn_input: DeviceBuffer[dtype]      # [N_ENVS × DYN_IN]
-    var dyn_output: DeviceBuffer[dtype]     # [N_ENVS × DYN_OUT]
-    var pred_input: DeviceBuffer[dtype]     # [N_ENVS × LATENT]
-    var pred_output: DeviceBuffer[dtype]    # [N_ENVS × PRED_OUT]
+    var dyn_input: DeviceBuffer[dtype]  # [N_ENVS × DYN_IN]
+    var dyn_output: DeviceBuffer[dtype]  # [N_ENVS × DYN_OUT]
+    var pred_input: DeviceBuffer[dtype]  # [N_ENVS × LATENT]
+    var pred_output: DeviceBuffer[dtype]  # [N_ENVS × PRED_OUT]
 
     # Final output
-    var actions_out: DeviceBuffer[dtype]    # [N_ENVS]
-    var policies_out: DeviceBuffer[dtype]   # [N_ENVS × ACT]
+    var actions_out: DeviceBuffer[dtype]  # [N_ENVS]
+    var policies_out: DeviceBuffer[dtype]  # [N_ENVS × ACT]
 
     # Legal mask (for self-play / board games)
-    var legal_masks: DeviceBuffer[dtype]    # [N_ENVS × ACT]
+    var legal_masks: DeviceBuffer[dtype]  # [N_ENVS × ACT]
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         comptime NODE_ACT_SIZE = Self.N_ENVS * Self.MAX_NODES * Self.ACT
         comptime NODE_SIZE = Self.N_ENVS * Self.MAX_NODES
         comptime HIDDEN_SIZE = Self.N_ENVS * Self.MAX_NODES * Self.LATENT
@@ -1649,19 +2000,35 @@ struct GPUMCTSState[
         comptime BS = Self.BATCH_SIMS
         self.pending_parent = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS)
         self.pending_action = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS)
-        self.search_paths = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * MAX_DEPTH)
-        self.action_paths = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * MAX_DEPTH)
+        self.search_paths = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * BS * MAX_DEPTH
+        )
+        self.action_paths = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * BS * MAX_DEPTH
+        )
         self.path_lengths = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS)
         self.leaf_values = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS)
 
-        self.dyn_input = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * Self.DYN_IN)
-        self.dyn_output = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * Self.DYN_OUT)
-        self.pred_input = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * Self.LATENT)
-        self.pred_output = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * BS * Self.PRED_OUT)
+        self.dyn_input = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * BS * Self.DYN_IN
+        )
+        self.dyn_output = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * BS * Self.DYN_OUT
+        )
+        self.pred_input = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * BS * Self.LATENT
+        )
+        self.pred_output = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * BS * Self.PRED_OUT
+        )
 
         self.actions_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
-        self.policies_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.ACT)
-        self.legal_masks = ctx.enqueue_create_buffer[dtype](Self.N_ENVS * Self.ACT)
+        self.policies_out = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * Self.ACT
+        )
+        self.legal_masks = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * Self.ACT
+        )
 
         # Game state storage (AlphaZero mode: STATE_SIZE > 0)
         comptime GS_SIZE = Self.N_ENVS * Self.MAX_NODES * Self.STATE_SIZE
@@ -1676,7 +2043,7 @@ struct GPUMCTSState[
             Self.N_ENVS * BS * Self.ACT
         )
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.visit_count = take.visit_count^
         self.total_value = take.total_value^
         self.prior = take.prior^

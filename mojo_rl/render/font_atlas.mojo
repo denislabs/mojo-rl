@@ -17,7 +17,7 @@ comptime FONT_ATLAS_W = 128  # atlas width  in pixels (16 * 8)
 comptime FONT_ATLAS_H = 64  # atlas height in pixels  (8 * 8)
 
 
-fn _make_font_bitmap() -> List[UInt8]:
+def _make_font_bitmap() -> List[UInt8]:
     """Build 8×8 bitmap font for ASCII 0-127 (LSB = leftmost pixel).
 
     Based on the public-domain font8x8 library by Daniel Hepper.
@@ -876,7 +876,7 @@ fn _make_font_bitmap() -> List[UInt8]:
     return d^
 
 
-fn build_font_atlas_r8() -> List[UInt8]:
+def build_font_atlas_r8() -> List[UInt8]:
     """Expand packed font bitmap to a 128×64 R8 atlas for GPU upload.
 
     Each glyph occupies an 8×8 block. Atlas layout:
@@ -905,7 +905,7 @@ fn build_font_atlas_r8() -> List[UInt8]:
     return atlas^
 
 
-fn glyph_uv(c: UInt8) -> Tuple[Float32, Float32, Float32, Float32]:
+def glyph_uv(c: UInt8) -> Tuple[Float32, Float32, Float32, Float32]:
     """Return (u0, v0, u1, v1) atlas UV coordinates for ASCII character c.
 
     Args:

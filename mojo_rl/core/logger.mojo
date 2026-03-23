@@ -47,7 +47,7 @@ struct MetricEntry(Copyable, Movable):
     var name: String
     var value: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         step: Int,
         wall_time_ms: Float64,
@@ -59,13 +59,13 @@ struct MetricEntry(Copyable, Movable):
         self.name = name
         self.value = value
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.step = copy.step
         self.wall_time_ms = copy.wall_time_ms
         self.name = copy.name
         self.value = copy.value
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.step = take.step
         self.wall_time_ms = take.wall_time_ms
         self.name = take.name^
@@ -88,24 +88,24 @@ trait Logger(Copyable, Movable):
 
     comptime ENABLED: Bool = True
 
-    fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+    def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         ...
 
-    fn log_scalars(
+    def log_scalars(
         mut self, names: List[String], values: List[Float64], step: Int
     ) raises:
         ...
 
-    fn flush(mut self) raises:
+    def flush(mut self) raises:
         ...
 
-    fn close(mut self) raises:
+    def close(mut self) raises:
         ...
 
-    fn set_config(mut self, key: String, value: String):
+    def set_config(mut self, key: String, value: String):
         ...
 
-    fn is_active(self) -> Bool:
+    def is_active(self) -> Bool:
         ...
 
 
@@ -119,30 +119,30 @@ struct NoOpLogger(Logger):
 
     comptime ENABLED: Bool = False
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+    def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         pass
 
-    fn log_scalars(
+    def log_scalars(
         mut self, names: List[String], values: List[Float64], step: Int
     ) raises:
         pass
 
-    fn flush(mut self) raises:
+    def flush(mut self) raises:
         pass
 
-    fn close(mut self) raises:
+    def close(mut self) raises:
         pass
 
-    fn set_config(mut self, key: String, value: String):
+    def set_config(mut self, key: String, value: String):
         pass
 
-    fn is_active(self) -> Bool:
+    def is_active(self) -> Bool:
         return False
 
 
@@ -167,7 +167,7 @@ struct CsvLogger(Logger):
     var _file_header_written: Bool
     var _total_logged: Int
 
-    fn __init__(
+    def __init__(
         out self,
         file_path: String,
         buffer_size: Int = 200,
@@ -179,7 +179,7 @@ struct CsvLogger(Logger):
         self._file_header_written = False
         self._total_logged = 0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.file_path = take.file_path^
         self.entries = take.entries^
         self.buffer_size = take.buffer_size
@@ -187,7 +187,7 @@ struct CsvLogger(Logger):
         self._file_header_written = take._file_header_written
         self._total_logged = take._total_logged
 
-    fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+    def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         var elapsed_ns = perf_counter_ns() - self._start_ns
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
         self.entries.append(MetricEntry(step, wall_time_ms, name, value))
@@ -195,7 +195,7 @@ struct CsvLogger(Logger):
         if len(self.entries) >= self.buffer_size:
             self.flush()
 
-    fn log_scalars(
+    def log_scalars(
         mut self, names: List[String], values: List[Float64], step: Int
     ) raises:
         var elapsed_ns = perf_counter_ns() - self._start_ns
@@ -209,7 +209,7 @@ struct CsvLogger(Logger):
         if len(self.entries) >= self.buffer_size:
             self.flush()
 
-    fn flush(mut self) raises:
+    def flush(mut self) raises:
         if len(self.entries) == 0:
             return
         var content = String("")
@@ -232,19 +232,19 @@ struct CsvLogger(Logger):
             f.write(content)
         self.entries.clear()
 
-    fn close(mut self) raises:
+    def close(mut self) raises:
         self.flush()
 
-    fn set_config(mut self, key: String, value: String):
+    def set_config(mut self, key: String, value: String):
         pass
 
-    fn is_active(self) -> Bool:
+    def is_active(self) -> Bool:
         return True
 
-    fn total_logged(self) -> Int:
+    def total_logged(self) -> Int:
         return self._total_logged
 
-    fn pending(self) -> Int:
+    def pending(self) -> Int:
         return len(self.entries)
 
 
@@ -272,7 +272,7 @@ struct RemoteLogger(Logger):
     var _run_registered: Bool
     var _total_logged: Int
 
-    fn __init__(
+    def __init__(
         out self,
         server_url: String,
         run_name: String = "",
@@ -295,7 +295,7 @@ struct RemoteLogger(Logger):
         self._run_registered = False
         self._total_logged = 0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.run_id = take.run_id^
         self.run_name = take.run_name^
         self.server_url = take.server_url^
@@ -308,7 +308,7 @@ struct RemoteLogger(Logger):
         self._run_registered = take._run_registered
         self._total_logged = take._total_logged
 
-    fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+    def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         var elapsed_ns = perf_counter_ns() - self._start_ns
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
         self.entries.append(MetricEntry(step, wall_time_ms, name, value))
@@ -316,7 +316,7 @@ struct RemoteLogger(Logger):
         if len(self.entries) >= self.buffer_size:
             self.flush()
 
-    fn log_scalars(
+    def log_scalars(
         mut self, names: List[String], values: List[Float64], step: Int
     ) raises:
         var elapsed_ns = perf_counter_ns() - self._start_ns
@@ -330,7 +330,7 @@ struct RemoteLogger(Logger):
         if len(self.entries) >= self.buffer_size:
             self.flush()
 
-    fn flush(mut self) raises:
+    def flush(mut self) raises:
         if len(self.entries) == 0:
             return
         from std.python import Python
@@ -360,10 +360,10 @@ struct RemoteLogger(Logger):
         _http_post(urllib_request, json_mod, url, payload, self.api_key)
         self.entries.clear()
 
-    fn close(mut self) raises:
+    def close(mut self) raises:
         self.flush()
 
-    fn set_config(mut self, key: String, value: String):
+    def set_config(mut self, key: String, value: String):
         for i in range(len(self._config_keys)):
             if self._config_keys[i] == key:
                 self._config_vals[i] = value
@@ -371,10 +371,10 @@ struct RemoteLogger(Logger):
         self._config_keys.append(key)
         self._config_vals.append(value)
 
-    fn is_active(self) -> Bool:
+    def is_active(self) -> Bool:
         return True
 
-    fn _register_run(
+    def _register_run(
         mut self,
         json_mod: PythonObject,
         urllib_request: PythonObject,
@@ -391,10 +391,10 @@ struct RemoteLogger(Logger):
         var url = self.server_url.removesuffix("/") + "/runs"
         _http_post(urllib_request, json_mod, url, payload, self.api_key)
 
-    fn total_logged(self) -> Int:
+    def total_logged(self) -> Int:
         return self._total_logged
 
-    fn pending(self) -> Int:
+    def pending(self) -> Int:
         return len(self.entries)
 
 
@@ -416,41 +416,41 @@ struct CompositeLogger[A: Logger, B: Logger](Logger):
     var a: Self.A
     var b: Self.B
 
-    fn __init__(out self, a: Self.A, b: Self.B):
+    def __init__(out self, a: Self.A, b: Self.B):
         self.a = a.copy()
         self.b = b.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.a = take.a^
         self.b = take.b^
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.a = copy.a.copy()
         self.b = copy.b.copy()
 
-    fn log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+    def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         self.a.log_scalar(name, value, step)
         self.b.log_scalar(name, value, step)
 
-    fn log_scalars(
+    def log_scalars(
         mut self, names: List[String], values: List[Float64], step: Int
     ) raises:
         self.a.log_scalars(names, values, step)
         self.b.log_scalars(names, values, step)
 
-    fn flush(mut self) raises:
+    def flush(mut self) raises:
         self.a.flush()
         self.b.flush()
 
-    fn close(mut self) raises:
+    def close(mut self) raises:
         self.a.close()
         self.b.close()
 
-    fn set_config(mut self, key: String, value: String):
+    def set_config(mut self, key: String, value: String):
         self.a.set_config(key, value)
         self.b.set_config(key, value)
 
-    fn is_active(self) -> Bool:
+    def is_active(self) -> Bool:
         return True
 
 
@@ -459,7 +459,7 @@ struct CompositeLogger[A: Logger, B: Logger](Logger):
 # =============================================================================
 
 
-fn _http_post(
+def _http_post(
     urllib_request: PythonObject,
     json_mod: PythonObject,
     url: String,

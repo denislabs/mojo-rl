@@ -7,7 +7,7 @@ from std.math import sqrt
 
 
 @always_inline
-fn normalize_position[
+def normalize_position[
     T: DType
 ](x: Scalar[T], y: Scalar[T]) -> Tuple[Scalar[T], Scalar[T]]:
     """Normalize position relative to helipad center.
@@ -32,7 +32,7 @@ fn normalize_position[
 
 
 @always_inline
-fn normalize_velocity[
+def normalize_velocity[
     T: DType
 ](vx: Scalar[T], vy: Scalar[T]) -> Tuple[Scalar[T], Scalar[T]]:
     """Normalize velocity for observation.
@@ -54,7 +54,7 @@ fn normalize_velocity[
 
 
 @always_inline
-fn normalize_angular_velocity[T: DType](omega: Scalar[T]) -> Scalar[T]:
+def normalize_angular_velocity[T: DType](omega: Scalar[T]) -> Scalar[T]:
     """Normalize angular velocity for observation.
 
     Args:
@@ -67,7 +67,7 @@ fn normalize_angular_velocity[T: DType](omega: Scalar[T]) -> Scalar[T]:
 
 
 @always_inline
-fn get_terrain_height_at_x[T: DType](x: Scalar[T]) -> Scalar[T]:
+def get_terrain_height_at_x[T: DType](x: Scalar[T]) -> Scalar[T]:
     """Get terrain height at a given x position using simplified chunk lookup.
 
     This matches the CPU version's _get_terrain_height() behavior, which returns
@@ -89,7 +89,7 @@ fn get_terrain_height_at_x[T: DType](x: Scalar[T]) -> Scalar[T]:
 
 
 @always_inline
-fn compute_shaping[
+def compute_shaping[
     T: DType
 ](
     x_norm: Scalar[T],

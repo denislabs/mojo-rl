@@ -19,7 +19,7 @@ from ..gpu.constants import (
 )
 
 
-fn lu_factor[
+def lu_factor[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -73,7 +73,7 @@ fn lu_factor[
                 A[i * NV + j] = A[i * NV + j] - lik * A[k * NV + j]
 
 
-fn lu_solve[
+def lu_solve[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -123,7 +123,7 @@ fn lu_solve[
         x[i] = s / A[i * NV + i]
 
 
-fn compute_M_inv_from_lu[
+def compute_M_inv_from_lu[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
@@ -168,7 +168,7 @@ fn compute_M_inv_from_lu[
 
 
 @always_inline
-fn lu_factor_gpu[
+def lu_factor_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -246,7 +246,7 @@ fn lu_factor_gpu[
 
 
 @always_inline
-fn lu_solve_workspace_gpu[
+def lu_solve_workspace_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,
@@ -302,7 +302,7 @@ fn lu_solve_workspace_gpu[
 
 
 @always_inline
-fn compute_M_inv_from_lu_gpu[
+def compute_M_inv_from_lu_gpu[
     DTYPE: DType,
     NV: Int,
     NBODY: Int,

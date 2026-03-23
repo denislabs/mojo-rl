@@ -60,7 +60,7 @@ comptime dtype = DType.float32
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("Autodiff SAC Agent GPU Training on HalfCheetah")
@@ -83,7 +83,9 @@ fn main() raises:
             critic_lr=0.001,
         ]
 
-        var agent = GenericOffPolicyAgent[Config, L=RemoteLogger, max_n_envs=MAX_N_ENVS](
+        var agent = GenericOffPolicyAgent[
+            Config, L=RemoteLogger, max_n_envs=MAX_N_ENVS
+        ](
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,

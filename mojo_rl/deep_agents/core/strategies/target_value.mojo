@@ -30,7 +30,7 @@ trait TargetValue:
     comptime NEEDS_LOG_PROBS: Bool
 
     @staticmethod
-    fn compute_cpu[
+    def compute_cpu[
         BATCH: Int
     ](
         q1: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
@@ -38,16 +38,14 @@ trait TargetValue:
         log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        mut targets: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
+        mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
         alpha: Float64,
     ):
         ...
 
     @staticmethod
-    fn compute_gpu[
+    def compute_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -56,23 +54,21 @@ trait TargetValue:
         log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        mut targets: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
+        mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
         alpha: Float64,
     ) raises:
         ...
 
 
-fn _safe_q(val: Float64) -> Float64:
+def _safe_q(val: Float64) -> Float64:
     """Guard NaN in Q values."""
     if val != val:
         return 0.0
     return val
 
 
-fn _clamp_target(mut tgt: Float64):
+def _clamp_target(mut tgt: Float64):
     """Guard NaN and clamp to [-1000, 1000]."""
     if tgt != tgt:
         tgt = 0.0
@@ -97,7 +93,7 @@ struct SingleQTarget(TargetValue):
     comptime NEEDS_LOG_PROBS: Bool = False
 
     @staticmethod
-    fn compute_cpu[
+    def compute_cpu[
         BATCH: Int
     ](
         q1: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
@@ -105,9 +101,7 @@ struct SingleQTarget(TargetValue):
         log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        mut targets: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
+        mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
         alpha: Float64,
     ):
@@ -120,7 +114,7 @@ struct SingleQTarget(TargetValue):
             targets.ptr[b] = Scalar[dtype](tgt)
 
     @staticmethod
-    fn compute_gpu[
+    def compute_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -129,9 +123,7 @@ struct SingleQTarget(TargetValue):
         log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        mut targets: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
+        mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
         alpha: Float64,
     ) raises:
@@ -140,14 +132,12 @@ struct SingleQTarget(TargetValue):
         var gamma_s = Scalar[dtype](gamma)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             td_targets: LayoutTensor[
                 dtype, Layout.row_major(BATCH), MutAnyOrigin
             ],
             rew: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-            next_q: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
-            ],
+            next_q: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             dn: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             g: Scalar[dtype],
         ):
@@ -181,7 +171,7 @@ struct TwinQTarget(TargetValue):
     comptime NEEDS_LOG_PROBS: Bool = False
 
     @staticmethod
-    fn compute_cpu[
+    def compute_cpu[
         BATCH: Int
     ](
         q1: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
@@ -189,9 +179,7 @@ struct TwinQTarget(TargetValue):
         log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        mut targets: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
+        mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
         alpha: Float64,
     ):
@@ -206,7 +194,7 @@ struct TwinQTarget(TargetValue):
             targets.ptr[b] = Scalar[dtype](tgt)
 
     @staticmethod
-    fn compute_gpu[
+    def compute_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -215,9 +203,7 @@ struct TwinQTarget(TargetValue):
         log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        mut targets: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
+        mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
         alpha: Float64,
     ) raises:
@@ -227,7 +213,7 @@ struct TwinQTarget(TargetValue):
         var alpha_s = Scalar[dtype](0.0)  # unused, entropy disabled
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             td_targets: LayoutTensor[
                 dtype, Layout.row_major(BATCH), MutAnyOrigin
             ],
@@ -272,7 +258,7 @@ struct EntropicTwinQTarget(TargetValue):
     comptime NEEDS_LOG_PROBS: Bool = True
 
     @staticmethod
-    fn compute_cpu[
+    def compute_cpu[
         BATCH: Int
     ](
         q1: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
@@ -280,9 +266,7 @@ struct EntropicTwinQTarget(TargetValue):
         log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        mut targets: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
+        mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
         alpha: Float64,
     ):
@@ -293,12 +277,14 @@ struct EntropicTwinQTarget(TargetValue):
             var min_q = q_1 if q_1 < q_2 else q_2
             var lp = Float64(log_probs.ptr[b])
             var dm = 1.0 - Float64(dones.ptr[b])
-            var tgt = Float64(rewards.ptr[b]) + gamma * (min_q - alpha * lp) * dm
+            var tgt = (
+                Float64(rewards.ptr[b]) + gamma * (min_q - alpha * lp) * dm
+            )
             _clamp_target(tgt)
             targets.ptr[b] = Scalar[dtype](tgt)
 
     @staticmethod
-    fn compute_gpu[
+    def compute_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -307,9 +293,7 @@ struct EntropicTwinQTarget(TargetValue):
         log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        mut targets: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ],
+        mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
         alpha: Float64,
     ) raises:
@@ -319,7 +303,7 @@ struct EntropicTwinQTarget(TargetValue):
         var alpha_s = Scalar[dtype](alpha)
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             td_targets: LayoutTensor[
                 dtype, Layout.row_major(BATCH), MutAnyOrigin
             ],

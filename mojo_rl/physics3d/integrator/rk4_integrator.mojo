@@ -121,7 +121,7 @@ from ..gpu.constants import (
 
 
 @always_inline
-fn _integrate_pos_gpu[
+def _integrate_pos_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -217,7 +217,7 @@ fn _integrate_pos_gpu[
             state[env, qpos_off + qpos_adr] = q0_val + v_val * dt
 
 
-fn _forward_dynamics[
+def _forward_dynamics[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -500,7 +500,7 @@ fn _forward_dynamics[
         compute_M_inv_from_ldl[DTYPE, NV](L, D, M_inv_out)
 
 
-fn _solve_constraints[
+def _solve_constraints[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -573,7 +573,7 @@ fn _solve_constraints[
         ](constraints, data)
 
 
-fn _integrate_pos[
+def _integrate_pos[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -688,7 +688,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
     # =========================================================================
 
     @staticmethod
-    fn step[
+    def step[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1039,7 +1039,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         ](model, data)
 
     @staticmethod
-    fn simulate[
+    def simulate[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1097,7 +1097,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn rk4_stage_kernel[
+    def rk4_stage_kernel[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1611,7 +1611,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn rk4_combine_kernel[
+    def rk4_combine_kernel[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1738,7 +1738,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         ](env, state, model, workspace, q0_idx, A0_idx, dt)
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1804,9 +1804,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # Grid configuration for stage kernels (multi-threaded)
         comptime STEP_ENV_TPB = TPB // STEP_THREADS
-        comptime STEP_ENV_BLOCKS = (
-            BATCH + STEP_ENV_TPB - 1
-        ) // STEP_ENV_TPB
+        comptime STEP_ENV_BLOCKS = (BATCH + STEP_ENV_TPB - 1) // STEP_ENV_TPB
 
         # --- Stage 0: forward dynamics at (q0, v0) ---
         comptime stage0_kernel = Self.rk4_stage_kernel[
@@ -1872,69 +1870,129 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # --- Stage 1: forward dynamics at (q0+dt/2*C[0], v0+dt/2*A[0]) ---
         comptime stage1_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-            SOLVER_WS, 1, NM, SPARSE, STEP_THREADS,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            1,
+            NM,
+            SPARSE,
+            STEP_THREADS,
         ]
         comptime if STEP_THREADS > 1:
             ctx.enqueue_function[stage1_kernel, stage1_kernel](
-                state, model, workspace,
+                state,
+                model,
+                workspace,
                 grid_dim=(STEP_ENV_BLOCKS, 1),
                 block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         else:
             ctx.enqueue_function[stage1_kernel, stage1_kernel](
-                state, model, workspace,
-                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+                state,
+                model,
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
 
         # --- Stage 2: forward dynamics at (q0+dt/2*C[1], v0+dt/2*A[1]) ---
         comptime stage2_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-            SOLVER_WS, 2, NM, SPARSE, STEP_THREADS,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            2,
+            NM,
+            SPARSE,
+            STEP_THREADS,
         ]
         comptime if STEP_THREADS > 1:
             ctx.enqueue_function[stage2_kernel, stage2_kernel](
-                state, model, workspace,
+                state,
+                model,
+                workspace,
                 grid_dim=(STEP_ENV_BLOCKS, 1),
                 block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         else:
             ctx.enqueue_function[stage2_kernel, stage2_kernel](
-                state, model, workspace,
-                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+                state,
+                model,
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
 
         # --- Stage 3: forward dynamics at (q0+dt*C[2], v0+dt*A[2]) ---
         comptime stage3_kernel = Self.rk4_stage_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-            SOLVER_WS, 3, NM, SPARSE, STEP_THREADS,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            SOLVER_WS,
+            3,
+            NM,
+            SPARSE,
+            STEP_THREADS,
         ]
         comptime if STEP_THREADS > 1:
             ctx.enqueue_function[stage3_kernel, stage3_kernel](
-                state, model, workspace,
+                state,
+                model,
+                workspace,
                 grid_dim=(STEP_ENV_BLOCKS, 1),
                 block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         else:
             ctx.enqueue_function[stage3_kernel, stage3_kernel](
-                state, model, workspace,
-                grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+                state,
+                model,
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
             )
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
@@ -1966,7 +2024,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
     # =========================================================================
 
     @staticmethod
-    fn register_gpu_profile_slots(
+    def register_gpu_profile_slots(
         mut timer: PerfTimer[True], parent: Int = -1
     ) -> Int:
         """Register 5 profiling slots for RK4 GPU step phases.
@@ -1993,7 +2051,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         return base
 
     @staticmethod
-    fn step_gpu_profiled[
+    def step_gpu_profiled[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -2251,7 +2309,7 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         timer.sync_and_accumulate(base + 4, ctx)
 
     @staticmethod
-    fn simulate_gpu[
+    def simulate_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

@@ -46,7 +46,7 @@ comptime FSHIN_GEAR: Float64 = 60.0
 comptime FFOOT_GEAR: Float64 = 30.0
 
 
-fn body_name(id: Int) -> String:
+def body_name(id: Int) -> String:
     if id == 0:
         return "torso "
     elif id == 1:
@@ -66,7 +66,7 @@ fn body_name(id: Int) -> String:
     return "???"
 
 
-fn run_test(label: String, actions: InlineArray[Float64, 6]):
+def run_test(label: String, actions: InlineArray[Float64, 6]):
     """Run 200 env steps (1000 physics steps) with given actions."""
     print("")
     print("=" * 80)
@@ -210,7 +210,7 @@ fn run_test(label: String, actions: InlineArray[Float64, 6]):
     print("    Max force_n:", max_imp_n)
 
 
-fn main():
+def main():
     # Test 1: Zero actions (baseline)
     var zero = InlineArray[Float64, 6](0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     run_test("Test 1: Zero actions (free fall + settle)", zero)

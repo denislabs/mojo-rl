@@ -12,7 +12,7 @@ from mojo_rl.deep_agents.muzero.utils import (
 from std.memory import alloc, memset
 
 
-fn main():
+def main():
     print("=== MuZero Utils Tests ===")
 
     # Test scalar transform roundtrip

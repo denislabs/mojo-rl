@@ -60,7 +60,7 @@ comptime NSITE = HalfCheetahModel.NSITE
 
 
 @always_inline
-fn noop_kernel[
+def noop_kernel[
     DTYPE: DType,
     BATCH: Int,
     SIZE: Int,
@@ -74,7 +74,7 @@ fn noop_kernel[
 
 
 @always_inline
-fn noop_2d_kernel[
+def noop_2d_kernel[
     DTYPE: DType,
     BATCH: Int,
     SIZE: Int,
@@ -93,7 +93,7 @@ fn noop_2d_kernel[
 # =============================================================================
 
 
-fn bench_noop_launches[
+def bench_noop_launches[
     BATCH: Int
 ](ctx: DeviceContext, num_launches: Int, launches_per_iter: Int,) raises:
     """Benchmark pure kernel launch overhead with no-op kernels."""
@@ -193,7 +193,7 @@ fn bench_noop_launches[
     print()
 
 
-fn bench_physics_step[
+def bench_physics_step[
     BATCH: Int
 ](ctx: DeviceContext, num_substeps: Int,) raises:
     """Benchmark the actual 3-kernel physics step."""
@@ -303,7 +303,7 @@ fn bench_physics_step[
     print()
 
 
-fn bench_physics_with_sync[
+def bench_physics_with_sync[
     BATCH: Int
 ](ctx: DeviceContext, num_substeps: Int,) raises:
     """Benchmark with synchronize after each kernel to isolate per-kernel timing.
@@ -555,7 +555,7 @@ fn bench_physics_with_sync[
     print()
 
 
-fn bench_physics_step_mt[
+def bench_physics_step_mt[
     BATCH: Int, STEP_THREADS: Int
 ](ctx: DeviceContext, num_substeps: Int,) raises:
     """Benchmark multi-threaded step kernel vs single-threaded."""
@@ -721,7 +721,7 @@ fn bench_physics_step_mt[
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     print("=" * 70)
     print("Benchmark: GPU Kernel Launch Overhead for Physics Step")
     print("=" * 70)

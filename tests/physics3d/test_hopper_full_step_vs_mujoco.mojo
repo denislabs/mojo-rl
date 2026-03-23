@@ -47,7 +47,7 @@ comptime QVEL_REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -257,7 +257,7 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_freefall() raises:
+def test_freefall() raises:
     """Free fall from default height — no contacts expected.
     Hopper torso is at body_pos z=1.25, so qpos rootz=0 is high enough."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -267,7 +267,7 @@ fn test_freefall() raises:
     compare_step("Free fall (no contacts)", qpos, qvel, actions)
 
 
-fn test_standing_zero_action() raises:
+def test_standing_zero_action() raises:
     """Standing at default height — may have ground contact."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
@@ -275,7 +275,7 @@ fn test_standing_zero_action() raises:
     compare_step("Standing, zero action", qpos, qvel, actions)
 
 
-fn test_standing_with_action() raises:
+def test_standing_with_action() raises:
     """Standing with moderate actions applied."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
@@ -286,7 +286,7 @@ fn test_standing_with_action() raises:
     compare_step("Standing, moderate action", qpos, qvel, actions)
 
 
-fn test_moving_with_action() raises:
+def test_moving_with_action() raises:
     """Robot already moving with velocity + actions."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[2] = 0.1  # rooty slight pitch
@@ -303,7 +303,7 @@ fn test_moving_with_action() raises:
     compare_step("Moving with actions", qpos, qvel, actions)
 
 
-fn test_freefall_10_steps() raises:
+def test_freefall_10_steps() raises:
     """Free fall 10 steps — accumulates any per-step drift."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.5  # high enough for 10 steps of free fall
@@ -312,7 +312,7 @@ fn test_freefall_10_steps() raises:
     compare_step("Free fall (10 steps)", qpos, qvel, actions, num_steps=10)
 
 
-fn test_standing_10_steps() raises:
+def test_standing_10_steps() raises:
     """Standing 10 steps with actions — tests solver stability."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
@@ -324,5 +324,5 @@ fn test_standing_10_steps() raises:
     )
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

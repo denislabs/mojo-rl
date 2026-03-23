@@ -54,7 +54,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
     # HUD state
     var step_count: Int
 
-    fn __init__(
+    def __init__(
         out self,
         width: Int = 1280,
         height: Int = 720,
@@ -127,7 +127,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.step_count = 0
         self.initialized = False
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.renderer = take.renderer^
         self.initialized = take.initialized
         self.follow = take.follow
@@ -143,41 +143,43 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         self.vel_color = take.vel_color
         self.step_count = take.step_count
 
-    fn init(mut self) raises -> None:
+    def init(mut self) raises -> None:
         var title = String("Model Environment")
         self.renderer.init(title)
         self.initialized = True
 
-    fn close(mut self) raises -> None:
+    def close(mut self) raises -> None:
         if self.initialized:
             self.renderer.close()
             self.initialized = False
 
-    fn check_quit(mut self) -> Bool:
+    def check_quit(mut self) -> Bool:
         return self.renderer.check_quit()
 
-    fn is_open(self) -> Bool:
+    def is_open(self) -> Bool:
         return self.initialized
 
-    fn delay(self, ms: Int) -> None:
+    def delay(self, ms: Int) -> None:
         try:
             self.renderer.delay_ms(ms)
         except:
             pass
 
-    fn orbit_camera(mut self, delta_theta: Float64, delta_phi: Float64) -> None:
+    def orbit_camera(
+        mut self, delta_theta: Float64, delta_phi: Float64
+    ) -> None:
         self.renderer.orbit_camera(delta_theta, delta_phi)
 
-    fn zoom_camera(mut self, delta: Float64) -> None:
+    def zoom_camera(mut self, delta: Float64) -> None:
         self.renderer.zoom_camera(delta)
 
-    fn pan_camera(mut self, delta_x: Float64, delta_y: Float64) -> None:
+    def pan_camera(mut self, delta_x: Float64, delta_y: Float64) -> None:
         self.renderer.pan_camera(delta_x, delta_y)
 
-    fn reset_camera(mut self) -> None:
+    def reset_camera(mut self) -> None:
         self.renderer.reset_camera()
 
-    fn render_from_body_state[
+    def render_from_body_state[
         DTYPE: DType, SIZE_POS: Int, SIZE_QUAT: Int
     ](
         mut self,
@@ -220,7 +222,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
 
         self.render(positions, quaternions, vel_x)
 
-    fn render(
+    def render(
         mut self,
         positions: List[Vec3],
         quaternions: List[Quat],
@@ -319,7 +321,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         except:
             pass
 
-    fn _draw_hud(mut self):
+    def _draw_hud(mut self):
         """Draw MuJoCo-style HUD: controls help, camera name, step counter, pause indicator.
         """
         var x0 = Float32(12)
@@ -391,7 +393,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             )
             self.renderer.draw_text(x0, y, rec_str, Color(220, 40, 40, 255), s)
 
-    fn _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
+    def _draw_velocity_indicator(mut self, torso_pos: Vec3, vel_x: Float64):
         """Draw a velocity indicator arrow above the torso."""
         var arrow_start = Vec3(
             torso_pos.x, torso_pos.y, torso_pos.z + self.vel_arrow_height

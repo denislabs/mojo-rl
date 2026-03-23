@@ -31,7 +31,7 @@ from std.testing import assert_true
 # ---------------------------------------------------------------------------
 # Helper: set one Jacobian entry in-place
 # ---------------------------------------------------------------------------
-fn set_j[
+def set_j[
     DTYPE: DType, MAX_ROWS: Int, NV: Int
 ](
     mut cd: ConstraintData[DTYPE, MAX_ROWS, NV],
@@ -46,7 +46,7 @@ fn set_j[
 # ---------------------------------------------------------------------------
 # Test 1: no constraints → 0 islands
 # ---------------------------------------------------------------------------
-fn test_no_constraints() raises:
+def test_no_constraints() raises:
     print("Test 1: no constraints → 0 islands ... ", end="")
     var cd = ConstraintData[DType.float64, 4, 4]()
     # num_rows defaults to 0
@@ -64,7 +64,7 @@ fn test_no_constraints() raises:
 # ---------------------------------------------------------------------------
 # Test 2: single fully coupled system → 1 island
 # ---------------------------------------------------------------------------
-fn test_single_island() raises:
+def test_single_island() raises:
     print("Test 2: all rows share DOFs → 1 island ... ", end="")
     # NV=4, 3 rows each touching DOFs {0,1}, {1,2}, {2,3} — all connected
     var cd = ConstraintData[DType.float64, 8, 4]()
@@ -101,7 +101,7 @@ fn test_single_island() raises:
 # ---------------------------------------------------------------------------
 # Test 3: two disjoint groups → 2 islands
 # ---------------------------------------------------------------------------
-fn test_two_islands() raises:
+def test_two_islands() raises:
     print("Test 3: two independent DOF groups → 2 islands ... ", end="")
     # NV=6: DOFs 0,1,2 form island A; DOFs 3,4,5 form island B
     # Rows 0,1 touch only {0,1,2}; rows 2,3 touch only {3,4,5}
@@ -182,7 +182,7 @@ fn test_two_islands() raises:
 # ---------------------------------------------------------------------------
 # Test 4: three independent single-DOF constraints → 3 islands
 # ---------------------------------------------------------------------------
-fn test_three_islands() raises:
+def test_three_islands() raises:
     print("Test 4: three independent constraints → 3 islands ... ", end="")
     # NV=6, 3 rows each touching one distinct DOF
     var cd = ConstraintData[DType.float64, 4, 6]()
@@ -218,7 +218,7 @@ fn test_three_islands() raises:
 # ---------------------------------------------------------------------------
 # Test 5: chain coupling A-B, B-C merges into one island
 # ---------------------------------------------------------------------------
-fn test_chain_merges() raises:
+def test_chain_merges() raises:
     print("Test 5: chain A-B, B-C bridges into 1 island ... ", end="")
     # Row 0 couples DOFs 0 and 1 (A-B edge)
     # Row 1 couples DOFs 1 and 2 (B-C edge)
@@ -251,7 +251,7 @@ fn test_chain_merges() raises:
 # ---------------------------------------------------------------------------
 # Test 6: unconstrained DOFs have dof_island == -1
 # ---------------------------------------------------------------------------
-fn test_unconstrained_dofs() raises:
+def test_unconstrained_dofs() raises:
     print("Test 6: unconstrained DOFs have dof_island = -1 ... ", end="")
     # NV=4, only DOFs 0 and 1 touched; DOFs 2 and 3 are free.
     var cd = ConstraintData[DType.float64, 4, 4]()
@@ -296,7 +296,7 @@ fn test_unconstrained_dofs() raises:
 # ---------------------------------------------------------------------------
 # Test 7: negative J values are also recognised as non-zero
 # ---------------------------------------------------------------------------
-fn test_negative_j() raises:
+def test_negative_j() raises:
     print("Test 7: negative J entries count as non-zero couplings ... ", end="")
     # Row 0: DOF 0 = +1, DOF 1 = -1  →  DOFs 0,1 in same island
     var cd = ConstraintData[DType.float64, 4, 4]()
@@ -322,7 +322,7 @@ fn test_negative_j() raises:
     print("PASS")
 
 
-fn main() raises:
+def main() raises:
     # TestSuite.discover_tests[__functions_in_module()]().run()
     test_no_constraints()
     test_single_island()

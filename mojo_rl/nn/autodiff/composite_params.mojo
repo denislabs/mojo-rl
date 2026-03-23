@@ -35,7 +35,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 # GPU matmul requires 16-byte alignment = 4 float32 elements
 @always_inline
-fn _cp_align4(x: Int) -> Int:
+def _cp_align4(x: Int) -> Int:
     """Round up to next multiple of 4 for GPU alignment."""
     return (x + 3) & ~3
 
@@ -58,7 +58,7 @@ struct CompositeParams[*MODELS: Model]:
     comptime N = Variadic.size(Self.model_types)
 
     @staticmethod
-    fn _total() -> Int:
+    def _total() -> Int:
         """Total param size with alignment padding between models."""
         var total = 0
         comptime for j in range(Self.N - 1):
@@ -69,7 +69,7 @@ struct CompositeParams[*MODELS: Model]:
     comptime TOTAL_SIZE: Int = Self._total()
 
     @staticmethod
-    fn offset[idx: Int]() -> Int:
+    def offset[idx: Int]() -> Int:
         """Aligned param offset for model idx."""
         var total = 0
         comptime for j in range(idx):
@@ -77,7 +77,7 @@ struct CompositeParams[*MODELS: Model]:
         return total
 
     @staticmethod
-    fn assemble(
+    def assemble(
         dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *sources: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
@@ -96,7 +96,7 @@ struct CompositeParams[*MODELS: Model]:
                 dst[off + i] = src[i]
 
     @staticmethod
-    fn scatter(
+    def scatter(
         src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *dsts: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
@@ -109,7 +109,7 @@ struct CompositeParams[*MODELS: Model]:
                 d[i] = src[off + i]
 
     @staticmethod
-    fn scatter_add(
+    def scatter_add(
         src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *dsts: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
@@ -126,7 +126,7 @@ struct CompositeParams[*MODELS: Model]:
     # =====================================================================
 
     @staticmethod
-    fn assemble_gpu(
+    def assemble_gpu(
         ctx: DeviceContext,
         dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *sources: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -148,7 +148,7 @@ struct CompositeParams[*MODELS: Model]:
             comptime SZ = Self.model_types[m].PARAM_SIZE
 
             @always_inline
-            fn _cp_assemble_kernel(
+            def _cp_assemble_kernel(
                 d: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],
                 s: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],
             ):
@@ -158,20 +158,23 @@ struct CompositeParams[*MODELS: Model]:
                 d[i] = s[i]
 
             var off = Self.offset[m]()
-            var d_t = LayoutTensor[
-                dtype, Layout.row_major(SZ), MutAnyOrigin
-            ](dst + off)
-            var s_t = LayoutTensor[
-                dtype, Layout.row_major(SZ), MutAnyOrigin
-            ](sources[m])
+            var d_t = LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin](
+                dst + off
+            )
+            var s_t = LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin](
+                sources[m]
+            )
 
             comptime BLOCKS = (SZ + TPB - 1) // TPB
             ctx.enqueue_function[_cp_assemble_kernel, _cp_assemble_kernel](
-                d_t, s_t, grid_dim=(BLOCKS,), block_dim=(TPB,),
+                d_t,
+                s_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
             )
 
     @staticmethod
-    fn scatter_add_gpu(
+    def scatter_add_gpu(
         ctx: DeviceContext,
         src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *dsts: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -186,7 +189,7 @@ struct CompositeParams[*MODELS: Model]:
             comptime SZ = Self.model_types[m].PARAM_SIZE
 
             @always_inline
-            fn _cp_scatter_add_kernel(
+            def _cp_scatter_add_kernel(
                 d: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],
                 s: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],
             ):
@@ -196,16 +199,19 @@ struct CompositeParams[*MODELS: Model]:
                 d[i] = rebind[Scalar[dtype]](d[i]) + rebind[Scalar[dtype]](s[i])
 
             var off = Self.offset[m]()
-            var d_t = LayoutTensor[
-                dtype, Layout.row_major(SZ), MutAnyOrigin
-            ](dsts[m])
-            var s_t = LayoutTensor[
-                dtype, Layout.row_major(SZ), MutAnyOrigin
-            ](src + off)
+            var d_t = LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin](
+                dsts[m]
+            )
+            var s_t = LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin](
+                src + off
+            )
 
             comptime BLOCKS = (SZ + TPB - 1) // TPB
             ctx.enqueue_function[
                 _cp_scatter_add_kernel, _cp_scatter_add_kernel
             ](
-                d_t, s_t, grid_dim=(BLOCKS,), block_dim=(TPB,),
+                d_t,
+                s_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
             )

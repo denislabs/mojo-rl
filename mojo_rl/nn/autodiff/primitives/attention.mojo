@@ -41,9 +41,7 @@ from std.gpu.primitives import block
 from std.math import exp, sqrt
 
 
-struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
-    DiffOp
-):
+struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](DiffOp):
     """Scaled dot-product attention with multi-head support.
 
     Input: concatenated Q, K, V as (BATCH, seq_len * dim * 3)
@@ -60,18 +58,17 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
     comptime PARAM_SIZE: Int = 0
     # Cache: Q + K + V + attention weights
     comptime CACHE_SIZE: Int = (
-        3 * Self.seq_len * Self.dim
-        + Self.n_heads * Self.seq_len * Self.seq_len
+        3 * Self.seq_len * Self.dim + Self.n_heads * Self.seq_len * Self.seq_len
     )
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -84,22 +81,22 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
 
     @always_inline
     @staticmethod
-    fn _q_offset() -> Int:
+    def _q_offset() -> Int:
         return 0
 
     @always_inline
     @staticmethod
-    fn _k_offset() -> Int:
+    def _k_offset() -> Int:
         return Self.seq_len * Self.dim
 
     @always_inline
     @staticmethod
-    fn _v_offset() -> Int:
+    def _v_offset() -> Int:
         return 2 * Self.seq_len * Self.dim
 
     @always_inline
     @staticmethod
-    fn _attn_cache_offset() -> Int:
+    def _attn_cache_offset() -> Int:
         return 3 * Self.seq_len * Self.dim
 
     # =========================================================================
@@ -107,7 +104,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -156,10 +153,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
                         for d in range(Self.head_dim):
                             var q_val = Float64(
                                 input.ptr[
-                                    b * Self.IN_DIM
-                                    + i * Self.dim
-                                    + h_off
-                                    + d
+                                    b * Self.IN_DIM + i * Self.dim + h_off + d
                                 ]
                             )
                             var k_val = Float64(
@@ -195,9 +189,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
                             + i * Self.seq_len
                             + j
                         )
-                        var e = exp(
-                            Float64(cache.ptr[attn_idx]) - max_score
-                        )
+                        var e = exp(Float64(cache.ptr[attn_idx]) - max_score)
                         cache.ptr[attn_idx] = Scalar[dtype](e)
                         sum_exp += e
 
@@ -244,7 +236,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
     # =========================================================================
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -294,10 +286,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
                         for d in range(Self.head_dim):
                             var go = Float64(
                                 grad_output.ptr[
-                                    b * Self.OUT_DIM
-                                    + i * Self.dim
-                                    + h_off
-                                    + d
+                                    b * Self.OUT_DIM + i * Self.dim + h_off + d
                                 ]
                             )
                             # dV[j, h_off+d] += attn[i,j] * grad_out[i, h_off+d]
@@ -324,10 +313,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
                         for d in range(Self.head_dim):
                             var go = Float64(
                                 grad_output.ptr[
-                                    b * Self.OUT_DIM
-                                    + i * Self.dim
-                                    + h_off
-                                    + d
+                                    b * Self.OUT_DIM + i * Self.dim + h_off + d
                                 ]
                             )
                             var v_val = Float64(
@@ -360,10 +346,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
                         for d in range(Self.head_dim):
                             var go = Float64(
                                 grad_output.ptr[
-                                    b * Self.OUT_DIM
-                                    + i * Self.dim
-                                    + h_off
-                                    + d
+                                    b * Self.OUT_DIM + i * Self.dim + h_off + d
                                 ]
                             )
                             var v_val = Float64(
@@ -413,10 +396,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
 
                             # dQ[i, h_off+d]
                             var dq_idx = (
-                                b * Self.IN_DIM
-                                + i * Self.dim
-                                + h_off
-                                + d
+                                b * Self.IN_DIM + i * Self.dim + h_off + d
                             )
                             grad_input.ptr[dq_idx] = grad_input.ptr[
                                 dq_idx
@@ -439,7 +419,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -465,7 +445,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](
     # =========================================================================
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,

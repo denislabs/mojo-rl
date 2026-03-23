@@ -43,7 +43,7 @@ comptime RENDER = True  # Set to False for headless evaluation
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Continuous Agent CPU Evaluation - Gymnasium HalfCheetah-v5")

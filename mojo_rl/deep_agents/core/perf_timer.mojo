@@ -51,14 +51,14 @@ struct PerfTimer[ENABLED: Bool]:
     var parents: List[Int]  # -1 = top-level, otherwise parent slot index
     var _mark: UInt
 
-    fn __init__(out self):
+    def __init__(out self):
         self.accum_ns = List[UInt]()
         self.counts = List[UInt]()
         self.labels = List[String]()
         self.parents = List[Int]()
         self._mark = 0
 
-    fn add_slot(mut self, label: String, parent: Int = -1) -> Int:
+    def add_slot(mut self, label: String, parent: Int = -1) -> Int:
         """Add a timing slot. Returns its index for use with accumulate().
 
         Args:
@@ -75,25 +75,25 @@ struct PerfTimer[ENABLED: Bool]:
         self.parents.append(parent)
         return idx
 
-    fn mark(mut self):
+    def mark(mut self):
         """Record start timestamp (CPU-side, no GPU sync)."""
         comptime if Self.ENABLED:
             self._mark = perf_counter_ns()
 
-    fn accumulate(mut self, idx: Int):
+    def accumulate(mut self, idx: Int):
         """Add elapsed ns since last mark() to slot idx."""
         comptime if Self.ENABLED:
             var now = perf_counter_ns()
             self.accum_ns[idx] += now - self._mark
             self.counts[idx] += 1
 
-    fn sync_and_mark(mut self, ctx: DeviceContext) raises:
+    def sync_and_mark(mut self, ctx: DeviceContext) raises:
         """Synchronize GPU then record start timestamp."""
         comptime if Self.ENABLED:
             ctx.synchronize()
             self._mark = perf_counter_ns()
 
-    fn sync_and_accumulate(mut self, idx: Int, ctx: DeviceContext) raises:
+    def sync_and_accumulate(mut self, idx: Int, ctx: DeviceContext) raises:
         """Synchronize GPU then accumulate elapsed ns to slot idx."""
         comptime if Self.ENABLED:
             ctx.synchronize()
@@ -101,7 +101,7 @@ struct PerfTimer[ENABLED: Bool]:
             self.accum_ns[idx] += now - self._mark
             self.counts[idx] += 1
 
-    fn total(self) -> UInt:
+    def total(self) -> UInt:
         """Sum all top-level accumulator slots."""
         var s: UInt = 0
         for i in range(len(self.accum_ns)):
@@ -109,7 +109,7 @@ struct PerfTimer[ENABLED: Bool]:
                 s += self.accum_ns[i]
         return s
 
-    fn merge_children(mut self, parent_idx: Int, other: Self):
+    def merge_children(mut self, parent_idx: Int, other: Self):
         """Merge all slots from other as children of parent_idx.
 
         Top-level slots in `other` become children of `parent_idx` in self.
@@ -126,7 +126,7 @@ struct PerfTimer[ENABLED: Bool]:
                 else:
                     self.parents.append(other.parents[i] + base)
 
-    fn merge_children_range(
+    def merge_children_range(
         mut self, parent_idx: Int, other: Self, start: Int, end: Int
     ):
         """Merge slots [start, end) from other as children of parent_idx."""
@@ -137,7 +137,7 @@ struct PerfTimer[ENABLED: Bool]:
                 self.labels.append(other.labels[i])
                 self.parents.append(parent_idx)
 
-    fn merge_subtree_range(
+    def merge_subtree_range(
         mut self, parent_idx: Int, other: Self, start: Int, end: Int
     ):
         """Merge slots [start, end) from other as children of parent_idx,
@@ -161,7 +161,7 @@ struct PerfTimer[ENABLED: Bool]:
                     self.labels.append(other.labels[i])
                     self.parents.append(p - start + base)  # remap parent
 
-    fn print_report(self, title: String = "Performance Profile"):
+    def print_report(self, title: String = "Performance Profile"):
         """Print hierarchical performance report.
 
         Top-level slots show percentage relative to total.
@@ -182,19 +182,17 @@ struct PerfTimer[ENABLED: Bool]:
             for i in range(len(self.accum_ns)):
                 if self.parents[i] != -1:
                     continue  # skip children, they're printed under parent
-                _print_slot(self.labels[i], self.accum_ns[i], total_ns, indent=2)
+                _print_slot(
+                    self.labels[i], self.accum_ns[i], total_ns, indent=2
+                )
                 self._print_children(i, self.accum_ns[i], depth=1)
 
             print(sep)
             var total_ms = Float64(total_ns) / 1_000_000.0
-            print(
-                "  Total:"
-                + _pad_to(24 - len("Total:"))
-                + _fmt_ms(total_ms)
-            )
+            print("  Total:" + _pad_to(24 - len("Total:")) + _fmt_ms(total_ms))
             print(sep)
 
-    fn _print_children(self, parent: Int, ref_ns: UInt, depth: Int):
+    def _print_children(self, parent: Int, ref_ns: UInt, depth: Int):
         """Recursively print children of a slot with increasing indentation."""
         comptime if Self.ENABLED:
             for j in range(len(self.accum_ns)):
@@ -208,17 +206,17 @@ struct PerfTimer[ENABLED: Bool]:
                     self._print_children(j, self.accum_ns[j], depth + 1)
 
 
-fn _fmt_ms(ms: Float64) -> String:
+def _fmt_ms(ms: Float64) -> String:
     """Format milliseconds with consistent width."""
     return String(ms)[:9] + "ms"
 
 
-fn _fmt_pct(pct: Float64) -> String:
+def _fmt_pct(pct: Float64) -> String:
     """Format percentage."""
     return "(" + String(pct)[:4] + "%)"
 
 
-fn _pad_to(n: Int) -> String:
+def _pad_to(n: Int) -> String:
     """Return n spaces."""
     var s = String("")
     for _ in range(n):
@@ -226,9 +224,7 @@ fn _pad_to(n: Int) -> String:
     return s
 
 
-fn _print_slot(
-    label: String, ns: UInt, ref_ns: UInt, indent: Int
-):
+def _print_slot(label: String, ns: UInt, ref_ns: UInt, indent: Int):
     """Print a single slot line with proper formatting."""
     var ms = Float64(ns) / 1_000_000.0
     var pct: Float64 = 0.0

@@ -56,7 +56,7 @@ comptime WINDOW_HEIGHT = 500
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Pendulum CPU Evaluation (with Rendering)")

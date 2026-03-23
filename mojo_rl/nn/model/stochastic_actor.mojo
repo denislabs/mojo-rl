@@ -73,20 +73,20 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     comptime CACHE_SIZE: Int = Self.in_dim  # Cache input for backward pass
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize StochasticActor."""
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor for Sequential composition."""
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor for Copyable trait."""
         pass
 
     @staticmethod
-    fn initialize_params[
+    def initialize_params[
         INIT: Initializer
     ](
         mut params: LayoutTensor[
@@ -100,7 +100,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     # =========================================================================
 
     @staticmethod
-    fn init_params_small(
+    def init_params_small(
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -136,7 +136,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             params[Self._log_std_offset() + i] = Scalar[dtype](log_std_init)
 
     @staticmethod
-    fn init_params_with_mean_bias(
+    def init_params_with_mean_bias(
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -182,19 +182,19 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @always_inline
     @staticmethod
-    fn _mean_W_offset() -> Int:
+    def _mean_W_offset() -> Int:
         """Offset for mean head weights."""
         return 0
 
     @always_inline
     @staticmethod
-    fn _mean_b_offset() -> Int:
+    def _mean_b_offset() -> Int:
         """Offset for mean head bias."""
         return Self.in_dim * Self.action_dim
 
     @always_inline
     @staticmethod
-    fn _log_std_offset() -> Int:
+    def _log_std_offset() -> Int:
         """Offset for state-independent log_std parameters."""
         return Self.in_dim * Self.action_dim + Self.action_dim
 
@@ -203,7 +203,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -264,7 +264,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
                 output[batch, Self.action_dim + j] = Scalar[dtype](log_std_val)
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -311,7 +311,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -391,7 +391,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl[
+    def forward_kernel_impl[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -490,7 +490,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl_no_cache[
+    def forward_kernel_impl_no_cache[
         BATCH: Int,
     ](
         output: LayoutTensor[
@@ -584,7 +584,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @always_inline
     @staticmethod
-    fn backward_dx_fused_kernel_impl[
+    def backward_dx_fused_kernel_impl[
         BATCH: Int,
     ](
         grad_input: LayoutTensor[
@@ -629,7 +629,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @always_inline
     @staticmethod
-    fn backward_dW_db_fused_kernel_impl[
+    def backward_dW_db_fused_kernel_impl[
         BATCH: Int,
     ](
         grads: LayoutTensor[
@@ -717,7 +717,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @always_inline
     @staticmethod
-    fn backward_dx_kernel_impl[
+    def backward_dx_kernel_impl[
         BATCH: Int,
     ](
         grad_input: LayoutTensor[
@@ -786,7 +786,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @always_inline
     @staticmethod
-    fn backward_dW_mean_kernel_impl[
+    def backward_dW_mean_kernel_impl[
         BATCH: Int,
     ](
         dW_mean: LayoutTensor[
@@ -848,7 +848,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @always_inline
     @staticmethod
-    fn backward_d_log_std_kernel_impl[
+    def backward_d_log_std_kernel_impl[
         BATCH: Int,
     ](
         d_log_std: LayoutTensor[
@@ -884,7 +884,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @always_inline
     @staticmethod
-    fn backward_db_mean_kernel_impl[
+    def backward_db_mean_kernel_impl[
         BATCH: Int,
     ](
         db_mean: LayoutTensor[
@@ -918,7 +918,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -961,7 +961,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime grid_y = (BATCH + TILE - 1) // TILE
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -1004,7 +1004,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         )
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1041,7 +1041,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime grid_y = (BATCH + TILE - 1) // TILE
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
             ],
@@ -1075,7 +1075,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         )
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1095,7 +1095,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -1142,7 +1142,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime dx_grid = (dx_total + TPB - 1) // TPB
 
         @always_inline
-        fn dx_fused_kernel_wrapper(
+        def dx_fused_kernel_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
             ],
@@ -1176,7 +1176,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime dW_db_grid = dW_size + 2 * Self.action_dim
 
         @always_inline
-        fn dW_db_fused_kernel_wrapper(
+        def dW_db_fused_kernel_wrapper(
             grads: LayoutTensor[
                 dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
             ],
@@ -1207,7 +1207,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 # =============================================================================
 
 
-fn rsample[
+def rsample[
     BATCH: Int, action_dim: Int
 ](
     mean: LayoutTensor[
@@ -1274,7 +1274,7 @@ fn rsample[
         log_prob[batch, 0] = Scalar[dtype](total_log_prob)
 
 
-fn sample_action[
+def sample_action[
     BATCH: Int, action_dim: Int
 ](
     mean: LayoutTensor[
@@ -1314,7 +1314,7 @@ fn sample_action[
             action[batch, j] = Scalar[dtype](tanh_z)
 
 
-fn compute_log_prob[
+def compute_log_prob[
     BATCH: Int, action_dim: Int
 ](
     mean: LayoutTensor[
@@ -1374,7 +1374,7 @@ fn compute_log_prob[
         log_prob[batch, 0] = Scalar[dtype](total_log_prob)
 
 
-fn get_deterministic_action[
+def get_deterministic_action[
     BATCH: Int, action_dim: Int
 ](
     mean: LayoutTensor[
@@ -1406,7 +1406,7 @@ fn get_deterministic_action[
 # =============================================================================
 
 
-fn rsample_with_cache[
+def rsample_with_cache[
     BATCH: Int, action_dim: Int
 ](
     mean: LayoutTensor[
@@ -1477,7 +1477,7 @@ fn rsample_with_cache[
         log_prob[batch, 0] = Scalar[dtype](total_log_prob)
 
 
-fn rsample_backward[
+def rsample_backward[
     BATCH: Int, action_dim: Int
 ](
     grad_action: LayoutTensor[
@@ -1569,7 +1569,7 @@ fn rsample_backward[
 
 
 @always_inline
-fn rsample_backward_kernel_impl[
+def rsample_backward_kernel_impl[
     BATCH: Int, action_dim: Int
 ](
     grad_action: LayoutTensor[
@@ -1634,7 +1634,7 @@ fn rsample_backward_kernel_impl[
     grad_log_std[batch, j] = Scalar[dtype](grad_ls)
 
 
-fn rsample_backward_gpu[
+def rsample_backward_gpu[
     BATCH: Int, action_dim: Int
 ](
     ctx: DeviceContext,
@@ -1684,7 +1684,7 @@ fn rsample_backward_gpu[
     comptime grid_size = (total_size + TPB - 1) // TPB
 
     @always_inline
-    fn kernel_wrapper(
+    def kernel_wrapper(
         grad_action: LayoutTensor[
             dtype, Layout.row_major(BATCH, action_dim), ImmutAnyOrigin
         ],

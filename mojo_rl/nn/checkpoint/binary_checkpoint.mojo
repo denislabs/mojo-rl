@@ -43,15 +43,15 @@ struct FloatSection(Copyable, Movable):
     var name: String
     var data: List[Scalar[dtype]]
 
-    fn __init__(out self, name: String, data: List[Scalar[dtype]]):
+    def __init__(out self, name: String, data: List[Scalar[dtype]]):
         self.name = name
         self.data = data.copy()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.name = copy.name
         self.data = copy.data.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.name = take.name^
         self.data = take.data^
 
@@ -75,17 +75,17 @@ struct BinaryCheckpoint(Copyable, Movable):
     var sections: List[FloatSection]
     var metadata: List[String]
 
-    fn __init__(out self, checkpoint_type: String = "network"):
+    def __init__(out self, checkpoint_type: String = "network"):
         self.checkpoint_type = checkpoint_type
         self.sections = List[FloatSection]()
         self.metadata = List[String]()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.checkpoint_type = copy.checkpoint_type
         self.sections = copy.sections.copy()
         self.metadata = copy.metadata.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.checkpoint_type = take.checkpoint_type^
         self.sections = take.sections^
         self.metadata = take.metadata^
@@ -94,7 +94,7 @@ struct BinaryCheckpoint(Copyable, Movable):
     # Building
     # =========================================================================
 
-    fn add_float_section(mut self, name: String, data: List[Scalar[dtype]]):
+    def add_float_section(mut self, name: String, data: List[Scalar[dtype]]):
         """Add a named float section.
 
         Args:
@@ -103,7 +103,7 @@ struct BinaryCheckpoint(Copyable, Movable):
         """
         self.sections.append(FloatSection(name, data))
 
-    fn add_float_section_ptr(
+    def add_float_section_ptr(
         mut self, name: String, data: UnsafePointer[Scalar[dtype], _], size: Int
     ):
         """Add a named float section from a raw pointer.
@@ -118,7 +118,7 @@ struct BinaryCheckpoint(Copyable, Movable):
             lst.append((data + i)[])
         self.sections.append(FloatSection(name, lst^))
 
-    fn add_metadata(mut self, key: String, value: String):
+    def add_metadata(mut self, key: String, value: String):
         """Add a metadata key=value pair.
 
         Args:
@@ -127,7 +127,7 @@ struct BinaryCheckpoint(Copyable, Movable):
         """
         self.metadata.append(key + "=" + value)
 
-    fn add_metadata_entry(mut self, entry: String):
+    def add_metadata_entry(mut self, entry: String):
         """Add a raw metadata entry (already formatted as key=value).
 
         Args:
@@ -139,7 +139,7 @@ struct BinaryCheckpoint(Copyable, Movable):
     # Querying
     # =========================================================================
 
-    fn get_float_section(
+    def get_float_section(
         self, name: String, size: Int
     ) raises -> List[Scalar[dtype]]:
         """Get float data for a named section.
@@ -176,7 +176,7 @@ struct BinaryCheckpoint(Copyable, Movable):
             result.append(0)
         return result^
 
-    fn get_metadata_value(self, key: String) -> String:
+    def get_metadata_value(self, key: String) -> String:
         """Get value for a metadata key.
 
         Args:
@@ -191,7 +191,7 @@ struct BinaryCheckpoint(Copyable, Movable):
                 return String(self.metadata[i][len(prefix) :])
         return String("")
 
-    fn get_metadata_list(self) -> List[String]:
+    def get_metadata_list(self) -> List[String]:
         """Get all metadata entries.
 
         Returns:
@@ -203,7 +203,7 @@ struct BinaryCheckpoint(Copyable, Movable):
     # Serialization
     # =========================================================================
 
-    fn to_bytes(self) -> List[UInt8]:
+    def to_bytes(self) -> List[UInt8]:
         """Serialize to binary format.
 
         Returns:
@@ -254,7 +254,7 @@ struct BinaryCheckpoint(Copyable, Movable):
         return buf^
 
     @staticmethod
-    fn from_bytes(data: List[UInt8]) raises -> BinaryCheckpoint:
+    def from_bytes(data: List[UInt8]) raises -> BinaryCheckpoint:
         """Deserialize from binary format.
 
         Args:
@@ -332,7 +332,7 @@ struct BinaryCheckpoint(Copyable, Movable):
 
         return ckpt^
 
-    fn estimated_text_size(self) -> Int:
+    def estimated_text_size(self) -> Int:
         """Estimate how large the equivalent text format would be.
 
         Useful for reporting compression ratio.
@@ -353,7 +353,7 @@ struct BinaryCheckpoint(Copyable, Movable):
     # File I/O
     # =========================================================================
 
-    fn save(self, filepath: String) raises:
+    def save(self, filepath: String) raises:
         """Save checkpoint to binary file.
 
         Args:
@@ -364,7 +364,7 @@ struct BinaryCheckpoint(Copyable, Movable):
             f.write_bytes(data)
 
     @staticmethod
-    fn load(filepath: String) raises -> BinaryCheckpoint:
+    def load(filepath: String) raises -> BinaryCheckpoint:
         """Load checkpoint from binary file.
 
         Args:
@@ -383,7 +383,7 @@ struct BinaryCheckpoint(Copyable, Movable):
 # =============================================================================
 
 
-fn _write_uint32(mut buf: List[UInt8], value: UInt32):
+def _write_uint32(mut buf: List[UInt8], value: UInt32):
     """Write a uint32 in little-endian to buffer."""
     buf.append(UInt8(value & 0xFF))
     buf.append(UInt8((value >> 8) & 0xFF))
@@ -391,7 +391,7 @@ fn _write_uint32(mut buf: List[UInt8], value: UInt32):
     buf.append(UInt8((value >> 24) & 0xFF))
 
 
-fn _read_uint32(data: List[UInt8], pos: Int) -> UInt32:
+def _read_uint32(data: List[UInt8], pos: Int) -> UInt32:
     """Read a uint32 in little-endian from buffer."""
     return (
         UInt32(data[pos])
@@ -401,7 +401,7 @@ fn _read_uint32(data: List[UInt8], pos: Int) -> UInt32:
     )
 
 
-fn _read_string(data: List[UInt8], pos: Int, length: Int) -> String:
+def _read_string(data: List[UInt8], pos: Int, length: Int) -> String:
     """Read a UTF-8 string from buffer."""
     var result = String("")
     for i in range(length):

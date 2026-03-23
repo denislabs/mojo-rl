@@ -30,7 +30,7 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
 
     # === CPU: Integrator step ===
     @staticmethod
-    fn physics_substep[
+    def physics_substep[
         DTYPE: DType where DTYPE.is_floating_point(),
         NQ: Int,
         NV: Int,
@@ -71,7 +71,7 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
 
     # === CPU: Pre-step hook ===
     @staticmethod
-    fn pre_step_cpu[
+    def pre_step_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
         NQ: Int,
         NV: Int,
@@ -88,7 +88,7 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
 
     # === CPU: Reward + termination ===
     @staticmethod
-    fn compute_reward_and_done_cpu[
+    def compute_reward_and_done_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
         NQ: Int,
         NV: Int,
@@ -122,16 +122,16 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
 
     # === CPU: Float getters ===
     @staticmethod
-    fn get_timestep() -> Float64:
+    def get_timestep() -> Float64:
         return Float64(HumanoidStandupModel.TIMESTEP)
 
     @staticmethod
-    fn get_reset_noise() -> Float64:
+    def get_reset_noise() -> Float64:
         return 0.01
 
     # === GPU: Integrator step ===
     @staticmethod
-    fn physics_substep_gpu[
+    def physics_substep_gpu[
         DTYPE: DType where DTYPE.is_floating_point(),
         BATCH_SIZE: Int,
         NQ: Int,
@@ -164,7 +164,7 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
     # === GPU inline: Pre-step hook ===
     @always_inline
     @staticmethod
-    fn pre_step_gpu[
+    def pre_step_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -184,7 +184,7 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
     # === GPU inline: Reward + termination ===
     @always_inline
     @staticmethod
-    fn compute_reward_and_done_gpu[
+    def compute_reward_and_done_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -236,7 +236,7 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
     # === GPU inline: Non-zero qpos init ===
     @always_inline
     @staticmethod
-    fn init_qpos_gpu[
+    def init_qpos_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -259,7 +259,7 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
     # === GPU inline: Custom obs extraction (none — use model default 45D obs) ===
     @always_inline
     @staticmethod
-    fn custom_extract_obs_gpu[
+    def custom_extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,

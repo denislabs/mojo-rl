@@ -39,7 +39,7 @@ comptime MAX_STEPS = 1600
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Continuous Agent GPU Evaluation on BipedalWalker")

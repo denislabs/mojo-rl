@@ -43,7 +43,7 @@ struct CarRacingState[DTYPE: DType](
     # Speed indicator
     var speed: Scalar[Self.DTYPE]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.x = 0.0
         self.y = 0.0
         self.angle = 0.0
@@ -58,7 +58,7 @@ struct CarRacingState[DTYPE: DType](
         self.wheel_omega_rr = 0.0
         self.speed = 0.0
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.x = copy.x
         self.y = copy.y
         self.angle = copy.angle
@@ -73,7 +73,7 @@ struct CarRacingState[DTYPE: DType](
         self.wheel_omega_rr = copy.wheel_omega_rr
         self.speed = copy.speed
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.x = take.x
         self.y = take.y
         self.angle = take.angle
@@ -88,10 +88,10 @@ struct CarRacingState[DTYPE: DType](
         self.wheel_omega_rr = take.wheel_omega_rr
         self.speed = take.speed
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         return self.x == other.x and self.y == other.y
 
-    fn to_list(self) -> List[Scalar[Self.DTYPE]]:
+    def to_list(self) -> List[Scalar[Self.DTYPE]]:
         """Convert to list for agent interface."""
         var result = List[Scalar[Self.DTYPE]]()
         result.append(self.x)
@@ -109,7 +109,7 @@ struct CarRacingState[DTYPE: DType](
         result.append(self.speed)
         return result^
 
-    fn to_list_typed[dtype: DType](self) -> List[Scalar[dtype]]:
+    def to_list_typed[dtype: DType](self) -> List[Scalar[dtype]]:
         """Convert to list with specified dtype."""
         var result = List[Scalar[dtype]]()
         result.append(Scalar[dtype](self.x))
@@ -128,7 +128,7 @@ struct CarRacingState[DTYPE: DType](
         return result^
 
     @staticmethod
-    fn from_buffer[
+    def from_buffer[
         BATCH: Int,
         STATE_SIZE: Int,
         OBS_OFFSET: Int,

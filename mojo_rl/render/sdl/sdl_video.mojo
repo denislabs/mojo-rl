@@ -62,15 +62,15 @@ struct DisplayID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -85,15 +85,15 @@ struct WindowID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -106,19 +106,19 @@ struct SystemTheme(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime SYSTEM_THEME_UNKNOWN = Self(0)
@@ -178,19 +178,19 @@ struct DisplayOrientation(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime ORIENTATION_UNKNOWN = Self(0)
@@ -229,15 +229,15 @@ struct WindowFlags(Intable, TrivialRegisterPassable):
     var value: UInt64
 
     @always_inline
-    fn __init__(out self, value: UInt64):
+    def __init__(out self, value: UInt64):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime WINDOW_FULLSCREEN = Self(0x0000000000000001)
@@ -301,19 +301,19 @@ struct FlashOperation(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime FLASH_CANCEL = Self(0)
@@ -356,15 +356,15 @@ struct EGLAttrib(Intable, TrivialRegisterPassable):
     var value: Int
 
     @always_inline
-    fn __init__(out self, value: Int):
+    def __init__(out self, value: Int):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -377,15 +377,15 @@ struct EGLint(Intable, TrivialRegisterPassable):
     var value: c_int
 
     @always_inline
-    fn __init__(out self, value: c_int):
+    def __init__(out self, value: c_int):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -476,19 +476,19 @@ struct GLAttr(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime GL_RED_SIZE = Self(0)
@@ -555,15 +555,15 @@ struct GLProfile(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime GL_CONTEXT_PROFILE_CORE = Self(0x0001)
@@ -583,15 +583,15 @@ struct GLContextFlag(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime GL_CONTEXT_DEBUG_FLAG = Self(0x0001)
@@ -610,15 +610,15 @@ struct GLContextReleaseFlag(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime GL_CONTEXT_RELEASE_BEHAVIOR_NONE = Self(0x0000)
@@ -634,22 +634,22 @@ struct GLContextResetNotification(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime GL_CONTEXT_RESET_NO_NOTIFICATION = Self(0x0000)
     comptime GL_CONTEXT_RESET_LOSE_CONTEXT = Self(0x0001)
 
 
-fn get_num_video_drivers() raises -> c_int:
+def get_num_video_drivers() raises -> c_int:
     """Get the number of video drivers compiled into SDL.
 
     Returns:
@@ -664,7 +664,7 @@ fn get_num_video_drivers() raises -> c_int:
     return _get_dylib_function[lib, "SDL_GetNumVideoDrivers", fn() -> c_int]()()
 
 
-fn get_video_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_video_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the name of a built in video driver.
 
     The video drivers are presented in the order in which they are normally
@@ -693,7 +693,7 @@ fn get_video_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()(index)
 
 
-fn get_current_video_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_current_video_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the name of the currently initialized video driver.
 
     The names of drivers are all simple, low-ASCII identifiers, like "cocoa",
@@ -715,7 +715,7 @@ fn get_current_video_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()()
 
 
-fn get_system_theme() raises -> SystemTheme:
+def get_system_theme() raises -> SystemTheme:
     """Get the current system theme.
 
     Returns:
@@ -732,7 +732,7 @@ fn get_system_theme() raises -> SystemTheme:
     ]()()
 
 
-fn get_displays(
+def get_displays(
     count: Ptr[c_int, MutAnyOrigin], out ret: Ptr[DisplayID, MutAnyOrigin]
 ) raises:
     """Get a list of currently connected displays.
@@ -761,7 +761,7 @@ fn get_displays(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_primary_display() raises -> DisplayID:
+def get_primary_display() raises -> DisplayID:
     """Return the primary display.
 
     Returns:
@@ -779,7 +779,7 @@ fn get_primary_display() raises -> DisplayID:
     ]()()
 
 
-fn get_display_properties(display_id: DisplayID) raises -> PropertiesID:
+def get_display_properties(display_id: DisplayID) raises -> PropertiesID:
     """Get the properties associated with a display.
 
     The following read-only properties are provided by SDL:
@@ -817,7 +817,7 @@ fn get_display_properties(display_id: DisplayID) raises -> PropertiesID:
     ]()(display_id)
 
 
-fn get_display_name(
+def get_display_name(
     display_id: DisplayID, out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the name of a display in UTF-8 encoding.
@@ -844,7 +844,7 @@ fn get_display_name(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_display_bounds(
+def get_display_bounds(
     display_id: DisplayID, rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the desktop area represented by a display.
@@ -875,7 +875,7 @@ fn get_display_bounds(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_display_usable_bounds(
+def get_display_usable_bounds(
     display_id: DisplayID, rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the usable desktop area represented by a display, in screen
@@ -912,7 +912,7 @@ fn get_display_usable_bounds(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_natural_display_orientation(
+def get_natural_display_orientation(
     display_id: DisplayID,
 ) raises -> DisplayOrientation:
     """Get the orientation of a display when it is unrotated.
@@ -937,7 +937,7 @@ fn get_natural_display_orientation(
     ]()(display_id)
 
 
-fn get_current_display_orientation(
+def get_current_display_orientation(
     display_id: DisplayID,
 ) raises -> DisplayOrientation:
     """Get the orientation of a display.
@@ -962,7 +962,7 @@ fn get_current_display_orientation(
     ]()(display_id)
 
 
-fn get_display_content_scale(display_id: DisplayID) raises -> c_float:
+def get_display_content_scale(display_id: DisplayID) raises -> c_float:
     """Get the content scale of a display.
 
     The content scale is the expected scale for content based on the DPI
@@ -994,7 +994,7 @@ fn get_display_content_scale(display_id: DisplayID) raises -> c_float:
     ]()(display_id)
 
 
-fn get_fullscreen_display_modes(
+def get_fullscreen_display_modes(
     display_id: DisplayID, count: Ptr[c_int, MutAnyOrigin]
 ) raises -> Ptr[Ptr[DisplayMode, MutAnyOrigin], MutAnyOrigin]:
     """Get a list of fullscreen display modes available on a display.
@@ -1034,7 +1034,7 @@ fn get_fullscreen_display_modes(
     ]()(display_id, count)
 
 
-fn get_closest_fullscreen_display_mode(
+def get_closest_fullscreen_display_mode(
     display_id: DisplayID,
     w: c_int,
     h: c_int,
@@ -1088,7 +1088,7 @@ fn get_closest_fullscreen_display_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_desktop_display_mode(
+def get_desktop_display_mode(
     display_id: DisplayID, out ret: Ptr[DisplayMode, ImmutAnyOrigin]
 ) raises:
     """Get information about the desktop's display mode.
@@ -1120,7 +1120,7 @@ fn get_desktop_display_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_current_display_mode(
+def get_current_display_mode(
     display_id: DisplayID, out ret: Ptr[DisplayMode, ImmutAnyOrigin]
 ) raises:
     """Get information about the current display mode.
@@ -1152,7 +1152,7 @@ fn get_current_display_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_display_for_point(point: Ptr[Point, ImmutAnyOrigin]) raises -> DisplayID:
+def get_display_for_point(point: Ptr[Point, ImmutAnyOrigin]) raises -> DisplayID:
     """Get the display containing a point.
 
     Args:
@@ -1175,7 +1175,7 @@ fn get_display_for_point(point: Ptr[Point, ImmutAnyOrigin]) raises -> DisplayID:
     ]()(point)
 
 
-fn get_display_for_rect(rect: Ptr[Rect, ImmutAnyOrigin]) raises -> DisplayID:
+def get_display_for_rect(rect: Ptr[Rect, ImmutAnyOrigin]) raises -> DisplayID:
     """Get the display primarily containing a rect.
 
     Args:
@@ -1199,7 +1199,7 @@ fn get_display_for_rect(rect: Ptr[Rect, ImmutAnyOrigin]) raises -> DisplayID:
     ]()(rect)
 
 
-fn get_display_for_window(
+def get_display_for_window(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> DisplayID:
     """Get the display associated with a window.
@@ -1225,7 +1225,7 @@ fn get_display_for_window(
     ]()(window)
 
 
-fn get_window_pixel_density(
+def get_window_pixel_density(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> c_float:
     """Get the pixel density of a window.
@@ -1254,7 +1254,7 @@ fn get_window_pixel_density(
     ]()(window)
 
 
-fn get_window_display_scale(
+def get_window_display_scale(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> c_float:
     """Get the content display scale relative to a window's pixel size.
@@ -1290,7 +1290,7 @@ fn get_window_display_scale(
     ]()(window)
 
 
-fn set_window_fullscreen_mode(
+def set_window_fullscreen_mode(
     window: Ptr[Window, MutAnyOrigin],
     mode: Ptr[DisplayMode, ImmutAnyOrigin],
 ) raises:
@@ -1339,7 +1339,7 @@ fn set_window_fullscreen_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_fullscreen_mode(
+def get_window_fullscreen_mode(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> Ptr[DisplayMode, ImmutAnyOrigin]:
     """Query the display mode to use when a window is visible at fullscreen.
@@ -1366,7 +1366,7 @@ fn get_window_fullscreen_mode(
     ]()(window)
 
 
-fn get_window_icc_profile(
+def get_window_icc_profile(
     window: Ptr[Window, MutAnyOrigin],
     size: Ptr[c_size_t, MutAnyOrigin],
     out ret: Ptr[NoneType, MutAnyOrigin],
@@ -1400,7 +1400,7 @@ fn get_window_icc_profile(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_pixel_format(
+def get_window_pixel_format(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> PixelFormat:
     """Get the pixel format associated with the window.
@@ -1426,7 +1426,7 @@ fn get_window_pixel_format(
     ]()(window)
 
 
-fn get_windows(
+def get_windows(
     count: Ptr[c_int, MutAnyOrigin],
     out ret: Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
 ) raises:
@@ -1459,7 +1459,7 @@ fn get_windows(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_window(
+def create_window(
     var title: String,
     w: c_int,
     h: c_int,
@@ -1567,7 +1567,7 @@ fn create_window(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_popup_window(
+def create_popup_window(
     parent: Ptr[Window, MutAnyOrigin],
     offset_x: c_int,
     offset_y: c_int,
@@ -1664,7 +1664,7 @@ fn create_popup_window(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn create_window_with_properties(
+def create_window_with_properties(
     props: PropertiesID, out ret: Ptr[Window, MutAnyOrigin]
 ) raises:
     """Create a window with the specified properties.
@@ -1802,7 +1802,7 @@ fn create_window_with_properties(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_id(window: Ptr[Window, MutAnyOrigin]) raises -> WindowID:
+def get_window_id(window: Ptr[Window, MutAnyOrigin]) raises -> WindowID:
     """Get the numeric ID of a window.
 
     The numeric ID is what SDL_WindowEvent references, and is necessary to map
@@ -1828,7 +1828,7 @@ fn get_window_id(window: Ptr[Window, MutAnyOrigin]) raises -> WindowID:
     ]()(window)
 
 
-fn get_window_from_id(id: WindowID) raises -> Ptr[Window, MutAnyOrigin]:
+def get_window_from_id(id: WindowID) raises -> Ptr[Window, MutAnyOrigin]:
     """Get a window from a stored ID.
 
     The numeric ID is what SDL_WindowEvent references, and is necessary to map
@@ -1854,7 +1854,7 @@ fn get_window_from_id(id: WindowID) raises -> Ptr[Window, MutAnyOrigin]:
     ]()(id)
 
 
-fn get_window_parent(
+def get_window_parent(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> Ptr[Window, MutAnyOrigin]:
     """Get parent of a window.
@@ -1879,7 +1879,7 @@ fn get_window_parent(
     ]()(window)
 
 
-fn get_window_properties(
+def get_window_properties(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with a window.
@@ -2013,7 +2013,7 @@ fn get_window_properties(
     ]()(window)
 
 
-fn get_window_flags(window: Ptr[Window, MutAnyOrigin]) raises -> WindowFlags:
+def get_window_flags(window: Ptr[Window, MutAnyOrigin]) raises -> WindowFlags:
     """Get the window flags.
 
     Args:
@@ -2035,7 +2035,7 @@ fn get_window_flags(window: Ptr[Window, MutAnyOrigin]) raises -> WindowFlags:
     ]()(window)
 
 
-fn set_window_title(
+def set_window_title(
     window: Ptr[Window, MutAnyOrigin], var title: String
 ) raises:
     """Set the title of a window.
@@ -2068,7 +2068,7 @@ fn set_window_title(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_title(
+def get_window_title(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the title of a window.
@@ -2093,7 +2093,7 @@ fn get_window_title(
     ]()(window)
 
 
-fn set_window_icon(
+def set_window_icon(
     window: Ptr[Window, MutAnyOrigin], icon: Ptr[Surface, MutAnyOrigin]
 ) raises:
     """Set the icon for a window.
@@ -2134,7 +2134,7 @@ fn set_window_icon(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_position(
+def set_window_position(
     window: Ptr[Window, MutAnyOrigin], x: c_int, y: c_int
 ) raises:
     """Request that the window's position be set.
@@ -2186,7 +2186,7 @@ fn set_window_position(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_position(
+def get_window_position(
     window: Ptr[Window, MutAnyOrigin],
     x: Ptr[c_int, MutAnyOrigin],
     y: Ptr[c_int, MutAnyOrigin],
@@ -2229,7 +2229,7 @@ fn get_window_position(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_size(
+def set_window_size(
     window: Ptr[Window, MutAnyOrigin], w: c_int, h: c_int
 ) raises:
     """Request that the size of a window's client area be set.
@@ -2276,7 +2276,7 @@ fn set_window_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_size(
+def get_window_size(
     window: Ptr[Window, MutAnyOrigin],
     w: Ptr[c_int, MutAnyOrigin],
     h: Ptr[c_int, MutAnyOrigin],
@@ -2315,7 +2315,7 @@ fn get_window_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_safe_area(
+def get_window_safe_area(
     window: Ptr[Window, MutAnyOrigin], rect: Ptr[Rect, MutAnyOrigin]
 ) raises:
     """Get the safe area for this window.
@@ -2354,7 +2354,7 @@ fn get_window_safe_area(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_aspect_ratio(
+def set_window_aspect_ratio(
     window: Ptr[Window, MutAnyOrigin],
     min_aspect: c_float,
     max_aspect: c_float,
@@ -2412,7 +2412,7 @@ fn set_window_aspect_ratio(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_aspect_ratio(
+def get_window_aspect_ratio(
     window: Ptr[Window, MutAnyOrigin],
     min_aspect: Ptr[c_float, MutAnyOrigin],
     max_aspect: Ptr[c_float, MutAnyOrigin],
@@ -2449,7 +2449,7 @@ fn get_window_aspect_ratio(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_borders_size(
+def get_window_borders_size(
     window: Ptr[Window, MutAnyOrigin],
     top: Ptr[c_int, MutAnyOrigin],
     left: Ptr[c_int, MutAnyOrigin],
@@ -2508,7 +2508,7 @@ fn get_window_borders_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_size_in_pixels(
+def get_window_size_in_pixels(
     window: Ptr[Window, MutAnyOrigin],
     w: Ptr[c_int, MutAnyOrigin],
     h: Ptr[c_int, MutAnyOrigin],
@@ -2545,7 +2545,7 @@ fn get_window_size_in_pixels(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_minimum_size(
+def set_window_minimum_size(
     window: Ptr[Window, MutAnyOrigin], min_w: c_int, min_h: c_int
 ) raises:
     """Set the minimum size of a window's client area.
@@ -2576,7 +2576,7 @@ fn set_window_minimum_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_minimum_size(
+def get_window_minimum_size(
     window: Ptr[Window, MutAnyOrigin],
     w: Ptr[c_int, MutAnyOrigin],
     h: Ptr[c_int, MutAnyOrigin],
@@ -2613,7 +2613,7 @@ fn get_window_minimum_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_maximum_size(
+def set_window_maximum_size(
     window: Ptr[Window, MutAnyOrigin], max_w: c_int, max_h: c_int
 ) raises:
     """Set the maximum size of a window's client area.
@@ -2644,7 +2644,7 @@ fn set_window_maximum_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_maximum_size(
+def get_window_maximum_size(
     window: Ptr[Window, MutAnyOrigin],
     w: Ptr[c_int, MutAnyOrigin],
     h: Ptr[c_int, MutAnyOrigin],
@@ -2681,7 +2681,7 @@ fn get_window_maximum_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_bordered(
+def set_window_bordered(
     window: Ptr[Window, MutAnyOrigin], bordered: Bool
 ) raises:
     """Set the border state of a window.
@@ -2715,7 +2715,7 @@ fn set_window_bordered(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_resizable(
+def set_window_resizable(
     window: Ptr[Window, MutAnyOrigin], resizable: Bool
 ) raises:
     """Set the user-resizable state of a window.
@@ -2749,7 +2749,7 @@ fn set_window_resizable(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_always_on_top(
+def set_window_always_on_top(
     window: Ptr[Window, MutAnyOrigin], on_top: Bool
 ) raises:
     """Set the window to always be above the others.
@@ -2780,7 +2780,7 @@ fn set_window_always_on_top(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn show_window(window: Ptr[Window, MutAnyOrigin]) raises:
+def show_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """Show a window.
 
     Args:
@@ -2803,7 +2803,7 @@ fn show_window(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn hide_window(window: Ptr[Window, MutAnyOrigin]) raises:
+def hide_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """Hide a window.
 
     Args:
@@ -2826,7 +2826,7 @@ fn hide_window(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn raise_window(window: Ptr[Window, MutAnyOrigin]) raises:
+def raise_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """Request that a window be raised above other windows and gain the input
     focus.
 
@@ -2856,7 +2856,7 @@ fn raise_window(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn maximize_window(window: Ptr[Window, MutAnyOrigin]) raises:
+def maximize_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """Request that the window be made as large as possible.
 
     Non-resizable windows can't be maximized. The window must have the
@@ -2898,7 +2898,7 @@ fn maximize_window(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn minimize_window(window: Ptr[Window, MutAnyOrigin]) raises:
+def minimize_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """Request that the window be minimized to an iconic representation.
 
     If the window is in a fullscreen state, this request has no direct effect.
@@ -2935,7 +2935,7 @@ fn minimize_window(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn restore_window(window: Ptr[Window, MutAnyOrigin]) raises:
+def restore_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """Request that the size and position of a minimized or maximized window be
     restored.
 
@@ -2973,7 +2973,7 @@ fn restore_window(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_fullscreen(
+def set_window_fullscreen(
     window: Ptr[Window, MutAnyOrigin], fullscreen: Bool
 ) raises:
     """Request that the window's fullscreen state be changed.
@@ -3014,7 +3014,7 @@ fn set_window_fullscreen(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn sync_window(window: Ptr[Window, MutAnyOrigin]) raises:
+def sync_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """Block until any pending window state is finalized.
 
     On asynchronous windowing systems, this acts as a synchronization barrier
@@ -3047,7 +3047,7 @@ fn sync_window(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn window_has_surface(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
+def window_has_surface(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     """Return whether the window has a surface associated with it.
 
     Args:
@@ -3070,7 +3070,7 @@ fn window_has_surface(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     ]()(window)
 
 
-fn get_window_surface(
+def get_window_surface(
     window: Ptr[Window, MutAnyOrigin], out ret: Ptr[Surface, MutAnyOrigin]
 ) raises:
     """Get the SDL surface associated with the window.
@@ -3108,7 +3108,7 @@ fn get_window_surface(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_surface_vsync(
+def set_window_surface_vsync(
     window: Ptr[Window, MutAnyOrigin], vsync: c_int
 ) raises:
     """Toggle VSync for the window surface.
@@ -3146,7 +3146,7 @@ fn set_window_surface_vsync(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_surface_vsync(
+def get_window_surface_vsync(
     window: Ptr[Window, MutAnyOrigin], vsync: Ptr[c_int, MutAnyOrigin]
 ) raises:
     """Get VSync for the window surface.
@@ -3178,7 +3178,7 @@ fn get_window_surface_vsync(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn update_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
+def update_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
     """Copy the window surface to the screen.
 
     This is the function you use to reflect any changes to the surface on the
@@ -3208,7 +3208,7 @@ fn update_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn update_window_surface_rects(
+def update_window_surface_rects(
     window: Ptr[Window, MutAnyOrigin],
     rects: Ptr[Rect, ImmutAnyOrigin],
     numrects: c_int,
@@ -3254,7 +3254,7 @@ fn update_window_surface_rects(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
+def destroy_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
     """Destroy the surface associated with the window.
 
     Args:
@@ -3279,7 +3279,7 @@ fn destroy_window_surface(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_keyboard_grab(
+def set_window_keyboard_grab(
     window: Ptr[Window, MutAnyOrigin], grabbed: Bool
 ) raises:
     """Set a window's keyboard grab mode.
@@ -3323,7 +3323,7 @@ fn set_window_keyboard_grab(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_mouse_grab(
+def set_window_mouse_grab(
     window: Ptr[Window, MutAnyOrigin], grabbed: Bool
 ) raises:
     """Set a window's mouse grab mode.
@@ -3353,7 +3353,7 @@ fn set_window_mouse_grab(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_keyboard_grab(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
+def get_window_keyboard_grab(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     """Get a window's keyboard grab mode.
 
     Args:
@@ -3375,7 +3375,7 @@ fn get_window_keyboard_grab(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     ]()(window)
 
 
-fn get_window_mouse_grab(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
+def get_window_mouse_grab(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     """Get a window's mouse grab mode.
 
     Args:
@@ -3397,7 +3397,7 @@ fn get_window_mouse_grab(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     ]()(window)
 
 
-fn get_grabbed_window() raises -> Ptr[Window, MutAnyOrigin]:
+def get_grabbed_window() raises -> Ptr[Window, MutAnyOrigin]:
     """Get the window that currently has an input grab enabled.
 
     Returns:
@@ -3414,7 +3414,7 @@ fn get_grabbed_window() raises -> Ptr[Window, MutAnyOrigin]:
     ]()()
 
 
-fn set_window_mouse_rect(
+def set_window_mouse_rect(
     window: Ptr[Window, MutAnyOrigin], rect: Ptr[Rect, ImmutAnyOrigin]
 ) raises:
     """Confines the cursor to the specified area of a window.
@@ -3449,7 +3449,7 @@ fn set_window_mouse_rect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_mouse_rect(
+def get_window_mouse_rect(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> Ptr[Rect, ImmutAnyOrigin]:
     """Get the mouse confinement rectangle of a window.
@@ -3474,7 +3474,7 @@ fn get_window_mouse_rect(
     ]()(window)
 
 
-fn set_window_opacity(
+def set_window_opacity(
     window: Ptr[Window, MutAnyOrigin], opacity: c_float
 ) raises:
     """Set the opacity for a window.
@@ -3507,7 +3507,7 @@ fn set_window_opacity(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_window_opacity(window: Ptr[Window, MutAnyOrigin]) raises -> c_float:
+def get_window_opacity(window: Ptr[Window, MutAnyOrigin]) raises -> c_float:
     """Get the opacity of a window.
 
     If transparency isn't supported on this platform, opacity will be returned
@@ -3533,7 +3533,7 @@ fn get_window_opacity(window: Ptr[Window, MutAnyOrigin]) raises -> c_float:
     ]()(window)
 
 
-fn set_window_parent(
+def set_window_parent(
     window: Ptr[Window, MutAnyOrigin], parent: Ptr[Window, MutAnyOrigin]
 ) raises:
     """Set the window as a child of a parent window.
@@ -3582,7 +3582,7 @@ fn set_window_parent(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_modal(window: Ptr[Window, MutAnyOrigin], modal: Bool) raises:
+def set_window_modal(window: Ptr[Window, MutAnyOrigin], modal: Bool) raises:
     """Toggle the state of the window as modal.
 
     To enable modal status on a window, the window must currently be the child
@@ -3611,7 +3611,7 @@ fn set_window_modal(window: Ptr[Window, MutAnyOrigin], modal: Bool) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_focusable(
+def set_window_focusable(
     window: Ptr[Window, MutAnyOrigin], focusable: Bool
 ) raises:
     """Set whether the window may have input focus.
@@ -3639,7 +3639,7 @@ fn set_window_focusable(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn show_window_system_menu(
+def show_window_system_menu(
     window: Ptr[Window, MutAnyOrigin], x: c_int, y: c_int
 ) raises:
     """Display the system-level window menu.
@@ -3690,19 +3690,19 @@ struct HitTestResult(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime HITTEST_NORMAL = Self(0)
@@ -3746,7 +3746,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_HitTest.
 """
 
 
-fn set_window_hit_test(
+def set_window_hit_test(
     window: Ptr[Window, MutAnyOrigin],
     callback: HitTest,
     callback_data: Ptr[NoneType, MutAnyOrigin],
@@ -3810,7 +3810,7 @@ fn set_window_hit_test(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_window_shape(
+def set_window_shape(
     window: Ptr[Window, MutAnyOrigin], shape: Ptr[Surface, MutAnyOrigin]
 ) raises:
     """Set the shape of a transparent window.
@@ -3855,7 +3855,7 @@ fn set_window_shape(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn flash_window(
+def flash_window(
     window: Ptr[Window, MutAnyOrigin], operation: FlashOperation
 ) raises:
     """Request a window to demand attention from the user.
@@ -3885,7 +3885,7 @@ fn flash_window(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_window(window: Ptr[Window, MutAnyOrigin]) raises -> None:
+def destroy_window(window: Ptr[Window, MutAnyOrigin]) raises -> None:
     """Destroy a window.
 
     Any child windows owned by the window will be recursively destroyed as
@@ -3911,7 +3911,7 @@ fn destroy_window(window: Ptr[Window, MutAnyOrigin]) raises -> None:
     ]()(window)
 
 
-fn screen_saver_enabled() raises -> Bool:
+def screen_saver_enabled() raises -> Bool:
     """Check whether the screensaver is currently enabled.
 
     The screensaver is disabled by default.
@@ -3930,7 +3930,7 @@ fn screen_saver_enabled() raises -> Bool:
     return _get_dylib_function[lib, "SDL_ScreenSaverEnabled", fn() -> Bool]()()
 
 
-fn enable_screen_saver() raises:
+def enable_screen_saver() raises:
     """Allow the screen to be blanked by a screen saver.
 
     Raises:
@@ -3948,7 +3948,7 @@ fn enable_screen_saver() raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn disable_screen_saver() raises:
+def disable_screen_saver() raises:
     """Prevent the screen from being blanked by a screen saver.
 
     If you disable the screensaver, it is automatically re-enabled when SDL
@@ -3972,7 +3972,7 @@ fn disable_screen_saver() raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_load_library(var path: String) raises:
+def gl_load_library(var path: String) raises:
     """Dynamically load an OpenGL library.
 
     This should be done after initializing the video driver, but before
@@ -4005,7 +4005,7 @@ fn gl_load_library(var path: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_get_proc_address(var proc: String) raises -> fn() -> None:
+def gl_get_proc_address(var proc: String) raises -> fn() -> None:
     """Get an OpenGL function by name.
 
     If the GL library is loaded at runtime with SDL_GL_LoadLibrary(), then all
@@ -4066,7 +4066,7 @@ fn gl_get_proc_address(var proc: String) raises -> fn() -> None:
     ]()(proc.as_c_string_slice().unsafe_ptr())
 
 
-fn egl_get_proc_address(var proc: String) raises -> fn() -> None:
+def egl_get_proc_address(var proc: String) raises -> fn() -> None:
     """Get an EGL library function by name.
 
     If an EGL library is loaded, this function allows applications to get entry
@@ -4093,7 +4093,7 @@ fn egl_get_proc_address(var proc: String) raises -> fn() -> None:
     ]()(proc.as_c_string_slice().unsafe_ptr())
 
 
-fn gl_unload_library() raises -> None:
+def gl_unload_library() raises -> None:
     """Unload the OpenGL library previously loaded by SDL_GL_LoadLibrary().
 
     Safety:
@@ -4105,7 +4105,7 @@ fn gl_unload_library() raises -> None:
     return _get_dylib_function[lib, "SDL_GL_UnloadLibrary", fn() -> None]()()
 
 
-fn gl_extension_supported(var extension: String) raises -> Bool:
+def gl_extension_supported(var extension: String) raises -> Bool:
     """Check if an OpenGL extension is supported for the current context.
 
     This function operates on the current GL context; you must have created a
@@ -4138,7 +4138,7 @@ fn gl_extension_supported(var extension: String) raises -> Bool:
     ]()(extension.as_c_string_slice().unsafe_ptr())
 
 
-fn gl_reset_attributes() raises -> None:
+def gl_reset_attributes() raises -> None:
     """Reset all previously set OpenGL context attributes to their default values.
 
     Safety:
@@ -4150,7 +4150,7 @@ fn gl_reset_attributes() raises -> None:
     return _get_dylib_function[lib, "SDL_GL_ResetAttributes", fn() -> None]()()
 
 
-fn gl_set_attribute(attr: GLAttr, value: c_int) raises:
+def gl_set_attribute(attr: GLAttr, value: c_int) raises:
     """Set an OpenGL window attribute before window creation.
 
     This function sets the OpenGL attribute `attr` to `value`. The requested
@@ -4180,7 +4180,7 @@ fn gl_set_attribute(attr: GLAttr, value: c_int) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_get_attribute(attr: GLAttr, value: Ptr[c_int, MutAnyOrigin]) raises:
+def gl_get_attribute(attr: GLAttr, value: Ptr[c_int, MutAnyOrigin]) raises:
     """Get the actual value for an attribute from the current context.
 
     Args:
@@ -4207,7 +4207,7 @@ fn gl_get_attribute(attr: GLAttr, value: Ptr[c_int, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_create_context(window: Ptr[Window, MutAnyOrigin]) raises -> GLContext:
+def gl_create_context(window: Ptr[Window, MutAnyOrigin]) raises -> GLContext:
     """Create an OpenGL context for an OpenGL window, and make it current.
 
     Windows users new to OpenGL should note that, for historical reasons, GL
@@ -4238,7 +4238,7 @@ fn gl_create_context(window: Ptr[Window, MutAnyOrigin]) raises -> GLContext:
     ]()(window)
 
 
-fn gl_make_current(
+def gl_make_current(
     window: Ptr[Window, MutAnyOrigin], context: GLContext
 ) raises:
     """Set up an OpenGL context for rendering into an OpenGL window.
@@ -4268,7 +4268,7 @@ fn gl_make_current(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_get_current_window(out ret: Ptr[Window, MutAnyOrigin]) raises:
+def gl_get_current_window(out ret: Ptr[Window, MutAnyOrigin]) raises:
     """Get the currently active OpenGL window.
 
     Returns:
@@ -4288,7 +4288,7 @@ fn gl_get_current_window(out ret: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_get_current_context() raises -> GLContext:
+def gl_get_current_context() raises -> GLContext:
     """Get the currently active OpenGL context.
 
     Returns:
@@ -4306,7 +4306,7 @@ fn gl_get_current_context() raises -> GLContext:
     ]()()
 
 
-fn egl_get_current_display() raises -> EGLDisplay:
+def egl_get_current_display() raises -> EGLDisplay:
     """Get the currently active EGL display.
 
     Returns:
@@ -4324,7 +4324,7 @@ fn egl_get_current_display() raises -> EGLDisplay:
     ]()()
 
 
-fn egl_get_current_config() raises -> EGLConfig:
+def egl_get_current_config() raises -> EGLConfig:
     """Get the currently active EGL config.
 
     Returns:
@@ -4342,7 +4342,7 @@ fn egl_get_current_config() raises -> EGLConfig:
     ]()()
 
 
-fn egl_get_window_surface(
+def egl_get_window_surface(
     window: Ptr[Window, MutAnyOrigin]
 ) raises -> EGLSurface:
     """Get the EGL surface associated with the window.
@@ -4367,7 +4367,7 @@ fn egl_get_window_surface(
     ]()(window)
 
 
-fn egl_set_attribute_callbacks(
+def egl_set_attribute_callbacks(
     platform_attrib_callback: EGLAttribArrayCallback,
     surface_attrib_callback: EGLIntArrayCallback,
     context_attrib_callback: EGLIntArrayCallback,
@@ -4412,7 +4412,7 @@ fn egl_set_attribute_callbacks(
     )
 
 
-fn gl_set_swap_interval(interval: c_int) raises:
+def gl_set_swap_interval(interval: c_int) raises:
     """Set the swap interval for the current OpenGL context.
 
     Some systems allow specifying -1 for the interval, to enable adaptive
@@ -4451,7 +4451,7 @@ fn gl_set_swap_interval(interval: c_int) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_get_swap_interval(interval: Ptr[c_int, MutAnyOrigin]) raises:
+def gl_get_swap_interval(interval: Ptr[c_int, MutAnyOrigin]) raises:
     """Get the swap interval for the current OpenGL context.
 
     If the system can't determine the swap interval, or there isn't a valid
@@ -4482,7 +4482,7 @@ fn gl_get_swap_interval(interval: Ptr[c_int, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_swap_window(window: Ptr[Window, MutAnyOrigin]) raises:
+def gl_swap_window(window: Ptr[Window, MutAnyOrigin]) raises:
     """Update a window with OpenGL rendering.
 
     This is used with double-buffered OpenGL contexts, which are the default.
@@ -4514,7 +4514,7 @@ fn gl_swap_window(window: Ptr[Window, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn gl_destroy_context(context: GLContext) raises:
+def gl_destroy_context(context: GLContext) raises:
     """Delete an OpenGL context.
 
     Args:

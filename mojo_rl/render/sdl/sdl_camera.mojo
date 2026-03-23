@@ -81,15 +81,15 @@ struct CameraID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
@@ -136,19 +136,19 @@ struct CameraPosition(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime CAMERA_POSITION_UNKNOWN = Self(0x0)
@@ -156,7 +156,7 @@ struct CameraPosition(Indexer, Intable, TrivialRegisterPassable):
     comptime CAMERA_POSITION_BACK_FACING = Self(0x2)
 
 
-fn get_num_camera_drivers() raises -> c_int:
+def get_num_camera_drivers() raises -> c_int:
     """Use this function to get the number of built-in camera drivers.
 
     This function returns a hardcoded number. This never returns a negative
@@ -183,7 +183,7 @@ fn get_num_camera_drivers() raises -> c_int:
     ]()()
 
 
-fn get_camera_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_camera_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Use this function to get the name of a built in camera driver.
 
     The list of camera drivers is given in the order that they are normally
@@ -215,7 +215,7 @@ fn get_camera_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()(index)
 
 
-fn get_current_camera_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_current_camera_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the name of the current camera driver.
 
     The names of drivers are all simple, low-ASCII identifiers, like "v4l2",
@@ -237,7 +237,7 @@ fn get_current_camera_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()()
 
 
-fn get_cameras(
+def get_cameras(
     count: Ptr[c_int, MutAnyOrigin], out ret: Ptr[CameraID, MutAnyOrigin]
 ) raises:
     """Get a list of currently connected camera devices.
@@ -266,7 +266,7 @@ fn get_cameras(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_camera_supported_formats(
+def get_camera_supported_formats(
     instance_id: CameraID, count: Ptr[c_int, MutAnyOrigin]
 ) raises -> Ptr[Ptr[CameraSpec, MutAnyOrigin], MutAnyOrigin]:
     """Get the list of native formats/sizes a camera supports.
@@ -316,7 +316,7 @@ fn get_camera_supported_formats(
     ]()(instance_id, count)
 
 
-fn get_camera_name(
+def get_camera_name(
     instance_id: CameraID, out ret: Ptr[c_char, ImmutAnyOrigin]
 ) raises:
     """Get the human-readable device name for a camera.
@@ -343,7 +343,7 @@ fn get_camera_name(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_camera_position(instance_id: CameraID) raises -> CameraPosition:
+def get_camera_position(instance_id: CameraID) raises -> CameraPosition:
     """Get the position of the camera in relation to the system.
 
     Most platforms will report UNKNOWN, but mobile devices, like phones, can
@@ -370,7 +370,7 @@ fn get_camera_position(instance_id: CameraID) raises -> CameraPosition:
     ]()(instance_id)
 
 
-fn open_camera(
+def open_camera(
     instance_id: CameraID,
     spec: Ptr[CameraSpec, ImmutAnyOrigin],
     out ret: Ptr[Camera, MutAnyOrigin],
@@ -432,7 +432,7 @@ fn open_camera(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_camera_permission_state(
+def get_camera_permission_state(
     camera: Ptr[Camera, MutAnyOrigin]
 ) raises -> c_int:
     """Query if camera access has been approved by the user.
@@ -474,7 +474,7 @@ fn get_camera_permission_state(
     ]()(camera)
 
 
-fn get_camera_id(camera: Ptr[Camera, MutAnyOrigin]) raises -> CameraID:
+def get_camera_id(camera: Ptr[Camera, MutAnyOrigin]) raises -> CameraID:
     """Get the instance ID of an opened camera.
 
     Args:
@@ -497,7 +497,7 @@ fn get_camera_id(camera: Ptr[Camera, MutAnyOrigin]) raises -> CameraID:
     ]()(camera)
 
 
-fn get_camera_properties(
+def get_camera_properties(
     camera: Ptr[Camera, MutAnyOrigin]
 ) raises -> PropertiesID:
     """Get the properties associated with an opened camera.
@@ -522,7 +522,7 @@ fn get_camera_properties(
     ]()(camera)
 
 
-fn get_camera_format(
+def get_camera_format(
     camera: Ptr[Camera, MutAnyOrigin], spec: Ptr[CameraSpec, MutAnyOrigin]
 ) raises:
     """Get the spec that a camera is using when generating images.
@@ -563,7 +563,7 @@ fn get_camera_format(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn acquire_camera_frame(
+def acquire_camera_frame(
     camera: Ptr[Camera, MutAnyOrigin],
     timestamp_ns: Ptr[UInt64, MutAnyOrigin],
 ) raises -> Ptr[Surface, MutAnyOrigin]:
@@ -620,7 +620,7 @@ fn acquire_camera_frame(
     ]()(camera, timestamp_ns)
 
 
-fn release_camera_frame(
+def release_camera_frame(
     camera: Ptr[Camera, MutAnyOrigin], frame: Ptr[Surface, MutAnyOrigin]
 ) raises -> None:
     """Release a frame of video acquired from a camera.
@@ -659,7 +659,7 @@ fn release_camera_frame(
     ]()(camera, frame)
 
 
-fn close_camera(camera: Ptr[Camera, MutAnyOrigin]) raises -> None:
+def close_camera(camera: Ptr[Camera, MutAnyOrigin]) raises -> None:
     """Use this function to shut down camera processing and close the camera
     device.
 

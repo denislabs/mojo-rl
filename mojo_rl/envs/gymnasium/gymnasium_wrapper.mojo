@@ -31,7 +31,7 @@ struct GymnasiumEnv:
     var episode_reward: Float64
     var episode_length: Int
 
-    fn __init__(out self, env_name: String, render_mode: String = "") raises:
+    def __init__(out self, env_name: String, render_mode: String = "") raises:
         """Initialize a Gymnasium environment.
 
         Args:
@@ -96,7 +96,7 @@ struct GymnasiumEnv:
         self.episode_reward = 0.0
         self.episode_length = 0
 
-    fn reset(mut self) raises -> PythonObject:
+    def reset(mut self) raises -> PythonObject:
         """Reset environment and return initial observation as numpy array."""
         var result = self.env.reset()
         var obs = result[0]
@@ -107,7 +107,7 @@ struct GymnasiumEnv:
 
         return obs
 
-    fn step(
+    def step(
         mut self, action: PythonObject, verbose: Bool = False
     ) raises -> Tuple[PythonObject, Float64, Bool]:
         """Take action and return (observation, reward, done).
@@ -128,17 +128,17 @@ struct GymnasiumEnv:
 
         return (obs, reward, self.done)
 
-    fn step_discrete(
+    def step_discrete(
         mut self, action: Int
     ) raises -> Tuple[PythonObject, Float64, Bool]:
         """Take discrete action (convenience method)."""
         return self.step(PythonObject(action))
 
-    fn sample_action(self) raises -> PythonObject:
+    def sample_action(self) raises -> PythonObject:
         """Sample a random action from the action space."""
         return self.env.action_space.sample()
 
-    fn get_obs_as_list(self, obs: PythonObject) raises -> List[Float64]:
+    def get_obs_as_list(self, obs: PythonObject) raises -> List[Float64]:
         """Convert numpy observation to Mojo List[Float64]."""
         var flat = self.np.asarray(obs).flatten()
         var result = List[Float64]()
@@ -146,16 +146,16 @@ struct GymnasiumEnv:
             result.append(Float64(py=flat[i]))
         return result^
 
-    fn close(mut self) raises:
+    def close(mut self) raises:
         """Close the environment."""
         _ = self.env.close()
 
-    fn render(mut self) raises:
+    def render(mut self) raises:
         """Render the environment (uses Gymnasium's renderer, renderer argument ignored).
         """
         _ = self.env.render()
 
-    fn get_info(self) -> String:
+    def get_info(self) -> String:
         """Return environment info string."""
         return (
             "Env: "

@@ -29,7 +29,7 @@ from mojo_rl.agents import DDPGAgent
 from mojo_rl.render import Renderer2D
 
 
-fn main() raises:
+def main() raises:
     print("\n" + "=" * 60)
     print("    DDPG on Pendulum - Linear Function Approximation")
     print("=" * 60 + "\n")

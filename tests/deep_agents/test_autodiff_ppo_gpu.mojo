@@ -39,7 +39,7 @@ comptime NUM_UPDATES = 1_000
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("Autodiff PPO Agent GPU Test on CartPole")

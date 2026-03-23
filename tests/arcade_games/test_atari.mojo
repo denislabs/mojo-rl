@@ -35,7 +35,7 @@ from mojo_rl.envs.atari.games.helpers import (
 )
 
 
-fn test_state_init():
+def test_state_init():
     print("Test: AtariState init...")
     var state = AtariState()
     assert_true(state.pc == 0)
@@ -47,7 +47,7 @@ fn test_state_init():
     print("  PASSED")
 
 
-fn test_ram_rw():
+def test_ram_rw():
     print("Test: RAM read/write...")
     var state = AtariState()
     write_ram(state.ram, 0x42, 0xAB)
@@ -58,7 +58,7 @@ fn test_ram_rw():
     print("  PASSED")
 
 
-fn test_flags():
+def test_flags():
     print("Test: CPU flags...")
     var state = AtariState()
     set_flag(state, FLAG_C, True)
@@ -80,7 +80,7 @@ fn test_flags():
     print("  PASSED")
 
 
-fn test_opcode_table():
+def test_opcode_table():
     print("Test: Opcode table...")
     var table = materialize[OPCODE_TABLE]()
     # NOP = 0xEA
@@ -97,7 +97,7 @@ fn test_opcode_table():
     print("  PASSED")
 
 
-fn test_pong_game():
+def test_pong_game():
     print("Test: Pong game definition...")
     var ram = InlineArray[UInt8, RAM_SIZE](fill=0)
 
@@ -113,7 +113,7 @@ fn test_pong_game():
     print("  PASSED")
 
 
-fn test_breakout_game():
+def test_breakout_game():
     print("Test: Breakout game definition...")
     var ram = InlineArray[UInt8, RAM_SIZE](fill=0)
 
@@ -132,7 +132,7 @@ fn test_breakout_game():
     print("  PASSED")
 
 
-fn test_bcd_helpers():
+def test_bcd_helpers():
     print("Test: BCD score helpers...")
     var ram = InlineArray[UInt8, RAM_SIZE](fill=0)
 
@@ -150,7 +150,7 @@ fn test_bcd_helpers():
     print("  PASSED")
 
 
-fn test_action_mapping():
+def test_action_mapping():
     print("Test: Action mapping...")
     var state = AtariState()
     set_action(state, ACTION_NOOP)
@@ -159,7 +159,7 @@ fn test_action_mapping():
     print("  PASSED")
 
 
-fn test_palette():
+def test_palette():
     print("Test: Palette...")
     from mojo_rl.envs.atari.palette import (
         palette_r,
@@ -180,7 +180,7 @@ fn test_palette():
     print("  PASSED")
 
 
-fn test_frame_render():
+def test_frame_render():
     print("Test: Frame rendering...")
     var state = AtariState()
 
@@ -218,7 +218,7 @@ fn test_frame_render():
     print("  PASSED")
 
 
-fn test_frame_render_player():
+def test_frame_render_player():
     print("Test: Frame rendering with player sprite...")
     var state = AtariState()
 
@@ -255,7 +255,7 @@ fn test_frame_render_player():
     print("  PASSED")
 
 
-fn main():
+def main():
     print("=== Atari 2600 Emulator Tests ===")
     test_state_init()
     test_ram_rw()
@@ -271,6 +271,6 @@ fn main():
     print("=== All tests passed! ===")
 
 
-fn assert_true(cond: Bool):
+def assert_true(cond: Bool):
     if not cond:
         print("ASSERTION FAILED!")

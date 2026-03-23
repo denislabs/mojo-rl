@@ -12,7 +12,7 @@ from mojo_rl.agents.qlearning import QLearningAgent
 from std.random import seed
 
 
-fn compute_total_steps(steps: List[Int]) -> Int:
+def compute_total_steps(steps: List[Int]) -> Int:
     """Sum all episode steps to get total training steps."""
     var total = 0
     for i in range(len(steps)):
@@ -20,7 +20,7 @@ fn compute_total_steps(steps: List[Int]) -> Int:
     return total
 
 
-fn benchmark_gymnasium(
+def benchmark_gymnasium(
     num_episodes: Int, num_bins: Int
 ) raises -> Tuple[Float64, Float64, Int]:
     """Benchmark Gymnasium CartPole.
@@ -65,7 +65,7 @@ fn benchmark_gymnasium(
     return (total_time, avg_eval_reward, total_steps)
 
 
-fn benchmark_native(
+def benchmark_native(
     num_episodes: Int, num_bins: Int
 ) raises -> Tuple[Float64, Float64, Int]:
     """Benchmark Native Mojo CartPole.
@@ -106,7 +106,7 @@ fn benchmark_native(
     return (total_time, avg_eval_reward, total_steps)
 
 
-fn main() raises:
+def main() raises:
     seed()
 
     print("=" * 70)

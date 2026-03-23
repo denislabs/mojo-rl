@@ -35,7 +35,7 @@ struct SumTree[DTYPE: DType](Movable):
     var write_ptr: Int  # Next write position in leaves
     var size: Int  # Current number of valid entries
 
-    fn __init__(out self, capacity: Int):
+    def __init__(out self, capacity: Int):
         """Initialize sum-tree with given leaf capacity.
 
         Args:
@@ -51,14 +51,14 @@ struct SumTree[DTYPE: DType](Movable):
         for _ in range(tree_size):
             self.tree.append(0.0)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.tree = take.tree^
         self.capacity = take.capacity
         self.write_ptr = take.write_ptr
         self.size = take.size
 
-    fn _propagate(mut self, idx: Int, change: Scalar[Self.DTYPE]):
+    def _propagate(mut self, idx: Int, change: Scalar[Self.DTYPE]):
         """Propagate priority change up to root.
 
         Args:
@@ -71,7 +71,7 @@ struct SumTree[DTYPE: DType](Movable):
         if parent > 0:
             self._propagate(parent, change)
 
-    fn _leaf_to_tree_idx(self, leaf_idx: Int) -> Int:
+    def _leaf_to_tree_idx(self, leaf_idx: Int) -> Int:
         """Convert leaf index to tree array index.
 
         Args:
@@ -82,7 +82,7 @@ struct SumTree[DTYPE: DType](Movable):
         """
         return leaf_idx + self.capacity - 1
 
-    fn _tree_to_leaf_idx(self, tree_idx: Int) -> Int:
+    def _tree_to_leaf_idx(self, tree_idx: Int) -> Int:
         """Convert tree array index to leaf index.
 
         Args:
@@ -93,7 +93,7 @@ struct SumTree[DTYPE: DType](Movable):
         """
         return tree_idx - self.capacity + 1
 
-    fn update(mut self, leaf_idx: Int, priority: Scalar[Self.DTYPE]):
+    def update(mut self, leaf_idx: Int, priority: Scalar[Self.DTYPE]):
         """Update priority at leaf index.
 
         Args:
@@ -108,7 +108,7 @@ struct SumTree[DTYPE: DType](Movable):
         if tree_idx > 0:
             self._propagate(tree_idx, change)
 
-    fn add(mut self, priority: Scalar[Self.DTYPE]) -> Int:
+    def add(mut self, priority: Scalar[Self.DTYPE]) -> Int:
         """Add a new priority and return its leaf index.
 
         Uses circular buffer - overwrites oldest entry when full.
@@ -128,7 +128,7 @@ struct SumTree[DTYPE: DType](Movable):
 
         return leaf_idx
 
-    fn get(self, leaf_idx: Int) -> Scalar[Self.DTYPE]:
+    def get(self, leaf_idx: Int) -> Scalar[Self.DTYPE]:
         """Get priority at leaf index.
 
         Args:
@@ -140,7 +140,7 @@ struct SumTree[DTYPE: DType](Movable):
         var tree_idx = self._leaf_to_tree_idx(leaf_idx)
         return self.tree[tree_idx]
 
-    fn sample(self, target: Scalar[Self.DTYPE]) -> Int:
+    def sample(self, target: Scalar[Self.DTYPE]) -> Int:
         """Sample a leaf index proportional to priorities.
 
         Traverses tree from root, going left if target <= left child sum,
@@ -172,7 +172,7 @@ struct SumTree[DTYPE: DType](Movable):
 
         return self._tree_to_leaf_idx(idx)
 
-    fn total_sum(self) -> Scalar[Self.DTYPE]:
+    def total_sum(self) -> Scalar[Self.DTYPE]:
         """Get total sum of all priorities (root value).
 
         Returns:
@@ -180,7 +180,7 @@ struct SumTree[DTYPE: DType](Movable):
         """
         return self.tree[0]
 
-    fn max_priority(self) -> Scalar[Self.DTYPE]:
+    def max_priority(self) -> Scalar[Self.DTYPE]:
         """Get maximum priority among all leaves.
 
         Returns:
@@ -193,7 +193,7 @@ struct SumTree[DTYPE: DType](Movable):
                 max_p = self.tree[tree_idx]
         return max_p
 
-    fn min_priority(self) -> Scalar[Self.DTYPE]:
+    def min_priority(self) -> Scalar[Self.DTYPE]:
         """Get minimum non-zero priority among all leaves.
 
         Returns:
@@ -207,6 +207,6 @@ struct SumTree[DTYPE: DType](Movable):
                 min_p = p
         return min_p if min_p < 1e10 else 1.0
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return number of valid entries."""
         return self.size

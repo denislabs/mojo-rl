@@ -51,7 +51,7 @@ comptime QVEL_REL_TOL: Float64 = 1e-4
 # =============================================================================
 
 
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -262,7 +262,7 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_ground_contact_default() raises:
+def test_ground_contact_default() raises:
     """Robot at default height — feet may touch ground (0-2 contacts)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     # rootz=0 means body_pos height (0.7m), feet near ground
@@ -271,7 +271,7 @@ fn test_ground_contact_default() raises:
     compare_step("Default height (feet near ground)", qpos, qvel, actions)
 
 
-fn test_ground_contact_default_with_action() raises:
+def test_ground_contact_default_with_action() raises:
     """Robot at default height with actions."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
@@ -285,7 +285,7 @@ fn test_ground_contact_default_with_action() raises:
     compare_step("Default height with actions", qpos, qvel, actions)
 
 
-fn test_ground_contact_mild() raises:
+def test_ground_contact_mild() raises:
     """Robot slightly low — few contacts (rootz=-0.3)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz moderately low
@@ -294,7 +294,7 @@ fn test_ground_contact_mild() raises:
     compare_step("Mild contact (rootz=-0.3)", qpos, qvel, actions)
 
 
-fn test_ground_contact_deep() raises:
+def test_ground_contact_deep() raises:
     """Robot deep penetration — many contacts (rootz=-0.45)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz deep — 10 contacts
@@ -303,5 +303,5 @@ fn test_ground_contact_deep() raises:
     compare_step("Deep contact (rootz=-0.45)", qpos, qvel, actions)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

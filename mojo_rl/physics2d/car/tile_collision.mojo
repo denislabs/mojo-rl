@@ -63,7 +63,7 @@ struct TileCollision:
 
     @staticmethod
     @always_inline
-    fn point_in_quad(
+    def point_in_quad(
         px: Scalar[dtype],
         py: Scalar[dtype],
         v0x: Scalar[dtype],
@@ -128,7 +128,7 @@ struct TileCollision:
 
     @staticmethod
     @always_inline
-    fn get_friction_at[
+    def get_friction_at[
         MAX_TILES: Int,
     ](
         x: Scalar[dtype],
@@ -175,7 +175,7 @@ struct TileCollision:
 
     @staticmethod
     @always_inline
-    fn get_friction_limit_at[
+    def get_friction_limit_at[
         MAX_TILES: Int,
     ](
         x: Scalar[dtype],
@@ -211,7 +211,7 @@ struct TileCollision:
 
     @staticmethod
     @always_inline
-    fn get_wheel_friction_limits[
+    def get_wheel_friction_limits[
         MAX_TILES: Int,
     ](
         hull_x: Scalar[dtype],
@@ -292,7 +292,7 @@ struct TileCollision:
 
     @staticmethod
     @always_inline
-    fn check_tile_visited[
+    def check_tile_visited[
         MAX_TILES: Int,
     ](
         x: Scalar[dtype],
@@ -340,7 +340,7 @@ struct TileCollision:
 
     @staticmethod
     @always_inline
-    fn get_friction_at_embedded[
+    def get_friction_at_embedded[
         BATCH: Int,
         STATE_SIZE: Int,
         TRACK_OFFSET: Int,
@@ -393,7 +393,7 @@ struct TileCollision:
 
     @staticmethod
     @always_inline
-    fn get_friction_limit_at_embedded[
+    def get_friction_limit_at_embedded[
         BATCH: Int,
         STATE_SIZE: Int,
         TRACK_OFFSET: Int,
@@ -428,7 +428,7 @@ struct TileCollision:
 
     @staticmethod
     @always_inline
-    fn check_tile_visited_embedded[
+    def check_tile_visited_embedded[
         BATCH: Int,
         STATE_SIZE: Int,
         TRACK_OFFSET: Int,
@@ -476,7 +476,7 @@ struct TileCollision:
 
     @staticmethod
     @always_inline
-    fn check_and_mark_visited_embedded[
+    def check_and_mark_visited_embedded[
         BATCH: Int,
         STATE_SIZE: Int,
         TRACK_OFFSET: Int,

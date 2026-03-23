@@ -43,7 +43,7 @@ removing, copying files.
 """
 
 
-fn get_base_path() raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_base_path() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the directory where the application was run from.
 
     SDL caches the result of this call internally, but the first call to this
@@ -87,7 +87,7 @@ fn get_base_path() raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()()
 
 
-fn get_pref_path(
+def get_pref_path(
     var org: String, var app: String
 ) raises -> Ptr[c_char, MutAnyOrigin]:
     """Get the user-and-app-specific path where files can be written.
@@ -188,19 +188,19 @@ struct Folder(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime FOLDER_HOME = Self(0x0)
@@ -229,7 +229,7 @@ struct Folder(Indexer, Intable, TrivialRegisterPassable):
     """Total number of types in this enum, not a folder type by itself."""
 
 
-fn get_user_folder(folder: Folder) raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_user_folder(folder: Folder) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Finds the most suitable user folder for a specific purpose.
 
     Many OSes provide certain standard folders for certain purposes, such as
@@ -276,19 +276,19 @@ struct PathType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime PATHTYPE_NONE = Self(0x0)
@@ -329,21 +329,21 @@ struct GlobFlags(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
     comptime GLOB_CASEINSENSITIVE = Self(1 << 0)
 
 
-fn create_directory(var path: String) raises:
+def create_directory(var path: String) raises:
     """Create a directory, and any missing parent directories.
 
     This reports success if `path` already exists as a directory.
@@ -379,19 +379,19 @@ struct EnumerationResult(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime ENUM_CONTINUE = Self(0x0)
@@ -433,7 +433,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_EnumerateDirectoryCallback.
 """
 
 
-fn enumerate_directory(
+def enumerate_directory(
     var path: String,
     callback: EnumerateDirectoryCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
@@ -475,7 +475,7 @@ fn enumerate_directory(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn remove_path(var path: String) raises:
+def remove_path(var path: String) raises:
     """Remove a file or an empty directory.
 
     Directories that are not empty will fail; this function will not recursely
@@ -498,7 +498,7 @@ fn remove_path(var path: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn rename_path(var oldpath: String, var newpath: String) raises:
+def rename_path(var oldpath: String, var newpath: String) raises:
     """Rename a file or directory.
 
     If the file at `newpath` already exists, it will replaced.
@@ -538,7 +538,7 @@ fn rename_path(var oldpath: String, var newpath: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn copy_file(var oldpath: String, var newpath: String) raises:
+def copy_file(var oldpath: String, var newpath: String) raises:
     """Copy a file.
 
     If the file at `newpath` already exists, it will be overwritten with the
@@ -595,7 +595,7 @@ fn copy_file(var oldpath: String, var newpath: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_path_info(var path: String, info: Ptr[PathInfo, MutAnyOrigin]) raises:
+def get_path_info(var path: String, info: Ptr[PathInfo, MutAnyOrigin]) raises:
     """Get information about a filesystem path.
 
     Args:
@@ -622,7 +622,7 @@ fn get_path_info(var path: String, info: Ptr[PathInfo, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn glob_directory(
+def glob_directory(
     var path: String,
     var pattern: String,
     flags: GlobFlags,
@@ -683,7 +683,7 @@ fn glob_directory(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_current_directory() raises -> Ptr[c_char, MutAnyOrigin]:
+def get_current_directory() raises -> Ptr[c_char, MutAnyOrigin]:
     """Get what the system believes is the "current working directory.".
 
     For systems without a concept of a current working directory, this will

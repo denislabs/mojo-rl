@@ -29,7 +29,14 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model import Linear, LinearMish, Sequential, Parallel, Identity, Model
+from mojo_rl.nn.model import (
+    Linear,
+    LinearMish,
+    Sequential,
+    Parallel,
+    Identity,
+    Model,
+)
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.initializer import Kaiming
 from mojo_rl.nn.training import Network, NetworkState
@@ -51,7 +58,7 @@ from mojo_rl.nn.loss.two_hot import (
 # =============================================================================
 
 
-fn categorical_sample[
+def categorical_sample[
     BATCH: Int, STOCH_DIM: Int, CLASSES: Int, UNIMIX: Float64 = 0.01
 ](
     logits: LayoutTensor[
@@ -100,14 +107,20 @@ fn categorical_sample[
             # Compute exp and sum
             var sum_exp = Scalar[dtype](0.0)
             for c in range(CLASSES):
-                var e = exp(rebind[Scalar[dtype]](logits[b, base + c]) - max_val)
+                var e = exp(
+                    rebind[Scalar[dtype]](logits[b, base + c]) - max_val
+                )
                 probs[b, base + c] = e  # temporary storage
                 sum_exp += e
 
             # Normalize to softmax, then apply unimix
             for c in range(CLASSES):
-                var softmax_p = rebind[Scalar[dtype]](probs[b, base + c]) / sum_exp
-                probs[b, base + c] = one_minus_unimix * softmax_p + unimix * uniform_prob
+                var softmax_p = (
+                    rebind[Scalar[dtype]](probs[b, base + c]) / sum_exp
+                )
+                probs[b, base + c] = (
+                    one_minus_unimix * softmax_p + unimix * uniform_prob
+                )
 
             # --- Sampling ---
             var best_idx = 0
@@ -139,7 +152,7 @@ fn categorical_sample[
             output[b, base + best_idx] = Scalar[dtype](1.0)
 
 
-fn kl_divergence[
+def kl_divergence[
     BATCH: Int, STOCH_DIM: Int, CLASSES: Int
 ](
     post_probs: LayoutTensor[
@@ -317,7 +330,7 @@ struct RSSM[
     # Constructors
     # =========================================================================
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize all sub-networks with Kaiming initialization and
         compute symlog bins for distributional reward prediction."""
         self.encoder = NetworkState[Self.EncModel, Adam[LR=Self.WM_LR]]()
@@ -347,7 +360,9 @@ struct RSSM[
         self.action_proj = NetworkState[Self.ActionProj, Adam[LR=Self.WM_LR]]()
         self.action_proj.initialize[Kaiming[]]()
 
-        self.gru_hidden = NetworkState[Self.GRUHiddenModel, Adam[LR=Self.WM_LR]]()
+        self.gru_hidden = NetworkState[
+            Self.GRUHiddenModel, Adam[LR=Self.WM_LR]
+        ]()
         self.gru_hidden.initialize[Kaiming[]]()
 
         self.gru_gates = NetworkState[Self.GRUGateModel, Adam[LR=Self.WM_LR]]()
@@ -356,7 +371,7 @@ struct RSSM[
         # Compute symlog-spaced bins for distributional reward head
         self.bins = compute_symlog_bins[Self.NUM_BINS]()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor — transfers ownership of all fields."""
         self.encoder = take.encoder^
         self.posterior = take.posterior^
@@ -375,7 +390,7 @@ struct RSSM[
     # GRU Core Forward
     # =========================================================================
 
-    fn core_forward[
+    def core_forward[
         BATCH: Int
     ](
         self,
@@ -491,9 +506,7 @@ struct RSSM[
         # 5. Apply GRU-style gating
         for b in range(BATCH):
             for i in range(Self.DETER_DIM):
-                var reset_logit = rebind[Scalar[dtype]](
-                    gate_out[b, i]
-                )
+                var reset_logit = rebind[Scalar[dtype]](gate_out[b, i])
                 var cand_logit = rebind[Scalar[dtype]](
                     gate_out[b, Self.DETER_DIM + i]
                 )
@@ -516,9 +529,9 @@ struct RSSM[
                 var update_val = one / (one + exp(-(update_logit - one)))
 
                 var old_d = rebind[Scalar[dtype]](prev_deter[b, i])
-                new_deter[b, i] = update_val * cand_val + (
-                    one - update_val
-                ) * old_d
+                new_deter[b, i] = (
+                    update_val * cand_val + (one - update_val) * old_d
+                )
 
         # Free normalized action scratch
         norm_action_ptr.free()
@@ -527,7 +540,7 @@ struct RSSM[
     # Observe Step (Posterior — uses observations)
     # =========================================================================
 
-    fn observe_step[
+    def observe_step[
         BATCH: Int
     ](
         self,
@@ -724,7 +737,7 @@ struct RSSM[
     # Imagine Step (Prior — no observations)
     # =========================================================================
 
-    fn imagine_step[
+    def imagine_step[
         BATCH: Int
     ](
         self,
@@ -858,7 +871,7 @@ struct RSSM[
     # Decoder / Reward / Continue Heads
     # =========================================================================
 
-    fn decode[
+    def decode[
         BATCH: Int
     ](
         self,
@@ -877,11 +890,9 @@ struct RSSM[
             feat: Feature vector [BATCH, FEAT_DIM].
             obs_pred: Predicted observation [BATCH, OBS_DIM] (written).
         """
-        Self.DecNet.forward[BATCH](
-            feat, obs_pred, self.decoder.params_view()
-        )
+        Self.DecNet.forward[BATCH](feat, obs_pred, self.decoder.params_view())
 
-    fn predict_reward[
+    def predict_reward[
         BATCH: Int
     ](
         self,
@@ -905,7 +916,7 @@ struct RSSM[
             feat, reward_logits, self.reward_head.params_view()
         )
 
-    fn predict_continue[
+    def predict_continue[
         BATCH: Int
     ](
         self,
@@ -938,7 +949,7 @@ struct RSSM[
     # Gradient Management
     # =========================================================================
 
-    fn zero_all_grads(mut self):
+    def zero_all_grads(mut self):
         """Zero gradients for all world model sub-networks."""
         self.encoder.zero_grads()
         self.posterior.zero_grads()
@@ -956,7 +967,7 @@ struct RSSM[
     # Parameter Updates
     # =========================================================================
 
-    fn update_all_params(mut self):
+    def update_all_params(mut self):
         """Apply gradient updates to all world model parameters."""
         self.encoder.optimizer_step()
         self.posterior.optimizer_step()
@@ -991,11 +1002,11 @@ struct RSSM[
     comptime HEADS_OUT_DIM: Int = Self._DEC_REW_DIM + 1
 
     comptime HeadsGraph = ComputeGraph[
-        GNode["decoder",   Self.DecModel],
-        GNode["rew_head",  Self.RewModel],
+        GNode["decoder", Self.DecModel],
+        GNode["rew_head", Self.RewModel],
         GNode["cont_head", Self.ContModel],
-        GNode["cat_dr",    Identity[Self._DEC_REW_DIM], "decoder", "rew_head"],
-        GNode["output",    Identity[Self.HEADS_OUT_DIM], "cat_dr", "cont_head"],
+        GNode["cat_dr", Identity[Self._DEC_REW_DIM], "decoder", "rew_head"],
+        GNode["output", Identity[Self.HEADS_OUT_DIM], "cat_dr", "cont_head"],
     ]
 
     comptime HeadsCP = CompositeParams[
@@ -1004,7 +1015,7 @@ struct RSSM[
 
     comptime HEADS_CACHE_SIZE: Int = Self.HeadsGraph.CACHE_SIZE
 
-    fn predict_all_heads[
+    def predict_all_heads[
         BATCH: Int
     ](
         self,
@@ -1028,9 +1039,9 @@ struct RSSM[
         Allocate as: BATCH * HEADS_CACHE_SIZE elements.
         """
         # Assemble params from separate network states
-        var combined = InlineArray[
-            Scalar[dtype], Self.HeadsCP.TOTAL_SIZE
-        ](uninitialized=True)
+        var combined = InlineArray[Scalar[dtype], Self.HeadsCP.TOTAL_SIZE](
+            uninitialized=True
+        )
         Self.HeadsCP.assemble(
             combined.unsafe_ptr(),
             self.decoder.params_view().ptr,
@@ -1045,7 +1056,7 @@ struct RSSM[
 
         Self.HeadsGraph.forward[BATCH](feat, output, params_t, cache)
 
-    fn backward_all_heads[
+    def backward_all_heads[
         BATCH: Int
     ](
         mut self,
@@ -1075,9 +1086,9 @@ struct RSSM[
             cache: Cache from predict_all_heads forward pass.
         """
         # Re-assemble params (needed for backward)
-        var combined = InlineArray[
-            Scalar[dtype], Self.HeadsCP.TOTAL_SIZE
-        ](uninitialized=True)
+        var combined = InlineArray[Scalar[dtype], Self.HeadsCP.TOTAL_SIZE](
+            uninitialized=True
+        )
         Self.HeadsCP.assemble(
             combined.unsafe_ptr(),
             self.decoder.params_view().ptr,
@@ -1128,7 +1139,7 @@ struct RSSM[
     # =========================================================================
 
     @staticmethod
-    fn predict_all_heads_gpu[
+    def predict_all_heads_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -1154,11 +1165,16 @@ struct RSSM[
         The cache must be preserved for the subsequent backward call.
         """
         Self.HeadsGraph.forward_gpu[BATCH](
-            ctx, output, feat, params, cache, workspace,
+            ctx,
+            output,
+            feat,
+            params,
+            cache,
+            workspace,
         )
 
     @staticmethod
-    fn backward_all_heads_gpu[
+    def backward_all_heads_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -1190,7 +1206,13 @@ struct RSSM[
         Use HeadsCP.scatter_add_gpu to distribute grads to individual networks.
         """
         Self.HeadsGraph.backward_gpu[BATCH](
-            ctx, grad_feat, grad_output, params, cache, grads, workspace,
+            ctx,
+            grad_feat,
+            grad_output,
+            params,
+            cache,
+            grads,
+            workspace,
         )
 
     # =========================================================================
@@ -1208,7 +1230,7 @@ struct RSSM[
     # observe_step used inference-mode forward without caching).
     # =========================================================================
 
-    fn backward_feat_to_encoder[
+    def backward_feat_to_encoder[
         BATCH: Int
     ](
         mut self,
@@ -1263,9 +1285,9 @@ struct RSSM[
         # Then: grad_softmax = (1 - UNIMIX) * grad_probs
         # Then: grad_logits = softmax_vjp(grad_softmax)
         #   where softmax_vjp(g, s) = s * (g - sum(g * s)) per group
-        var grad_logits = InlineArray[
-            Scalar[dtype], BATCH * Self.STOCH_FLAT
-        ](uninitialized=True)
+        var grad_logits = InlineArray[Scalar[dtype], BATCH * Self.STOCH_FLAT](
+            uninitialized=True
+        )
 
         comptime ONE_MINUS_UNIMIX = 1.0 - Self.UNIMIX
 
@@ -1312,9 +1334,9 @@ struct RSSM[
                     if softmax_c < 0.0:
                         softmax_c = 0.0
                     var grad_sm_c = ONE_MINUS_UNIMIX * grad_stoch_c
-                    grad_logits[
-                        b * Self.STOCH_FLAT + base + c
-                    ] = Scalar[dtype](softmax_c * (grad_sm_c - dot_gs))
+                    grad_logits[b * Self.STOCH_FLAT + base + c] = Scalar[dtype](
+                        softmax_c * (grad_sm_c - dot_gs)
+                    )
 
         var grad_logits_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
@@ -1329,9 +1351,7 @@ struct RSSM[
         for b in range(BATCH):
             for i in range(Self.OBS_DIM):
                 var val = Float32(rebind[Scalar[dtype]](obs[b, i]))
-                symlog_obs[b * Self.OBS_DIM + i] = Scalar[dtype](
-                    symlog(val)
-                )
+                symlog_obs[b * Self.OBS_DIM + i] = Scalar[dtype](symlog(val))
         var symlog_obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
         ](symlog_obs.unsafe_ptr())
@@ -1363,9 +1383,7 @@ struct RSSM[
         )
         for b in range(BATCH):
             for i in range(Self.DETER_DIM):
-                post_in[b * POST_IN + i] = rebind[Scalar[dtype]](
-                    deter[b, i]
-                )
+                post_in[b * POST_IN + i] = rebind[Scalar[dtype]](deter[b, i])
             for i in range(Self.STOCH_FLAT):
                 post_in[b * POST_IN + Self.DETER_DIM + i] = embed[
                     b * Self.STOCH_FLAT + i
@@ -1374,9 +1392,9 @@ struct RSSM[
             dtype, Layout.row_major(BATCH, POST_IN), MutAnyOrigin
         ](post_in.unsafe_ptr())
 
-        var post_logits = InlineArray[
-            Scalar[dtype], BATCH * Self.STOCH_FLAT
-        ](uninitialized=True)
+        var post_logits = InlineArray[Scalar[dtype], BATCH * Self.STOCH_FLAT](
+            uninitialized=True
+        )
         var post_logits_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.STOCH_FLAT), MutAnyOrigin
         ](post_logits.unsafe_ptr())
@@ -1421,9 +1439,9 @@ struct RSSM[
         # 6. Extract grad_embed from grad_post_input and encoder backward
         # =====================================================================
         # grad_post_input = [grad_deter_from_post, grad_embed]
-        var grad_embed = InlineArray[
-            Scalar[dtype], BATCH * Self.STOCH_FLAT
-        ](uninitialized=True)
+        var grad_embed = InlineArray[Scalar[dtype], BATCH * Self.STOCH_FLAT](
+            uninitialized=True
+        )
         for b in range(BATCH):
             for i in range(Self.STOCH_FLAT):
                 grad_embed[b * Self.STOCH_FLAT + i] = grad_post_in[
@@ -1457,16 +1475,12 @@ struct RSSM[
         for b in range(BATCH):
             for i in range(Self.DETER_DIM):
                 # Direct contribution from feat split
-                var gd_feat = Float64(
-                    grad_feat.ptr[b * Self.FEAT_DIM + i]
-                )
+                var gd_feat = Float64(grad_feat.ptr[b * Self.FEAT_DIM + i])
                 # Contribution from posterior backward
-                var gd_post = Float64(
-                    grad_post_in[b * POST_IN + i]
+                var gd_post = Float64(grad_post_in[b * POST_IN + i])
+                grad_deter_out.ptr[b * Self.DETER_DIM + i] = Scalar[dtype](
+                    gd_feat + gd_post
                 )
-                grad_deter_out.ptr[b * Self.DETER_DIM + i] = Scalar[
-                    dtype
-                ](gd_feat + gd_post)
 
     # =========================================================================
     # KL Loss Backward (Step 2 of BPTT)
@@ -1487,7 +1501,7 @@ struct RSSM[
     #   - grad_deter += contributions from both KL terms through posterior/prior backward
     # =========================================================================
 
-    fn backward_kl_loss[
+    def backward_kl_loss[
         BATCH: Int
     ](
         mut self,
@@ -1559,17 +1573,13 @@ struct RSSM[
             ](uninitialized=True)
             for b in range(BATCH):
                 for k in range(Self.STOCH_FLAT):
-                    var p = Float64(
-                        rebind[Scalar[dtype]](post_probs[b, k])
-                    )
-                    var q = Float64(
-                        rebind[Scalar[dtype]](prior_probs[b, k])
-                    )
+                    var p = Float64(rebind[Scalar[dtype]](post_probs[b, k]))
+                    var q = Float64(rebind[Scalar[dtype]](prior_probs[b, k]))
                     # d_KL/d_q = -p/q, scaled by dyn_scale / BATCH
                     var dkl_dq = -p / (q + eps) * dyn_scale * inv_batch
-                    grad_prior_probs[
-                        b * Self.STOCH_FLAT + k
-                    ] = Scalar[dtype](dkl_dq)
+                    grad_prior_probs[b * Self.STOCH_FLAT + k] = Scalar[dtype](
+                        dkl_dq
+                    )
 
             # Softmax VJP through unimix to get grad_prior_logits
             var grad_prior_logits = InlineArray[
@@ -1585,18 +1595,13 @@ struct RSSM[
                     var dot_gs: Float64 = 0.0
                     for c in range(Self.CLASSES):
                         var gp = Float64(
-                            grad_prior_probs[
-                                b * Self.STOCH_FLAT + base + c
-                            ]
+                            grad_prior_probs[b * Self.STOCH_FLAT + base + c]
                         )
                         var prob_c = Float64(
-                            rebind[Scalar[dtype]](
-                                prior_probs[b, base + c]
-                            )
+                            rebind[Scalar[dtype]](prior_probs[b, base + c])
                         )
                         var sm_c = (
-                            prob_c
-                            - Self.UNIMIX / Float64(Self.CLASSES)
+                            prob_c - Self.UNIMIX / Float64(Self.CLASSES)
                         ) / ONE_MINUS_UNIMIX
                         if sm_c < 0.0:
                             sm_c = 0.0
@@ -1605,18 +1610,13 @@ struct RSSM[
 
                     for c in range(Self.CLASSES):
                         var gp = Float64(
-                            grad_prior_probs[
-                                b * Self.STOCH_FLAT + base + c
-                            ]
+                            grad_prior_probs[b * Self.STOCH_FLAT + base + c]
                         )
                         var prob_c = Float64(
-                            rebind[Scalar[dtype]](
-                                prior_probs[b, base + c]
-                            )
+                            rebind[Scalar[dtype]](prior_probs[b, base + c])
                         )
                         var sm_c = (
-                            prob_c
-                            - Self.UNIMIX / Float64(Self.CLASSES)
+                            prob_c - Self.UNIMIX / Float64(Self.CLASSES)
                         ) / ONE_MINUS_UNIMIX
                         if sm_c < 0.0:
                             sm_c = 0.0
@@ -1633,9 +1633,9 @@ struct RSSM[
 
             # Re-forward prior with cache
             comptime PRIOR_CS = Self.PriorModel.CACHE_SIZE
-            var prior_cache = InlineArray[
-                Scalar[dtype], BATCH * PRIOR_CS
-            ](uninitialized=True)
+            var prior_cache = InlineArray[Scalar[dtype], BATCH * PRIOR_CS](
+                uninitialized=True
+            )
             var prior_cache_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, PRIOR_CS), MutAnyOrigin
             ](prior_cache.unsafe_ptr())
@@ -1697,12 +1697,8 @@ struct RSSM[
             ](uninitialized=True)
             for b in range(BATCH):
                 for k in range(Self.STOCH_FLAT):
-                    var p = Float64(
-                        rebind[Scalar[dtype]](post_probs[b, k])
-                    )
-                    var q = Float64(
-                        rebind[Scalar[dtype]](prior_probs[b, k])
-                    )
+                    var p = Float64(rebind[Scalar[dtype]](post_probs[b, k]))
+                    var q = Float64(rebind[Scalar[dtype]](prior_probs[b, k]))
                     # d_KL/d_p = log(p) - log(q) + 1, scaled
                     var dkl_dp: Float64 = 0.0
                     if p > eps:
@@ -1711,9 +1707,9 @@ struct RSSM[
                             * rep_scale
                             * inv_batch
                         )
-                    grad_post_probs[
-                        b * Self.STOCH_FLAT + k
-                    ] = Scalar[dtype](dkl_dp)
+                    grad_post_probs[b * Self.STOCH_FLAT + k] = Scalar[dtype](
+                        dkl_dp
+                    )
 
             # Softmax VJP through unimix → grad_post_logits
             var grad_post_logits = InlineArray[
@@ -1726,18 +1722,13 @@ struct RSSM[
                     var dot_gs: Float64 = 0.0
                     for c in range(Self.CLASSES):
                         var gp = Float64(
-                            grad_post_probs[
-                                b * Self.STOCH_FLAT + base + c
-                            ]
+                            grad_post_probs[b * Self.STOCH_FLAT + base + c]
                         )
                         var prob_c = Float64(
-                            rebind[Scalar[dtype]](
-                                post_probs[b, base + c]
-                            )
+                            rebind[Scalar[dtype]](post_probs[b, base + c])
                         )
                         var sm_c = (
-                            prob_c
-                            - Self.UNIMIX / Float64(Self.CLASSES)
+                            prob_c - Self.UNIMIX / Float64(Self.CLASSES)
                         ) / ONE_MINUS_UNIMIX_R
                         if sm_c < 0.0:
                             sm_c = 0.0
@@ -1746,18 +1737,13 @@ struct RSSM[
 
                     for c in range(Self.CLASSES):
                         var gp = Float64(
-                            grad_post_probs[
-                                b * Self.STOCH_FLAT + base + c
-                            ]
+                            grad_post_probs[b * Self.STOCH_FLAT + base + c]
                         )
                         var prob_c = Float64(
-                            rebind[Scalar[dtype]](
-                                post_probs[b, base + c]
-                            )
+                            rebind[Scalar[dtype]](post_probs[b, base + c])
                         )
                         var sm_c = (
-                            prob_c
-                            - Self.UNIMIX / Float64(Self.CLASSES)
+                            prob_c - Self.UNIMIX / Float64(Self.CLASSES)
                         ) / ONE_MINUS_UNIMIX_R
                         if sm_c < 0.0:
                             sm_c = 0.0
@@ -1773,9 +1759,9 @@ struct RSSM[
             ](grad_post_logits.unsafe_ptr())
 
             # Re-forward encoder + posterior with cache
-            var symlog_obs = InlineArray[
-                Scalar[dtype], BATCH * Self.OBS_DIM
-            ](uninitialized=True)
+            var symlog_obs = InlineArray[Scalar[dtype], BATCH * Self.OBS_DIM](
+                uninitialized=True
+            )
             for b in range(BATCH):
                 for i in range(Self.OBS_DIM):
                     var val = Float32(rebind[Scalar[dtype]](obs[b, i]))
@@ -1786,9 +1772,9 @@ struct RSSM[
                 dtype, Layout.row_major(BATCH, Self.OBS_DIM), MutAnyOrigin
             ](symlog_obs.unsafe_ptr())
 
-            var embed = InlineArray[
-                Scalar[dtype], BATCH * Self.STOCH_FLAT
-            ](uninitialized=True)
+            var embed = InlineArray[Scalar[dtype], BATCH * Self.STOCH_FLAT](
+                uninitialized=True
+            )
             var embed_t = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.STOCH_FLAT),
@@ -1811,9 +1797,9 @@ struct RSSM[
             )
 
             # Build posterior input: concat(deter, embed)
-            var post_in = InlineArray[
-                Scalar[dtype], BATCH * POST_IN
-            ](uninitialized=True)
+            var post_in = InlineArray[Scalar[dtype], BATCH * POST_IN](
+                uninitialized=True
+            )
             for b in range(BATCH):
                 for i in range(Self.DETER_DIM):
                     post_in[b * POST_IN + i] = rebind[Scalar[dtype]](
@@ -1837,9 +1823,9 @@ struct RSSM[
             ](post_logits_tmp.unsafe_ptr())
 
             comptime POST_CS = Self.PostModel.CACHE_SIZE
-            var post_cache = InlineArray[
-                Scalar[dtype], BATCH * POST_CS
-            ](uninitialized=True)
+            var post_cache = InlineArray[Scalar[dtype], BATCH * POST_CS](
+                uninitialized=True
+            )
             var post_cache_t = LayoutTensor[
                 dtype, Layout.row_major(BATCH, POST_CS), MutAnyOrigin
             ](post_cache.unsafe_ptr())
@@ -1852,9 +1838,9 @@ struct RSSM[
             )
 
             # Posterior backward → grad_post_input
-            var grad_post_in = InlineArray[
-                Scalar[dtype], BATCH * POST_IN
-            ](uninitialized=True)
+            var grad_post_in = InlineArray[Scalar[dtype], BATCH * POST_IN](
+                uninitialized=True
+            )
             for i in range(BATCH * POST_IN):
                 grad_post_in[i] = Scalar[dtype](0.0)
             var grad_post_in_t = LayoutTensor[
@@ -1885,9 +1871,9 @@ struct RSSM[
                 MutAnyOrigin,
             ](grad_embed.unsafe_ptr())
 
-            var grad_obs = InlineArray[
-                Scalar[dtype], BATCH * Self.OBS_DIM
-            ](uninitialized=True)
+            var grad_obs = InlineArray[Scalar[dtype], BATCH * Self.OBS_DIM](
+                uninitialized=True
+            )
             var grad_obs_t = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.OBS_DIM),
@@ -1938,7 +1924,7 @@ struct RSSM[
     #   Total: d_prev_deter = direct + concat + proj contributions
     # =========================================================================
 
-    fn backward_gru_core[
+    def backward_gru_core[
         BATCH: Int
     ](
         mut self,
@@ -1983,9 +1969,9 @@ struct RSSM[
         # =================================================================
         # 1. Normalize action (same as forward)
         # =================================================================
-        var norm_action = InlineArray[
-            Scalar[dtype], BATCH * Self.ACTION_DIM
-        ](uninitialized=True)
+        var norm_action = InlineArray[Scalar[dtype], BATCH * Self.ACTION_DIM](
+            uninitialized=True
+        )
         for b in range(BATCH):
             for i in range(Self.ACTION_DIM):
                 var a = rebind[Scalar[dtype]](prev_action[b, i])
@@ -2071,9 +2057,9 @@ struct RSSM[
                 concat_buf[b * GRU_CONCAT + DETER + i] = proj_d[
                     b * Self.HIDDEN + i
                 ]
-                concat_buf[
-                    b * GRU_CONCAT + DETER + Self.HIDDEN + i
-                ] = proj_s[b * Self.HIDDEN + i]
+                concat_buf[b * GRU_CONCAT + DETER + Self.HIDDEN + i] = proj_s[
+                    b * Self.HIDDEN + i
+                ]
                 concat_buf[
                     b * GRU_CONCAT + DETER + 2 * Self.HIDDEN + i
                 ] = proj_a[b * Self.HIDDEN + i]
@@ -2133,16 +2119,10 @@ struct RSSM[
 
         for b in range(BATCH):
             for i in range(DETER):
-                var d_nd = Float64(
-                    grad_new_deter.ptr[b * DETER + i]
-                )
+                var d_nd = Float64(grad_new_deter.ptr[b * DETER + i])
 
-                var reset_logit = Float64(
-                    gate_out[b * 3 * DETER + i]
-                )
-                var cand_logit = Float64(
-                    gate_out[b * 3 * DETER + DETER + i]
-                )
+                var reset_logit = Float64(gate_out[b * 3 * DETER + i])
+                var cand_logit = Float64(gate_out[b * 3 * DETER + DETER + i])
                 var update_logit = Float64(
                     gate_out[b * 3 * DETER + 2 * DETER + i]
                 )
@@ -2155,12 +2135,8 @@ struct RSSM[
                 var cand_val = (exp(rc) - exp(-rc)) / (
                     exp(rc) + exp(-rc)
                 )  # tanh(rc)
-                var update_val = one / (
-                    one + exp(-(update_logit - one))
-                )
-                var old_d = Float64(
-                    rebind[Scalar[dtype]](prev_deter[b, i])
-                )
+                var update_val = one / (one + exp(-(update_logit - one)))
+                var old_d = Float64(rebind[Scalar[dtype]](prev_deter[b, i]))
 
                 # Backward through: new_d = update * cand + (1-update) * old_d
                 var d_update = d_nd * (cand_val - old_d)
@@ -2168,9 +2144,7 @@ struct RSSM[
                 var d_old_d = d_nd * (one - update_val)
 
                 # update = sigmoid(update_logit - 1)
-                var d_update_logit = d_update * update_val * (
-                    one - update_val
-                )
+                var d_update_logit = d_update * update_val * (one - update_val)
 
                 # cand = tanh(rc), d_tanh = 1 - tanh^2
                 var d_rc = d_cand * (one - cand_val * cand_val)
@@ -2180,24 +2154,18 @@ struct RSSM[
                 var d_cand_logit = d_rc * reset_val
 
                 # reset = sigmoid(reset_logit)
-                var d_reset_logit = d_reset * reset_val * (
-                    one - reset_val
-                )
+                var d_reset_logit = d_reset * reset_val * (one - reset_val)
 
-                d_gate_out[b * 3 * DETER + i] = Scalar[dtype](
-                    d_reset_logit
-                )
+                d_gate_out[b * 3 * DETER + i] = Scalar[dtype](d_reset_logit)
                 d_gate_out[b * 3 * DETER + DETER + i] = Scalar[dtype](
                     d_cand_logit
                 )
-                d_gate_out[b * 3 * DETER + 2 * DETER + i] = Scalar[
-                    dtype
-                ](d_update_logit)
+                d_gate_out[b * 3 * DETER + 2 * DETER + i] = Scalar[dtype](
+                    d_update_logit
+                )
 
                 # Direct contribution to prev_deter
-                grad_prev_deter.ptr[b * DETER + i] = Scalar[dtype](
-                    d_old_d
-                )
+                grad_prev_deter.ptr[b * DETER + i] = Scalar[dtype](d_old_d)
 
         var d_gate_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 3 * DETER), MutAnyOrigin
@@ -2293,9 +2261,9 @@ struct RSSM[
         ](d_proj_a.unsafe_ptr())
 
         # DeterProj backward → d_prev_deter_proj
-        var d_prev_deter_proj = InlineArray[
-            Scalar[dtype], BATCH * DETER
-        ](uninitialized=True)
+        var d_prev_deter_proj = InlineArray[Scalar[dtype], BATCH * DETER](
+            uninitialized=True
+        )
         for i in range(BATCH * DETER):
             d_prev_deter_proj[i] = Scalar[dtype](0.0)
         var d_prev_deter_proj_t = LayoutTensor[
@@ -2332,9 +2300,9 @@ struct RSSM[
 
         # ActionProj backward → d_action (not needed for training, but
         # accumulates param grads for ActionProj)
-        var d_action = InlineArray[
-            Scalar[dtype], BATCH * Self.ACTION_DIM
-        ](uninitialized=True)
+        var d_action = InlineArray[Scalar[dtype], BATCH * Self.ACTION_DIM](
+            uninitialized=True
+        )
         for i in range(BATCH * Self.ACTION_DIM):
             d_action[i] = Scalar[dtype](0.0)
         var d_action_t = LayoutTensor[

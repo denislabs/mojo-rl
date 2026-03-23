@@ -60,7 +60,7 @@ comptime dtype = DType.float32
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("TD3 Agent GPU Training on HalfCheetah")

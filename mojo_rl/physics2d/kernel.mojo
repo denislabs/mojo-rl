@@ -72,7 +72,7 @@ struct PhysicsConfig(Copyable, Movable):
     var velocity_iterations: Int
     var position_iterations: Int
 
-    fn __init__(
+    def __init__(
         out self,
         gravity_x: Float64 = 0.0,
         gravity_y: Float64 = -10.0,
@@ -94,7 +94,7 @@ struct PhysicsConfig(Copyable, Movable):
         self.velocity_iterations = velocity_iterations
         self.position_iterations = position_iterations
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.gravity_x = copy.gravity_x
         self.gravity_y = copy.gravity_y
         self.dt = copy.dt
@@ -105,7 +105,7 @@ struct PhysicsConfig(Copyable, Movable):
         self.velocity_iterations = copy.velocity_iterations
         self.position_iterations = copy.position_iterations
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.gravity_x = take.gravity_x
         self.gravity_y = take.gravity_y
         self.dt = take.dt
@@ -143,7 +143,7 @@ struct PhysicsKernel:
     # =========================================================================
 
     @staticmethod
-    fn step_gpu_edge_terrain[
+    def step_gpu_edge_terrain[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -247,7 +247,7 @@ struct PhysicsKernel:
     # =========================================================================
 
     @staticmethod
-    fn step_gpu_flat_terrain[
+    def step_gpu_flat_terrain[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,
@@ -347,7 +347,7 @@ struct PhysicsKernel:
     # =========================================================================
 
     @staticmethod
-    fn step_gpu_no_collision[
+    def step_gpu_no_collision[
         BATCH: Int,
         NUM_BODIES: Int,
         STATE_SIZE: Int,
@@ -389,7 +389,7 @@ struct PhysicsKernel:
     # =========================================================================
 
     @staticmethod
-    fn step_gpu_with_joints[
+    def step_gpu_with_joints[
         BATCH: Int,
         NUM_BODIES: Int,
         NUM_SHAPES: Int,

@@ -47,7 +47,7 @@ struct TrainResult(ImplicitlyCopyable, Movable):
     var final_loss: Float64
     var epochs_trained: Int
 
-    fn __init__(out self, final_loss: Float64, epochs_trained: Int):
+    def __init__(out self, final_loss: Float64, epochs_trained: Int):
         self.final_loss = final_loss
         self.epochs_trained = epochs_trained
 
@@ -74,7 +74,7 @@ struct Trainer[
     # =========================================================================
 
     @staticmethod
-    fn init_state[
+    def init_state[
         INITIALIZER: Initializer = Xavier[]
     ]() -> NetworkState[Self.MODEL, Self.OPTIMIZER]:
         """Create and initialize a CPU NetworkState.
@@ -90,7 +90,7 @@ struct Trainer[
         return state^
 
     @staticmethod
-    fn init_state_gpu[
+    def init_state_gpu[
         INITIALIZER: Initializer = Xavier[]
     ](ctx: DeviceContext) raises -> GPUNetworkState[Self.MODEL, Self.OPTIMIZER]:
         """Create a GPUNetworkState with initialized weights, no persistent CPU state.
@@ -119,7 +119,7 @@ struct Trainer[
     # =========================================================================
 
     @staticmethod
-    fn train[
+    def train[
         BATCH: Int
     ](
         mut state: NetworkState[Self.MODEL, Self.OPTIMIZER],
@@ -233,7 +233,7 @@ struct Trainer[
     # =========================================================================
 
     @staticmethod
-    fn evaluate[
+    def evaluate[
         BATCH: Int
     ](
         params: LayoutTensor[
@@ -282,7 +282,7 @@ struct Trainer[
     # =========================================================================
 
     @staticmethod
-    fn train_gpu[
+    def train_gpu[
         BATCH: Int
     ](
         mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER],

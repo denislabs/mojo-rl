@@ -31,7 +31,7 @@ struct Camera3D(Copyable, Movable):
     var screen_width: Int
     var screen_height: Int
 
-    fn __init__(
+    def __init__(
         out self,
         eye: Vec3 = Vec3(0.0, -5.0, 2.0),
         target: Vec3 = Vec3(0.0, 0.0, 1.0),
@@ -66,7 +66,7 @@ struct Camera3D(Copyable, Movable):
         self.screen_width = screen_width
         self.screen_height = screen_height
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor."""
         self.eye = copy.eye
         self.target = copy.target
@@ -78,7 +78,7 @@ struct Camera3D(Copyable, Movable):
         self.screen_width = copy.screen_width
         self.screen_height = copy.screen_height
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.eye = take.eye
         self.target = take.target
@@ -90,7 +90,7 @@ struct Camera3D(Copyable, Movable):
         self.screen_width = take.screen_width
         self.screen_height = take.screen_height
 
-    fn get_view_matrix(self) -> Mat4:
+    def get_view_matrix(self) -> Mat4:
         """Compute the view matrix (world to camera transform).
 
         Returns:
@@ -98,7 +98,7 @@ struct Camera3D(Copyable, Movable):
         """
         return Mat4.look_at(self.eye, self.target, self.up)
 
-    fn get_projection_matrix(self) -> Mat4:
+    def get_projection_matrix(self) -> Mat4:
         """Compute the perspective projection matrix.
 
         Returns:
@@ -106,7 +106,7 @@ struct Camera3D(Copyable, Movable):
         """
         return Mat4.perspective(self.fov, self.aspect, self.near, self.far)
 
-    fn get_view_projection(self) -> Mat4:
+    def get_view_projection(self) -> Mat4:
         """Compute combined view-projection matrix.
 
         Returns:
@@ -114,7 +114,7 @@ struct Camera3D(Copyable, Movable):
         """
         return self.get_projection_matrix() @ self.get_view_matrix()
 
-    fn project_to_screen(self, world_point: Vec3) -> Tuple[Int, Int, Bool]:
+    def project_to_screen(self, world_point: Vec3) -> Tuple[Int, Int, Bool]:
         """Project a 3D world point to 2D screen coordinates.
 
         Args:
@@ -175,7 +175,7 @@ struct Camera3D(Copyable, Movable):
 
         return (screen_x, screen_y, True)
 
-    fn orbit(mut self, delta_theta: Float64, delta_phi: Float64):
+    def orbit(mut self, delta_theta: Float64, delta_phi: Float64):
         """Orbit camera around target point.
 
         Args:
@@ -204,7 +204,7 @@ struct Camera3D(Copyable, Movable):
             self.target.z + r * cos(phi),
         )
 
-    fn zoom(mut self, delta: Float64):
+    def zoom(mut self, delta: Float64):
         """Zoom camera in/out.
 
         Args:
@@ -218,7 +218,7 @@ struct Camera3D(Copyable, Movable):
 
         self.eye = self.target + direction * distance
 
-    fn pan(mut self, delta_x: Float64, delta_y: Float64):
+    def pan(mut self, delta_x: Float64, delta_y: Float64):
         """Pan camera (move target and eye together).
 
         Args:
@@ -235,7 +235,7 @@ struct Camera3D(Copyable, Movable):
         self.eye += offset
         self.target += offset
 
-    fn set_screen_size(mut self, width: Int, height: Int):
+    def set_screen_size(mut self, width: Int, height: Int):
         """Update screen dimensions.
 
         Args:
@@ -247,14 +247,14 @@ struct Camera3D(Copyable, Movable):
         self.aspect = Float64(width) / Float64(height) if height > 0 else 1.0
 
     @staticmethod
-    fn _atan2(y: Float64, x: Float64) -> Float64:
+    def _atan2(y: Float64, x: Float64) -> Float64:
         """Compute atan2(y, x)."""
         from std.math import atan2
 
         return atan2(y, x)
 
     @staticmethod
-    fn _acos(x: Float64) -> Float64:
+    def _acos(x: Float64) -> Float64:
         """Compute acos(x) with clamping."""
         from std.math import acos
 
@@ -266,7 +266,7 @@ struct Camera3D(Copyable, Movable):
         return acos(clamped)
 
     @staticmethod
-    fn _clamp(x: Float64, min_val: Float64, max_val: Float64) -> Float64:
+    def _clamp(x: Float64, min_val: Float64, max_val: Float64) -> Float64:
         """Clamp value to range."""
         if x < min_val:
             return min_val

@@ -42,7 +42,7 @@ comptime BIAS_AFFINE: Int = 1
 
 # Helper to compute max(1, n) at compile time for array sizing
 @always_inline
-fn _max_one[n: Int]() -> Int:
+def _max_one[n: Int]() -> Int:
     if n > 0:
         return n
     return 1
@@ -91,7 +91,7 @@ struct EqualityConstraintDef[DTYPE: DType](
     var solimp_4: Scalar[Self.DTYPE]  # power
 
     @staticmethod
-    fn empty() -> Self:
+    def empty() -> Self:
         """Create empty equality constraint."""
         return Self(
             eq_type=EQ_CONNECT,
@@ -153,7 +153,7 @@ struct TendonDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     var solimp_4: Scalar[Self.DTYPE]  # power
 
     @staticmethod
-    fn empty() -> Self:
+    def empty() -> Self:
         """Create empty tendon definition."""
         return Self(
             num_joints=0,
@@ -210,7 +210,7 @@ struct ActuatorDef[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
     var has_activation: Bool
 
     @staticmethod
-    fn empty() -> Self:
+    def empty() -> Self:
         """Create empty actuator definition."""
         return Self(
             joint_idx=-1,
@@ -275,7 +275,7 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     var frame_t1_z: Scalar[Self.DTYPE]
 
     @staticmethod
-    fn empty() -> Self:
+    def empty() -> Self:
         """Create empty contact."""
         return Self(
             body_a=0,
@@ -452,7 +452,7 @@ struct Model[
     var tendons: List[TendonDef[Self.DTYPE]]
     var num_tendons: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize model with default values."""
         self.gravity = SIMD[Self.DTYPE, 4](0, 0, -9.81, 0)
         self.timestep = Scalar[Self.DTYPE](0.01)
@@ -676,7 +676,7 @@ struct Model[
             self.tendons.append(TendonDef[Self.DTYPE].empty())
         self.num_tendons = 0
 
-    fn set_body(
+    def set_body(
         mut self,
         body_id: Int,
         name: String,
@@ -710,7 +710,7 @@ struct Model[
             Scalar[Self.DTYPE](1.0) / inertia[2]
         )
 
-    fn get_body_name(self, body_id: Int) -> String:
+    def get_body_name(self, body_id: Int) -> String:
         """Get body name."""
         if body_id >= Self.NBODY:
             return ""
@@ -718,7 +718,7 @@ struct Model[
             return "world"
         return self.body_name[body_id]
 
-    fn set_body_parent(mut self, body_id: Int, parent_id: Int):
+    def set_body_parent(mut self, body_id: Int, parent_id: Int):
         """Set parent body for kinematic tree.
 
         Args:
@@ -727,7 +727,7 @@ struct Model[
         """
         self.body_parent[body_id] = parent_id
 
-    fn set_body_local_frame(
+    def set_body_local_frame(
         mut self,
         body_id: Int,
         pos: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
@@ -759,7 +759,7 @@ struct Model[
         self.body_quat[body_id * 4 + 2] = quat[2]
         self.body_quat[body_id * 4 + 3] = quat[3]
 
-    fn set_body_ipos_iquat(
+    def set_body_ipos_iquat(
         mut self,
         body_id: Int,
         ipos: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
@@ -791,7 +791,7 @@ struct Model[
         self.body_iquat[body_id * 4 + 2] = iquat[2]
         self.body_iquat[body_id * 4 + 3] = iquat[3]
 
-    fn add_hinge_joint(
+    def add_hinge_joint(
         mut self,
         body_id: Int,
         pos: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
@@ -851,7 +851,7 @@ struct Model[
         self.num_joints += 1
         return joint_idx
 
-    fn add_slide_joint(
+    def add_slide_joint(
         mut self,
         body_id: Int,
         pos: Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]],
@@ -912,7 +912,7 @@ struct Model[
         self.num_joints += 1
         return joint_idx
 
-    fn add_free_joint(
+    def add_free_joint(
         mut self,
         body_id: Int,
         armature: Scalar[Self.DTYPE] = 0.0,
@@ -948,7 +948,7 @@ struct Model[
         self.num_joints += 1
         return joint_idx
 
-    fn add_connect_constraint(
+    def add_connect_constraint(
         mut self,
         body_a: Int,
         body_b: Int,
@@ -1011,7 +1011,7 @@ struct Model[
         self.num_equality += 1
         return idx
 
-    fn add_weld_constraint(
+    def add_weld_constraint(
         mut self,
         body_a: Int,
         body_b: Int,
@@ -1086,7 +1086,7 @@ struct Model[
         self.num_equality += 1
         return idx
 
-    fn add_tendon(
+    def add_tendon(
         mut self,
         num_joints: Int,
         joint_indices: InlineArray[Int, 4],
@@ -1142,7 +1142,7 @@ struct Model[
         self.num_tendons += 1
         return idx
 
-    fn get_joint(self, joint_idx: Int) -> JointDef[Self.DTYPE]:
+    def get_joint(self, joint_idx: Int) -> JointDef[Self.DTYPE]:
         """Get joint definition by index."""
         return self.joints[joint_idx]
 
@@ -1211,7 +1211,7 @@ struct Data[
     # Site world positions — NSITE * 3 elements
     var site_xpos: List[Scalar[Self.DTYPE]]
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize with zero state."""
         var nq = _max_one[Self.NQ]()
         var nv = _max_one[Self.NV]()
@@ -1265,7 +1265,7 @@ struct Data[
         for _ in range(_max_one[Self.NSITE * 3]()):
             self.site_xpos.append(Scalar[Self.DTYPE](0))
 
-    fn get_body_position(
+    def get_body_position(
         self, body_id: Int
     ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
         """Get world position of a body."""
@@ -1275,7 +1275,7 @@ struct Data[
             self.xpos[body_id * 3 + 2],
         )
 
-    fn get_body_quaternion(
+    def get_body_quaternion(
         self, body_id: Int
     ) -> Tuple[
         Scalar[Self.DTYPE],
@@ -1291,30 +1291,30 @@ struct Data[
             self.xquat[body_id * 4 + 3],
         )
 
-    fn get_body_z(self, body_id: Int) -> Scalar[Self.DTYPE]:
+    def get_body_z(self, body_id: Int) -> Scalar[Self.DTYPE]:
         """Get z position of a body."""
         return self.xpos[body_id * 3 + 2]
 
-    fn set_qpos(mut self, idx: Int, value: Scalar[Self.DTYPE]):
+    def set_qpos(mut self, idx: Int, value: Scalar[Self.DTYPE]):
         """Set a qpos element."""
         self.qpos[idx] = value
 
-    fn set_qvel(mut self, idx: Int, value: Scalar[Self.DTYPE]):
+    def set_qvel(mut self, idx: Int, value: Scalar[Self.DTYPE]):
         """Set a qvel element."""
         self.qvel[idx] = value
 
-    fn set_qfrc(mut self, idx: Int, value: Scalar[Self.DTYPE]):
+    def set_qfrc(mut self, idx: Int, value: Scalar[Self.DTYPE]):
         """Set an applied force/torque."""
         self.qfrc[idx] = value
 
-    fn clear_forces(mut self):
+    def clear_forces(mut self):
         """Clear all applied forces."""
         for i in range(Self.NV):
             self.qfrc[i] = Scalar[Self.DTYPE](0)
 
 
 @always_inline
-fn compute_capsule_inertia[
+def compute_capsule_inertia[
     DTYPE: DType
 ](
     mass: Scalar[DTYPE],

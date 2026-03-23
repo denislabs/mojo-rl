@@ -32,20 +32,19 @@ struct Repeat[n: Int, Inner: Model](Model):
     comptime CACHE_SIZE: Int = Self.Inner.CACHE_SIZE * Self.n  # one per iter
     # Workspace: (n-1) intermediate buffers + Inner's own workspace + cache for no_cache inference
     comptime INTER_SIZE_PER_SAMPLE: Int = (
-        Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
-        + (Self.n - 1) * Self.Inner.OUT_DIM
+        Self.Inner.WORKSPACE_SIZE_PER_SAMPLE + (Self.n - 1) * Self.Inner.OUT_DIM
     )
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
 
     # --- Offset helpers ---
 
     @staticmethod
-    fn _cache_offset[idx: Int]() -> Int:
+    def _cache_offset[idx: Int]() -> Int:
         """Cache offset for iteration idx."""
         return idx * Self.Inner.CACHE_SIZE
 
     @staticmethod
-    fn _inter_offset[idx: Int]() -> Int:
+    def _inter_offset[idx: Int]() -> Int:
         """Intermediate buffer offset for iteration idx (per sample)."""
         return idx * Self.Inner.OUT_DIM
 
@@ -54,7 +53,9 @@ struct Repeat[n: Int, Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn initialize_params[INIT: Initializer](
+    def initialize_params[
+        INIT: Initializer
+    ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
@@ -67,7 +68,7 @@ struct Repeat[n: Int, Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -138,7 +139,7 @@ struct Repeat[n: Int, Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -168,7 +169,7 @@ struct Repeat[n: Int, Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -247,16 +248,14 @@ struct Repeat[n: Int, Inner: Model](Model):
                         Layout.row_major(BATCH, Self.Inner.IN_DIM),
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
-                    Self.Inner.backward[BATCH](
-                        li_go, li_gi, params, ci, grads
-                    )
+                    Self.Inner.backward[BATCH](li_go, li_gi, params, ci, grads)
 
     # =========================================================================
     # GPU Forward (with cache)
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -303,9 +302,7 @@ struct Repeat[n: Int, Inner: Model](Model):
         else:
             var ws_ptr = workspace.unsafe_ptr()
             comptime INNER_WS_OFF = (Self.n - 1) * Self.Inner.OUT_DIM
-            var inner_ws_size = (
-                BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
-            )
+            var inner_ws_size = BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
             var inner_ws = DeviceBuffer[dtype](
                 ctx,
                 ws_ptr + BATCH * INNER_WS_OFF,
@@ -372,7 +369,7 @@ struct Repeat[n: Int, Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu_no_cache[
+    def forward_gpu_no_cache[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -398,7 +395,7 @@ struct Repeat[n: Int, Inner: Model](Model):
         Self.forward_gpu[BATCH](ctx, output, input, params, cache_v, workspace)
 
     @staticmethod
-    fn forward_gpu_no_cache_on_stream[
+    def forward_gpu_no_cache_on_stream[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -422,7 +419,7 @@ struct Repeat[n: Int, Inner: Model](Model):
     # =========================================================================
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
     ](
         ctx: DeviceContext,
@@ -471,9 +468,7 @@ struct Repeat[n: Int, Inner: Model](Model):
         else:
             var ws_ptr = workspace.unsafe_ptr()
             comptime INNER_WS_OFF = (Self.n - 1) * Self.Inner.OUT_DIM
-            var inner_ws_size = (
-                BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
-            )
+            var inner_ws_size = BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
             var inner_ws = DeviceBuffer[dtype](
                 ctx,
                 ws_ptr + BATCH * INNER_WS_OFF,
@@ -500,9 +495,7 @@ struct Repeat[n: Int, Inner: Model](Model):
                     var go_rb = rebind[
                         LayoutTensor[
                             dtype,
-                            Layout.row_major(
-                                BATCH, Self.Inner.OUT_DIM
-                            ),
+                            Layout.row_major(BATCH, Self.Inner.OUT_DIM),
                             MutAnyOrigin,
                         ]
                     ](grad_output)

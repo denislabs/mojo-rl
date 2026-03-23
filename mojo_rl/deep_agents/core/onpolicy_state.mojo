@@ -21,7 +21,9 @@ from mojo_rl.deep_agents.core.training.onpolicy_train import (
     OnPolicyDiscreteState,
     OnPolicyContinuousState,
 )
-from mojo_rl.deep_agents.core.training.gpu_onpolicy_train import GPUOnPolicyState
+from mojo_rl.deep_agents.core.training.gpu_onpolicy_train import (
+    GPUOnPolicyState,
+)
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
@@ -80,7 +82,7 @@ struct PPOContinuousState[
     # Shuffled index buffer
     var _indices: List[Int]  # [rollout_len]
 
-    fn __init__(out self):
+    def __init__(out self):
         """Allocate networks (actor Kaiming init only), rollout buffers, scratch.
 
         IMPORTANT: Only the actor is initialized here. The critic is left
@@ -146,7 +148,7 @@ struct PPOContinuousState[
     # OnPolicyContinuousState trait methods
     # -------------------------------------------------------------------------
 
-    fn store_step(
+    def store_step(
         mut self,
         obs: List[Scalar[dtype]],
         action: List[Scalar[dtype]],
@@ -168,11 +170,11 @@ struct PPOContinuousState[
         self.buffer_dones[idx] = done
         self.buffer_idx += 1
 
-    fn is_full(self) -> Bool:
+    def is_full(self) -> Bool:
         """Return True when rollout_len steps have been collected."""
         return self.buffer_idx >= Self.ROLLOUT
 
-    fn clear(mut self) -> None:
+    def clear(mut self) -> None:
         """Reset the rollout buffer write pointer."""
         self.buffer_idx = 0
 
@@ -303,7 +305,7 @@ struct PPOContinuousGPUState[
     # Pre-allocated loss workspace for autodiff gradient (avoids per-minibatch allocs)
     var loss_ws: DeviceBuffer[dtype]  # [loss_ws_size]
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU device and pinned host buffers."""
         self.gpu_actor = GPUNetworkState[Self.ActorModel, Self.ActorOpt](ctx)
         self.gpu_critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](ctx)
@@ -443,7 +445,7 @@ struct PPOContinuousGPUState[
     # GPUOnPolicyState trait methods
     # -------------------------------------------------------------------------
 
-    fn gpu_store_pre_step[
+    def gpu_store_pre_step[
         N_ENVS: Int
     ](
         mut self,
@@ -503,7 +505,7 @@ struct PPOContinuousGPUState[
         comptime blocks = (N_ENVS + TPB - 1) // TPB
 
         @always_inline
-        fn store_scalars_cont_wrapper(
+        def store_scalars_cont_wrapper(
             r_a: LayoutTensor[
                 dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
             ],
@@ -536,7 +538,7 @@ struct PPOContinuousGPUState[
             block_dim=(TPB,),
         )
 
-    fn gpu_store_post_step[
+    def gpu_store_post_step[
         N_ENVS: Int
     ](
         mut self,
@@ -575,10 +577,10 @@ struct PPOContinuousGPUState[
         )
         self.rollout_step += 1
 
-    fn gpu_rollout_is_full(self) -> Bool:
+    def gpu_rollout_is_full(self) -> Bool:
         """Return True when rollout_len steps have been stored."""
         return self.rollout_step >= Self.ROLLOUT
 
-    fn gpu_rollout_reset(mut self) -> None:
+    def gpu_rollout_reset(mut self) -> None:
         """Reset rollout write pointer to 0 for the next update cycle."""
         self.rollout_step = 0

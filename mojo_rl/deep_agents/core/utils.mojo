@@ -11,7 +11,7 @@ from layout import (
 from mojo_rl.nn.constants import dtype
 
 
-fn fill_inline[
+def fill_inline[
     N: Int, T: DType
 ](src: List[Scalar[T]], mut dst: InlineArray[Scalar[dtype], N]):
     """Fill an InlineArray in-place from a List[Scalar[T]].
@@ -31,7 +31,7 @@ fn fill_inline[
         dst[i] = Scalar[dtype](src[i])
 
 
-fn obs_to_inline[
+def obs_to_inline[
     N: Int, T: DType
 ](src: List[Scalar[T]]) -> InlineArray[Scalar[dtype], N]:
     """Convert a List observation to a fixed-size InlineArray with dtype cast.
@@ -62,7 +62,7 @@ fn obs_to_inline[
     return arr^
 
 
-fn concat_obs_action[
+def concat_obs_action[
     OBS: Int, ACT: Int
 ](
     obs: InlineArray[Scalar[dtype], OBS],
@@ -89,7 +89,7 @@ fn concat_obs_action[
         dst[OBS + i] = act[i]
 
 
-fn print_progress_bar(
+def print_progress_bar(
     current: Int,
     total: Int,
     train_steps: Int,
@@ -133,7 +133,7 @@ fn print_progress_bar(
     )
 
 
-fn clear_progress_bar():
+def clear_progress_bar():
     """Overwrite the current progress bar line with spaces and return to start.
 
     Call this before printing stats to ensure the progress bar is fully erased.
@@ -142,7 +142,7 @@ fn clear_progress_bar():
     print("\r" + String(" ") * 120 + "\r", end="")
 
 
-fn concat_obs_action_batch[
+def concat_obs_action_batch[
     OBS: Int, ACT: Int, BATCH: Int
 ](
     dst: LayoutTensor[dtype, Layout.row_major(BATCH, OBS + ACT), MutAnyOrigin],

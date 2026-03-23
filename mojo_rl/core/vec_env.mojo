@@ -40,7 +40,7 @@ struct VecStepResult[num_envs: Int]:
     var dones: SIMD[DType.bool, Self.num_envs]
     """SIMD vector of done flags, one per environment."""
 
-    fn __init__(
+    def __init__(
         out self,
         var observations: List[SIMD[DType.float64, 4]],
         rewards: SIMD[DType.float64, Self.num_envs],
@@ -64,7 +64,7 @@ struct VecStepResult[num_envs: Int]:
 
 
 @always_inline
-fn simd_splat_f64[n: Int](value: Float64) -> SIMD[DType.float64, n]:
+def simd_splat_f64[n: Int](value: Float64) -> SIMD[DType.float64, n]:
     """Create a SIMD vector with all elements set to value.
 
     Parameters:
@@ -84,7 +84,7 @@ fn simd_splat_f64[n: Int](value: Float64) -> SIMD[DType.float64, n]:
 
 
 @always_inline
-fn simd_splat_i32[n: Int](value: Int32) -> SIMD[DType.int32, n]:
+def simd_splat_i32[n: Int](value: Int32) -> SIMD[DType.int32, n]:
     """Create a SIMD vector with all elements set to value.
 
     Parameters:
@@ -109,7 +109,7 @@ fn simd_splat_i32[n: Int](value: Int32) -> SIMD[DType.int32, n]:
 
 
 @always_inline
-fn simd_eq_i32[
+def simd_eq_i32[
     n: Int
 ](a: SIMD[DType.int32, n], b: SIMD[DType.int32, n]) -> SIMD[DType.bool, n]:
     """Element-wise equality comparison of two int32 SIMD vectors.
@@ -130,7 +130,7 @@ fn simd_eq_i32[
 
 
 @always_inline
-fn simd_ge_i32[
+def simd_ge_i32[
     n: Int
 ](a: SIMD[DType.int32, n], b: SIMD[DType.int32, n]) -> SIMD[DType.bool, n]:
     """Element-wise greater-than-or-equal comparison.
@@ -151,7 +151,7 @@ fn simd_ge_i32[
 
 
 @always_inline
-fn simd_lt_f64[
+def simd_lt_f64[
     n: Int
 ](a: SIMD[DType.float64, n], b: Float64) -> SIMD[DType.bool, n]:
     """Element-wise less-than comparison with scalar.
@@ -172,7 +172,7 @@ fn simd_lt_f64[
 
 
 @always_inline
-fn simd_gt_f64[
+def simd_gt_f64[
     n: Int
 ](a: SIMD[DType.float64, n], b: Float64) -> SIMD[DType.bool, n]:
     """Element-wise greater-than comparison with scalar.
@@ -198,7 +198,7 @@ fn simd_gt_f64[
 
 
 @always_inline
-fn random_simd[n: Int](low: Float64, high: Float64) -> SIMD[DType.float64, n]:
+def random_simd[n: Int](low: Float64, high: Float64) -> SIMD[DType.float64, n]:
     """Generate a SIMD vector of random values in [low, high).
 
     Parameters:
@@ -220,7 +220,7 @@ fn random_simd[n: Int](low: Float64, high: Float64) -> SIMD[DType.float64, n]:
 
 
 @always_inline
-fn random_simd_centered[n: Int](half_range: Float64) -> SIMD[DType.float64, n]:
+def random_simd_centered[n: Int](half_range: Float64) -> SIMD[DType.float64, n]:
     """Generate a SIMD vector of random values in [-half_range, half_range).
 
     Convenience function for centered distributions (common in RL initialization).
@@ -243,7 +243,7 @@ fn random_simd_centered[n: Int](half_range: Float64) -> SIMD[DType.float64, n]:
 
 
 @always_inline
-fn simd_or[
+def simd_or[
     n: Int
 ](a: SIMD[DType.bool, n], b: SIMD[DType.bool, n]) -> SIMD[DType.bool, n]:
     """Element-wise OR of two boolean SIMD vectors.
@@ -264,7 +264,7 @@ fn simd_or[
 
 
 @always_inline
-fn simd_any[n: Int](mask: SIMD[DType.bool, n]) -> Bool:
+def simd_any[n: Int](mask: SIMD[DType.bool, n]) -> Bool:
     """Check if any element in the boolean SIMD vector is True.
 
     Uses SIMD reduce_or for optimal performance.
@@ -282,7 +282,7 @@ fn simd_any[n: Int](mask: SIMD[DType.bool, n]) -> Bool:
 
 
 @always_inline
-fn simd_all[n: Int](mask: SIMD[DType.bool, n]) -> Bool:
+def simd_all[n: Int](mask: SIMD[DType.bool, n]) -> Bool:
     """Check if all elements in the boolean SIMD vector are True.
 
     Uses SIMD reduce_and for optimal performance.
@@ -300,7 +300,7 @@ fn simd_all[n: Int](mask: SIMD[DType.bool, n]) -> Bool:
 
 
 @always_inline
-fn simd_count_true[n: Int](mask: SIMD[DType.bool, n]) -> Int:
+def simd_count_true[n: Int](mask: SIMD[DType.bool, n]) -> Int:
     """Count the number of True elements in a boolean SIMD vector.
 
     Uses SIMD cast and reduce for optimal performance.

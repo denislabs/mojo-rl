@@ -17,7 +17,7 @@ Usage:
     print("Mean reward:", metrics.mean_reward())
 
     # Each agent's evaluate() becomes a thin delegation:
-    fn evaluate[E: BoxContinuousActionEnv](self, mut env: E, ...) -> Float64:
+    def evaluate[E: BoxContinuousActionEnv](self, mut env: E, ...) -> Float64:
         return run_offpolicy_continuous_eval(
             self, env, num_episodes=num_episodes, verbose=verbose,
         ).mean_reward()
@@ -34,7 +34,10 @@ from .training.offpolicy_train import (
     OffPolicyContinuousAgent,
     OffPolicyDiscreteAgent,
 )
-from .training.onpolicy_train import OnPolicyDiscreteAgent, OnPolicyContinuousAgent
+from .training.onpolicy_train import (
+    OnPolicyDiscreteAgent,
+    OnPolicyContinuousAgent,
+)
 
 
 # =============================================================================
@@ -42,7 +45,7 @@ from .training.onpolicy_train import OnPolicyDiscreteAgent, OnPolicyContinuousAg
 # =============================================================================
 
 
-fn run_offpolicy_continuous_eval[
+def run_offpolicy_continuous_eval[
     E: BoxContinuousActionEnv, A: OffPolicyAgent
 ](
     agent: A,
@@ -109,7 +112,7 @@ fn run_offpolicy_continuous_eval[
     return metrics^
 
 
-fn run_offpolicy_continuous_eval[
+def run_offpolicy_continuous_eval[
     E: BoxContinuousActionEnv & RenderableEnv, A: OffPolicyAgent
 ](
     agent: A,
@@ -218,7 +221,7 @@ fn run_offpolicy_continuous_eval[
 # =============================================================================
 
 
-fn run_offpolicy_discrete_eval[
+def run_offpolicy_discrete_eval[
     E: BoxDiscreteActionEnv, A: OffPolicyAgent
 ](
     agent: A,
@@ -305,7 +308,7 @@ fn run_offpolicy_discrete_eval[
 # =============================================================================
 
 
-fn run_offpolicy_continuous_eval[
+def run_offpolicy_continuous_eval[
     E: BoxContinuousActionEnv, A: OffPolicyContinuousAgent
 ](
     agent: A,
@@ -388,7 +391,7 @@ fn run_offpolicy_continuous_eval[
     return metrics^
 
 
-fn run_offpolicy_continuous_eval[
+def run_offpolicy_continuous_eval[
     E: BoxContinuousActionEnv & RenderableEnv, A: OffPolicyContinuousAgent
 ](
     agent: A,
@@ -480,7 +483,7 @@ fn run_offpolicy_continuous_eval[
 # =============================================================================
 
 
-fn run_offpolicy_discrete_eval[
+def run_offpolicy_discrete_eval[
     E: BoxDiscreteActionEnv, A: OffPolicyDiscreteAgent
 ](
     agent: A,
@@ -558,7 +561,7 @@ fn run_offpolicy_discrete_eval[
     return metrics^
 
 
-fn run_offpolicy_discrete_eval[
+def run_offpolicy_discrete_eval[
     E: BoxDiscreteActionEnv & RenderableEnv, A: OffPolicyDiscreteAgent
 ](
     agent: A,
@@ -650,7 +653,7 @@ fn run_offpolicy_discrete_eval[
 # =============================================================================
 
 
-fn run_onpolicy_discrete_eval[
+def run_onpolicy_discrete_eval[
     E: BoxDiscreteActionEnv, A: OnPolicyDiscreteAgent
 ](
     agent: A,
@@ -738,7 +741,7 @@ fn run_onpolicy_discrete_eval[
 # =============================================================================
 
 
-fn run_onpolicy_continuous_eval[
+def run_onpolicy_continuous_eval[
     E: BoxContinuousActionEnv, A: OnPolicyContinuousAgent
 ](
     agent: A,

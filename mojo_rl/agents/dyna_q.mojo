@@ -45,7 +45,7 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
     var visited_pairs: List[Int]
     var num_visited: Int
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.q_table = copy.q_table
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
@@ -60,7 +60,7 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.visited_pairs = copy.visited_pairs.copy()
         self.num_visited = copy.num_visited
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.q_table = take.q_table^
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
@@ -75,7 +75,7 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         self.visited_pairs = take.visited_pairs^
         self.num_visited = take.num_visited
 
-    fn __init__(
+    def __init__(
         out self,
         num_states: Int,
         num_actions: Int,
@@ -110,11 +110,11 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
             self.visited_pairs.append(-1)
         self.num_visited = 0
 
-    fn _pair_index(self, state: Int, action: Int) -> Int:
+    def _pair_index(self, state: Int, action: Int) -> Int:
         """Convert (state, action) to flat index."""
         return state * self.num_actions + action
 
-    fn select_action(self, state_idx: Int) -> Int:
+    def select_action(self, state_idx: Int) -> Int:
         """Select action using epsilon-greedy policy."""
         var rand = random_float64()
         if rand < self.epsilon:
@@ -123,7 +123,7 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         else:
             return self.q_table.get_best_action(state_idx)
 
-    fn _q_update(
+    def _q_update(
         mut self,
         state: Int,
         action: Int,
@@ -137,7 +137,7 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
         var new_q = current_q + self.learning_rate * (target - current_q)
         self.q_table.set(state, action, new_q)
 
-    fn update(
+    def update(
         mut self,
         state_idx: Int,
         action: Int,
@@ -186,19 +186,19 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
                 # Q-learning update with simulated experience (assume non-terminal)
                 self._q_update(s, a, r, ns)
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         """Decay epsilon after each episode."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         """Return current epsilon value."""
         return self.epsilon
 
-    fn get_best_action(self, state_idx: Int) -> Int:
+    def get_best_action(self, state_idx: Int) -> Int:
         """Return the greedy action for a state."""
         return self.q_table.get_best_action(state_idx)
 
-    fn train[
+    def train[
         E: DiscreteEnv
     ](
         mut self,
@@ -262,7 +262,7 @@ struct DynaQAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: DiscreteEnv & RenderableEnv
     ](
         self,

@@ -8,7 +8,7 @@ from std.collections import Dict
 from std.pathlib import Path
 
 
-fn _split_lines(content: String) -> List[String]:
+def _split_lines(content: String) -> List[String]:
     """Split content into lines."""
     var lines = List[String]()
     var current = String("")
@@ -24,7 +24,7 @@ fn _split_lines(content: String) -> List[String]:
     return lines^
 
 
-fn load_dotenv(path: String = ".env") raises -> Dict[String, String]:
+def load_dotenv(path: String = ".env") raises -> Dict[String, String]:
     """Parse a .env file and return a dict of key-value pairs.
 
     Args:
@@ -58,7 +58,7 @@ fn load_dotenv(path: String = ".env") raises -> Dict[String, String]:
         if eq_pos < 0:
             continue
 
-        var key = String(line[: eq_pos])
+        var key = String(line[:eq_pos])
         var val = String(line[eq_pos + 1 :])
 
         # Strip surrounding quotes

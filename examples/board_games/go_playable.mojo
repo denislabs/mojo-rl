@@ -16,7 +16,7 @@ from mojo_rl.render.sdl.sdl_scancode import Scancode
 from mojo_rl.render.sdl.sdl_mouse import get_mouse_state, MouseButtonFlags
 
 
-fn main() raises:
+def main() raises:
     print("=== Playable Go 9x9 ===")
     print("Controls:")
     print("  Arrow keys to move cursor")
@@ -97,7 +97,9 @@ fn main() raises:
         # Convert mouse position to nearest grid intersection
         var grid_col = (mouse_x - margin + cell_size // 2) // cell_size
         var grid_row = (mouse_y - margin + cell_size // 2) // cell_size
-        var mouse_on_board = grid_row >= 0 and grid_row <= 8 and grid_col >= 0 and grid_col <= 8
+        var mouse_on_board = (
+            grid_row >= 0 and grid_row <= 8 and grid_col >= 0 and grid_col <= 8
+        )
 
         var game_over = env.done
 
@@ -166,7 +168,7 @@ fn main() raises:
             )
 
         # Draw star points (hoshi) at (2,2), (2,6), (6,2), (6,6), (4,4)
-        fn _hoshi_r(i: Int) -> Int:
+        def _hoshi_r(i: Int) -> Int:
             if i == 0:
                 return 2
             if i == 1:
@@ -177,7 +179,7 @@ fn main() raises:
                 return 6
             return 4
 
-        fn _hoshi_c(i: Int) -> Int:
+        def _hoshi_c(i: Int) -> Int:
             if i == 0:
                 return 2
             if i == 1:
@@ -204,12 +206,20 @@ fn main() raises:
 
                 if cell_val == 1:
                     # Black stone: filled black with white outline
-                    renderer.draw_circle(cx, cy, stone_r + 1, black_outline, filled=True)
-                    renderer.draw_circle(cx, cy, stone_r, black_stone, filled=True)
+                    renderer.draw_circle(
+                        cx, cy, stone_r + 1, black_outline, filled=True
+                    )
+                    renderer.draw_circle(
+                        cx, cy, stone_r, black_stone, filled=True
+                    )
                 elif cell_val == 2:
                     # White stone: filled white with black outline
-                    renderer.draw_circle(cx, cy, stone_r + 1, black_outline2, filled=True)
-                    renderer.draw_circle(cx, cy, stone_r, white_stone, filled=True)
+                    renderer.draw_circle(
+                        cx, cy, stone_r + 1, black_outline2, filled=True
+                    )
+                    renderer.draw_circle(
+                        cx, cy, stone_r, white_stone, filled=True
+                    )
 
         # Draw cursor (translucent stone at cursor position)
         if not game_over:
@@ -220,9 +230,13 @@ fn main() raises:
             if cell_val == 0:
                 var player = env.current_player()
                 if player == 0:
-                    renderer.draw_circle(ccx, ccy, 18, cursor_black, filled=True)
+                    renderer.draw_circle(
+                        ccx, ccy, 18, cursor_black, filled=True
+                    )
                 else:
-                    renderer.draw_circle(ccx, ccy, 18, cursor_white, filled=True)
+                    renderer.draw_circle(
+                        ccx, ccy, 18, cursor_white, filled=True
+                    )
             # If occupied, show a small yellow indicator
             var indicator_color = SDL_Color(r=0xFF, g=0xFF, b=0x00, a=0xFF)
             renderer.draw_circle(ccx, ccy, 3, indicator_color, filled=True)
@@ -234,13 +248,21 @@ fn main() raises:
         if game_result == 0:
             var player = env.current_player()
             if player == 0:
-                renderer.draw_text("Black's turn  (Space=place, P=pass)", 100, 520, text_color)
+                renderer.draw_text(
+                    "Black's turn  (Space=place, P=pass)", 100, 520, text_color
+                )
             else:
-                renderer.draw_text("White's turn  (Space=place, P=pass)", 100, 520, text_color)
+                renderer.draw_text(
+                    "White's turn  (Space=place, P=pass)", 100, 520, text_color
+                )
         elif game_result == 1:
-            renderer.draw_text("Black Wins!  (R to reset)", 140, 520, text_color)
+            renderer.draw_text(
+                "Black Wins!  (R to reset)", 140, 520, text_color
+            )
         elif game_result == 2:
-            renderer.draw_text("White Wins!  (R to reset)", 140, 520, text_color)
+            renderer.draw_text(
+                "White Wins!  (R to reset)", 140, 520, text_color
+            )
         else:
             renderer.draw_text("Draw!  (R to reset)", 160, 520, text_color)
 

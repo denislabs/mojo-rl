@@ -13,7 +13,7 @@ from mojo_rl.deep_agents.dreamer_v3 import DreamerV3Agent
 comptime N_ENVS = 8
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("DreamerV3 GPU Training — Pendulum")
     print("=" * 60)

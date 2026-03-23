@@ -27,13 +27,13 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = Self.vocab_size
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -41,7 +41,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -73,11 +73,13 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
             for j in range(Self.embed_dim):
                 var acc: Scalar[dtype] = 0
                 for v in range(Self.vocab_size):
-                    acc += rebind[Scalar[dtype]](input[b, v]) * rebind[Scalar[dtype]](W[v, j])
+                    acc += rebind[Scalar[dtype]](input[b, v]) * rebind[
+                        Scalar[dtype]
+                    ](W[v, j])
                 output[b, j] = acc
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -112,14 +114,18 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
             for v in range(Self.vocab_size):
                 var acc: Scalar[dtype] = 0
                 for j in range(Self.embed_dim):
-                    acc += rebind[Scalar[dtype]](grad_output[b, j]) * rebind[Scalar[dtype]](W[v, j])
+                    acc += rebind[Scalar[dtype]](grad_output[b, j]) * rebind[
+                        Scalar[dtype]
+                    ](W[v, j])
                 grad_input[b, v] = acc
 
             # dW += input.T @ grad_output (ACCUMULATE)
             for v in range(Self.vocab_size):
                 var inp_val = rebind[Scalar[dtype]](cache[b, v])
                 for j in range(Self.embed_dim):
-                    dW[v, j] = rebind[Scalar[dtype]](dW[v, j]) + inp_val * rebind[Scalar[dtype]](grad_output[b, j])
+                    dW[v, j] = rebind[Scalar[dtype]](
+                        dW[v, j]
+                    ) + inp_val * rebind[Scalar[dtype]](grad_output[b, j])
 
     # =========================================================================
     # GPU kernels
@@ -127,7 +133,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -166,7 +172,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dx_kernel_impl[
+    def backward_dx_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -197,7 +203,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dW_kernel_impl[
+    def backward_dW_kernel_impl[
         BATCH: Int
     ](
         dW: LayoutTensor[
@@ -231,7 +237,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -261,7 +267,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.embed_dim), MutAnyOrigin
             ],
@@ -291,7 +297,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -334,7 +340,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         var grid_dx = (total_dx + TPB - 1) // TPB
 
         @always_inline
-        fn dx_wrapper(
+        def dx_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.vocab_size), MutAnyOrigin
             ],
@@ -364,7 +370,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         var grid_dW = (total_dW + TPB - 1) // TPB
 
         @always_inline
-        fn dW_wrapper(
+        def dW_wrapper(
             dW: LayoutTensor[
                 dtype,
                 Layout.row_major(Self.vocab_size, Self.embed_dim),

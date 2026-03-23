@@ -90,7 +90,7 @@ from ..joint_types import (
 # =============================================================================
 
 
-fn forward_kinematics[
+def forward_kinematics[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -505,7 +505,7 @@ fn forward_kinematics[
 # =============================================================================
 
 
-fn compute_body_velocities[
+def compute_body_velocities[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -674,7 +674,7 @@ fn compute_body_velocities[
 
 
 @always_inline
-fn forward_kinematics_gpu[
+def forward_kinematics_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1227,7 +1227,7 @@ fn forward_kinematics_gpu[
 
 
 @always_inline
-fn compute_body_velocities_gpu[
+def compute_body_velocities_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

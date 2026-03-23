@@ -143,54 +143,98 @@ struct DreamerV3CPUState[
     var buffer: SequenceReplayBuffer[Self.BUFFER_CAPACITY, Self.OBS, Self.ACT]
 
     # ── Pre-allocated scratch buffers for sequence batch ───────────────────
-    var _batch_obs: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*(BL+1)*OBS]
-    var _batch_actions: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*BL*ACT]
+    var _batch_obs: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH*(BL+1)*OBS]
+    var _batch_actions: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH*BL*ACT]
     var _batch_rewards: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*BL]
     var _batch_dones: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*BL]
 
     # ── RSSM observe scratch (cached for BPTT) ────────────────────────────
-    var _all_deter: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BL*BATCH*DETER]
-    var _all_stoch: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BL*BATCH*STOCH]
-    var _all_post_probs: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BL*BATCH*STOCH]
-    var _all_prior_probs: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BL*BATCH*STOCH]
-    var _all_feats: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BL*BATCH*FEAT]
+    var _all_deter: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BL*BATCH*DETER]
+    var _all_stoch: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BL*BATCH*STOCH]
+    var _all_post_probs: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BL*BATCH*STOCH]
+    var _all_prior_probs: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BL*BATCH*STOCH]
+    var _all_feats: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BL*BATCH*FEAT]
 
     # ── GRU core scratch buffers (reused per timestep) ────────────────────
     var _proj_d: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*HIDDEN]
     var _proj_s: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*HIDDEN]
     var _proj_a: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*HIDDEN]
-    var _concat_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*(DETER+3*HIDDEN)]
+    var _concat_buf: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH*(DETER+3*HIDDEN)]
     var _hidden_out: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*DETER]
     var _gate_out: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*3*DETER]
     var _embed: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*STOCH]
-    var _post_logits: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*STOCH]
-    var _prior_logits: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*STOCH]
-    var _deter_embed_concat: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*(DETER+STOCH)]
+    var _post_logits: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH*STOCH]
+    var _prior_logits: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH*STOCH]
+    var _deter_embed_concat: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH*(DETER+STOCH)]
     var _symlog_obs: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*OBS]
 
     # ── Decoder/head scratch ──────────────────────────────────────────────
     var _dec_out: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*OBS]
-    var _rew_logits: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*NUM_BINS]
+    var _rew_logits: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH*NUM_BINS]
     var _cont_logits: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH*1]
 
     # ── Imagination scratch [IMAG_BATCH x HORIZON] ────────────────────────
-    var _imag_deter: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [HORIZON*IB*DETER]
-    var _imag_stoch: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [HORIZON*IB*STOCH]
-    var _imag_feat: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [HORIZON*IB*FEAT]
-    var _imag_actions: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [HORIZON*IB*ACT]
-    var _imag_log_probs: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [HORIZON*IB]
-    var _imag_rewards: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [HORIZON*IB]
+    var _imag_deter: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [HORIZON*IB*DETER]
+    var _imag_stoch: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [HORIZON*IB*STOCH]
+    var _imag_feat: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [HORIZON*IB*FEAT]
+    var _imag_actions: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [HORIZON*IB*ACT]
+    var _imag_log_probs: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [HORIZON*IB]
+    var _imag_rewards: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [HORIZON*IB]
     var _imag_values: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [HORIZON*IB]
-    var _imag_continues: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [HORIZON*IB]
-    var _imag_returns: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [HORIZON*IB]
+    var _imag_continues: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [HORIZON*IB]
+    var _imag_returns: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [HORIZON*IB]
 
     # ── Actor scratch ─────────────────────────────────────────────────────
     var _actor_out: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [IB*2*ACT]
     var _actor_feat: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [IB*FEAT]
 
     # ── Critic scratch ────────────────────────────────────────────────────
-    var _critic_logits: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [IB*NUM_BINS]
-    var _slow_critic_logits: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [IB*NUM_BINS]
+    var _critic_logits: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [IB*NUM_BINS]
+    var _slow_critic_logits: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [IB*NUM_BINS]
 
     # ── Return normalization (percentile-based EMA) ───────────────────────
     var return_ema_lo: Float64  # 5th percentile
@@ -200,8 +244,9 @@ struct DreamerV3CPUState[
     # Constructors
     # ══════════════════════════════════════════════════════════════════════
 
-    fn __init__(out self):
-        """Allocate RSSM, actor-critic, replay buffer, and all scratch buffers."""
+    def __init__(out self):
+        """Allocate RSSM, actor-critic, replay buffer, and all scratch buffers.
+        """
 
         # ── Core state ────────────────────────────────────────────────────
         self.rssm = Self.RSSMType()
@@ -215,7 +260,9 @@ struct DreamerV3CPUState[
         self.critic.initialize[Kaiming[]]()
 
         # Slow critic (EMA copy of critic params)
-        self.slow_critic_params = alloc[Scalar[dtype]](Self.CriticModel.PARAM_SIZE)
+        self.slow_critic_params = alloc[Scalar[dtype]](
+            Self.CriticModel.PARAM_SIZE
+        )
         var cp = self.critic.params
         for i in range(Self.CriticModel.PARAM_SIZE):
             self.slow_critic_params[i] = cp[i]
@@ -368,7 +415,7 @@ struct DreamerV3CPUState[
         self.return_ema_lo = 0.0
         self.return_ema_hi = 1.0
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor — transfer ownership of all fields."""
         self.rssm = take.rssm^
         self.actor = take.actor^
@@ -434,7 +481,7 @@ struct DreamerV3CPUState[
     # Helper methods
     # ══════════════════════════════════════════════════════════════════════
 
-    fn is_ready(self) -> Bool:
+    def is_ready(self) -> Bool:
         """Return True if buffer has enough samples for one training batch.
 
         Requires at least BATCH_SIZE + BATCH_LENGTH + 1 samples so that
@@ -442,7 +489,7 @@ struct DreamerV3CPUState[
         """
         return self.buffer.is_ready[Self.BATCH_SIZE + Self.BATCH_LENGTH + 1]()
 
-    fn slow_critic_update(mut self, tau: Float64):
+    def slow_critic_update(mut self, tau: Float64):
         """EMA update: slow_params = (1-tau) * slow_params + tau * critic_params.
 
         Args:
@@ -452,7 +499,9 @@ struct DreamerV3CPUState[
         for i in range(Self.CriticModel.PARAM_SIZE):
             var s = Float64(self.slow_critic_params[i])
             var c = Float64(cp[i])
-            self.slow_critic_params[i] = Scalar[dtype]((1.0 - tau) * s + tau * c)
+            self.slow_critic_params[i] = Scalar[dtype](
+                (1.0 - tau) * s + tau * c
+            )
 
 
 # =============================================================================
@@ -504,14 +553,25 @@ struct DreamerV3GPUState[
     comptime BINS: Int = Self.NUM_BINS
     comptime HORIZON: Int = Self.IMAGINE_HORIZON
     comptime IB: Int = Self.IMAG_BATCH
-    comptime HIB: Int = (Self.IMAGINE_HORIZON - 1) * Self.IB  # actor-critic batch
+    comptime HIB: Int = (
+        Self.IMAGINE_HORIZON - 1
+    ) * Self.IB  # actor-critic batch
     comptime MAX_N: Int = Self.MAX_N_ENVS
 
     # ── RSSM type alias (same as CPUState) ────────────────────────────────
     comptime RSSMType = RSSM[
-        Self.OBS_DIM, Self.ACTION_DIM, Self.DETER_DIM, Self.HIDDEN,
-        Self.STOCH_DIM, Self.CLASSES, Self.UNITS, Self.NUM_BINS,
-        Self.BLOCKS, Self.WM_LR, Self.UNIMIX, Self.FREE_NATS,
+        Self.OBS_DIM,
+        Self.ACTION_DIM,
+        Self.DETER_DIM,
+        Self.HIDDEN,
+        Self.STOCH_DIM,
+        Self.CLASSES,
+        Self.UNITS,
+        Self.NUM_BINS,
+        Self.BLOCKS,
+        Self.WM_LR,
+        Self.UNIMIX,
+        Self.FREE_NATS,
     ]
 
     # ── Model type aliases (from RSSM + CPUState) ────────────────────────
@@ -635,12 +695,24 @@ struct DreamerV3GPUState[
     var imag_all_actions_buf: DeviceBuffer[dtype]  # [HORIZON * IB * ACT]
 
     # Per-horizon imagination caches (for dynamics backprop through actor)
-    var imag_actor_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * ActorModel.CACHE_SIZE]
-    var imag_aproj_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * ActionProj.CACHE_SIZE]
-    var imag_gh_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * GRUHiddenModel.CACHE_SIZE]
-    var imag_gg_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * GRUGateModel.CACHE_SIZE]
-    var imag_prior_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * PriorModel.CACHE_SIZE]
-    var imag_rew_cache_buf: DeviceBuffer[dtype]  # [HORIZON * IB * RewModel.CACHE_SIZE]
+    var imag_actor_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [HORIZON * IB * ActorModel.CACHE_SIZE]
+    var imag_aproj_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [HORIZON * IB * ActionProj.CACHE_SIZE]
+    var imag_gh_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [HORIZON * IB * GRUHiddenModel.CACHE_SIZE]
+    var imag_gg_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [HORIZON * IB * GRUGateModel.CACHE_SIZE]
+    var imag_prior_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [HORIZON * IB * PriorModel.CACHE_SIZE]
+    var imag_rew_cache_buf: DeviceBuffer[
+        dtype
+    ]  # [HORIZON * IB * RewModel.CACHE_SIZE]
     # Per-horizon saved gate_out for GRU backward
     var imag_gate_out_save_buf: DeviceBuffer[dtype]  # [HORIZON * IB * 3*DETER]
     # Per-horizon actor_out for reparameterization backward
@@ -680,8 +752,12 @@ struct DreamerV3GPUState[
     var host_upload_done_buf: HostBuffer[dtype]  # [BATCH * BL]
 
     # ── Pre-allocated host buffers for imagination diagnostics ──────
-    var host_diag_imag_buf: HostBuffer[dtype]  # [HORIZON * IB] (reused for rew/ret/val)
-    var host_diag_actor_buf: HostBuffer[dtype]  # [ActorModel.PARAM_SIZE] (reused for grads/params)
+    var host_diag_imag_buf: HostBuffer[
+        dtype
+    ]  # [HORIZON * IB] (reused for rew/ret/val)
+    var host_diag_actor_buf: HostBuffer[
+        dtype
+    ]  # [ActorModel.PARAM_SIZE] (reused for grads/params)
 
     # ── Pre-allocated host buffer for bins upload ─────────────────────
     var host_bins_buf: HostBuffer[dtype]  # [NUM_BINS]
@@ -794,7 +870,9 @@ struct DreamerV3GPUState[
     var inf_actor_out_buf: DeviceBuffer[dtype]  # [MAX_N * 2*ACT]
 
     # ── Gradient clipping scratch ─────────────────────────────────────────
-    var grad_partial_sums_buf: DeviceBuffer[dtype]  # [1024] (shared across nets)
+    var grad_partial_sums_buf: DeviceBuffer[
+        dtype
+    ]  # [1024] (shared across nets)
 
     # ── Pinned host buffers for batch upload ─────────────────────────────
     var host_batch_obs: DeviceBuffer[dtype]  # pinned [BATCH * (BL+1) * OBS]
@@ -806,68 +884,148 @@ struct DreamerV3GPUState[
     # Constructor
     # ══════════════════════════════════════════════════════════════════════
 
-    fn __init__(out self, ctx: DeviceContext) raises:
+    def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers."""
         # ── RSSM network states ──────────────────────────────────────────
         self.encoder = GPUNetworkState[Self.RSSMType.EncModel, Self.WMOpt](ctx)
-        self.posterior = GPUNetworkState[Self.RSSMType.PostModel, Self.WMOpt](ctx)
+        self.posterior = GPUNetworkState[Self.RSSMType.PostModel, Self.WMOpt](
+            ctx
+        )
         self.prior = GPUNetworkState[Self.RSSMType.PriorModel, Self.WMOpt](ctx)
         self.decoder = GPUNetworkState[Self.RSSMType.DecModel, Self.WMOpt](ctx)
-        self.reward_head = GPUNetworkState[Self.RSSMType.RewModel, Self.WMOpt](ctx)
-        self.continue_head = GPUNetworkState[Self.RSSMType.ContModel, Self.WMOpt](ctx)
-        self.deter_proj = GPUNetworkState[Self.RSSMType.DeterProj, Self.WMOpt](ctx)
-        self.stoch_proj = GPUNetworkState[Self.RSSMType.StochProj, Self.WMOpt](ctx)
-        self.action_proj = GPUNetworkState[Self.RSSMType.ActionProj, Self.WMOpt](ctx)
-        self.gru_hidden = GPUNetworkState[Self.RSSMType.GRUHiddenModel, Self.WMOpt](ctx)
-        self.gru_gates = GPUNetworkState[Self.RSSMType.GRUGateModel, Self.WMOpt](ctx)
+        self.reward_head = GPUNetworkState[Self.RSSMType.RewModel, Self.WMOpt](
+            ctx
+        )
+        self.continue_head = GPUNetworkState[
+            Self.RSSMType.ContModel, Self.WMOpt
+        ](ctx)
+        self.deter_proj = GPUNetworkState[Self.RSSMType.DeterProj, Self.WMOpt](
+            ctx
+        )
+        self.stoch_proj = GPUNetworkState[Self.RSSMType.StochProj, Self.WMOpt](
+            ctx
+        )
+        self.action_proj = GPUNetworkState[
+            Self.RSSMType.ActionProj, Self.WMOpt
+        ](ctx)
+        self.gru_hidden = GPUNetworkState[
+            Self.RSSMType.GRUHiddenModel, Self.WMOpt
+        ](ctx)
+        self.gru_gates = GPUNetworkState[
+            Self.RSSMType.GRUGateModel, Self.WMOpt
+        ](ctx)
 
         # ── Actor-Critic ─────────────────────────────────────────────────
         self.actor = GPUNetworkState[Self.ActorModel, Self.ActorOpt](ctx)
         self.critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](ctx)
-        self.slow_critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](ctx)
+        self.slow_critic = GPUNetworkState[Self.CriticModel, Self.CriticOpt](
+            ctx
+        )
 
         # ── Symlog bins ──────────────────────────────────────────────────
         self.bins_buf = ctx.enqueue_create_buffer[dtype](Self.BINS)
 
         # ── Batch data ───────────────────────────────────────────────────
-        self.batch_obs = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.BL + 1) * Self.OBS)
-        self.batch_actions = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL * Self.ACT)
-        self.batch_rewards = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL)
-        self.batch_dones = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL)
+        self.batch_obs = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.BL + 1) * Self.OBS
+        )
+        self.batch_actions = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.BL * Self.ACT
+        )
+        self.batch_rewards = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.BL
+        )
+        self.batch_dones = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.BL
+        )
 
         # ── Observe scratch ──────────────────────────────────────────────
-        self.deter_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
-        self.stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.new_deter_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
-        self.new_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.post_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.prior_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.deter_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
+        self.stoch_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.new_deter_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
+        self.new_stoch_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.post_probs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.prior_probs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
         self.feat_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
-        self.obs_step_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
-        self.act_step_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.ACT)
-        self.symlog_obs_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
-        self.embed_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.post_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.DETER + Self.STOCH))
-        self.post_logits_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.prior_logits_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.norm_action_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.ACT)
+        self.obs_step_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+        self.act_step_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.ACT
+        )
+        self.symlog_obs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+        self.embed_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.post_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.DETER + Self.STOCH)
+        )
+        self.post_logits_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.prior_logits_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.norm_action_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.ACT
+        )
 
         # GRU scratch
-        self.proj_d_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
-        self.proj_s_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
-        self.proj_a_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
-        self.concat_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.DETER + 3 * Self.HIDDEN))
-        self.hidden_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
-        self.gate_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * 3 * Self.DETER)
-        self.dummy_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
+        self.proj_d_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.HIDDEN
+        )
+        self.proj_s_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.HIDDEN
+        )
+        self.proj_a_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.HIDDEN
+        )
+        self.concat_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.DETER + 3 * Self.HIDDEN)
+        )
+        self.hidden_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
+        self.gate_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * 3 * Self.DETER
+        )
+        self.dummy_stoch_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
 
         # ── Cached observe ───────────────────────────────────────────────
-        self.all_deter_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.DETER)
-        self.all_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
-        self.all_post_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
-        self.all_prior_probs_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
-        self.all_feats_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.FEAT)
-        self.all_embed_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.STOCH)
+        self.all_deter_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.DETER
+        )
+        self.all_stoch_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.STOCH
+        )
+        self.all_post_probs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.STOCH
+        )
+        self.all_prior_probs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.STOCH
+        )
+        self.all_feats_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.FEAT
+        )
+        self.all_embed_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.STOCH
+        )
 
         # ── Decoder/head scratch ─────────────────────────────────────────
         self.dec_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.OBS)
@@ -878,157 +1036,359 @@ struct DreamerV3GPUState[
         self.kl_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH)
 
         # ── Imagination GRU scratch (IB-sized) ──────────────────────────
-        self.imag_proj_d_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HIDDEN)
-        self.imag_proj_s_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HIDDEN)
-        self.imag_proj_a_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HIDDEN)
-        self.imag_concat_buf = ctx.enqueue_create_buffer[dtype](Self.IB * (Self.DETER + 3 * Self.HIDDEN))
-        self.imag_hidden_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.DETER)
-        self.imag_gate_buf = ctx.enqueue_create_buffer[dtype](Self.IB * 3 * Self.DETER)
-        self.imag_norm_act_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.ACT)
-        self.imag_prior_logits_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.STOCH)
-        self.imag_prior_probs_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.STOCH)
+        self.imag_proj_d_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.HIDDEN
+        )
+        self.imag_proj_s_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.HIDDEN
+        )
+        self.imag_proj_a_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.HIDDEN
+        )
+        self.imag_concat_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * (Self.DETER + 3 * Self.HIDDEN)
+        )
+        self.imag_hidden_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.DETER
+        )
+        self.imag_gate_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * 3 * Self.DETER
+        )
+        self.imag_norm_act_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.ACT
+        )
+        self.imag_prior_logits_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.STOCH
+        )
+        self.imag_prior_probs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.STOCH
+        )
 
         # ── Imagination scratch ──────────────────────────────────────────
-        self.imag_deter_buf = ctx.enqueue_create_buffer[dtype](2 * Self.IB * Self.DETER)
-        self.imag_stoch_buf = ctx.enqueue_create_buffer[dtype](2 * Self.IB * Self.STOCH)
-        self.imag_feat_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.FEAT)
+        self.imag_deter_buf = ctx.enqueue_create_buffer[dtype](
+            2 * Self.IB * Self.DETER
+        )
+        self.imag_stoch_buf = ctx.enqueue_create_buffer[dtype](
+            2 * Self.IB * Self.STOCH
+        )
+        self.imag_feat_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * Self.FEAT
+        )
 
         comptime IMAG_SCALAR = Self.HORIZON * Self.IB
         self.imag_rewards_buf = ctx.enqueue_create_buffer[dtype](IMAG_SCALAR)
         self.imag_values_buf = ctx.enqueue_create_buffer[dtype](IMAG_SCALAR)
         self.imag_continues_buf = ctx.enqueue_create_buffer[dtype](IMAG_SCALAR)
         self.imag_returns_buf = ctx.enqueue_create_buffer[dtype](IMAG_SCALAR)
-        self.imag_actions_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.ACT)
+        self.imag_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.ACT
+        )
         self.imag_log_probs_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
         self.imag_advantages_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
-        self.imag_all_deter_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.DETER)
-        self.imag_all_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.STOCH)
-        self.imag_all_actions_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.ACT)
-        self.imag_actor_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.ActorModel.CACHE_SIZE)
-        self.imag_aproj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.ActionProj.CACHE_SIZE)
-        self.imag_gh_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.GRUHiddenModel.CACHE_SIZE)
-        self.imag_gg_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.GRUGateModel.CACHE_SIZE)
-        self.imag_prior_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.PriorModel.CACHE_SIZE)
-        self.imag_rew_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * Self.RSSMType.RewModel.CACHE_SIZE)
-        self.imag_gate_out_save_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * 3 * Self.DETER)
-        self.imag_actor_out_save_buf = ctx.enqueue_create_buffer[dtype](Self.HORIZON * Self.IB * 2 * Self.ACT)
+        self.imag_all_deter_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * Self.DETER
+        )
+        self.imag_all_stoch_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * Self.STOCH
+        )
+        self.imag_all_actions_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * Self.ACT
+        )
+        self.imag_actor_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * Self.ActorModel.CACHE_SIZE
+        )
+        self.imag_aproj_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * Self.RSSMType.ActionProj.CACHE_SIZE
+        )
+        self.imag_gh_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * Self.RSSMType.GRUHiddenModel.CACHE_SIZE
+        )
+        self.imag_gg_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * Self.RSSMType.GRUGateModel.CACHE_SIZE
+        )
+        self.imag_prior_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * Self.RSSMType.PriorModel.CACHE_SIZE
+        )
+        self.imag_rew_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * Self.RSSMType.RewModel.CACHE_SIZE
+        )
+        self.imag_gate_out_save_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * 3 * Self.DETER
+        )
+        self.imag_actor_out_save_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HORIZON * Self.IB * 2 * Self.ACT
+        )
 
         # ── Actor/Critic scratch ─────────────────────────────────────────
         comptime ACTOR_OUT_DIM = Self.ActorModel.OUT_DIM
-        self.actor_out_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * ACTOR_OUT_DIM)
-        self.actor_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.ActorModel.CACHE_SIZE)
-        self.actor_grad_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * ACTOR_OUT_DIM)
-        self.actor_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.FEAT)
-        self.critic_logits_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.BINS)
-        self.critic_cache_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.CriticModel.CACHE_SIZE)
-        self.critic_grad_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.BINS)
-        self.critic_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.FEAT)
-        self.two_hot_targets_buf = ctx.enqueue_create_buffer[dtype](Self.HIB * Self.BINS)
+        self.actor_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * ACTOR_OUT_DIM
+        )
+        self.actor_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * Self.ActorModel.CACHE_SIZE
+        )
+        self.actor_grad_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * ACTOR_OUT_DIM
+        )
+        self.actor_grad_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * Self.FEAT
+        )
+        self.critic_logits_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * Self.BINS
+        )
+        self.critic_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * Self.CriticModel.CACHE_SIZE
+        )
+        self.critic_grad_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * Self.BINS
+        )
+        self.critic_grad_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * Self.FEAT
+        )
+        self.two_hot_targets_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HIB * Self.BINS
+        )
         self.symlog_returns_buf = ctx.enqueue_create_buffer[dtype](Self.HIB)
         self.returns_minmax_buf = ctx.enqueue_create_buffer[dtype](2)
 
         # ── Pre-allocated host buffers for observe loop ──────────────────
-        self.host_obs_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.OBS)
-        self.host_act_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.ACT)
-        self.host_target_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.OBS)
-        self.host_rew_symlog_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
-        self.host_cont_target_step_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
+        self.host_obs_step_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+        self.host_act_step_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.ACT
+        )
+        self.host_target_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+        self.host_rew_symlog_step_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH
+        )
+        self.host_cont_target_step_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH
+        )
 
         # ── Pre-allocated host buffers for training diagnostics ───────
-        self.host_dec_diag_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.OBS)
-        self.host_rew_diag_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.BINS)
-        self.host_cont_diag_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
-        self.host_kl_diag_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
+        self.host_dec_diag_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+        self.host_rew_diag_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.BINS
+        )
+        self.host_cont_diag_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH
+        )
+        self.host_kl_diag_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH
+        )
         self.host_minmax_buf = ctx.enqueue_create_host_buffer[dtype](2)
 
         # ── Pre-allocated host buffers for batch upload ───────────────
-        self.host_upload_obs_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * (Self.BL + 1) * Self.OBS)
-        self.host_upload_act_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.BL * Self.ACT)
-        self.host_upload_rew_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.BL)
-        self.host_upload_done_buf = ctx.enqueue_create_host_buffer[dtype](Self.BATCH * Self.BL)
+        self.host_upload_obs_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * (Self.BL + 1) * Self.OBS
+        )
+        self.host_upload_act_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.BL * Self.ACT
+        )
+        self.host_upload_rew_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.BL
+        )
+        self.host_upload_done_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.BL
+        )
 
         # ── Pre-allocated host buffers for imagination diagnostics ────
-        self.host_diag_imag_buf = ctx.enqueue_create_host_buffer[dtype](Self.HORIZON * Self.IB)
-        self.host_diag_actor_buf = ctx.enqueue_create_host_buffer[dtype](Self.ActorModel.PARAM_SIZE)
+        self.host_diag_imag_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.HORIZON * Self.IB
+        )
+        self.host_diag_actor_buf = ctx.enqueue_create_host_buffer[dtype](
+            Self.ActorModel.PARAM_SIZE
+        )
 
         # ── Pre-allocated host buffer for bins upload ─────────────────
         self.host_bins_buf = ctx.enqueue_create_host_buffer[dtype](Self.BINS)
 
         # ── Decoder backward scratch ─────────────────────────────────────
-        self.dec_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.DecModel.CACHE_SIZE)
-        self.dec_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.OBS)
-        self.dec_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
-        self.dec_target_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.OBS)
+        self.dec_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.RSSMType.DecModel.CACHE_SIZE
+        )
+        self.dec_grad_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.OBS
+        )
+        self.dec_grad_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.FEAT
+        )
+        self.dec_target_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.OBS
+        )
 
         # ── Continue backward scratch ────────────────────────────────────
         self.cont_target_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
         self.cont_grad_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
 
         # ── Reward backward scratch ──────────────────────────────────────
-        self.rew_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.RewModel.CACHE_SIZE)
-        self.rew_target_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
-        self.rew_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.BINS)
-        self.rew_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
+        self.rew_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.RSSMType.RewModel.CACHE_SIZE
+        )
+        self.rew_target_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.BINS
+        )
+        self.rew_grad_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.BINS
+        )
+        self.rew_grad_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.FEAT
+        )
         self.rew_symlog_buf = ctx.enqueue_create_buffer[dtype](Self.IB)
 
         # ── Continue backward cache ──────────────────────────────────────
-        self.cont_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.ContModel.CACHE_SIZE)
-        self.cont_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
+        self.cont_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.RSSMType.ContModel.CACHE_SIZE
+        )
+        self.cont_grad_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.FEAT
+        )
 
         # ── Posterior backward scratch ───────────────────────────────────
-        self.post_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.PostModel.CACHE_SIZE)
-        self.post_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.post_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.DETER + Self.STOCH))
+        self.post_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.RSSMType.PostModel.CACHE_SIZE
+        )
+        self.post_grad_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.post_grad_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.DETER + Self.STOCH)
+        )
 
         # ── Prior backward scratch ───────────────────────────────────────
-        self.prior_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.RSSMType.PriorModel.CACHE_SIZE)
-        self.prior_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.prior_grad_in_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.prior_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.RSSMType.PriorModel.CACHE_SIZE
+        )
+        self.prior_grad_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.prior_grad_in_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
 
         # ── BPTT per-timestep caches ──────────────────────────────────────
-        self.all_enc_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.EncModel.CACHE_SIZE)
-        self.all_dproj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.DeterProj.CACHE_SIZE)
-        self.all_sproj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.StochProj.CACHE_SIZE)
-        self.all_aproj_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.ActionProj.CACHE_SIZE)
-        self.all_gru_hidden_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.GRUHiddenModel.CACHE_SIZE)
-        self.all_gru_gates_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.GRUGateModel.CACHE_SIZE)
-        self.all_post_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.PostModel.CACHE_SIZE)
-        self.all_prior_cache_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.RSSMType.PriorModel.CACHE_SIZE)
+        self.all_enc_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.RSSMType.EncModel.CACHE_SIZE
+        )
+        self.all_dproj_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.RSSMType.DeterProj.CACHE_SIZE
+        )
+        self.all_sproj_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.RSSMType.StochProj.CACHE_SIZE
+        )
+        self.all_aproj_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.RSSMType.ActionProj.CACHE_SIZE
+        )
+        self.all_gru_hidden_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.RSSMType.GRUHiddenModel.CACHE_SIZE
+        )
+        self.all_gru_gates_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.RSSMType.GRUGateModel.CACHE_SIZE
+        )
+        self.all_post_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.RSSMType.PostModel.CACHE_SIZE
+        )
+        self.all_prior_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.RSSMType.PriorModel.CACHE_SIZE
+        )
 
         # ── BPTT per-timestep saved activations ──────────────────────────
-        self.all_gate_out_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * 3 * Self.DETER)
-        self.all_prev_deter_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.DETER)
-        self.all_symlog_obs_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.OBS)
-        self.all_norm_action_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.ACT)
-        self.all_d_feat_buf = ctx.enqueue_create_buffer[dtype](Self.BL * Self.BATCH * Self.FEAT)
+        self.all_gate_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * 3 * Self.DETER
+        )
+        self.all_prev_deter_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.DETER
+        )
+        self.all_symlog_obs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.OBS
+        )
+        self.all_norm_action_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.ACT
+        )
+        self.all_d_feat_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BL * Self.BATCH * Self.FEAT
+        )
 
         # ── BPTT gradient scratch ─────────────────────────────────────────
-        self.d_feat_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.FEAT)
-        self.d_deter_total_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
-        self.d_stoch_feat_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.d_gate_out_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * 3 * Self.DETER)
-        self.d_prev_deter_gru_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
-        self.d_concat_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.DETER + 3 * Self.HIDDEN))
-        self.d_proj_d_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
-        self.d_proj_s_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
-        self.d_proj_a_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.HIDDEN)
-        self.d_hidden_out_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
-        self.d_embed_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.d_symlog_obs_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
-        self.d_prev_deter_dproj_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
-        self.d_prev_stoch_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.d_prev_action_bwd_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.ACT)
-        self.d_recurrent_deter_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
-        self.d_recurrent_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.d_post_logits_total_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.STOCH)
-        self.d_deter_from_post_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.DETER)
+        self.d_feat_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.FEAT
+        )
+        self.d_deter_total_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
+        self.d_stoch_feat_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.d_gate_out_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * 3 * Self.DETER
+        )
+        self.d_prev_deter_gru_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
+        self.d_concat_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.DETER + 3 * Self.HIDDEN)
+        )
+        self.d_proj_d_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.HIDDEN
+        )
+        self.d_proj_s_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.HIDDEN
+        )
+        self.d_proj_a_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.HIDDEN
+        )
+        self.d_hidden_out_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
+        self.d_embed_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.d_symlog_obs_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.OBS
+        )
+        self.d_prev_deter_dproj_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
+        self.d_prev_stoch_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.d_prev_action_bwd_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.ACT
+        )
+        self.d_recurrent_deter_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
+        self.d_recurrent_stoch_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.d_post_logits_total_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.STOCH
+        )
+        self.d_deter_from_post_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.DETER
+        )
 
         # ── Combined prediction heads (ComputeGraph) ─────────────────────
-        self.heads_params_buf = ctx.enqueue_create_buffer[dtype](Self.HeadsGraph.PARAM_SIZE)
-        self.heads_grads_buf = ctx.enqueue_create_buffer[dtype](Self.HeadsGraph.PARAM_SIZE)
-        self.heads_cache_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HEADS_CACHE_SIZE)
-        self.heads_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HEADS_OUT_DIM)
-        self.heads_grad_out_buf = ctx.enqueue_create_buffer[dtype](Self.IB * Self.HEADS_OUT_DIM)
+        self.heads_params_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HeadsGraph.PARAM_SIZE
+        )
+        self.heads_grads_buf = ctx.enqueue_create_buffer[dtype](
+            Self.HeadsGraph.PARAM_SIZE
+        )
+        self.heads_cache_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.HEADS_CACHE_SIZE
+        )
+        self.heads_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.HEADS_OUT_DIM
+        )
+        self.heads_grad_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.IB * Self.HEADS_OUT_DIM
+        )
 
         # ── Network workspace buffers ────────────────────────────────────
         # Use IB (imag batch) as max batch size for workspace allocation
@@ -1063,41 +1423,79 @@ struct DreamerV3GPUState[
         comptime WS_B_DEC = Self.BATCH * DecNet.WORKSPACE_SIZE_PER_SAMPLE
 
         # Use max of observe and imagination sizes, minimum 1
-        fn max_ws(a: Int, b: Int) -> Int:
+        def max_ws(a: Int, b: Int) -> Int:
             return a if a > b else b
 
         self.ws_encoder = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_ENC, 1))
-        self.ws_posterior = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_POST, 1))
+        self.ws_posterior = ctx.enqueue_create_buffer[dtype](
+            max_ws(WS_B_POST, 1)
+        )
         self.ws_prior = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_PRIOR, 1))
         self.ws_decoder = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_DEC, 1))
-        self.ws_reward = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_REWARD, 1))
-        self.ws_continue = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_CONT, 1))
-        self.ws_deter_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_DPROJ, 1))
-        self.ws_stoch_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_SPROJ, 1))
-        self.ws_action_proj = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_APROJ, 1))
-        self.ws_gru_hidden = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_GH, 1))
-        self.ws_gru_gates = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_GG, 1))
+        self.ws_reward = ctx.enqueue_create_buffer[dtype](
+            max_ws(WS_IB_REWARD, 1)
+        )
+        self.ws_continue = ctx.enqueue_create_buffer[dtype](
+            max_ws(WS_IB_CONT, 1)
+        )
+        self.ws_deter_proj = ctx.enqueue_create_buffer[dtype](
+            max_ws(WS_IB_DPROJ, 1)
+        )
+        self.ws_stoch_proj = ctx.enqueue_create_buffer[dtype](
+            max_ws(WS_IB_SPROJ, 1)
+        )
+        self.ws_action_proj = ctx.enqueue_create_buffer[dtype](
+            max_ws(WS_IB_APROJ, 1)
+        )
+        self.ws_gru_hidden = ctx.enqueue_create_buffer[dtype](
+            max_ws(WS_IB_GH, 1)
+        )
+        self.ws_gru_gates = ctx.enqueue_create_buffer[dtype](
+            max_ws(WS_IB_GG, 1)
+        )
         self.ws_actor = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_ACTOR, 1))
-        self.ws_critic = ctx.enqueue_create_buffer[dtype](max_ws(WS_IB_CRITIC, 1))
+        self.ws_critic = ctx.enqueue_create_buffer[dtype](
+            max_ws(WS_IB_CRITIC, 1)
+        )
         comptime WS_B_HEADS = Self.IB * Self.HeadsGraph.WORKSPACE_SIZE_PER_SAMPLE
         self.ws_heads = ctx.enqueue_create_buffer[dtype](max_ws(WS_B_HEADS, 1))
 
         # ── Inference buffers ────────────────────────────────────────────
-        self.inf_obs_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.OBS)
-        self.inf_deter_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.DETER)
-        self.inf_stoch_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.STOCH)
-        self.inf_action_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.ACT)
-        self.inf_feat_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * Self.FEAT)
-        self.inf_actor_out_buf = ctx.enqueue_create_buffer[dtype](Self.MAX_N * ACTOR_OUT_DIM)
+        self.inf_obs_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MAX_N * Self.OBS
+        )
+        self.inf_deter_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MAX_N * Self.DETER
+        )
+        self.inf_stoch_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MAX_N * Self.STOCH
+        )
+        self.inf_action_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MAX_N * Self.ACT
+        )
+        self.inf_feat_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MAX_N * Self.FEAT
+        )
+        self.inf_actor_out_buf = ctx.enqueue_create_buffer[dtype](
+            Self.MAX_N * ACTOR_OUT_DIM
+        )
 
         # ── Gradient clipping scratch ──────────────────────────────────
         self.grad_partial_sums_buf = ctx.enqueue_create_buffer[dtype](1024)
 
         # ── Pinned host buffers ──────────────────────────────────────────
-        self.host_batch_obs = ctx.enqueue_create_buffer[dtype](Self.BATCH * (Self.BL + 1) * Self.OBS)
-        self.host_batch_actions = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL * Self.ACT)
-        self.host_batch_rewards = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL)
-        self.host_batch_dones = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.BL)
+        self.host_batch_obs = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.BL + 1) * Self.OBS
+        )
+        self.host_batch_actions = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.BL * Self.ACT
+        )
+        self.host_batch_rewards = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.BL
+        )
+        self.host_batch_dones = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.BL
+        )
 
         # Zero-initialize key buffers
         ctx.enqueue_memset(self.deter_buf, 0)
@@ -1106,7 +1504,7 @@ struct DreamerV3GPUState[
         ctx.enqueue_memset(self.inf_stoch_buf, 0)
         ctx.enqueue_memset(self.inf_action_buf, 0)
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.encoder = take.encoder^
         self.posterior = take.posterior^

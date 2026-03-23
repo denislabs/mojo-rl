@@ -22,7 +22,7 @@ from std.random import random_float64, seed
 from std.time import sleep
 
 
-fn main() raises:
+def main() raises:
     print("=== BipedalWalker v2 Demo (CPU Mode) ===")
     print("Using physics2d module with motor-enabled joints")
     print()

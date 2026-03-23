@@ -27,7 +27,7 @@ from mojo_rl.agents.actor_critic import (
 )
 
 
-fn main() raises:
+def main() raises:
     """Run policy gradient comparison on CartPole."""
     print("=" * 60)
     print("CartPole with Policy Gradient Methods")

@@ -24,13 +24,13 @@ from mojo_rl.nn.autodiff import (
 from layout import Layout, LayoutTensor
 
 
-fn print_header(name: String):
+def print_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
 
 
-fn check(cond: Bool, msg: String, mut fails: Int):
+def check(cond: Bool, msg: String, mut fails: Int):
     if cond:
         print("  PASS: " + msg)
     else:
@@ -38,21 +38,21 @@ fn check(cond: Bool, msg: String, mut fails: Int):
         fails += 1
 
 
-fn make_list(size: Int) -> List[Scalar[dtype]]:
+def make_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(0)
     return lst^
 
 
-fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
+def make_rand_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(Scalar[dtype](random_float64(-1.0, 1.0)))
     return lst^
 
 
-fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
+def max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
     var md: Float64 = 0
     for i in range(n):
         var d = math_abs(Float64(a[i]) - Float64(b[i]))
@@ -66,7 +66,7 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # =============================================================================
 
 
-fn test_dropout_basic() -> Int:
+def test_dropout_basic() -> Int:
     print_header("DropoutOp basic properties + rate 0 = identity")
     var fails = 0
 
@@ -116,7 +116,7 @@ fn test_dropout_basic() -> Int:
 # =============================================================================
 
 
-fn test_dropout_mask() -> Int:
+def test_dropout_mask() -> Int:
     print_header("DropoutOp mask consistency + backward")
     var fails = 0
 
@@ -207,7 +207,7 @@ fn test_dropout_mask() -> Int:
 # =============================================================================
 
 
-fn test_dropout_rate_one() -> Int:
+def test_dropout_rate_one() -> Int:
     print_header("DropoutOp rate=1 -> zero output")
     var fails = 0
 
@@ -251,7 +251,7 @@ fn test_dropout_rate_one() -> Int:
 # =============================================================================
 
 
-fn test_flatten() -> Int:
+def test_flatten() -> Int:
     print_header("Flatten forward/backward identity")
     var fails = 0
 
@@ -322,7 +322,7 @@ fn test_flatten() -> Int:
 # =============================================================================
 
 
-fn test_flatten_composition() -> Int:
+def test_flatten_composition() -> Int:
     print_header("Flatten in AutoDiffChain composition")
     var fails = 0
 
@@ -361,7 +361,7 @@ fn test_flatten_composition() -> Int:
 # =============================================================================
 
 
-fn test_embedding_forward() -> Int:
+def test_embedding_forward() -> Int:
     print_header("Embedding forward correctness")
     var fails = 0
 
@@ -425,7 +425,7 @@ fn test_embedding_forward() -> Int:
 # =============================================================================
 
 
-fn test_embedding_backward() -> Int:
+def test_embedding_backward() -> Int:
     print_header("Embedding backward gradient scatter")
     var fails = 0
 
@@ -520,7 +520,7 @@ fn test_embedding_backward() -> Int:
 # =============================================================================
 
 
-fn test_embedding_fd() -> Int:
+def test_embedding_fd() -> Int:
     print_header("Embedding finite-difference gradient check")
     var fails = 0
 
@@ -634,7 +634,7 @@ fn test_embedding_fd() -> Int:
 # =============================================================================
 
 
-fn test_dropout_chain() -> Int:
+def test_dropout_chain() -> Int:
     print_header(
         "DropoutOp in AutoDiffChain[MatMul, BiasAdd, DropoutOp, ReLUOp]"
     )
@@ -706,7 +706,7 @@ fn test_dropout_chain() -> Int:
 # =============================================================================
 
 
-fn main():
+def main():
     print("=" * 70)
     print("Phase 6: Regularization & Structural Primitives")
     print("=" * 70)

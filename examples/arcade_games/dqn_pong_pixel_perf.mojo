@@ -14,7 +14,7 @@ comptime N_ENVS = 64
 comptime dtype = DType.float32
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("DQN CNN Pong Pixel — PERF TEST (3K steps)")
     print("=" * 50)

@@ -70,7 +70,7 @@ from ..joint_types import (
 
 
 @always_inline
-fn _is_descendant_gpu[
+def _is_descendant_gpu[
     DTYPE: DType,
     NBODY: Int,
     MODEL_SIZE: Int,
@@ -97,7 +97,7 @@ fn _is_descendant_gpu[
 # =============================================================================
 
 
-fn compute_bias_forces[
+def compute_bias_forces[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -342,7 +342,7 @@ fn compute_bias_forces[
 # =============================================================================
 
 
-fn _is_descendant[
+def _is_descendant[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -385,7 +385,7 @@ fn _is_descendant[
 # =============================================================================
 
 
-fn compute_coriolis_forces[
+def compute_coriolis_forces[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -441,7 +441,7 @@ fn compute_coriolis_forces[
 
 
 @always_inline
-fn compute_bias_forces_gpu[
+def compute_bias_forces_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -703,7 +703,7 @@ fn compute_bias_forces_gpu[
 # =============================================================================
 
 
-fn compute_bias_forces_rne[
+def compute_bias_forces_rne[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1194,7 +1194,7 @@ fn compute_bias_forces_rne[
 
 
 @always_inline
-fn compute_bias_forces_rne_gpu[
+def compute_bias_forces_rne_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

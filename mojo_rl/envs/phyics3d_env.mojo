@@ -168,7 +168,7 @@ struct Phyics3dEnv[
     # Initialization
     # =========================================================================
 
-    fn __init__(
+    def __init__(
         out self,
         max_steps: Int = Self.CONFIG.MAX_STEPS,
         frame_skip: Int = Self.CONFIG.FRAME_SKIP,
@@ -219,7 +219,7 @@ struct Phyics3dEnv[
     # Physics State Management
     # =========================================================================
 
-    fn _reset_state(mut self):
+    def _reset_state(mut self):
         """Reset to initial position."""
         Self.MODEL_DEF.reset_data(self.data)
 
@@ -230,7 +230,7 @@ struct Phyics3dEnv[
         self.current_step = 0
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
 
-    fn _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
+    def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         """Extract observation from current physics data."""
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.MODEL_DEF.OBS_DIM)
         Self.MODEL_DEF.extract_obs(self.data, obs_list)
@@ -243,28 +243,28 @@ struct Phyics3dEnv[
     # BoxContinuousActionEnv Interface
     # =========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs = List[Scalar[Self.dtype]](capacity=Self.MODEL_DEF.OBS_DIM)
         Self.MODEL_DEF.extract_obs(self.data, obs)
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         self._reset_state()
         return self.get_obs_list()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         return Self.MODEL_DEF.OBS_DIM
 
-    fn action_dim(self) -> Int:
+    def action_dim(self) -> Int:
         return Self.MODEL_DEF.ACTION_DIM
 
-    fn action_low(self) -> Scalar[Self.dtype]:
+    def action_low(self) -> Scalar[Self.dtype]:
         return Scalar[Self.dtype](-1.0)
 
-    fn action_high(self) -> Scalar[Self.dtype]:
+    def action_high(self) -> Scalar[Self.dtype]:
         return Scalar[Self.dtype](1.0)
 
-    fn step_continuous[
+    def step_continuous[
         DTYPE2: DType
     ](mut self, action: Scalar[DTYPE2]) -> Tuple[
         List[Scalar[DTYPE2]], Scalar[DTYPE2], Bool
@@ -274,7 +274,7 @@ struct Phyics3dEnv[
             actions.append(Scalar[DTYPE2](action))
         return self.step_continuous_vec[DTYPE2](actions)
 
-    fn step_continuous_vec[
+    def step_continuous_vec[
         DTYPE2: DType
     ](
         mut self,
@@ -304,7 +304,7 @@ struct Phyics3dEnv[
     # Env Interface
     # =========================================================================
 
-    fn step(
+    def step(
         mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
@@ -348,52 +348,52 @@ struct Phyics3dEnv[
 
         return (self._get_obs(), Scalar[Self.dtype](reward), done)
 
-    fn get_state(self) -> Self.StateType:
+    def get_state(self) -> Self.StateType:
         return self._get_obs()
 
-    fn reset(mut self) -> Self.StateType:
+    def reset(mut self) -> Self.StateType:
         self._reset_state()
         return self._get_obs()
 
-    fn render(mut self, mut renderer: Renderer2D):
+    def render(mut self, mut renderer: Renderer2D):
         pass
 
-    fn close(mut self):
+    def close(mut self):
         pass
 
     # =========================================================================
     # State Accessors
     # =========================================================================
 
-    fn get_xpos(self, idx: Int) -> Scalar[Self.DTYPE]:
+    def get_xpos(self, idx: Int) -> Scalar[Self.DTYPE]:
         """Get xpos element by flat index (for rendering)."""
         return self.data.xpos[idx]
 
-    fn get_xquat(self, idx: Int) -> Scalar[Self.DTYPE]:
+    def get_xquat(self, idx: Int) -> Scalar[Self.DTYPE]:
         """Get xquat element by flat index (for rendering)."""
         return self.data.xquat[idx]
 
-    fn get_qpos(self, idx: Int) -> Scalar[Self.DTYPE]:
+    def get_qpos(self, idx: Int) -> Scalar[Self.DTYPE]:
         """Get qpos element by index."""
         return self.data.qpos[idx]
 
-    fn get_qvel(self, idx: Int) -> Scalar[Self.DTYPE]:
+    def get_qvel(self, idx: Int) -> Scalar[Self.DTYPE]:
         """Get qvel element by index."""
         return self.data.qvel[idx]
 
-    fn get_x_position(self) -> Scalar[Self.DTYPE]:
+    def get_x_position(self) -> Scalar[Self.DTYPE]:
         return self.data.qpos[0]
 
-    fn get_x_velocity(self) -> Scalar[Self.DTYPE]:
+    def get_x_velocity(self) -> Scalar[Self.DTYPE]:
         return self.data.qvel[0]
 
-    fn get_current_step(self) -> Int:
+    def get_current_step(self) -> Int:
         return self.current_step
 
-    fn get_max_steps(self) -> Int:
+    def get_max_steps(self) -> Int:
         return self.max_steps
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         var truncated = self.current_step >= self.max_steps
 
         comptime if Self.TERMINATE_ON_UNHEALTHY:
@@ -415,7 +415,7 @@ struct Phyics3dEnv[
     # =========================================================================
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
@@ -537,7 +537,7 @@ struct Phyics3dEnv[
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE_VAL: Int,
     ](
@@ -573,7 +573,7 @@ struct Phyics3dEnv[
         ](model_buf.unsafe_ptr())
 
         @always_inline
-        fn reset_with_fk_wrapper(
+        def reset_with_fk_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -609,7 +609,7 @@ struct Phyics3dEnv[
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE_VAL: Int,
     ](
@@ -659,7 +659,7 @@ struct Phyics3dEnv[
         ](model_buf.unsafe_ptr())
 
         @always_inline
-        fn selective_reset_with_fk_wrapper(
+        def selective_reset_with_fk_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -703,7 +703,7 @@ struct Phyics3dEnv[
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
@@ -722,7 +722,7 @@ struct Phyics3dEnv[
     # =========================================================================
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[gpu_dtype]) raises:
         """Initialize pre-allocated step workspace buffer."""
@@ -741,7 +741,7 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.init_model_gpu(ctx, model_view)
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[gpu_dtype],
         curriculum_values: List[Scalar[gpu_dtype]],
@@ -778,7 +778,7 @@ struct Phyics3dEnv[
         ](workspace_buf.unsafe_ptr())
 
         @always_inline
-        fn write_curriculum_kernel(
+        def write_curriculum_kernel(
             model: LayoutTensor[
                 gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
             ],
@@ -797,7 +797,7 @@ struct Phyics3dEnv[
         )
 
     @staticmethod
-    fn _pre_step_gpu[
+    def _pre_step_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype]) raises:
@@ -815,7 +815,7 @@ struct Phyics3dEnv[
         ]()
 
         @always_inline
-        fn pre_step_kernel(
+        def pre_step_kernel(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -836,7 +836,7 @@ struct Phyics3dEnv[
         )
 
     @staticmethod
-    fn _extract_obs_rewards_dones_gpu[
+    def _extract_obs_rewards_dones_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         MODEL_SIZE: Int,
@@ -911,7 +911,7 @@ struct Phyics3dEnv[
         ]()
 
         @always_inline
-        fn extract_kernel(
+        def extract_kernel(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -1022,7 +1022,7 @@ struct Phyics3dEnv[
 
     @always_inline
     @staticmethod
-    fn _reset_env_gpu[
+    def _reset_env_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1063,7 +1063,7 @@ struct Phyics3dEnv[
     # RenderableEnv Trait Implementation
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
 
@@ -1083,7 +1083,7 @@ struct Phyics3dEnv[
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
 
@@ -1108,7 +1108,7 @@ struct Phyics3dEnv[
             vel_x=Float64(self.get_x_velocity()),
         )
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
 
@@ -1116,27 +1116,27 @@ struct Phyics3dEnv[
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].is_open()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].check_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].renderer.is_paused
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].renderer.step_once

@@ -230,7 +230,7 @@ Full 6502 CPU + TIA + RIOT emulation. CPU-only (Pong, Breakout, Space Invaders R
 from mojo_rl.agents import QLearningAgent
 from mojo_rl.envs import GridWorldEnv
 
-fn main():
+def main():
     var env = GridWorldEnv(width=5, height=5)
     var agent = QLearningAgent(num_states=25, num_actions=4)
     _ = agent.train(env, num_episodes=500, verbose=True)
@@ -243,7 +243,7 @@ from mojo_rl.deep_agents import DeepPPOContinuousAgent
 from mojo_rl.envs.half_cheetah import HalfCheetahEnv
 from gpu.host import DeviceContext
 
-fn main() raises:
+def main() raises:
     var agent = DeepPPOContinuousAgent[
         obs_dim=17, action_dim=6, hidden_dim=64,
     ]()
@@ -256,7 +256,7 @@ fn main() raises:
 ```mojo
 from mojo_rl.nn import Sequential, Linear, ReLU, Adam, MSELoss, Kaiming, Trainer
 
-fn main() raises:
+def main() raises:
     # Define model at compile time: 2 -> 16 (ReLU) -> 1
     comptime MLP = Sequential[Linear[2, 16], ReLU[16], Linear[16, 1]]
 
@@ -275,20 +275,20 @@ struct MyEnv(DiscreteEnv):
     comptime StateType = MyState
     comptime ActionType = MyAction
 
-    fn step(mut self, action: MyAction) -> Tuple[MyState, Float64, Bool]: ...
-    fn reset(mut self) -> MyState: ...
-    fn state_to_index(self, state: MyState) -> Int: ...
-    fn action_from_index(self, idx: Int) -> MyAction: ...
+    def step(mut self, action: MyAction) -> Tuple[MyState, Float64, Bool]: ...
+    def reset(mut self) -> MyState: ...
+    def state_to_index(self, state: MyState) -> Int: ...
+    def action_from_index(self, idx: Int) -> MyAction: ...
 ```
 
 ### Adding a New Agent
 
 ```mojo
 struct MyAgent(TabularAgent):
-    fn select_action(self, state_idx: Int) -> Int: ...
-    fn update(mut self, state: Int, action: Int, reward: Float64,
+    def select_action(self, state_idx: Int) -> Int: ...
+    def update(mut self, state: Int, action: Int, reward: Float64,
               next_state: Int, done: Bool): ...
-    fn get_best_action(self, state_idx: Int) -> Int: ...
-    fn decay_epsilon(mut self): ...
-    fn get_epsilon(self) -> Float64: ...
+    def get_best_action(self, state_idx: Int) -> Int: ...
+    def decay_epsilon(mut self): ...
+    def get_epsilon(self) -> Float64: ...
 ```

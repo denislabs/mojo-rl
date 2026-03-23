@@ -13,7 +13,7 @@ from mojo_rl.deep_agents.core.training.self_play_training import (
 )
 
 
-fn main() raises:
+def main() raises:
     print("=== TicTacToe Self-Play (Random vs Random) ===\n")
 
     var env = TicTacToeEnv[DType.float64]()

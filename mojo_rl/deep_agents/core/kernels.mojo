@@ -83,7 +83,7 @@ from std.random.philox import Random as PhiloxRandom
 
 
 @always_inline
-fn soft_update_kernel[
+def soft_update_kernel[
     dtype: DType,
     SIZE: Int,
 ](
@@ -110,7 +110,7 @@ fn soft_update_kernel[
 
 
 @always_inline
-fn zero_buffer_kernel[
+def zero_buffer_kernel[
     dtype: DType,
     SIZE: Int,
 ](buffer: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
@@ -126,7 +126,7 @@ fn zero_buffer_kernel[
 
 
 @always_inline
-fn copy_buffer_kernel[
+def copy_buffer_kernel[
     dtype: DType,
     SIZE: Int,
 ](
@@ -151,7 +151,7 @@ fn copy_buffer_kernel[
 
 
 @always_inline
-fn accumulate_rewards_kernel[
+def accumulate_rewards_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
 ](
@@ -175,7 +175,7 @@ fn accumulate_rewards_kernel[
 
 
 @always_inline
-fn increment_steps_kernel[
+def increment_steps_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
 ](
@@ -195,7 +195,7 @@ fn increment_steps_kernel[
 
 
 @always_inline
-fn extract_completed_episodes_kernel[
+def extract_completed_episodes_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
 ](
@@ -250,7 +250,7 @@ fn extract_completed_episodes_kernel[
 
 
 @always_inline
-fn selective_reset_tracking_kernel[
+def selective_reset_tracking_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
 ](
@@ -279,7 +279,7 @@ fn selective_reset_tracking_kernel[
 
 
 @always_inline
-fn log_and_reset_completed_kernel[
+def log_and_reset_completed_kernel[
     dtype: DType,
     N_ENVS: Int,
 ](
@@ -324,7 +324,7 @@ fn log_and_reset_completed_kernel[
 
 
 @always_inline
-fn store_transitions_kernel[
+def store_transitions_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     OBS_DIM: Int,
@@ -387,7 +387,7 @@ fn store_transitions_kernel[
 
 
 @always_inline
-fn store_obs_parallel_kernel[
+def store_obs_parallel_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     OBS_DIM: Int,
@@ -423,7 +423,7 @@ fn store_obs_parallel_kernel[
 
 
 @always_inline
-fn sample_indices_kernel[
+def sample_indices_kernel[
     dtype: DType,
     SAMPLE_SIZE: Int,
 ](
@@ -459,7 +459,7 @@ fn sample_indices_kernel[
 
 
 @always_inline
-fn gather_batch_kernel[
+def gather_batch_kernel[
     dtype: DType,
     SAMPLE_SIZE: Int,
     OBS_DIM: Int,
@@ -532,7 +532,7 @@ fn gather_batch_kernel[
 
 
 @always_inline
-fn gather_obs_parallel_kernel[
+def gather_obs_parallel_kernel[
     dtype: DType,
     SAMPLE_SIZE: Int,
     OBS_DIM: Int,
@@ -571,7 +571,7 @@ fn gather_obs_parallel_kernel[
 
 
 @always_inline
-fn gather_scalars_kernel[
+def gather_scalars_kernel[
     dtype: DType,
     SAMPLE_SIZE: Int,
     CAPACITY: Int,
@@ -605,7 +605,7 @@ fn gather_scalars_kernel[
 
 
 @always_inline
-fn gather_scalars_nd_kernel[
+def gather_scalars_nd_kernel[
     dtype: DType,
     SAMPLE_SIZE: Int,
     ACTION_DIM: Int,
@@ -648,7 +648,7 @@ fn gather_scalars_nd_kernel[
 
 
 @always_inline
-fn store_transitions_kernel_nd[
+def store_transitions_kernel_nd[
     dtype: DType,
     BATCH_SIZE: Int,
     OBS_DIM: Int,
@@ -715,7 +715,7 @@ fn store_transitions_kernel_nd[
 
 
 @always_inline
-fn gather_batch_kernel_nd[
+def gather_batch_kernel_nd[
     dtype: DType,
     SAMPLE_SIZE: Int,
     OBS_DIM: Int,
@@ -795,7 +795,7 @@ fn gather_batch_kernel_nd[
 
 
 @always_inline
-fn td_target_continuous_kernel[
+def td_target_continuous_kernel[
     dtype: DType,
     BATCH: Int,
 ](
@@ -825,7 +825,7 @@ fn td_target_continuous_kernel[
 
 
 @always_inline
-fn td_target_min_twin_kernel[
+def td_target_min_twin_kernel[
     dtype: DType,
     BATCH: Int,
     use_entropy: Bool,
@@ -880,7 +880,7 @@ fn td_target_min_twin_kernel[
 
 
 @always_inline
-fn actor_grad_from_critic_kernel[
+def actor_grad_from_critic_kernel[
     dtype: DType,
     BATCH: Int,
     OBS_DIM: Int,
@@ -922,16 +922,14 @@ fn actor_grad_from_critic_kernel[
 
 
 @always_inline
-fn concat_obs_action_kernel[
+def concat_obs_action_kernel[
     dtype: DType,
     BATCH: Int,
     OBS_DIM: Int,
     ACTION_DIM: Int,
     CONCAT_DIM: Int = OBS_DIM + ACTION_DIM,
 ](
-    dst: LayoutTensor[
-        dtype, Layout.row_major(BATCH, CONCAT_DIM), MutAnyOrigin
-    ],
+    dst: LayoutTensor[dtype, Layout.row_major(BATCH, CONCAT_DIM), MutAnyOrigin],
     obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
     act: LayoutTensor[dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin],
 ):
@@ -964,7 +962,7 @@ fn concat_obs_action_kernel[
 
 
 @always_inline
-fn scale_clip_actions_kernel[
+def scale_clip_actions_kernel[
     dtype: DType,
     BATCH: Int,
     ACTION_DIM: Int,
@@ -1001,7 +999,7 @@ fn scale_clip_actions_kernel[
 
 
 @always_inline
-fn ddpg_exploration_kernel[
+def ddpg_exploration_kernel[
     dtype: DType,
     BATCH: Int,
     ACTION_DIM: Int,
@@ -1062,7 +1060,7 @@ fn ddpg_exploration_kernel[
 
 
 @always_inline
-fn uniform_random_actions_kernel[
+def uniform_random_actions_kernel[
     dtype: DType,
     BATCH: Int,
     ACTION_DIM: Int,
@@ -1100,7 +1098,7 @@ fn uniform_random_actions_kernel[
 
 
 @always_inline
-fn uniform_random_discrete_actions_kernel[
+def uniform_random_discrete_actions_kernel[
     dtype: DType,
     BATCH: Int,
     NUM_ACTIONS: Int,
@@ -1134,7 +1132,7 @@ fn uniform_random_discrete_actions_kernel[
 
 
 @always_inline
-fn _extract_obs_kernel[
+def _extract_obs_kernel[
     dtype: DType,
     BATCH: Int,
     STATE_SIZE: Int,
@@ -1164,7 +1162,7 @@ fn _extract_obs_kernel[
 
 
 @always_inline
-fn td_mse_grad_kernel[
+def td_mse_grad_kernel[
     dtype: DType,
     BATCH: Int,
     Q_DIM: Int = 1,
@@ -1197,7 +1195,7 @@ fn td_mse_grad_kernel[
 
 
 @always_inline
-fn dqn_td_target_kernel[
+def dqn_td_target_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
@@ -1229,7 +1227,7 @@ fn dqn_td_target_kernel[
 
 
 @always_inline
-fn dqn_double_td_target_kernel[
+def dqn_double_td_target_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
@@ -1272,7 +1270,7 @@ fn dqn_double_td_target_kernel[
 
 
 @always_inline
-fn dueling_combine_kernel[
+def dueling_combine_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
@@ -1317,7 +1315,7 @@ fn dueling_combine_kernel[
 
 
 @always_inline
-fn dueling_grad_kernel[
+def dueling_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
@@ -1369,7 +1367,7 @@ fn dueling_grad_kernel[
 
 
 @always_inline
-fn add_gaussian_noise_kernel[
+def add_gaussian_noise_kernel[
     dtype: DType,
     BATCH: Int,
     ACTION_DIM: Int,
@@ -1444,7 +1442,7 @@ fn add_gaussian_noise_kernel[
 
 
 @always_inline
-fn sac_sample_actions_kernel[
+def sac_sample_actions_kernel[
     dtype: DType where dtype.is_floating_point(),
     N: Int,
     ACTION_DIM: Int,
@@ -1512,7 +1510,7 @@ fn sac_sample_actions_kernel[
 
 
 @always_inline
-fn sac_rsample_with_cache_kernel[
+def sac_rsample_with_cache_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
     ACTION_DIM: Int,
@@ -1611,7 +1609,7 @@ fn sac_rsample_with_cache_kernel[
 
 
 @always_inline
-fn sac_rsample_bwd_kernel[
+def sac_rsample_bwd_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
     ACTION_DIM: Int,
@@ -1707,7 +1705,7 @@ fn sac_rsample_bwd_kernel[
 
 
 @always_inline
-fn min_q_dq_kernel[
+def min_q_dq_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
     Q_DIM: Int = 1,
@@ -1743,7 +1741,7 @@ fn min_q_dq_kernel[
 
 
 @always_inline
-fn add_ci_grads_kernel[
+def add_ci_grads_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
     DIM: Int,
@@ -1770,7 +1768,7 @@ fn add_ci_grads_kernel[
 
 
 @always_inline
-fn _sample_continuous_actions_kernel[
+def _sample_continuous_actions_kernel[
     dtype: DType,
     N_ENVS: Int,
     ACTION_DIM: Int,
@@ -1865,7 +1863,7 @@ fn _sample_continuous_actions_kernel[
 
 
 @always_inline
-fn _store_continuous_pre_step_kernel[
+def _store_continuous_pre_step_kernel[
     dtype: DType,
     N_ENVS: Int,
     OBS_DIM: Int,
@@ -1903,7 +1901,7 @@ fn _store_continuous_pre_step_kernel[
 
 
 @always_inline
-fn _store_post_step_kernel[
+def _store_post_step_kernel[
     dtype: DType,
     N_ENVS: Int,
 ](
@@ -1924,7 +1922,7 @@ fn _store_post_step_kernel[
 
 
 @always_inline
-fn ppo_continuous_gather_minibatch_kernel[
+def ppo_continuous_gather_minibatch_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     OBS_DIM: Int,
@@ -1993,7 +1991,7 @@ fn ppo_continuous_gather_minibatch_kernel[
 
 
 @always_inline
-fn ppo_continuous_actor_grad_kernel[
+def ppo_continuous_actor_grad_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     ACTION_DIM: Int,
@@ -2192,7 +2190,7 @@ fn ppo_continuous_actor_grad_kernel[
 
 
 @always_inline
-fn ppo_critic_grad_kernel[
+def ppo_critic_grad_kernel[
     dtype: DType, BATCH_SIZE: Int
 ](
     # Outputs
@@ -2223,7 +2221,7 @@ fn ppo_critic_grad_kernel[
 
 
 @always_inline
-fn ppo_critic_grad_clipped_kernel[
+def ppo_critic_grad_clipped_kernel[
     dtype: DType, BATCH_SIZE: Int
 ](
     # Outputs
@@ -2284,7 +2282,7 @@ fn ppo_critic_grad_clipped_kernel[
 
 
 @always_inline
-fn normalize_advantages_kernel[
+def normalize_advantages_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
 ](
@@ -2309,7 +2307,7 @@ fn normalize_advantages_kernel[
 
 
 @always_inline
-fn gradient_norm_kernel[
+def gradient_norm_kernel[
     dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
 ](
     partial_sums: LayoutTensor[
@@ -2350,7 +2348,7 @@ fn gradient_norm_kernel[
 
 
 @always_inline
-fn gradient_reduce_and_compute_scale_kernel[
+def gradient_reduce_and_compute_scale_kernel[
     dtype: DType, NUM_BLOCKS: Int, BLOCK_SIZE: Int
 ](
     scale_out: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -2406,7 +2404,7 @@ fn gradient_reduce_and_compute_scale_kernel[
 
 
 @always_inline
-fn gradient_apply_scale_kernel[
+def gradient_apply_scale_kernel[
     dtype: DType, PARAM_SIZE: Int
 ](
     grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -2427,7 +2425,7 @@ fn gradient_apply_scale_kernel[
 
 
 @always_inline
-fn gradient_reduce_apply_fused_kernel[
+def gradient_reduce_apply_fused_kernel[
     dtype: DType, PARAM_SIZE: Int, NUM_BLOCKS: Int, BLOCK_SIZE: Int
 ](
     grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -2501,7 +2499,7 @@ fn gradient_reduce_apply_fused_kernel[
 
 
 @always_inline
-fn clamp_log_std_params_kernel[
+def clamp_log_std_params_kernel[
     dtype: DType,
     PARAM_SIZE: Int,
     LOG_STD_OFFSET: Int,
@@ -2543,7 +2541,7 @@ fn clamp_log_std_params_kernel[
 
 
 @always_inline
-fn ppo_gather_minibatch_kernel[
+def ppo_gather_minibatch_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     OBS_DIM: Int,
@@ -2603,7 +2601,7 @@ fn ppo_gather_minibatch_kernel[
 
 
 @always_inline
-fn ppo_actor_grad_with_kl_kernel[
+def ppo_actor_grad_with_kl_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH_SIZE: Int,
     NUM_ACTIONS: Int,
@@ -2727,7 +2725,7 @@ fn ppo_actor_grad_with_kl_kernel[
 
 
 @always_inline
-fn _store_pre_step_kernel[
+def _store_pre_step_kernel[
     dtype: DType,
     N_ENVS: Int,
     OBS_DIM: Int,
@@ -2756,7 +2754,7 @@ fn _store_pre_step_kernel[
 
 
 @always_inline
-fn _store_pre_step_obs_parallel_kernel[
+def _store_pre_step_obs_parallel_kernel[
     dtype: DType,
     N_ENVS: Int,
     OBS_DIM: Int,
@@ -2776,7 +2774,7 @@ fn _store_pre_step_obs_parallel_kernel[
 
 
 @always_inline
-fn ppo_gather_minibatch_obs_parallel_kernel[
+def ppo_gather_minibatch_obs_parallel_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
     OBS_DIM: Int,

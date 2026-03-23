@@ -17,7 +17,7 @@ from std.math import sqrt, log, exp
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn scalar_transform(x: Float64, eps: Float64 = 0.001) -> Float64:
+def scalar_transform(x: Float64, eps: Float64 = 0.001) -> Float64:
     """Apply MuZero scalar transform: h(x) = sign(x)(sqrt(|x|+1) - 1) + eps*x.
 
     Compresses large values into a bounded range for stable categorical
@@ -35,7 +35,7 @@ fn scalar_transform(x: Float64, eps: Float64 = 0.001) -> Float64:
     return sign * (sqrt(abs_x + 1.0) - 1.0) + eps * x
 
 
-fn inverse_scalar_transform(y: Float64, eps: Float64 = 0.001) -> Float64:
+def inverse_scalar_transform(y: Float64, eps: Float64 = 0.001) -> Float64:
     """Invert MuZero scalar transform: h^{-1}(y).
 
     Recovers the original scalar value from the transformed representation.
@@ -56,7 +56,7 @@ fn inverse_scalar_transform(y: Float64, eps: Float64 = 0.001) -> Float64:
 
     # Closed-form inverse
     var inner = sqrt(1.0 + 4.0 * eps * (abs_y + 1.0 + eps))
-    var f = ((inner - 1.0) / (2.0 * eps))
+    var f = (inner - 1.0) / (2.0 * eps)
     return sign * (f * f - 1.0)
 
 
@@ -65,7 +65,7 @@ fn inverse_scalar_transform(y: Float64, eps: Float64 = 0.001) -> Float64:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-struct MinMaxStats(Movable, ImplicitlyCopyable):
+struct MinMaxStats(ImplicitlyCopyable, Movable):
     """Tracks min/max Q-values in the MCTS tree for PUCT normalization.
 
     Q-values are normalized to [0, 1] using the observed range, so the
@@ -75,20 +75,20 @@ struct MinMaxStats(Movable, ImplicitlyCopyable):
     var minimum: Float64
     var maximum: Float64
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize with extreme values so first update always applies."""
         self.minimum = Float64(1e18)
         self.maximum = Float64(-1e18)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.minimum = copy.minimum
         self.maximum = copy.maximum
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.minimum = take.minimum
         self.maximum = take.maximum
 
-    fn update(mut self, value: Float64):
+    def update(mut self, value: Float64):
         """Update tracked range with a new Q-value.
 
         Args:
@@ -99,7 +99,7 @@ struct MinMaxStats(Movable, ImplicitlyCopyable):
         if value > self.maximum:
             self.maximum = value
 
-    fn normalize(self, value: Float64) -> Float64:
+    def normalize(self, value: Float64) -> Float64:
         """Normalize a Q-value to [0, 1] using the tracked range.
 
         If the range is zero (no values seen, or all equal), returns the
@@ -122,9 +122,9 @@ struct MinMaxStats(Movable, ImplicitlyCopyable):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-fn compute_support[NUM_BINS: Int](v_min: Float64, v_max: Float64) -> InlineArray[
-    Float64, NUM_BINS
-]:
+def compute_support[
+    NUM_BINS: Int
+](v_min: Float64, v_max: Float64) -> InlineArray[Float64, NUM_BINS]:
     """Compute evenly-spaced support bins for categorical value encoding.
 
     Args:
@@ -135,15 +135,15 @@ fn compute_support[NUM_BINS: Int](v_min: Float64, v_max: Float64) -> InlineArray
         InlineArray of NUM_BINS evenly-spaced values from v_min to v_max.
     """
     var bins = InlineArray[Float64, NUM_BINS](uninitialized=True)
-    var step = (v_max - v_min) / Float64(NUM_BINS - 1) if NUM_BINS > 1 else Float64(
-        0.0
-    )
+    var step = (v_max - v_min) / Float64(
+        NUM_BINS - 1
+    ) if NUM_BINS > 1 else Float64(0.0)
     for i in range(NUM_BINS):
         bins[i] = v_min + Float64(i) * step
     return bins
 
 
-fn encode_categorical[
+def encode_categorical[
     NUM_BINS: Int,
     origin: MutOrigin,
 ](
@@ -171,9 +171,9 @@ fn encode_categorical[
         clamped = v_max
 
     # Find position in support
-    var step = (v_max - v_min) / Float64(NUM_BINS - 1) if NUM_BINS > 1 else Float64(
-        1.0
-    )
+    var step = (v_max - v_min) / Float64(
+        NUM_BINS - 1
+    ) if NUM_BINS > 1 else Float64(1.0)
     var b = (clamped - v_min) / step
 
     # Integer bin indices
@@ -192,7 +192,7 @@ fn encode_categorical[
     target[hi] = frac
 
 
-fn decode_categorical[
+def decode_categorical[
     NUM_BINS: Int,
     origin: MutOrigin,
 ](
@@ -212,9 +212,9 @@ fn decode_categorical[
     Returns:
         Expected scalar value.
     """
-    var step = (v_max - v_min) / Float64(NUM_BINS - 1) if NUM_BINS > 1 else Float64(
-        0.0
-    )
+    var step = (v_max - v_min) / Float64(
+        NUM_BINS - 1
+    ) if NUM_BINS > 1 else Float64(0.0)
 
     # Numerically stable softmax
     var max_val = logits[0]
@@ -236,7 +236,7 @@ fn decode_categorical[
     return result
 
 
-fn softmax_inplace[
+def softmax_inplace[
     N: Int,
     origin: MutOrigin,
 ](mut data: UnsafePointer[Float64, origin]):
@@ -260,7 +260,7 @@ fn softmax_inplace[
         data[i] *= inv_sum
 
 
-fn cross_entropy_with_softmax[
+def cross_entropy_with_softmax[
     N: Int,
     o1: MutOrigin,
     o2: MutOrigin,

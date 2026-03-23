@@ -40,7 +40,7 @@ comptime MAX_STEPS = 1000  # HalfCheetah episodes run for 1000 steps
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("TD3 Agent CPU Evaluation")

@@ -63,7 +63,7 @@ comptime dtype = DType.float32
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("Autodiff PPO Continuous Agent GPU Training on HalfCheetah")
@@ -72,7 +72,9 @@ fn main() raises:
 
     with DeviceContext() as ctx:
         var agent = GenericOnPolicyContinuousAgent[
-            AutodiffContinuousPPOConfig[OBS_DIM, ACTION_DIM, HIDDEN_DIM, ROLLOUT_LEN],
+            AutodiffContinuousPPOConfig[
+                OBS_DIM, ACTION_DIM, HIDDEN_DIM, ROLLOUT_LEN
+            ],
             N_ENVS,
             GPU_MINIBATCH_SIZE,
             RemoteLogger,
@@ -94,7 +96,9 @@ fn main() raises:
         print("Environment: HalfCheetah Continuous (GPU)")
         print("Agent: PPO Continuous (GPU) - Autodiff actor gradient")
         print("  Policy gradient: AutodiffContinuousPPOConfig")
-        print("  Actor grad: GaussianLogProbOp + RatioOp + ClipSurrogateOp vjps")
+        print(
+            "  Actor grad: GaussianLogProbOp + RatioOp + ClipSurrogateOp vjps"
+        )
         print()
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))

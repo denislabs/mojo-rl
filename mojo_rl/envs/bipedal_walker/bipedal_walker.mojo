@@ -187,7 +187,7 @@ struct BipedalWalker[
     # Initialization
     # =========================================================================
 
-    fn __init__(out self, seed: UInt64 = 42):
+    def __init__(out self, seed: UInt64 = 42):
         """Initialize the environment for CPU single-env operation."""
         # Create physics state for single environment
         self.physics = PhysicsStateOwned[
@@ -249,7 +249,7 @@ struct BipedalWalker[
         # Reset to initial state
         self._reset_cpu()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor."""
         self.physics = PhysicsStateOwned[
             BWConstants.NUM_BODIES,
@@ -293,7 +293,7 @@ struct BipedalWalker[
         self._init_physics_shapes()
         self._reset_cpu()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.physics = PhysicsStateOwned[
             BWConstants.NUM_BODIES,
@@ -341,7 +341,7 @@ struct BipedalWalker[
     # CPU Single-Environment Methods
     # =========================================================================
 
-    fn _init_physics_shapes(mut self):
+    def _init_physics_shapes(mut self):
         """Initialize physics shapes for hull and legs."""
         # Shape 0: Hull (pentagon)
         var hull_vx = List[Float64]()
@@ -388,7 +388,7 @@ struct BipedalWalker[
         self.physics.define_polygon_shape(3, ul_vx, ul_vy)
         self.physics.define_polygon_shape(4, ll_vx, ll_vy)
 
-    fn _reset_cpu(mut self):
+    def _reset_cpu(mut self):
         """Internal reset for CPU single-env operation."""
         self.rng_counter += 1
         var combined_seed = (
@@ -417,7 +417,7 @@ struct BipedalWalker[
         self._update_cached_state()
         self.prev_shaping = self._compute_shaping()
 
-    fn _generate_terrain_cpu(mut self, seed: Int):
+    def _generate_terrain_cpu(mut self, seed: Int):
         """Generate terrain with smooth random variation."""
         self.terrain_x.clear()
         self.terrain_y.clear()
@@ -495,7 +495,7 @@ struct BipedalWalker[
             self.edge_collision.edges[collision_edge_off + 4] = nx
             self.edge_collision.edges[collision_edge_off + 5] = ny
 
-    fn _create_walker_cpu(
+    def _create_walker_cpu(
         mut self, init_x: Float64, init_y: Float64, mut rng: PhiloxRandom
     ):
         """Create the bipedal walker bodies and joints."""
@@ -648,7 +648,7 @@ struct BipedalWalker[
             state[0, force_off + 1] = Scalar[dtype](0)
             state[0, force_off + 2] = Scalar[dtype](0)
 
-    fn _compute_shaping(mut self) -> Scalar[Self.dtype]:
+    def _compute_shaping(mut self) -> Scalar[Self.dtype]:
         """Compute potential-based shaping reward."""
         var state = self.physics.get_state_tensor()
         var hull_x = Float64(
@@ -658,7 +658,7 @@ struct BipedalWalker[
         # Forward progress is the main shaping
         return Scalar[Self.dtype](130.0 * hull_x / BWConstants.SCALE)
 
-    fn _update_cached_state(mut self):
+    def _update_cached_state(mut self):
         """Update cached observation state."""
         var state = self.physics.get_state_tensor()
 
@@ -839,7 +839,7 @@ struct BipedalWalker[
 
             self.cached_state.lidar[i] = Scalar[Self.dtype](min_t)
 
-    fn _update_ground_contacts(mut self):
+    def _update_ground_contacts(mut self):
         """Update ground contact flags based on collision detection."""
         var contacts = self.physics.get_contacts_tensor()
         var contact_counts = self.physics.get_contact_counts_tensor()
@@ -856,7 +856,7 @@ struct BipedalWalker[
             elif body_a == Self.BODY_LOWER_LEG_R:
                 self.right_leg_contact = True
 
-    fn _check_hull_contact(mut self):
+    def _check_hull_contact(mut self):
         """Check if hull is in contact with ground (game over condition)."""
         var contacts = self.physics.get_contacts_tensor()
         var contact_counts = self.physics.get_contact_counts_tensor()
@@ -868,7 +868,7 @@ struct BipedalWalker[
                 self.game_over = True
                 return
 
-    fn _step_physics_cpu(mut self):
+    def _step_physics_cpu(mut self):
         """Execute physics step."""
         var bodies = self.physics.get_bodies_tensor()
         var shapes = self.physics.get_shapes_tensor()
@@ -943,19 +943,19 @@ struct BipedalWalker[
     # BoxContinuousActionEnv Trait Methods
     # =========================================================================
 
-    fn reset(mut self) -> Self.StateType:
+    def reset(mut self) -> Self.StateType:
         """Reset the environment and return initial state."""
         self._reset_cpu()
         return self.get_state()
 
-    fn step(
+    def step(
         mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         var result = self._step_cpu_continuous(action)
         return (self.get_state(), result[0], result[1])
 
-    fn _step_cpu_continuous(
+    def _step_cpu_continuous(
         mut self, action: BipedalWalkerAction[Self.dtype]
     ) -> Tuple[Scalar[Self.dtype], Bool]:
         """Internal CPU step with continuous action."""
@@ -1049,7 +1049,7 @@ struct BipedalWalker[
         # Compute reward
         return self._compute_step_result(action)
 
-    fn _compute_step_result(
+    def _compute_step_result(
         mut self, action: BipedalWalkerAction[Self.dtype]
     ) -> Tuple[Scalar[Self.dtype], Bool]:
         """Compute reward and termination."""
@@ -1133,40 +1133,40 @@ struct BipedalWalker[
 
         return (reward, terminated)
 
-    fn get_state(self) -> Self.StateType:
+    def get_state(self) -> Self.StateType:
         """Return current state representation."""
         return self.cached_state
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current observation as a list."""
         return self.cached_state.to_list()
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset and return initial observation."""
         var state = self.reset()
         return state.to_list()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension."""
         return BWConstants.OBS_DIM_VAL
 
-    fn action_dim(self) -> Int:
+    def action_dim(self) -> Int:
         """Return action dimension."""
         return BWConstants.ACTION_DIM_VAL
 
-    fn action_low(self) -> Scalar[Self.dtype]:
+    def action_low(self) -> Scalar[Self.dtype]:
         """Return minimum action value."""
         return Scalar[Self.dtype](-1.0)
 
-    fn action_high(self) -> Scalar[Self.dtype]:
+    def action_high(self) -> Scalar[Self.dtype]:
         """Return maximum action value."""
         return Scalar[Self.dtype](1.0)
 
-    fn step_continuous[
+    def step_continuous[
         DTYPE_SC: DType
-    ](
-        mut self, action: Scalar[DTYPE_SC]
-    ) -> Tuple[List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool]:
+    ](mut self, action: Scalar[DTYPE_SC]) -> Tuple[
+        List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool
+    ]:
         """Step with single scalar action (applied to all joints)."""
         var a = Scalar[Self.dtype](action)
         var act = BipedalWalkerAction[Self.dtype](a, a, a, a)
@@ -1177,7 +1177,7 @@ struct BipedalWalker[
             obs.append(Scalar[DTYPE_SC](obs_self[i]))
         return (obs^, Scalar[DTYPE_SC](result[0]), result[1])
 
-    fn step_continuous_vec[
+    def step_continuous_vec[
         DTYPE_VEC: DType
     ](
         mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
@@ -1201,7 +1201,7 @@ struct BipedalWalker[
         var obs = self.cached_state.to_list_typed[DTYPE_VEC]()
         return (obs^, Scalar[DTYPE_VEC](result[0]), result[1])
 
-    fn render(mut self, mut renderer: Renderer2D):
+    def render(mut self, mut renderer: Renderer2D):
         """Render the environment.
 
         Args:
@@ -1209,7 +1209,7 @@ struct BipedalWalker[
         """
         self._render_internal(renderer)
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer[].close()
@@ -1220,7 +1220,7 @@ struct BipedalWalker[
     # RenderableEnv Trait Implementation
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
@@ -1229,13 +1229,13 @@ struct BipedalWalker[
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
         self.render(self._renderer[])
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
@@ -1243,35 +1243,35 @@ struct BipedalWalker[
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # =========================================================================
     # Rendering Methods
     # =========================================================================
 
-    fn _render_internal(mut self, mut renderer: Renderer2D):
+    def _render_internal(mut self, mut renderer: Renderer2D):
         """Render the environment with scrolling Camera.
 
         Args:
@@ -1312,7 +1312,7 @@ struct BipedalWalker[
 
         renderer.flip()
 
-    fn _draw_terrain(mut self, mut renderer: Renderer2D, camera: Camera):
+    def _draw_terrain(mut self, mut renderer: Renderer2D, camera: Camera):
         """Draw terrain polygons using Camera world coordinates."""
         var terrain_color = grass_green()
 
@@ -1344,7 +1344,7 @@ struct BipedalWalker[
                 vertices, camera, terrain_color, filled=True
             )
 
-    fn _draw_hull(mut self, mut renderer: Renderer2D, camera: Camera):
+    def _draw_hull(mut self, mut renderer: Renderer2D, camera: Camera):
         """Draw hull polygon using Transform2D and Camera."""
         var pos_x = self.physics.get_body_x(0, Self.BODY_HULL)
         var pos_y = self.physics.get_body_y(0, Self.BODY_HULL)
@@ -1394,7 +1394,7 @@ struct BipedalWalker[
             hull_verts, transform, camera, hull_color, filled=True
         )
 
-    fn _draw_legs(mut self, mut renderer: Renderer2D, camera: Camera):
+    def _draw_legs(mut self, mut renderer: Renderer2D, camera: Camera):
         """Draw leg segments using Transform2D and Camera."""
         for side in range(2):
             var upper_body_idx = (
@@ -1430,7 +1430,7 @@ struct BipedalWalker[
                 camera,
             )
 
-    fn _draw_leg_segment(
+    def _draw_leg_segment(
         mut self,
         mut renderer: Renderer2D,
         body_idx: Int,
@@ -1461,7 +1461,7 @@ struct BipedalWalker[
     # =========================================================================
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -1500,7 +1500,10 @@ struct BipedalWalker[
         if workspace_ptr:
             # Reuse pre-allocated workspace
             shapes_buf = DeviceBuffer[dtype](
-                ctx, workspace_ptr, SHAPES_SIZE, owning=False,
+                ctx,
+                workspace_ptr,
+                SHAPES_SIZE,
+                owning=False,
             )
             var per_env_ptr = workspace_ptr + SHAPES_SIZE
             contacts_buf = DeviceBuffer[dtype](
@@ -1558,7 +1561,7 @@ struct BipedalWalker[
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1574,7 +1577,7 @@ struct BipedalWalker[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -1596,7 +1599,7 @@ struct BipedalWalker[
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1619,7 +1622,7 @@ struct BipedalWalker[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn selective_reset_wrapper(
+        def selective_reset_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -1650,7 +1653,7 @@ struct BipedalWalker[
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
@@ -1671,7 +1674,7 @@ struct BipedalWalker[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn extract_obs(
+        def extract_obs(
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -1695,18 +1698,21 @@ struct BipedalWalker[
         )
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
         """Initialize shapes in the shared region of the workspace."""
         comptime SHAPES_SIZE = BWConstants.NUM_SHAPES * SHAPE_MAX_SIZE
         var shapes_buf = DeviceBuffer[dtype](
-            ctx, workspace_buf.unsafe_ptr(), SHAPES_SIZE, owning=False,
+            ctx,
+            workspace_buf.unsafe_ptr(),
+            SHAPES_SIZE,
+            owning=False,
         )
         BipedalWalker[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[dtype],
         curriculum_values: List[Scalar[dtype]],
@@ -1720,7 +1726,7 @@ struct BipedalWalker[
 
     @always_inline
     @staticmethod
-    fn _reset_env_gpu[
+    def _reset_env_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1962,7 +1968,7 @@ struct BipedalWalker[
 
     @always_inline
     @staticmethod
-    fn _compute_initial_obs_reset_gpu[
+    def _compute_initial_obs_reset_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -2138,7 +2144,7 @@ struct BipedalWalker[
             states[env, obs_off + BWConstants.LIDAR_START_IDX + i] = min_t
 
     @staticmethod
-    fn _init_shapes_gpu(
+    def _init_shapes_gpu(
         ctx: DeviceContext,
         mut shapes_buf: DeviceBuffer[dtype],
     ) raises:
@@ -2150,7 +2156,7 @@ struct BipedalWalker[
         ](shapes_buf.unsafe_ptr())
 
         @always_inline
-        fn init_shapes_wrapper(
+        def init_shapes_wrapper(
             shapes: LayoutTensor[
                 dtype,
                 Layout.row_major(BWConstants.NUM_SHAPES * SHAPE_MAX_SIZE),
@@ -2210,7 +2216,7 @@ struct BipedalWalker[
         )
 
     @staticmethod
-    fn _fused_step_gpu[
+    def _fused_step_gpu[
         BATCH_SIZE: Int,
         OBS_DIM: Int,
         ACTION_DIM: Int,
@@ -2267,7 +2273,7 @@ struct BipedalWalker[
         ](obs_buf.unsafe_ptr())
 
         @always_inline
-        fn step_wrapper(
+        def step_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -2575,7 +2581,7 @@ struct BipedalWalker[
 
     @always_inline
     @staticmethod
-    fn _compute_lidar_gpu[
+    def _compute_lidar_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -2674,7 +2680,7 @@ struct BipedalWalker[
 
     @always_inline
     @staticmethod
-    fn _apply_motor_actions_gpu[
+    def _apply_motor_actions_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         ACTION_DIM: Int,
@@ -2770,7 +2776,7 @@ struct BipedalWalker[
 
     @always_inline
     @staticmethod
-    fn _extract_obs_gpu[
+    def _extract_obs_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,

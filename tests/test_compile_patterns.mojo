@@ -35,7 +35,7 @@ comptime OUT_DIM = 32
 
 
 @always_inline
-fn pattern_a_kernel[
+def pattern_a_kernel[
     BATCH: Int,  # <-- This compile-time Int causes recompilation!
 ](
     output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
@@ -55,7 +55,7 @@ fn pattern_a_kernel[
         output[row, col] = acc
 
 
-fn launch_pattern_a[
+def launch_pattern_a[
     BATCH: Int
 ](
     ctx: DeviceContext,
@@ -78,7 +78,7 @@ fn launch_pattern_a[
     comptime grid_y = (BATCH + TILE - 1) // TILE
 
     @always_inline
-    fn wrapper(
+    def wrapper(
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
         ],
@@ -106,7 +106,7 @@ fn launch_pattern_a[
 
 
 @always_inline
-fn pattern_b_kernel[
+def pattern_b_kernel[
     out_layout: Layout,  # <-- Layout TYPE, not a dimension Int
     in_layout: Layout,
     W_layout: Layout,
@@ -129,7 +129,7 @@ fn pattern_b_kernel[
         output[row, col] = acc
 
 
-fn launch_pattern_b[
+def launch_pattern_b[
     BUFFER_SIZE: Int,  # Fixed buffer size (e.g., max batch you'll ever use)
 ](
     ctx: DeviceContext,
@@ -173,7 +173,7 @@ fn launch_pattern_b[
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("Compilation Pattern Test: p07 Puzzle Pattern")
@@ -272,13 +272,13 @@ fn main() raises:
         print("=" * 70)
         print()
         print("BEFORE (recompiles for each batch size):")
-        print("  fn kernel[BATCH: Int](")
+        print("  def kernel[BATCH: Int](")
         print("      t: LayoutTensor[..., Layout.row_major(BATCH, DIM), ...]")
         print("  ):")
         print("      if row < BATCH: ...  # compile-time constant")
         print()
         print("AFTER (single compilation, runtime batch):")
-        print("  fn kernel[layout: Layout](")
+        print("  def kernel[layout: Layout](")
         print("      t: LayoutTensor[..., layout, ...],")
         print("      batch: UInt,  # runtime parameter")
         print("  ):")

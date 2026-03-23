@@ -45,19 +45,19 @@ struct HintPriority(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime HINT_DEFAULT = Self(0)
@@ -65,7 +65,7 @@ struct HintPriority(Indexer, Intable, TrivialRegisterPassable):
     comptime HINT_OVERRIDE = Self(2)
 
 
-fn set_hint_with_priority(
+def set_hint_with_priority(
     var name: String, var value: String, priority: HintPriority
 ) raises:
     """Set a hint with a specific priority.
@@ -106,7 +106,7 @@ fn set_hint_with_priority(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_hint(var name: String, var value: String) raises:
+def set_hint(var name: String, var value: String) raises:
     """Set a hint with normal priority.
 
     Hints will not be set if there is an existing override hint or environment
@@ -142,7 +142,7 @@ fn set_hint(var name: String, var value: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn reset_hint(var name: String) raises:
+def reset_hint(var name: String) raises:
     """Reset a hint to the default value.
 
     This will reset a hint to the value of the environment variable, or NULL if
@@ -169,7 +169,7 @@ fn reset_hint(var name: String) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn reset_hints() raises -> None:
+def reset_hints() raises -> None:
     """Reset all hints to the default values.
 
     This will reset all hints to the value of the associated environment
@@ -185,7 +185,7 @@ fn reset_hints() raises -> None:
     return _get_dylib_function[lib, "SDL_ResetHints", fn() -> None]()()
 
 
-fn get_hint(var name: String) raises -> Ptr[c_char, ImmutAnyOrigin]:
+def get_hint(var name: String) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the value of a hint.
 
     Args:
@@ -212,7 +212,7 @@ fn get_hint(var name: String) raises -> Ptr[c_char, ImmutAnyOrigin]:
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
-fn get_hint_boolean(var name: String, default_value: Bool) raises -> Bool:
+def get_hint_boolean(var name: String, default_value: Bool) raises -> Bool:
     """Get the boolean value of a hint variable.
 
     Args:
@@ -262,7 +262,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_HintCallback.
 """
 
 
-fn add_hint_callback(
+def add_hint_callback(
     var name: String,
     callback: HintCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],
@@ -301,7 +301,7 @@ fn add_hint_callback(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn remove_hint_callback(
+def remove_hint_callback(
     var name: String,
     callback: HintCallback,
     userdata: Ptr[NoneType, MutAnyOrigin],

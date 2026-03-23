@@ -42,7 +42,7 @@ comptime REG_TILE_N = 2
 
 
 @always_inline
-fn matmul_apple_kernel[
+def matmul_apple_kernel[
     dtype: DType,
     M: Int,
     N: Int,
@@ -71,14 +71,14 @@ fn matmul_apple_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var acc: output.element_type = 0
@@ -122,7 +122,7 @@ fn matmul_apple_kernel[
 
 
 @always_inline
-fn matmul_apple_reg2x2_kernel[
+def matmul_apple_reg2x2_kernel[
     dtype: DType,
     M: Int,
     N: Int,
@@ -158,14 +158,14 @@ fn matmul_apple_reg2x2_kernel[
         dtype,
         Layout.row_major(TILE * 2, TILE),  # Larger in row dimension for 2x2
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE * 2),  # Larger in col dimension for 2x2
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # 2x2 accumulators in registers
@@ -231,7 +231,7 @@ fn matmul_apple_reg2x2_kernel[
 
 
 @always_inline
-fn matmul_bias_apple_kernel[
+def matmul_bias_apple_kernel[
     dtype: DType,
     M: Int,
     N: Int,
@@ -257,14 +257,14 @@ fn matmul_bias_apple_kernel[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         dtype,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # Initialize accumulator with bias
@@ -306,7 +306,7 @@ fn matmul_bias_apple_kernel[
 
 
 @always_inline
-fn matmul_fp16_apple_kernel[
+def matmul_fp16_apple_kernel[
     M: Int,
     N: Int,
     K: Int,
@@ -333,14 +333,14 @@ fn matmul_fp16_apple_kernel[
         DType.float16,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     var b_shared = LayoutTensor[
         DType.float16,
         Layout.row_major(TILE, TILE),
         MutAnyOrigin,
-        address_space = AddressSpace.SHARED,
+        address_space=AddressSpace.SHARED,
     ].stack_allocation()
 
     # Accumulate in FP32 for numerical stability, convert at the end
@@ -381,7 +381,7 @@ fn matmul_fp16_apple_kernel[
 # =============================================================================
 
 
-fn get_apple_grid_block[
+def get_apple_grid_block[
     M: Int, N: Int, TILE: Int = TILE_APPLE
 ]() -> Tuple[Tuple[Int, Int], Tuple[Int, Int]]:
     """Returns (grid_dim, block_dim) for Apple Silicon matmul kernels."""
@@ -390,7 +390,7 @@ fn get_apple_grid_block[
     return ((grid_x, grid_y), (TILE, TILE))
 
 
-fn get_apple_reg2x2_grid_block[
+def get_apple_reg2x2_grid_block[
     M: Int, N: Int, TILE: Int = TILE_APPLE
 ]() -> Tuple[Tuple[Int, Int], Tuple[Int, Int]]:
     """Returns (grid_dim, block_dim) for register-blocked kernels."""

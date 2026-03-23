@@ -57,7 +57,7 @@ comptime QVEL_REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
-fn compare_step(
+def compare_step(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -264,7 +264,7 @@ fn compare_step(
 # =============================================================================
 
 
-fn test_free_fall() raises:
+def test_free_fall() raises:
     """Free fall from high altitude — no contacts, pure 3D rigid-body dynamics.
     Torso starts at z=2.0 with identity quaternion and all joints at 0."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -275,7 +275,7 @@ fn test_free_fall() raises:
     compare_step("Free fall from z=2.0 (no contacts)", qpos, qvel, actions)
 
 
-fn test_free_fall_with_actions() raises:
+def test_free_fall_with_actions() raises:
     """Free fall with all 8 motors firing — exercises actuator mapping
     through the RK4 stages for a 3D free-body system."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -295,7 +295,7 @@ fn test_free_fall_with_actions() raises:
     compare_step("Free fall with moderate actions", qpos, qvel, actions)
 
 
-fn test_default_pose_no_action() raises:
+def test_default_pose_no_action() raises:
     """Default Ant init_qpos (z=0.55), zero velocity, no actions.
     Tests standing pose — may have ground contacts."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -320,7 +320,7 @@ fn test_default_pose_no_action() raises:
     compare_step("Default init_qpos, no action", qpos, qvel, actions)
 
 
-fn test_default_pose_with_actions() raises:
+def test_default_pose_with_actions() raises:
     """Default Ant pose with full motor actions — exercises combined
     contact + actuation through RK4 stages."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -343,7 +343,7 @@ fn test_default_pose_with_actions() raises:
     compare_step("Default pose, max symmetric actions", qpos, qvel, actions)
 
 
-fn test_moving_with_velocity() raises:
+def test_moving_with_velocity() raises:
     """Ant already translating and rotating — tests free-joint velocity
     integration (linear + angular velocity through quaternion update)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -361,7 +361,7 @@ fn test_moving_with_velocity() raises:
     compare_step("Moving torso + velocity + actions", qpos, qvel, actions)
 
 
-fn test_free_fall_10_steps() raises:
+def test_free_fall_10_steps() raises:
     """Free fall 10 steps — accumulates any per-step integration drift
     in the quaternion and free-joint position."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -372,5 +372,5 @@ fn test_free_fall_10_steps() raises:
     compare_step("Free fall 10 steps", qpos, qvel, actions, num_steps=10)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -28,7 +28,7 @@ from layout import Layout, LayoutTensor
 from std.math import abs
 
 
-fn finite_diff_check[
+def finite_diff_check[
     M: Model,
     BATCH: Int,
 ](
@@ -71,9 +71,7 @@ fn finite_diff_check[
     var grad_in_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.IN_DIM), MutAnyOrigin
     ](grad_in_arr.unsafe_ptr())
-    var grads_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](
-        uninitialized=True
-    )
+    var grads_arr = InlineArray[Scalar[dtype], M.PARAM_SIZE](uninitialized=True)
     for i in range(M.PARAM_SIZE):
         grads_arr[i] = Scalar[dtype](0.0)
     var grads_t = LayoutTensor[
@@ -155,7 +153,7 @@ fn finite_diff_check[
     return (max_abs, max_rel, num_checked)
 
 
-fn test_min_op_gradcheck() raises:
+def test_min_op_gradcheck() raises:
     """Gradient check for MinOp."""
     comptime BS = 4
     comptime D = 1
@@ -239,7 +237,7 @@ fn test_min_op_gradcheck() raises:
         print("  [FAIL] MinOp gradcheck: max_err =", max_err)
 
 
-fn test_slice_op_gradcheck() raises:
+def test_slice_op_gradcheck() raises:
     """Gradient check for SliceOp."""
     comptime BS = 3
     comptime IN = 5
@@ -297,14 +295,22 @@ fn test_slice_op_gradcheck() raises:
             var got = Float64(grad_in[b * IN + i])
             if abs(got - expected) > 1e-6:
                 ok = False
-                print("  [FAIL] SliceOp grad at b=", b, "i=", i,
-                      "expected=", expected, "got=", got)
+                print(
+                    "  [FAIL] SliceOp grad at b=",
+                    b,
+                    "i=",
+                    i,
+                    "expected=",
+                    expected,
+                    "got=",
+                    got,
+                )
 
     if ok:
         print("  [PASS] SliceOp gradcheck: correct sparse gradient")
 
 
-fn test_linear_model_gradcheck() raises:
+def test_linear_model_gradcheck() raises:
     """Gradient check for a small Linear model via finite differences."""
     comptime BS = 4
     comptime M = LinearReLU[3, 2]
@@ -329,13 +335,18 @@ fn test_linear_model_gradcheck() raises:
     var num = result[2]
 
     if max_rel < 1e-3:
-        print("  [PASS] LinearReLU gradcheck: max_rel_err =", max_rel,
-              "(", num, "params checked)")
+        print(
+            "  [PASS] LinearReLU gradcheck: max_rel_err =",
+            max_rel,
+            "(",
+            num,
+            "params checked)",
+        )
     else:
         print("  [FAIL] LinearReLU gradcheck: max_rel_err =", max_rel)
 
 
-fn test_split_apply_gradcheck() raises:
+def test_split_apply_gradcheck() raises:
     """Gradient check for SplitApply with two Linear branches."""
     comptime BS = 4
     comptime Left = Linear[3, 2]
@@ -363,13 +374,18 @@ fn test_split_apply_gradcheck() raises:
 
     var max_abs = result[0]
     if max_abs < 1e-2:
-        print("  [PASS] SplitApply gradcheck: max_abs_err =", max_abs,
-              "(", num, "params checked)")
+        print(
+            "  [PASS] SplitApply gradcheck: max_abs_err =",
+            max_abs,
+            "(",
+            num,
+            "params checked)",
+        )
     else:
         print("  [FAIL] SplitApply gradcheck: max_abs_err =", max_abs)
 
 
-fn test_dual_path_gradcheck() raises:
+def test_dual_path_gradcheck() raises:
     """Gradient check for DualPath[Linear, Linear].
     Uses Linear (not ReLU) for smooth gradients — ReLU boundaries cause
     finite-diff errors when activations cross the kink.
@@ -400,13 +416,18 @@ fn test_dual_path_gradcheck() raises:
 
     var max_abs = result[0]
     if max_abs < 1e-2:
-        print("  [PASS] DualPath gradcheck: max_abs_err =", max_abs,
-              "(", num, "params checked)")
+        print(
+            "  [PASS] DualPath gradcheck: max_abs_err =",
+            max_abs,
+            "(",
+            num,
+            "params checked)",
+        )
     else:
         print("  [FAIL] DualPath gradcheck: max_abs_err =", max_abs)
 
 
-fn test_skip_concat_gradcheck() raises:
+def test_skip_concat_gradcheck() raises:
     """Gradient check for SkipConcat[Linear]."""
     comptime BS = 4
     comptime Inner = Linear[3, 2]
@@ -432,13 +453,18 @@ fn test_skip_concat_gradcheck() raises:
     var num = result[2]
 
     if max_rel < 1e-3:
-        print("  [PASS] SkipConcat gradcheck: max_rel_err =", max_rel,
-              "(", num, "params checked)")
+        print(
+            "  [PASS] SkipConcat gradcheck: max_rel_err =",
+            max_rel,
+            "(",
+            num,
+            "params checked)",
+        )
     else:
         print("  [FAIL] SkipConcat gradcheck: max_rel_err =", max_rel)
 
 
-fn test_full_sac_gradcheck() raises:
+def test_full_sac_gradcheck() raises:
     """Gradient check for the composed SAC graph."""
     comptime OBS = 4
     comptime ACT = 2
@@ -455,7 +481,9 @@ fn test_full_sac_gradcheck() raises:
         LinearReLU[OBS + ACT, H],
         Linear[H, 1],
     ]
-    comptime TwinCriticMin = Sequential[DualPath[CriticModel, CriticModel], Min[1]]
+    comptime TwinCriticMin = Sequential[
+        DualPath[CriticModel, CriticModel], Min[1]
+    ]
     comptime LogProbPass = Slice[1, 0, 1]
     comptime SACOutput = SplitApply[TwinCriticMin, LogProbPass, OBS + ACT]
     comptime SACGraph = Sequential[ActorSkip, SACOutput]
@@ -477,7 +505,9 @@ fn test_full_sac_gradcheck() raises:
     # perfectly. We check with a looser tolerance and focus on the
     # deterministic parts (critic params).
     var result = finite_diff_check[SACGraph, BS](
-        params, input_arr.unsafe_ptr(), grad_out_arr.unsafe_ptr(),
+        params,
+        input_arr.unsafe_ptr(),
+        grad_out_arr.unsafe_ptr(),
         eps=1e-3,
     )
     var max_rel = result[1]
@@ -488,13 +518,18 @@ fn test_full_sac_gradcheck() raises:
     # can't match analytical gradients. This is expected (same as PyTorch —
     # you'd need to fix the random seed). We just verify the graph runs
     # without errors and produces non-zero gradients.
-    print("  [SKIP] Full SAC gradcheck: finite-diff not applicable",
-          "(stochastic RSampleOp noise differs between forward calls)")
-    print("         max_abs_err =", max_abs,
-          "(expected large due to noise mismatch)")
+    print(
+        "  [SKIP] Full SAC gradcheck: finite-diff not applicable",
+        "(stochastic RSampleOp noise differs between forward calls)",
+    )
+    print(
+        "         max_abs_err =",
+        max_abs,
+        "(expected large due to noise mismatch)",
+    )
 
 
-fn main() raises:
+def main() raises:
     print("=== Autodiff Gradient Checks ===")
     print()
     print("--- Primitive DiffOps ---")

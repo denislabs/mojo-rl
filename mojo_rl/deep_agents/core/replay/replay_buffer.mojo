@@ -21,11 +21,11 @@ trait ReplayBufferTrait(ImplicitlyDestructible):
     comptime ACTION_DIM: Int
     comptime DTYPE: DType
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize the replay buffer."""
         ...
 
-    fn add(
+    def add(
         mut self,
         obs: InlineArray[Scalar[Self.DTYPE], Self.OBS_DIM],
         action: InlineArray[Scalar[Self.DTYPE], Self.ACTION_DIM],
@@ -36,7 +36,7 @@ trait ReplayBufferTrait(ImplicitlyDestructible):
         """Add a transition to the buffer."""
         ...
 
-    fn sample[
+    def sample[
         batch_size: Int
     ](
         self,
@@ -55,11 +55,11 @@ trait ReplayBufferTrait(ImplicitlyDestructible):
         """Sample a batch from the buffer."""
         ...
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return the current number of transitions in the buffer."""
         ...
 
-    fn is_ready[batch_size: Int](self) -> Bool:
+    def is_ready[batch_size: Int](self) -> Bool:
         """Check if the buffer has enough samples for a batch."""
         ...
 
@@ -98,7 +98,7 @@ struct ReplayBuffer[
     var size: Int
     var ptr: Int  # Next write position
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize empty replay buffer."""
         self.obs = InlineArray[
             Scalar[Self.DTYPE], Self.capacity * Self.OBS_DIM
@@ -114,7 +114,7 @@ struct ReplayBuffer[
         self.size = 0
         self.ptr = 0
 
-    fn add(
+    def add(
         mut self,
         obs: InlineArray[Scalar[Self.DTYPE], Self.OBS_DIM],
         action: InlineArray[Scalar[Self.DTYPE], Self.ACTION_DIM],
@@ -148,7 +148,7 @@ struct ReplayBuffer[
         if self.size < Self.capacity:
             self.size += 1
 
-    fn sample[
+    def sample[
         batch_size: Int
     ](
         self,
@@ -201,11 +201,11 @@ struct ReplayBuffer[
             # Copy done flag
             batch_dones[b] = self.dones[idx]
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return current number of transitions stored."""
         return self.size
 
-    fn is_ready[batch_size: Int](self) -> Bool:
+    def is_ready[batch_size: Int](self) -> Bool:
         """Check if buffer has enough samples for a batch."""
         return self.size >= batch_size
 
@@ -275,7 +275,7 @@ struct PrioritizedReplayBuffer[
     var epsilon: Scalar[Self.dtype]
     var max_priority: Scalar[Self.dtype]
 
-    fn __init__(
+    def __init__(
         out self,
         alpha: Scalar[Self.dtype] = 0.6,
         beta: Scalar[Self.dtype] = 0.4,
@@ -316,29 +316,29 @@ struct PrioritizedReplayBuffer[
         self.epsilon = epsilon
         self.max_priority = 1.0
 
-    fn _leaf_to_tree_idx(self, leaf_idx: Int) -> Int:
+    def _leaf_to_tree_idx(self, leaf_idx: Int) -> Int:
         """Convert leaf index to tree array index."""
         return leaf_idx + Self.capacity - 1
 
-    fn _tree_to_leaf_idx(self, tree_idx: Int) -> Int:
+    def _tree_to_leaf_idx(self, tree_idx: Int) -> Int:
         """Convert tree array index to leaf index."""
         return tree_idx - Self.capacity + 1
 
-    fn _propagate_up(mut self, mut idx: Int, change: Scalar[Self.dtype]):
+    def _propagate_up(mut self, mut idx: Int, change: Scalar[Self.dtype]):
         """Propagate priority change up to root."""
         while idx > 0:
             var parent = (idx - 1) // 2
             self.tree[parent] += change
             idx = parent
 
-    fn _update_tree(mut self, leaf_idx: Int, priority: Scalar[Self.dtype]):
+    def _update_tree(mut self, leaf_idx: Int, priority: Scalar[Self.dtype]):
         """Update priority at leaf and propagate up."""
         var tree_idx = self._leaf_to_tree_idx(leaf_idx)
         var change = priority - self.tree[tree_idx]
         self.tree[tree_idx] = priority
         self._propagate_up(tree_idx, change)
 
-    fn _sample_tree(self, target: Scalar[Self.dtype]) -> Int:
+    def _sample_tree(self, target: Scalar[Self.dtype]) -> Int:
         """Sample a leaf index proportional to priorities."""
         var idx = 0  # Start at root
         var remaining = target
@@ -360,11 +360,11 @@ struct PrioritizedReplayBuffer[
 
         return self._tree_to_leaf_idx(idx)
 
-    fn _total_priority(self) -> Scalar[Self.dtype]:
+    def _total_priority(self) -> Scalar[Self.dtype]:
         """Get total sum of all priorities (root value)."""
         return self.tree[0]
 
-    fn _min_priority(self) -> Scalar[Self.dtype]:
+    def _min_priority(self) -> Scalar[Self.dtype]:
         """Get minimum non-zero priority among all leaves."""
         var min_p: Scalar[Self.dtype] = 1e10
         for i in range(self.size):
@@ -374,7 +374,7 @@ struct PrioritizedReplayBuffer[
                 min_p = p
         return min_p if min_p < 1e10 else Scalar[Self.dtype](1.0)
 
-    fn _compute_priority(
+    def _compute_priority(
         self, td_error: Scalar[Self.dtype]
     ) -> Scalar[Self.dtype]:
         """Compute priority from TD error: (|δ| + ε)^α."""
@@ -382,7 +382,7 @@ struct PrioritizedReplayBuffer[
         var p = abs_error + self.epsilon
         return p**self.alpha
 
-    fn add(
+    def add(
         mut self,
         obs: InlineArray[Scalar[Self.dtype], Self.obs_dim],
         action: InlineArray[Scalar[Self.dtype], Self.action_dim],
@@ -420,7 +420,7 @@ struct PrioritizedReplayBuffer[
         if self.size < Self.capacity:
             self.size += 1
 
-    fn update_priority(mut self, idx: Int, td_error: Scalar[Self.dtype]):
+    def update_priority(mut self, idx: Int, td_error: Scalar[Self.dtype]):
         """Update priority for a transition after computing TD error.
 
         Args:
@@ -435,7 +435,7 @@ struct PrioritizedReplayBuffer[
         if raw_priority > self.max_priority:
             self.max_priority = raw_priority
 
-    fn update_priorities[
+    def update_priorities[
         batch_size: Int
     ](
         mut self,
@@ -451,7 +451,7 @@ struct PrioritizedReplayBuffer[
         for i in range(batch_size):
             self.update_priority(indices[i], td_errors[i])
 
-    fn sample[
+    def sample[
         batch_size: Int
     ](
         self,
@@ -534,11 +534,11 @@ struct PrioritizedReplayBuffer[
             # Copy done flag
             batch_dones[b] = self.dones[idx]
 
-    fn set_beta(mut self, beta: Scalar[Self.dtype]):
+    def set_beta(mut self, beta: Scalar[Self.dtype]):
         """Set IS exponent (should be annealed from initial to 1.0)."""
         self.beta = beta
 
-    fn anneal_beta(
+    def anneal_beta(
         mut self,
         progress: Scalar[Self.dtype],
         beta_start: Scalar[Self.dtype] = 0.4,
@@ -553,11 +553,11 @@ struct PrioritizedReplayBuffer[
             Scalar[Self.dtype](1.0) - beta_start
         )
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return current number of transitions stored."""
         return self.size
 
-    fn is_ready[batch_size: Int](self) -> Bool:
+    def is_ready[batch_size: Int](self) -> Bool:
         """Check if buffer has enough samples for a batch."""
         return self.size >= batch_size
 
@@ -609,7 +609,7 @@ struct HeapReplayBuffer[
     var size: Int
     var ptr: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize empty heap replay buffer."""
         # Pre-allocate capacity
         var obs_size = Self.capacity * Self.obs_dim
@@ -634,7 +634,7 @@ struct HeapReplayBuffer[
         self.size = 0
         self.ptr = 0
 
-    fn add(
+    def add(
         mut self,
         obs: InlineArray[Scalar[Self.DTYPE], Self.OBS_DIM],
         action: InlineArray[Scalar[Self.DTYPE], Self.ACTION_DIM],
@@ -668,7 +668,7 @@ struct HeapReplayBuffer[
         if self.size < Self.capacity:
             self.size += 1
 
-    fn sample[
+    def sample[
         batch_size: Int
     ](
         self,
@@ -721,10 +721,10 @@ struct HeapReplayBuffer[
             # Copy done flag
             batch_dones[b] = self.dones[idx]
 
-    fn len(self) -> Int:
+    def len(self) -> Int:
         """Return current number of transitions stored."""
         return self.size
 
-    fn is_ready[batch_size: Int](self) -> Bool:
+    def is_ready[batch_size: Int](self) -> Bool:
         """Check if buffer has enough samples for a batch."""
         return self.size >= batch_size

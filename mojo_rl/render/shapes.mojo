@@ -13,7 +13,7 @@ from .transform import Vec2
 # =============================================================================
 
 
-fn make_rect(
+def make_rect(
     width: Float64, height: Float64, centered: Bool = True
 ) -> List[Vec2]:
     """Create rectangle vertices.
@@ -42,7 +42,7 @@ fn make_rect(
     return vertices^
 
 
-fn make_box(half_width: Float64, half_height: Float64) -> List[Vec2]:
+def make_box(half_width: Float64, half_height: Float64) -> List[Vec2]:
     """Create box vertices centered at origin.
 
     Args:
@@ -55,7 +55,7 @@ fn make_box(half_width: Float64, half_height: Float64) -> List[Vec2]:
     return make_rect(half_width * 2.0, half_height * 2.0, centered=True)
 
 
-fn make_triangle(
+def make_triangle(
     base: Float64, height: Float64, centered: Bool = True
 ) -> List[Vec2]:
     """Create isoceles triangle vertices pointing up.
@@ -82,7 +82,7 @@ fn make_triangle(
     return vertices^
 
 
-fn make_circle(radius: Float64, segments: Int = 32) -> List[Vec2]:
+def make_circle(radius: Float64, segments: Int = 32) -> List[Vec2]:
     """Create circle vertices.
 
     Args:
@@ -100,7 +100,7 @@ fn make_circle(radius: Float64, segments: Int = 32) -> List[Vec2]:
     return vertices^
 
 
-fn make_regular_polygon(radius: Float64, sides: Int) -> List[Vec2]:
+def make_regular_polygon(radius: Float64, sides: Int) -> List[Vec2]:
     """Create regular polygon vertices.
 
     Args:
@@ -120,7 +120,7 @@ fn make_regular_polygon(radius: Float64, sides: Int) -> List[Vec2]:
     return vertices^
 
 
-fn make_hexagon(radius: Float64) -> List[Vec2]:
+def make_hexagon(radius: Float64) -> List[Vec2]:
     """Create hexagon vertices.
 
     Args:
@@ -137,7 +137,7 @@ fn make_hexagon(radius: Float64) -> List[Vec2]:
 # =============================================================================
 
 
-fn make_arrow(
+def make_arrow(
     length: Float64, head_size: Float64, shaft_width: Float64
 ) -> List[Vec2]:
     """Create arrow vertices pointing right (positive X).
@@ -169,7 +169,7 @@ fn make_arrow(
     return vertices^
 
 
-fn make_simple_arrow_head(size: Float64) -> List[Vec2]:
+def make_simple_arrow_head(size: Float64) -> List[Vec2]:
     """Create simple triangular arrowhead pointing right.
 
     Args:
@@ -185,7 +185,7 @@ fn make_simple_arrow_head(size: Float64) -> List[Vec2]:
     return vertices^
 
 
-fn make_chevron(size: Float64, thickness: Float64) -> List[Vec2]:
+def make_chevron(size: Float64, thickness: Float64) -> List[Vec2]:
     """Create chevron (>) shape pointing right.
 
     Args:
@@ -215,7 +215,7 @@ fn make_chevron(size: Float64, thickness: Float64) -> List[Vec2]:
 # =============================================================================
 
 
-fn make_wheel(radius: Float64, segments: Int = 16) -> List[Vec2]:
+def make_wheel(radius: Float64, segments: Int = 16) -> List[Vec2]:
     """Create wheel vertices (same as circle but with fewer segments).
 
     Args:
@@ -228,7 +228,7 @@ fn make_wheel(radius: Float64, segments: Int = 16) -> List[Vec2]:
     return make_circle(radius, segments)
 
 
-fn make_capsule(
+def make_capsule(
     length: Float64, radius: Float64, segments: Int = 8
 ) -> List[Vec2]:
     """Create capsule/pill shape vertices (rectangle with semicircle ends).
@@ -261,7 +261,7 @@ fn make_capsule(
     return vertices^
 
 
-fn make_car_body(
+def make_car_body(
     length: Float64, width: Float64, cabin_ratio: Float64 = 0.5
 ) -> List[Vec2]:
     """Create simple car body silhouette.
@@ -297,7 +297,7 @@ fn make_car_body(
     return vertices^
 
 
-fn make_lander_body() -> List[Vec2]:
+def make_lander_body() -> List[Vec2]:
     """Create lunar lander body vertices (hexagonal shape).
 
     Returns:
@@ -314,7 +314,7 @@ fn make_lander_body() -> List[Vec2]:
     return vertices^
 
 
-fn make_leg_box(width: Float64, height: Float64) -> List[Vec2]:
+def make_leg_box(width: Float64, height: Float64) -> List[Vec2]:
     """Create leg segment box vertices.
 
     Args:
@@ -332,7 +332,7 @@ fn make_leg_box(width: Float64, height: Float64) -> List[Vec2]:
 # =============================================================================
 
 
-fn make_flag(
+def make_flag(
     pole_height: Float64, flag_width: Float64, flag_height: Float64
 ) -> Tuple[List[Vec2], List[Vec2]]:
     """Create flag pole and flag vertices.
@@ -361,7 +361,7 @@ fn make_flag(
     return (pole^, flag^)
 
 
-fn make_star(
+def make_star(
     outer_radius: Float64, inner_radius: Float64, points: Int = 5
 ) -> List[Vec2]:
     """Create star shape vertices.
@@ -386,7 +386,7 @@ fn make_star(
     return vertices^
 
 
-fn make_cross(size: Float64, thickness: Float64) -> List[Vec2]:
+def make_cross(size: Float64, thickness: Float64) -> List[Vec2]:
     """Create plus/cross shape vertices.
 
     Args:
@@ -422,7 +422,7 @@ fn make_cross(size: Float64, thickness: Float64) -> List[Vec2]:
 # =============================================================================
 
 
-fn make_terrain_line(
+def make_terrain_line(
     func: fn(Float64) -> Float64,
     x_min: Float64,
     x_max: Float64,
@@ -450,7 +450,7 @@ fn make_terrain_line(
     return points^
 
 
-fn make_filled_terrain(
+def make_filled_terrain(
     terrain_line: List[Vec2], bottom_y: Float64
 ) -> List[Vec2]:
     """Convert terrain line to filled polygon.
@@ -481,7 +481,7 @@ fn make_filled_terrain(
 # =============================================================================
 
 
-fn offset_vertices(vertices: List[Vec2], offset: Vec2) -> List[Vec2]:
+def offset_vertices(vertices: List[Vec2], offset: Vec2) -> List[Vec2]:
     """Offset all vertices by a fixed amount.
 
     Args:
@@ -497,7 +497,7 @@ fn offset_vertices(vertices: List[Vec2], offset: Vec2) -> List[Vec2]:
     return result^
 
 
-fn scale_vertices(vertices: List[Vec2], scale: Float64) -> List[Vec2]:
+def scale_vertices(vertices: List[Vec2], scale: Float64) -> List[Vec2]:
     """Scale all vertices uniformly.
 
     Args:
@@ -513,7 +513,7 @@ fn scale_vertices(vertices: List[Vec2], scale: Float64) -> List[Vec2]:
     return result^
 
 
-fn rotate_vertices(vertices: List[Vec2], angle: Float64) -> List[Vec2]:
+def rotate_vertices(vertices: List[Vec2], angle: Float64) -> List[Vec2]:
     """Rotate all vertices around origin.
 
     Args:
@@ -529,7 +529,7 @@ fn rotate_vertices(vertices: List[Vec2], angle: Float64) -> List[Vec2]:
     return result^
 
 
-fn flip_vertices_y(vertices: List[Vec2]) -> List[Vec2]:
+def flip_vertices_y(vertices: List[Vec2]) -> List[Vec2]:
     """Flip vertices vertically (negate Y).
 
     Args:
@@ -544,7 +544,7 @@ fn flip_vertices_y(vertices: List[Vec2]) -> List[Vec2]:
     return result^
 
 
-fn flip_vertices_x(vertices: List[Vec2]) -> List[Vec2]:
+def flip_vertices_x(vertices: List[Vec2]) -> List[Vec2]:
     """Flip vertices horizontally (negate X).
 
     Args:

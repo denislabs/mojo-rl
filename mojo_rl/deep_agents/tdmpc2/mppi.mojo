@@ -46,7 +46,7 @@ from .kernels import (
 )
 
 
-fn plan[
+def plan[
     OBS_DIM: Int,
     ACTION_DIM: Int,
     LATENT_DIM: Int,
@@ -386,7 +386,7 @@ fn plan[
 
 
 @always_inline
-fn _weighted_sample(weights: List[Float64], n: Int) -> Int:
+def _weighted_sample(weights: List[Float64], n: Int) -> Int:
     """Multinomial sampling: draw one index proportional to weights.
 
     Equivalent to torch.multinomial(weights, 1). Weights must be
@@ -403,7 +403,7 @@ fn _weighted_sample(weights: List[Float64], n: Int) -> Int:
 
 
 @always_inline
-fn _gaussian_sample() -> Float64:
+def _gaussian_sample() -> Float64:
     """Box-Muller transform to generate a standard normal sample."""
     var u1 = random_float64()
     var u2 = random_float64()
@@ -415,7 +415,7 @@ fn _gaussian_sample() -> Float64:
 
 
 @always_inline
-fn _clamp(x: Float64, lo: Float64, hi: Float64) -> Float64:
+def _clamp(x: Float64, lo: Float64, hi: Float64) -> Float64:
     """Clamp x to [lo, hi]."""
     if x < lo:
         return lo
@@ -429,7 +429,7 @@ fn _clamp(x: Float64, lo: Float64, hi: Float64) -> Float64:
 # =============================================================================
 
 
-fn plan_gpu[
+def plan_gpu[
     OBS_DIM: Int,
     ACTION_DIM: Int,
     LATENT_DIM: Int,
@@ -910,7 +910,7 @@ fn plan_gpu[
 # =============================================================================
 
 
-fn plan_gpu_batched[
+def plan_gpu_batched[
     OBS_DIM: Int,
     ACTION_DIM: Int,
     LATENT_DIM: Int,

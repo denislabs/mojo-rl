@@ -22,7 +22,7 @@ from mojo_rl.deep_agents.muzero.configs import AlphaZeroConfig
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
-fn main() raises:
+def main() raises:
     print("╔══════════════════════════════════════════════════╗")
     print("║  TicTacToe AlphaZero — Long Run (500K steps)    ║")
     print("╚══════════════════════════════════════════════════╝")
@@ -34,18 +34,22 @@ fn main() raises:
 
     # Tuned config: larger network, more sims, higher LR
     comptime Config = AlphaZeroConfig[
-        TTT.OBS_DIM, TTT.NUM_ACTIONS,
-        HIDDEN=256,     # 256 vs 128
-        LR=3e-3,        # Higher LR for small game
-        BS=128,          # Larger batch
-        SIMS=50,         # More MCTS simulations
-        NODES=128,       # More tree nodes
+        TTT.OBS_DIM,
+        TTT.NUM_ACTIONS,
+        HIDDEN=256,  # 256 vs 128
+        LR=3e-3,  # Higher LR for small game
+        BS=128,  # Larger batch
+        SIMS=50,  # More MCTS simulations
+        NODES=128,  # More tree nodes
     ]
     comptime N_ENVS = 128  # More parallel games
 
     var agent = GenericMuZeroAgent[Config, N_ENVS](
-        gamma=1.0, v_min=-1.0, v_max=1.0,
-        temperature=1.0, temperature_decay_steps=0,
+        gamma=1.0,
+        v_min=-1.0,
+        v_max=1.0,
+        temperature=1.0,
+        temperature_decay_steps=0,
     )
 
     var random_eval = RandomOpponent()
@@ -70,7 +74,7 @@ fn main() raises:
             ctx,
             num_steps=CHUNK,
             warmup_steps=2000 if chunk == 0 else 0,
-            gradient_steps=2,     # 2 gradient steps per collection
+            gradient_steps=2,  # 2 gradient steps per collection
             print_every=CHUNK,
         )
 

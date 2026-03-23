@@ -112,7 +112,7 @@ from .contact_detection import (
 
 
 @always_inline
-fn _aabb_half_extents[
+def _aabb_half_extents[
     DTYPE: DType
 ](
     geom_type: Int,
@@ -173,7 +173,7 @@ fn _aabb_half_extents[
 # =============================================================================
 
 
-fn detect_contacts_sap[
+def detect_contacts_sap[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -856,7 +856,7 @@ fn detect_contacts_sap[
 
 
 @always_inline
-fn detect_contacts_sap_gpu[
+def detect_contacts_sap_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1621,7 +1621,7 @@ fn detect_contacts_sap_gpu[
 comptime SAP_THRESHOLD: Int = 16
 
 
-fn detect_contacts_auto[
+def detect_contacts_auto[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -1687,7 +1687,7 @@ fn detect_contacts_auto[
 
 
 @always_inline
-fn detect_contacts_auto_gpu[
+def detect_contacts_auto_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

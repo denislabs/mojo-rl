@@ -11,16 +11,16 @@ struct SDLHandle(ImplicitlyCopyable, Movable):
 
     var ptr: UnsafePointer[UInt8, MutAnyOrigin]
 
-    fn __init__(out self):
+    def __init__(out self):
         self.ptr = UnsafePointer[UInt8, MutAnyOrigin]()
 
-    fn __init__(out self, ptr: UnsafePointer[UInt8, MutAnyOrigin]):
+    def __init__(out self, ptr: UnsafePointer[UInt8, MutAnyOrigin]):
         self.ptr = ptr
 
-    fn __bool__(self) -> Bool:
+    def __bool__(self) -> Bool:
         return self.ptr.__bool__()
 
-    fn copy(self) -> Self:
+    def copy(self) -> Self:
         return Self(self.ptr)
 
 

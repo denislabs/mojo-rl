@@ -51,7 +51,7 @@ from .constants import (
 )
 
 
-fn compute_cfrc_ext_gpu[
+def compute_cfrc_ext_gpu[
     DTYPE: DType,
     BATCH_SIZE: Int,
     STATE_SIZE: Int,
@@ -92,7 +92,7 @@ fn compute_cfrc_ext_gpu[
     comptime EPS = Scalar[DTYPE](1e-10)
 
     @always_inline
-    fn cfrc_ext_kernel(
+    def cfrc_ext_kernel(
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ],

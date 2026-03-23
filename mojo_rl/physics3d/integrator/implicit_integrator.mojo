@@ -156,7 +156,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
     # =========================================================================
 
     @staticmethod
-    fn step[
+    def step[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -549,7 +549,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             print("")
 
     @staticmethod
-    fn simulate[
+    def simulate[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -607,7 +607,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn step_kernel[
+    def step_kernel[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1019,7 +1019,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn step_finalize_kernel[
+    def step_finalize_kernel[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1057,7 +1057,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         ](state, model, workspace)
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1190,7 +1190,7 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         )
 
     @staticmethod
-    fn simulate_gpu[
+    def simulate_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

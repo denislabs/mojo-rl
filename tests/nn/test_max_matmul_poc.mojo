@@ -21,7 +21,7 @@ import linalg.matmul.vendor.blas as vendor_blas
 from linalg.matmul import matmul as max_matmul
 
 
-fn main() raises:
+def main() raises:
     seed(42)
 
     # Dimensions matching MPPI: BATCH=17152, IN=512, OUT=512
@@ -84,9 +84,7 @@ fn main() raises:
 
         # ── Warmup both ──
         print("Warming up...")
-        vendor_blas.matmul(
-            ctx, c1_tensor, a_tensor, b_tensor, c_row_major=True
-        )
+        vendor_blas.matmul(ctx, c1_tensor, a_tensor, b_tensor, c_row_major=True)
         max_matmul[target="gpu"](c2_tensor, a_tensor, b_tensor, ctx)
         ctx.synchronize()
 
@@ -129,12 +127,17 @@ fn main() raises:
         )
 
         print(
-            "3. Our custom MMA:            ~308     μs  |  ~29    TFLOPS (from nsys profile)"
+            "3. Our custom MMA:            ~308     μs  |  ~29    TFLOPS (from"
+            " nsys profile)"
         )
 
         print()
-        print("Speedup BLAS vs custom MMA: " + String(308.0 / blas_us)[:4] + "x")
-        print("Speedup GEMM vs custom MMA: " + String(308.0 / gemm_us)[:4] + "x")
+        print(
+            "Speedup BLAS vs custom MMA: " + String(308.0 / blas_us)[:4] + "x"
+        )
+        print(
+            "Speedup GEMM vs custom MMA: " + String(308.0 / gemm_us)[:4] + "x"
+        )
         if gemm_us < blas_us:
             print(">>> multistage GEMM is FASTER than cuBLAS! <<<")
         else:
@@ -158,9 +161,7 @@ fn main() raises:
             var diff = abs(Float64(c1_host[i]) - Float64(c2_host[i]))
             if diff > max_diff:
                 max_diff = diff
-        print(
-            "Max abs diff (first 1000 elements): " + String(max_diff)[:10]
-        )
+        print("Max abs diff (first 1000 elements): " + String(max_diff)[:10])
 
         print()
         print("=" * 60)

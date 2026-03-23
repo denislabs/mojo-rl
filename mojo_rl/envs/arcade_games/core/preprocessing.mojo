@@ -7,7 +7,7 @@ from .colors import SCREEN_W, SCREEN_H, OBS_W, OBS_H, FRAME_STACK
 
 
 @always_inline
-fn resize_160x210_to_84x84(
+def resize_160x210_to_84x84(
     src: UnsafePointer[UInt8, MutAnyOrigin],
     dst: UnsafePointer[UInt8, MutAnyOrigin],
 ):
@@ -45,7 +45,7 @@ fn resize_160x210_to_84x84(
 
 
 @always_inline
-fn push_frame_stack[
+def push_frame_stack[
     WS_FRAME_OFFSET: Int,  # Offset in workspace to frame stack (4*84*84 bytes)
     WS_IDX_OFFSET: Int,  # Offset in workspace to frame_idx (1 float32)
 ](
@@ -74,7 +74,9 @@ fn push_frame_stack[
         workspace[frame_base + i] = Scalar[DType.float32](resized[i]) / 255.0
 
     # Advance ring index
-    workspace[WS_IDX_OFFSET] = Scalar[DType.float32]((frame_idx + 1) % FRAME_STACK)
+    workspace[WS_IDX_OFFSET] = Scalar[DType.float32](
+        (frame_idx + 1) % FRAME_STACK
+    )
 
     # Output chronological stack: oldest first
     for f in range(FRAME_STACK):

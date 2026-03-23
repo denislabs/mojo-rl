@@ -100,7 +100,7 @@ comptime RESULT_DRAW: Int = 3
 
 
 # Queen-like directions: (dr, dc) — N, NE, E, SE, S, SW, W, NW
-fn _queen_dr(d: Int) -> Int:
+def _queen_dr(d: Int) -> Int:
     if d == 0:
         return 1  # N
     if d == 1:
@@ -118,7 +118,7 @@ fn _queen_dr(d: Int) -> Int:
     return 1  # NW
 
 
-fn _queen_dc(d: Int) -> Int:
+def _queen_dc(d: Int) -> Int:
     if d == 0:
         return 0  # N
     if d == 1:
@@ -137,7 +137,7 @@ fn _queen_dc(d: Int) -> Int:
 
 
 # Knight offsets: (dr, dc)
-fn _knight_dr(k: Int) -> Int:
+def _knight_dr(k: Int) -> Int:
     if k == 0:
         return 2
     if k == 1:
@@ -155,7 +155,7 @@ fn _knight_dr(k: Int) -> Int:
     return 2
 
 
-fn _knight_dc(k: Int) -> Int:
+def _knight_dc(k: Int) -> Int:
     if k == 0:
         return 1
     if k == 1:
@@ -179,43 +179,43 @@ fn _knight_dc(k: Int) -> Int:
 
 
 @always_inline
-fn _on_board(r: Int, c: Int) -> Bool:
+def _on_board(r: Int, c: Int) -> Bool:
     return r >= 0 and r < 8 and c >= 0 and c < 8
 
 
 @always_inline
-fn _sq(r: Int, c: Int) -> Int:
+def _sq(r: Int, c: Int) -> Int:
     return r * 8 + c
 
 
 @always_inline
-fn _row(sq: Int) -> Int:
+def _row(sq: Int) -> Int:
     return sq // 8
 
 
 @always_inline
-fn _col(sq: Int) -> Int:
+def _col(sq: Int) -> Int:
     return sq % 8
 
 
 @always_inline
-fn _flip_sq(sq: Int) -> Int:
+def _flip_sq(sq: Int) -> Int:
     """Flip square vertically (for canonical view)."""
     return (7 - _row(sq)) * 8 + _col(sq)
 
 
 @always_inline
-fn _is_white(piece: Int) -> Bool:
+def _is_white(piece: Int) -> Bool:
     return piece >= 1 and piece <= 6
 
 
 @always_inline
-fn _is_black(piece: Int) -> Bool:
+def _is_black(piece: Int) -> Bool:
     return piece >= 7 and piece <= 12
 
 
 @always_inline
-fn _piece_type(piece: Int) -> Int:
+def _piece_type(piece: Int) -> Int:
     """Return piece type 1-6 regardless of color."""
     if piece <= 6:
         return piece
@@ -223,21 +223,21 @@ fn _piece_type(piece: Int) -> Int:
 
 
 @always_inline
-fn _is_friendly(piece: Int, player: Int) -> Bool:
+def _is_friendly(piece: Int, player: Int) -> Bool:
     if player == 0:
         return _is_white(piece)
     return _is_black(piece)
 
 
 @always_inline
-fn _is_enemy(piece: Int, player: Int) -> Bool:
+def _is_enemy(piece: Int, player: Int) -> Bool:
     if piece == EMPTY:
         return False
     return not _is_friendly(piece, player)
 
 
 @always_inline
-fn _make_piece(piece_type: Int, player: Int) -> Int:
+def _make_piece(piece_type: Int, player: Int) -> Int:
     """Create piece of given type (1-6) for player."""
     if player == 0:
         return piece_type
@@ -254,17 +254,17 @@ struct Move(Copyable, ImplicitlyCopyable, Movable):
     var to_sq: Int
     var promo: Int  # 0=none, 2=knight, 3=bishop, 4=rook, 5=queen
 
-    fn __init__(out self, from_sq: Int, to_sq: Int, promo: Int = 0):
+    def __init__(out self, from_sq: Int, to_sq: Int, promo: Int = 0):
         self.from_sq = from_sq
         self.to_sq = to_sq
         self.promo = promo
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.from_sq = copy.from_sq
         self.to_sq = copy.to_sq
         self.promo = copy.promo
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.from_sq = take.from_sq
         self.to_sq = take.to_sq
         self.promo = take.promo
@@ -275,7 +275,7 @@ struct Move(Copyable, ImplicitlyCopyable, Movable):
 # ============================================================================
 
 
-fn _encode_action(m: Move, player: Int) -> Int:
+def _encode_action(m: Move, player: Int) -> Int:
     """Encode a move in real coordinates to a canonical action index."""
     var from_sq = m.from_sq
     var to_sq = m.to_sq
@@ -351,7 +351,7 @@ fn _encode_action(m: Move, player: Int) -> Int:
     return from_sq * 73 + move_type
 
 
-fn _decode_action(action: Int, player: Int) -> Move:
+def _decode_action(action: Int, player: Int) -> Move:
     """Decode a canonical action index to a move in real coordinates."""
     var canonical_from = action // 73
     var move_type = action % 73
@@ -406,7 +406,7 @@ fn _decode_action(action: Int, player: Int) -> Move:
     return Move(from_sq, to_sq, promo)
 
 
-fn _piece_char(piece: Int) -> String:
+def _piece_char(piece: Int) -> String:
     """Return the character for a given piece ID."""
     if piece == W_KING:
         return "K"
@@ -466,7 +466,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     var _sprite_pixels: UnsafePointer[UInt8, MutAnyOrigin]
     var _has_sprites: Bool
 
-    fn __init__(out self):
+    def __init__(out self):
         self.state = List[Scalar[Self.dtype]](capacity=72)
         for _ in range(72):
             self.state.append(Scalar[Self.dtype](0.0))
@@ -480,7 +480,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     # Reset to initial position
     # ========================================================================
 
-    fn reset(mut self) -> BoardGameState:
+    def reset(mut self) -> BoardGameState:
         for i in range(72):
             self.state[i] = 0.0
 
@@ -525,13 +525,13 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     # Board access helpers
     # ========================================================================
 
-    fn _piece_at(self, sq: Int) -> Int:
+    def _piece_at(self, sq: Int) -> Int:
         return Int(self.state[sq])
 
-    fn _player(self) -> Int:
+    def _player(self) -> Int:
         return Int(self.state[S_PLAYER])
 
-    fn _king_sq(self, player: Int) -> Int:
+    def _king_sq(self, player: Int) -> Int:
         if player == 0:
             return Int(self.state[S_WK])
         return Int(self.state[S_BK])
@@ -540,7 +540,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     # Attack detection
     # ========================================================================
 
-    fn _is_attacked_by(self, sq: Int, attacker: Int) -> Bool:
+    def _is_attacked_by(self, sq: Int, attacker: Int) -> Bool:
         """Check if `sq` is attacked by `attacker` (0=white, 1=black)."""
         var r = _row(sq)
         var c = _col(sq)
@@ -599,7 +599,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
         return False
 
-    fn _in_check(self, player: Int) -> Bool:
+    def _in_check(self, player: Int) -> Bool:
         """Check if `player`'s king is in check."""
         var ksq = self._king_sq(player)
         var opponent = 1 - player
@@ -609,7 +609,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     # Pseudo-legal move generation
     # ========================================================================
 
-    fn _gen_pseudo_legal(self, player: Int) -> List[Move]:
+    def _gen_pseudo_legal(self, player: Int) -> List[Move]:
         """Generate all pseudo-legal moves for `player`.
 
         Does NOT filter moves that leave own king in check.
@@ -773,7 +773,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
         return moves^
 
-    fn _gen_legal_moves(mut self, player: Int) -> List[Move]:
+    def _gen_legal_moves(mut self, player: Int) -> List[Move]:
         """Generate all legal moves (pseudo-legal + not leaving king in check).
         """
         var pseudo = self._gen_pseudo_legal(player)
@@ -833,7 +833,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     # Step
     # ========================================================================
 
-    fn step(
+    def step(
         mut self, action: BoardGameAction, verbose: Bool = False
     ) -> Tuple[BoardGameState, Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action.value)
@@ -843,7 +843,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             result[1],
         )
 
-    fn _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
+    def _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
         """Execute canonical action. Returns (reward, done)."""
         if self.done:
             return (Scalar[Self.dtype](0.0), True)
@@ -995,38 +995,38 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     # Env trait methods
     # ========================================================================
 
-    fn get_state(self) -> BoardGameState:
+    def get_state(self) -> BoardGameState:
         return BoardGameState(index=Int(self.state[S_FULLMOVE]))
 
-    fn close(mut self):
+    def close(mut self):
         if self._renderer_initialized:
             self._renderer[].close()
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn action_from_index(self, action_idx: Int) -> BoardGameAction:
+    def action_from_index(self, action_idx: Int) -> BoardGameAction:
         return BoardGameAction(value=action_idx)
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         return 4672
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         return 896
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         return 1
 
-    fn state_to_index(self, state: BoardGameState) -> Int:
+    def state_to_index(self, state: BoardGameState) -> Int:
         return state.index
 
     # ========================================================================
     # TwoPlayerDiscreteEnv trait methods
     # ========================================================================
 
-    fn current_player(self) -> Int:
+    def current_player(self) -> Int:
         return self._player()
 
-    fn legal_action_mask(self) -> List[Bool]:
+    def legal_action_mask(self) -> List[Bool]:
         var mask = List[Bool](capacity=4672)
         for _ in range(4672):
             mask.append(False)
@@ -1051,14 +1051,14 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
         return mask^
 
-    fn game_result(self) -> Int:
+    def game_result(self) -> Int:
         return Int(self.state[S_RESULT])
 
     # ========================================================================
     # Canonical observation
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs = List[Scalar[Self.dtype]](capacity=896)
         var player = self._player()
 
@@ -1113,11 +1113,11 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Single-agent step with random opponent."""
@@ -1151,7 +1151,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
@@ -1165,12 +1165,12 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             self._has_sprites = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._render(self._renderer[])
 
-    fn _piece_to_sprite_idx(self, piece: Int) -> Int:
+    def _piece_to_sprite_idx(self, piece: Int) -> Int:
         """Map piece ID (1-12) to sprite sheet index (0-11).
 
         Sprite order: wK(0) wQ(1) wR(2) wB(3) wN(4) wP(5) bK(6) bQ(7) bR(8) bB(9) bN(10) bP(11)
@@ -1202,7 +1202,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             return 11
         return -1
 
-    fn _render(self, mut renderer: Renderer2D):
+    def _render(self, mut renderer: Renderer2D):
         """Render chess board state using SDL3 with sprite pieces."""
         from mojo_rl.render.sdl import (
             create_surface_from,
@@ -1245,10 +1245,14 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                     c_int(SPRITE_SHEET_WIDTH),
                     c_int(SPRITE_SHEET_HEIGHT),
                     PixelFormat.PIXELFORMAT_RGBA32,
-                    rebind[UnsafePointer[NoneType, MutAnyOrigin]](self._sprite_pixels),
+                    rebind[UnsafePointer[NoneType, MutAnyOrigin]](
+                        self._sprite_pixels
+                    ),
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
                 )
-                texture = create_texture_from_surface(renderer.sdl_renderer, surface)
+                texture = create_texture_from_surface(
+                    renderer.sdl_renderer, surface
+                )
                 set_texture_blend_mode(texture, BlendMode.BLENDMODE_BLEND)
                 try:
                     set_texture_scale_mode(texture, ScaleMode.SCALEMODE_NEAREST)
@@ -1299,8 +1303,12 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                             render_texture(
                                 renderer.sdl_renderer,
                                 texture,
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](src_rect),
-                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](dst_rect),
+                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                    src_rect
+                                ),
+                                rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
+                                    dst_rect
+                                ),
                             )
                         except:
                             pass
@@ -1326,14 +1334,22 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             var lx = left_margin + col * sq_size + sq_size // 2 - 4
             var ly = top_margin + 8 * sq_size + 4
             var fl = String("")
-            if col == 0: fl = "a"
-            elif col == 1: fl = "b"
-            elif col == 2: fl = "c"
-            elif col == 3: fl = "d"
-            elif col == 4: fl = "e"
-            elif col == 5: fl = "f"
-            elif col == 6: fl = "g"
-            else: fl = "h"
+            if col == 0:
+                fl = "a"
+            elif col == 1:
+                fl = "b"
+            elif col == 2:
+                fl = "c"
+            elif col == 3:
+                fl = "d"
+            elif col == 4:
+                fl = "e"
+            elif col == 5:
+                fl = "f"
+            elif col == 6:
+                fl = "g"
+            else:
+                fl = "h"
             renderer.draw_text(fl, lx, ly, label_color)
 
         # Rank labels (8 down to 1) to the left of the board
@@ -1351,19 +1367,27 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         var player = self._player()
         if result == RESULT_ONGOING:
             if player == 0:
-                renderer.draw_text("White's turn", 200, status_y + 20, text_color)
+                renderer.draw_text(
+                    "White's turn", 200, status_y + 20, text_color
+                )
             else:
-                renderer.draw_text("Black's turn", 200, status_y + 20, text_color)
+                renderer.draw_text(
+                    "Black's turn", 200, status_y + 20, text_color
+                )
         elif result == RESULT_WHITE_WINS:
-            renderer.draw_text("Checkmate! White wins", 150, status_y + 20, text_color)
+            renderer.draw_text(
+                "Checkmate! White wins", 150, status_y + 20, text_color
+            )
         elif result == RESULT_BLACK_WINS:
-            renderer.draw_text("Checkmate! Black wins", 150, status_y + 20, text_color)
+            renderer.draw_text(
+                "Checkmate! Black wins", 150, status_y + 20, text_color
+            )
         elif result == RESULT_DRAW:
             renderer.draw_text("Draw!", 220, status_y + 20, text_color)
 
         renderer.flip()
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].close()
@@ -1373,25 +1397,25 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             self._sprite_pixels.free()
             self._has_sprites = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
@@ -1402,11 +1426,16 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn _gpu_is_attacked_by[
-        BATCH_SIZE: Int, STATE_SIZE: Int,
+    def _gpu_is_attacked_by[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-        g: Int, sq: Int, attacker: Int,
+        states: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        g: Int,
+        sq: Int,
+        attacker: Int,
     ) -> Bool:
         """Check if `sq` is attacked by `attacker` (0=white, 1=black) on GPU."""
         var r = _row(sq)
@@ -1436,7 +1465,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         for d in range(8):
             var dr = _queen_dr(d)
             var dc = _queen_dc(d)
-            var is_diag = (dr != 0 and dc != 0)
+            var is_diag = dr != 0 and dc != 0
             var sr = r + dr
             var sc = c + dc
             while _on_board(sr, sc):
@@ -1464,28 +1493,42 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn _gpu_in_check[
-        BATCH_SIZE: Int, STATE_SIZE: Int,
+    def _gpu_in_check[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-        g: Int, player: Int,
+        states: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        g: Int,
+        player: Int,
     ) -> Bool:
         var ksq: Int
         if player == 0:
             ksq = Int(states[g, S_WK])
         else:
             ksq = Int(states[g, S_BK])
-        return ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, ksq, 1 - player)
+        return ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](
+            states, g, ksq, 1 - player
+        )
 
     @staticmethod
     @always_inline
-    fn _gpu_try_move_legal[
-        BATCH_SIZE: Int, STATE_SIZE: Int,
+    def _gpu_try_move_legal[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-        g: Int, from_sq: Int, to_sq: Int, promo: Int, player: Int,
+        states: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        g: Int,
+        from_sq: Int,
+        to_sq: Int,
+        promo: Int,
+        player: Int,
     ) -> Bool:
-        """Make move, check if own king is safe, unmake. Returns True if legal."""
+        """Make move, check if own king is safe, unmake. Returns True if legal.
+        """
         var moved = Int(states[g, from_sq])
         var captured = Int(states[g, to_sq])
         var old_wk = Int(states[g, S_WK])
@@ -1512,7 +1555,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             else:
                 states[g, S_BK] = Scalar[board_dtype](to_sq)
 
-        var legal = not ChessEnv._gpu_in_check[BATCH_SIZE, STATE_SIZE](states, g, player)
+        var legal = not ChessEnv._gpu_in_check[BATCH_SIZE, STATE_SIZE](
+            states, g, player
+        )
 
         states[g, from_sq] = Scalar[board_dtype](moved)
         states[g, to_sq] = Scalar[board_dtype](captured)
@@ -1525,14 +1570,22 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn _gpu_gen_legal_mask_and_count[
-        BATCH_SIZE: Int, STATE_SIZE: Int, NUM_ACTIONS: Int,
+    def _gpu_gen_legal_mask_and_count[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        NUM_ACTIONS: Int,
     ](
-        states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-        legal_masks: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin],
-        g: Int, player: Int,
+        states: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        legal_masks: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+        ],
+        g: Int,
+        player: Int,
     ) -> Int:
-        """Generate legal mask for all 4672 actions. Returns count of legal moves."""
+        """Generate legal mask for all 4672 actions. Returns count of legal moves.
+        """
         for a in range(4672):
             legal_masks[g, a] = 0.0
 
@@ -1559,22 +1612,34 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 if _on_board(fr, c) and Int(states[g, _sq(fr, c)]) == EMPTY:
                     if fr == promo_row:
                         for promo in range(2, 6):
-                            if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, g, sq, _sq(fr, c), promo, player):
-                                var action = _encode_action(Move(sq, _sq(fr, c), promo), player)
+                            if ChessEnv._gpu_try_move_legal[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, sq, _sq(fr, c), promo, player):
+                                var action = _encode_action(
+                                    Move(sq, _sq(fr, c), promo), player
+                                )
                                 if action >= 0 and action < 4672:
                                     legal_masks[g, action] = 1.0
                                     count += 1
                     else:
-                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, g, sq, _sq(fr, c), 0, player):
-                            var action = _encode_action(Move(sq, _sq(fr, c), 0), player)
+                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+                            states, g, sq, _sq(fr, c), 0, player
+                        ):
+                            var action = _encode_action(
+                                Move(sq, _sq(fr, c), 0), player
+                            )
                             if action >= 0 and action < 4672:
                                 legal_masks[g, action] = 1.0
                                 count += 1
                         if r == start_row:
                             var fr2 = r + 2 * fwd
                             if Int(states[g, _sq(fr2, c)]) == EMPTY:
-                                if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, g, sq, _sq(fr2, c), 0, player):
-                                    var action = _encode_action(Move(sq, _sq(fr2, c), 0), player)
+                                if ChessEnv._gpu_try_move_legal[
+                                    BATCH_SIZE, STATE_SIZE
+                                ](states, g, sq, _sq(fr2, c), 0, player):
+                                    var action = _encode_action(
+                                        Move(sq, _sq(fr2, c), 0), player
+                                    )
                                     if action >= 0 and action < 4672:
                                         legal_masks[g, action] = 1.0
                                         count += 1
@@ -1590,14 +1655,22 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                     if _is_enemy(target, player) or _sq(cr2, cc) == ep:
                         if cr2 == promo_row:
                             for promo in range(2, 6):
-                                if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, g, sq, _sq(cr2, cc), promo, player):
-                                    var action = _encode_action(Move(sq, _sq(cr2, cc), promo), player)
+                                if ChessEnv._gpu_try_move_legal[
+                                    BATCH_SIZE, STATE_SIZE
+                                ](states, g, sq, _sq(cr2, cc), promo, player):
+                                    var action = _encode_action(
+                                        Move(sq, _sq(cr2, cc), promo), player
+                                    )
                                     if action >= 0 and action < 4672:
                                         legal_masks[g, action] = 1.0
                                         count += 1
                         else:
-                            if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, g, sq, _sq(cr2, cc), 0, player):
-                                var action = _encode_action(Move(sq, _sq(cr2, cc), 0), player)
+                            if ChessEnv._gpu_try_move_legal[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, sq, _sq(cr2, cc), 0, player):
+                                var action = _encode_action(
+                                    Move(sq, _sq(cr2, cc), 0), player
+                                )
                                 if action >= 0 and action < 4672:
                                     legal_masks[g, action] = 1.0
                                     count += 1
@@ -1606,16 +1679,22 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 for k in range(8):
                     var nr = r + _knight_dr(k)
                     var nc = c + _knight_dc(k)
-                    if _on_board(nr, nc) and not _is_friendly(Int(states[g, _sq(nr, nc)]), player):
-                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, g, sq, _sq(nr, nc), 0, player):
-                            var action = _encode_action(Move(sq, _sq(nr, nc), 0), player)
+                    if _on_board(nr, nc) and not _is_friendly(
+                        Int(states[g, _sq(nr, nc)]), player
+                    ):
+                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+                            states, g, sq, _sq(nr, nc), 0, player
+                        ):
+                            var action = _encode_action(
+                                Move(sq, _sq(nr, nc), 0), player
+                            )
                             if action >= 0 and action < 4672:
                                 legal_masks[g, action] = 1.0
                                 count += 1
 
             elif pt == 3 or pt == 4 or pt == 5:
                 for d in range(8):
-                    var is_diag = (_queen_dr(d) != 0 and _queen_dc(d) != 0)
+                    var is_diag = _queen_dr(d) != 0 and _queen_dc(d) != 0
                     if pt == 3 and not is_diag:
                         continue
                     if pt == 4 and is_diag:
@@ -1626,8 +1705,12 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                         var target = Int(states[g, _sq(sr, sc)])
                         if _is_friendly(target, player):
                             break
-                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, g, sq, _sq(sr, sc), 0, player):
-                            var action = _encode_action(Move(sq, _sq(sr, sc), 0), player)
+                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+                            states, g, sq, _sq(sr, sc), 0, player
+                        ):
+                            var action = _encode_action(
+                                Move(sq, _sq(sr, sc), 0), player
+                            )
                             if action >= 0 and action < 4672:
                                 legal_masks[g, action] = 1.0
                                 count += 1
@@ -1640,9 +1723,15 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 for d in range(8):
                     var kr = r + _queen_dr(d)
                     var kc = c + _queen_dc(d)
-                    if _on_board(kr, kc) and not _is_friendly(Int(states[g, _sq(kr, kc)]), player):
-                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, g, sq, _sq(kr, kc), 0, player):
-                            var action = _encode_action(Move(sq, _sq(kr, kc), 0), player)
+                    if _on_board(kr, kc) and not _is_friendly(
+                        Int(states[g, _sq(kr, kc)]), player
+                    ):
+                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+                            states, g, sq, _sq(kr, kc), 0, player
+                        ):
+                            var action = _encode_action(
+                                Move(sq, _sq(kr, kc), 0), player
+                            )
                             if action >= 0 and action < 4672:
                                 legal_masks[g, action] = 1.0
                                 count += 1
@@ -1650,28 +1739,94 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 # Castling
                 var castling = Int(states[g, S_CASTLING])
                 if player == 0 and sq == _sq(0, 4):
-                    if (castling & CASTLE_WK) != 0 and Int(states[g, _sq(0, 5)]) == EMPTY and Int(states[g, _sq(0, 6)]) == EMPTY:
-                        if not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(0, 4), 1) and not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(0, 5), 1) and not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(0, 6), 1):
-                            var action = _encode_action(Move(_sq(0, 4), _sq(0, 6), 0), player)
+                    if (
+                        (castling & CASTLE_WK) != 0
+                        and Int(states[g, _sq(0, 5)]) == EMPTY
+                        and Int(states[g, _sq(0, 6)]) == EMPTY
+                    ):
+                        if (
+                            not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(0, 4), 1)
+                            and not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(0, 5), 1)
+                            and not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(0, 6), 1)
+                        ):
+                            var action = _encode_action(
+                                Move(_sq(0, 4), _sq(0, 6), 0), player
+                            )
                             if action >= 0 and action < 4672:
                                 legal_masks[g, action] = 1.0
                                 count += 1
-                    if (castling & CASTLE_WQ) != 0 and Int(states[g, _sq(0, 3)]) == EMPTY and Int(states[g, _sq(0, 2)]) == EMPTY and Int(states[g, _sq(0, 1)]) == EMPTY:
-                        if not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(0, 4), 1) and not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(0, 3), 1) and not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(0, 2), 1):
-                            var action = _encode_action(Move(_sq(0, 4), _sq(0, 2), 0), player)
+                    if (
+                        (castling & CASTLE_WQ) != 0
+                        and Int(states[g, _sq(0, 3)]) == EMPTY
+                        and Int(states[g, _sq(0, 2)]) == EMPTY
+                        and Int(states[g, _sq(0, 1)]) == EMPTY
+                    ):
+                        if (
+                            not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(0, 4), 1)
+                            and not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(0, 3), 1)
+                            and not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(0, 2), 1)
+                        ):
+                            var action = _encode_action(
+                                Move(_sq(0, 4), _sq(0, 2), 0), player
+                            )
                             if action >= 0 and action < 4672:
                                 legal_masks[g, action] = 1.0
                                 count += 1
                 elif player == 1 and sq == _sq(7, 4):
-                    if (castling & CASTLE_BK) != 0 and Int(states[g, _sq(7, 5)]) == EMPTY and Int(states[g, _sq(7, 6)]) == EMPTY:
-                        if not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(7, 4), 0) and not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(7, 5), 0) and not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(7, 6), 0):
-                            var action = _encode_action(Move(_sq(7, 4), _sq(7, 6), 0), player)
+                    if (
+                        (castling & CASTLE_BK) != 0
+                        and Int(states[g, _sq(7, 5)]) == EMPTY
+                        and Int(states[g, _sq(7, 6)]) == EMPTY
+                    ):
+                        if (
+                            not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(7, 4), 0)
+                            and not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(7, 5), 0)
+                            and not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(7, 6), 0)
+                        ):
+                            var action = _encode_action(
+                                Move(_sq(7, 4), _sq(7, 6), 0), player
+                            )
                             if action >= 0 and action < 4672:
                                 legal_masks[g, action] = 1.0
                                 count += 1
-                    if (castling & CASTLE_BQ) != 0 and Int(states[g, _sq(7, 3)]) == EMPTY and Int(states[g, _sq(7, 2)]) == EMPTY and Int(states[g, _sq(7, 1)]) == EMPTY:
-                        if not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(7, 4), 0) and not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(7, 3), 0) and not ChessEnv._gpu_is_attacked_by[BATCH_SIZE, STATE_SIZE](states, g, _sq(7, 2), 0):
-                            var action = _encode_action(Move(_sq(7, 4), _sq(7, 2), 0), player)
+                    if (
+                        (castling & CASTLE_BQ) != 0
+                        and Int(states[g, _sq(7, 3)]) == EMPTY
+                        and Int(states[g, _sq(7, 2)]) == EMPTY
+                        and Int(states[g, _sq(7, 1)]) == EMPTY
+                    ):
+                        if (
+                            not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(7, 4), 0)
+                            and not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(7, 3), 0)
+                            and not ChessEnv._gpu_is_attacked_by[
+                                BATCH_SIZE, STATE_SIZE
+                            ](states, g, _sq(7, 2), 0)
+                        ):
+                            var action = _encode_action(
+                                Move(_sq(7, 4), _sq(7, 2), 0), player
+                            )
                             if action >= 0 and action < 4672:
                                 legal_masks[g, action] = 1.0
                                 count += 1
@@ -1684,13 +1839,22 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn step_kernel[
-        BATCH_SIZE: Int, STATE_SIZE: Int,
+    def step_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-        actions: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin],
-        rewards: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-        dones: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+        states: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        actions: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+        ],
+        rewards: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
+        dones: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
     ):
         var i = Int(block_dim.x * block_idx.x + thread_idx.x)
         if i >= BATCH_SIZE:
@@ -1711,7 +1875,11 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             return
 
         var moved = Int(states[i, m.from_sq])
-        if moved == EMPTY or (player == 0 and not _is_white(moved)) or (player == 1 and not _is_black(moved)):
+        if (
+            moved == EMPTY
+            or (player == 0 and not _is_white(moved))
+            or (player == 1 and not _is_black(moved))
+        ):
             rewards[i] = -1.0
             dones[i] = 0.0
             return
@@ -1733,10 +1901,15 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             if dc == 0 and dr == fwd and Int(states[i, m.to_sq]) == EMPTY:
                 pseudo_legal = True
             elif dc == 0 and dr == 2 * fwd and fr == (1 if player == 0 else 6):
-                if Int(states[i, _sq(fr + fwd, fc)]) == EMPTY and Int(states[i, m.to_sq]) == EMPTY:
+                if (
+                    Int(states[i, _sq(fr + fwd, fc)]) == EMPTY
+                    and Int(states[i, m.to_sq]) == EMPTY
+                ):
                     pseudo_legal = True
             elif abs_dc == 1 and dr == fwd:
-                if _is_enemy(Int(states[i, m.to_sq]), player) or m.to_sq == Int(states[i, S_EP]):
+                if _is_enemy(Int(states[i, m.to_sq]), player) or m.to_sq == Int(
+                    states[i, S_EP]
+                ):
                     pseudo_legal = True
         elif pt == 2:  # Knight
             if (abs_dr == 2 and abs_dc == 1) or (abs_dr == 1 and abs_dc == 2):
@@ -1749,7 +1922,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             if (abs_dr == 0 or abs_dc == 0) and (abs_dr + abs_dc) > 0:
                 pseudo_legal = True
         elif pt == 5:  # Queen (diagonal or straight)
-            if (abs_dr == abs_dc and abs_dr > 0) or ((abs_dr == 0 or abs_dc == 0) and (abs_dr + abs_dc) > 0):
+            if (abs_dr == abs_dc and abs_dr > 0) or (
+                (abs_dr == 0 or abs_dc == 0) and (abs_dr + abs_dc) > 0
+            ):
                 pseudo_legal = True
         elif pt == 6:  # King
             if abs_dr <= 1 and abs_dc <= 1 and (abs_dr + abs_dc) > 0:
@@ -1794,7 +1969,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 dones[i] = 0.0
                 return
 
-        if not ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, i, m.from_sq, m.to_sq, m.promo, player):
+        if not ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+            states, i, m.from_sq, m.to_sq, m.promo, player
+        ):
             rewards[i] = -1.0
             dones[i] = 0.0
             return
@@ -1814,7 +1991,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         states[i, m.from_sq] = 0.0
 
         if m.promo != 0:
-            states[i, m.to_sq] = Scalar[board_dtype](_make_piece(m.promo, player))
+            states[i, m.to_sq] = Scalar[board_dtype](
+                _make_piece(m.promo, player)
+            )
 
         if _piece_type(moved) == 6:
             var fc = _col(m.from_sq)
@@ -1847,8 +2026,13 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             cr &= ~CASTLE_BK
         states[i, S_CASTLING] = Scalar[board_dtype](cr)
 
-        if is_pawn and (_row(m.to_sq) - _row(m.from_sq) == 2 or _row(m.from_sq) - _row(m.to_sq) == 2):
-            states[i, S_EP] = Scalar[board_dtype](_sq((_row(m.from_sq) + _row(m.to_sq)) // 2, _col(m.from_sq)))
+        if is_pawn and (
+            _row(m.to_sq) - _row(m.from_sq) == 2
+            or _row(m.from_sq) - _row(m.to_sq) == 2
+        ):
+            states[i, S_EP] = Scalar[board_dtype](
+                _sq((_row(m.from_sq) + _row(m.to_sq)) // 2, _col(m.from_sq))
+            )
         else:
             states[i, S_EP] = -1.0
 
@@ -1865,7 +2049,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
         # Check game end — find if opponent has any legal move
         var opp_has_move = False
-        var opp_in_check = ChessEnv._gpu_in_check[BATCH_SIZE, STATE_SIZE](states, i, opponent)
+        var opp_in_check = ChessEnv._gpu_in_check[BATCH_SIZE, STATE_SIZE](
+            states, i, opponent
+        )
         var opp_fwd = 1 if opponent == 0 else -1
         var opp_start = 1 if opponent == 0 else 6
         var opp_promo = 7 if opponent == 0 else 0
@@ -1888,12 +2074,19 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 var fr = r + opp_fwd
                 if _on_board(fr, c) and Int(states[i, _sq(fr, c)]) == EMPTY:
                     var pr2 = 5 if fr == opp_promo else 0
-                    if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, i, sq, _sq(fr, c), pr2, opponent):
+                    if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+                        states, i, sq, _sq(fr, c), pr2, opponent
+                    ):
                         opp_has_move = True
                 if not opp_has_move and r == opp_start:
                     var fr2 = r + 2 * opp_fwd
-                    if Int(states[i, _sq(r + opp_fwd, c)]) == EMPTY and Int(states[i, _sq(fr2, c)]) == EMPTY:
-                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, i, sq, _sq(fr2, c), 0, opponent):
+                    if (
+                        Int(states[i, _sq(r + opp_fwd, c)]) == EMPTY
+                        and Int(states[i, _sq(fr2, c)]) == EMPTY
+                    ):
+                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+                            states, i, sq, _sq(fr2, c), 0, opponent
+                        ):
                             opp_has_move = True
                 if not opp_has_move:
                     for dc_idx in range(2):
@@ -1902,24 +2095,32 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                         var cr2 = r + opp_fwd
                         if _on_board(cr2, cc):
                             var t = Int(states[i, _sq(cr2, cc)])
-                            if _is_enemy(t, opponent) or _sq(cr2, cc) == Int(states[i, S_EP]):
+                            if _is_enemy(t, opponent) or _sq(cr2, cc) == Int(
+                                states[i, S_EP]
+                            ):
                                 var pr2 = 5 if cr2 == opp_promo else 0
-                                if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, i, sq, _sq(cr2, cc), pr2, opponent):
+                                if ChessEnv._gpu_try_move_legal[
+                                    BATCH_SIZE, STATE_SIZE
+                                ](states, i, sq, _sq(cr2, cc), pr2, opponent):
                                     opp_has_move = True
                                     break
             elif pt == 2:
                 for k in range(8):
                     var nr = r + _knight_dr(k)
                     var nc = c + _knight_dc(k)
-                    if _on_board(nr, nc) and not _is_friendly(Int(states[i, _sq(nr, nc)]), opponent):
-                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, i, sq, _sq(nr, nc), 0, opponent):
+                    if _on_board(nr, nc) and not _is_friendly(
+                        Int(states[i, _sq(nr, nc)]), opponent
+                    ):
+                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+                            states, i, sq, _sq(nr, nc), 0, opponent
+                        ):
                             opp_has_move = True
                             break
             elif pt == 3 or pt == 4 or pt == 5:
                 for d in range(8):
                     if opp_has_move:
                         break
-                    var is_diag = (_queen_dr(d) != 0 and _queen_dc(d) != 0)
+                    var is_diag = _queen_dr(d) != 0 and _queen_dc(d) != 0
                     if pt == 3 and not is_diag:
                         continue
                     if pt == 4 and is_diag:
@@ -1930,7 +2131,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                         var t = Int(states[i, _sq(sr, sc)])
                         if _is_friendly(t, opponent):
                             break
-                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, i, sq, _sq(sr, sc), 0, opponent):
+                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+                            states, i, sq, _sq(sr, sc), 0, opponent
+                        ):
                             opp_has_move = True
                             break
                         if t != EMPTY:
@@ -1941,8 +2144,12 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 for d in range(8):
                     var kr = r + _queen_dr(d)
                     var kc = c + _queen_dc(d)
-                    if _on_board(kr, kc) and not _is_friendly(Int(states[i, _sq(kr, kc)]), opponent):
-                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](states, i, sq, _sq(kr, kc), 0, opponent):
+                    if _on_board(kr, kc) and not _is_friendly(
+                        Int(states[i, _sq(kr, kc)]), opponent
+                    ):
+                        if ChessEnv._gpu_try_move_legal[BATCH_SIZE, STATE_SIZE](
+                            states, i, sq, _sq(kr, kc), 0, opponent
+                        ):
                             opp_has_move = True
                             break
 
@@ -1971,10 +2178,13 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn reset_kernel[
-        BATCH_SIZE: Int, STATE_SIZE: Int,
+    def reset_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
+        states: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
     ):
         var i = Int(block_dim.x * block_idx.x + thread_idx.x)
         if i >= BATCH_SIZE:
@@ -2001,7 +2211,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         states[i, _sq(7, 7)] = Scalar[board_dtype](B_ROOK)
         for c in range(8):
             states[i, _sq(6, c)] = Scalar[board_dtype](B_PAWN)
-        states[i, S_CASTLING] = Scalar[board_dtype](CASTLE_WK | CASTLE_WQ | CASTLE_BK | CASTLE_BQ)
+        states[i, S_CASTLING] = Scalar[board_dtype](
+            CASTLE_WK | CASTLE_WQ | CASTLE_BK | CASTLE_BQ
+        )
         states[i, S_EP] = -1.0
         states[i, S_FULLMOVE] = 1.0
         states[i, S_WK] = Scalar[board_dtype](_sq(0, 4))
@@ -2009,11 +2221,16 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn selective_reset_kernel[
-        BATCH_SIZE: Int, STATE_SIZE: Int,
+    def selective_reset_kernel[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
-        states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-        dones: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+        states: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        dones: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ],
     ):
         var i = Int(block_dim.x * block_idx.x + thread_idx.x)
         if i >= BATCH_SIZE:
@@ -2042,7 +2259,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             states[i, _sq(7, 7)] = Scalar[board_dtype](B_ROOK)
             for c in range(8):
                 states[i, _sq(6, c)] = Scalar[board_dtype](B_PAWN)
-            states[i, S_CASTLING] = Scalar[board_dtype](CASTLE_WK | CASTLE_WQ | CASTLE_BK | CASTLE_BQ)
+            states[i, S_CASTLING] = Scalar[board_dtype](
+                CASTLE_WK | CASTLE_WQ | CASTLE_BK | CASTLE_BQ
+            )
             states[i, S_EP] = -1.0
             states[i, S_FULLMOVE] = 1.0
             states[i, S_WK] = Scalar[board_dtype](_sq(0, 4))
@@ -2051,12 +2270,21 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn extract_obs_and_masks[
-        BATCH_SIZE: Int, STATE_SIZE: Int, OBS_DIM: Int, NUM_ACTIONS: Int,
+    def extract_obs_and_masks[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+        NUM_ACTIONS: Int,
     ](
-        states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-        obs: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin],
-        legal_masks: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin],
+        states: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ],
+        obs: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        legal_masks: LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, NUM_ACTIONS), MutAnyOrigin
+        ],
     ):
         var i = Int(block_dim.x * block_idx.x + thread_idx.x)
         if i >= BATCH_SIZE:
@@ -2105,17 +2333,19 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                 obs[i, 13 * 64 + csq] = 0.0
 
         # Legal mask
-        _ = ChessEnv._gpu_gen_legal_mask_and_count[BATCH_SIZE, STATE_SIZE, NUM_ACTIONS](
-            states, legal_masks, i, player
-        )
+        _ = ChessEnv._gpu_gen_legal_mask_and_count[
+            BATCH_SIZE, STATE_SIZE, NUM_ACTIONS
+        ](states, legal_masks, i, player)
 
     # ========================================================================
     # GPU Launcher Methods (GPUTwoPlayerDiscreteEnv trait)
     # ========================================================================
 
     @staticmethod
-    fn step_kernel_gpu[
-        BATCH_SIZE: Int, STATE_SIZE: Int, OBS_DIM: Int,
+    def step_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[board_dtype],
@@ -2127,89 +2357,187 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         mut legal_masks_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64 = 0,
     ) raises:
-        var states = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin](states_buf.unsafe_ptr())
-        var actions = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin](actions_buf.unsafe_ptr())
-        var rewards = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin](rewards_buf.unsafe_ptr())
-        var dones = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin](dones_buf.unsafe_ptr())
-        var terminated_out = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin](terminated_buf.unsafe_ptr())
-        var obs = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin](obs_buf.unsafe_ptr())
-        var legal_masks = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin](legal_masks_buf.unsafe_ptr())
+        var states = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var actions = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+        ](actions_buf.unsafe_ptr())
+        var rewards = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](rewards_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        var terminated_out = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](terminated_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        var legal_masks = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin
+        ](legal_masks_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn step_wrapper(
-            states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-            actions: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin],
-            rewards: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-            dones: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-            terminated_out: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
-            obs: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin],
-            legal_masks: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin],
+        def step_wrapper(
+            states: LayoutTensor[
+                board_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            actions: LayoutTensor[
+                board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
+            ],
+            rewards: LayoutTensor[
+                board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            dones: LayoutTensor[
+                board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            terminated_out: LayoutTensor[
+                board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+            obs: LayoutTensor[
+                board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            ],
+            legal_masks: LayoutTensor[
+                board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin
+            ],
         ):
-            ChessEnv.step_kernel[BATCH_SIZE, STATE_SIZE](states, actions, rewards, dones)
+            ChessEnv.step_kernel[BATCH_SIZE, STATE_SIZE](
+                states, actions, rewards, dones
+            )
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx < BATCH_SIZE:
                 terminated_out[idx] = dones[idx]
-            ChessEnv.extract_obs_and_masks[BATCH_SIZE, STATE_SIZE, OBS_DIM, 4672](states, obs, legal_masks)
+            ChessEnv.extract_obs_and_masks[
+                BATCH_SIZE, STATE_SIZE, OBS_DIM, 4672
+            ](states, obs, legal_masks)
 
         ctx.enqueue_function[step_wrapper, step_wrapper](
-            states, actions, rewards, dones, terminated_out, obs, legal_masks,
-            grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated_out,
+            obs,
+            legal_masks,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
-        BATCH_SIZE: Int, STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[board_dtype], rng_seed: UInt64 = 0) raises:
-        var states = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin](states_buf.unsafe_ptr())
+    def reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[board_dtype],
+        rng_seed: UInt64 = 0,
+    ) raises:
+        var states = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn wrapper(states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin]):
+        def wrapper(
+            states: LayoutTensor[
+                board_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ]
+        ):
             ChessEnv.reset_kernel[BATCH_SIZE, STATE_SIZE](states)
 
-        ctx.enqueue_function[wrapper, wrapper](states, grid_dim=(BLOCKS,), block_dim=(Self.TPB,))
+        ctx.enqueue_function[wrapper, wrapper](
+            states, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
+        )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
-        BATCH_SIZE: Int, STATE_SIZE: Int,
-    ](ctx: DeviceContext, mut states_buf: DeviceBuffer[board_dtype], mut dones_buf: DeviceBuffer[board_dtype], rng_seed: UInt64) raises:
-        var states = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin](states_buf.unsafe_ptr())
-        var dones = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin](dones_buf.unsafe_ptr())
+    def selective_reset_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+    ](
+        ctx: DeviceContext,
+        mut states_buf: DeviceBuffer[board_dtype],
+        mut dones_buf: DeviceBuffer[board_dtype],
+        rng_seed: UInt64,
+    ) raises:
+        var states = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var dones = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn wrapper(
-            states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-            dones: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+        def wrapper(
+            states: LayoutTensor[
+                board_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            dones: LayoutTensor[
+                board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
         ):
-            ChessEnv.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](states, dones)
+            ChessEnv.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
+                states, dones
+            )
 
-        ctx.enqueue_function[wrapper, wrapper](states, dones, grid_dim=(BLOCKS,), block_dim=(Self.TPB,))
+        ctx.enqueue_function[wrapper, wrapper](
+            states, dones, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
+        )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
-        BATCH_SIZE: Int, STATE_SIZE: Int, OBS_DIM: Int,
+    def extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
     ](
         ctx: DeviceContext,
         states_buf: DeviceBuffer[board_dtype],
         mut obs_buf: DeviceBuffer[board_dtype],
         mut legal_masks_buf: DeviceBuffer[board_dtype],
     ) raises:
-        var states = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin](
-            rebind[UnsafePointer[Scalar[board_dtype], MutAnyOrigin]](states_buf.unsafe_ptr())
+        var states = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](
+            rebind[UnsafePointer[Scalar[board_dtype], MutAnyOrigin]](
+                states_buf.unsafe_ptr()
+            )
         )
-        var obs = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin](obs_buf.unsafe_ptr())
-        var legal_masks = LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin](legal_masks_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        var legal_masks = LayoutTensor[
+            board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin
+        ](legal_masks_buf.unsafe_ptr())
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn wrapper(
-            states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
-            obs: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin],
-            legal_masks: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin],
+        def wrapper(
+            states: LayoutTensor[
+                board_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            obs: LayoutTensor[
+                board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            ],
+            legal_masks: LayoutTensor[
+                board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin
+            ],
         ):
-            ChessEnv.extract_obs_and_masks[BATCH_SIZE, STATE_SIZE, OBS_DIM, 4672](states, obs, legal_masks)
+            ChessEnv.extract_obs_and_masks[
+                BATCH_SIZE, STATE_SIZE, OBS_DIM, 4672
+            ](states, obs, legal_masks)
 
-        ctx.enqueue_function[wrapper, wrapper](states, obs, legal_masks, grid_dim=(BLOCKS,), block_dim=(Self.TPB,))
+        ctx.enqueue_function[wrapper, wrapper](
+            states, obs, legal_masks, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
+        )

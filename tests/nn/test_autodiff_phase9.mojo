@@ -7,7 +7,7 @@ Tests:
   9.1 ResNet variants (ResBlock, ResNet)
   9.2 Multi-head architectures (Parallel + Dense)
   9.3 CNN architectures (Conv2D + Pool + Dense)
-  9.4 Transformer architectures (Attention + FFN + Repeat)
+  9.4 Transformer architectures (Attention + Fdef + Repeat)
 
 Run with:
     pixi run mojo run -I . tests/test_autodiff_phase9.mojo
@@ -44,13 +44,13 @@ from mojo_rl.nn.model.sequential import Sequential
 from layout import Layout, LayoutTensor
 
 
-fn print_header(name: String):
+def print_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
 
 
-fn check(cond: Bool, msg: String, mut fails: Int):
+def check(cond: Bool, msg: String, mut fails: Int):
     if cond:
         print("  PASS: " + msg)
     else:
@@ -58,21 +58,21 @@ fn check(cond: Bool, msg: String, mut fails: Int):
         fails += 1
 
 
-fn make_list(size: Int) -> List[Scalar[dtype]]:
+def make_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(0)
     return lst^
 
 
-fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
+def make_rand_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(Scalar[dtype](random_float64(-0.5, 0.5)))
     return lst^
 
 
-fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
+def max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
     var md: Float64 = 0
     for i in range(n):
         var d = math_abs(Float64(a[i]) - Float64(b[i]))
@@ -96,7 +96,7 @@ comptime ResNet_2_8_1_2 = Sequential[
 ]
 
 
-fn test_resblock_dims() -> Int:
+def test_resblock_dims() -> Int:
     print_header("9.1a ResBlock dimension checks")
     var fails = 0
 
@@ -117,7 +117,7 @@ fn test_resblock_dims() -> Int:
     return fails
 
 
-fn test_resnet_dims() -> Int:
+def test_resnet_dims() -> Int:
     print_header("9.1b ResNet[2, 8, 1, depth=2] dimension checks")
     var fails = 0
 
@@ -143,7 +143,7 @@ fn test_resnet_dims() -> Int:
     return fails
 
 
-fn test_resnet_forward_backward() -> Int:
+def test_resnet_forward_backward() -> Int:
     print_header("9.1c ResNet forward + backward (sanity)")
     var fails = 0
     seed(42)
@@ -215,7 +215,7 @@ fn test_resnet_forward_backward() -> Int:
     return fails
 
 
-fn test_resnet_xor_training() -> Int:
+def test_resnet_xor_training() -> Int:
     print_header("9.1d ResNet XOR training convergence")
     var fails = 0
 
@@ -304,7 +304,7 @@ fn test_resnet_xor_training() -> Int:
     return fails
 
 
-fn test_resnet_gradient_flow() -> Int:
+def test_resnet_gradient_flow() -> Int:
     print_header("9.1e ResNet gradient flow through residual connections")
     var fails = 0
     seed(42)
@@ -399,7 +399,7 @@ comptime MultiHeadClassifier_2_1 = Sequential[
 ]
 
 
-fn test_multihead_dims() -> Int:
+def test_multihead_dims() -> Int:
     print_header("9.2a MultiHead dimension checks")
     var fails = 0
 
@@ -414,7 +414,7 @@ fn test_multihead_dims() -> Int:
     return fails
 
 
-fn test_multihead_forward_backward() -> Int:
+def test_multihead_forward_backward() -> Int:
     print_header("9.2b MultiHeadClassifier forward + backward")
     var fails = 0
     seed(42)
@@ -486,7 +486,7 @@ fn test_multihead_forward_backward() -> Int:
     return fails
 
 
-fn test_multihead_xor_training() -> Int:
+def test_multihead_xor_training() -> Int:
     print_header("9.2c MultiHeadClassifier XOR training convergence")
     var fails = 0
 
@@ -578,7 +578,7 @@ fn test_multihead_xor_training() -> Int:
 
 
 # 3-branch multi-head variant
-fn test_multihead_3branch() -> Int:
+def test_multihead_3branch() -> Int:
     print_header(
         "9.2d 3-branch MultiHead[Dense[4,3], DenseReLU[4,2], DenseTanh[4,1]]"
     )
@@ -681,7 +681,7 @@ comptime LeNet = Sequential[
 ]
 
 
-fn test_cnn_dims() -> Int:
+def test_cnn_dims() -> Int:
     print_header("9.3a SimpleCNN dimension checks (1ch, 8x8 input)")
     var fails = 0
 
@@ -691,7 +691,7 @@ fn test_cnn_dims() -> Int:
     return fails
 
 
-fn test_lenet_dims() -> Int:
+def test_lenet_dims() -> Int:
     print_header("9.3b LeNet dimension checks (1ch, 8x8 input)")
     var fails = 0
 
@@ -701,7 +701,7 @@ fn test_lenet_dims() -> Int:
     return fails
 
 
-fn test_cnn_forward_backward() -> Int:
+def test_cnn_forward_backward() -> Int:
     print_header("9.3c SimpleCNN forward + backward")
     var fails = 0
     seed(42)
@@ -773,7 +773,7 @@ fn test_cnn_forward_backward() -> Int:
     return fails
 
 
-fn test_lenet_forward_backward() -> Int:
+def test_lenet_forward_backward() -> Int:
     print_header("9.3d LeNet forward + backward")
     var fails = 0
     seed(99)
@@ -838,7 +838,7 @@ fn test_lenet_forward_backward() -> Int:
     return fails
 
 
-fn test_cnn_synthetic_training() -> Int:
+def test_cnn_synthetic_training() -> Int:
     print_header("9.3e SimpleCNN training on synthetic 8x8 data")
     var fails = 0
 
@@ -949,7 +949,7 @@ fn test_cnn_synthetic_training() -> Int:
 # =============================================================================
 
 
-fn test_transformer_composite_dims() -> Int:
+def test_transformer_composite_dims() -> Int:
     print_header("9.4a Transformer composite dimension checks")
     var fails = 0
 
@@ -959,10 +959,10 @@ fn test_transformer_composite_dims() -> Int:
     comptime FF_DIM = 8
     comptime SD = SEQ * DIM
 
-    # FFN = Sequential[DenseReLU[SD, FF_DIM], Dense[FF_DIM, SD]]
-    comptime FFN = Sequential[DenseReLU[SD, FF_DIM], Dense[FF_DIM, SD]]
-    check(FFN.IN_DIM == SD, "FFN IN_DIM = " + String(SD), fails)
-    check(FFN.OUT_DIM == SD, "FFN OUT_DIM = " + String(SD), fails)
+    # Fdef = Sequential[DenseReLU[SD, FF_DIM], Dense[FF_DIM, SD]]
+    comptime Fdef = Sequential[DenseReLU[SD, FF_DIM], Dense[FF_DIM, SD]]
+    check(FFN.IN_DIM == SD, "Fdef IN_DIM = " + String(SD), fails)
+    check(FFN.OUT_DIM == SD, "Fdef OUT_DIM = " + String(SD), fails)
 
     # TransformerLayer = Sequential[ResAttn, ResFFN]
     comptime AttnInner = AutoDiffChain[
@@ -971,7 +971,7 @@ fn test_transformer_composite_dims() -> Int:
         ScaledDotProductAttention[DIM, HEADS, SEQ],
     ]
     comptime ResAttn = Residual[AttnInner]
-    comptime ResFFN = Residual[FFN]
+    comptime ResFdef = Residual[FFN]
     comptime TLayer = Sequential[ResAttn, ResFFN]
 
     check(TLayer.IN_DIM == SD, "TransformerLayer IN_DIM = " + String(SD), fails)
@@ -998,7 +998,7 @@ fn test_transformer_composite_dims() -> Int:
     return fails
 
 
-fn test_tiny_gpt() -> Int:
+def test_tiny_gpt() -> Int:
     print_header("9.4b Tiny GPT composite: Embedding + Encoder + Dense")
     var fails = 0
     seed(42)
@@ -1018,7 +1018,7 @@ fn test_tiny_gpt() -> Int:
     ]
     comptime ResAttn = Residual[AttnInner]
     comptime FFNInner = Sequential[DenseReLU[SD, FF_DIM], Dense[FF_DIM, SD]]
-    comptime ResFFN = Residual[FFNInner]
+    comptime ResFdef = Residual[FFNInner]
     comptime TLayer = Sequential[ResAttn, ResFFN]
     comptime Encoder = Repeat[2, TLayer]
 
@@ -1102,7 +1102,7 @@ fn test_tiny_gpt() -> Int:
 # =============================================================================
 
 
-fn main():
+def main():
     print("=" * 70)
     print("Phase 9: Composite Model Library — Test Suite")
     print("=" * 70)

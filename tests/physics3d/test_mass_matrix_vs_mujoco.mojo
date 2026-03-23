@@ -50,7 +50,7 @@ comptime M_REL_TOL: Float64 = 1e-3  # Relative tolerance for large values
 # =============================================================================
 
 
-fn compare_mass_matrix(
+def compare_mass_matrix(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
 ) raises:
@@ -207,20 +207,20 @@ fn compare_mass_matrix(
 # =============================================================================
 
 
-fn test_default_qpos() raises:
+def test_default_qpos() raises:
     """Mass matrix at default qpos (rootz=0.7)."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
     compare_mass_matrix("Default qpos (rootz=0.7)", qpos)
 
 
-fn test_zero_qpos() raises:
+def test_zero_qpos() raises:
     """Mass matrix at qpos=0."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     compare_mass_matrix("Zero qpos", qpos)
 
 
-fn test_nonzero_joints() raises:
+def test_nonzero_joints() raises:
     """Mass matrix with non-zero joint angles."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[0] = 1.0  # rootx
@@ -235,7 +235,7 @@ fn test_nonzero_joints() raises:
     compare_mass_matrix("Non-zero joints", qpos)
 
 
-fn test_extreme_joints() raises:
+def test_extreme_joints() raises:
     """Mass matrix at joint limits."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.7
@@ -248,5 +248,5 @@ fn test_extreme_joints() raises:
     compare_mass_matrix("Extreme joint angles", qpos)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

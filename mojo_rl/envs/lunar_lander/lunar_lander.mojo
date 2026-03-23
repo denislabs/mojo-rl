@@ -223,7 +223,7 @@ struct LunarLander[
     # Initialization
     # =========================================================================
 
-    fn __init__(
+    def __init__(
         out self,
         seed: UInt64 = 42,
     ):
@@ -333,7 +333,7 @@ struct LunarLander[
         # Reset to initial state
         self._reset_cpu()
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor - creates fresh physics state and copies data."""
         self.particles = List[Particle[Self.dtype]](copy.particles)
         # Create fresh physics state
@@ -381,7 +381,7 @@ struct LunarLander[
         # Reset to initialize physics state properly
         self._reset_cpu()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.particles = take.particles^
         # Create fresh physics state
@@ -433,7 +433,7 @@ struct LunarLander[
     # CPU Single-Environment Methods
     # =========================================================================
 
-    fn _init_physics_shapes(mut self):
+    def _init_physics_shapes(mut self):
         """Initialize physics shapes. Must be called after creating fresh PhysicsState.
         """
         # Define lander shape as polygon (shape 0)
@@ -467,7 +467,7 @@ struct LunarLander[
         self.physics.define_polygon_shape(1, leg_vx, leg_vy)
         self.physics.define_polygon_shape(2, leg_vx, leg_vy)
 
-    fn _reset_cpu(mut self):
+    def _reset_cpu(mut self):
         """Internal reset for CPU single-env operation."""
         # Generate random values using Philox
         # Use combined_seed formula matching GPU for consistency:
@@ -661,7 +661,7 @@ struct LunarLander[
         # Update cached state
         self._update_cached_state()
 
-    fn _update_cached_state(mut self):
+    def _update_cached_state(mut self):
         """Update the cached state from physics state."""
         var x = Scalar[DType.float64](
             self.physics.get_body_x(0, Self.BODY_LANDER)
@@ -717,14 +717,14 @@ struct LunarLander[
             0.0
         )
 
-    fn _compute_shaping(mut self) -> Scalar[Self.dtype]:
+    def _compute_shaping(mut self) -> Scalar[Self.dtype]:
         """Compute the shaping potential for reward calculation."""
         var obs = self.get_observation(0)
         return compute_shaping[Self.dtype](
             obs[0], obs[1], obs[2], obs[3], obs[4], obs[6], obs[7]
         )
 
-    fn get_observation(
+    def get_observation(
         mut self, env: Int
     ) -> InlineArray[Scalar[Self.dtype], LLConstants.OBS_DIM_VAL]:
         """Get normalized observation for an environment."""
@@ -792,7 +792,7 @@ struct LunarLander[
             ]
         )
 
-    fn _get_terrain_height(self, x: Float64) -> Float64:
+    def _get_terrain_height(self, x: Float64) -> Float64:
         """Get terrain height at given x position."""
         var chunk_width = LLConstants.W_UNITS / Float64(
             LLConstants.TERRAIN_CHUNKS - 1
@@ -804,7 +804,7 @@ struct LunarLander[
             chunk_idx = LLConstants.TERRAIN_CHUNKS - 1
         return Float64(self.terrain_heights[chunk_idx])
 
-    fn _update_particles(mut self, dt: Float64):
+    def _update_particles(mut self, dt: Float64):
         """Update particle positions and remove dead particles."""
         var i = 0
         while i < len(self.particles):
@@ -826,7 +826,7 @@ struct LunarLander[
                 )
                 i += 1
 
-    fn _spawn_main_engine_particles(
+    def _spawn_main_engine_particles(
         mut self,
         pos_x: Float64,
         pos_y: Float64,
@@ -879,7 +879,7 @@ struct LunarLander[
                 )
             )
 
-    fn _spawn_side_engine_particles(
+    def _spawn_side_engine_particles(
         mut self,
         pos_x: Float64,
         pos_y: Float64,
@@ -944,19 +944,19 @@ struct LunarLander[
     # BoxDiscreteActionEnv Trait Methods
     # =========================================================================
 
-    fn reset(mut self) -> Self.StateType:
+    def reset(mut self) -> Self.StateType:
         """Reset the environment and return initial state."""
         self._reset_cpu()
         return self.get_state()
 
-    fn step(
+    def step(
         mut self, action: Self.ActionType, verbose: Bool = False
     ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
         """Take an action and return (next_state, reward, done)."""
         var result = self._step_cpu(action.action_idx)
         return (self.get_state(), result[0], result[1])
 
-    fn _step_cpu(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
+    def _step_cpu(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
         """Internal CPU step implementation."""
         # Convert action to power values
         var m_power = Float64(0)
@@ -1015,7 +1015,7 @@ struct LunarLander[
         # Compute reward and termination
         return self._compute_step_result(m_power, s_power)
 
-    fn _apply_wind(mut self):
+    def _apply_wind(mut self):
         """Apply wind and turbulence forces.
 
         Uses compile-time struct parameters ENABLE_WIND, WIND_POWER, TURBULENCE_POWER.
@@ -1056,7 +1056,7 @@ struct LunarLander[
             0, Self.BODY_LANDER, vx + dvx, vy, omega + domega
         )
 
-    fn _apply_engines(
+    def _apply_engines(
         mut self, m_power: Float64, s_power: Float64, direction: Float64
     ):
         """Apply engine impulses."""
@@ -1128,7 +1128,7 @@ struct LunarLander[
             0, Self.BODY_LANDER, vx + dvx, vy + dvy, omega + domega
         )
 
-    fn _step_physics_cpu(mut self):
+    def _step_physics_cpu(mut self):
         """Execute physics step."""
         var bodies = self.physics.get_bodies_tensor()
         var shapes = self.physics.get_shapes_tensor()
@@ -1201,7 +1201,7 @@ struct LunarLander[
             forces[0, body, 1] = Scalar[dtype](0)
             forces[0, body, 2] = Scalar[dtype](0)
 
-    fn _has_lander_body_contact(mut self) -> Bool:
+    def _has_lander_body_contact(mut self) -> Bool:
         """Check if the lander body (not legs) is in contact with terrain.
 
         Uses the collision detection system results to determine if the main
@@ -1223,7 +1223,7 @@ struct LunarLander[
                 return True
         return False
 
-    fn _compute_step_result(
+    def _compute_step_result(
         mut self, m_power: Float64, s_power: Float64
     ) -> Tuple[Scalar[Self.dtype], Bool]:
         """Compute reward and termination."""
@@ -1286,33 +1286,33 @@ struct LunarLander[
 
         return (reward, terminated)
 
-    fn get_state(self) -> Self.StateType:
+    def get_state(self) -> Self.StateType:
         """Return current state representation (from cache)."""
         return self.cached_state
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as a list."""
         var state = self.get_state()
         return state.to_list()
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial continuous observation."""
         var state = self.reset()
         return state.to_list()
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return the dimension of the observation vector."""
         return LLConstants.OBS_DIM_VAL
 
-    fn action_from_index(self, action_idx: Int) -> Self.ActionType:
+    def action_from_index(self, action_idx: Int) -> Self.ActionType:
         """Create an action from an integer index."""
         return LunarLanderAction(action_idx=action_idx)
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return the number of discrete actions available."""
         return LLConstants.NUM_ACTIONS_VAL
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take discrete action and return (continuous_obs, reward, done)."""
@@ -1324,7 +1324,7 @@ struct LunarLander[
     # BoxContinuousActionEnv Trait Methods
     # =========================================================================
 
-    fn action_dim(self) -> Int:
+    def action_dim(self) -> Int:
         """Return action dimension (2 for LunarLander continuous).
 
         Action space:
@@ -1333,15 +1333,15 @@ struct LunarLander[
         """
         return LLConstants.ACTION_DIM_VAL
 
-    fn action_low(self) -> Scalar[Self.dtype]:
+    def action_low(self) -> Scalar[Self.dtype]:
         """Return lower bound for action values (-1.0 for side engine)."""
         return Scalar[Self.dtype](-1.0)
 
-    fn action_high(self) -> Scalar[Self.dtype]:
+    def action_high(self) -> Scalar[Self.dtype]:
         """Return upper bound for action values (1.0)."""
         return Scalar[Self.dtype](1.0)
 
-    fn step_continuous[
+    def step_continuous[
         DTYPE_SC: DType
     ](mut self, action: Scalar[DTYPE_SC]) -> Tuple[
         List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool
@@ -1364,7 +1364,7 @@ struct LunarLander[
             obs.append(Scalar[DTYPE_SC](obs_self[i]))
         return (obs^, Scalar[DTYPE_SC](result[0]), result[1])
 
-    fn step_continuous_vec[
+    def step_continuous_vec[
         DTYPE_VEC: DType
     ](
         mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
@@ -1420,7 +1420,7 @@ struct LunarLander[
             obs.append(Scalar[DTYPE_VEC](obs_internal[i]))
         return (obs^, Scalar[DTYPE_VEC](result[0]), result[1])
 
-    fn _step_cpu_continuous(
+    def _step_cpu_continuous(
         mut self, m_power: Float64, s_power: Float64, direction: Float64
     ) -> Tuple[Scalar[Self.dtype], Bool]:
         """Internal CPU step implementation for continuous actions.
@@ -1473,12 +1473,12 @@ struct LunarLander[
         # Compute reward and termination
         return self._compute_step_result(m_power, s_power)
 
-    fn render(mut self, mut renderer: Renderer2D):
+    def render(mut self, mut renderer: Renderer2D):
         """Render the environment (Env trait method)."""
         # Render env 0 for single-env CPU mode
         self.render(0, renderer)
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up resources."""
         self.particles.clear()
         if self._renderer_initialized:
@@ -1490,7 +1490,7 @@ struct LunarLander[
     # RenderableEnv Trait Implementation
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
@@ -1499,13 +1499,13 @@ struct LunarLander[
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
         self.render(self._renderer[])
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
@@ -1513,28 +1513,28 @@ struct LunarLander[
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # =========================================================================
@@ -1542,7 +1542,7 @@ struct LunarLander[
     # =========================================================================
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -1576,9 +1576,7 @@ struct LunarLander[
 
         # Carve pre-allocated workspace into sub-buffers (no GPU allocation)
         var ws = workspace_ptr
-        var shapes_buf = DeviceBuffer[dtype](
-            ctx, ws, SHAPES_SIZE, owning=False
-        )
+        var shapes_buf = DeviceBuffer[dtype](ctx, ws, SHAPES_SIZE, owning=False)
         ws = ws + SHAPES_SIZE
         var contacts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE * CONTACTS_PER_ENV, owning=False
@@ -1632,7 +1630,7 @@ struct LunarLander[
         )
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -1664,9 +1662,7 @@ struct LunarLander[
 
         # Carve pre-allocated workspace into sub-buffers (no GPU allocation)
         var ws = workspace_ptr
-        var shapes_buf = DeviceBuffer[dtype](
-            ctx, ws, SHAPES_SIZE, owning=False
-        )
+        var shapes_buf = DeviceBuffer[dtype](ctx, ws, SHAPES_SIZE, owning=False)
         ws = ws + SHAPES_SIZE
         var contacts_buf = DeviceBuffer[dtype](
             ctx, ws, BATCH_SIZE * CONTACTS_PER_ENV, owning=False
@@ -1722,7 +1718,7 @@ struct LunarLander[
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1747,7 +1743,7 @@ struct LunarLander[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -1775,7 +1771,7 @@ struct LunarLander[
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -1809,7 +1805,7 @@ struct LunarLander[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn selective_reset_wrapper(
+        def selective_reset_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -1839,7 +1835,7 @@ struct LunarLander[
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
@@ -1860,7 +1856,7 @@ struct LunarLander[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn extract_obs(
+        def extract_obs(
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -1884,7 +1880,7 @@ struct LunarLander[
         )
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
         """Initialize pre-allocated workspace: shapes buffer at offset 0."""
@@ -1898,7 +1894,7 @@ struct LunarLander[
         LunarLander[Self.dtype]._init_shapes_gpu(ctx, shapes_buf)
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[dtype],
         curriculum_values: List[Scalar[dtype]],
@@ -1912,7 +1908,7 @@ struct LunarLander[
 
     @always_inline
     @staticmethod
-    fn _reset_env_gpu[
+    def _reset_env_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -2172,7 +2168,7 @@ struct LunarLander[
         ] = Scalar[dtype](0)
 
     @staticmethod
-    fn _init_shapes_gpu(
+    def _init_shapes_gpu(
         ctx: DeviceContext,
         mut shapes_buf: DeviceBuffer[dtype],
     ) raises:
@@ -2184,7 +2180,7 @@ struct LunarLander[
         ](shapes_buf.unsafe_ptr())
 
         @always_inline
-        fn init_shapes_wrapper(
+        def init_shapes_wrapper(
             shapes: LayoutTensor[
                 dtype,
                 Layout.row_major(LLConstants.NUM_SHAPES * SHAPE_MAX_SIZE),
@@ -2244,7 +2240,7 @@ struct LunarLander[
 
     @always_inline
     @staticmethod
-    fn _apply_wind_gpu[
+    def _apply_wind_gpu[
         BATCH_SIZE: Int,
     ](
         env: Int,
@@ -2311,7 +2307,7 @@ struct LunarLander[
 
     @always_inline
     @staticmethod
-    fn _setup_single_env[
+    def _setup_single_env[
         BATCH_SIZE: Int,
     ](
         env: Int,
@@ -2470,7 +2466,7 @@ struct LunarLander[
 
     @always_inline
     @staticmethod
-    fn _finalize_single_env[
+    def _finalize_single_env[
         BATCH_SIZE: Int,
     ](
         env: Int,
@@ -2699,7 +2695,7 @@ struct LunarLander[
         terminated_out[env] = is_terminated
 
     @staticmethod
-    fn _setup_fused_gpu[
+    def _setup_fused_gpu[
         BATCH_SIZE: Int,
     ](
         ctx: DeviceContext,
@@ -2731,7 +2727,7 @@ struct LunarLander[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn setup_kernel(
+        def setup_kernel(
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
@@ -2768,7 +2764,7 @@ struct LunarLander[
         )
 
     @staticmethod
-    fn _physics_finalize_obs_fused_gpu[
+    def _physics_finalize_obs_fused_gpu[
         BATCH_SIZE: Int,
         OBS_DIM: Int,
     ](
@@ -2842,7 +2838,7 @@ struct LunarLander[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn physics_finalize_obs_kernel(
+        def physics_finalize_obs_kernel(
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
@@ -3010,7 +3006,7 @@ struct LunarLander[
     # =========================================================================
 
     @staticmethod
-    fn _setup_fused_gpu_continuous[
+    def _setup_fused_gpu_continuous[
         BATCH_SIZE: Int,
         ACTION_DIM: Int,
     ](
@@ -3043,7 +3039,7 @@ struct LunarLander[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn setup_kernel_continuous(
+        def setup_kernel_continuous(
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
@@ -3081,7 +3077,7 @@ struct LunarLander[
 
     @always_inline
     @staticmethod
-    fn _setup_single_env_continuous[
+    def _setup_single_env_continuous[
         BATCH_SIZE: Int,
         ACTION_DIM: Int,
     ](
@@ -3259,7 +3255,7 @@ struct LunarLander[
         states[env, LLConstants.BODIES_OFFSET + IDX_OMEGA] = omega + domega
 
     @staticmethod
-    fn _physics_finalize_obs_fused_gpu_continuous[
+    def _physics_finalize_obs_fused_gpu_continuous[
         BATCH_SIZE: Int,
         OBS_DIM: Int,
         ACTION_DIM: Int,
@@ -3330,7 +3326,7 @@ struct LunarLander[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn physics_finalize_obs_kernel_continuous(
+        def physics_finalize_obs_kernel_continuous(
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, LLConstants.STATE_SIZE_VAL),
@@ -3498,7 +3494,7 @@ struct LunarLander[
 
     @always_inline
     @staticmethod
-    fn _finalize_single_env_continuous[
+    def _finalize_single_env_continuous[
         BATCH_SIZE: Int,
         ACTION_DIM: Int,
     ](
@@ -3755,7 +3751,7 @@ struct LunarLander[
     # Rendering Methods
     # =========================================================================
 
-    fn render(mut self, env: Int, mut renderer: Renderer2D):
+    def render(mut self, env: Int, mut renderer: Renderer2D):
         """Render a specific environment using the provided renderer.
 
         Args:
@@ -3802,7 +3798,7 @@ struct LunarLander[
 
         renderer.flip()
 
-    fn _draw_terrain(
+    def _draw_terrain(
         mut self, env: Int, camera: Camera, mut renderer: Renderer2D
     ):
         """Draw terrain as filled polygons using world coordinates."""
@@ -3843,7 +3839,7 @@ struct LunarLander[
                 2,
             )
 
-    fn _draw_helipad(
+    def _draw_helipad(
         mut self, env: Int, camera: Camera, mut renderer: Renderer2D
     ):
         """Draw the helipad landing zone using world coordinates."""
@@ -3879,7 +3875,7 @@ struct LunarLander[
             centered=True,
         )
 
-    fn _draw_flags(
+    def _draw_flags(
         mut self, env: Int, camera: Camera, mut renderer: Renderer2D
     ):
         """Draw helipad flags with poles using world coordinates."""
@@ -3932,7 +3928,7 @@ struct LunarLander[
                 flag_verts, camera, flag_color, filled=True
             )
 
-    fn _draw_lander(
+    def _draw_lander(
         mut self, env: Int, camera: Camera, mut renderer: Renderer2D
     ):
         """Draw lander body as filled polygon using Transform2D."""
@@ -3960,7 +3956,9 @@ struct LunarLander[
             lander_verts, transform, camera, lander_outline, filled=False
         )
 
-    fn _draw_legs(mut self, env: Int, camera: Camera, mut renderer: Renderer2D):
+    def _draw_legs(
+        mut self, env: Int, camera: Camera, mut renderer: Renderer2D
+    ):
         """Draw lander legs as filled polygons using Transform2D."""
         # Get leg contact from observation
         var obs = self.get_observation(env)
@@ -3999,7 +3997,7 @@ struct LunarLander[
                 leg_verts, transform, camera, leg_outline, filled=False
             )
 
-    fn _draw_particles(mut self, camera: Camera, mut renderer: Renderer2D):
+    def _draw_particles(mut self, camera: Camera, mut renderer: Renderer2D):
         """Draw engine flame particles."""
         for i in range(len(self.particles)):
             var p = self.particles[i]

@@ -189,7 +189,7 @@ struct ModelDefFromXML[
     # =========================================================================
 
     @staticmethod
-    fn setup_model_and_data[
+    def setup_model_and_data[
         DTYPE: DType
     ](
         mut model: Model[
@@ -268,7 +268,7 @@ struct ModelDefFromXML[
     # =========================================================================
 
     @staticmethod
-    fn reset_data[
+    def reset_data[
         DTYPE: DType
     ](
         mut data: Data[
@@ -310,7 +310,7 @@ struct ModelDefFromXML[
             data.qfrc[i] = Scalar[DTYPE](0)
 
     @staticmethod
-    fn extract_obs[
+    def extract_obs[
         DTYPE: DType
     ](
         data: Data[
@@ -331,7 +331,7 @@ struct ModelDefFromXML[
             obs.append(data.qvel[i])
 
     @staticmethod
-    fn enforce_limits[
+    def enforce_limits[
         DTYPE: DType
     ](
         mut data: Data[
@@ -370,7 +370,7 @@ struct ModelDefFromXML[
             qpos_adr += jd.nq
 
     @staticmethod
-    fn apply_actions[
+    def apply_actions[
         DTYPE: DType
     ](
         mut data: Data[
@@ -416,7 +416,7 @@ struct ModelDefFromXML[
     # =========================================================================
 
     @staticmethod
-    fn init_model_gpu[
+    def init_model_gpu[
         DTYPE: DType
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE],) raises:
         """Serialize CPU model to GPU buffer, then compute invweight0 on GPU.
@@ -480,7 +480,7 @@ struct ModelDefFromXML[
     # =========================================================================
 
     @staticmethod
-    fn _compute_invweight0_gpu[
+    def _compute_invweight0_gpu[
         DTYPE: DType,
     ](ctx: DeviceContext, mut model_buf: DeviceBuffer[DTYPE]) raises:
         """Compute invweight0 on GPU via a single-thread kernel.
@@ -514,7 +514,7 @@ struct ModelDefFromXML[
         ](ws_buf)
 
         @always_inline
-        fn invweight0_kernel(
+        def invweight0_kernel(
             state: LayoutTensor[
                 DTYPE, Layout.row_major(1, STATE_SIZE), MutAnyOrigin
             ],
@@ -869,7 +869,7 @@ struct ModelDefFromXML[
     # =========================================================================
 
     @staticmethod
-    fn apply_actions_kernel_gpu[
+    def apply_actions_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -894,7 +894,7 @@ struct ModelDefFromXML[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn apply_kernel(
+        def apply_kernel(
             states: LayoutTensor[
                 DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -927,7 +927,7 @@ struct ModelDefFromXML[
         )
 
     @staticmethod
-    fn enforce_limits_kernel_gpu[
+    def enforce_limits_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -940,7 +940,7 @@ struct ModelDefFromXML[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn limits_kernel(
+        def limits_kernel(
             states: LayoutTensor[
                 DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -972,7 +972,7 @@ struct ModelDefFromXML[
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -993,7 +993,7 @@ struct ModelDefFromXML[
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn obs_kernel(
+        def obs_kernel(
             states: LayoutTensor[
                 DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
             ],
@@ -1021,7 +1021,7 @@ struct ModelDefFromXML[
 
     @always_inline
     @staticmethod
-    fn reset_env_gpu[
+    def reset_env_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1081,7 +1081,7 @@ struct ModelDefFromXML[
 
     @always_inline
     @staticmethod
-    fn extract_obs_gpu[
+    def extract_obs_gpu[
         DTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1112,7 +1112,7 @@ struct ModelDefFromXML[
     # =========================================================================
 
     @staticmethod
-    fn setup_lights() raises -> List[Light]:
+    def setup_lights() raises -> List[Light]:
         """Return Light objects parsed from <light> elements in <worldbody>."""
         var fmd = parse_xml_full[
             Self.NBODY,
@@ -1154,7 +1154,7 @@ struct ModelDefFromXML[
         return lights^
 
     @staticmethod
-    fn setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
+    def setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
         """Return Camera3D objects parsed from <camera> elements in <worldbody>.
         """
         var fmd = parse_xml_full[
@@ -1217,7 +1217,7 @@ struct ModelDefFromXML[
         return cameras^
 
     @staticmethod
-    fn setup_camera_modes() raises -> List[Int]:
+    def setup_camera_modes() raises -> List[Int]:
         """Return camera modes (CAM_MODE_* constants) for each parsed camera."""
         var fmd = parse_xml_full[
             Self.NBODY,
@@ -1248,7 +1248,7 @@ struct ModelDefFromXML[
         return modes^
 
     @staticmethod
-    fn get_skybox_colors() -> List[Float64]:
+    def get_skybox_colors() -> List[Float64]:
         """Return [top_r, top_g, top_b, bottom_r, bottom_g, bottom_b] from the
         first skybox/gradient texture, or an empty list if none exists."""
         var fmd = parse_xml_full[
@@ -1280,7 +1280,7 @@ struct ModelDefFromXML[
         return List[Float64]()
 
     @staticmethod
-    fn get_checker_colors() -> List[Float64]:
+    def get_checker_colors() -> List[Float64]:
         """Return [r, g, b] of the checker texture's secondary (light square) colour,
         or an empty list if no checker texture is found."""
         var fmd = parse_xml_full[
@@ -1309,7 +1309,7 @@ struct ModelDefFromXML[
         return List[Float64]()
 
     @staticmethod
-    fn render_ground_geoms(
+    def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,
         follow: Bool,
@@ -1352,7 +1352,7 @@ struct ModelDefFromXML[
             renderer.draw_ground_grid(grid_cx, height=ground_offset)
 
     @staticmethod
-    fn render_body_geoms(
+    def render_body_geoms(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -1481,7 +1481,7 @@ struct ModelDefFromXML[
                 )
 
     @staticmethod
-    fn render_sites(
+    def render_sites(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],

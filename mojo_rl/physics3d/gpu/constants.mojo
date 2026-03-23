@@ -56,22 +56,22 @@ comptime MAX_POS_CORRECTION_VEL: Float32 = 10.0  # Legacy, unused after accel-le
 #   qfrc: [NQ + 2*NV, NQ + 3*NV)
 
 
-fn qpos_offset[NQ: Int, NV: Int]() -> Int:
+def qpos_offset[NQ: Int, NV: Int]() -> Int:
     """Offset to qpos array (always 0)."""
     return 0
 
 
-fn qvel_offset[NQ: Int, NV: Int]() -> Int:
+def qvel_offset[NQ: Int, NV: Int]() -> Int:
     """Offset to qvel array."""
     return NQ
 
 
-fn qacc_offset[NQ: Int, NV: Int]() -> Int:
+def qacc_offset[NQ: Int, NV: Int]() -> Int:
     """Offset to qacc array."""
     return NQ + NV
 
 
-fn qfrc_offset[NQ: Int, NV: Int]() -> Int:
+def qfrc_offset[NQ: Int, NV: Int]() -> Int:
     """Offset to qfrc array."""
     return NQ + 2 * NV
 
@@ -81,27 +81,27 @@ fn qfrc_offset[NQ: Int, NV: Int]() -> Int:
 # =============================================================================
 
 
-fn xpos_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+def xpos_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xpos array (body world positions)."""
     return NQ + 3 * NV
 
 
-fn xquat_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+def xquat_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xquat array (body world orientations)."""
     return NQ + 3 * NV + NBODY * 3
 
 
-fn xipos_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+def xipos_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xipos array (body CoM world positions)."""
     return NQ + 3 * NV + NBODY * 3 + NBODY * 4
 
 
-fn xvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+def xvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xvel array (body world linear velocities)."""
     return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3
 
 
-fn xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+def xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to xangvel array (body world angular velocities)."""
     return NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3
 
@@ -137,14 +137,14 @@ comptime CONTACT_IDX_FRAME_T1_Y: Int = 20
 comptime CONTACT_IDX_FRAME_T1_Z: Int = 21
 
 
-fn contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
+def contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
     """Offset to contacts array."""
     return (
         NQ + 3 * NV + NBODY * 3 + NBODY * 4 + NBODY * 3 + NBODY * 3 + NBODY * 3
     )
 
 
-fn contact_offset[NQ: Int, NV: Int, NBODY: Int](contact_idx: Int) -> Int:
+def contact_offset[NQ: Int, NV: Int, NBODY: Int](contact_idx: Int) -> Int:
     """Offset to a specific contact."""
     return contacts_offset[NQ, NV, NBODY]() + contact_idx * CONTACT_SIZE
 
@@ -161,7 +161,7 @@ comptime META_IDX_PREV_X: Int = 2  # Previous x position for velocity computatio
 comptime META_IDX_PREV_COM_X: Int = 3  # Reserved for prev CoM x (unused with cvel approach)
 
 
-fn metadata_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
+def metadata_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
     """Offset to metadata."""
     return contacts_offset[NQ, NV, NBODY]() + MAX_CONTACTS * CONTACT_SIZE
 
@@ -171,7 +171,7 @@ fn metadata_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
 # =============================================================================
 
 
-fn site_xpos_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
+def site_xpos_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
     """Offset to site_xpos array (site world positions).
 
     Placed after metadata at end of state buffer.
@@ -179,7 +179,7 @@ fn site_xpos_offset[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int]() -> Int:
     return metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]() + METADATA_SIZE
 
 
-fn cfrc_ext_offset[
+def cfrc_ext_offset[
     NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
 ]() -> Int:
     """Offset to cfrc_ext array (external contact forces per body).
@@ -190,7 +190,7 @@ fn cfrc_ext_offset[
     return site_xpos_offset[NQ, NV, NBODY, MAX_CONTACTS]() + NSITE * 3
 
 
-fn cvel_offset[
+def cvel_offset[
     NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
 ]() -> Int:
     """Offset to cvel array (body CoM spatial velocities).
@@ -201,7 +201,7 @@ fn cvel_offset[
     return cfrc_ext_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 6
 
 
-fn cinert_offset[
+def cinert_offset[
     NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
 ]() -> Int:
     """Offset to cinert array (composite rigid body inertia).
@@ -212,7 +212,7 @@ fn cinert_offset[
     return cvel_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 6
 
 
-fn qfrc_actuator_offset[
+def qfrc_actuator_offset[
     NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
 ]() -> Int:
     """Offset to qfrc_actuator array (actuator force per DOF).
@@ -223,7 +223,9 @@ fn qfrc_actuator_offset[
     return cinert_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 10
 
 
-fn state_size[NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0]() -> Int:
+def state_size[
+    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
+]() -> Int:
     """Compute total state buffer size per environment.
 
     Returns:
@@ -278,7 +280,7 @@ comptime BODY_IDX_IQUAT_Z: Int = 21
 comptime BODY_IDX_IQUAT_W: Int = 22
 
 
-fn model_body_offset(body_idx: Int) -> Int:
+def model_body_offset(body_idx: Int) -> Int:
     """Offset to a specific body in model buffer."""
     return body_idx * MODEL_BODY_SIZE
 
@@ -317,7 +319,7 @@ comptime JOINT_IDX_SOLIMP_LIMIT_4: Int = 24  # Per-joint limit solimp power
 comptime JOINT_IDX_QPOS0: Int = 25  # Joint reference position (MuJoCo qpos0 / ref)
 
 
-fn model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
+def model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
     """Offset to a specific joint in model buffer."""
     return NBODY * MODEL_BODY_SIZE + joint_idx * MODEL_JOINT_SIZE
 
@@ -336,7 +338,7 @@ comptime MODEL_META_IDX_GRAVITY_Z: Int = 4
 comptime MODEL_META_IDX_TIMESTEP: Int = 5
 # Fluid dynamics parameters (MuJoCo option.density / option.viscosity)
 # These occupy the previously-reserved slots 6 and 7.
-comptime MODEL_META_IDX_DENSITY: Int = 6    # Fluid mass density (kg/m³), 0 = disabled
+comptime MODEL_META_IDX_DENSITY: Int = 6  # Fluid mass density (kg/m³), 0 = disabled
 comptime MODEL_META_IDX_VISCOSITY: Int = 7  # Fluid dynamic viscosity (Pa·s), 0 = disabled
 # solref/solimp contact parameters (MuJoCo impedance model)
 comptime MODEL_META_IDX_SOLREF_CONTACT_0: Int = 8  # timeconst
@@ -362,7 +364,7 @@ comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 comptime MODEL_META_IDX_NTENDON: Int = 24  # Number of fixed tendons
 
 
-fn model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
+def model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
     """Offset to model metadata."""
     return NBODY * MODEL_BODY_SIZE + NJOINT * MODEL_JOINT_SIZE
 
@@ -404,7 +406,7 @@ comptime GEOM_IDX_SOLIMP_4: Int = 27  # Per-geom solimp power
 comptime GEOM_IDX_MARGIN: Int = 28  # Per-geom contact margin
 
 
-fn model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
+def model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
     """Offset to a specific unified geom in model buffer.
 
     Geoms are stored AFTER metadata+curriculum to avoid shifting metadata offsets.
@@ -447,7 +449,7 @@ comptime EQ_IDX_SOLIMP_3: Int = 18  # solimp midpoint
 comptime EQ_IDX_SOLIMP_4: Int = 19  # solimp power
 
 
-fn model_equality_offset[
+def model_equality_offset[
     NBODY: Int, NJOINT: Int, NGEOM: Int
 ](eq_idx: Int) -> Int:
     """Offset to a specific equality constraint in model buffer.
@@ -490,7 +492,7 @@ comptime TENDON_IDX_SOLIMP_3: Int = 15  # solimp midpoint
 comptime TENDON_IDX_SOLIMP_4: Int = 16  # solimp power
 
 
-fn model_tendon_offset[
+def model_tendon_offset[
     NBODY: Int, NJOINT: Int, NGEOM: Int, NEQUALITY: Int = 0
 ](tendon_idx: Int) -> Int:
     """Offset to a specific tendon in model buffer.
@@ -527,7 +529,7 @@ comptime CURRICULUM_IDX_PARAM_6: Int = 6
 comptime CURRICULUM_IDX_PARAM_7: Int = 7
 
 
-fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
+def model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
     """Offset to curriculum parameters in model buffer."""
     return model_metadata_offset[NBODY, NJOINT]() + MODEL_META_SIZE
 
@@ -539,14 +541,17 @@ fn model_curriculum_offset[NBODY: Int, NJOINT: Int]() -> Int:
 # Site layout: [body_idx, pos_x, pos_y, pos_z]
 comptime MODEL_SITE_SIZE: Int = 4  # Per site: body + pos(3)
 
-comptime SITE_IDX_BODY: Int = 0   # Body index the site is attached to
+comptime SITE_IDX_BODY: Int = 0  # Body index the site is attached to
 comptime SITE_IDX_POS_X: Int = 1  # Local position in body frame
 comptime SITE_IDX_POS_Y: Int = 2
 comptime SITE_IDX_POS_Z: Int = 3
 
 
-fn model_site_offset[
-    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
+def model_site_offset[
+    NBODY: Int,
+    NJOINT: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
     NTENDON: Int = 0,
 ](site_idx: Int) -> Int:
     """Offset to a specific site in model buffer.
@@ -566,9 +571,13 @@ fn model_site_offset[
     )
 
 
-fn model_size[
-    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
-    NTENDON: Int = 0, NSITE: Int = 0,
+def model_size[
+    NBODY: Int,
+    NJOINT: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
 ]() -> Int:
     """Total model buffer size (without invweight0 arrays).
 
@@ -586,9 +595,13 @@ fn model_size[
     )
 
 
-fn model_body_invweight0_offset[
-    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
-    NTENDON: Int = 0, NSITE: Int = 0,
+def model_body_invweight0_offset[
+    NBODY: Int,
+    NJOINT: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
 ]() -> Int:
     """Offset to body_invweight0[NBODY*2] in model buffer.
 
@@ -597,30 +610,46 @@ fn model_body_invweight0_offset[
     return model_size[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE]()
 
 
-fn model_dof_invweight0_offset[
-    NBODY: Int, NJOINT: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
-    NTENDON: Int = 0, NSITE: Int = 0,
+def model_dof_invweight0_offset[
+    NBODY: Int,
+    NJOINT: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
 ]() -> Int:
     """Offset to dof_invweight0[NV] in model buffer.
 
     Appended after body_invweight0[NBODY*2].
     """
     return (
-        model_body_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE]()
+        model_body_invweight0_offset[
+            NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
+        ]()
         + NBODY * 2
     )
 
 
-fn model_size_with_invweight[
-    NBODY: Int, NJOINT: Int, NV: Int, NGEOM: Int = 0, NEQUALITY: Int = 0,
-    NTENDON: Int = 0, NSITE: Int = 0,
+def model_size_with_invweight[
+    NBODY: Int,
+    NJOINT: Int,
+    NV: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
 ]() -> Int:
     """Total model buffer size including invweight0 arrays.
 
     Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites |
              body_invweight0(NBODY*2) | dof_invweight0(NV)]
     """
-    return model_dof_invweight0_offset[NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE]() + NV
+    return (
+        model_dof_invweight0_offset[
+            NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
+        ]()
+        + NV
+    )
 
 
 # =============================================================================
@@ -637,52 +666,52 @@ fn model_size_with_invweight[
 #    bias: NV | f_net: NV | qacc_ws: NV | qacc_constrained: NV]
 
 
-fn integrator_workspace_size[NV: Int, NBODY: Int]() -> Int:
+def integrator_workspace_size[NV: Int, NBODY: Int]() -> Int:
     """Total integrator temporaries size per environment."""
     return NV * 6 + NBODY * 10 + 2 * NV * NV + 5 * NV
 
 
-fn ws_cdof_offset() -> Int:
+def ws_cdof_offset() -> Int:
     """Offset to cdof (NV*6) in workspace buffer."""
     return 0
 
 
-fn ws_crb_offset[NV: Int]() -> Int:
+def ws_crb_offset[NV: Int]() -> Int:
     """Offset to crb (NBODY*10) in workspace buffer."""
     return NV * 6
 
 
-fn ws_M_offset[NV: Int, NBODY: Int]() -> Int:
+def ws_M_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to mass matrix M (NV*NV) in workspace buffer."""
     return NV * 6 + NBODY * 10
 
 
-fn ws_L_offset[NV: Int, NBODY: Int]() -> Int:
+def ws_L_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to LDL factor L (NV*NV) in workspace buffer."""
     return NV * 6 + NBODY * 10 + NV * NV
 
 
-fn ws_D_offset[NV: Int, NBODY: Int]() -> Int:
+def ws_D_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to LDL factor D (NV) in workspace buffer."""
     return NV * 6 + NBODY * 10 + 2 * NV * NV
 
 
-fn ws_bias_offset[NV: Int, NBODY: Int]() -> Int:
+def ws_bias_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to bias forces (NV) in workspace buffer."""
     return NV * 6 + NBODY * 10 + 2 * NV * NV + NV
 
 
-fn ws_fnet_offset[NV: Int, NBODY: Int]() -> Int:
+def ws_fnet_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to f_net (NV) in workspace buffer."""
     return NV * 6 + NBODY * 10 + 2 * NV * NV + 2 * NV
 
 
-fn ws_qacc_ws_offset[NV: Int, NBODY: Int]() -> Int:
+def ws_qacc_ws_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to qacc workspace (NV) in workspace buffer."""
     return NV * 6 + NBODY * 10 + 2 * NV * NV + 3 * NV
 
 
-fn ws_qacc_constrained_offset[NV: Int, NBODY: Int]() -> Int:
+def ws_qacc_constrained_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to qacc_constrained (NV) in workspace buffer.
 
     This slot stores the acceleration vector that the constraint solver
@@ -691,12 +720,12 @@ fn ws_qacc_constrained_offset[NV: Int, NBODY: Int]() -> Int:
     return NV * 6 + NBODY * 10 + 2 * NV * NV + 4 * NV
 
 
-fn ws_m_inv_offset[NV: Int, NBODY: Int]() -> Int:
+def ws_m_inv_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to M_inv (NV*NV) in workspace buffer (after integrator temps)."""
     return integrator_workspace_size[NV, NBODY]()
 
 
-fn ws_solver_offset[NV: Int, NBODY: Int]() -> Int:
+def ws_solver_offset[NV: Int, NBODY: Int]() -> Int:
     """Offset to solver workspace (after integrator temps + M_inv)."""
     return integrator_workspace_size[NV, NBODY]() + NV * NV
 
@@ -715,7 +744,7 @@ fn ws_solver_offset[NV: Int, NBODY: Int]() -> Int:
 #    Dcacc: NBODY*6*NV | Dcfrcbody: NBODY*6*NV]
 
 
-fn implicit_extra_workspace_size[NV: Int, NBODY: Int]() -> Int:
+def implicit_extra_workspace_size[NV: Int, NBODY: Int]() -> Int:
     """Total implicit-extra workspace size per environment."""
     return (
         NV * NV  # qDeriv
@@ -730,39 +759,39 @@ fn implicit_extra_workspace_size[NV: Int, NBODY: Int]() -> Int:
     )
 
 
-fn ws_implicit_qderiv_offset(base: Int) -> Int:
+def ws_implicit_qderiv_offset(base: Int) -> Int:
     """Offset to qDeriv (NV*NV) within implicit extra workspace."""
     return base
 
 
-fn ws_implicit_cdof_origin_offset[NV: Int](base: Int) -> Int:
+def ws_implicit_cdof_origin_offset[NV: Int](base: Int) -> Int:
     """Offset to cdof_sc (NV*6) within implicit extra workspace (subtree-COM).
     """
     return base + NV * NV
 
 
-fn ws_implicit_cvel_origin_offset[NV: Int](base: Int) -> Int:
+def ws_implicit_cvel_origin_offset[NV: Int](base: Int) -> Int:
     """Offset to cvel_sc (NBODY*6) within implicit extra workspace (subtree-COM).
     """
     return base + NV * NV + NV * 6
 
 
-fn ws_implicit_cinert_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+def ws_implicit_cinert_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     """Offset to cinert (NBODY*10) within implicit extra workspace."""
     return base + NV * NV + NV * 6 + NBODY * 6
 
 
-fn ws_implicit_cdof_dot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+def ws_implicit_cdof_dot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     """Offset to cdof_dot (NV*6) within implicit extra workspace."""
     return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10
 
 
-fn ws_implicit_dcvel_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+def ws_implicit_dcvel_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     """Offset to Dcvel (NBODY*6*NV) within implicit extra workspace."""
     return base + NV * NV + NV * 6 + NBODY * 6 + NBODY * 10 + NV * 6
 
 
-fn ws_implicit_dcdofdot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+def ws_implicit_dcdofdot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     """Offset to Dcdofdot (NV*6*NV) within implicit extra workspace."""
     return (
         base
@@ -775,7 +804,7 @@ fn ws_implicit_dcdofdot_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     )
 
 
-fn ws_implicit_dcacc_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+def ws_implicit_dcacc_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     """Offset to Dcacc (NBODY*6*NV) within implicit extra workspace."""
     return (
         base
@@ -789,7 +818,7 @@ fn ws_implicit_dcacc_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     )
 
 
-fn ws_implicit_dcfrcbody_offset[NV: Int, NBODY: Int](base: Int) -> Int:
+def ws_implicit_dcfrcbody_offset[NV: Int, NBODY: Int](base: Int) -> Int:
     """Offset to Dcfrcbody (NBODY*6*NV) within implicit extra workspace."""
     return (
         base
@@ -816,12 +845,12 @@ fn ws_implicit_dcfrcbody_offset[NV: Int, NBODY: Int](base: Int) -> Int:
 # Total: NQ + 7*NV
 
 
-fn rk4_extra_workspace_size[NQ: Int, NV: Int]() -> Int:
+def rk4_extra_workspace_size[NQ: Int, NV: Int]() -> Int:
     """Total RK4-extra workspace size per environment."""
     return NQ + 7 * NV
 
 
-fn ws_rk4_q0_offset[NV: Int, NBODY: Int](solver_ws_size: Int) -> Int:
+def ws_rk4_q0_offset[NV: Int, NBODY: Int](solver_ws_size: Int) -> Int:
     """Offset to saved initial qpos (NQ) in RK4 workspace.
 
     Placed after integrator_temps + M_inv + solver_ws.
@@ -829,28 +858,28 @@ fn ws_rk4_q0_offset[NV: Int, NBODY: Int](solver_ws_size: Int) -> Int:
     return ws_solver_offset[NV, NBODY]() + solver_ws_size
 
 
-fn ws_rk4_v0_offset[
+def ws_rk4_v0_offset[
     NV: Int, NBODY: Int, NQ: Int
 ](solver_ws_size: Int,) -> Int:
     """Offset to saved initial qvel (NV) in RK4 workspace."""
     return ws_rk4_q0_offset[NV, NBODY](solver_ws_size) + NQ
 
 
-fn ws_rk4_A_offset[
+def ws_rk4_A_offset[
     NV: Int, NBODY: Int, NQ: Int
 ](solver_ws_size: Int, stage: Int) -> Int:
     """Offset to A[stage] (NV) in RK4 workspace. stage in [0,3]."""
     return ws_rk4_v0_offset[NV, NBODY, NQ](solver_ws_size) + NV + stage * NV
 
 
-fn ws_rk4_C1_offset[
+def ws_rk4_C1_offset[
     NV: Int, NBODY: Int, NQ: Int
 ](solver_ws_size: Int,) -> Int:
     """Offset to C1 velocity intermediate (NV) in RK4 workspace."""
     return ws_rk4_v0_offset[NV, NBODY, NQ](solver_ws_size) + NV + 4 * NV
 
 
-fn ws_rk4_C2_offset[
+def ws_rk4_C2_offset[
     NV: Int, NBODY: Int, NQ: Int
 ](solver_ws_size: Int,) -> Int:
     """Offset to C2 velocity intermediate (NV) in RK4 workspace."""

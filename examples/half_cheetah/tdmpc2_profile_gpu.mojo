@@ -48,7 +48,7 @@ comptime NUM_EPISODES = 10
 comptime dtype = DType.float32
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("TD-MPC2 GPU Profiling (short run)")
     print("Episodes:", NUM_EPISODES, "| Warmup: 1000 steps")

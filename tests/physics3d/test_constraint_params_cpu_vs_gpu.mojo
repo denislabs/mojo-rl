@@ -159,7 +159,7 @@ comptime REL_TOL: Float64 = 1e-2
 # =============================================================================
 
 
-fn constraint_params_kernel[
+def constraint_params_kernel[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -522,7 +522,7 @@ fn constraint_params_kernel[
 # =============================================================================
 
 
-fn run_constraint_params_test(
+def run_constraint_params_test(
     test_name: String,
     test_qpos: InlineArray[Float64, NQ],
     test_qvel: InlineArray[Float64, NV],
@@ -573,7 +573,7 @@ fn run_constraint_params_test(
         BATCH * RESULT_PER_CONFIG
     )
 
-    comptime kernel_fn = constraint_params_kernel[
+    comptime kernel_def = constraint_params_kernel[
         GPU_DTYPE,
         NQ,
         NV,
@@ -958,14 +958,14 @@ fn run_constraint_params_test(
     assert_true(all_pass, "CPU vs GPU mismatch for: " + test_name)
 
 
-fn test_low_static() raises:
+def test_low_static() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.2  # rootz low
     var qvel = InlineArray[Float64, NV](fill=0.0)
     run_constraint_params_test("Low static (rootz=-0.2)", qpos, qvel)
 
 
-fn test_low_moving() raises:
+def test_low_moving() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.2  # rootz low
     var qvel = InlineArray[Float64, NV](fill=0.0)
@@ -974,14 +974,14 @@ fn test_low_moving() raises:
     run_constraint_params_test("Low moving (rootz=-0.2, vel)", qpos, qvel)
 
 
-fn test_very_low() raises:
+def test_very_low() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.5  # rootz very low
     var qvel = InlineArray[Float64, NV](fill=0.0)
     run_constraint_params_test("Very low (rootz=-0.5)", qpos, qvel)
 
 
-fn test_bent_legs() raises:
+def test_bent_legs() raises:
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.15  # rootz slightly low
     qpos[3] = -0.5  # bthigh
@@ -992,7 +992,7 @@ fn test_bent_legs() raises:
     run_constraint_params_test("Bent legs (rootz=-0.15, joints)", qpos, qvel)
 
 
-fn main() raises:
+def main() raises:
     test_low_static()
     test_low_moving()
     test_very_low()

@@ -104,7 +104,7 @@ struct PhysicsState[
 
     var env: Int
 
-    fn __init__(out self, env: Int):
+    def __init__(out self, env: Int):
         """Create helper for accessing a specific environment's physics data.
 
         Args:
@@ -117,12 +117,12 @@ struct PhysicsState[
     # =========================================================================
 
     @always_inline
-    fn body_offset(self, body: Int) -> Int:
+    def body_offset(self, body: Int) -> Int:
         """Get offset for a body's data within the state row."""
         return Self.BODIES_OFFSET + body * BODY_STATE_SIZE
 
     @always_inline
-    fn set_body_position[
+    def set_body_position[
         BATCH: Int
     ](
         self,
@@ -139,7 +139,7 @@ struct PhysicsState[
         states[self.env, off + IDX_Y] = Scalar[dtype](y)
 
     @always_inline
-    fn set_body_angle[
+    def set_body_angle[
         BATCH: Int
     ](
         self,
@@ -154,7 +154,7 @@ struct PhysicsState[
         states[self.env, off + IDX_ANGLE] = Scalar[dtype](angle)
 
     @always_inline
-    fn set_body_velocity[
+    def set_body_velocity[
         BATCH: Int
     ](
         self,
@@ -173,7 +173,7 @@ struct PhysicsState[
         states[self.env, off + IDX_OMEGA] = Scalar[dtype](omega)
 
     @always_inline
-    fn set_body_mass[
+    def set_body_mass[
         BATCH: Int
     ](
         self,
@@ -200,7 +200,7 @@ struct PhysicsState[
             states[self.env, off + IDX_INV_INERTIA] = Scalar[dtype](0)
 
     @always_inline
-    fn set_body_shape[
+    def set_body_shape[
         BATCH: Int
     ](
         self,
@@ -215,7 +215,7 @@ struct PhysicsState[
         states[self.env, off + IDX_SHAPE] = Scalar[dtype](shape_idx)
 
     @always_inline
-    fn get_body_x[
+    def get_body_x[
         BATCH: Int
     ](
         self,
@@ -229,7 +229,7 @@ struct PhysicsState[
         return rebind[Scalar[dtype]](states[self.env, off + IDX_X])
 
     @always_inline
-    fn get_body_y[
+    def get_body_y[
         BATCH: Int
     ](
         self,
@@ -243,7 +243,7 @@ struct PhysicsState[
         return rebind[Scalar[dtype]](states[self.env, off + IDX_Y])
 
     @always_inline
-    fn get_body_angle[
+    def get_body_angle[
         BATCH: Int
     ](
         self,
@@ -257,7 +257,7 @@ struct PhysicsState[
         return rebind[Scalar[dtype]](states[self.env, off + IDX_ANGLE])
 
     @always_inline
-    fn get_body_vx[
+    def get_body_vx[
         BATCH: Int
     ](
         self,
@@ -271,7 +271,7 @@ struct PhysicsState[
         return rebind[Scalar[dtype]](states[self.env, off + IDX_VX])
 
     @always_inline
-    fn get_body_vy[
+    def get_body_vy[
         BATCH: Int
     ](
         self,
@@ -285,7 +285,7 @@ struct PhysicsState[
         return rebind[Scalar[dtype]](states[self.env, off + IDX_VY])
 
     @always_inline
-    fn get_body_omega[
+    def get_body_omega[
         BATCH: Int
     ](
         self,
@@ -303,12 +303,12 @@ struct PhysicsState[
     # =========================================================================
 
     @always_inline
-    fn force_offset(self, body: Int) -> Int:
+    def force_offset(self, body: Int) -> Int:
         """Get offset for a body's forces within the state row."""
         return Self.FORCES_OFFSET + body * Self.FORCES_PER_BODY
 
     @always_inline
-    fn clear_forces[
+    def clear_forces[
         BATCH: Int
     ](
         self,
@@ -324,7 +324,7 @@ struct PhysicsState[
             states[self.env, off + 2] = Scalar[dtype](0)
 
     @always_inline
-    fn apply_force[
+    def apply_force[
         BATCH: Int
     ](
         self,
@@ -345,7 +345,7 @@ struct PhysicsState[
         )
 
     @always_inline
-    fn apply_torque[
+    def apply_torque[
         BATCH: Int
     ](
         self,
@@ -362,7 +362,7 @@ struct PhysicsState[
         )
 
     @always_inline
-    fn set_force[
+    def set_force[
         BATCH: Int
     ](
         self,
@@ -385,12 +385,12 @@ struct PhysicsState[
     # =========================================================================
 
     @always_inline
-    fn joint_offset(self, joint: Int) -> Int:
+    def joint_offset(self, joint: Int) -> Int:
         """Get offset for a joint's data within the state row."""
         return Self.JOINTS_OFFSET + joint * JOINT_DATA_SIZE
 
     @always_inline
-    fn get_joint_count[
+    def get_joint_count[
         BATCH: Int
     ](
         self,
@@ -402,7 +402,7 @@ struct PhysicsState[
         return Int(states[self.env, Self.JOINT_COUNT_OFFSET])
 
     @always_inline
-    fn set_joint_count[
+    def set_joint_count[
         BATCH: Int
     ](
         self,
@@ -415,7 +415,7 @@ struct PhysicsState[
         states[self.env, Self.JOINT_COUNT_OFFSET] = Scalar[dtype](count)
 
     @always_inline
-    fn add_revolute_joint[
+    def add_revolute_joint[
         BATCH: Int
     ](
         self,
@@ -485,7 +485,7 @@ struct PhysicsState[
         return joint_idx
 
     @always_inline
-    fn clear_joints[
+    def clear_joints[
         BATCH: Int
     ](
         self,
@@ -505,12 +505,12 @@ struct PhysicsState[
     # =========================================================================
 
     @always_inline
-    fn edge_offset(self, edge: Int) -> Int:
+    def edge_offset(self, edge: Int) -> Int:
         """Get offset for an edge's data (6 floats: x0, y0, x1, y1, nx, ny)."""
         return Self.EDGES_OFFSET + edge * 6
 
     @always_inline
-    fn get_edge_count[
+    def get_edge_count[
         BATCH: Int
     ](
         self,
@@ -522,7 +522,7 @@ struct PhysicsState[
         return Int(states[self.env, Self.EDGE_COUNT_OFFSET])
 
     @always_inline
-    fn set_edge_count[
+    def set_edge_count[
         BATCH: Int
     ](
         self,
@@ -535,7 +535,7 @@ struct PhysicsState[
         states[self.env, Self.EDGE_COUNT_OFFSET] = Scalar[dtype](count)
 
     @always_inline
-    fn set_edge[
+    def set_edge[
         BATCH: Int
     ](
         self,
@@ -625,7 +625,7 @@ struct PhysicsStateOwned[
         Scalar[dtype]
     ]  # Single-element buffer for tensor view
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize with zeroed buffers."""
         # Allocate state buffer
         self.state = List[Scalar[dtype]](capacity=Self.STATE_SIZE)
@@ -646,7 +646,7 @@ struct PhysicsStateOwned[
         self.contact_counts = List[Scalar[dtype]](capacity=1)
         self.contact_counts.append(Scalar[dtype](0))
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor."""
         # Explicitly copy Lists
         self.state = List[Scalar[dtype]](capacity=Self.STATE_SIZE)
@@ -661,7 +661,7 @@ struct PhysicsStateOwned[
         self.contact_counts = List[Scalar[dtype]](capacity=1)
         self.contact_counts.append(copy.contact_counts[0])
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.state = take.state^
         self.shapes = take.shapes^
@@ -673,7 +673,7 @@ struct PhysicsStateOwned[
     # =========================================================================
 
     @always_inline
-    fn get_state_tensor(
+    def get_state_tensor(
         mut self,
     ) -> LayoutTensor[
         dtype, Layout.row_major(1, Self.STATE_SIZE), MutAnyOrigin
@@ -684,7 +684,7 @@ struct PhysicsStateOwned[
         ](self.state.unsafe_ptr())
 
     @always_inline
-    fn get_bodies_tensor(
+    def get_bodies_tensor(
         mut self,
     ) -> LayoutTensor[
         dtype,
@@ -700,7 +700,7 @@ struct PhysicsStateOwned[
         ](self.state.unsafe_ptr() + Self.BODIES_OFFSET)
 
     @always_inline
-    fn get_shapes_tensor(
+    def get_shapes_tensor(
         mut self,
     ) -> LayoutTensor[
         dtype, Layout.row_major(Self.NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
@@ -713,7 +713,7 @@ struct PhysicsStateOwned[
         ](self.shapes.unsafe_ptr())
 
     @always_inline
-    fn get_forces_tensor(
+    def get_forces_tensor(
         mut self,
     ) -> LayoutTensor[
         dtype, Layout.row_major(1, Self.NUM_BODIES, 3), MutAnyOrigin
@@ -724,7 +724,7 @@ struct PhysicsStateOwned[
         ](self.state.unsafe_ptr() + Self.FORCES_OFFSET)
 
     @always_inline
-    fn get_contacts_tensor(
+    def get_contacts_tensor(
         mut self,
     ) -> LayoutTensor[
         dtype,
@@ -739,7 +739,7 @@ struct PhysicsStateOwned[
         ](self.contacts.unsafe_ptr())
 
     @always_inline
-    fn get_contact_counts_tensor(
+    def get_contact_counts_tensor(
         mut self,
     ) -> LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin]:
         """Get tensor view of contact counts (single element for single env)."""
@@ -748,7 +748,7 @@ struct PhysicsStateOwned[
         )
 
     @always_inline
-    fn get_joints_tensor(
+    def get_joints_tensor(
         mut self,
     ) -> LayoutTensor[
         dtype,
@@ -763,7 +763,7 @@ struct PhysicsStateOwned[
         ](self.state.unsafe_ptr() + Self.JOINTS_OFFSET)
 
     @always_inline
-    fn get_joint_counts_tensor(
+    def get_joint_counts_tensor(
         mut self,
     ) -> LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin]:
         """Get tensor view of joint counts."""
@@ -776,7 +776,7 @@ struct PhysicsStateOwned[
     # =========================================================================
 
     @always_inline
-    fn helper(self) -> Self.Helper:
+    def helper(self) -> Self.Helper:
         """Get a PhysicsStateStrided helper for env 0."""
         return Self.Helper(0)
 
@@ -784,61 +784,63 @@ struct PhysicsStateOwned[
     # Body State Accessors (env is always 0 for single-env mode)
     # =========================================================================
 
-    fn set_body_position(mut self, env: Int, body: Int, x: Float64, y: Float64):
+    def set_body_position(
+        mut self, env: Int, body: Int, x: Float64, y: Float64
+    ):
         """Set body position."""
         var states = self.get_state_tensor()
         self.helper().set_body_position[1](states, body, x, y)
 
-    fn set_body_angle(mut self, env: Int, body: Int, angle: Float64):
+    def set_body_angle(mut self, env: Int, body: Int, angle: Float64):
         """Set body angle."""
         var states = self.get_state_tensor()
         self.helper().set_body_angle[1](states, body, angle)
 
-    fn set_body_velocity(
+    def set_body_velocity(
         mut self, env: Int, body: Int, vx: Float64, vy: Float64, omega: Float64
     ):
         """Set body velocity."""
         var states = self.get_state_tensor()
         self.helper().set_body_velocity[1](states, body, vx, vy, omega)
 
-    fn set_body_mass(
+    def set_body_mass(
         mut self, env: Int, body: Int, mass: Float64, inertia: Float64
     ):
         """Set body mass properties."""
         var states = self.get_state_tensor()
         self.helper().set_body_mass[1](states, body, mass, inertia)
 
-    fn set_body_shape(mut self, env: Int, body: Int, shape_idx: Int):
+    def set_body_shape(mut self, env: Int, body: Int, shape_idx: Int):
         """Set body shape reference."""
         var states = self.get_state_tensor()
         self.helper().set_body_shape[1](states, body, shape_idx)
 
-    fn get_body_x(mut self, env: Int, body: Int) -> Scalar[dtype]:
+    def get_body_x(mut self, env: Int, body: Int) -> Scalar[dtype]:
         """Get body x position."""
         var states = self.get_state_tensor()
         return self.helper().get_body_x[1](states, body)
 
-    fn get_body_y(mut self, env: Int, body: Int) -> Scalar[dtype]:
+    def get_body_y(mut self, env: Int, body: Int) -> Scalar[dtype]:
         """Get body y position."""
         var states = self.get_state_tensor()
         return self.helper().get_body_y[1](states, body)
 
-    fn get_body_angle(mut self, env: Int, body: Int) -> Scalar[dtype]:
+    def get_body_angle(mut self, env: Int, body: Int) -> Scalar[dtype]:
         """Get body angle."""
         var states = self.get_state_tensor()
         return self.helper().get_body_angle[1](states, body)
 
-    fn get_body_vx(mut self, env: Int, body: Int) -> Scalar[dtype]:
+    def get_body_vx(mut self, env: Int, body: Int) -> Scalar[dtype]:
         """Get body x velocity."""
         var states = self.get_state_tensor()
         return self.helper().get_body_vx[1](states, body)
 
-    fn get_body_vy(mut self, env: Int, body: Int) -> Scalar[dtype]:
+    def get_body_vy(mut self, env: Int, body: Int) -> Scalar[dtype]:
         """Get body y velocity."""
         var states = self.get_state_tensor()
         return self.helper().get_body_vy[1](states, body)
 
-    fn get_body_omega(mut self, env: Int, body: Int) -> Scalar[dtype]:
+    def get_body_omega(mut self, env: Int, body: Int) -> Scalar[dtype]:
         """Get body angular velocity."""
         var states = self.get_state_tensor()
         return self.helper().get_body_omega[1](states, body)
@@ -847,7 +849,7 @@ struct PhysicsStateOwned[
     # Shape Definitions
     # =========================================================================
 
-    fn define_polygon_shape(
+    def define_polygon_shape(
         mut self,
         shape_idx: Int,
         vertices_x: List[Float64],
@@ -868,7 +870,7 @@ struct PhysicsStateOwned[
     # Joint Management
     # =========================================================================
 
-    fn add_revolute_joint(
+    def add_revolute_joint(
         mut self,
         env: Int,
         body_a: Int,
@@ -900,12 +902,12 @@ struct PhysicsStateOwned[
             enable_limit,
         )
 
-    fn clear_joints(mut self, env: Int):
+    def clear_joints(mut self, env: Int):
         """Clear all joints."""
         var states = self.get_state_tensor()
         self.helper().clear_joints[1](states)
 
-    fn get_joint_count(mut self, env: Int) -> Int:
+    def get_joint_count(mut self, env: Int) -> Int:
         """Get number of active joints."""
         var states = self.get_state_tensor()
         return self.helper().get_joint_count[1](states)
@@ -914,10 +916,10 @@ struct PhysicsStateOwned[
     # Contact Information
     # =========================================================================
 
-    fn get_contact_count(mut self, env: Int) -> Int:
+    def get_contact_count(mut self, env: Int) -> Int:
         """Get number of active contacts."""
         return Int(self.contact_counts[0])
 
-    fn set_contact_count(mut self, count: Int):
+    def set_contact_count(mut self, count: Int):
         """Set contact count (called by collision system)."""
         self.contact_counts[0] = Scalar[dtype](count)

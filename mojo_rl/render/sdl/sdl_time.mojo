@@ -72,19 +72,19 @@ struct DateFormat(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime DATE_FORMAT_YYYYMMDD = Self(0)
@@ -104,19 +104,19 @@ struct TimeFormat(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime TIME_FORMAT_24HR = Self(0)
@@ -125,7 +125,7 @@ struct TimeFormat(Indexer, Intable, TrivialRegisterPassable):
     """12 hour time."""
 
 
-fn get_date_time_locale_preferences(
+def get_date_time_locale_preferences(
     date_format: Ptr[DateFormat, MutAnyOrigin],
     time_format: Ptr[TimeFormat, MutAnyOrigin],
 ) raises:
@@ -161,7 +161,7 @@ fn get_date_time_locale_preferences(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_current_time(ticks: Ptr[Int64, MutAnyOrigin]) raises:
+def get_current_time(ticks: Ptr[Int64, MutAnyOrigin]) raises:
     """Gets the current value of the system realtime clock in nanoseconds since
     Jan 1, 1970 in Universal Coordinated Time (UTC).
 
@@ -184,7 +184,7 @@ fn get_current_time(ticks: Ptr[Int64, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn time_to_date_time(
+def time_to_date_time(
     ticks: Int64, dt: Ptr[DateTime, MutAnyOrigin], local_time: Bool
 ) raises:
     """Converts an SDL_Time in nanoseconds since the epoch to a calendar time in
@@ -215,7 +215,7 @@ fn time_to_date_time(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn date_time_to_time(
+def date_time_to_time(
     dt: Ptr[DateTime, ImmutAnyOrigin], ticks: Ptr[Int64, MutAnyOrigin]
 ) raises:
     """Converts a calendar time to an SDL_Time in nanoseconds since the epoch.
@@ -246,7 +246,7 @@ fn date_time_to_time(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn time_to_windows(
+def time_to_windows(
     ticks: Int64,
     dw_low_date_time: Ptr[UInt32, MutAnyOrigin],
     dw_high_date_time: Ptr[UInt32, MutAnyOrigin],
@@ -277,7 +277,7 @@ fn time_to_windows(
     ]()(ticks, dw_low_date_time, dw_high_date_time)
 
 
-fn time_from_windows(
+def time_from_windows(
     dw_low_date_time: UInt32, dw_high_date_time: UInt32
 ) raises -> Int64:
     """Converts a Windows FILETIME (100-nanosecond intervals since January 1,
@@ -303,7 +303,7 @@ fn time_from_windows(
     ]()(dw_low_date_time, dw_high_date_time)
 
 
-fn get_days_in_month(year: c_int, month: c_int) raises -> c_int:
+def get_days_in_month(year: c_int, month: c_int) raises -> c_int:
     """Get the number of days in a month for a given year.
 
     Args:
@@ -322,7 +322,7 @@ fn get_days_in_month(year: c_int, month: c_int) raises -> c_int:
     ]()(year, month)
 
 
-fn get_day_of_year(year: c_int, month: c_int, day: c_int) raises -> c_int:
+def get_day_of_year(year: c_int, month: c_int, day: c_int) raises -> c_int:
     """Get the day of year for a calendar date.
 
     Args:
@@ -344,7 +344,7 @@ fn get_day_of_year(year: c_int, month: c_int, day: c_int) raises -> c_int:
     ]()(year, month, day)
 
 
-fn get_day_of_week(year: c_int, month: c_int, day: c_int) raises -> c_int:
+def get_day_of_week(year: c_int, month: c_int, day: c_int) raises -> c_int:
     """Get the day of week for a calendar date.
 
     Args:

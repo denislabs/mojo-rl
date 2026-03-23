@@ -129,7 +129,7 @@ comptime MINVAL: Float64 = 1e-10
 
 
 @always_inline
-fn _build_hessian[
+def _build_hessian[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -295,7 +295,7 @@ struct OldNewtonSolver(ConstraintSolver):
     comptime NEEDS_M_INV: Bool = True
 
     @staticmethod
-    fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
+    def solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """Newton solver workspace size (primal, qacc-space).
 
         Layout:
@@ -313,7 +313,7 @@ struct OldNewtonSolver(ConstraintSolver):
 
     @no_inline
     @staticmethod
-    fn solve[
+    def solve[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -709,7 +709,7 @@ struct OldNewtonSolver(ConstraintSolver):
             data.qacc_warmstart[i] = qacc[i]
 
     @staticmethod
-    fn solver_threads[
+    def solver_threads[
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -720,7 +720,7 @@ struct OldNewtonSolver(ConstraintSolver):
 
     @staticmethod
     @always_inline
-    fn solve_gpu[
+    def solve_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

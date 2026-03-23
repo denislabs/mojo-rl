@@ -42,13 +42,13 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
     comptime CACHE_SIZE: Int = 1
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -56,7 +56,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -88,7 +88,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
                 )
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -128,18 +128,12 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ],
-        input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, 2), ImmutAnyOrigin
-        ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, 2), ImmutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
     ):
         var b = Int(block_dim.x * block_idx.x + thread_idx.x)
         if b >= BATCH:
@@ -158,7 +152,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -167,9 +161,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin
         ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin
-        ],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin],
     ):
         var b = Int(block_dim.x * block_idx.x + thread_idx.x)
         if b >= BATCH:
@@ -192,7 +184,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -216,26 +208,23 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         var grid_x = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
-            o: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
-            i: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 2), ImmutAnyOrigin
-            ],
-            c: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ],
+        def wrapper(
+            o: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
+            i: LayoutTensor[dtype, Layout.row_major(BATCH, 2), ImmutAnyOrigin],
+            c: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
         ):
             Self.eval_kernel_impl[BATCH](o, i, c)
 
         ctx.enqueue_function[wrapper, wrapper](
-            output, input_immut, cache,
-            grid_dim=(grid_x,), block_dim=(TPB,),
+            output,
+            input_immut,
+            cache,
+            grid_dim=(grid_x,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -265,20 +254,17 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         var grid_x = (BATCH + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
-            gi: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
-            ],
-            go: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin
-            ],
-            c: LayoutTensor[
-                dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin
-            ],
+        def wrapper(
+            gi: LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin],
+            go: LayoutTensor[dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin],
+            c: LayoutTensor[dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin],
         ):
             Self.backward_kernel_impl[BATCH](gi, go, c)
 
         ctx.enqueue_function[wrapper, wrapper](
-            grad_input, go_immut, c_immut,
-            grid_dim=(grid_x,), block_dim=(TPB,),
+            grad_input,
+            go_immut,
+            c_immut,
+            grid_dim=(grid_x,),
+            block_dim=(TPB,),
         )

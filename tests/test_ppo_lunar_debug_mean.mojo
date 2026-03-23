@@ -32,7 +32,7 @@ comptime GPU_MINIBATCH_SIZE = 512
 comptime NUM_EPISODES = 5000
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Debug: Tracking Mean Action Values During Training")
@@ -69,7 +69,7 @@ fn main() raises:
         print("This prevents fuel penalties from dominating landing bonuses.")
 
         # Helper function to compute mean action for a test observation
-        fn get_mean_action(
+        def get_mean_action(
             agent: DeepPPOContinuousAgent[
                 OBS_DIM,
                 ACTION_DIM,

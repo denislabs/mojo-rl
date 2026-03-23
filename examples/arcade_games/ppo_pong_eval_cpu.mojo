@@ -37,7 +37,7 @@ comptime RENDER = True
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Agent CPU Evaluation with Rendering — Pong")

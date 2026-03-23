@@ -10,7 +10,7 @@ from std.math import abs, sqrt
 from std.random import random_float64
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("Dreamer V3 Full BPTT Integration Test")
     print("=" * 60)
@@ -28,8 +28,17 @@ fn main() raises:
     comptime BL = 4  # short sequence
 
     comptime Agent = DreamerV3Agent[
-        OBS, ACT, DETER, HIDDEN, STOCH, CLASSES, UNITS, BINS,
-        batch_size=BATCH, batch_length=BL, imagine_horizon=3,
+        OBS,
+        ACT,
+        DETER,
+        HIDDEN,
+        STOCH,
+        CLASSES,
+        UNITS,
+        BINS,
+        batch_size=BATCH,
+        batch_length=BL,
+        imagine_horizon=3,
         buffer_capacity=500,
     ]
 
@@ -68,18 +77,10 @@ fn main() raises:
     # Then call _backward_world_model_autodiff
 
     # Sample batch data
-    var batch_obs = List[Scalar[DType.float32]](
-        capacity=BATCH * (BL + 1) * OBS
-    )
-    var batch_actions = List[Scalar[DType.float32]](
-        capacity=BATCH * BL * ACT
-    )
-    var batch_rewards = List[Scalar[DType.float32]](
-        capacity=BATCH * BL
-    )
-    var batch_dones = List[Scalar[DType.float32]](
-        capacity=BATCH * BL
-    )
+    var batch_obs = List[Scalar[DType.float32]](capacity=BATCH * (BL + 1) * OBS)
+    var batch_actions = List[Scalar[DType.float32]](capacity=BATCH * BL * ACT)
+    var batch_rewards = List[Scalar[DType.float32]](capacity=BATCH * BL)
+    var batch_dones = List[Scalar[DType.float32]](capacity=BATCH * BL)
 
     for _ in range(BATCH * (BL + 1) * OBS):
         batch_obs.append(0)
@@ -116,9 +117,7 @@ fn main() raises:
         for b in range(BATCH):
             for i in range(OBS):
                 var idx = b * (BL + 1) * OBS + t * OBS + i
-                (obs_step_ptr + b * OBS + i)[] = Scalar[dtype](
-                    batch_obs[idx]
-                )
+                (obs_step_ptr + b * OBS + i)[] = Scalar[dtype](batch_obs[idx])
             for i in range(ACT):
                 if t == 0:
                     (act_step_ptr + b * ACT + i)[] = Scalar[dtype](0.0)
@@ -164,8 +163,15 @@ fn main() raises:
         ](feat_ptr)
 
         agent.state.rssm.observe_step[BATCH](
-            obs_t, deter_t, stoch_t, act_t,
-            new_deter_t, new_stoch_t, post_probs_t, prior_probs_t, feat_t,
+            obs_t,
+            deter_t,
+            stoch_t,
+            act_t,
+            new_deter_t,
+            new_stoch_t,
+            post_probs_t,
+            prior_probs_t,
+            feat_t,
             True,
         )
 
@@ -196,12 +202,9 @@ fn main() raises:
                     + i
                 )[] = (prior_probs_ptr + b * STOCH_FLAT + i)[]
             for i in range(FEAT):
-                (
-                    agent.state._all_feats
-                    + t * BATCH * FEAT
-                    + b * FEAT
-                    + i
-                )[] = (feat_ptr + b * FEAT + i)[]
+                (agent.state._all_feats + t * BATCH * FEAT + b * FEAT + i)[] = (
+                    feat_ptr + b * FEAT + i
+                )[]
 
         # Update for next timestep
         for b in range(BATCH):
@@ -226,7 +229,7 @@ fn main() raises:
     # ── Check all 11 networks have non-zero gradients ────────────────────
     print("Checking gradient norms for all 11 RSSM networks...")
 
-    fn grad_norm(
+    def grad_norm(
         ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin], n: Int
     ) -> Float64:
         var total = Float64(0.0)
@@ -288,8 +291,12 @@ fn main() raises:
     print("    encoder:", enc_gn, " posterior:", post_gn, " prior:", prior_gn)
     print("  GRU networks:")
     print(
-        "    deter_proj:", dp_gn, " stoch_proj:", sp_gn,
-        " action_proj:", ap_gn,
+        "    deter_proj:",
+        dp_gn,
+        " stoch_proj:",
+        sp_gn,
+        " action_proj:",
+        ap_gn,
     )
     print("    gru_hidden:", gh_gn, " gru_gates:", gg_gn)
 

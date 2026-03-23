@@ -6,7 +6,7 @@ from mojo_rl.deep_agents.muzero.mcts import MCTS
 from mojo_rl.nn.constants import dtype
 
 
-fn main():
+def main():
     print("=== Batched MCTS Test ===")
 
     comptime OBS = 4
@@ -51,7 +51,9 @@ fn main():
     var t1 = perf_counter_ns()
     var unbatched_ms = Float64(t1 - t0) / 1e6
 
-    print("Unbatched:", NUM_RUNS, "searches x", SIMS, "sims =", unbatched_ms, "ms")
+    print(
+        "Unbatched:", NUM_RUNS, "searches x", SIMS, "sims =", unbatched_ms, "ms"
+    )
     print("  Per search:", unbatched_ms / Float64(NUM_RUNS), "ms")
 
     # ── Test 2: Batched (BATCH_SIMS=8) ────────────────────────────────
@@ -79,7 +81,15 @@ fn main():
     var t3 = perf_counter_ns()
     var batched_ms = Float64(t3 - t2) / 1e6
 
-    print("Batched (B=8):", NUM_RUNS, "searches x", SIMS, "sims =", batched_ms, "ms")
+    print(
+        "Batched (B=8):",
+        NUM_RUNS,
+        "searches x",
+        SIMS,
+        "sims =",
+        batched_ms,
+        "ms",
+    )
     print("  Per search:", batched_ms / Float64(NUM_RUNS), "ms")
 
     var speedup = unbatched_ms / batched_ms
@@ -93,7 +103,15 @@ fn main():
         StateType.OptType,
         StateType.OptType,
         StateType.OptType,
-    ](obs, state.representation, state.dynamics, state.prediction, -10.0, 10.0, add_noise=False)
+    ](
+        obs,
+        state.representation,
+        state.dynamics,
+        state.prediction,
+        -10.0,
+        10.0,
+        add_noise=False,
+    )
 
     var policy_b = mcts_batched.search_batched[
         StateType.RepModel,
@@ -103,7 +121,15 @@ fn main():
         StateType.OptType,
         StateType.OptType,
         8,
-    ](obs, state.representation, state.dynamics, state.prediction, -10.0, 10.0, add_noise=False)
+    ](
+        obs,
+        state.representation,
+        state.dynamics,
+        state.prediction,
+        -10.0,
+        10.0,
+        add_noise=False,
+    )
 
     print("\nUnbatched policy:", policy_u[0], policy_u[1])
     print("Batched policy:  ", policy_b[0], policy_b[1])

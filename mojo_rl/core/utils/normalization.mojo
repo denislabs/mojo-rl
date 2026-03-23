@@ -20,7 +20,7 @@ Example usage:
 from std.gpu.host import HostBuffer
 
 
-fn normalize(mut values: List[Float64], eps: Float64 = 1e-8):
+def normalize(mut values: List[Float64], eps: Float64 = 1e-8):
     """Normalize values in-place to have zero mean and unit variance.
 
     Computes: values[i] = (values[i] - mean) / (std + eps)
@@ -59,7 +59,7 @@ fn normalize(mut values: List[Float64], eps: Float64 = 1e-8):
         values[i] = (values[i] - mean) / std
 
 
-fn normalize_inline[
+def normalize_inline[
     dtype: DType, N: Int
 ](n: Int, mut values: InlineArray[Scalar[dtype], N], eps: Float64 = 1e-8):
     """Normalize values in an InlineArray to have zero mean and unit variance.
@@ -102,7 +102,7 @@ fn normalize_inline[
         values[i] = (values[i] - mean) / std
 
 
-fn compute_mean(values: List[Float64]) -> Float64:
+def compute_mean(values: List[Float64]) -> Float64:
     """Compute the mean of a list of values.
 
     Args:
@@ -121,7 +121,7 @@ fn compute_mean(values: List[Float64]) -> Float64:
     return sum / Float64(n)
 
 
-fn compute_std(values: List[Float64], mean: Float64) -> Float64:
+def compute_std(values: List[Float64], mean: Float64) -> Float64:
     """Compute the standard deviation of a list of values.
 
     Args:
@@ -144,7 +144,7 @@ fn compute_std(values: List[Float64], mean: Float64) -> Float64:
     return variance**0.5
 
 
-fn compute_mean_std(values: List[Float64]) -> Tuple[Float64, Float64]:
+def compute_mean_std(values: List[Float64]) -> Tuple[Float64, Float64]:
     """Compute both mean and standard deviation in one pass.
 
     More efficient than calling compute_mean and compute_std separately.
@@ -207,23 +207,23 @@ struct RunningMeanStd:
     var mean: Float64
     var var_sum: Float64  # Sum of squared differences (M2 in Welford's)
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize with zero statistics."""
         self.count = 0.0
         self.mean = 0.0
         self.var_sum = 0.0
 
-    fn variance(self) -> Float64:
+    def variance(self) -> Float64:
         """Return the running variance."""
         if self.count < 2:
             return 1.0  # Default to 1 to avoid division issues
         return self.var_sum / self.count
 
-    fn std(self) -> Float64:
+    def std(self) -> Float64:
         """Return the running standard deviation."""
         return (self.variance() + 1e-8) ** 0.5
 
-    fn update[dt: DType](mut self, buffer: HostBuffer[dt], n: Int):
+    def update[dt: DType](mut self, buffer: HostBuffer[dt], n: Int):
         """Update running statistics with a batch of values.
 
         Uses Welford's online algorithm for numerically stable updates.
@@ -271,7 +271,7 @@ struct RunningMeanStd:
 
         self.count = new_count
 
-    fn normalize[
+    def normalize[
         dt: DType
     ](self, mut buffer: HostBuffer[dt], n: Int, eps: Float64 = 1e-8):
         """Normalize values in-place using running statistics (CleanRL-style).

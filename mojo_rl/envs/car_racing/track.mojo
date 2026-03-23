@@ -46,11 +46,11 @@ struct TrackRNG:
     var seed: Int
     var counter: Int
 
-    fn __init__(out self, seed: UInt64):
+    def __init__(out self, seed: UInt64):
         self.seed = Int(seed) if seed != 0 else 1
         self.counter = 0
 
-    fn next(mut self) -> UInt64:
+    def next(mut self) -> UInt64:
         """Generate next random value."""
         self.counter += 1
         var rng = PhiloxRandom(
@@ -60,7 +60,7 @@ struct TrackRNG:
         # Convert float to UInt64-like range
         return UInt64(Float64(vals[0]) * Float64(UInt64.MAX))
 
-    fn uniform(mut self, low: Float64, high: Float64) -> Float64:
+    def uniform(mut self, low: Float64, high: Float64) -> Float64:
         """Generate uniform random float in [low, high)."""
         self.counter += 1
         var rng = PhiloxRandom(
@@ -70,7 +70,7 @@ struct TrackRNG:
         var normalized = Float64(vals[0])
         return low + normalized * (high - low)
 
-    fn uniform_scalar[
+    def uniform_scalar[
         DTYPE: DType
     ](mut self, low: Float64, high: Float64) -> Scalar[DTYPE]:
         """Generate uniform random Scalar in [low, high)."""
@@ -92,7 +92,7 @@ struct TrackPoint[DTYPE: DType where DTYPE.is_floating_point()](
     var x: Scalar[Self.DTYPE]
     var y: Scalar[Self.DTYPE]
 
-    fn __init__(
+    def __init__(
         out self,
         alpha: Scalar[Self.DTYPE],
         beta: Scalar[Self.DTYPE],
@@ -104,13 +104,13 @@ struct TrackPoint[DTYPE: DType where DTYPE.is_floating_point()](
         self.x = x
         self.y = y
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.alpha = copy.alpha
         self.beta = copy.beta
         self.x = copy.x
         self.y = copy.y
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.alpha = take.alpha
         self.beta = take.beta
         self.x = take.x
@@ -131,7 +131,7 @@ struct Checkpoint[DTYPE: DType where DTYPE.is_floating_point()](
     var x: Scalar[Self.DTYPE]
     var y: Scalar[Self.DTYPE]
 
-    fn __init__(
+    def __init__(
         out self,
         alpha: Scalar[Self.DTYPE],
         x: Scalar[Self.DTYPE],
@@ -141,12 +141,12 @@ struct Checkpoint[DTYPE: DType where DTYPE.is_floating_point()](
         self.x = x
         self.y = y
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.alpha = copy.alpha
         self.x = copy.x
         self.y = copy.y
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.alpha = take.alpha
         self.x = take.x
         self.y = take.y
@@ -179,7 +179,7 @@ struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](
     var center_y: Scalar[Self.DTYPE]
     var direction: Scalar[Self.DTYPE]  # Tangent angle
 
-    fn __init__(out self):
+    def __init__(out self):
         self.v0_x = 0.0
         self.v0_y = 0.0
         self.v1_x = 0.0
@@ -195,7 +195,7 @@ struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](
         self.center_y = 0.0
         self.direction = 0.0
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.v0_x = copy.v0_x
         self.v0_y = copy.v0_y
         self.v1_x = copy.v1_x
@@ -211,7 +211,7 @@ struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](
         self.center_y = copy.center_y
         self.direction = copy.direction
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.v0_x = take.v0_x
         self.v0_y = take.v0_y
         self.v1_x = take.v1_x
@@ -227,7 +227,7 @@ struct TrackTile[DTYPE: DType where DTYPE.is_floating_point()](
         self.center_y = take.center_y
         self.direction = take.direction
 
-    fn to_buffer[
+    def to_buffer[
         MAX_TILES: Int
     ](
         self,
@@ -262,19 +262,19 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
     var track: List[TrackTile[Self.DTYPE]]
     var track_length: Int
 
-    fn __init__(out self):
+    def __init__(out self):
         self.track = List[TrackTile[Self.DTYPE]]()
         self.track_length = 0
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.track = copy.track.copy()
         self.track_length = copy.track_length
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.track = take.track^
         self.track_length = take.track_length
 
-    fn generate_simple_track(mut self):
+    def generate_simple_track(mut self):
         """Generate a simple circular track.
 
         This is a reliable fallback that always produces a valid track.
@@ -329,7 +329,7 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
 
         self.track_length = len(self.track)
 
-    fn generate_random_track(
+    def generate_random_track(
         mut self, seed: UInt64 = 42, verbose: Bool = False
     ):
         """Generate a random procedural track matching Gymnasium's algorithm.
@@ -362,7 +362,7 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
             print("Falling back to simple circular track")
         self.generate_simple_track()
 
-    fn _try_generate_track(
+    def _try_generate_track(
         mut self, mut rng: TrackRNG, verbose: Bool = False
     ) -> Bool:
         """Attempt to generate a random track. Returns True on success."""
@@ -652,7 +652,7 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
         self.track_length = len(self.track)
         return self.track_length >= 20
 
-    fn to_buffer[
+    def to_buffer[
         MAX_TILES: Int
     ](
         self,
@@ -666,12 +666,12 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
         for i in range(min(self.track_length, MAX_TILES)):
             self.track[i].to_buffer[MAX_TILES](tiles, i)
 
-    fn reset_visited(mut self):
+    def reset_visited(mut self):
         """Mark all tiles as unvisited."""
         for i in range(self.track_length):
             self.track[i].visited = False
 
-    fn get_start_position(
+    def get_start_position(
         self,
     ) -> Tuple[Scalar[Self.DTYPE], Scalar[Self.DTYPE], Scalar[Self.DTYPE]]:
         """Get starting position (x, y, angle) for the car."""
@@ -684,7 +684,7 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
             Scalar[Self.DTYPE](0.0),
         )
 
-    fn mark_tile_visited(mut self, tile_idx: Int) -> Bool:
+    def mark_tile_visited(mut self, tile_idx: Int) -> Bool:
         """Mark a tile as visited. Returns True if this is a new visit."""
         if tile_idx >= 0 and tile_idx < self.track_length:
             if not self.track[tile_idx].visited:
@@ -692,7 +692,7 @@ struct TrackGenerator[DTYPE: DType where DTYPE.is_floating_point()](
                 return True
         return False
 
-    fn count_visited(self) -> Int:
+    def count_visited(self) -> Int:
         """Count number of visited tiles."""
         var count = 0
         for i in range(self.track_length):

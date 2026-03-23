@@ -38,13 +38,13 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
     comptime FUSED_COUNT: Int = 2
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -52,7 +52,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -86,7 +86,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
                 output[ba, j] = acc
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -139,7 +139,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_tiled[
+    def eval_kernel_tiled[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -216,7 +216,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_tiled[
+    def backward_kernel_tiled[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -352,7 +352,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_mma[
+    def eval_kernel_mma[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -492,7 +492,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_2x2[
+    def eval_kernel_2x2[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -611,7 +611,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
     @always_inline
     @staticmethod
-    fn backward_dx_kernel_mma[
+    def backward_dx_kernel_mma[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -721,7 +721,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
     @always_inline
     @staticmethod
-    fn backward_dx_kernel_2x2[
+    def backward_dx_kernel_2x2[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -821,7 +821,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
     @always_inline
     @staticmethod
-    fn backward_dW_kernel_mma[
+    def backward_dW_kernel_mma[
         BATCH: Int
     ](
         dW: LayoutTensor[
@@ -929,7 +929,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
     @always_inline
     @staticmethod
-    fn backward_dW_kernel_2x2[
+    def backward_dW_kernel_2x2[
         BATCH: Int
     ](
         dW: LayoutTensor[
@@ -1029,7 +1029,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
 
     @always_inline
     @staticmethod
-    fn backward_db_kernel[
+    def backward_db_kernel[
         BATCH: Int
     ](
         db: LayoutTensor[dtype, Layout.row_major(Self.out_dim), MutAnyOrigin],
@@ -1054,7 +1054,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -1088,7 +1088,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             comptime cache_blocks = (cache_elems + TPB - 1) // TPB
 
             @always_inline
-            fn cache_input_wrapper(
+            def cache_input_wrapper(
                 cache: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.in_dim),
@@ -1122,7 +1122,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             comptime bias_blocks = (bias_elems + TPB - 1) // TPB
 
             @always_inline
-            fn bias_add_wrapper(
+            def bias_add_wrapper(
                 output: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.out_dim),
@@ -1136,9 +1136,9 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
                 if idx >= bias_elems:
                     return
                 var col = idx % Self.out_dim
-                output[idx // Self.out_dim, col] = output[
-                    idx // Self.out_dim, col
-                ] + b[col]
+                output[idx // Self.out_dim, col] = (
+                    output[idx // Self.out_dim, col] + b[col]
+                )
 
             ctx.enqueue_function[bias_add_wrapper, bias_add_wrapper](
                 output,
@@ -1151,7 +1151,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
             @always_inline
-            fn wrapper(
+            def wrapper(
                 output: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.out_dim),
@@ -1189,7 +1189,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             )
 
     @staticmethod
-    fn eval_gpu_on_stream[
+    def eval_gpu_on_stream[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -1222,7 +1222,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
         comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
             ],
@@ -1259,7 +1259,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -1301,7 +1301,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
         comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
         @always_inline
-        fn dx_wrapper(
+        def dx_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
             ],
@@ -1332,7 +1332,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
         comptime dW_grid_y = (Self.in_dim + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
         @always_inline
-        fn dW_wrapper(
+        def dW_wrapper(
             dW: LayoutTensor[
                 dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
             ],
@@ -1360,7 +1360,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
         comptime db_grid_x = (Self.out_dim + TPB - 1) // TPB
 
         @always_inline
-        fn db_wrapper(
+        def db_wrapper(
             db: LayoutTensor[
                 dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
             ],

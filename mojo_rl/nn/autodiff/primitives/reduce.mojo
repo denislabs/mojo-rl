@@ -22,13 +22,13 @@ struct ReduceSum[dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = 0
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -36,7 +36,7 @@ struct ReduceSum[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -59,7 +59,7 @@ struct ReduceSum[dim: Int](DiffOp):
             output[b, 0] = s
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -89,12 +89,10 @@ struct ReduceSum[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
@@ -118,7 +116,7 @@ struct ReduceSum[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -141,7 +139,7 @@ struct ReduceSum[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -164,7 +162,7 @@ struct ReduceSum[dim: Int](DiffOp):
         ](input.ptr)
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
             ],
@@ -182,7 +180,7 @@ struct ReduceSum[dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -210,7 +208,7 @@ struct ReduceSum[dim: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -244,13 +242,13 @@ struct ReduceMean[dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = 0
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -258,7 +256,7 @@ struct ReduceMean[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -282,7 +280,7 @@ struct ReduceMean[dim: Int](DiffOp):
             output[b, 0] = s * inv_dim
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -313,12 +311,10 @@ struct ReduceMean[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
-        ],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
@@ -341,7 +337,7 @@ struct ReduceMean[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -356,16 +352,16 @@ struct ReduceMean[dim: Int](DiffOp):
             return
         var row = idx // Self.dim
         var col = idx % Self.dim
-        grad_input[row, col] = rebind[Scalar[dtype]](grad_output[row, 0]) * Scalar[dtype](
-            1.0 / Float64(Self.dim)
-        )
+        grad_input[row, col] = rebind[Scalar[dtype]](
+            grad_output[row, 0]
+        ) * Scalar[dtype](1.0 / Float64(Self.dim))
 
     # =========================================================================
     # GPU launchers
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -388,7 +384,7 @@ struct ReduceMean[dim: Int](DiffOp):
         ](input.ptr)
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
             ],
@@ -406,7 +402,7 @@ struct ReduceMean[dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -434,7 +430,7 @@ struct ReduceMean[dim: Int](DiffOp):
         var grid_x = (total_elements + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],

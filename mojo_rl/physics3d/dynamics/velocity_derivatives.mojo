@@ -76,7 +76,7 @@ from ..gpu.constants import (
 
 
 @always_inline
-fn _mjd_crossMotion_vel[
+def _mjd_crossMotion_vel[
     DTYPE: DType,
 ](mut D: InlineArray[Scalar[DTYPE], 36], v: InlineArray[Scalar[DTYPE], 6],):
     """Derivative of crossMotion(vel, v) w.r.t. vel. D is 6x6 row-major.
@@ -122,7 +122,7 @@ fn _mjd_crossMotion_vel[
 
 
 @always_inline
-fn _mjd_crossForce_vel[
+def _mjd_crossForce_vel[
     DTYPE: DType,
 ](mut D: InlineArray[Scalar[DTYPE], 36], f: InlineArray[Scalar[DTYPE], 6],):
     """Derivative of crossForce(vel, f) w.r.t. vel. D is 6x6 row-major.
@@ -164,7 +164,7 @@ fn _mjd_crossForce_vel[
 
 
 @always_inline
-fn _mjd_crossForce_frc[
+def _mjd_crossForce_frc[
     DTYPE: DType,
 ](mut D: InlineArray[Scalar[DTYPE], 36], vel: InlineArray[Scalar[DTYPE], 6],):
     """Derivative of crossForce(vel, f) w.r.t. f. D is 6x6 row-major.
@@ -206,7 +206,7 @@ fn _mjd_crossForce_frc[
 
 
 @always_inline
-fn _mjd_mulInertVec_vel[
+def _mjd_mulInertVec_vel[
     DTYPE: DType,
 ](
     mut D: InlineArray[Scalar[DTYPE], 36],
@@ -259,7 +259,7 @@ fn _mjd_mulInertVec_vel[
 
 
 @always_inline
-fn _mulInertVec[
+def _mulInertVec[
     DTYPE: DType,
 ](
     mut res: InlineArray[Scalar[DTYPE], 6],
@@ -304,7 +304,7 @@ fn _mulInertVec[
 
 
 @always_inline
-fn _matmul_6x6_x_6xN[
+def _matmul_6x6_x_6xN[
     DTYPE: DType,
     N: Int,
     SIZE_6N: Int,
@@ -323,7 +323,7 @@ fn _matmul_6x6_x_6xN[
 
 
 @always_inline
-fn _matmul_6x6_x_6x6[
+def _matmul_6x6_x_6x6[
     DTYPE: DType,
 ](
     mut result: InlineArray[Scalar[DTYPE], 36],
@@ -344,7 +344,7 @@ fn _matmul_6x6_x_6x6[
 # =============================================================================
 
 
-fn compute_rne_vel_derivative[
+def compute_rne_vel_derivative[
     DTYPE: DType,
     NQ: Int,
     NV: Int,
@@ -956,7 +956,7 @@ fn compute_rne_vel_derivative[
 
 
 @always_inline
-fn compute_rne_vel_derivative_gpu[
+def compute_rne_vel_derivative_gpu[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

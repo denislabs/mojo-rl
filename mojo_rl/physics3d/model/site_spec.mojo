@@ -99,7 +99,7 @@ trait SitesLike:
     comptime N: Int  # Number of sites
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -131,7 +131,7 @@ trait SitesLike:
         ...
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
         NJOINT: Int,
@@ -143,7 +143,7 @@ trait SitesLike:
         ...
 
     @staticmethod
-    fn render_sites(
+    def render_sites(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -164,7 +164,7 @@ struct _EmptySites(SitesLike):
     comptime N: Int = 0
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -194,7 +194,7 @@ struct _EmptySites(SitesLike):
         pass
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
         NJOINT: Int,
@@ -205,7 +205,7 @@ struct _EmptySites(SitesLike):
         pass
 
     @staticmethod
-    fn render_sites(
+    def render_sites(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],
@@ -229,7 +229,7 @@ struct Sites[*S: SiteSpec](SitesLike):
     comptime N: Int = Variadic.size(Self.site_types)
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -266,7 +266,7 @@ struct Sites[*S: SiteSpec](SitesLike):
             model.site_pos[i * 3 + 2] = Scalar[DTYPE](SS.POS_Z)
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
         NJOINT: Int,
@@ -291,7 +291,7 @@ struct Sites[*S: SiteSpec](SitesLike):
             buffer[base + SITE_IDX_POS_Z] = Scalar[DTYPE](SS.POS_Z)
 
     @staticmethod
-    fn render_sites(
+    def render_sites(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
         quaternions: List[_RQuat],

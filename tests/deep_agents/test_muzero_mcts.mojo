@@ -5,7 +5,7 @@ from mojo_rl.deep_agents.muzero.mcts import MCTS, MCTSNode
 from mojo_rl.nn.constants import dtype
 
 
-fn main():
+def main():
     print("=== MuZero MCTS Tests ===")
 
     comptime OBS = 4
@@ -14,7 +14,9 @@ fn main():
     comptime BINS = 21
     comptime SIMS = 10
 
-    comptime StateType = MuZeroCPUState[OBS, ACT, LATENT_DIM=LATENT, HIDDEN_DIM=32, NUM_BINS=BINS]
+    comptime StateType = MuZeroCPUState[
+        OBS, ACT, LATENT_DIM=LATENT, HIDDEN_DIM=32, NUM_BINS=BINS
+    ]
 
     # Create networks
     var state = StateType()

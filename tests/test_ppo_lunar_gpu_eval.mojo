@@ -44,7 +44,7 @@ comptime DEBUG_PRINT_EVERY = 50  # Print debug info every N steps
 # =============================================================================
 
 
-fn format_obs(obs: List[Float32]) -> String:
+def format_obs(obs: List[Float32]) -> String:
     """Format observation for debug printing."""
     return (
         "x="
@@ -66,7 +66,7 @@ fn format_obs(obs: List[Float32]) -> String:
     )
 
 
-fn action_name(action: Int) -> String:
+def action_name(action: Int) -> String:
     """Get human-readable action name."""
     if action == 0:
         return "nop"
@@ -79,7 +79,7 @@ fn action_name(action: Int) -> String:
     return "???"
 
 
-fn format_probs(probs: InlineArray[Scalar[DType.float32], 4]) -> String:
+def format_probs(probs: InlineArray[Scalar[DType.float32], 4]) -> String:
     """Format action probabilities for debug printing."""
     return (
         "nop="
@@ -98,7 +98,7 @@ fn format_probs(probs: InlineArray[Scalar[DType.float32], 4]) -> String:
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 70)
     print("PPO Agent Evaluation on LunarLander (CPU)")

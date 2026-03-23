@@ -90,7 +90,7 @@ comptime half_cheetah_xml = """
 """
 
 
-fn test_xml_full_parser() raises:
+def test_xml_full_parser() raises:
     # =========================================================================
     # Step 1: Dimension check
     # =========================================================================
@@ -214,5 +214,5 @@ fn test_xml_full_parser() raises:
     print("torso xpos_z  =", Float64(data.xpos[1 * 3 + 2]), " (expected ~0.7)")
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

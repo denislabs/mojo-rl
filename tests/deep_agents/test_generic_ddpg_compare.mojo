@@ -14,7 +14,7 @@ from mojo_rl.deep_agents.core.agents import DeepDDPGAgent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Generic DDPG vs Old DDPG Comparison ===\n")
 
     # ---------- Generic agent ----------
@@ -58,9 +58,7 @@ fn main() raises:
 
     # Both should have same number of episodes
     if gen_episodes == old_episodes:
-        print(
-            "   OK: Same episode count (" + String(gen_episodes) + ")"
-        )
+        print("   OK: Same episode count (" + String(gen_episodes) + ")")
         pass_count += 1
     else:
         print(
@@ -86,6 +84,4 @@ fn main() raises:
             + ")"
         )
 
-    print(
-        "\n=== " + String(pass_count) + "/4 checks passed ==="
-    )
+    print("\n=== " + String(pass_count) + "/4 checks passed ===")

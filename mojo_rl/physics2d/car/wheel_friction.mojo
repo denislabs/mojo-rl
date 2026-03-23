@@ -88,7 +88,7 @@ struct WheelFriction:
 
     @staticmethod
     @always_inline
-    fn get_wheel_local_pos(wheel: Int) -> Tuple[Scalar[dtype], Scalar[dtype]]:
+    def get_wheel_local_pos(wheel: Int) -> Tuple[Scalar[dtype], Scalar[dtype]]:
         """Get wheel position in hull-local coordinates.
 
         Args:
@@ -120,13 +120,13 @@ struct WheelFriction:
 
     @staticmethod
     @always_inline
-    fn is_front_wheel(wheel: Int) -> Bool:
+    def is_front_wheel(wheel: Int) -> Bool:
         """Check if wheel is a front wheel (has steering)."""
         return wheel == WHEEL_FL or wheel == WHEEL_FR
 
     @staticmethod
     @always_inline
-    fn is_rear_wheel(wheel: Int) -> Bool:
+    def is_rear_wheel(wheel: Int) -> Bool:
         """Check if wheel is a rear wheel (has engine power)."""
         return wheel == WHEEL_RL or wheel == WHEEL_RR
 
@@ -136,7 +136,7 @@ struct WheelFriction:
 
     @staticmethod
     @always_inline
-    fn compute_wheel_forces(
+    def compute_wheel_forces(
         # Wheel angular velocity
         wheel_omega: Scalar[dtype],
         # Steering angle (0 for rear wheels)
@@ -332,7 +332,7 @@ struct WheelFriction:
 
     @staticmethod
     @always_inline
-    fn compute_all_wheels_forces[
+    def compute_all_wheels_forces[
         BATCH: Int,
         STATE_SIZE: Int,
         HULL_OFFSET: Int,
@@ -446,7 +446,7 @@ struct WheelFriction:
     # =========================================================================
 
     @staticmethod
-    fn compute_batch_cpu[
+    def compute_batch_cpu[
         BATCH: Int,
         STATE_SIZE: Int,
         HULL_OFFSET: Int,
@@ -480,7 +480,9 @@ struct WheelFriction:
         """
         for env in range(BATCH):
             # Build friction limits array for this env
-            var limits = InlineArray[Scalar[dtype], NUM_WHEELS](fill=Scalar[dtype](0))
+            var limits = InlineArray[Scalar[dtype], NUM_WHEELS](
+                fill=Scalar[dtype](0)
+            )
             limits[0] = rebind[Scalar[dtype]](friction_limits[env, 0])
             limits[1] = rebind[Scalar[dtype]](friction_limits[env, 1])
             limits[2] = rebind[Scalar[dtype]](friction_limits[env, 2])

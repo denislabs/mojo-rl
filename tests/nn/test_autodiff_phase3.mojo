@@ -30,13 +30,13 @@ from mojo_rl.nn.autodiff import (
 from layout import Layout, LayoutTensor
 
 
-fn print_header(name: String):
+def print_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
 
 
-fn check(cond: Bool, msg: String, mut fails: Int):
+def check(cond: Bool, msg: String, mut fails: Int):
     if cond:
         print("  PASS: " + msg)
     else:
@@ -44,21 +44,21 @@ fn check(cond: Bool, msg: String, mut fails: Int):
         fails += 1
 
 
-fn make_list(size: Int) -> List[Scalar[dtype]]:
+def make_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(0)
     return lst^
 
 
-fn make_rand_list(size: Int) -> List[Scalar[dtype]]:
+def make_rand_list(size: Int) -> List[Scalar[dtype]]:
     var lst = List[Scalar[dtype]](capacity=size)
     for _ in range(size):
         lst.append(Scalar[dtype](random_float64(-1.0, 1.0)))
     return lst^
 
 
-fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
+def max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
     var md: Float64 = 0
     for i in range(n):
         var d = math_abs(Float64(a[i]) - Float64(b[i]))
@@ -72,7 +72,7 @@ fn max_diff(a: List[Scalar[dtype]], b: List[Scalar[dtype]], n: Int) -> Float64:
 # =============================================================================
 
 
-fn finite_diff_check[
+def finite_diff_check[
     Op: MishOp
 ](
     inp: List[Scalar[dtype]],
@@ -90,7 +90,7 @@ fn finite_diff_check[
     return 0.0
 
 
-fn fd_grad_check_generic[
+def fd_grad_check_generic[
     BATCH: Int, IN_DIM: Int, OUT_DIM: Int, PARAM_SIZE: Int, CACHE_SIZE: Int
 ](
     eval_fn: fn(
@@ -209,7 +209,7 @@ fn fd_grad_check_generic[
 # =============================================================================
 
 
-fn test_mish() -> Int:
+def test_mish() -> Int:
     print_header("MishOp forward + gradient check")
     var fails = 0
 
@@ -274,7 +274,7 @@ fn test_mish() -> Int:
 # =============================================================================
 
 
-fn test_scale() -> Int:
+def test_scale() -> Int:
     print_header("Scale forward + gradient check")
     var fails = 0
 
@@ -338,7 +338,7 @@ fn test_scale() -> Int:
 # =============================================================================
 
 
-fn test_elem_mul() -> Int:
+def test_elem_mul() -> Int:
     print_header("ElemMul forward + gradient check")
     var fails = 0
 
@@ -400,7 +400,7 @@ fn test_elem_mul() -> Int:
 # =============================================================================
 
 
-fn test_reduce_sum() -> Int:
+def test_reduce_sum() -> Int:
     print_header("ReduceSum forward + gradient check")
     var fails = 0
 
@@ -465,7 +465,7 @@ fn test_reduce_sum() -> Int:
 # =============================================================================
 
 
-fn test_reduce_mean() -> Int:
+def test_reduce_mean() -> Int:
     print_header("ReduceMean forward + gradient check")
     var fails = 0
 
@@ -526,7 +526,7 @@ fn test_reduce_mean() -> Int:
 # =============================================================================
 
 
-fn test_softmax() -> Int:
+def test_softmax() -> Int:
     print_header("SoftmaxOp forward + gradient check")
     var fails = 0
 
@@ -592,7 +592,7 @@ fn test_softmax() -> Int:
 # =============================================================================
 
 
-fn test_layer_norm() -> Int:
+def test_layer_norm() -> Int:
     print_header("LayerNormOp forward + gradient check")
     var fails = 0
 
@@ -669,7 +669,7 @@ fn test_layer_norm() -> Int:
 # =============================================================================
 
 
-fn test_rms_norm() -> Int:
+def test_rms_norm() -> Int:
     print_header("RMSNormOp forward + gradient check")
     var fails = 0
 
@@ -739,7 +739,7 @@ fn test_rms_norm() -> Int:
 # =============================================================================
 
 
-fn test_chain_composition() -> Int:
+def test_chain_composition() -> Int:
     print_header("AutoDiffChain composition with new ops")
     var fails = 0
 
@@ -779,7 +779,7 @@ fn test_chain_composition() -> Int:
 # =============================================================================
 
 
-fn main():
+def main():
     print("=" * 70)
     print("Phase 3 AutoDiff Primitives — Verification Tests")
     print("=" * 70)

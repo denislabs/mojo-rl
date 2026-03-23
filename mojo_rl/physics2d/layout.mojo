@@ -131,7 +131,7 @@ struct PhysicsLayout[
 
     @staticmethod
     @always_inline
-    fn body_offset(body: Int) -> Int:
+    def body_offset(body: Int) -> Int:
         """Compute offset for a specific body within environment state.
 
         Args:
@@ -144,7 +144,7 @@ struct PhysicsLayout[
 
     @staticmethod
     @always_inline
-    fn body_field_offset(body: Int, field: Int) -> Int:
+    def body_field_offset(body: Int, field: Int) -> Int:
         """Compute offset for a specific field of a body.
 
         Args:
@@ -162,7 +162,7 @@ struct PhysicsLayout[
 
     @staticmethod
     @always_inline
-    fn force_offset(body: Int) -> Int:
+    def force_offset(body: Int) -> Int:
         """Compute offset for a body's forces within environment state.
 
         Args:
@@ -179,7 +179,7 @@ struct PhysicsLayout[
 
     @staticmethod
     @always_inline
-    fn joint_offset(joint: Int) -> Int:
+    def joint_offset(joint: Int) -> Int:
         """Compute offset for a specific joint within environment state.
 
         Args:
@@ -192,7 +192,7 @@ struct PhysicsLayout[
 
     @staticmethod
     @always_inline
-    fn joint_field_offset(joint: Int, field: Int) -> Int:
+    def joint_field_offset(joint: Int, field: Int) -> Int:
         """Compute offset for a specific field of a joint.
 
         Args:
@@ -210,7 +210,7 @@ struct PhysicsLayout[
 
     @staticmethod
     @always_inline
-    fn edge_offset(edge: Int) -> Int:
+    def edge_offset(edge: Int) -> Int:
         """Compute offset for a specific edge within environment state.
 
         Args:
@@ -227,7 +227,7 @@ struct PhysicsLayout[
 
     @staticmethod
     @always_inline
-    fn metadata_offset(field: Int) -> Int:
+    def metadata_offset(field: Int) -> Int:
         """Compute offset for a metadata field.
 
         Args:

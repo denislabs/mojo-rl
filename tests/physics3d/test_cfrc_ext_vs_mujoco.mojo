@@ -37,7 +37,7 @@ comptime TOL: Float64 = 1.0  # N or Nm absolute tolerance
 comptime FRAC_TOL: Float64 = 0.5  # 50% relative tolerance for large forces
 
 
-fn run_test(
+def run_test(
     test_name: String,
     qpos_init: InlineArray[Float64, NQ],
     qvel_init: InlineArray[Float64, NV],
@@ -193,7 +193,7 @@ fn run_test(
         assert_true(False, "run_test failed for: " + test_name)
 
 
-fn test_standing_no_action() raises:
+def test_standing_no_action() raises:
     """Standing pose, no action — foot in contact with ground."""
     var qpos1 = InlineArray[Float64, NQ](fill=0.0)
     qpos1[1] = 1.25  # rootz = default standing height
@@ -202,7 +202,7 @@ fn test_standing_no_action() raises:
     run_test("Standing, no action, 1 step", qpos1, qvel1, act0, 1)
 
 
-fn test_standing_max_action() raises:
+def test_standing_max_action() raises:
     """Standing pose, strong action (larger contact forces)."""
     var qpos1 = InlineArray[Float64, NQ](fill=0.0)
     qpos1[1] = 1.25  # rootz = default standing height
@@ -211,7 +211,7 @@ fn test_standing_max_action() raises:
     run_test("Standing, max action, 1 step", qpos1, qvel1, act1, 1)
 
 
-fn test_standing_max_action_5steps() raises:
+def test_standing_max_action_5steps() raises:
     """After 5 steps with action."""
     var qpos1 = InlineArray[Float64, NQ](fill=0.0)
     qpos1[1] = 1.25  # rootz = default standing height
@@ -220,7 +220,7 @@ fn test_standing_max_action_5steps() raises:
     run_test("Standing, max action, 5 steps", qpos1, qvel1, act1, 5)
 
 
-fn test_low_pose_max_action() raises:
+def test_low_pose_max_action() raises:
     """Slightly compressed (foot deeper in ground — bigger contact force)."""
     var qpos2 = InlineArray[Float64, NQ](fill=0.0)
     qpos2[1] = 1.0  # lower than default
@@ -229,5 +229,5 @@ fn test_low_pose_max_action() raises:
     run_test("Low pose, max action, 1 step", qpos2, qvel1, act1, 1)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

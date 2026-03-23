@@ -29,17 +29,17 @@ struct SoftCrossEntropyLoss(LossFunction):
     that soft (non-integer) targets are expected, as in two-hot encoding.
     """
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
     @staticmethod
-    fn forward[
+    def forward[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -78,7 +78,7 @@ struct SoftCrossEntropyLoss(LossFunction):
         return total_loss / Float64(BATCH)
 
     @staticmethod
-    fn backward[
+    def backward[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -123,7 +123,7 @@ struct SoftCrossEntropyLoss(LossFunction):
 
     @always_inline
     @staticmethod
-    fn forward_kernel_impl[
+    def forward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -176,7 +176,7 @@ struct SoftCrossEntropyLoss(LossFunction):
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -223,7 +223,7 @@ struct SoftCrossEntropyLoss(LossFunction):
     # =========================================================================
 
     @staticmethod
-    fn forward_gpu[
+    def forward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -239,7 +239,7 @@ struct SoftCrossEntropyLoss(LossFunction):
         """Launch forward pass on GPU."""
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
             predictions: LayoutTensor[
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -259,7 +259,7 @@ struct SoftCrossEntropyLoss(LossFunction):
         )
 
     @staticmethod
-    fn backward_gpu[
+    def backward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
     ](
@@ -277,7 +277,7 @@ struct SoftCrossEntropyLoss(LossFunction):
         """Launch backward pass on GPU."""
 
         @always_inline
-        fn kernel_wrapper(
+        def kernel_wrapper(
             grad_output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
             ],

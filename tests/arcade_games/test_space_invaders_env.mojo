@@ -9,7 +9,7 @@ comptime STATE_SIZE = SpaceInvadersEnv[DType.float64].STATE_SIZE
 comptime OBS_DIM = SpaceInvadersEnv[DType.float64].OBS_DIM
 
 
-fn main() raises:
+def main() raises:
     print("=== Testing SpaceInvadersEnv ===")
     print("STATE_SIZE:", STATE_SIZE, ", OBS_DIM:", OBS_DIM)
 

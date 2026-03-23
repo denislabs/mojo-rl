@@ -33,7 +33,7 @@ from mojo_rl.core import (
 from mojo_rl.agents import TD3Agent
 
 
-fn main() raises:
+def main() raises:
     print("\n" + "=" * 60)
     print("    TD3 on Pendulum - Linear Function Approximation")
     print("=" * 60 + "\n")

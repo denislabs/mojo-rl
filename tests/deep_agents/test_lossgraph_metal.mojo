@@ -33,56 +33,61 @@ comptime ACTIONS = 2
 comptime LOSS_IN = ACTIONS + 2  # [Q0, Q1, action_idx, target] = 4
 
 
-fn fill_dummy_input(ctx: DeviceContext, buf: DeviceBuffer[dtype]) raises:
-    """Fill with known values: Q=[1.0, 2.0], action=0, target=0.5 for each sample."""
+def fill_dummy_input(ctx: DeviceContext, buf: DeviceBuffer[dtype]) raises:
+    """Fill with known values: Q=[1.0, 2.0], action=0, target=0.5 for each sample.
+    """
     var host = List[Scalar[dtype]](capacity=BATCH * LOSS_IN)
     for b in range(BATCH):
-        host.append(Scalar[dtype](1.0))   # Q[0]
-        host.append(Scalar[dtype](2.0))   # Q[1]
-        host.append(Scalar[dtype](0.0))   # action_idx = 0
-        host.append(Scalar[dtype](0.5))   # target = 0.5
+        host.append(Scalar[dtype](1.0))  # Q[0]
+        host.append(Scalar[dtype](2.0))  # Q[1]
+        host.append(Scalar[dtype](0.0))  # action_idx = 0
+        host.append(Scalar[dtype](0.5))  # target = 0.5
     ctx.enqueue_copy(buf, host.unsafe_ptr())
     ctx.synchronize()
 
 
-fn test_gather_forward(ctx: DeviceContext) raises:
+def test_gather_forward(ctx: DeviceContext) raises:
     """Test: Gather[ACTIONS].forward_gpu in isolation."""
     print("--- Test 1: Gather[ACTIONS].forward_gpu ---")
 
     comptime G = Gather[ACTIONS]
     # Gather input: [Q0, Q1, action_idx] = ACTIONS + 1 = 3
-    comptime GIN = G.IN_DIM   # ACTIONS + 1
+    comptime GIN = G.IN_DIM  # ACTIONS + 1
     comptime GOUT = G.OUT_DIM  # 1
 
     var in_buf = ctx.enqueue_create_buffer[dtype](BATCH * GIN)
     var out_buf = ctx.enqueue_create_buffer[dtype](BATCH * GOUT)
-    var cache_buf = ctx.enqueue_create_buffer[dtype](max(1, BATCH * G.CACHE_SIZE))
+    var cache_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * G.CACHE_SIZE)
+    )
     var params_buf = ctx.enqueue_create_buffer[dtype](max(1, G.PARAM_SIZE))
 
     # Fill input: [Q0=1.0, Q1=2.0, action_idx=0] for each sample
     var host_in = List[Scalar[dtype]](capacity=BATCH * GIN)
     for b in range(BATCH):
-        host_in.append(Scalar[dtype](1.0))   # Q[0]
-        host_in.append(Scalar[dtype](2.0))   # Q[1]
-        host_in.append(Scalar[dtype](0.0))   # action_idx = 0
+        host_in.append(Scalar[dtype](1.0))  # Q[0]
+        host_in.append(Scalar[dtype](2.0))  # Q[1]
+        host_in.append(Scalar[dtype](0.0))  # action_idx = 0
     ctx.enqueue_copy(in_buf, host_in.unsafe_ptr())
     ctx.synchronize()
 
     var in_t = LayoutTensor[dtype, Layout.row_major(BATCH, GIN), MutAnyOrigin](
         in_buf.unsafe_ptr()
     )
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, GOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
-    var params_t = LayoutTensor[dtype, Layout.row_major(G.PARAM_SIZE), MutAnyOrigin](
-        params_buf.unsafe_ptr()
-    )
-    var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, G.CACHE_SIZE), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
+    var params_t = LayoutTensor[
+        dtype, Layout.row_major(G.PARAM_SIZE), MutAnyOrigin
+    ](params_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, G.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
 
     # Use workspace
-    var ws = ctx.enqueue_create_buffer[dtype](max(1, BATCH * G.WORKSPACE_SIZE_PER_SAMPLE))
+    var ws = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * G.WORKSPACE_SIZE_PER_SAMPLE)
+    )
 
     print("  Calling Gather.forward_gpu...")
     G.forward_gpu[BATCH](ctx, out_t, in_t, params_t, cache_t, ws)
@@ -98,17 +103,19 @@ fn test_gather_forward(ctx: DeviceContext) raises:
     print()
 
 
-fn test_slice_forward(ctx: DeviceContext) raises:
+def test_slice_forward(ctx: DeviceContext) raises:
     """Test: Slice[1,0,1].forward_gpu in isolation."""
     print("--- Test 2: Slice[1,0,1].forward_gpu ---")
 
     comptime S = Slice[1, 0, 1]
-    comptime SIN = S.IN_DIM   # 1
+    comptime SIN = S.IN_DIM  # 1
     comptime SOUT = S.OUT_DIM  # 1
 
     var in_buf = ctx.enqueue_create_buffer[dtype](BATCH * SIN)
     var out_buf = ctx.enqueue_create_buffer[dtype](BATCH * SOUT)
-    var cache_buf = ctx.enqueue_create_buffer[dtype](max(1, BATCH * S.CACHE_SIZE))
+    var cache_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * S.CACHE_SIZE)
+    )
     var params_buf = ctx.enqueue_create_buffer[dtype](max(1, S.PARAM_SIZE))
 
     # Fill input: [0.5] for each sample (target value)
@@ -121,17 +128,19 @@ fn test_slice_forward(ctx: DeviceContext) raises:
     var in_t = LayoutTensor[dtype, Layout.row_major(BATCH, SIN), MutAnyOrigin](
         in_buf.unsafe_ptr()
     )
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, SOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
-    var params_t = LayoutTensor[dtype, Layout.row_major(S.PARAM_SIZE), MutAnyOrigin](
-        params_buf.unsafe_ptr()
-    )
-    var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, S.CACHE_SIZE), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, SOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
+    var params_t = LayoutTensor[
+        dtype, Layout.row_major(S.PARAM_SIZE), MutAnyOrigin
+    ](params_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, S.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
 
-    var ws = ctx.enqueue_create_buffer[dtype](max(1, BATCH * S.WORKSPACE_SIZE_PER_SAMPLE))
+    var ws = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * S.WORKSPACE_SIZE_PER_SAMPLE)
+    )
 
     print("  Calling Slice.forward_gpu...")
     S.forward_gpu[BATCH](ctx, out_t, in_t, params_t, cache_t, ws)
@@ -146,41 +155,45 @@ fn test_slice_forward(ctx: DeviceContext) raises:
     print()
 
 
-fn test_mse_forward(ctx: DeviceContext) raises:
+def test_mse_forward(ctx: DeviceContext) raises:
     """Test: MSELoss.forward_gpu in isolation."""
     print("--- Test 3: MSELoss.forward_gpu ---")
 
     comptime M = MSELoss
-    comptime MIN = M.IN_DIM   # 2 (prediction, target)
+    comptime MIN = M.IN_DIM  # 2 (prediction, target)
     comptime MOUT = M.OUT_DIM  # 1
 
     var in_buf = ctx.enqueue_create_buffer[dtype](BATCH * MIN)
     var out_buf = ctx.enqueue_create_buffer[dtype](BATCH * MOUT)
-    var cache_buf = ctx.enqueue_create_buffer[dtype](max(1, BATCH * M.CACHE_SIZE))
+    var cache_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * M.CACHE_SIZE)
+    )
     var params_buf = ctx.enqueue_create_buffer[dtype](max(1, M.PARAM_SIZE))
 
     # Fill input: [prediction=1.0, target=0.5] -> MSE = (1.0-0.5)^2 = 0.25
     var host_in = List[Scalar[dtype]](capacity=BATCH * MIN)
     for b in range(BATCH):
-        host_in.append(Scalar[dtype](1.0))   # prediction
-        host_in.append(Scalar[dtype](0.5))   # target
+        host_in.append(Scalar[dtype](1.0))  # prediction
+        host_in.append(Scalar[dtype](0.5))  # target
     ctx.enqueue_copy(in_buf, host_in.unsafe_ptr())
     ctx.synchronize()
 
     var in_t = LayoutTensor[dtype, Layout.row_major(BATCH, MIN), MutAnyOrigin](
         in_buf.unsafe_ptr()
     )
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, MOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
-    var params_t = LayoutTensor[dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin](
-        params_buf.unsafe_ptr()
-    )
-    var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, MOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
+    var params_t = LayoutTensor[
+        dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
+    ](params_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
 
-    var ws = ctx.enqueue_create_buffer[dtype](max(1, BATCH * M.WORKSPACE_SIZE_PER_SAMPLE))
+    var ws = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * M.WORKSPACE_SIZE_PER_SAMPLE)
+    )
 
     print("  Calling MSELoss.forward_gpu...")
     M.forward_gpu[BATCH](ctx, out_t, in_t, params_t, cache_t, ws)
@@ -195,17 +208,19 @@ fn test_mse_forward(ctx: DeviceContext) raises:
     print()
 
 
-fn test_splitapply_forward(ctx: DeviceContext) raises:
+def test_splitapply_forward(ctx: DeviceContext) raises:
     """Test: SplitApply[Gather[2], Slice[1,0,1], 3].forward_gpu."""
     print("--- Test 4: SplitApply[Gather[2], Slice[1,0,1], 3].forward_gpu ---")
 
     comptime SA = SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1]
-    comptime SAIN = SA.IN_DIM   # ACTIONS + 2 = 4
+    comptime SAIN = SA.IN_DIM  # ACTIONS + 2 = 4
     comptime SAOUT = SA.OUT_DIM  # 2 (gathered Q + sliced target)
 
     var in_buf = ctx.enqueue_create_buffer[dtype](BATCH * SAIN)
     var out_buf = ctx.enqueue_create_buffer[dtype](BATCH * SAOUT)
-    var cache_buf = ctx.enqueue_create_buffer[dtype](max(1, BATCH * SA.CACHE_SIZE))
+    var cache_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * SA.CACHE_SIZE)
+    )
     var params_buf = ctx.enqueue_create_buffer[dtype](max(1, SA.PARAM_SIZE))
 
     fill_dummy_input(ctx, in_buf)
@@ -213,17 +228,19 @@ fn test_splitapply_forward(ctx: DeviceContext) raises:
     var in_t = LayoutTensor[dtype, Layout.row_major(BATCH, SAIN), MutAnyOrigin](
         in_buf.unsafe_ptr()
     )
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, SAOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
-    var params_t = LayoutTensor[dtype, Layout.row_major(SA.PARAM_SIZE), MutAnyOrigin](
-        params_buf.unsafe_ptr()
-    )
-    var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, SA.CACHE_SIZE), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, SAOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
+    var params_t = LayoutTensor[
+        dtype, Layout.row_major(SA.PARAM_SIZE), MutAnyOrigin
+    ](params_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, SA.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
 
-    var ws = ctx.enqueue_create_buffer[dtype](max(1, BATCH * SA.WORKSPACE_SIZE_PER_SAMPLE))
+    var ws = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * SA.WORKSPACE_SIZE_PER_SAMPLE)
+    )
 
     print("  Calling SplitApply.forward_gpu...")
     SA.forward_gpu[BATCH](ctx, out_t, in_t, params_t, cache_t, ws)
@@ -239,48 +256,49 @@ fn test_splitapply_forward(ctx: DeviceContext) raises:
         + String(host_out[0])
         + " (expected 1.0 = Q[action=0])"
     )
-    print(
-        "  Output[0,1] = "
-        + String(host_out[1])
-        + " (expected 0.5 = target)"
-    )
+    print("  Output[0,1] = " + String(host_out[1]) + " (expected 0.5 = target)")
     print()
 
 
-fn test_full_lossgraph_forward(ctx: DeviceContext) raises:
+def test_full_lossgraph_forward(ctx: DeviceContext) raises:
     """Test: Full LossGraph = Sequential[SplitApply[...], MSELoss].forward_gpu.
 
     This is the exact graph that crashes in AutodiffQGradient.
     """
-    print("--- Test 5: Full LossGraph (Sequential[SplitApply, MSELoss]).forward_gpu ---")
+    print(
+        "--- Test 5: Full LossGraph (Sequential[SplitApply,"
+        " MSELoss]).forward_gpu ---"
+    )
 
     comptime LossGraph = Sequential[
         SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
         MSELoss,
     ]
-    comptime LIN = LossGraph.IN_DIM    # ACTIONS + 2 = 4
-    comptime LOUT = LossGraph.OUT_DIM   # 1
+    comptime LIN = LossGraph.IN_DIM  # ACTIONS + 2 = 4
+    comptime LOUT = LossGraph.OUT_DIM  # 1
     comptime LCS = LossGraph.CACHE_SIZE
 
     var in_buf = ctx.enqueue_create_buffer[dtype](BATCH * LIN)
     var out_buf = ctx.enqueue_create_buffer[dtype](BATCH * LOUT)
     var cache_buf = ctx.enqueue_create_buffer[dtype](max(1, BATCH * LCS))
-    var params_buf = ctx.enqueue_create_buffer[dtype](max(1, LossGraph.PARAM_SIZE))
+    var params_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, LossGraph.PARAM_SIZE)
+    )
 
     fill_dummy_input(ctx, in_buf)
 
     var in_t = LayoutTensor[dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin](
         in_buf.unsafe_ptr()
     )
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
-    var params_t = LayoutTensor[dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin](
-        params_buf.unsafe_ptr()
-    )
-    var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, LCS), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
+    var params_t = LayoutTensor[
+        dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
+    ](params_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LCS), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
 
     var ws = ctx.enqueue_create_buffer[dtype](
         max(1, BATCH * LossGraph.WORKSPACE_SIZE_PER_SAMPLE)
@@ -303,7 +321,7 @@ fn test_full_lossgraph_forward(ctx: DeviceContext) raises:
     print()
 
 
-fn test_full_lossgraph_backward(ctx: DeviceContext) raises:
+def test_full_lossgraph_backward(ctx: DeviceContext) raises:
     """Test: Full LossGraph backward_gpu (if forward passed)."""
     print("--- Test 6: Full LossGraph backward_gpu ---")
 
@@ -329,15 +347,15 @@ fn test_full_lossgraph_backward(ctx: DeviceContext) raises:
     var in_t = LayoutTensor[dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin](
         in_buf.unsafe_ptr()
     )
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
-    var params_t = LayoutTensor[dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin](
-        params_buf.unsafe_ptr()
-    )
-    var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, LCS), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
+    var params_t = LayoutTensor[
+        dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
+    ](params_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LCS), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
 
     var ws = ctx.enqueue_create_buffer[dtype](
         max(1, BATCH * LossGraph.WORKSPACE_SIZE_PER_SAMPLE)
@@ -356,15 +374,15 @@ fn test_full_lossgraph_backward(ctx: DeviceContext) raises:
     ctx.enqueue_copy(grad_seed_buf, host_seed.unsafe_ptr())
     ctx.synchronize()
 
-    var grad_in_t = LayoutTensor[dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin](
-        grad_in_buf.unsafe_ptr()
-    )
-    var grad_seed_t = LayoutTensor[dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin](
-        grad_seed_buf.unsafe_ptr()
-    )
-    var grads_t = LayoutTensor[dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin](
-        grads_buf.unsafe_ptr()
-    )
+    var grad_in_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin
+    ](grad_in_buf.unsafe_ptr())
+    var grad_seed_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin
+    ](grad_seed_buf.unsafe_ptr())
+    var grads_t = LayoutTensor[
+        dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
+    ](grads_buf.unsafe_ptr())
 
     print("  Calling LossGraph.backward_gpu...")
     LossGraph.backward_gpu[BATCH](
@@ -398,7 +416,7 @@ fn test_full_lossgraph_backward(ctx: DeviceContext) raises:
 # =============================================================================
 
 
-fn test_huber_forward(ctx: DeviceContext) raises:
+def test_huber_forward(ctx: DeviceContext) raises:
     """Test: HuberLoss.forward_gpu in isolation.
 
     Input: [pred=1.0, target=0.5] → residual=0.5, |0.5| <= delta=1.0
@@ -407,36 +425,40 @@ fn test_huber_forward(ctx: DeviceContext) raises:
     print("--- Test 7: HuberLoss.forward_gpu (quadratic region) ---")
 
     comptime H = HuberLoss[1.0]
-    comptime HIN = H.IN_DIM   # 2 (prediction, target)
+    comptime HIN = H.IN_DIM  # 2 (prediction, target)
     comptime HOUT = H.OUT_DIM  # 1
 
     var in_buf = ctx.enqueue_create_buffer[dtype](BATCH * HIN)
     var out_buf = ctx.enqueue_create_buffer[dtype](BATCH * HOUT)
-    var cache_buf = ctx.enqueue_create_buffer[dtype](max(1, BATCH * H.CACHE_SIZE))
+    var cache_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * H.CACHE_SIZE)
+    )
     var params_buf = ctx.enqueue_create_buffer[dtype](max(1, H.PARAM_SIZE))
 
     # Fill input: [prediction=1.0, target=0.5]
     var host_in = List[Scalar[dtype]](capacity=BATCH * HIN)
     for b in range(BATCH):
-        host_in.append(Scalar[dtype](1.0))   # prediction
-        host_in.append(Scalar[dtype](0.5))   # target
+        host_in.append(Scalar[dtype](1.0))  # prediction
+        host_in.append(Scalar[dtype](0.5))  # target
     ctx.enqueue_copy(in_buf, host_in.unsafe_ptr())
     ctx.synchronize()
 
     var in_t = LayoutTensor[dtype, Layout.row_major(BATCH, HIN), MutAnyOrigin](
         in_buf.unsafe_ptr()
     )
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, HOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
-    var params_t = LayoutTensor[dtype, Layout.row_major(H.PARAM_SIZE), MutAnyOrigin](
-        params_buf.unsafe_ptr()
-    )
-    var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, H.CACHE_SIZE), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, HOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
+    var params_t = LayoutTensor[
+        dtype, Layout.row_major(H.PARAM_SIZE), MutAnyOrigin
+    ](params_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, H.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
 
-    var ws = ctx.enqueue_create_buffer[dtype](max(1, BATCH * H.WORKSPACE_SIZE_PER_SAMPLE))
+    var ws = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * H.WORKSPACE_SIZE_PER_SAMPLE)
+    )
 
     print("  Calling HuberLoss.forward_gpu...")
     H.forward_gpu[BATCH](ctx, out_t, in_t, params_t, cache_t, ws)
@@ -448,9 +470,7 @@ fn test_huber_forward(ctx: DeviceContext) raises:
     ctx.enqueue_copy(host_out.unsafe_ptr(), out_buf)
     ctx.synchronize()
     print(
-        "  Output[0] = "
-        + String(host_out[0])
-        + " (expected 0.125 = 0.5*0.5^2)"
+        "  Output[0] = " + String(host_out[0]) + " (expected 0.125 = 0.5*0.5^2)"
     )
 
     # Also read cache to verify residual was stored
@@ -459,14 +479,12 @@ fn test_huber_forward(ctx: DeviceContext) raises:
     ctx.enqueue_copy(host_cache.unsafe_ptr(), cache_buf)
     ctx.synchronize()
     print(
-        "  Cache[0] = "
-        + String(host_cache[0])
-        + " (expected 0.5 = residual)"
+        "  Cache[0] = " + String(host_cache[0]) + " (expected 0.5 = residual)"
     )
     print()
 
 
-fn test_huber_forward_linear(ctx: DeviceContext) raises:
+def test_huber_forward_linear(ctx: DeviceContext) raises:
     """Test: HuberLoss.forward_gpu in the LINEAR region (|residual| > delta).
 
     Input: [pred=3.0, target=0.5] → residual=2.5, |2.5| > delta=1.0
@@ -480,30 +498,34 @@ fn test_huber_forward_linear(ctx: DeviceContext) raises:
 
     var in_buf = ctx.enqueue_create_buffer[dtype](BATCH * HIN)
     var out_buf = ctx.enqueue_create_buffer[dtype](BATCH * HOUT)
-    var cache_buf = ctx.enqueue_create_buffer[dtype](max(1, BATCH * H.CACHE_SIZE))
+    var cache_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * H.CACHE_SIZE)
+    )
     var params_buf = ctx.enqueue_create_buffer[dtype](max(1, H.PARAM_SIZE))
 
     var host_in = List[Scalar[dtype]](capacity=BATCH * HIN)
     for b in range(BATCH):
-        host_in.append(Scalar[dtype](3.0))   # prediction (large)
-        host_in.append(Scalar[dtype](0.5))   # target
+        host_in.append(Scalar[dtype](3.0))  # prediction (large)
+        host_in.append(Scalar[dtype](0.5))  # target
     ctx.enqueue_copy(in_buf, host_in.unsafe_ptr())
     ctx.synchronize()
 
     var in_t = LayoutTensor[dtype, Layout.row_major(BATCH, HIN), MutAnyOrigin](
         in_buf.unsafe_ptr()
     )
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, HOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
-    var params_t = LayoutTensor[dtype, Layout.row_major(H.PARAM_SIZE), MutAnyOrigin](
-        params_buf.unsafe_ptr()
-    )
-    var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, H.CACHE_SIZE), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
+    var out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, HOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
+    var params_t = LayoutTensor[
+        dtype, Layout.row_major(H.PARAM_SIZE), MutAnyOrigin
+    ](params_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, H.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
 
-    var ws = ctx.enqueue_create_buffer[dtype](max(1, BATCH * H.WORKSPACE_SIZE_PER_SAMPLE))
+    var ws = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * H.WORKSPACE_SIZE_PER_SAMPLE)
+    )
 
     H.forward_gpu[BATCH](ctx, out_t, in_t, params_t, cache_t, ws)
     ctx.synchronize()
@@ -520,7 +542,7 @@ fn test_huber_forward_linear(ctx: DeviceContext) raises:
     print()
 
 
-fn test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
+def test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
     """Critical test: Compare HuberLoss GPU backward vs CPU backward.
 
     If these differ, the GPU kernel has a bug.
@@ -528,7 +550,7 @@ fn test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
     print("--- Test 9: HuberLoss backward GPU vs CPU ---")
 
     comptime H = HuberLoss[1.0]
-    comptime HIN = H.IN_DIM   # 2
+    comptime HIN = H.IN_DIM  # 2
     comptime HOUT = H.OUT_DIM  # 1
 
     # -- CPU backward --
@@ -556,9 +578,15 @@ fn test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
     # Sample 2: pred=0.2, target=0.8 → residual=-0.6 (quadratic, negative)
     # Sample 3: pred=0.0, target=5.0 → residual=-5.0 (linear, negative)
     var preds = InlineArray[Float64, BATCH](uninitialized=True)
-    preds[0] = 1.0; preds[1] = 3.0; preds[2] = 0.2; preds[3] = 0.0
+    preds[0] = 1.0
+    preds[1] = 3.0
+    preds[2] = 0.2
+    preds[3] = 0.0
     var targets = InlineArray[Float64, BATCH](uninitialized=True)
-    targets[0] = 0.5; targets[1] = 0.5; targets[2] = 0.8; targets[3] = 5.0
+    targets[0] = 0.5
+    targets[1] = 0.5
+    targets[2] = 0.8
+    targets[3] = 5.0
 
     for b in range(BATCH):
         cpu_in[b * HIN + 0] = Scalar[dtype](preds[b])
@@ -613,7 +641,9 @@ fn test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
     # -- GPU backward --
     var in_buf = ctx.enqueue_create_buffer[dtype](BATCH * HIN)
     var out_buf = ctx.enqueue_create_buffer[dtype](BATCH * HOUT)
-    var cache_buf = ctx.enqueue_create_buffer[dtype](max(1, BATCH * H.CACHE_SIZE))
+    var cache_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * H.CACHE_SIZE)
+    )
     var params_buf = ctx.enqueue_create_buffer[dtype](max(1, H.PARAM_SIZE))
     var grad_in_buf = ctx.enqueue_create_buffer[dtype](BATCH * HIN)
     var grad_seed_buf = ctx.enqueue_create_buffer[dtype](BATCH * HOUT)
@@ -623,32 +653,36 @@ fn test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
     ctx.enqueue_copy(grad_seed_buf, cpu_grad_seed.unsafe_ptr())
     ctx.synchronize()
 
-    var gpu_in_t = LayoutTensor[dtype, Layout.row_major(BATCH, HIN), MutAnyOrigin](
-        in_buf.unsafe_ptr()
-    )
-    var gpu_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, HOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
-    var gpu_params_t = LayoutTensor[dtype, Layout.row_major(H.PARAM_SIZE), MutAnyOrigin](
-        params_buf.unsafe_ptr()
-    )
-    var gpu_cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, H.CACHE_SIZE), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
-    var gpu_grad_in_t = LayoutTensor[dtype, Layout.row_major(BATCH, HIN), MutAnyOrigin](
-        grad_in_buf.unsafe_ptr()
-    )
-    var gpu_grad_seed_t = LayoutTensor[dtype, Layout.row_major(BATCH, HOUT), MutAnyOrigin](
-        grad_seed_buf.unsafe_ptr()
-    )
-    var gpu_grads_t = LayoutTensor[dtype, Layout.row_major(H.PARAM_SIZE), MutAnyOrigin](
-        grads_buf.unsafe_ptr()
-    )
+    var gpu_in_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, HIN), MutAnyOrigin
+    ](in_buf.unsafe_ptr())
+    var gpu_out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, HOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
+    var gpu_params_t = LayoutTensor[
+        dtype, Layout.row_major(H.PARAM_SIZE), MutAnyOrigin
+    ](params_buf.unsafe_ptr())
+    var gpu_cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, H.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
+    var gpu_grad_in_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, HIN), MutAnyOrigin
+    ](grad_in_buf.unsafe_ptr())
+    var gpu_grad_seed_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, HOUT), MutAnyOrigin
+    ](grad_seed_buf.unsafe_ptr())
+    var gpu_grads_t = LayoutTensor[
+        dtype, Layout.row_major(H.PARAM_SIZE), MutAnyOrigin
+    ](grads_buf.unsafe_ptr())
 
-    var ws = ctx.enqueue_create_buffer[dtype](max(1, BATCH * H.WORKSPACE_SIZE_PER_SAMPLE))
+    var ws = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * H.WORKSPACE_SIZE_PER_SAMPLE)
+    )
 
     # GPU forward (populate cache)
-    H.forward_gpu[BATCH](ctx, gpu_out_t, gpu_in_t, gpu_params_t, gpu_cache_t, ws)
+    H.forward_gpu[BATCH](
+        ctx, gpu_out_t, gpu_in_t, gpu_params_t, gpu_cache_t, ws
+    )
     ctx.synchronize()
 
     # GPU backward
@@ -719,7 +753,7 @@ fn test_huber_backward_gpu_vs_cpu(ctx: DeviceContext) raises:
     print()
 
 
-fn test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
+def test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
     """Test: Full HuberLoss LossGraph backward, compare GPU vs CPU.
 
     Uses the exact same graph as HuberDQNConfig:
@@ -738,8 +772,8 @@ fn test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
         SplitApply[Gather[ACTIONS], Slice[1, 0, 1], ACTIONS + 1],
         HuberLoss[1.0],
     ]
-    comptime LIN = HuberLossGraph.IN_DIM    # 4
-    comptime LOUT = HuberLossGraph.OUT_DIM   # 1
+    comptime LIN = HuberLossGraph.IN_DIM  # 4
+    comptime LOUT = HuberLossGraph.OUT_DIM  # 1
     comptime LCS = HuberLossGraph.CACHE_SIZE
     comptime PS = max(1, HuberLossGraph.PARAM_SIZE)
 
@@ -765,18 +799,18 @@ fn test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
     for b in range(BATCH):
         cpu_grad_seed[b] = Scalar[dtype](1.0 / Float64(BATCH))
 
-    var cpu_in_t = LayoutTensor[dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin](
-        cpu_in.unsafe_ptr()
-    )
-    var cpu_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin](
-        cpu_out.unsafe_ptr()
-    )
+    var cpu_in_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin
+    ](cpu_in.unsafe_ptr())
+    var cpu_out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin
+    ](cpu_out.unsafe_ptr())
     var cpu_params_t = LayoutTensor[
         dtype, Layout.row_major(HuberLossGraph.PARAM_SIZE), MutAnyOrigin
     ](cpu_params.unsafe_ptr())
-    var cpu_cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, LCS), MutAnyOrigin](
-        cpu_cache.unsafe_ptr()
-    )
+    var cpu_cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LCS), MutAnyOrigin
+    ](cpu_cache.unsafe_ptr())
     var cpu_grad_seed_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin
     ](cpu_grad_seed.unsafe_ptr())
@@ -787,7 +821,9 @@ fn test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
         dtype, Layout.row_major(HuberLossGraph.PARAM_SIZE), MutAnyOrigin
     ](cpu_grads.unsafe_ptr())
 
-    HuberLossGraph.forward[BATCH](cpu_in_t, cpu_out_t, cpu_params_t, cpu_cache_t)
+    HuberLossGraph.forward[BATCH](
+        cpu_in_t, cpu_out_t, cpu_params_t, cpu_cache_t
+    )
     HuberLossGraph.backward[BATCH](
         cpu_grad_seed_t, cpu_grad_in_t, cpu_params_t, cpu_cache_t, cpu_grads_t
     )
@@ -818,21 +854,21 @@ fn test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
     ctx.enqueue_copy(grad_seed_buf, cpu_grad_seed.unsafe_ptr())
     ctx.synchronize()
 
-    var gpu_in_t = LayoutTensor[dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin](
-        in_buf.unsafe_ptr()
-    )
-    var gpu_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin](
-        out_buf.unsafe_ptr()
-    )
+    var gpu_in_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin
+    ](in_buf.unsafe_ptr())
+    var gpu_out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin
+    ](out_buf.unsafe_ptr())
     var gpu_params_t = LayoutTensor[
         dtype, Layout.row_major(HuberLossGraph.PARAM_SIZE), MutAnyOrigin
     ](params_buf.unsafe_ptr())
-    var gpu_cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, LCS), MutAnyOrigin](
-        cache_buf.unsafe_ptr()
-    )
-    var gpu_grad_in_t = LayoutTensor[dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin](
-        grad_in_buf.unsafe_ptr()
-    )
+    var gpu_cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LCS), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
+    var gpu_grad_in_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, LIN), MutAnyOrigin
+    ](grad_in_buf.unsafe_ptr())
     var gpu_grad_seed_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, LOUT), MutAnyOrigin
     ](grad_seed_buf.unsafe_ptr())
@@ -850,8 +886,13 @@ fn test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
     ctx.synchronize()
 
     HuberLossGraph.backward_gpu[BATCH](
-        ctx, gpu_grad_in_t, gpu_grad_seed_t, gpu_params_t, gpu_cache_t,
-        gpu_grads_t, ws,
+        ctx,
+        gpu_grad_in_t,
+        gpu_grad_seed_t,
+        gpu_params_t,
+        gpu_cache_t,
+        gpu_grads_t,
+        ws,
     )
     ctx.synchronize()
 
@@ -886,9 +927,15 @@ fn test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
             var diff = cpu_val - gpu_val
             if diff > 1e-5 or diff < -1e-5:
                 print(
-                    "    MISMATCH grad[" + String(b) + "," + String(c) + "]:"
-                    + " cpu=" + String(cpu_val)[:10]
-                    + " gpu=" + String(gpu_val)[:10]
+                    "    MISMATCH grad["
+                    + String(b)
+                    + ","
+                    + String(c)
+                    + "]:"
+                    + " cpu="
+                    + String(cpu_val)[:10]
+                    + " gpu="
+                    + String(gpu_val)[:10]
                 )
                 all_ok = False
     if all_ok:
@@ -898,7 +945,7 @@ fn test_full_huber_lossgraph_backward(ctx: DeviceContext) raises:
     print()
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("LossGraph Metal Isolation Test (MSE + Huber)")
     print("=" * 60)

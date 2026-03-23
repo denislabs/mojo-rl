@@ -59,7 +59,7 @@ struct PrioritySweepingAgent(
     # predecessors[state] contains list of (prev_state * num_actions + action)
     var predecessors: List[List[Int]]
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.q_table = copy.q_table
         self.learning_rate = copy.learning_rate
         self.discount_factor = copy.discount_factor
@@ -77,7 +77,7 @@ struct PrioritySweepingAgent(
         self.pq_size = copy.pq_size
         self.predecessors = copy.predecessors.copy()
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.q_table = take.q_table^
         self.learning_rate = take.learning_rate
         self.discount_factor = take.discount_factor
@@ -95,7 +95,7 @@ struct PrioritySweepingAgent(
         self.pq_size = take.pq_size
         self.predecessors = take.predecessors^
 
-    fn __init__(
+    def __init__(
         out self,
         num_states: Int,
         num_actions: Int,
@@ -136,10 +136,10 @@ struct PrioritySweepingAgent(
         for _ in range(num_states):
             self.predecessors.append(List[Int]())
 
-    fn _pair_index(self, state: Int, action: Int) -> Int:
+    def _pair_index(self, state: Int, action: Int) -> Int:
         return state * self.num_actions + action
 
-    fn select_action(self, state_idx: Int) -> Int:
+    def select_action(self, state_idx: Int) -> Int:
         var rand = random_float64()
         if rand < self.epsilon:
             # random_si64 is inclusive on both ends, so use num_actions - 1
@@ -147,7 +147,7 @@ struct PrioritySweepingAgent(
         else:
             return self.q_table.get_best_action(state_idx)
 
-    fn _add_to_pq(mut self, pair_idx: Int, priority: Float64):
+    def _add_to_pq(mut self, pair_idx: Int, priority: Float64):
         """Add or update priority in queue."""
         # Check if already in queue
         for i in range(self.pq_size):
@@ -166,7 +166,7 @@ struct PrioritySweepingAgent(
             self.pq_priorities.append(priority)
         self.pq_size += 1
 
-    fn _pop_max_pq(mut self) -> Int:
+    def _pop_max_pq(mut self) -> Int:
         """Pop and return pair with highest priority."""
         if self.pq_size == 0:
             return -1
@@ -189,7 +189,7 @@ struct PrioritySweepingAgent(
 
         return result
 
-    fn _add_predecessor(mut self, next_state: Int, state: Int, action: Int):
+    def _add_predecessor(mut self, next_state: Int, state: Int, action: Int):
         """Record that (state, action) leads to next_state."""
         var pred_pair = self._pair_index(state, action)
 
@@ -200,7 +200,7 @@ struct PrioritySweepingAgent(
 
         self.predecessors[next_state].append(pred_pair)
 
-    fn update(
+    def update(
         mut self,
         state_idx: Int,
         action: Int,
@@ -284,16 +284,16 @@ struct PrioritySweepingAgent(
                 if p_priority > self.priority_threshold:
                     self._add_to_pq(pred_pair, p_priority)
 
-    fn decay_epsilon(mut self):
+    def decay_epsilon(mut self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    fn get_epsilon(self) -> Float64:
+    def get_epsilon(self) -> Float64:
         return self.epsilon
 
-    fn get_best_action(self, state_idx: Int) -> Int:
+    def get_best_action(self, state_idx: Int) -> Int:
         return self.q_table.get_best_action(state_idx)
 
-    fn train[
+    def train[
         E: DiscreteEnv
     ](
         mut self,
@@ -357,7 +357,7 @@ struct PrioritySweepingAgent(
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: DiscreteEnv & RenderableEnv
     ](
         self,

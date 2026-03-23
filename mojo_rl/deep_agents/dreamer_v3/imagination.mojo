@@ -16,7 +16,7 @@ from mojo_rl.nn.constants import dtype
 # =============================================================================
 
 
-fn compute_lambda_returns[
+def compute_lambda_returns[
     HORIZON: Int,
     BATCH: Int,
 ](
@@ -65,7 +65,7 @@ fn compute_lambda_returns[
 # =============================================================================
 
 
-fn normalize_returns[
+def normalize_returns[
     HORIZON: Int,
     BATCH: Int,
 ](
@@ -124,7 +124,7 @@ fn normalize_returns[
 # =============================================================================
 
 
-fn sample_tanh_normal(
+def sample_tanh_normal(
     mean: Float64,
     log_std: Float64,
     noise: Float64,
@@ -152,7 +152,7 @@ fn sample_tanh_normal(
     return (ep - en) / (ep + en)
 
 
-fn log_prob_tanh_normal(
+def log_prob_tanh_normal(
     action: Float64,
     mean: Float64,
     log_std: Float64,

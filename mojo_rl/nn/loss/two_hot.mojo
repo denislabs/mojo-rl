@@ -19,7 +19,7 @@ from std.math import exp, log, abs
 from ..constants import dtype
 
 
-fn compute_bins[
+def compute_bins[
     NUM_BINS: Int
 ](v_min: Float32, v_max: Float32) -> InlineArray[Float32, NUM_BINS]:
     """Compute evenly spaced bin values for distributional RL.
@@ -41,9 +41,7 @@ fn compute_bins[
     return bins^
 
 
-fn compute_symlog_bins[
-    NUM_BINS: Int
-]() -> InlineArray[Float32, NUM_BINS]:
+def compute_symlog_bins[NUM_BINS: Int]() -> InlineArray[Float32, NUM_BINS]:
     """Compute symlog-spaced bin values for DreamerV3 distributional RL.
 
     Bins are evenly spaced in symlog space: linspace(-20, 20, NUM_BINS).
@@ -63,7 +61,7 @@ fn compute_symlog_bins[
     return bins^
 
 
-fn two_hot_encode[
+def two_hot_encode[
     NUM_BINS: Int
 ](
     x: Float32,
@@ -119,7 +117,7 @@ fn two_hot_encode[
     target[k + 1] = lower_weight
 
 
-fn two_hot_encode_batch[
+def two_hot_encode_batch[
     BATCH: Int, NUM_BINS: Int
 ](
     values: InlineArray[Float32, BATCH],
@@ -169,7 +167,7 @@ fn two_hot_encode_batch[
         targets[base + k + 1] = Float32(1.0) - upper_weight
 
 
-fn symlog(x: Float32) -> Float32:
+def symlog(x: Float32) -> Float32:
     """Symmetric logarithm: sign(x) * ln(1 + |x|).
 
     Compresses large values into a bounded range while preserving sign.
@@ -181,7 +179,7 @@ fn symlog(x: Float32) -> Float32:
         return -log(Float32(1.0) - x)
 
 
-fn symexp(x: Float32) -> Float32:
+def symexp(x: Float32) -> Float32:
     """Inverse of symlog: sign(x) * (exp(|x|) - 1).
 
     Converts from symlog space back to actual value space.
@@ -193,7 +191,7 @@ fn symexp(x: Float32) -> Float32:
         return -(exp(-x) - Float32(1.0))
 
 
-fn decode_value[
+def decode_value[
     NUM_BINS: Int
 ](
     logits: InlineArray[Float32, NUM_BINS],
@@ -228,7 +226,7 @@ fn decode_value[
     return symexp(value_symlog)
 
 
-fn decode_value_batch[
+def decode_value_batch[
     BATCH: Int, NUM_BINS: Int
 ](
     logits: InlineArray[Float32, BATCH * NUM_BINS],

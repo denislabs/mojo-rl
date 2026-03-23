@@ -128,7 +128,7 @@ struct CGSolver(ConstraintSolver):
     comptime NEEDS_M_INV: Bool = True
 
     @staticmethod
-    fn solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
+    def solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """CG solver workspace size (primal, qacc-space).
 
         Layout identical to Newton primal layout:
@@ -143,7 +143,7 @@ struct CGSolver(ConstraintSolver):
         return 25 * MC + 6 * MC * NV
 
     @staticmethod
-    fn solve[
+    def solve[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -489,7 +489,7 @@ struct CGSolver(ConstraintSolver):
             constraints.rows[r].lambda_val = force[r]
 
     @staticmethod
-    fn solver_threads[
+    def solver_threads[
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -500,7 +500,7 @@ struct CGSolver(ConstraintSolver):
 
     @staticmethod
     @always_inline
-    fn solve_gpu[
+    def solve_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

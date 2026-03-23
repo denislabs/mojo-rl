@@ -28,7 +28,7 @@ from std.gpu.host import DeviceContext
 # =============================================================================
 
 
-fn print_test_header(name: String):
+def print_test_header(name: String):
     print("\n" + "=" * 70)
     print("TEST: " + name)
     print("=" * 70)
@@ -39,7 +39,7 @@ fn print_test_header(name: String):
 # =============================================================================
 
 
-fn test_stochastic_actor_gpu_training() raises:
+def test_stochastic_actor_gpu_training() raises:
     print_test_header("StochasticActor GPU Training")
 
     seed(42)
@@ -124,7 +124,7 @@ fn test_stochastic_actor_gpu_training() raises:
 # =============================================================================
 
 
-fn test_backbone_with_stochastic_actor() raises:
+def test_backbone_with_stochastic_actor() raises:
     print_test_header("Backbone + StochasticActor (Full Policy)")
 
     seed(123)
@@ -219,7 +219,7 @@ fn test_backbone_with_stochastic_actor() raises:
 # =============================================================================
 
 
-fn test_larger_action_space() raises:
+def test_larger_action_space() raises:
     print_test_header("Larger Action Space (Robot Control)")
 
     seed(456)
@@ -310,7 +310,7 @@ fn test_larger_action_space() raises:
 # =============================================================================
 
 
-fn main() raises:
+def main() raises:
     print("=" * 70)
     print("StochasticActor GPU Tests")
     print("=" * 70)

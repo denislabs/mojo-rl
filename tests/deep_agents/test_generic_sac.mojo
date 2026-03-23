@@ -7,7 +7,7 @@ from mojo_rl.deep_agents.core.agents import DeepSACAgent
 from mojo_rl.envs.pendulum import PendulumEnv
 
 
-fn main() raises:
+def main() raises:
     print("=== Generic SAC Test ===\n")
 
     # Test 1: Unified SAC agent
@@ -33,7 +33,11 @@ fn main() raises:
     # Comparison
     print("\n3. Comparison...")
     if sac.train_step_count > 0:
-        print("   OK: Generic SAC trained (" + String(sac.train_step_count) + " steps)")
+        print(
+            "   OK: Generic SAC trained ("
+            + String(sac.train_step_count)
+            + " steps)"
+        )
     else:
         print("   FAIL: Generic SAC did not train")
 

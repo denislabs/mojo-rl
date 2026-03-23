@@ -548,11 +548,11 @@ struct HapticEffect:
     ]
     var _impl: Self._mlir_type
 
-    fn __init__(out self):
+    def __init__(out self):
         """Initialize with uninitialized data (for C interop)."""
         __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(self))
 
-    fn __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
+    def __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
         return rebind[Ptr[T, origin_of(self._impl)]](Ptr(to=self._impl))[]
 
 
@@ -570,19 +570,19 @@ struct HapticID(Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __or__(lhs, rhs: Self) -> Self:
+    def __or__(lhs, rhs: Self) -> Self:
         return Self(lhs.value | rhs.value)
 
 
-fn get_haptics(
+def get_haptics(
     count: Ptr[c_int, MutAnyOrigin]
 ) raises -> Ptr[HapticID, MutAnyOrigin]:
     """Get a list of currently connected haptic devices.
@@ -606,7 +606,7 @@ fn get_haptics(
     ]()(count)
 
 
-fn get_haptic_name_for_id(
+def get_haptic_name_for_id(
     instance_id: HapticID,
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the implementation dependent name of a haptic device.
@@ -631,7 +631,7 @@ fn get_haptic_name_for_id(
     ]()(instance_id)
 
 
-fn open_haptic(
+def open_haptic(
     instance_id: HapticID, out ret: Ptr[Haptic, MutAnyOrigin]
 ) raises:
     """Open a haptic device for use.
@@ -662,7 +662,7 @@ fn open_haptic(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_haptic_from_id(
+def get_haptic_from_id(
     instance_id: HapticID,
 ) raises -> Ptr[Haptic, MutAnyOrigin]:
     """Get the SDL_Haptic associated with an instance ID, if it has been opened.
@@ -684,7 +684,7 @@ fn get_haptic_from_id(
     ]()(instance_id)
 
 
-fn get_haptic_id(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> HapticID:
+def get_haptic_id(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> HapticID:
     """Get the instance ID of an opened haptic device.
 
     Args:
@@ -704,7 +704,7 @@ fn get_haptic_id(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> HapticID:
     ]()(haptic)
 
 
-fn get_haptic_name(
+def get_haptic_name(
     haptic: Ptr[Haptic, MutAnyOrigin]
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the implementation dependent name of a haptic device.
@@ -727,7 +727,7 @@ fn get_haptic_name(
     ]()(haptic)
 
 
-fn is_mouse_haptic() raises -> Bool:
+def is_mouse_haptic() raises -> Bool:
     """Query whether or not the current mouse has haptic capabilities.
 
     Returns:
@@ -739,7 +739,7 @@ fn is_mouse_haptic() raises -> Bool:
     return _get_dylib_function[lib, "SDL_IsMouseHaptic", fn() -> Bool]()()
 
 
-fn open_haptic_from_mouse(out ret: Ptr[Haptic, MutAnyOrigin]) raises:
+def open_haptic_from_mouse(out ret: Ptr[Haptic, MutAnyOrigin]) raises:
     """Try to open a haptic device from the current mouse.
 
     Returns:
@@ -756,7 +756,7 @@ fn open_haptic_from_mouse(out ret: Ptr[Haptic, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn is_joystick_haptic(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> Bool:
+def is_joystick_haptic(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> Bool:
     """Query if a joystick has haptic features.
 
     Args:
@@ -775,7 +775,7 @@ fn is_joystick_haptic(joystick: Ptr[Joystick, MutAnyOrigin]) raises -> Bool:
     ]()(joystick)
 
 
-fn open_haptic_from_joystick(
+def open_haptic_from_joystick(
     joystick: Ptr[Joystick, MutAnyOrigin],
     out ret: Ptr[Haptic, MutAnyOrigin],
 ) raises:
@@ -808,7 +808,7 @@ fn open_haptic_from_joystick(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn close_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> None:
+def close_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> None:
     """Close a haptic device previously opened with SDL_OpenHaptic().
 
     Args:
@@ -822,7 +822,7 @@ fn close_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> None:
     ]()(haptic)
 
 
-fn get_max_haptic_effects(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> c_int:
+def get_max_haptic_effects(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> c_int:
     """Get the number of effects a haptic device can store.
 
     On some platforms this isn't fully supported, and therefore is an
@@ -846,7 +846,7 @@ fn get_max_haptic_effects(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> c_int:
     ]()(haptic)
 
 
-fn get_max_haptic_effects_playing(
+def get_max_haptic_effects_playing(
     haptic: Ptr[Haptic, MutAnyOrigin]
 ) raises -> c_int:
     """Get the number of effects a haptic device can play at the same time.
@@ -870,7 +870,7 @@ fn get_max_haptic_effects_playing(
     ]()(haptic)
 
 
-fn get_haptic_features(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> UInt32:
+def get_haptic_features(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> UInt32:
     """Get the haptic device's supported features in bitwise manner.
 
     Args:
@@ -890,7 +890,7 @@ fn get_haptic_features(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> UInt32:
     ]()(haptic)
 
 
-fn get_num_haptic_axes(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> c_int:
+def get_num_haptic_axes(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> c_int:
     """Get the number of haptic axes the device has.
 
     The number of haptic axes might be useful if working with the
@@ -913,7 +913,7 @@ fn get_num_haptic_axes(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> c_int:
     ]()(haptic)
 
 
-fn haptic_effect_supported(
+def haptic_effect_supported(
     haptic: Ptr[Haptic, MutAnyOrigin],
     effect: Ptr[HapticEffect, ImmutAnyOrigin],
 ) raises -> Bool:
@@ -939,7 +939,7 @@ fn haptic_effect_supported(
     ]()(haptic, effect)
 
 
-fn create_haptic_effect(
+def create_haptic_effect(
     haptic: Ptr[Haptic, MutAnyOrigin],
     effect: Ptr[HapticEffect, ImmutAnyOrigin],
 ) raises -> c_int:
@@ -967,7 +967,7 @@ fn create_haptic_effect(
     ]()(haptic, effect)
 
 
-fn update_haptic_effect(
+def update_haptic_effect(
     haptic: Ptr[Haptic, MutAnyOrigin],
     effect: c_int,
     data: Ptr[HapticEffect, ImmutAnyOrigin],
@@ -1005,7 +1005,7 @@ fn update_haptic_effect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn run_haptic_effect(
+def run_haptic_effect(
     haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int, iterations: UInt32
 ) raises:
     """Run the haptic effect on its associated haptic device.
@@ -1042,7 +1042,7 @@ fn run_haptic_effect(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn stop_haptic_effect(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) raises:
+def stop_haptic_effect(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) raises:
     """Stop the haptic effect on its associated haptic device.
 
     Args:
@@ -1065,7 +1065,7 @@ fn stop_haptic_effect(haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_haptic_effect(
+def destroy_haptic_effect(
     haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int
 ) raises -> None:
     """Destroy a haptic effect on the device.
@@ -1087,7 +1087,7 @@ fn destroy_haptic_effect(
     ]()(haptic, effect)
 
 
-fn get_haptic_effect_status(
+def get_haptic_effect_status(
     haptic: Ptr[Haptic, MutAnyOrigin], effect: c_int
 ) raises -> Bool:
     """Get the status of the current effect on the specified haptic device.
@@ -1112,7 +1112,7 @@ fn get_haptic_effect_status(
     ]()(haptic, effect)
 
 
-fn set_haptic_gain(haptic: Ptr[Haptic, MutAnyOrigin], gain: c_int) raises:
+def set_haptic_gain(haptic: Ptr[Haptic, MutAnyOrigin], gain: c_int) raises:
     """Set the global gain of the specified haptic device.
 
     Device must support the SDL_HAPTIC_GAIN feature.
@@ -1143,7 +1143,7 @@ fn set_haptic_gain(haptic: Ptr[Haptic, MutAnyOrigin], gain: c_int) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn set_haptic_autocenter(
+def set_haptic_autocenter(
     haptic: Ptr[Haptic, MutAnyOrigin], autocenter: c_int
 ) raises:
     """Set the global autocenter of the device.
@@ -1173,7 +1173,7 @@ fn set_haptic_autocenter(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn pause_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
+def pause_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     """Pause a haptic device.
 
     Device must support the `SDL_HAPTIC_PAUSE` feature. Call SDL_ResumeHaptic()
@@ -1199,7 +1199,7 @@ fn pause_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn resume_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
+def resume_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     """Resume a haptic device.
 
     Call to unpause after SDL_PauseHaptic().
@@ -1223,7 +1223,7 @@ fn resume_haptic(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn stop_haptic_effects(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
+def stop_haptic_effects(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     """Stop all the currently playing effects on a haptic device.
 
     Args:
@@ -1245,7 +1245,7 @@ fn stop_haptic_effects(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn haptic_rumble_supported(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> Bool:
+def haptic_rumble_supported(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> Bool:
     """Check whether rumble is supported on a haptic device.
 
     Args:
@@ -1264,7 +1264,7 @@ fn haptic_rumble_supported(haptic: Ptr[Haptic, MutAnyOrigin]) raises -> Bool:
     ]()(haptic)
 
 
-fn init_haptic_rumble(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
+def init_haptic_rumble(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     """Initialize a haptic device for simple rumble playback.
 
     Args:
@@ -1286,7 +1286,7 @@ fn init_haptic_rumble(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn play_haptic_rumble(
+def play_haptic_rumble(
     haptic: Ptr[Haptic, MutAnyOrigin], strength: c_float, length: UInt32
 ) raises:
     """Run a simple rumble effect on a haptic device.
@@ -1316,7 +1316,7 @@ fn play_haptic_rumble(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn stop_haptic_rumble(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
+def stop_haptic_rumble(haptic: Ptr[Haptic, MutAnyOrigin]) raises:
     """Stop the simple rumble on a haptic device.
 
     Args:

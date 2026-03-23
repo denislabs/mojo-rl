@@ -28,17 +28,17 @@ struct NegateOp[dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = 0
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -58,7 +58,7 @@ struct NegateOp[dim: Int](DiffOp):
             output.ptr[i] = -input.ptr[i]
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -81,7 +81,7 @@ struct NegateOp[dim: Int](DiffOp):
             grad_input.ptr[i] = -grad_output.ptr[i]
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -106,7 +106,7 @@ struct NegateOp[dim: Int](DiffOp):
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             o: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -124,7 +124,7 @@ struct NegateOp[dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -152,7 +152,7 @@ struct NegateOp[dim: Int](DiffOp):
         var grid_x = (total + TPB - 1) // TPB
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             gi: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],

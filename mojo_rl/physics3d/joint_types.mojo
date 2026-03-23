@@ -93,7 +93,7 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
     var frictionloss: Scalar[Self.DTYPE]
 
     @staticmethod
-    fn empty() -> Self:
+    def empty() -> Self:
         """Create an empty/default joint definition."""
         return Self(
             jnt_type=JNT_HINGE,
@@ -117,7 +117,7 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         )
 
     @staticmethod
-    fn create_hinge(
+    def create_hinge(
         body_id: Int,
         qpos_adr: Int,
         dof_adr: Int,
@@ -184,7 +184,7 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         )
 
     @staticmethod
-    fn create_slide(
+    def create_slide(
         body_id: Int,
         qpos_adr: Int,
         dof_adr: Int,
@@ -251,7 +251,7 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         )
 
     @staticmethod
-    fn create_ball(
+    def create_ball(
         body_id: Int,
         qpos_adr: Int,
         dof_adr: Int,
@@ -294,7 +294,7 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         )
 
     @staticmethod
-    fn create_free(
+    def create_free(
         body_id: Int,
         qpos_adr: Int,
         dof_adr: Int,
@@ -332,7 +332,7 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
             frictionloss=Scalar[Self.DTYPE](0),
         )
 
-    fn qpos_size(self) -> Int:
+    def qpos_size(self) -> Int:
         """Get the number of qpos elements for this joint type."""
         if self.jnt_type == JNT_FREE:
             return FREE_QPOS_SIZE
@@ -343,7 +343,7 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
         else:  # JNT_HINGE
             return HINGE_QPOS_SIZE
 
-    fn qvel_size(self) -> Int:
+    def qvel_size(self) -> Int:
         """Get the number of qvel elements for this joint type."""
         if self.jnt_type == JNT_FREE:
             return FREE_QVEL_SIZE
@@ -360,7 +360,7 @@ struct JointDef[DTYPE: DType](ImplicitlyCopyable, Movable):
 # =============================================================================
 
 
-fn get_joint_qpos_size(jnt_type: Int) -> Int:
+def get_joint_qpos_size(jnt_type: Int) -> Int:
     """Get qpos size for a joint type."""
     if jnt_type == JNT_FREE:
         return FREE_QPOS_SIZE
@@ -372,7 +372,7 @@ fn get_joint_qpos_size(jnt_type: Int) -> Int:
         return HINGE_QPOS_SIZE
 
 
-fn get_joint_qvel_size(jnt_type: Int) -> Int:
+def get_joint_qvel_size(jnt_type: Int) -> Int:
     """Get qvel size for a joint type."""
     if jnt_type == JNT_FREE:
         return FREE_QVEL_SIZE

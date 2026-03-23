@@ -17,7 +17,7 @@ from mojo_rl.core.hyperparam.search_result import SearchResults, TrialResult
 from mojo_rl.core.hyperparam.agent_factories import make_qlearning_agent
 
 
-fn run_grid_search(
+def run_grid_search(
     num_episodes: Int = 300,
     max_steps: Int = 100,
     convergence_target: Float64 = 3.0,
@@ -105,7 +105,7 @@ fn run_grid_search(
     return results^
 
 
-fn run_random_search(
+def run_random_search(
     num_trials: Int = 20,
     num_episodes: Int = 300,
     max_steps: Int = 100,
@@ -187,7 +187,7 @@ fn run_random_search(
     return results^
 
 
-fn main() raises:
+def main() raises:
     """Run hyperparameter search demonstration."""
     print("")
     print("=" * 60)

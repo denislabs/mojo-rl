@@ -37,7 +37,7 @@ comptime IPOS_TOL: Float64 = 1e-6  # ipos (CoM offset) tolerance
 # =============================================================================
 
 
-fn test_half_cheetah() raises:
+def test_half_cheetah() raises:
     """Compare inertiafromgeom output for HalfCheetah against MuJoCo."""
     print("--- Test: HalfCheetah inertiafromgeom ---")
 
@@ -175,7 +175,7 @@ fn test_half_cheetah() raises:
 # =============================================================================
 
 
-fn test_hopper() raises:
+def test_hopper() raises:
     """Compare inertiafromgeom output for Hopper against MuJoCo."""
     print("--- Test: Hopper inertiafromgeom ---")
 
@@ -297,5 +297,5 @@ fn test_hopper() raises:
     assert_true(all_pass, "Inertia from geom mismatch for: Hopper")
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

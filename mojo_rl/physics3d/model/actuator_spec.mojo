@@ -280,7 +280,7 @@ trait ActuatorsLike:
     comptime N: Int
 
     @staticmethod
-    fn apply_actions[
+    def apply_actions[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -295,7 +295,7 @@ trait ActuatorsLike:
         ...
 
     @staticmethod
-    fn apply_actions_kernel_gpu[
+    def apply_actions_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -310,7 +310,7 @@ trait ActuatorsLike:
         ...
 
     @staticmethod
-    fn compute_qderiv_contribution[
+    def compute_qderiv_contribution[
         DTYPE: DType,
         NV: Int,
     ](mut qderiv: InlineArray[Scalar[DTYPE], NV * NV]):
@@ -318,7 +318,7 @@ trait ActuatorsLike:
 
     @always_inline
     @staticmethod
-    fn compute_qderiv_contribution_gpu[
+    def compute_qderiv_contribution_gpu[
         GDTYPE: DType,
         NV: Int,
     ](
@@ -330,7 +330,7 @@ trait ActuatorsLike:
 
     @always_inline
     @staticmethod
-    fn apply_actions_gpu[
+    def apply_actions_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -368,7 +368,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
     # =========================================================================
 
     @staticmethod
-    fn apply_actions[
+    def apply_actions[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -449,7 +449,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
 
     @always_inline
     @staticmethod
-    fn apply_actions_gpu[
+    def apply_actions_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -542,7 +542,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
             states[env, QFRC_ACT_OFF + dof_adr] = gear_force
 
     @staticmethod
-    fn compute_qderiv_contribution[
+    def compute_qderiv_contribution[
         DTYPE: DType,
         NV: Int,
     ](mut qderiv: InlineArray[Scalar[DTYPE], NV * NV]):
@@ -568,7 +568,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
 
     @always_inline
     @staticmethod
-    fn compute_qderiv_contribution_gpu[
+    def compute_qderiv_contribution_gpu[
         GDTYPE: DType,
         NV: Int,
     ](
@@ -592,7 +592,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
                 workspace[env, idx] = cur + Scalar[GDTYPE](vel_deriv)
 
     @staticmethod
-    fn apply_actions_kernel_gpu[
+    def apply_actions_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -615,7 +615,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn kernel(
+        def kernel(
             states: LayoutTensor[
                 GDTYPE,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -647,7 +647,7 @@ struct _EmptyActuators(ActuatorsLike):
     comptime N: Int = 0
 
     @staticmethod
-    fn apply_actions[
+    def apply_actions[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -662,7 +662,7 @@ struct _EmptyActuators(ActuatorsLike):
         pass
 
     @staticmethod
-    fn apply_actions_kernel_gpu[
+    def apply_actions_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -677,7 +677,7 @@ struct _EmptyActuators(ActuatorsLike):
         pass
 
     @staticmethod
-    fn compute_qderiv_contribution[
+    def compute_qderiv_contribution[
         DTYPE: DType,
         NV: Int,
     ](mut qderiv: InlineArray[Scalar[DTYPE], NV * NV]):
@@ -685,7 +685,7 @@ struct _EmptyActuators(ActuatorsLike):
 
     @always_inline
     @staticmethod
-    fn compute_qderiv_contribution_gpu[
+    def compute_qderiv_contribution_gpu[
         GDTYPE: DType,
         NV: Int,
     ](
@@ -697,7 +697,7 @@ struct _EmptyActuators(ActuatorsLike):
 
     @always_inline
     @staticmethod
-    fn apply_actions_gpu[
+    def apply_actions_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,

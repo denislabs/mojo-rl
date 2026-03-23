@@ -20,7 +20,7 @@ from mojo_rl.nn.constants import dtype
 from mojo_rl.core.logger import NoOpLogger
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=== AutodiffSAC GPU Training Test ===")
     print()

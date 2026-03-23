@@ -26,13 +26,13 @@ struct LayerNormOp[dim: Int](DiffOp):
     comptime CACHE_SIZE: Int = Self.dim + 1
     comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     # =========================================================================
@@ -40,7 +40,7 @@ struct LayerNormOp[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval[
+    def eval[
         BATCH: Int
     ](
         input: LayoutTensor[
@@ -84,13 +84,11 @@ struct LayerNormOp[dim: Int](DiffOp):
                 ) * inv_std
                 cache[b, i] = Scalar[dtype](x_hat)
                 var gamma = Float64(rebind[Scalar[dtype]](params[i]))
-                var beta = Float64(
-                    rebind[Scalar[dtype]](params[Self.dim + i])
-                )
+                var beta = Float64(rebind[Scalar[dtype]](params[Self.dim + i]))
                 output[b, i] = Scalar[dtype](gamma * x_hat + beta)
 
     @staticmethod
-    fn vjp[
+    def vjp[
         BATCH: Int
     ](
         grad_output: LayoutTensor[
@@ -112,9 +110,7 @@ struct LayerNormOp[dim: Int](DiffOp):
         var inv_dim = 1.0 / Float64(Self.dim)
 
         for b in range(BATCH):
-            var inv_std = Float64(
-                rebind[Scalar[dtype]](cache[b, Self.dim])
-            )
+            var inv_std = Float64(rebind[Scalar[dtype]](cache[b, Self.dim]))
 
             # Compute dx_hat = grad * gamma, and accumulate dgamma/dbeta
             # Also compute mean(dx_hat) and mean(dx_hat * x_hat)
@@ -158,7 +154,7 @@ struct LayerNormOp[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn eval_kernel_impl[
+    def eval_kernel_impl[
         BATCH: Int
     ](
         output: LayoutTensor[
@@ -189,7 +185,9 @@ struct LayerNormOp[dim: Int](DiffOp):
         while idx < Self.dim:
             my_sum += rebind[Scalar[dtype]](input[b, idx])
             idx += TPB
-        var mean_val = block.sum[block_size=TPB, broadcast=True](val=my_sum) * inv_dim
+        var mean_val = (
+            block.sum[block_size=TPB, broadcast=True](val=my_sum) * inv_dim
+        )
 
         # Phase 2: compute variance
         var my_var = Scalar[dtype](0)
@@ -198,7 +196,9 @@ struct LayerNormOp[dim: Int](DiffOp):
             var diff = rebind[Scalar[dtype]](input[b, idx]) - mean_val
             my_var += diff * diff
             idx += TPB
-        var var_val = block.sum[block_size=TPB, broadcast=True](val=my_var) * inv_dim
+        var var_val = (
+            block.sum[block_size=TPB, broadcast=True](val=my_var) * inv_dim
+        )
 
         var inv_std = Scalar[dtype](1.0) / sqrt(var_val + Scalar[dtype](1e-5))
 
@@ -209,14 +209,18 @@ struct LayerNormOp[dim: Int](DiffOp):
         # Phase 3: normalize, scale, shift
         idx = local_i
         while idx < Self.dim:
-            var x_hat = (rebind[Scalar[dtype]](input[b, idx]) - mean_val) * inv_std
+            var x_hat = (
+                rebind[Scalar[dtype]](input[b, idx]) - mean_val
+            ) * inv_std
             cache[b, idx] = x_hat
-            output[b, idx] = rebind[Scalar[dtype]](params[idx]) * x_hat + rebind[Scalar[dtype]](params[Self.dim + idx])
+            output[b, idx] = rebind[Scalar[dtype]](
+                params[idx]
+            ) * x_hat + rebind[Scalar[dtype]](params[Self.dim + idx])
             idx += TPB
 
     @always_inline
     @staticmethod
-    fn backward_kernel_impl[
+    def backward_kernel_impl[
         BATCH: Int
     ](
         grad_input: LayoutTensor[
@@ -232,7 +236,8 @@ struct LayerNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """Per-sample LayerNorm backward (dx only). Grid: (BATCH,), Block: (TPB,)."""
+        """Per-sample LayerNorm backward (dx only). Grid: (BATCH,), Block: (TPB,).
+        """
         var b = Int(block_idx.x)
         var local_i = Int(thread_idx.x)
 
@@ -255,12 +260,13 @@ struct LayerNormOp[dim: Int](DiffOp):
             my_dxhat_xhat += dx_hat * x_hat
             idx += TPB
 
-        var mean_dxhat = block.sum[block_size=TPB, broadcast=True](
-            val=my_dxhat
-        ) * inv_dim
-        var mean_dxhat_xhat = block.sum[block_size=TPB, broadcast=True](
-            val=my_dxhat_xhat
-        ) * inv_dim
+        var mean_dxhat = (
+            block.sum[block_size=TPB, broadcast=True](val=my_dxhat) * inv_dim
+        )
+        var mean_dxhat_xhat = (
+            block.sum[block_size=TPB, broadcast=True](val=my_dxhat_xhat)
+            * inv_dim
+        )
 
         # Phase 2: compute dx
         idx = local_i
@@ -276,7 +282,7 @@ struct LayerNormOp[dim: Int](DiffOp):
 
     @always_inline
     @staticmethod
-    fn backward_dparams_kernel_impl[
+    def backward_dparams_kernel_impl[
         BATCH: Int
     ](
         dgamma: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
@@ -288,7 +294,8 @@ struct LayerNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """Reduce over batch for dgamma and dbeta. Grid: (dim,), Block: (TPB,)."""
+        """Reduce over batch for dgamma and dbeta. Grid: (dim,), Block: (TPB,).
+        """
         var col = Int(block_idx.x)
         var local_i = Int(thread_idx.x)
 
@@ -320,7 +327,7 @@ struct LayerNormOp[dim: Int](DiffOp):
     # =========================================================================
 
     @staticmethod
-    fn eval_gpu[
+    def eval_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -346,7 +353,7 @@ struct LayerNormOp[dim: Int](DiffOp):
         ](params.ptr)
 
         @always_inline
-        fn wrapper(
+        def wrapper(
             output: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -372,7 +379,7 @@ struct LayerNormOp[dim: Int](DiffOp):
         )
 
     @staticmethod
-    fn vjp_gpu[
+    def vjp_gpu[
         BATCH: Int
     ](
         ctx: DeviceContext,
@@ -405,7 +412,7 @@ struct LayerNormOp[dim: Int](DiffOp):
 
         # Kernel 1: dx (per-sample reduction)
         @always_inline
-        fn dx_wrapper(
+        def dx_wrapper(
             grad_input: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
@@ -441,7 +448,7 @@ struct LayerNormOp[dim: Int](DiffOp):
         ](grad_params.ptr + Self.dim)
 
         @always_inline
-        fn dp_wrapper(
+        def dp_wrapper(
             dgamma: LayoutTensor[
                 dtype, Layout.row_major(Self.dim), MutAnyOrigin
             ],

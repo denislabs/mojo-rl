@@ -33,7 +33,7 @@ struct TrialResult(Copyable, ImplicitlyCopyable, Movable):
     var total_steps: Int
     var training_episodes: Int
 
-    fn __init__(
+    def __init__(
         out self,
         trial_id: Int,
         hyperparams_str: String,
@@ -92,7 +92,7 @@ struct TrialResult(Copyable, ImplicitlyCopyable, Movable):
         else:
             self.convergence_episode = -1
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.trial_id = copy.trial_id
         self.hyperparams_str = copy.hyperparams_str
         self.mean_reward = copy.mean_reward
@@ -106,7 +106,7 @@ struct TrialResult(Copyable, ImplicitlyCopyable, Movable):
         self.total_steps = copy.total_steps
         self.training_episodes = copy.training_episodes
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.trial_id = take.trial_id
         self.hyperparams_str = take.hyperparams_str^
         self.mean_reward = take.mean_reward
@@ -121,11 +121,11 @@ struct TrialResult(Copyable, ImplicitlyCopyable, Movable):
         self.training_episodes = take.training_episodes
 
     @staticmethod
-    fn csv_header() -> String:
+    def csv_header() -> String:
         """Return CSV header for trial metrics."""
         return "trial_id,mean_reward,max_reward,min_reward,std_reward,final_reward,convergence_episode,mean_steps,total_steps,training_episodes"
 
-    fn to_csv_row(self) -> String:
+    def to_csv_row(self) -> String:
         """Return CSV row for trial metrics."""
         return (
             String(self.trial_id)
@@ -163,7 +163,7 @@ struct SearchResults(Copyable, Movable):
     var trials: List[TrialResult]
     var hyperparam_header: String
 
-    fn __init__(
+    def __init__(
         out self,
         algorithm_name: String,
         environment_name: String,
@@ -184,7 +184,7 @@ struct SearchResults(Copyable, Movable):
         self.trials = List[TrialResult]()
         self.hyperparam_header = hyperparam_header
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.algorithm_name = copy.algorithm_name
         self.environment_name = copy.environment_name
         self.search_type = copy.search_type
@@ -193,22 +193,22 @@ struct SearchResults(Copyable, Movable):
             self.trials.append(copy.trials[i])
         self.hyperparam_header = copy.hyperparam_header
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.algorithm_name = take.algorithm_name^
         self.environment_name = take.environment_name^
         self.search_type = take.search_type^
         self.trials = take.trials^
         self.hyperparam_header = take.hyperparam_header^
 
-    fn add_trial(mut self, var trial: TrialResult):
+    def add_trial(mut self, var trial: TrialResult):
         """Add a trial result to the collection."""
         self.trials.append(trial^)
 
-    fn num_trials(self) -> Int:
+    def num_trials(self) -> Int:
         """Return the number of trials."""
         return len(self.trials)
 
-    fn get_best_by_mean_reward(self) -> TrialResult:
+    def get_best_by_mean_reward(self) -> TrialResult:
         """Return trial with highest mean reward.
 
         Returns:
@@ -230,7 +230,7 @@ struct SearchResults(Copyable, Movable):
                 best_idx = i
         return self.trials[best_idx]
 
-    fn get_best_by_final_reward(self) -> TrialResult:
+    def get_best_by_final_reward(self) -> TrialResult:
         """Return trial with highest final reward.
 
         Final reward is the average of the last N episodes,
@@ -254,7 +254,7 @@ struct SearchResults(Copyable, Movable):
                 best_idx = i
         return self.trials[best_idx]
 
-    fn get_best_by_max_reward(self) -> TrialResult:
+    def get_best_by_max_reward(self) -> TrialResult:
         """Return trial with highest max reward.
 
         Returns:
@@ -275,7 +275,7 @@ struct SearchResults(Copyable, Movable):
                 best_idx = i
         return self.trials[best_idx]
 
-    fn get_best_by_convergence(self) -> TrialResult:
+    def get_best_by_convergence(self) -> TrialResult:
         """Return trial with fastest convergence.
 
         Finds the trial that converged to the target reward
@@ -306,11 +306,11 @@ struct SearchResults(Copyable, Movable):
             return self.get_best_by_mean_reward()
         return self.trials[best_idx]
 
-    fn get_trial(self, idx: Int) -> TrialResult:
+    def get_trial(self, idx: Int) -> TrialResult:
         """Get trial result by index."""
         return self.trials[idx]
 
-    fn to_csv(self, filepath: String) raises:
+    def to_csv(self, filepath: String) raises:
         """Export all results to CSV.
 
         The CSV file contains all hyperparameters and metrics
@@ -329,7 +329,7 @@ struct SearchResults(Copyable, Movable):
         with open(filepath, "w") as f:
             f.write(content)
 
-    fn print_summary(self):
+    def print_summary(self):
         """Print search summary to stdout."""
         print("=" * 60)
         print("Hyperparameter Search Results")
@@ -372,7 +372,7 @@ struct SearchResults(Copyable, Movable):
 
         print("=" * 60)
 
-    fn print_all_trials(self):
+    def print_all_trials(self):
         """Print all trial results in a table format."""
         print("-" * 80)
         print(
@@ -403,7 +403,7 @@ struct SearchResults(Copyable, Movable):
             )
         print("-" * 80)
 
-    fn get_statistics(self) -> Tuple[Float64, Float64, Float64, Float64]:
+    def get_statistics(self) -> Tuple[Float64, Float64, Float64, Float64]:
         """Get statistics across all trials.
 
         Returns:

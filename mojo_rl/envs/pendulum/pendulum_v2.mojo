@@ -138,7 +138,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # Constructors
     # =========================================================================
 
-    fn __init__(
+    def __init__(
         out self, num_bins_angle: Int = 15, num_bins_velocity: Int = 15
     ):
         """Initialize Pendulum with default physics parameters.
@@ -174,7 +174,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         """Copy constructor."""
         self.max_speed = copy.max_speed
         self.max_torque = copy.max_torque
@@ -195,7 +195,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.max_speed = take.max_speed
         self.max_torque = take.max_torque
@@ -221,7 +221,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # =========================================================================
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -287,7 +287,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn step_wrapper(
+        def step_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -329,7 +329,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -355,7 +355,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -378,7 +378,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -411,7 +411,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn selective_reset_wrapper(
+        def selective_reset_wrapper(
             states: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
@@ -441,7 +441,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE_VAL: Int,
         OBS_DIM_VAL: Int,
@@ -462,7 +462,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn extract_obs(
+        def extract_obs(
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
@@ -486,14 +486,14 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn init_step_workspace_gpu[
+    def init_step_workspace_gpu[
         BATCH_SIZE: Int,
     ](ctx: DeviceContext, mut workspace_buf: DeviceBuffer[dtype]) raises:
         """No-op: Pendulum doesn't need pre-allocated workspace."""
         pass
 
     @staticmethod
-    fn update_curriculum_gpu(
+    def update_curriculum_gpu(
         ctx: DeviceContext,
         mut workspace_buf: DeviceBuffer[dtype],
         curriculum_values: List[Scalar[dtype]],
@@ -507,7 +507,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
 
     @always_inline
     @staticmethod
-    fn _step_env_gpu[
+    def _step_env_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -648,7 +648,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
 
     @always_inline
     @staticmethod
-    fn _reset_env_gpu[
+    def _reset_env_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -711,7 +711,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # CPU Single-Environment Methods - BoxContinuousActionEnv Trait
     # =========================================================================
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         """Reset environment and return initial observation as list."""
         # Random initial angle in [-π, π]
         self.theta = Scalar[Self.dtype]((random_float64() * 2.0 - 1.0) * pi)
@@ -725,7 +725,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
 
         return self.get_obs_list()
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current continuous observation as list."""
         var obs = List[Scalar[Self.dtype]](capacity=3)
         obs.append(Scalar[Self.dtype](cos(Float64(self.theta))))
@@ -733,7 +733,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(self.theta_dot)
         return obs^
 
-    fn step_continuous[
+    def step_continuous[
         DTYPE_SC: DType
     ](mut self, action: Scalar[DTYPE_SC]) -> Tuple[
         List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool
@@ -746,7 +746,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             obs.append(Scalar[DTYPE_SC](obs_self[i]))
         return (obs^, Scalar[DTYPE_SC](result[1]), result[2])
 
-    fn step_continuous_vec[
+    def step_continuous_vec[
         DTYPE_VEC: DType
     ](
         mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
@@ -769,19 +769,19 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         obs.append(Scalar[DTYPE_VEC](self.theta_dot))
         return (obs^, Scalar[DTYPE_VEC](result[1]), result[2])
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         """Return observation dimension (3)."""
         return 3
 
-    fn action_dim(self) -> Int:
+    def action_dim(self) -> Int:
         """Return action dimension (1)."""
         return 1
 
-    fn action_low(self) -> Scalar[Self.dtype]:
+    def action_low(self) -> Scalar[Self.dtype]:
         """Return lower bound for action values."""
         return -self.max_torque
 
-    fn action_high(self) -> Scalar[Self.dtype]:
+    def action_high(self) -> Scalar[Self.dtype]:
         """Return upper bound for action values."""
         return self.max_torque
 
@@ -789,7 +789,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # CPU Single-Environment Methods - BoxDiscreteActionEnv Trait
     # =========================================================================
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Take discrete action and return (obs_list, reward, done)."""
@@ -797,7 +797,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         var result = self._step_with_torque(torque)
         return (self.get_obs_list(), result[1], result[2])
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         """Return number of discrete actions (3)."""
         return 3
 
@@ -805,12 +805,12 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # CPU Single-Environment Methods - DiscreteEnv Trait
     # =========================================================================
 
-    fn reset(mut self) -> PendulumV2State[Self.dtype]:
+    def reset(mut self) -> PendulumV2State[Self.dtype]:
         """Reset environment and return discretized state."""
         _ = self.reset_obs_list()
         return self.get_state()
 
-    fn step(
+    def step(
         mut self, action: PendulumV2Action[Self.dtype], verbose: Bool = False
     ) -> Tuple[PendulumV2State[Self.dtype], Scalar[Self.dtype], Bool]:
         """Take action and return (state, reward, done)."""
@@ -818,21 +818,23 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         var result = self._step_with_torque(torque)
         return (self.get_state(), result[1], result[2])
 
-    fn get_state(self) -> PendulumV2State[Self.dtype]:
+    def get_state(self) -> PendulumV2State[Self.dtype]:
         """Return current observation state."""
         return PendulumV2State[Self.dtype].from_theta(
             self.theta, self.theta_dot
         )
 
-    fn state_to_index(self, state: PendulumV2State[Self.dtype]) -> Int:
+    def state_to_index(self, state: PendulumV2State[Self.dtype]) -> Int:
         """Convert state to index for tabular methods."""
         return self._discretize_obs()
 
-    fn action_from_index(self, action_idx: Int) -> PendulumV2Action[Self.dtype]:
+    def action_from_index(
+        self, action_idx: Int
+    ) -> PendulumV2Action[Self.dtype]:
         """Create action from index."""
         return PendulumV2Action[Self.dtype].from_discrete(action_idx)
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         """Return total number of discrete states."""
         return self.num_bins_angle * self.num_bins_velocity
 
@@ -840,7 +842,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # Internal CPU Helpers
     # =========================================================================
 
-    fn _step_with_torque(
+    def _step_with_torque(
         mut self, torque: Scalar[Self.dtype]
     ) -> Tuple[PendulumV2State[Self.dtype], Scalar[Self.dtype], Bool]:
         """Internal step function that accepts continuous torque."""
@@ -889,7 +891,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
 
         return (self.get_state(), reward, self.done)
 
-    fn _angle_normalize(self, x: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
+    def _angle_normalize(self, x: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
         """Normalize angle to [-π, π]."""
         var result = x
         var pi_val = Scalar[Self.dtype](pi)
@@ -900,11 +902,11 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
             result += two_pi
         return result
 
-    fn _discretize_obs(self) -> Int:
+    def _discretize_obs(self) -> Int:
         """Discretize current continuous observation into a single state index.
         """
 
-        fn bin_value(
+        def bin_value(
             value: Float64, low: Float64, high: Float64, bins: Int
         ) -> Int:
             var normalized = (value - low) / (high - low)
@@ -926,7 +928,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
 
         return b_angle * self.num_bins_velocity + b_vel
 
-    fn is_done(self) -> Bool:
+    def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
 
@@ -934,7 +936,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # Rendering
     # =========================================================================
 
-    fn render(mut self, mut renderer: Renderer2D):
+    def render(mut self, mut renderer: Renderer2D):
         """Render the current state using SDL2.
 
         Args:
@@ -1025,7 +1027,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         # Update display
         renderer.flip()
 
-    fn close(mut self):
+    def close(mut self):
         """Clean up resources."""
         if self._renderer_initialized:
             self._renderer[].close()
@@ -1037,7 +1039,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # =========================================================================
 
     @staticmethod
-    fn make_tile_coding(
+    def make_tile_coding(
         num_tilings: Int = 8,
         tiles_per_dim: Int = 8,
     ) -> TileCoding[Self.dtype]:
@@ -1076,7 +1078,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         )
 
     @staticmethod
-    fn make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
+    def make_poly_features(degree: Int = 2) -> PolynomialFeatures[Self.dtype]:
         """Create polynomial features for Pendulum (3D observation).
 
         Args:
@@ -1107,7 +1109,7 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
     # RenderableEnv Trait Implementation
     # =========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         """Initialize the SDL2 renderer."""
         if self._renderer_initialized:
             return True
@@ -1116,13 +1118,13 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         """Render the current frame using the internal renderer."""
         if not self._renderer_initialized:
             return
         self.render(self._renderer[])
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         """Close and free the SDL2 renderer."""
         if not self._renderer_initialized:
             return
@@ -1130,26 +1132,26 @@ struct PendulumV2[DTYPE: DType where DTYPE.is_floating_point()](
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         """Return True if the renderer window is open."""
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         """Return True if the renderer has received a quit event."""
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         """Delay for frame rate control."""
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False

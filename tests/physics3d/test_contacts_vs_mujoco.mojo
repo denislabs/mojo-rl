@@ -52,7 +52,7 @@ comptime NORMAL_DOT_MIN: Float64 = 0.99  # Normal direction (dot product)
 # =============================================================================
 
 
-fn _geom_body_from_mujoco(mj_model: PythonObject, geom_id: Int) raises -> Int:
+def _geom_body_from_mujoco(mj_model: PythonObject, geom_id: Int) raises -> Int:
     """Map MuJoCo geom index to our body index.
 
     Both MuJoCo and our engine use 0-indexed bodies with worldbody=0.
@@ -66,7 +66,7 @@ fn _geom_body_from_mujoco(mj_model: PythonObject, geom_id: Int) raises -> Int:
 # =============================================================================
 
 
-fn compare_contacts(
+def compare_contacts(
     test_name: String,
     qpos_values: InlineArray[Float64, NQ],
 ) raises:
@@ -352,14 +352,14 @@ fn compare_contacts(
 # =============================================================================
 
 
-fn test_high_pose() raises:
+def test_high_pose() raises:
     """Robot high above ground (rootz=0.5) — no contacts expected."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = 0.5  # rootz high
     compare_contacts("High pose (no contacts)", qpos)
 
 
-fn test_default_pose() raises:
+def test_default_pose() raises:
     """Default pose (rootz=0.7, which is body_pos offset) — may or may not contact.
     """
     var qpos = InlineArray[Float64, NQ](fill=0.0)
@@ -367,21 +367,21 @@ fn test_default_pose() raises:
     compare_contacts("Default pose (rootz=0.7)", qpos)
 
 
-fn test_low_pose() raises:
+def test_low_pose() raises:
     """Robot low (rootz=-0.3) — feet should be in contact with ground."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low
     compare_contacts("Low pose (rootz=-0.3)", qpos)
 
 
-fn test_very_low_pose() raises:
+def test_very_low_pose() raises:
     """Robot very low (rootz=-0.45) — multiple body parts in contact."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.45  # rootz very low
     compare_contacts("Very low pose (rootz=-0.45)", qpos)
 
 
-fn test_bent_legs() raises:
+def test_bent_legs() raises:
     """Bent legs with non-default joint angles — different contact geometry."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.3  # rootz low enough for contact
@@ -392,7 +392,7 @@ fn test_bent_legs() raises:
     compare_contacts("Bent legs (various joint angles)", qpos)
 
 
-fn test_tilted_body() raises:
+def test_tilted_body() raises:
     """Tilted body (rooty rotation) — asymmetric contacts."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     qpos[1] = -0.2  # rootz slightly low
@@ -400,5 +400,5 @@ fn test_tilted_body() raises:
     compare_contacts("Tilted body (rooty=0.3)", qpos)
 
 
-fn main() raises:
+def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

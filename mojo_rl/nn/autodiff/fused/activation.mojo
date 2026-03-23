@@ -20,17 +20,17 @@ trait Activation(Movable & ImplicitlyCopyable):
     comptime FUSED_CONV_OP_ID: Int  # OP_ID for fused conv2d variant (e.g. 110)
 
     @staticmethod
-    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
         """Apply activation function to pre-activation value."""
         ...
 
     @staticmethod
-    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         """Return what to cache for backward. Either pre_act or output."""
         ...
 
     @staticmethod
-    fn backward(
+    def backward(
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         """Compute grad_out * activation_derivative from cached value."""
@@ -44,25 +44,25 @@ struct ReLUActivation(Activation):
     comptime FUSED_OP_ID: Int = 101  # OpID.FUSED_MATMUL_BIAS_RELU
     comptime FUSED_CONV_OP_ID: Int = 110  # OpID.FUSED_CONV2D_RELU
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
-    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
         return pre_act if pre_act > 0 else 0
 
     @staticmethod
-    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         return pre_act
 
     @staticmethod
-    fn backward(
+    def backward(
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         return grad_out if cache_val > 0 else 0
@@ -75,25 +75,25 @@ struct TanhActivation(Activation):
     comptime FUSED_OP_ID: Int = 102  # OpID.FUSED_MATMUL_BIAS_TANH
     comptime FUSED_CONV_OP_ID: Int = 111  # OpID.FUSED_CONV2D_TANH
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
-    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
         return tanh(pre_act)
 
     @staticmethod
-    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         return output
 
     @staticmethod
-    fn backward(
+    def backward(
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         return grad_out * (1 - cache_val * cache_val)
@@ -106,48 +106,49 @@ struct SigmoidActivation(Activation):
     comptime FUSED_OP_ID: Int = 103  # OpID.FUSED_MATMUL_BIAS_SIGMOID
     comptime FUSED_CONV_OP_ID: Int = 112  # OpID.FUSED_CONV2D_SIGMOID
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
-    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
         return 1.0 / (1.0 + exp(-pre_act))
 
     @staticmethod
-    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         return output
 
     @staticmethod
-    fn backward(
+    def backward(
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         return grad_out * cache_val * (1 - cache_val)
 
 
 struct MishActivation(Activation):
-    """Mish: x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x))). Caches input for backward."""
+    """Mish: x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x))). Caches input for backward.
+    """
 
     comptime OP_ID: Int = 13  # OpID.MISH
     comptime FUSED_OP_ID: Int = 104  # OpID.FUSED_MATMUL_BIAS_MISH
     comptime FUSED_CONV_OP_ID: Int = 113  # OpID.FUSED_CONV2D_MISH
 
-    fn __init__(out self):
+    def __init__(out self):
         pass
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         pass
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         pass
 
     @staticmethod
-    fn forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
         # Clamp for numerical stability: tanh(softplus(x)) -> 1 for x>15, -> 0 for x<-15
         if pre_act > Scalar[dtype](15.0):
             return pre_act  # tanh(sp) ≈ 1, so mish(x) ≈ x
@@ -157,11 +158,11 @@ struct MishActivation(Activation):
         return pre_act * tanh(sp)
 
     @staticmethod
-    fn cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         return pre_act  # Need input x for backward
 
     @staticmethod
-    fn backward(
+    def backward(
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         var x = cache_val

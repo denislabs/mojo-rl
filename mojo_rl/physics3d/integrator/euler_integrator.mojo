@@ -170,7 +170,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
     # =========================================================================
 
     @staticmethod
-    fn step[
+    def step[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -639,7 +639,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         # (no post-step clamping needed)
 
     @staticmethod
-    fn simulate[
+    def simulate[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -697,7 +697,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn step_kernel[
+    def step_kernel[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1304,7 +1304,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn step_kernel_mt[
+    def step_kernel_mt[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1508,9 +1508,9 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             else:
                 ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
                 comptime if Self.SOLVER.NEEDS_M_INV:
-                    compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-                        env, workspace
-                    )
+                    compute_M_inv_from_ldl_gpu[
+                        DTYPE, NV, NBODY, BATCH, WS_SIZE
+                    ](env, workspace)
 
             # 8. Compute bias forces
             compute_bias_forces_rne_gpu[
@@ -1946,7 +1946,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn contact_detection_kernel[
+    def contact_detection_kernel[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1989,7 +1989,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
-    fn step_finalize_kernel[
+    def step_finalize_kernel[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -2193,7 +2193,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         # (no post-step clamping needed)
 
     @staticmethod
-    fn step_gpu[
+    def step_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -2388,7 +2388,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
     # =========================================================================
 
     @staticmethod
-    fn register_gpu_profile_slots(
+    def register_gpu_profile_slots(
         mut timer: PerfTimer[True], parent: Int = -1
     ) -> Int:
         """Register 4 profiling slots for Euler GPU step phases.
@@ -2413,7 +2413,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         return base
 
     @staticmethod
-    fn step_gpu_profiled[
+    def step_gpu_profiled[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -2487,23 +2487,48 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 BATCH + STEP_ENV_TPB - 1
             ) // STEP_ENV_TPB
             comptime mt_kernel_wrapper = Self.step_kernel_mt[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-                NM, SPARSE, STEP_THREADS,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+                NGEOM,
+                NM,
+                SPARSE,
+                STEP_THREADS,
             ]
             ctx.enqueue_function[mt_kernel_wrapper, mt_kernel_wrapper](
-                state, model, workspace,
+                state,
+                model,
+                workspace,
                 grid_dim=(STEP_ENV_BLOCKS, 1),
                 block_dim=(STEP_ENV_TPB, STEP_THREADS),
             )
         else:
             comptime kernel_wrapper = Self.step_kernel[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NGEOM,
-                NM, SPARSE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+                NGEOM,
+                NM,
+                SPARSE,
             ]
             ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-                state, model, workspace,
+                state,
+                model,
+                workspace,
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
@@ -2514,11 +2539,20 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         timer.mark()
 
         comptime contact_kernel_wrapper = Self.contact_detection_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            NGEOM,
         ]
         ctx.enqueue_function[contact_kernel_wrapper, contact_kernel_wrapper](
-            state, model,
+            state,
+            model,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -2530,12 +2564,27 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
 
         comptime V_SIZE = _max_one[NV]()
         comptime solver_wrapper = Self.SOLVER.solve_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-            NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
         ]
         ctx.enqueue_function[solver_wrapper, solver_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
             block_dim=(SOLVER_ENV_TPB, THREADS),
         )
@@ -2546,11 +2595,23 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         timer.mark()
 
         comptime finalize_kernel_wrapper = Self.step_finalize_kernel[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE, NM, SPARSE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            BATCH,
+            WS_SIZE,
+            NM,
+            SPARSE,
         ]
         ctx.enqueue_function[finalize_kernel_wrapper, finalize_kernel_wrapper](
-            state, model, workspace,
+            state,
+            model,
+            workspace,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -2558,7 +2619,7 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         timer.sync_and_accumulate(base + 3, ctx)
 
     @staticmethod
-    fn simulate_gpu[
+    def simulate_gpu[
         DTYPE: DType,
         NQ: Int,
         NV: Int,

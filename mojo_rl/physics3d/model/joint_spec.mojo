@@ -345,7 +345,7 @@ trait JointsLike:
     comptime ACTION_DIM: Int
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
         Defaults: ModelDefaultsLike,
@@ -354,7 +354,7 @@ trait JointsLike:
 
     # CPU methods
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -384,7 +384,7 @@ trait JointsLike:
         ...
 
     @staticmethod
-    fn reset_data[
+    def reset_data[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -395,7 +395,7 @@ trait JointsLike:
         ...
 
     @staticmethod
-    fn extract_obs[
+    def extract_obs[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -409,7 +409,7 @@ trait JointsLike:
         ...
 
     @staticmethod
-    fn enforce_limits[
+    def enforce_limits[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -421,7 +421,7 @@ trait JointsLike:
 
     # GPU kernel launchers
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -434,7 +434,7 @@ trait JointsLike:
         ...
 
     @staticmethod
-    fn enforce_limits_kernel_gpu[
+    def enforce_limits_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -444,7 +444,7 @@ trait JointsLike:
     # GPU inline per-env methods
     @always_inline
     @staticmethod
-    fn extract_obs_gpu[
+    def extract_obs_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -462,7 +462,7 @@ trait JointsLike:
 
     @always_inline
     @staticmethod
-    fn reset_env_gpu[
+    def reset_env_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -486,7 +486,7 @@ struct _EmptyJoints(JointsLike):
     comptime ACTION_DIM: Int = 0
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
         Defaults: ModelDefaultsLike,
@@ -494,7 +494,7 @@ struct _EmptyJoints(JointsLike):
         pass
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -524,7 +524,7 @@ struct _EmptyJoints(JointsLike):
         pass
 
     @staticmethod
-    fn reset_data[
+    def reset_data[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -535,7 +535,7 @@ struct _EmptyJoints(JointsLike):
         pass
 
     @staticmethod
-    fn extract_obs[
+    def extract_obs[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -549,7 +549,7 @@ struct _EmptyJoints(JointsLike):
         pass
 
     @staticmethod
-    fn enforce_limits[
+    def enforce_limits[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -560,7 +560,7 @@ struct _EmptyJoints(JointsLike):
         pass
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -573,7 +573,7 @@ struct _EmptyJoints(JointsLike):
         pass
 
     @staticmethod
-    fn enforce_limits_kernel_gpu[
+    def enforce_limits_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -582,7 +582,7 @@ struct _EmptyJoints(JointsLike):
 
     @always_inline
     @staticmethod
-    fn extract_obs_gpu[
+    def extract_obs_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -600,7 +600,7 @@ struct _EmptyJoints(JointsLike):
 
     @always_inline
     @staticmethod
-    fn reset_env_gpu[
+    def reset_env_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -633,7 +633,7 @@ struct Joints[*J: JointSpec](JointsLike):
     comptime ACTION_DIM: Int = Self._action_dim()
 
     @staticmethod
-    fn _sum_nq() -> Int:
+    def _sum_nq() -> Int:
         """Sum NQ across all joints (total qpos dimension)."""
         var total = 0
 
@@ -642,7 +642,7 @@ struct Joints[*J: JointSpec](JointsLike):
         return total
 
     @staticmethod
-    fn _sum_nv() -> Int:
+    def _sum_nv() -> Int:
         """Sum NV across all joints (total qvel dimension)."""
         var total = 0
 
@@ -651,7 +651,7 @@ struct Joints[*J: JointSpec](JointsLike):
         return total
 
     @staticmethod
-    fn _qpos_offset[idx: Int]() -> Int:
+    def _qpos_offset[idx: Int]() -> Int:
         """Compute qpos address for joint idx (sum of NQ for joints 0..idx-1).
         """
         var total = 0
@@ -661,7 +661,7 @@ struct Joints[*J: JointSpec](JointsLike):
         return total
 
     @staticmethod
-    fn _qvel_offset[idx: Int]() -> Int:
+    def _qvel_offset[idx: Int]() -> Int:
         """Compute qvel/dof address for joint idx (sum of NV for joints 0..idx-1).
         """
         var total = 0
@@ -671,7 +671,7 @@ struct Joints[*J: JointSpec](JointsLike):
         return total
 
     @staticmethod
-    fn reset_data[
+    def reset_data[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -710,7 +710,7 @@ struct Joints[*J: JointSpec](JointsLike):
     # =========================================================================
 
     @staticmethod
-    fn _obs_qpos_dim() -> Int:
+    def _obs_qpos_dim() -> Int:
         """Count of qpos elements included in observation.
 
         For joints with NUM_EXCLUDED_QPOS > 0 (e.g., FreeJoint excluding x,y),
@@ -726,7 +726,7 @@ struct Joints[*J: JointSpec](JointsLike):
         return total
 
     @staticmethod
-    fn _obs_qvel_dim() -> Int:
+    def _obs_qvel_dim() -> Int:
         """Count of qvel elements included in observation."""
         var total = 0
 
@@ -738,12 +738,12 @@ struct Joints[*J: JointSpec](JointsLike):
         return total
 
     @staticmethod
-    fn _obs_dim() -> Int:
+    def _obs_dim() -> Int:
         """Total observation dimension (included qpos + included qvel)."""
         return Self._obs_qpos_dim() + Self._obs_qvel_dim()
 
     @staticmethod
-    fn _action_dim() -> Int:
+    def _action_dim() -> Int:
         """Count of actuated DOFs (joints with IS_ACTUATED=True)."""
         var total = 0
 
@@ -759,7 +759,7 @@ struct Joints[*J: JointSpec](JointsLike):
     # =========================================================================
 
     @staticmethod
-    fn extract_obs[
+    def extract_obs[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -796,7 +796,7 @@ struct Joints[*J: JointSpec](JointsLike):
                     obs.append(data.qvel[offset + k])
 
     @staticmethod
-    fn apply_actions[
+    def apply_actions[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -831,7 +831,7 @@ struct Joints[*J: JointSpec](JointsLike):
                     act_idx += 1
 
     @staticmethod
-    fn enforce_limits[
+    def enforce_limits[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -866,7 +866,7 @@ struct Joints[*J: JointSpec](JointsLike):
 
     @always_inline
     @staticmethod
-    fn extract_obs_gpu[
+    def extract_obs_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -912,7 +912,7 @@ struct Joints[*J: JointSpec](JointsLike):
 
     @always_inline
     @staticmethod
-    fn apply_actions_gpu[
+    def apply_actions_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -952,7 +952,7 @@ struct Joints[*J: JointSpec](JointsLike):
 
     @always_inline
     @staticmethod
-    fn enforce_limits_gpu[
+    def enforce_limits_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -998,7 +998,7 @@ struct Joints[*J: JointSpec](JointsLike):
 
     @always_inline
     @staticmethod
-    fn reset_env_gpu[
+    def reset_env_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1094,7 +1094,7 @@ struct Joints[*J: JointSpec](JointsLike):
     # =========================================================================
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1115,7 +1115,7 @@ struct Joints[*J: JointSpec](JointsLike):
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn kernel(
+        def kernel(
             states: LayoutTensor[
                 GDTYPE,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -1142,7 +1142,7 @@ struct Joints[*J: JointSpec](JointsLike):
         )
 
     @staticmethod
-    fn apply_actions_kernel_gpu[
+    def apply_actions_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1163,7 +1163,7 @@ struct Joints[*J: JointSpec](JointsLike):
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn kernel(
+        def kernel(
             states: LayoutTensor[
                 GDTYPE,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -1190,7 +1190,7 @@ struct Joints[*J: JointSpec](JointsLike):
         )
 
     @staticmethod
-    fn enforce_limits_kernel_gpu[
+    def enforce_limits_kernel_gpu[
         GDTYPE: DType,
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
@@ -1203,7 +1203,7 @@ struct Joints[*J: JointSpec](JointsLike):
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @always_inline
-        fn kernel(
+        def kernel(
             states: LayoutTensor[
                 GDTYPE,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -1226,7 +1226,7 @@ struct Joints[*J: JointSpec](JointsLike):
     # =========================================================================
 
     @staticmethod
-    fn setup_model[
+    def setup_model[
         DTYPE: DType,
         NQ: Int,
         NV: Int,
@@ -1377,7 +1377,7 @@ struct Joints[*J: JointSpec](JointsLike):
                 model.qpos0[qp_off] = Scalar[DTYPE](J.INIT_QPOS)
 
     @staticmethod
-    fn write_to_buffer[
+    def write_to_buffer[
         DTYPE: DType,
         NBODY: Int,
         Defaults: ModelDefaultsLike = ModelDefaults[],

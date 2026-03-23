@@ -31,7 +31,7 @@ from ..joint_types import JNT_HINGE, JNT_SLIDE, JNT_BALL, JNT_FREE
 from ..kinematics.quat_math import quat_rotate
 
 
-fn compute_fluid_forces[
+def compute_fluid_forces[
     DTYPE: DType,
     NQ: Int,
     NV: Int,

@@ -3,7 +3,7 @@
 from mojo_rl.envs.board_games.chess import ChessEnv
 
 
-fn test_reset() raises:
+def test_reset() raises:
     print("test_reset...", end="")
     var env = ChessEnv[DType.float64]()
     _ = env.reset()
@@ -46,7 +46,7 @@ fn test_reset() raises:
     print(" OK")
 
 
-fn test_initial_legal_moves() raises:
+def test_initial_legal_moves() raises:
     """White should have 20 legal moves in the starting position."""
     print("test_initial_legal_moves...", end="")
     var env = ChessEnv[DType.float64]()
@@ -65,7 +65,7 @@ fn test_initial_legal_moves() raises:
     print(" OK")
 
 
-fn test_obs_shape() raises:
+def test_obs_shape() raises:
     print("test_obs_shape...", end="")
     var env = ChessEnv[DType.float64]()
     _ = env.reset()
@@ -76,7 +76,7 @@ fn test_obs_shape() raises:
     print(" OK")
 
 
-fn test_pawn_move() raises:
+def test_pawn_move() raises:
     """Test that white can push e2-e4."""
     print("test_pawn_move...", end="")
     var env = ChessEnv[DType.float64]()
@@ -115,7 +115,7 @@ fn test_pawn_move() raises:
     print(" OK")
 
 
-fn test_player_alternation() raises:
+def test_player_alternation() raises:
     """Test that players alternate correctly."""
     print("test_player_alternation...", end="")
     var env = ChessEnv[DType.float64]()
@@ -143,7 +143,7 @@ fn test_player_alternation() raises:
     print(" OK")
 
 
-fn test_random_game() raises:
+def test_random_game() raises:
     """Test that random games complete."""
     print("test_random_game...", end="")
     from std.random import random_float64
@@ -177,7 +177,7 @@ fn test_random_game() raises:
     print(" OK (", games_finished, "/5 games completed within 300 moves)")
 
 
-fn test_step_obs_opponent() raises:
+def test_step_obs_opponent() raises:
     """Test that step_obs plays random opponent."""
     print("test_step_obs_opponent...", end="")
     var env = ChessEnv[DType.float64]()
@@ -207,7 +207,7 @@ fn test_step_obs_opponent() raises:
     print(" OK")
 
 
-fn main() raises:
+def main() raises:
     print("=== Testing ChessEnv ===\n")
 
     test_reset()

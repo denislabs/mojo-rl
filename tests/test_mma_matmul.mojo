@@ -25,7 +25,7 @@ from std.gpu.memory import AddressSpace
 # =============================================================================
 
 
-fn cpu_matmul[
+def cpu_matmul[
     M: Int, K: Int, N: Int
 ](
     a: LayoutTensor[dtype, Layout.row_major(M, K), MutAnyOrigin],
@@ -47,7 +47,7 @@ fn cpu_matmul[
 # =============================================================================
 
 
-fn test_matmul[M: Int, K: Int, N: Int](ctx: DeviceContext) raises:
+def test_matmul[M: Int, K: Int, N: Int](ctx: DeviceContext) raises:
     print(
         "  Matrix: ["
         + String(M)
@@ -191,7 +191,7 @@ fn test_matmul[M: Int, K: Int, N: Int](ctx: DeviceContext) raises:
 # =============================================================================
 
 
-fn gpu_matmul_tiled[
+def gpu_matmul_tiled[
     dtype: DType,
     M: Int,
     N: Int,
@@ -208,7 +208,7 @@ fn gpu_matmul_tiled[
     comptime grid_y = (M + TILE - 1) // TILE
 
     @always_inline
-    fn kernel(
+    def kernel(
         output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],
         a: LayoutTensor[dtype, Layout.row_major(M, K), ImmutAnyOrigin],
         b: LayoutTensor[dtype, Layout.row_major(K, N), ImmutAnyOrigin],
@@ -224,7 +224,7 @@ fn gpu_matmul_tiled[
     )
 
 
-fn bench_matmul[M: Int, K: Int, N: Int](ctx: DeviceContext) raises:
+def bench_matmul[M: Int, K: Int, N: Int](ctx: DeviceContext) raises:
     comptime a_size = M * K
     comptime b_size = K * N
     comptime c_size = M * N

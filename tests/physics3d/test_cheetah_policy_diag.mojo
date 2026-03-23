@@ -53,7 +53,7 @@ comptime DETERMINISTIC = True  # Use mean policy (no sampling noise)
 comptime CHECKPOINT_PATH = "ppo_half_cheetah.ckpt"
 
 
-fn main() raises:
+def main() raises:
     seed(42)
     print("=" * 80)
     print("HalfCheetah Policy Diagnostic")

@@ -25,7 +25,7 @@ from mojo_rl.agents import (
 from mojo_rl.render import Renderer2D
 
 
-fn main() raises:
+def main() raises:
     print("=" * 60)
     print("    Solving GridWorld - Tabular RL Comparison")
     print("=" * 60)

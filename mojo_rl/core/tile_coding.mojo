@@ -45,7 +45,7 @@ struct TileCoding[DTYPE: DType]:
     var tiles_per_tiling: Int
     var total_tiles: Int
 
-    fn __init__(
+    def __init__(
         out self,
         num_tilings: Int,
         var tiles_per_dim: List[Int],
@@ -100,7 +100,7 @@ struct TileCoding[DTYPE: DType]:
                 tiling_offsets.append(offset)
             self.offsets.append(tiling_offsets^)
 
-    fn get_tiles(self, state: List[Scalar[Self.DTYPE]]) -> List[Int]:
+    def get_tiles(self, state: List[Scalar[Self.DTYPE]]) -> List[Int]:
         """Get active tile indices for a given state.
 
         Args:
@@ -118,7 +118,7 @@ struct TileCoding[DTYPE: DType]:
 
         return active_tiles^
 
-    fn _get_tile_in_tiling(
+    def _get_tile_in_tiling(
         self, state: List[Scalar[Self.DTYPE]], tiling: Int
     ) -> Int:
         """Get tile index within a specific tiling.
@@ -153,7 +153,7 @@ struct TileCoding[DTYPE: DType]:
 
         return flat_index
 
-    fn get_tiles_simd4(self, state: SIMD[Self.DTYPE, 4]) -> List[Int]:
+    def get_tiles_simd4(self, state: SIMD[Self.DTYPE, 4]) -> List[Int]:
         """Get active tile indices for a 4D SIMD state (optimized for CartPole).
 
         Args:
@@ -169,7 +169,7 @@ struct TileCoding[DTYPE: DType]:
         state_list.append(state[3])
         return self.get_tiles(state_list^)
 
-    fn get_tiles_simd2(self, state: SIMD[Self.DTYPE, 2]) -> List[Int]:
+    def get_tiles_simd2(self, state: SIMD[Self.DTYPE, 2]) -> List[Int]:
         """Get active tile indices for a 2D SIMD state (optimized for MountainCar).
 
         Args:
@@ -183,11 +183,11 @@ struct TileCoding[DTYPE: DType]:
         state_list.append(state[1])
         return self.get_tiles(state_list^)
 
-    fn get_num_tiles(self) -> Int:
+    def get_num_tiles(self) -> Int:
         """Return total number of tiles across all tilings."""
         return self.total_tiles
 
-    fn get_num_tilings(self) -> Int:
+    def get_num_tilings(self) -> Int:
         """Return number of tilings."""
         return self.num_tilings
 
@@ -203,7 +203,7 @@ struct TiledWeights[DTYPE: DType]:
     var num_actions: Int
     var num_tiles: Int
 
-    fn __init__(
+    def __init__(
         out self,
         num_tiles: Int,
         num_actions: Int,
@@ -226,7 +226,7 @@ struct TiledWeights[DTYPE: DType]:
                 action_weights.append(init_value)
             self.weights.append(action_weights^)
 
-    fn get_value(self, tiles: List[Int], action: Int) -> Scalar[Self.DTYPE]:
+    def get_value(self, tiles: List[Int], action: Int) -> Scalar[Self.DTYPE]:
         """Get Q-value for state (represented by active tiles) and action.
 
         Args:
@@ -241,7 +241,7 @@ struct TiledWeights[DTYPE: DType]:
             value += self.weights[action][tiles[i]]
         return value
 
-    fn get_all_values(self, tiles: List[Int]) -> List[Scalar[Self.DTYPE]]:
+    def get_all_values(self, tiles: List[Int]) -> List[Scalar[Self.DTYPE]]:
         """Get Q-values for all actions given a state.
 
         Args:
@@ -255,7 +255,7 @@ struct TiledWeights[DTYPE: DType]:
             values.append(self.get_value(tiles, a))
         return values^
 
-    fn get_best_action(self, tiles: List[Int]) -> Int:
+    def get_best_action(self, tiles: List[Int]) -> Int:
         """Get action with highest Q-value.
 
         Args:
@@ -275,7 +275,7 @@ struct TiledWeights[DTYPE: DType]:
 
         return best_action
 
-    fn update(
+    def update(
         mut self,
         tiles: List[Int],
         action: Int,
@@ -307,7 +307,7 @@ struct TiledWeights[DTYPE: DType]:
             var tile_idx = tiles[i]
             self.weights[action][tile_idx] += step_size * td_error
 
-    fn update_eligibility(
+    def update_eligibility(
         mut self,
         traces: List[List[Scalar[Self.DTYPE]]],
         td_error: Scalar[Self.DTYPE],

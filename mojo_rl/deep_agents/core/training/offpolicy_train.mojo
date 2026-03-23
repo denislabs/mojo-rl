@@ -18,14 +18,14 @@ OffPolicyState (CPU buffer container trait, parallel to GPUOffPolicyState):
 Usage — OffPolicyContinuousAgent style (DDPG / TD3 / SAC):
     struct MyAgent[...](OffPolicyContinuousAgent):
         comptime CPUStateType = MyCPUState[...]
-        fn make_cpu_state(self) -> Self.CPUStateType: ...
-        fn select_action[dtype](mut self, mut cpu_state, obs) -> ...: ...
-        fn store_transition[dtype](mut self, mut cpu_state, obs, ...) -> None: ...
-        fn do_cpu_train_step(mut self, mut cpu_state) -> Float64: ...
-        fn decay_explore(mut self) -> None: ...
-        fn get_explore_rate(self) -> Float64: ...
-        fn random_action[dtype](self) -> List[Scalar[dtype]]: ...
-        fn select_greedy_action(self, cpu_state, obs) -> List[Float64]: ...
+        def make_cpu_state(self) -> Self.CPUStateType: ...
+        def select_action[dtype](mut self, mut cpu_state, obs) -> ...: ...
+        def store_transition[dtype](mut self, mut cpu_state, obs, ...) -> None: ...
+        def do_cpu_train_step(mut self, mut cpu_state) -> Float64: ...
+        def decay_explore(mut self) -> None: ...
+        def get_explore_rate(self) -> Float64: ...
+        def random_action[dtype](self) -> List[Scalar[dtype]]: ...
+        def select_greedy_action(self, cpu_state, obs) -> List[Float64]: ...
 
     var agent = MyAgent[...]()
     var cpu_state = agent.make_cpu_state()
@@ -63,7 +63,7 @@ trait OffPolicyState:
         is_ready(): True when the buffer has enough samples to train.
     """
 
-    fn store[
+    def store[
         dtype: DType
     ](
         mut self,
@@ -84,7 +84,7 @@ trait OffPolicyState:
         """
         ...
 
-    fn is_ready(self) -> Bool:
+    def is_ready(self) -> Bool:
         """Return True if the replay buffer has enough samples to train."""
         ...
 
@@ -114,14 +114,14 @@ trait OffPolicyContinuousAgent:
     comptime CPUStateType: OffPolicyState
     """Concrete CPU state type holding all networks, buffer, and scratch."""
 
-    fn make_cpu_state(self) -> Self.CPUStateType:
+    def make_cpu_state(self) -> Self.CPUStateType:
         """Allocate a fresh CPUStateType (networks + replay buffer + scratch).
 
         Called once before training. The returned state is owned by the caller.
         """
         ...
 
-    fn select_action[
+    def select_action[
         dtype: DType
     ](
         mut self,
@@ -139,7 +139,7 @@ trait OffPolicyContinuousAgent:
         """
         ...
 
-    fn store_transition[
+    def store_transition[
         dtype: DType
     ](
         mut self,
@@ -165,7 +165,7 @@ trait OffPolicyContinuousAgent:
         """
         ...
 
-    fn do_cpu_train_step(
+    def do_cpu_train_step(
         mut self,
         mut cpu_state: Self.CPUStateType,
     ) -> Float64:
@@ -181,15 +181,15 @@ trait OffPolicyContinuousAgent:
         """
         ...
 
-    fn decay_explore(mut self) -> None:
+    def decay_explore(mut self) -> None:
         """Decay exploration rate (noise_std, epsilon, etc.)."""
         ...
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         """Return current exploration rate (for logging)."""
         ...
 
-    fn random_action[dtype: DType](self) -> List[Scalar[dtype]]:
+    def random_action[dtype: DType](self) -> List[Scalar[dtype]]:
         """Return a uniformly random action (used during warmup).
 
         Returns:
@@ -197,7 +197,7 @@ trait OffPolicyContinuousAgent:
         """
         ...
 
-    fn select_greedy_action(
+    def select_greedy_action(
         self,
         cpu_state: Self.CPUStateType,
         obs: List[Float64],
@@ -236,7 +236,7 @@ trait OffPolicyDiscreteState:
         is_ready(): True when the buffer has enough samples to train.
     """
 
-    fn store[
+    def store[
         dtype: DType
     ](
         mut self,
@@ -257,7 +257,7 @@ trait OffPolicyDiscreteState:
         """
         ...
 
-    fn is_ready(self) -> Bool:
+    def is_ready(self) -> Bool:
         """Return True if the replay buffer has enough samples to train."""
         ...
 
@@ -285,14 +285,14 @@ trait OffPolicyDiscreteAgent:
     comptime CPUStateType: OffPolicyDiscreteState
     """Concrete CPU state type holding networks and replay buffer."""
 
-    fn make_cpu_state(self) -> Self.CPUStateType:
+    def make_cpu_state(self) -> Self.CPUStateType:
         """Allocate a fresh CPUStateType (networks + replay buffer).
 
         Called once before training. The returned state is owned by the caller.
         """
         ...
 
-    fn select_action[
+    def select_action[
         dtype: DType
     ](
         mut self,
@@ -310,7 +310,7 @@ trait OffPolicyDiscreteAgent:
         """
         ...
 
-    fn store_transition[
+    def store_transition[
         dtype: DType
     ](
         mut self,
@@ -333,7 +333,7 @@ trait OffPolicyDiscreteAgent:
         """
         ...
 
-    fn do_cpu_train_step(
+    def do_cpu_train_step(
         mut self,
         mut cpu_state: Self.CPUStateType,
     ) -> Float64:
@@ -347,15 +347,15 @@ trait OffPolicyDiscreteAgent:
         """
         ...
 
-    fn decay_explore(mut self) -> None:
+    def decay_explore(mut self) -> None:
         """Decay exploration rate (epsilon, noise_std, etc.)."""
         ...
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         """Return current exploration rate (for logging)."""
         ...
 
-    fn random_action(self) -> Int:
+    def random_action(self) -> Int:
         """Return a uniformly random action index (used during warmup).
 
         Returns:
@@ -363,7 +363,7 @@ trait OffPolicyDiscreteAgent:
         """
         ...
 
-    fn select_greedy_action(
+    def select_greedy_action(
         self,
         cpu_state: Self.CPUStateType,
         obs: List[Float64],
@@ -397,7 +397,7 @@ trait OffPolicyAgent:
         Continuous agents: List with action_dim elements = raw action values.
     """
 
-    fn select_action_list[
+    def select_action_list[
         dtype: DType
     ](mut self, obs: List[Scalar[dtype]]) -> List[Scalar[dtype]]:
         """Select an action given the current observation.
@@ -412,7 +412,7 @@ trait OffPolicyAgent:
         """
         ...
 
-    fn store_list_transition[
+    def store_list_transition[
         dtype: DType
     ](
         mut self,
@@ -433,11 +433,11 @@ trait OffPolicyAgent:
         """
         ...
 
-    fn is_ready(self) -> Bool:
+    def is_ready(self) -> Bool:
         """Return True if the buffer holds enough samples to train."""
         ...
 
-    fn do_train_step(mut self) -> Float64:
+    def do_train_step(mut self) -> Float64:
         """Perform one gradient update step.
 
         Returns:
@@ -445,15 +445,15 @@ trait OffPolicyAgent:
         """
         ...
 
-    fn decay_explore(mut self) -> None:
+    def decay_explore(mut self) -> None:
         """Decay exploration rate (epsilon, noise_std, etc.)."""
         ...
 
-    fn get_explore_rate(self) -> Float64:
+    def get_explore_rate(self) -> Float64:
         """Return current exploration rate (for logging)."""
         ...
 
-    fn random_action_list[dtype: DType](self) -> List[Scalar[dtype]]:
+    def random_action_list[dtype: DType](self) -> List[Scalar[dtype]]:
         """Return a uniformly random action (used during warmup).
 
         Returns:
@@ -461,7 +461,7 @@ trait OffPolicyAgent:
         """
         ...
 
-    fn select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
+    def select_greedy_action_list(self, obs: List[Float64]) -> List[Float64]:
         """Select action without exploration noise (for evaluation).
 
         DQN: pure argmax (epsilon=0). DDPG/TD3: actor forward, no Gaussian
@@ -481,7 +481,7 @@ trait OffPolicyAgent:
 # =============================================================================
 
 
-fn run_offpolicy_discrete_train[
+def run_offpolicy_discrete_train[
     E: BoxDiscreteActionEnv,
     A: OffPolicyAgent & Checkpointable,
     L: Logger = NoOpLogger,
@@ -498,9 +498,7 @@ fn run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-        L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for discrete-action off-policy agents.
 
@@ -628,7 +626,7 @@ fn run_offpolicy_discrete_train[
 # =============================================================================
 
 
-fn run_offpolicy_discrete_train[
+def run_offpolicy_discrete_train[
     E: BoxDiscreteActionEnv,
     A: OffPolicyDiscreteAgent & Checkpointable,
     L: Logger = NoOpLogger,
@@ -646,9 +644,7 @@ fn run_offpolicy_discrete_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-        L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyDiscreteAgent (DQN family).
 
@@ -781,7 +777,7 @@ fn run_offpolicy_discrete_train[
 # =============================================================================
 
 
-fn run_offpolicy_continuous_train[
+def run_offpolicy_continuous_train[
     E: BoxContinuousActionEnv,
     A: OffPolicyAgent & Checkpointable,
     L: Logger = NoOpLogger,
@@ -798,9 +794,7 @@ fn run_offpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-        L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for continuous-action off-policy agents.
 
@@ -932,7 +926,7 @@ fn run_offpolicy_continuous_train[
 # =============================================================================
 
 
-fn run_offpolicy_continuous_train[
+def run_offpolicy_continuous_train[
     E: BoxContinuousActionEnv,
     A: OffPolicyContinuousAgent & Checkpointable,
     L: Logger = NoOpLogger,
@@ -950,9 +944,7 @@ fn run_offpolicy_continuous_train[
     print_every: Int = 10,
     environment_name: String = "Environment",
     algorithm_name: String = "OffPolicy",
-    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
-        L, MutAnyOrigin
-    ](),
+    logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
 ) raises -> TrainingMetrics:
     """Warmup + episode training loop for OffPolicyContinuousAgent (DDPG/TD3/SAC).
 

@@ -107,7 +107,7 @@ struct SACAgent(Copyable, Movable):
     var log_std_min: Float64
     var log_std_max: Float64
 
-    fn __init__(
+    def __init__(
         out self,
         num_state_features: Int,
         action_scale: Float64 = 2.0,
@@ -178,7 +178,7 @@ struct SACAgent(Copyable, Movable):
             self.critic2_weights.append(w2)
             self.target_critic2_weights.append(w2)
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.num_state_features = copy.num_state_features
         self.num_critic_features = copy.num_critic_features
         self.actor_lr = copy.actor_lr
@@ -210,7 +210,7 @@ struct SACAgent(Copyable, Movable):
             self.critic2_weights.append(copy.critic2_weights[i])
             self.target_critic2_weights.append(copy.target_critic2_weights[i])
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.num_state_features = take.num_state_features
         self.num_critic_features = take.num_critic_features
         self.actor_lr = take.actor_lr
@@ -236,7 +236,7 @@ struct SACAgent(Copyable, Movable):
     # Actor (Stochastic Policy) Methods
     # ========================================================================
 
-    fn _compute_mean_logstd(
+    def _compute_mean_logstd(
         self, features: List[Float64]
     ) -> Tuple[Float64, Float64]:
         """Compute policy mean and log_std from features.
@@ -263,7 +263,7 @@ struct SACAgent(Copyable, Movable):
 
         return (mean, log_std)
 
-    fn select_action(self, features: List[Float64]) -> Float64:
+    def select_action(self, features: List[Float64]) -> Float64:
         """Sample action from stochastic policy.
 
         π(a|s) = tanh(μ(s) + σ(s) * ε) * action_scale, where ε ~ N(0, 1)
@@ -288,7 +288,7 @@ struct SACAgent(Copyable, Movable):
 
         return action
 
-    fn select_action_deterministic(self, features: List[Float64]) -> Float64:
+    def select_action_deterministic(self, features: List[Float64]) -> Float64:
         """Select deterministic action (mean of policy) for evaluation.
 
         Args:
@@ -301,7 +301,7 @@ struct SACAgent(Copyable, Movable):
         var mean = mean_logstd[0]
         return tanh(mean) * self.action_scale
 
-    fn _sample_action_with_log_prob(
+    def _sample_action_with_log_prob(
         self, features: List[Float64]
     ) -> Tuple[Float64, Float64]:
         """Sample action and compute log probability (for policy gradient).
@@ -349,7 +349,7 @@ struct SACAgent(Copyable, Movable):
     # Critic (Q-function) Methods
     # ========================================================================
 
-    fn _build_critic_features(
+    def _build_critic_features(
         self, state_features: List[Float64], action: Float64
     ) -> List[Float64]:
         """Build critic input features.
@@ -367,7 +367,7 @@ struct SACAgent(Copyable, Movable):
 
         return critic_features^
 
-    fn get_q1_value(
+    def get_q1_value(
         self, state_features: List[Float64], action: Float64
     ) -> Float64:
         """Compute Q-value using first critic."""
@@ -380,7 +380,7 @@ struct SACAgent(Copyable, Movable):
             q_value += self.critic1_weights[i] * critic_features[i]
         return q_value
 
-    fn get_q2_value(
+    def get_q2_value(
         self, state_features: List[Float64], action: Float64
     ) -> Float64:
         """Compute Q-value using second critic."""
@@ -393,7 +393,7 @@ struct SACAgent(Copyable, Movable):
             q_value += self.critic2_weights[i] * critic_features[i]
         return q_value
 
-    fn _get_q1_value_target(
+    def _get_q1_value_target(
         self, state_features: List[Float64], action: Float64
     ) -> Float64:
         """Compute Q-value using first target critic."""
@@ -406,7 +406,7 @@ struct SACAgent(Copyable, Movable):
             q_value += self.target_critic1_weights[i] * critic_features[i]
         return q_value
 
-    fn _get_q2_value_target(
+    def _get_q2_value_target(
         self, state_features: List[Float64], action: Float64
     ) -> Float64:
         """Compute Q-value using second target critic."""
@@ -419,7 +419,7 @@ struct SACAgent(Copyable, Movable):
             q_value += self.target_critic2_weights[i] * critic_features[i]
         return q_value
 
-    fn get_min_q_value(
+    def get_min_q_value(
         self, state_features: List[Float64], action: Float64
     ) -> Float64:
         """Get minimum Q-value from twin critics."""
@@ -433,7 +433,7 @@ struct SACAgent(Copyable, Movable):
     # Update Methods
     # ========================================================================
 
-    fn update(mut self, batch: List[ContinuousTransition[DType.float64]]):
+    def update(mut self, batch: List[ContinuousTransition[DType.float64]]):
         """Update critics, actor, and optionally alpha from a batch.
 
         SAC update procedure:
@@ -461,7 +461,7 @@ struct SACAgent(Copyable, Movable):
         # Soft update target networks
         self._soft_update_targets()
 
-    fn _update_critics(
+    def _update_critics(
         mut self, batch: List[ContinuousTransition[DType.float64]]
     ):
         """Update both critics using soft Bellman residual.
@@ -530,7 +530,7 @@ struct SACAgent(Copyable, Movable):
                         step_size * td_error2 * critic_features[j]
                     )
 
-    fn _update_actor(
+    def _update_actor(
         mut self, batch: List[ContinuousTransition[DType.float64]]
     ):
         """Update actor to maximize expected Q-value minus entropy.
@@ -627,7 +627,7 @@ struct SACAgent(Copyable, Movable):
                         step_size * grad_logstd * transition.state[j]
                     )
 
-    fn _update_alpha(
+    def _update_alpha(
         mut self, batch: List[ContinuousTransition[DType.float64]]
     ):
         """Update entropy coefficient α to maintain target entropy.
@@ -662,7 +662,7 @@ struct SACAgent(Copyable, Movable):
 
         self.alpha = exp(self.log_alpha)
 
-    fn _soft_update_targets(mut self):
+    def _soft_update_targets(mut self):
         """Soft update target critic networks.
 
         θ_target = τ * θ + (1 - τ) * θ_target
@@ -681,7 +681,7 @@ struct SACAgent(Copyable, Movable):
                 + (1.0 - self.tau) * self.target_critic2_weights[i]
             )
 
-    fn reset(mut self):
+    def reset(mut self):
         """Reset for new episode (no-op for SAC)."""
         pass
 
@@ -689,7 +689,7 @@ struct SACAgent(Copyable, Movable):
     # Training and Evaluation
     # ========================================================================
 
-    fn train[
+    def train[
         E: BoxContinuousActionEnv
     ](
         mut self,
@@ -827,7 +827,7 @@ struct SACAgent(Copyable, Movable):
 
         return metrics^
 
-    fn evaluate[
+    def evaluate[
         E: BoxContinuousActionEnv & RenderableEnv
     ](
         self,
@@ -901,7 +901,7 @@ struct SACAgent(Copyable, Movable):
 # ============================================================================
 
 
-fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
+def _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     """Convert a List[Scalar[DTYPE]] to SIMD[DTYPE, 4].
 
     Pads with zeros if the list has fewer than 4 elements.
@@ -913,7 +913,7 @@ fn _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     return result
 
 
-fn _list_to_simd4_f64[
+def _list_to_simd4_f64[
     DTYPE: DType
 ](obs: List[Scalar[DTYPE]]) -> SIMD[DType.float64, 4]:
     """Convert a List[Scalar[DTYPE]] to SIMD[DType.float64, 4].

@@ -1,8 +1,8 @@
-trait State(Copyable, Movable, ImplicitlyCopyable):
+trait State(Copyable, ImplicitlyCopyable, Movable):
     """Base trait for environment states.
 
     States must be copyable for use in generic training loops.
     """
 
-    fn __eq__(self, other: Self) -> Bool:
+    def __eq__(self, other: Self) -> Bool:
         ...

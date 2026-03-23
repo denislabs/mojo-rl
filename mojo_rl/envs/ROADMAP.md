@@ -123,7 +123,7 @@ All XMLs are in `Gymnasium-main/gymnasium/envs/mujoco/assets/`:
 **Framework hook**: `init_qpos_gpu` added to `Phyics3dEnvConfig` trait (default: no-op). Called by `_reset_env_gpu` after noise is applied. Signature:
 ```mojo
 @always_inline @staticmethod
-fn init_qpos_gpu[DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int](
+def init_qpos_gpu[DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int](
     states: LayoutTensor[...], env: Int, qpos_off: Int,
 ):
     pass  # default no-op; override for Humanoid, HumanoidStandup
@@ -138,7 +138,7 @@ Humanoid/HumanoidStandup will override to set:
 
 **Now**: The trait signature includes `xpos_off`, `xipos_off`, `cfrc_ext_off`, and `cvel_off`:
 ```mojo
-fn compute_reward_and_done_gpu[...](
+def compute_reward_and_done_gpu[...](
     states, model, actions, env,
     qpos_off, xpos_off, xipos_off, cfrc_ext_off, cvel_off,
     meta_offset, curriculum_offset,
@@ -155,7 +155,7 @@ All existing configs (HalfCheetah, Hopper, Ant, InvertedPendulum, Swimmer, Walke
 
 ```mojo
 @always_inline @staticmethod
-fn custom_extract_obs_gpu[DTYPE, BATCH_SIZE, STATE_SIZE, OBS_DIM](
+def custom_extract_obs_gpu[DTYPE, BATCH_SIZE, STATE_SIZE, OBS_DIM](
     states, obs, env, qpos_off, qvel_off, xpos_off,
 ) -> Bool:
     return False  # default: use model's qpos[skip:]+qvel extraction

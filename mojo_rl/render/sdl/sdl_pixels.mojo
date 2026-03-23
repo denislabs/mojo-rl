@@ -88,19 +88,19 @@ struct PixelType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime PIXELTYPE_UNKNOWN = Self(0)
@@ -128,19 +128,19 @@ struct BitmapOrder(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime BITMAPORDER_NONE = Self(0)
@@ -157,19 +157,19 @@ struct PackedOrder(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime PACKEDORDER_NONE = Self(0)
@@ -192,19 +192,19 @@ struct ArrayOrder(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime ARRAYORDER_NONE = Self(0)
@@ -225,19 +225,19 @@ struct PackedLayout(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime PACKEDLAYOUT_NONE = Self(0)
@@ -292,19 +292,19 @@ struct PixelFormat(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime PIXELFORMAT_UNKNOWN = Self(0)
@@ -469,19 +469,19 @@ struct ColorType(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime COLOR_TYPE_UNKNOWN = Self(0)
@@ -499,19 +499,19 @@ struct ColorRange(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime COLOR_RANGE_UNKNOWN = Self(0)
@@ -531,19 +531,19 @@ struct ColorPrimaries(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime COLOR_PRIMARIES_UNKNOWN = Self(0)
@@ -584,19 +584,19 @@ struct TransferCharacteristics(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime TRANSFER_CHARACTERISTICS_UNKNOWN = Self(0)
@@ -644,19 +644,19 @@ struct MatrixCoefficients(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime MATRIX_COEFFICIENTS_IDENTITY = Self(0)
@@ -694,19 +694,19 @@ struct ChromaLocation(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime CHROMA_LOCATION_NONE = Self(0)
@@ -732,19 +732,19 @@ struct Colorspace(Indexer, Intable, TrivialRegisterPassable):
     var value: UInt32
 
     @always_inline
-    fn __init__(out self, value: UInt32):
+    def __init__(out self, value: UInt32):
         self.value = value
 
     @always_inline
-    fn __int__(self) -> Int:
+    def __int__(self) -> Int:
         return Int(self.value)
 
     @always_inline
-    fn __eq__(lhs, rhs: Self) -> Bool:
+    def __eq__(lhs, rhs: Self) -> Bool:
         return lhs.value == rhs.value
 
     @always_inline("nodebug")
-    fn __mlir_index__(self) -> __mlir_type.index:
+    def __mlir_index__(self) -> __mlir_type.index:
         return Int(self)._mlir_value
 
     comptime COLORSPACE_UNKNOWN = Self(0)
@@ -922,7 +922,7 @@ struct PixelFormatDetails(ImplicitlyCopyable, Movable):
     var ashift: UInt8
 
 
-fn get_pixel_format_name(
+def get_pixel_format_name(
     format: PixelFormat,
 ) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """Get the human readable name of a pixel format.
@@ -947,7 +947,7 @@ fn get_pixel_format_name(
     ]()(format)
 
 
-fn get_masks_for_pixel_format(
+def get_masks_for_pixel_format(
     format: PixelFormat,
     bpp: Ptr[c_int, MutAnyOrigin],
     rmask: Ptr[UInt32, MutAnyOrigin],
@@ -991,7 +991,7 @@ fn get_masks_for_pixel_format(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn get_pixel_format_for_masks(
+def get_pixel_format_for_masks(
     bpp: c_int, rmask: UInt32, gmask: UInt32, bmask: UInt32, amask: UInt32
 ) raises -> PixelFormat:
     """Convert a bpp value and RGBA masks to an enumerated pixel format.
@@ -1029,7 +1029,7 @@ fn get_pixel_format_for_masks(
     ]()(bpp, rmask, gmask, bmask, amask)
 
 
-fn get_pixel_format_details(
+def get_pixel_format_details(
     format: PixelFormat,
 ) raises -> Ptr[PixelFormatDetails, ImmutAnyOrigin]:
     """Create an SDL_PixelFormatDetails structure corresponding to a pixel format.
@@ -1058,7 +1058,7 @@ fn get_pixel_format_details(
     ]()(format)
 
 
-fn create_palette(ncolors: c_int) raises -> Ptr[Palette, MutAnyOrigin]:
+def create_palette(ncolors: c_int) raises -> Ptr[Palette, MutAnyOrigin]:
     """Create a palette structure with the specified number of color entries.
 
     The palette entries are initialized to white.
@@ -1084,7 +1084,7 @@ fn create_palette(ncolors: c_int) raises -> Ptr[Palette, MutAnyOrigin]:
     ]()(ncolors)
 
 
-fn set_palette_colors(
+def set_palette_colors(
     palette: Ptr[Palette, MutAnyOrigin],
     colors: Ptr[Color, ImmutAnyOrigin],
     firstcolor: c_int,
@@ -1123,7 +1123,7 @@ fn set_palette_colors(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-fn destroy_palette(palette: Ptr[Palette, MutAnyOrigin]) raises -> None:
+def destroy_palette(palette: Ptr[Palette, MutAnyOrigin]) raises -> None:
     """Free a palette created with SDL_CreatePalette().
 
     Args:
@@ -1143,7 +1143,7 @@ fn destroy_palette(palette: Ptr[Palette, MutAnyOrigin]) raises -> None:
     ]()(palette)
 
 
-fn map_rgb(
+def map_rgb(
     format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
     palette: Ptr[Palette, ImmutAnyOrigin],
     r: UInt8,
@@ -1198,7 +1198,7 @@ fn map_rgb(
     ]()(format, palette, r, g, b)
 
 
-fn map_rgba(
+def map_rgba(
     format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
     palette: Ptr[Palette, ImmutAnyOrigin],
     r: UInt8,
@@ -1256,7 +1256,7 @@ fn map_rgba(
     ]()(format, palette, r, g, b, a)
 
 
-fn get_rgb(
+def get_rgb(
     pixel: UInt32,
     format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
     palette: Ptr[Palette, ImmutAnyOrigin],
@@ -1301,7 +1301,7 @@ fn get_rgb(
     ]()(pixel, format, palette, r, g, b)
 
 
-fn get_rgba(
+def get_rgba(
     pixel: UInt32,
     format: Ptr[PixelFormatDetails, ImmutAnyOrigin],
     palette: Ptr[Palette, ImmutAnyOrigin],

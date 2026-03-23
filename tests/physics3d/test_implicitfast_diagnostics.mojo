@@ -53,7 +53,7 @@ comptime CDOF_SIZE = NV * 6
 comptime CRB_SIZE = NBODY * 10
 
 
-fn main() raises:
+def main() raises:
     print("=" * 70)
     print("ImplicitFast Diagnostics: Intermediate Value Comparison")
     print("=" * 70)

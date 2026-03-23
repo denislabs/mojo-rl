@@ -16,15 +16,15 @@ struct WireframeLine(Copyable, Movable):
     var start: Vec3
     var end: Vec3
 
-    fn __init__(out self, start: Vec3, end: Vec3):
+    def __init__(out self, start: Vec3, end: Vec3):
         self.start = start
         self.end = end
 
-    fn __init__(out self, *, copy: Self):
+    def __init__(out self, *, copy: Self):
         self.start = copy.start
         self.end = copy.end
 
-    fn __init__(out self, *, deinit take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.start = take.start
         self.end = take.end
 
@@ -40,7 +40,7 @@ struct WireframeSphere:
     var segments: Int
     var rings: Int
 
-    fn __init__(
+    def __init__(
         out self,
         center: Vec3 = Vec3.zero(),
         radius: Float64 = 1.0,
@@ -60,7 +60,7 @@ struct WireframeSphere:
         self.segments = segments
         self.rings = rings
 
-    fn get_lines(self) -> List[WireframeLine]:
+    def get_lines(self) -> List[WireframeLine]:
         """Generate wireframe lines for the sphere.
 
         Returns:
@@ -130,7 +130,7 @@ struct WireframeCapsule:
     var axis: Int  # 0=X, 1=Y, 2=Z in local space
     var segments: Int
 
-    fn __init__(
+    def __init__(
         out self,
         center: Vec3 = Vec3.zero(),
         orientation: Quat = Quat.identity(),
@@ -156,7 +156,7 @@ struct WireframeCapsule:
         self.axis = axis
         self.segments = segments
 
-    fn get_lines(self) -> List[WireframeLine]:
+    def get_lines(self) -> List[WireframeLine]:
         """Generate wireframe lines for the capsule.
 
         Returns:
@@ -275,7 +275,7 @@ struct WireframeBox:
     var orientation: Quat
     var half_extents: Vec3
 
-    fn __init__(
+    def __init__(
         out self,
         center: Vec3 = Vec3.zero(),
         orientation: Quat = Quat.identity(),
@@ -292,7 +292,7 @@ struct WireframeBox:
         self.orientation = orientation
         self.half_extents = half_extents
 
-    fn get_lines(self) -> List[WireframeLine]:
+    def get_lines(self) -> List[WireframeLine]:
         """Generate wireframe lines for the box.
 
         Returns:
@@ -339,7 +339,7 @@ struct WireframeBox:
         return lines^
 
 
-fn create_ground_grid(
+def create_ground_grid(
     size: Float64 = 5.0,
     divisions: Int = 10,
     height: Float64 = 0.0,
@@ -380,7 +380,7 @@ fn create_ground_grid(
     return lines^
 
 
-fn create_axes(
+def create_axes(
     origin: Vec3 = Vec3.zero(),
     length: Float64 = 1.0,
 ) -> List[WireframeLine]:

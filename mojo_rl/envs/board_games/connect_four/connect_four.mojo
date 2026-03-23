@@ -53,7 +53,7 @@ comptime RESULT_DRAW: Int = 3
 
 
 @always_inline
-fn _cell_idx(col: Int, row: Int) -> Int:
+def _cell_idx(col: Int, row: Int) -> Int:
     """Column-major index: col * ROWS + row. Row 0 = bottom."""
     return col * ROWS + row
 
@@ -86,7 +86,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     var _renderer: UnsafePointer[Renderer2D, MutAnyOrigin]
     var _renderer_initialized: Bool
 
-    fn __init__(out self):
+    def __init__(out self):
         self.state = InlineArray[Scalar[Self.dtype], 46](
             fill=Scalar[Self.dtype](0.0)
         )
@@ -98,13 +98,13 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     # CPU: reset + step
     # ========================================================================
 
-    fn reset(mut self) -> BoardGameState:
+    def reset(mut self) -> BoardGameState:
         for i in range(46):
             self.state[i] = 0.0
         self.done = False
         return BoardGameState(index=0)
 
-    fn step(
+    def step(
         mut self, action: BoardGameAction, verbose: Bool = False
     ) -> Tuple[BoardGameState, Scalar[Self.dtype], Bool]:
         var result = self._step_impl(action.value)
@@ -114,14 +114,14 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
             result[1],
         )
 
-    fn _find_drop_row(self, col: Int) -> Int:
+    def _find_drop_row(self, col: Int) -> Int:
         """Find the lowest empty row in a column. Returns -1 if full."""
         for row in range(ROWS):
             if self.state[_cell_idx(col, row)] == 0.0:
                 return row
         return -1
 
-    fn _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
+    def _step_impl(mut self, action: Int) -> Tuple[Scalar[Self.dtype], Bool]:
         """Place piece in column, check win/draw. Returns (reward, done)."""
         if self.done:
             return (Scalar[Self.dtype](0.0), True)
@@ -160,19 +160,32 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         self.state[S_CURRENT_PLAYER] = Scalar[Self.dtype](1 - player)
         return (Scalar[Self.dtype](0.0), False)
 
-    fn _check_win_cpu(self, col: Int, row: Int, mark: Scalar[Self.dtype]) -> Bool:
+    def _check_win_cpu(
+        self, col: Int, row: Int, mark: Scalar[Self.dtype]
+    ) -> Bool:
         """Check 4-in-a-row from the last placed piece in all 4 directions."""
         # Direction pairs: horizontal, vertical, diagonal /, diagonal \
         # (dc, dr) pairs
         return (
-            self._count_dir(col, row, mark, 1, 0) + self._count_dir(col, row, mark, -1, 0) >= 3
-            or self._count_dir(col, row, mark, 0, 1) + self._count_dir(col, row, mark, 0, -1) >= 3
-            or self._count_dir(col, row, mark, 1, 1) + self._count_dir(col, row, mark, -1, -1) >= 3
-            or self._count_dir(col, row, mark, 1, -1) + self._count_dir(col, row, mark, -1, 1) >= 3
+            self._count_dir(col, row, mark, 1, 0)
+            + self._count_dir(col, row, mark, -1, 0)
+            >= 3
+            or self._count_dir(col, row, mark, 0, 1)
+            + self._count_dir(col, row, mark, 0, -1)
+            >= 3
+            or self._count_dir(col, row, mark, 1, 1)
+            + self._count_dir(col, row, mark, -1, -1)
+            >= 3
+            or self._count_dir(col, row, mark, 1, -1)
+            + self._count_dir(col, row, mark, -1, 1)
+            >= 3
         )
 
-    fn _count_dir(self, col: Int, row: Int, mark: Scalar[Self.dtype], dc: Int, dr: Int) -> Int:
-        """Count consecutive marks in one direction (excluding the starting cell)."""
+    def _count_dir(
+        self, col: Int, row: Int, mark: Scalar[Self.dtype], dc: Int, dr: Int
+    ) -> Int:
+        """Count consecutive marks in one direction (excluding the starting cell).
+        """
         var count = 0
         var c = col + dc
         var r = row + dr
@@ -188,38 +201,38 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     # Env trait methods
     # ========================================================================
 
-    fn get_state(self) -> BoardGameState:
+    def get_state(self) -> BoardGameState:
         return BoardGameState(index=Int(self.state[S_STEP_COUNT]))
 
-    fn close(mut self):
+    def close(mut self):
         if self._renderer_initialized:
             self._renderer[].close()
             self._renderer.free()
             self._renderer_initialized = False
 
-    fn action_from_index(self, action_idx: Int) -> BoardGameAction:
+    def action_from_index(self, action_idx: Int) -> BoardGameAction:
         return BoardGameAction(value=action_idx)
 
-    fn num_actions(self) -> Int:
+    def num_actions(self) -> Int:
         return 7
 
-    fn obs_dim(self) -> Int:
+    def obs_dim(self) -> Int:
         return 126
 
-    fn num_states(self) -> Int:
+    def num_states(self) -> Int:
         return 1
 
-    fn state_to_index(self, state: BoardGameState) -> Int:
+    def state_to_index(self, state: BoardGameState) -> Int:
         return state.index
 
     # ========================================================================
     # TwoPlayerDiscreteEnv trait methods
     # ========================================================================
 
-    fn current_player(self) -> Int:
+    def current_player(self) -> Int:
         return Int(self.state[S_CURRENT_PLAYER])
 
-    fn legal_action_mask(self) -> List[Bool]:
+    def legal_action_mask(self) -> List[Bool]:
         var mask = List[Bool](capacity=7)
         for col in range(COLS):
             # Column is legal if top row (row 5) is empty
@@ -228,14 +241,14 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
             )
         return mask^
 
-    fn game_result(self) -> Int:
+    def game_result(self) -> Int:
         return Int(self.state[S_GAME_RESULT])
 
     # ========================================================================
     # ContinuousStateEnv / BoxDiscreteActionEnv (CPU)
     # ========================================================================
 
-    fn get_obs_list(self) -> List[Scalar[Self.dtype]]:
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs = List[Scalar[Self.dtype]](capacity=126)
         var player = Int(self.state[S_CURRENT_PLAYER])
         var my_mark = Scalar[Self.dtype](player + 1)
@@ -266,11 +279,11 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
 
         return obs^
 
-    fn reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
         _ = self.reset()
         return self.get_obs_list()
 
-    fn step_obs(
+    def step_obs(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
         """Single-agent step: agent plays, then random opponent plays."""
@@ -302,7 +315,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     # RenderableEnv trait methods
     # ========================================================================
 
-    fn init_renderer(mut self) raises -> Bool:
+    def init_renderer(mut self) raises -> Bool:
         if self._renderer_initialized:
             return True
         self._renderer = alloc[Renderer2D](1)
@@ -312,12 +325,12 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         self._renderer_initialized = True
         return True
 
-    fn render_frame(mut self) raises -> None:
+    def render_frame(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._render(self._renderer[])
 
-    fn _render(self, mut renderer: Renderer2D):
+    def _render(self, mut renderer: Renderer2D):
         """Render ConnectFour board state."""
         var board_color = SDL_Color(r=0x00, g=0x00, b=0xAA, a=0xFF)
         var empty_color = SDL_Color(r=0x33, g=0x33, b=0x33, a=0xFF)
@@ -330,7 +343,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         var cell_size = 80
         var board_cols = 7
         var board_rows = 6
-        var board_width = board_cols * cell_size   # 560
+        var board_width = board_cols * cell_size  # 560
         var board_height = board_rows * cell_size  # 480
         var circle_radius = 32
 
@@ -368,11 +381,21 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         # Draw grid lines over circles for visual separation
         for i in range(1, board_cols):
             renderer.draw_line(
-                i * cell_size, 50, i * cell_size, 50 + board_height, board_color, 1
+                i * cell_size,
+                50,
+                i * cell_size,
+                50 + board_height,
+                board_color,
+                1,
             )
         for i in range(1, board_rows):
             renderer.draw_line(
-                0, 50 + i * cell_size, board_width, 50 + i * cell_size, board_color, 1
+                0,
+                50 + i * cell_size,
+                board_width,
+                50 + i * cell_size,
+                board_color,
+                1,
             )
 
         # Status bar at bottom (y=530-50..530)
@@ -410,32 +433,32 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
 
         renderer.flip()
 
-    fn close_renderer(mut self) raises -> None:
+    def close_renderer(mut self) raises -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].close()
         self._renderer.free()
         self._renderer_initialized = False
 
-    fn is_renderer_open(self) -> Bool:
+    def is_renderer_open(self) -> Bool:
         if not self._renderer_initialized:
             return False
         return not self._renderer[].get_should_quit()
 
-    fn check_renderer_quit(mut self) -> Bool:
+    def check_renderer_quit(mut self) -> Bool:
         if not self._renderer_initialized:
             return False
         return self._renderer[].get_should_quit()
 
-    fn renderer_delay(self, ms: Int) -> None:
+    def renderer_delay(self, ms: Int) -> None:
         if not self._renderer_initialized:
             return
         self._renderer[].renderer_delay(ms)
 
-    fn renderer_is_paused(self) -> Bool:
+    def renderer_is_paused(self) -> Bool:
         return False
 
-    fn renderer_step_once(self) -> Bool:
+    def renderer_step_once(self) -> Bool:
         return False
 
     # ========================================================================
@@ -446,7 +469,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn _gpu_count_dir[
+    def _gpu_count_dir[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -476,7 +499,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn step_kernel[
+    def step_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -536,10 +559,26 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         states[i, S_LAST_COL] = Scalar[board_dtype](col)
 
         # Check win (4 directions)
-        var h = Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](states, i, col, row, mark, 1, 0) + Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](states, i, col, row, mark, -1, 0)
-        var v = Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](states, i, col, row, mark, 0, 1) + Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](states, i, col, row, mark, 0, -1)
-        var d1 = Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](states, i, col, row, mark, 1, 1) + Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](states, i, col, row, mark, -1, -1)
-        var d2 = Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](states, i, col, row, mark, 1, -1) + Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](states, i, col, row, mark, -1, 1)
+        var h = Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](
+            states, i, col, row, mark, 1, 0
+        ) + Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](
+            states, i, col, row, mark, -1, 0
+        )
+        var v = Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](
+            states, i, col, row, mark, 0, 1
+        ) + Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](
+            states, i, col, row, mark, 0, -1
+        )
+        var d1 = Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](
+            states, i, col, row, mark, 1, 1
+        ) + Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](
+            states, i, col, row, mark, -1, -1
+        )
+        var d2 = Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](
+            states, i, col, row, mark, 1, -1
+        ) + Self._gpu_count_dir[BATCH_SIZE, STATE_SIZE](
+            states, i, col, row, mark, -1, 1
+        )
 
         if h >= 3 or v >= 3 or d1 >= 3 or d2 >= 3:
             states[i, S_GAME_RESULT] = Scalar[board_dtype](player + 1)
@@ -561,7 +600,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn reset_kernel[
+    def reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -579,7 +618,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn selective_reset_kernel[
+    def selective_reset_kernel[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -602,7 +641,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
 
     @staticmethod
     @always_inline
-    fn extract_obs_and_masks[
+    def extract_obs_and_masks[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -665,7 +704,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     # ========================================================================
 
     @staticmethod
-    fn step_kernel_gpu[
+    def step_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -705,7 +744,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn step_wrapper(
+        def step_wrapper(
             states: LayoutTensor[
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -745,7 +784,11 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
                 ImmutAnyOrigin,
-            ](rebind[UnsafePointer[Scalar[board_dtype], ImmutAnyOrigin]](states.ptr))
+            ](
+                rebind[UnsafePointer[Scalar[board_dtype], ImmutAnyOrigin]](
+                    states.ptr
+                )
+            )
             ConnectFourEnv.extract_obs_and_masks[
                 BATCH_SIZE, STATE_SIZE, OBS_DIM, 7
             ](states_read, obs, legal_masks)
@@ -763,7 +806,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         )
 
     @staticmethod
-    fn reset_kernel_gpu[
+    def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -777,7 +820,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn reset_wrapper(
+        def reset_wrapper(
             states: LayoutTensor[
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -793,7 +836,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         )
 
     @staticmethod
-    fn selective_reset_kernel_gpu[
+    def selective_reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
     ](
@@ -811,7 +854,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn sel_reset_wrapper(
+        def sel_reset_wrapper(
             states: LayoutTensor[
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -833,7 +876,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         )
 
     @staticmethod
-    fn extract_obs_kernel_gpu[
+    def extract_obs_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
         OBS_DIM: Int,
@@ -844,7 +887,9 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         mut legal_masks_buf: DeviceBuffer[board_dtype],
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
+            board_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE),
+            ImmutAnyOrigin,
         ](states_buf.unsafe_ptr())
         var obs = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -855,7 +900,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @always_inline
-        fn extract_wrapper(
+        def extract_wrapper(
             states: LayoutTensor[
                 board_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),

@@ -22,7 +22,7 @@ comptime OBS_DIM: Int = LunarLander.OBS_DIM
 comptime NUM_ACTIONS: Int = LunarLander.NUM_ACTIONS
 
 
-fn main() raises:
+def main() raises:
     seed(42)
 
     print("=" * 70)
