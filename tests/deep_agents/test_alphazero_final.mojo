@@ -25,8 +25,8 @@ def main() raises:
     comptime TTT = TicTacToeEnv[DType.float32]
 
     # Switch between MLP and CNN configs here
-    # comptime Config = AlphaZeroTicTacToeCNNConfig[]
-    comptime Config = AlphaZeroTicTacToeConfig[]
+    comptime Config = AlphaZeroTicTacToeCNNConfig[]
+    # comptime Config = AlphaZeroTicTacToeConfig[]
 
     var agent = GenericAlphaZeroAgent[Config, 64]()
 
