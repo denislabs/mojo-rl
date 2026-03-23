@@ -49,7 +49,6 @@ from .onpolicy_continuous_agent import GenericOnPolicyContinuousAgent
 from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, DQNPERConfig, AutodiffDQNConfig, HuberDQNConfig, NoisyDQNConfig, GenericDQNAgent, GenericDQNPERAgent, DQNGPUStateGeneric
 from .c51_agent import CategoricalDQNConfig, C51Config, GenericC51Agent
 from .rainbow_agent import RainbowConfig, RainbowCNNConfig, GenericRainbowAgent
-from .rainbow_host_agent import GenericRainbowHostAgent
 
 # Convenience aliases matching old agent names
 from .aliases import (

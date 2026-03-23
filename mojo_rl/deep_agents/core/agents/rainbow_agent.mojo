@@ -69,7 +69,6 @@ from mojo_rl.deep_agents.core import (
 from mojo_rl.deep_agents.core.utils import obs_to_inline
 from mojo_rl.deep_agents.core.replay import (
     PrioritizedReplayBuffer,
-    GPUPrioritizedReplayBuffer,
     HostPrioritizedReplayBuffer,
     NStepBuffer,
     NStepTransition,
@@ -453,9 +452,9 @@ struct RainbowGPUState[
     var online: GPUNetworkState[Self.QModel, Self.QOpt]
     var target: GPUNetworkState[Self.QModel, Self.QOpt]
 
-    # PER buffer
-    var buffer: GPUPrioritizedReplayBuffer[
-        Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size
+    # PER buffer (host-memory for large obs compatibility)
+    var buffer: HostPrioritizedReplayBuffer[
+        Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size, Self.max_n_envs
     ]
 
     # N-step buffer
@@ -510,8 +509,9 @@ struct RainbowGPUState[
     ) raises:
         self.online = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
         self.target = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
-        self.buffer = GPUPrioritizedReplayBuffer[
-            Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size
+        self.buffer = HostPrioritizedReplayBuffer[
+            Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size,
+            Self.max_n_envs,
         ](ctx, alpha=alpha, beta=beta)
         self.nstep = GPUNStepBuffer[Self.n_step, Self.obs_dim, Self.max_n_envs](
             ctx, gamma=gamma
@@ -608,209 +608,6 @@ struct RainbowGPUState[
             ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
         )
         # Store compressed transitions into PER buffer
-        self.buffer.store[N_ENVS](
-            ctx,
-            self.nstep.out_obs,
-            self.nstep.out_act,
-            self.nstep.out_rew,
-            self.nstep.out_nobs,
-            self.nstep.out_done,
-        )
-
-    def gpu_buffer_is_ready(self) -> Bool:
-        return self.buffer.gpu_buffer_is_ready()
-
-
-# =============================================================================
-# Rainbow GPU State (Host-memory buffer variant)
-# =============================================================================
-
-
-struct RainbowGPUStateHost[
-    QModel: Model,
-    QOpt: Optimizer,
-    buffer_capacity: Int,
-    obs_dim: Int,
-    num_actions: Int,
-    num_atoms: Int,
-    n_step: Int,
-    batch_size: Int,
-    max_n_envs: Int,
-](GPUOffPolicyState):
-    """GPU state for Rainbow with host-memory replay buffer.
-
-    Identical to RainbowGPUState but uses HostPrioritizedReplayBuffer
-    instead of GPUPrioritizedReplayBuffer, enabling much larger buffer
-    capacities for large-observation environments (e.g., pixel-based).
-    """
-
-    comptime Q_Net = Network[Self.QModel, Self.QOpt]
-    comptime CACHE_SIZE = Self.QModel.CACHE_SIZE
-    comptime WS_PER_SAMPLE = Self.Q_Net.WORKSPACE_SIZE_PER_SAMPLE
-    comptime RAW_OUT = Self.QModel.OUT_DIM
-    comptime COMBINED = Self.num_actions * Self.num_atoms
-
-    # Networks
-    var online: GPUNetworkState[Self.QModel, Self.QOpt]
-    var target: GPUNetworkState[Self.QModel, Self.QOpt]
-
-    # Host-memory PER buffer (the key difference)
-    var buffer: HostPrioritizedReplayBuffer[
-        Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size, Self.max_n_envs
-    ]
-
-    # N-step buffer
-    var nstep: GPUNStepBuffer[Self.n_step, Self.obs_dim, Self.max_n_envs]
-
-    # Inference buffers
-    var env_raw_buf: DeviceBuffer[dtype]
-    var env_q_buf: DeviceBuffer[dtype]
-    var inf_ws: DeviceBuffer[dtype]
-
-    # Training -- replay sample (on GPU, filled by host→GPU copy)
-    var s_obs: DeviceBuffer[dtype]
-    var s_act: DeviceBuffer[dtype]
-    var s_rew: DeviceBuffer[dtype]
-    var s_nobs: DeviceBuffer[dtype]
-    var s_done: DeviceBuffer[dtype]
-    var s_idx: DeviceBuffer[DType.int32]
-    var s_weights: DeviceBuffer[dtype]
-
-    # Training -- raw + combined outputs
-    var q_raw: DeviceBuffer[dtype]
-    var next_q_raw: DeviceBuffer[dtype]
-    var online_next_q_raw: DeviceBuffer[dtype]
-    var q_combined: DeviceBuffer[dtype]
-    var next_q_combined: DeviceBuffer[dtype]
-    var online_next_q_combined: DeviceBuffer[dtype]
-    var expected_q: DeviceBuffer[dtype]
-
-    # Training -- targets, cache, gradients
-    var cache: DeviceBuffer[dtype]
-    var grad_combined: DeviceBuffer[dtype]
-    var grad_raw: DeviceBuffer[dtype]
-    var grad_input: DeviceBuffer[dtype]
-    var train_ws: DeviceBuffer[dtype]
-    var td_errors: DeviceBuffer[dtype]
-    var bins_buf: DeviceBuffer[dtype]
-
-    # Diagnostic host buffers
-    var diag_comb_host: HostBuffer[dtype]
-    var diag_act_host: HostBuffer[dtype]
-    var diag_rew_host: HostBuffer[dtype]
-    var diag_done_host: HostBuffer[dtype]
-    var diag_weights_host: HostBuffer[dtype]
-    var diag_td_host: HostBuffer[dtype]
-
-    def __init__(
-        out self,
-        ctx: DeviceContext,
-        alpha: Float64 = 0.6,
-        beta: Float64 = 0.4,
-        gamma: Float64 = 0.99,
-    ) raises:
-        self.online = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
-        self.target = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
-        self.buffer = HostPrioritizedReplayBuffer[
-            Self.buffer_capacity,
-            Self.obs_dim,
-            1,
-            Self.batch_size,
-            Self.max_n_envs,
-        ](ctx, alpha=alpha, beta=beta)
-        self.nstep = GPUNStepBuffer[Self.n_step, Self.obs_dim, Self.max_n_envs](
-            ctx, gamma=gamma
-        )
-
-        # Inference
-        self.env_raw_buf = ctx.enqueue_create_buffer[dtype](
-            Self.max_n_envs * Self.RAW_OUT
-        )
-        self.env_q_buf = ctx.enqueue_create_buffer[dtype](
-            Self.max_n_envs * Self.num_actions
-        )
-        self.inf_ws = ctx.enqueue_create_buffer[dtype](
-            max(1, Self.max_n_envs * Self.WS_PER_SAMPLE)
-        )
-
-        # Replay sample
-        self.s_obs = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size * Self.obs_dim
-        )
-        self.s_act = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-        self.s_rew = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-        self.s_nobs = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size * Self.obs_dim
-        )
-        self.s_done = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-        self.s_idx = ctx.enqueue_create_buffer[DType.int32](Self.batch_size)
-        self.s_weights = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-
-        # Raw + combined
-        var batch_raw = Self.batch_size * Self.RAW_OUT
-        var batch_combined = Self.batch_size * Self.COMBINED
-        self.q_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
-        self.next_q_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
-        self.online_next_q_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
-        self.q_combined = ctx.enqueue_create_buffer[dtype](batch_combined)
-        self.next_q_combined = ctx.enqueue_create_buffer[dtype](batch_combined)
-        self.online_next_q_combined = ctx.enqueue_create_buffer[dtype](
-            batch_combined
-        )
-        self.expected_q = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size * Self.num_actions
-        )
-
-        # Cache, gradients
-        self.cache = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size * Self.CACHE_SIZE
-        )
-        self.grad_combined = ctx.enqueue_create_buffer[dtype](batch_combined)
-        self.grad_raw = ctx.enqueue_create_buffer[dtype](batch_raw)
-        self.grad_input = ctx.enqueue_create_buffer[dtype](
-            Self.batch_size * Self.obs_dim
-        )
-        self.train_ws = ctx.enqueue_create_buffer[dtype](
-            max(1, Self.batch_size * Self.WS_PER_SAMPLE)
-        )
-        self.td_errors = ctx.enqueue_create_buffer[dtype](Self.batch_size)
-        self.bins_buf = ctx.enqueue_create_buffer[dtype](Self.num_atoms)
-
-        # Diagnostics
-        self.diag_comb_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.batch_size * Self.num_actions * Self.num_atoms
-        )
-        self.diag_act_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.batch_size
-        )
-        self.diag_rew_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.batch_size
-        )
-        self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.batch_size
-        )
-        self.diag_weights_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.batch_size
-        )
-        self.diag_td_host = ctx.enqueue_create_host_buffer[dtype](
-            Self.batch_size
-        )
-
-    def gpu_store[
-        N_ENVS: Int
-    ](
-        mut self,
-        ctx: DeviceContext,
-        prev_obs_buf: DeviceBuffer[dtype],
-        actions_buf: DeviceBuffer[dtype],
-        rewards_buf: DeviceBuffer[dtype],
-        obs_buf: DeviceBuffer[dtype],
-        dones_buf: DeviceBuffer[dtype],
-    ) raises -> None:
-        """Route through n-step buffer then into host PER buffer."""
-        self.nstep.process(
-            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
-        )
         self.buffer.store[N_ENVS](
             ctx,
             self.nstep.out_obs,

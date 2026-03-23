@@ -29,7 +29,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.deep_agents.core.agents import (
     RainbowCNNConfig,
-    GenericRainbowHostAgent,
+    GenericRainbowAgent,
 )
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 from mojo_rl.core.logger import RemoteLogger
@@ -68,7 +68,7 @@ def main() raises:
     print()
 
     with DeviceContext() as ctx:
-        var agent = GenericRainbowHostAgent[
+        var agent = GenericRainbowAgent[
             RainbowCNNConfig[
                 NUM_ACTIONS,
                 NUM_ATOMS,
