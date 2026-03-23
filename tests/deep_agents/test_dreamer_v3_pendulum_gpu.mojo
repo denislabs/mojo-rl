@@ -61,7 +61,7 @@ fn main() raises:
         units=64,
         num_bins=65,
         blocks=2,
-        batch_size=16,
+        batch_size=64,
         batch_length=32,
         imagine_horizon=15,
         buffer_capacity=100000,
