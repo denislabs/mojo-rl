@@ -196,13 +196,21 @@ def _resize_and_push[
 # ============================================================================
 
 
-struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
-    BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv
-):
+struct PongPixelEnv[
+    DTYPE: DType where DTYPE.is_floating_point(),
+    FRAME_SKIP: Int = 1,
+](BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv):
     """Native Pong with pixel observations for CNN-based training.
 
     Uses the same physics as PongEnv but produces 4×84×84 pixel observations
     instead of 6D clean observations.
+
+    Parameters:
+        DTYPE: Floating point type (float32 recommended for GPU).
+        FRAME_SKIP: Number of physics steps per action (default 1).
+            With FRAME_SKIP=4, each action is repeated 4 times before
+            rendering and observing. Rewards are summed across skipped frames.
+            If the episode terminates mid-skip, remaining frames are skipped.
 
     CPU: Renders to internal grayscale buffer for get_obs_list().
     GPU: Renders in-kernel, maintains per-env frame stacks in workspace.
@@ -429,6 +437,8 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var seed = Scalar[DType.uint64](rng_seed)
 
         # ── Kernel 1: Physics + Render (1 thread per env) ──
+        # With FRAME_SKIP > 1, physics runs N times per action, rewards accumulate,
+        # and only the final frame is rendered.
         @always_inline
         def physics_render_wrapper(
             states: LayoutTensor[
@@ -451,6 +461,7 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
             ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
             rng_seed: Scalar[DType.uint64],
         ):
+            # First physics step (action applied normally)
             PongEnv[DType.float32].step_kernel[BATCH_SIZE, STATE_SIZE](
                 states, actions, rewards, dones, rng_seed
             )
@@ -458,6 +469,19 @@ struct PongPixelEnv[DTYPE: DType where DTYPE.is_floating_point()](
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx >= BATCH_SIZE:
                 return
+
+            # Frame skip: repeat physics with same action, accumulate rewards
+            comptime for _skip in range(Self.FRAME_SKIP - 1):
+                # Skip remaining frames if episode already done
+                if rebind[Scalar[gpu_dtype]](dones[idx]) < Scalar[gpu_dtype](0.5):
+                    var prev_reward = rebind[Scalar[gpu_dtype]](rewards[idx])
+                    PongEnv[DType.float32].step_kernel[BATCH_SIZE, STATE_SIZE](
+                        states, actions, rewards, dones, rng_seed
+                    )
+                    # Accumulate reward
+                    rewards[idx] = prev_reward + rebind[Scalar[gpu_dtype]](
+                        rewards[idx]
+                    )
 
             terminated_out[idx] = dones[idx]
 

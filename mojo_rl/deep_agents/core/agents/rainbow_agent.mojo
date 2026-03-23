@@ -105,6 +105,7 @@ trait RainbowDQNConfig:
     comptime buffer_capacity: Int
     comptime QModel: Model
     comptime QOpt: Optimizer
+    comptime store_dtype: DType
 
 
 # =============================================================================
@@ -150,6 +151,7 @@ struct RainbowConfig[
     comptime n_step: Int = Self.N_STEP
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
+    comptime store_dtype: DType = dtype  # float32 for clean obs
     # Dueling noisy network: V(NUM_ATOMS) + A(ACT*NUM_ATOMS)
     comptime QModel = Sequential[
         NoisyLinearReLU[Self.OBS, Self.HIDDEN],
@@ -216,6 +218,7 @@ struct RainbowCNNConfig[
     comptime n_step: Int = Self.N_STEP
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
+    comptime store_dtype: DType = DType.uint8  # 4× memory savings for pixels
 
     comptime QModel = Sequential[
         Conv2DReLU[4, 32, 8, 4, 0, 84, 84],
@@ -438,8 +441,13 @@ struct RainbowGPUState[
     n_step: Int,
     batch_size: Int,
     max_n_envs: Int,
+    store_dtype: DType = dtype,
 ](GPUOffPolicyState):
     """GPU state for Rainbow: networks + PER + n-step + distributional buffers.
+
+    Parameters:
+        store_dtype: Storage dtype for replay buffer observations.
+            Use DType.uint8 for pixel obs (4× memory savings).
     """
 
     comptime Q_Net = Network[Self.QModel, Self.QOpt]
@@ -452,9 +460,10 @@ struct RainbowGPUState[
     var online: GPUNetworkState[Self.QModel, Self.QOpt]
     var target: GPUNetworkState[Self.QModel, Self.QOpt]
 
-    # PER buffer (host-memory for large obs compatibility)
+    # PER buffer (host-memory, optionally compressed via store_dtype)
     var buffer: HostPrioritizedReplayBuffer[
-        Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size, Self.max_n_envs
+        Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size, Self.max_n_envs,
+        Self.store_dtype,
     ]
 
     # N-step buffer
@@ -511,7 +520,7 @@ struct RainbowGPUState[
         self.target = GPUNetworkState[Self.QModel, Self.QOpt](ctx)
         self.buffer = HostPrioritizedReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, 1, Self.batch_size,
-            Self.max_n_envs,
+            Self.max_n_envs, Self.store_dtype,
         ](ctx, alpha=alpha, beta=beta)
         self.nstep = GPUNStepBuffer[Self.n_step, Self.obs_dim, Self.max_n_envs](
             ctx, gamma=gamma
@@ -674,6 +683,7 @@ struct GenericRainbowAgent[
         Self.Config.n_step,
         Self.Config.batch_size,
         Self.n_envs,
+        Self.Config.store_dtype,
     ]
 
     var state: Self.CPUStateType

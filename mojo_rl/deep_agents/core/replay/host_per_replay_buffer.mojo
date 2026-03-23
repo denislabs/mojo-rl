@@ -4,21 +4,22 @@ Keeps transition data in host (pinned) memory instead of GPU device memory,
 enabling much larger buffer capacities for large-observation environments
 (e.g., pixel-based with 28K+ floats per transition).
 
+Supports compressed storage via the STORE_DTYPE parameter:
+- DType.float32 (default): no conversion, 4 bytes per obs element
+- DType.uint8: 4× memory reduction for pixel obs in [0,1] range
+  Store: float32 × 255 → uint8. Sample: uint8 / 255.0 → float32.
+
 Data flow:
-- Store: GPU env outputs → copy to host staging → CPU ring buffer write + tree update
-- Sample: CPU priority sampling → CPU gather from host ring → copy batch to GPU
+- Store: GPU env outputs → copy to host staging → quantize → CPU ring write + tree update
+- Sample: CPU priority sampling → CPU gather + dequantize → copy batch to GPU
 - Priority update: GPU TD errors → CPU tree update (same as GPU variant)
 
-The per-step overhead is one host↔device batch copy (~7 MB for 32×28K pixel obs),
-which is negligible compared to the GPU forward/backward passes.
-
 Usage:
-    var rb = HostPrioritizedReplayBuffer[100000, 28224, 1, 32, 64](
-        ctx, alpha=0.6, beta=0.4
-    )
-    rb.store[n_envs](ctx, prev_obs, actions, rewards, obs, dones)
-    rb.sample[batch](ctx, s_obs, s_act, s_rew, s_nobs, s_done, indices, weights)
-    rb.update_priorities[batch](ctx, td_errors_buf)
+    # Default float32 storage
+    var rb = HostPrioritizedReplayBuffer[100000, 6](ctx)
+
+    # UInt8 compressed storage for pixel obs (4× memory savings)
+    var rb = HostPrioritizedReplayBuffer[100000, 28224, STORE_DTYPE=DType.uint8](ctx)
 """
 
 from mojo_rl.nn.constants import dtype
@@ -34,6 +35,7 @@ struct HostPrioritizedReplayBuffer[
     ACTION_DIM: Int = 1,
     BATCH_SIZE: Int = 64,
     MAX_N_ENVS: Int = 256,
+    STORE_DTYPE: DType = dtype,
 ](Movable & GPUReplayBufferStorable):
     """Host-memory replay buffer with CPU-side prioritized sampling.
 
@@ -47,23 +49,27 @@ struct HostPrioritizedReplayBuffer[
         ACTION_DIM: Action dimension (default: 1 for discrete).
         BATCH_SIZE: Fixed batch size for pre-allocated staging buffers.
         MAX_N_ENVS: Maximum parallel environments (for store staging buffers).
+        STORE_DTYPE: Storage dtype for observations (default: float32).
+            Use DType.uint8 for pixel observations in [0,1] range (4× savings).
+            Actions/rewards/dones always stored as float32.
     """
 
-    # Host-resident ring buffers (the large data)
-    var states_buf: HostBuffer[dtype]
+    # Host-resident ring buffers (obs stored in STORE_DTYPE for compression)
+    var states_buf: HostBuffer[Self.STORE_DTYPE]
+    var next_states_buf: HostBuffer[Self.STORE_DTYPE]
+    # Actions/rewards/dones always float32 (tiny relative to obs)
     var actions_buf: HostBuffer[dtype]
     var rewards_buf: HostBuffer[dtype]
-    var next_states_buf: HostBuffer[dtype]
     var dones_buf: HostBuffer[dtype]
 
-    # Store staging: GPU env outputs copied here before CPU ring write
+    # Store staging: GPU env outputs (float32) copied here before quantize + ring write
     var store_host_obs: HostBuffer[dtype]
     var store_host_nobs: HostBuffer[dtype]
     var store_host_act: HostBuffer[dtype]
     var store_host_rew: HostBuffer[dtype]
     var store_host_done: HostBuffer[dtype]
 
-    # Sample staging: CPU-gathered batch copied to GPU from here
+    # Sample staging: CPU-gathered batch (float32) copied to GPU from here
     var sample_host_obs: HostBuffer[dtype]
     var sample_host_nobs: HostBuffer[dtype]
     var sample_host_act: HostBuffer[dtype]
@@ -104,20 +110,20 @@ struct HostPrioritizedReplayBuffer[
             beta: IS correction exponent (annealed from initial to 1.0).
             epsilon: Small constant for non-zero priority.
         """
-        # Host-resident ring buffers
-        self.states_buf = ctx.enqueue_create_host_buffer[dtype](
+        # Host-resident ring buffers (obs in STORE_DTYPE)
+        self.states_buf = ctx.enqueue_create_host_buffer[Self.STORE_DTYPE](
+            Self.CAPACITY * Self.OBS_DIM
+        )
+        self.next_states_buf = ctx.enqueue_create_host_buffer[Self.STORE_DTYPE](
             Self.CAPACITY * Self.OBS_DIM
         )
         self.actions_buf = ctx.enqueue_create_host_buffer[dtype](
             Self.CAPACITY * Self.ACTION_DIM
         )
         self.rewards_buf = ctx.enqueue_create_host_buffer[dtype](Self.CAPACITY)
-        self.next_states_buf = ctx.enqueue_create_host_buffer[dtype](
-            Self.CAPACITY * Self.OBS_DIM
-        )
         self.dones_buf = ctx.enqueue_create_host_buffer[dtype](Self.CAPACITY)
 
-        # Store staging buffers (sized for MAX_N_ENVS)
+        # Store staging buffers (always float32, sized for MAX_N_ENVS)
         self.store_host_obs = ctx.enqueue_create_host_buffer[dtype](
             Self.MAX_N_ENVS * Self.OBS_DIM
         )
@@ -134,7 +140,7 @@ struct HostPrioritizedReplayBuffer[
             Self.MAX_N_ENVS
         )
 
-        # Sample staging buffers (sized for BATCH_SIZE)
+        # Sample staging buffers (always float32, sized for BATCH_SIZE)
         self.sample_host_obs = ctx.enqueue_create_host_buffer[dtype](
             Self.BATCH_SIZE * Self.OBS_DIM
         )
@@ -178,9 +184,9 @@ struct HostPrioritizedReplayBuffer[
 
     def __init__(out self, *, deinit take: Self):
         self.states_buf = take.states_buf^
+        self.next_states_buf = take.next_states_buf^
         self.actions_buf = take.actions_buf^
         self.rewards_buf = take.rewards_buf^
-        self.next_states_buf = take.next_states_buf^
         self.dones_buf = take.dones_buf^
         self.store_host_obs = take.store_host_obs^
         self.store_host_nobs = take.store_host_nobs^
@@ -203,6 +209,36 @@ struct HostPrioritizedReplayBuffer[
         self.host_weights = take.host_weights^
         self.host_td_errors = take.host_td_errors^
         self.dev_weights = take.dev_weights^
+
+    # =========================================================================
+    # Quantization helpers
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    def _quantize(val: Scalar[dtype]) -> Scalar[Self.STORE_DTYPE]:
+        """Convert float32 to storage dtype (e.g., float32×255 → uint8)."""
+
+        comptime if Self.STORE_DTYPE == dtype:
+            return rebind[Scalar[Self.STORE_DTYPE]](val)
+        else:
+            # Clamp to [0,1] then scale to storage range
+            var clamped = val
+            if clamped < 0:
+                clamped = 0
+            if clamped > 1:
+                clamped = 1
+            return (clamped * 255.0).cast[Self.STORE_DTYPE]()
+
+    @always_inline
+    @staticmethod
+    def _dequantize(val: Scalar[Self.STORE_DTYPE]) -> Scalar[dtype]:
+        """Convert storage dtype back to float32 (e.g., uint8 / 255.0)."""
+
+        comptime if Self.STORE_DTYPE == dtype:
+            return rebind[Scalar[dtype]](val)
+        else:
+            return val.cast[dtype]() / 255.0
 
     # =========================================================================
     # Sum-tree helpers (CPU) — identical to GPUPrioritizedReplayBuffer
@@ -271,7 +307,7 @@ struct HostPrioritizedReplayBuffer[
         self.beta = beta_start + progress * (Scalar[dtype](1.0) - beta_start)
 
     # =========================================================================
-    # Store (GPU→Host copy + CPU ring write + CPU tree update)
+    # Store (GPU→Host copy + quantize + CPU ring write + CPU tree update)
     # =========================================================================
 
     def store[
@@ -285,9 +321,9 @@ struct HostPrioritizedReplayBuffer[
         next_states: DeviceBuffer[dtype],
         dones: DeviceBuffer[dtype],
     ) raises:
-        """Store N_ENVS transitions: copy GPU→host, write to ring, update tree.
+        """Store N_ENVS transitions: copy GPU→host, quantize, write to ring, update tree.
         """
-        # 1. GPU → Host staging copy
+        # 1. GPU → Host staging copy (float32)
         ctx.enqueue_copy(self.store_host_obs, states)
         ctx.enqueue_copy(self.store_host_nobs, next_states)
         ctx.enqueue_copy(self.store_host_act, actions)
@@ -295,20 +331,20 @@ struct HostPrioritizedReplayBuffer[
         ctx.enqueue_copy(self.store_host_done, dones)
         ctx.synchronize()
 
-        # 2. CPU: copy from staging into ring buffer at write_idx
+        # 2. CPU: quantize + copy from staging into ring buffer at write_idx
         for e in range(N_ENVS):
             var buf_idx = (self.write_idx + e) % Self.CAPACITY
-            # Observations
+            # Observations (quantized to STORE_DTYPE)
             var src_obs_base = e * Self.OBS_DIM
             var dst_obs_base = buf_idx * Self.OBS_DIM
             for d in range(Self.OBS_DIM):
-                self.states_buf[dst_obs_base + d] = self.store_host_obs[
-                    src_obs_base + d
-                ]
-                self.next_states_buf[dst_obs_base + d] = self.store_host_nobs[
-                    src_obs_base + d
-                ]
-            # Actions
+                self.states_buf[dst_obs_base + d] = Self._quantize(
+                    self.store_host_obs[src_obs_base + d]
+                )
+                self.next_states_buf[dst_obs_base + d] = Self._quantize(
+                    self.store_host_nobs[src_obs_base + d]
+                )
+            # Actions (always float32)
             var src_act_base = e * Self.ACTION_DIM
             var dst_act_base = buf_idx * Self.ACTION_DIM
             for d in range(Self.ACTION_DIM):
@@ -330,7 +366,7 @@ struct HostPrioritizedReplayBuffer[
         self.size = min(self.size + N_ENVS, Self.CAPACITY)
 
     # =========================================================================
-    # Sample (CPU priority sampling + CPU gather + Host→GPU copy)
+    # Sample (CPU priority sampling + CPU gather/dequantize + Host→GPU copy)
     # =========================================================================
 
     def sample[
@@ -346,17 +382,9 @@ struct HostPrioritizedReplayBuffer[
         indices: DeviceBuffer[DType.int32],
         weights: DeviceBuffer[dtype],
     ) raises:
-        """Priority-based sampling: CPU tree → CPU gather → Host→GPU copy.
+        """Priority-based sampling: CPU tree → CPU gather/dequantize → Host→GPU copy.
 
-        Args:
-            ctx: GPU device context.
-            sampled_obs: Output obs [BATCH * OBS_DIM] on GPU.
-            sampled_actions: Output actions [BATCH] on GPU.
-            sampled_rewards: Output rewards [BATCH] on GPU.
-            sampled_next_obs: Output next_obs [BATCH * OBS_DIM] on GPU.
-            sampled_dones: Output dones [BATCH] on GPU.
-            indices: Output indices [BATCH] for priority updates.
-            weights: Output IS weights [BATCH] on GPU.
+        Observations are dequantized from STORE_DTYPE back to float32 during gather.
         """
         # --- CPU: stratified priority sampling ---
         var total_priority = self._total_priority()
@@ -382,20 +410,20 @@ struct HostPrioritizedReplayBuffer[
             ) / max_weight
             self.host_weights[b] = weight
 
-        # --- CPU: gather from host ring buffer into staging ---
+        # --- CPU: gather + dequantize from host ring buffer into staging ---
         for b in range(BATCH):
             var idx = Int(self.host_indices[b])
-            # Observations
+            # Observations (dequantized to float32)
             var src_obs_base = idx * Self.OBS_DIM
             var dst_obs_base = b * Self.OBS_DIM
             for d in range(Self.OBS_DIM):
-                self.sample_host_obs[dst_obs_base + d] = self.states_buf[
-                    src_obs_base + d
-                ]
-                self.sample_host_nobs[dst_obs_base + d] = self.next_states_buf[
-                    src_obs_base + d
-                ]
-            # Actions
+                self.sample_host_obs[dst_obs_base + d] = Self._dequantize(
+                    self.states_buf[src_obs_base + d]
+                )
+                self.sample_host_nobs[dst_obs_base + d] = Self._dequantize(
+                    self.next_states_buf[src_obs_base + d]
+                )
+            # Actions (always float32)
             var src_act_base = idx * Self.ACTION_DIM
             var dst_act_base = b * Self.ACTION_DIM
             for d in range(Self.ACTION_DIM):
@@ -406,7 +434,7 @@ struct HostPrioritizedReplayBuffer[
             self.sample_host_rew[b] = self.rewards_buf[idx]
             self.sample_host_done[b] = self.dones_buf[idx]
 
-        # --- Host → GPU: copy gathered batch ---
+        # --- Host → GPU: copy gathered batch (float32) ---
         ctx.enqueue_copy(sampled_obs, self.sample_host_obs)
         ctx.enqueue_copy(sampled_next_obs, self.sample_host_nobs)
         ctx.enqueue_copy(sampled_actions, self.sample_host_act)
@@ -421,13 +449,8 @@ struct HostPrioritizedReplayBuffer[
 
     def update_priorities[
         BATCH: Int
-    ](mut self, ctx: DeviceContext, td_errors_buf: DeviceBuffer[dtype],) raises:
-        """Update priorities from GPU TD errors.
-
-        1. Copy TD errors GPU→CPU
-        2. Synchronize to ensure data is ready
-        3. Update sum-tree on CPU
-        """
+    ](mut self, ctx: DeviceContext, td_errors_buf: DeviceBuffer[dtype]) raises:
+        """Update priorities from GPU TD errors."""
         # GPU→CPU copy
         ctx.enqueue_copy(self.host_td_errors, td_errors_buf)
         ctx.synchronize()

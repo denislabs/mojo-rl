@@ -109,6 +109,7 @@ def main() raises:
         print("  Learning rate: 6.25e-5")
         print("  PER: alpha=0.5, beta=0.4→1.0")
         print("  Noisy networks: factorized Gaussian (no epsilon-greedy)")
+        print("  Frame skip: 4 (action repeated 4x, rewards summed)")
         print("  Total transitions:", NUM_STEPS)
         print()
         print("Note: Pixel-based Rainbow is slower than clean obs due to:")
@@ -153,7 +154,7 @@ def main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[PongPixelEnv[dtype]](
+            var metrics = agent.train_gpu[PongPixelEnv[dtype, 4]](
                 ctx,
                 num_steps=NUM_STEPS,
                 warmup_steps=5000,
