@@ -31,7 +31,7 @@ def main() raises:
     var agent = GenericAlphaZeroAgent[Config, 64]()
 
     # Single call — batch-then-train, all on GPU
-    _ = agent.train_selfplay_gpu[TTT](
+    _ = agent.train_selfplay_gpu[TTT, GPUMinimaxTicTacToe](
         ctx,
         num_iters=250,
         steps_per_iter=1000,  # ~130 games per iter (64 envs × ~7 moves)
