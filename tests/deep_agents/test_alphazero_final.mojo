@@ -9,8 +9,12 @@ Everything runs on GPU:
 
 from std.gpu.host import DeviceContext
 from mojo_rl.nn.model import (
-    Linear, LinearReLU, Sequential, Parallel,
-    Conv2DReLU, FlattenLayer,
+    Linear,
+    LinearReLU,
+    Sequential,
+    Parallel,
+    Conv2DReLU,
+    FlattenLayer,
 )
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.deep_agents.alphazero import (
@@ -30,22 +34,22 @@ def main() raises:
     comptime TTT = TicTacToeEnv[DType.float32]
 
     # Switch between MLP and CNN configs here
-    comptime Config = AlphaZeroTicTacToeCNNConfig[]
-    # comptime Config = AlphaZeroTicTacToeConfig[]
+    # comptime Config = AlphaZeroTicTacToeCNNConfig[]
+    comptime Config = AlphaZeroTicTacToeConfig[]
 
     var agent = GenericAlphaZeroAgent[Config, 64]()
 
     # Single call — everything on GPU, no CPU round-trips
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_steps=250000,
+        num_steps=1_000_000,
         warmup_steps=500,
         gradient_steps=4,
-        print_every=25000,
-        arena_every=25000,
+        print_every=25_000,
+        arena_every=25_000,
         arena_games=64,
         arena_threshold=0.6,
-        eval_every=25000,        # GPU eval vs Random every 25K steps
+        eval_every=25_000,  # GPU eval vs Random every 25K steps
     )
 
     print()
