@@ -45,12 +45,12 @@ comptime NUM_ATOMS = 51
 comptime N_STEP = 3
 
 # Smaller buffers/batch due to large obs size (28224 floats per transition)
-comptime BUFFER_CAPACITY = 10_000
+comptime BUFFER_CAPACITY = 320_000
 comptime BATCH_SIZE = 32
 comptime N_ENVS = 64  # Fewer envs — each needs pixel workspace
 
 # Training duration
-comptime NUM_STEPS = 100_000
+comptime NUM_STEPS = 2_000_000
 
 comptime dtype = DType.float32
 
@@ -163,7 +163,7 @@ fn main() raises:
                 print_every=100_000,
                 environment_name="Pong (Rainbow Pixel)",
                 logger=UnsafePointer(to=logger),
-                diag_every=10_000,
+                diag_every=1000,
             )
 
             var end_time = perf_counter_ns()

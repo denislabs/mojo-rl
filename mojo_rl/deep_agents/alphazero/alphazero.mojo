@@ -439,16 +439,20 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
         num_games: Int = 40,
         threshold: Float64 = 0.55,
     ) -> Bool:
-        """Play current model vs previous model. Accept if win rate >= threshold.
+        """Play current model vs previous model. Accept if score >= threshold.
 
-        Saves/restores network params to compare. Uses policy-only action
-        selection (no MCTS) for speed during comparison.
+        Uses policy-only action selection for speed.
+        Draws count as 0.5 for each player (Elo-style scoring):
+          score = (wins + 0.5 * draws) / total_games
+
+        This prevents the trap where two equally strong models that
+        draw most games always reject the new model.
 
         Args:
             env: Environment for playing games.
             prev_params: Saved parameters of the previous best model.
             num_games: Games to play (half as each side).
-            threshold: Win fraction needed to accept new model.
+            threshold: Score fraction needed to accept new model.
 
         Returns:
             True if new model is accepted.
@@ -463,7 +467,7 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
             new_params[i] = self.state.prediction.params[i]
 
         var new_wins = 0
-        var prev_wins = 0
+        var draws = 0
 
         for game_idx in range(num_games):
             var new_is_p0 = game_idx < num_games // 2
@@ -501,15 +505,13 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
                 _ = env.step(env.action_from_index(action))
 
             var result = env.game_result()
-            if result == 1:
+            if result == 3:
+                draws += 1
+            elif result == 1:
                 if new_is_p0:
                     new_wins += 1
-                else:
-                    prev_wins += 1
             elif result == 2:
-                if new_is_p0:
-                    prev_wins += 1
-                else:
+                if not new_is_p0:
                     new_wins += 1
 
         # Restore new params (we'll decide whether to keep or revert)
@@ -517,8 +519,9 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](Movable)
             self.state.prediction.params[i] = new_params[i]
         new_params.free()
 
-        var win_rate = Float64(new_wins) / Float64(num_games)
-        var accepted = win_rate >= threshold
+        # Elo-style: wins=1.0, draws=0.5, losses=0.0
+        var score = (Float64(new_wins) + 0.5 * Float64(draws)) / Float64(num_games)
+        var accepted = score >= threshold
 
         if not accepted:
             # Revert to previous params
