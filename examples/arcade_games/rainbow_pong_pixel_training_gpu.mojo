@@ -22,11 +22,17 @@ Run with:
 
 from std.random import seed
 from std.time import perf_counter_ns
+from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.core.agents import RainbowCNNConfig, GenericRainbowAgent
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.deep_agents.core.agents import (
+    RainbowCNNConfig,
+    GenericRainbowAgent,
+)
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
+from mojo_rl.core.logger import RemoteLogger
 
 
 # =============================================================================
@@ -44,7 +50,7 @@ comptime BATCH_SIZE = 32
 comptime N_ENVS = 64  # Fewer envs — each needs pixel workspace
 
 # Training duration
-comptime NUM_STEPS = 2_000_000
+comptime NUM_STEPS = 100_000
 
 comptime dtype = DType.float32
 
@@ -66,14 +72,15 @@ fn main() raises:
             RainbowCNNConfig[
                 NUM_ACTIONS,
                 NUM_ATOMS,
-                -21.0,          # v_min (Pong score range)
-                21.0,           # v_max
+                -21.0,  # v_min (Pong score range)
+                21.0,  # v_max
                 N_STEP,
                 BUFFER_CAPACITY,
                 BATCH_SIZE,
-                6.25e-5,        # lr
+                6.25e-5,  # lr
             ],
             N_ENVS,
+            RemoteLogger,
         ](
             gamma=0.99,
             tau=0.005,
@@ -112,6 +119,31 @@ fn main() raises:
         print()
 
         # =====================================================================
+        # Setup logger
+        # =====================================================================
+
+        var env_vars = load_dotenv()
+        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+        var url = env_vars.get("RL_MONITOR_URL", "")
+
+        var logger = RemoteLogger(
+            server_url=url,
+            run_name="Rainbow Pong Pixel GPU",
+            buffer_size=64,
+            api_key=api_key,
+        )
+        logger.set_config("agent", "Rainbow DQN CNN")
+        logger.set_config("env", "Pong (Pixel)")
+        logger.set_config("obs", "4x84x84")
+        logger.set_config("lr", "6.25e-5")
+        logger.set_config("gamma", "0.99")
+        logger.set_config("batch_size", String(BATCH_SIZE))
+        logger.set_config("n_envs", String(N_ENVS))
+        logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
+        logger.set_config("n_step", String(N_STEP))
+        logger.set_config("num_atoms", String(NUM_ATOMS))
+
+        # =====================================================================
         # Train
         # =====================================================================
 
@@ -130,10 +162,14 @@ fn main() raises:
                 verbose=True,
                 print_every=100_000,
                 environment_name="Pong (Rainbow Pixel)",
+                logger=UnsafePointer(to=logger),
+                diag_every=10_000,
             )
 
             var end_time = perf_counter_ns()
             var elapsed_s = Float64(end_time - start_time) / 1e9
+
+            logger.close()
 
             print("-" * 70)
             print()
