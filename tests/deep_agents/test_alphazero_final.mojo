@@ -12,8 +12,12 @@ from std.memory import alloc
 from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import (
-    Linear, LinearReLU, Sequential, Parallel,
-    Conv2DReLU, FlattenLayer,
+    Linear,
+    LinearReLU,
+    Sequential,
+    Parallel,
+    Conv2DReLU,
+    FlattenLayer,
 )
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.deep_agents.alphazero import (
@@ -23,9 +27,14 @@ from mojo_rl.deep_agents.alphazero import (
 )
 from mojo_rl.deep_agents.alphazero.configs import AlphaZeroConfig
 from mojo_rl.deep_agents.muzero.strategies import (
-    DirichletNoise, AlphaGoPUCT, SelfPlay,
+    DirichletNoise,
+    AlphaGoPUCT,
+    SelfPlay,
 )
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, MinimaxTicTacToe
+from mojo_rl.deep_agents.muzero.evaluators import (
+    RandomOpponent,
+    MinimaxTicTacToe,
+)
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
@@ -42,7 +51,7 @@ def main() raises:
     comptime TTTCPU = TicTacToeEnv[DType.float64]
 
     # Use default config (MLP variant, matches alpha-zero-general hyperparams)
-    comptime Config = AlphaZeroTicTacToeConfig[]
+    comptime Config = AlphaZeroTicTacToeCNNConfig[]
 
     var agent = GenericAlphaZeroAgent[Config, 64]()
     var random_eval = RandomOpponent()
@@ -74,7 +83,7 @@ def main() raises:
             arena_env,
             num_steps=1000,
             warmup_steps=0,
-            gradient_steps=0,       # No training during collection
+            gradient_steps=0,  # No training during collection
             print_every=100000,
         )
 
@@ -96,8 +105,10 @@ def main() raises:
         # Like alpha-zero-general: threshold=0.6, draws excluded
         if iter >= 5:
             var accepted = agent.arena_compare[TTTCPU](
-                arena_env, best_params,
-                num_games=40, threshold=0.6,
+                arena_env,
+                best_params,
+                num_games=40,
+                threshold=0.6,
             )
             if accepted:
                 for i in range(PS):
@@ -111,10 +122,19 @@ def main() raises:
                 best_params[i] = agent.state.prediction.params[i]
 
         # 5. Evaluate
-        print("Iter", iter + 1,
-              "(replay:", agent.state.buf_size,
-              "train:", num_train_steps,
-              "arena:", arena_accepts, "/", arena_rejects, ")")
+        print(
+            "Iter",
+            iter + 1,
+            "(replay:",
+            agent.state.buf_size,
+            "train:",
+            num_train_steps,
+            "arena:",
+            arena_accepts,
+            "/",
+            arena_rejects,
+            ")",
+        )
         var r = agent.evaluate_against[TTTCPU](eval_env, random_eval, 100)
         print("  vs Random: W", r[0], "D", r[1], "L", r[2])
         var m = agent.evaluate_against[TTTCPU](eval_env, minimax_eval, 100)
