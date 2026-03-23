@@ -1249,9 +1249,16 @@ def gpu_mcts_batched_select_and_copy_kernel[
             else:
                 n_total = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
             var sqrt_total = sqrt(n_total + Scalar[dtype](1e-8))
-            var c = (
-                log((Scalar[dtype](1.0) + n_total + c_base) / c_base) + c_init
-            )
+            # PUCT exploration constant:
+            # MuZero: c = log((1 + N + c_base) / c_base) + c_init
+            # AlphaGo: c = c_init (when c_base = 0)
+            var c: Scalar[dtype]
+            if c_base > Scalar[dtype](0.5):
+                c = log(
+                    (Scalar[dtype](1.0) + n_total + c_base) / c_base
+                ) + c_init
+            else:
+                c = c_init  # Constant c_puct (AlphaGo-style)
 
             var best_action = 0
             var best_score = Scalar[dtype](-1e18)
@@ -1623,9 +1630,16 @@ def gpu_mcts_batched_select_and_build_dyn_kernel[
         while depth < MAX_DEPTH - 1:
             var n_total = rebind[Scalar[dtype]](total_visits[tv_off + node_idx])
             var sqrt_total = sqrt(n_total + Scalar[dtype](1e-8))
-            var c = (
-                log((Scalar[dtype](1.0) + n_total + c_base) / c_base) + c_init
-            )
+            # PUCT exploration constant:
+            # MuZero: c = log((1 + N + c_base) / c_base) + c_init
+            # AlphaGo: c = c_init (when c_base = 0)
+            var c: Scalar[dtype]
+            if c_base > Scalar[dtype](0.5):
+                c = log(
+                    (Scalar[dtype](1.0) + n_total + c_base) / c_base
+                ) + c_init
+            else:
+                c = c_init  # Constant c_puct (AlphaGo-style)
 
             var best_action = 0
             var best_score = Scalar[dtype](-1e18)
