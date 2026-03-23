@@ -109,7 +109,8 @@ def main() raises:
         print("  Learning rate: 6.25e-5")
         print("  PER: alpha=0.5, beta=0.4→1.0")
         print("  Noisy networks: factorized Gaussian (no epsilon-greedy)")
-        print("  Frame skip: 4 (action repeated 4x, rewards summed)")
+        print("  Warmup: 20000 steps")
+        print("  Gradient steps per env step: 2")
         print("  Total transitions:", NUM_STEPS)
         print()
         print("Note: Pixel-based Rainbow is slower than clean obs due to:")
@@ -143,6 +144,8 @@ def main() raises:
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
         logger.set_config("n_step", String(N_STEP))
         logger.set_config("num_atoms", String(NUM_ATOMS))
+        logger.set_config("warmup_steps", "20000")
+        logger.set_config("gradient_steps", "2")
 
         # =====================================================================
         # Train
@@ -154,11 +157,11 @@ def main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[PongPixelEnv[dtype, 4]](
+            var metrics = agent.train_gpu[PongPixelEnv[dtype]](
                 ctx,
                 num_steps=NUM_STEPS,
-                warmup_steps=5000,
-                gradient_steps=8,
+                warmup_steps=20_000,
+                gradient_steps=2,
                 sync_every=10_000,
                 verbose=True,
                 print_every=100_000,
