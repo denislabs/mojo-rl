@@ -33,7 +33,7 @@ def main() raises:
     # Single call — batch-then-train, all on GPU
     _ = agent.train_selfplay_gpu[TTT](
         ctx,
-        num_iters=25,
+        num_iters=250,
         steps_per_iter=1000,  # ~130 games per iter (64 envs × ~7 moves)
         train_epochs=10,  # 10 epochs per iteration
         warmup_iters=1,  # 1 iter warmup (random play)
