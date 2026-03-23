@@ -39,7 +39,7 @@ def main() raises:
         warmup_iters=1,  # 1 iter warmup (random play)
         arena_threshold=0.6,
         do_eval=True,
-        do_arena=True,
+        do_arena=False,
     )
 
     print()
