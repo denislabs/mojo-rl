@@ -1610,8 +1610,11 @@ struct GenericC51Agent[
             Self.L, MutAnyOrigin
         ](),
         target_total_steps: Int = 0,
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train C51 on GPU."""
+        self.logger = logger
+        self.diag_every = diag_every
         self.target_total_steps = target_total_steps
         var timer = PerfTimer[False]()
         var algo_name = Self.Config.NAME
