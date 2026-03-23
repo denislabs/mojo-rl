@@ -37,10 +37,12 @@ def main() raises:
         steps_per_iter=1000,  # ~130 games per iter (64 envs × ~7 moves)
         train_epochs=10,  # 10 epochs per iteration
         warmup_iters=1,  # 1 iter warmup (random play)
-        arena_threshold=0.52,
+        arena_threshold=0.51,
         do_eval=True,
         do_eval2=True,
         do_arena=True,
+        checkpoint_every=10,
+        checkpoint_path="tictactoe_alphazero.ckpt",
     )
 
     print()

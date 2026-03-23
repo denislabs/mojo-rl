@@ -1020,15 +1020,14 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
         prev_params: UnsafePointer[Scalar[dtype], origin],
         num_games: Int = 40,
         threshold: Float64 = 0.55,
-    ) raises -> Bool:
+    ) raises -> Tuple[Bool, Int, Int, Int]:
         """Compare current (new) model vs previous (old) model on GPU.
 
-        Plays two phases of num_games/2 games each (total = num_games):
-          Phase 1: new=P0, old=P1 → new wins counted from P0 wins
-          Phase 2: old=P0, new=P1 → new wins counted from P1 wins
-        This ensures both sides are tested fairly.
+        Plays two phases of n_envs games each (total = 2 * n_envs):
+          Phase 1: new=P0, old=P1
+          Phase 2: old=P0, new=P1
 
-        Returns True if new model's win rate >= threshold (draws excluded).
+        Returns (accepted, new_wins, draws, old_wins).
         """
         comptime PS = Self.Config.PredModel.PARAM_SIZE
         var half = num_games // 2
@@ -1078,7 +1077,7 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
             for i in range(PS):
                 self.state.prediction.params[i] = prev_params[i]
 
-        return accepted
+        return (accepted, new_wins, draws, old_wins)
 
     # ══════════════════════════════════════════════════════════════
     # GPU Evaluation vs Random
@@ -1533,6 +1532,8 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
         do_eval: Bool = True,
         do_eval2: Bool = False,
         do_arena: Bool = True,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "alphazero.ckpt",
     ) raises -> TrainingMetrics:
         """Train via batch-then-train (like alpha-zero-general).
 
@@ -2159,7 +2160,7 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
 
             # ── 5. GPU Arena ─────────────────────────────────────
             if do_arena and use_mcts and iter >= warmup_iters:
-                var accepted = self.arena_compare_gpu[E](
+                var arena_r = self.arena_compare_gpu[E](
                     ctx,
                     rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
                         best_params
@@ -2167,29 +2168,37 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
                     num_games=40,
                     threshold=arena_threshold,
                 )
+                var accepted = arena_r[0]
+                var a_new = arena_r[1]
+                var a_draw = arena_r[2]
+                var a_old = arena_r[3]
                 if accepted:
                     for i in range(PS):
                         best_params[i] = self.state.prediction.params[i]
                     arena_accepts += 1
                     print(
-                        "  Arena: ACCEPTED (",
-                        arena_accepts,
-                        "/",
-                        arena_accepts + arena_rejects,
-                        ")",
+                        "  Arena: ACCEPTED",
+                        "W", a_new, "D", a_draw, "L", a_old,
+                        "(", arena_accepts, "/",
+                        arena_accepts + arena_rejects, ")",
                     )
                 else:
                     arena_rejects += 1
                     print(
-                        "  Arena: rejected (",
-                        arena_accepts,
-                        "/",
-                        arena_accepts + arena_rejects,
-                        ")",
+                        "  Arena: rejected",
+                        "W", a_new, "D", a_draw, "L", a_old,
+                        "(", arena_accepts, "/",
+                        arena_accepts + arena_rejects, ")",
                     )
+
+            # ── 6. Checkpoint ───────────────────────────────────
+            if checkpoint_every > 0 and (iter + 1) % checkpoint_every == 0:
+                self.save_checkpoint(checkpoint_path)
 
         # end iteration loop
         best_params.free()
         if do_arena:
             print("Arena: accepted", arena_accepts, "/ rejected", arena_rejects)
+        if checkpoint_every > 0:
+            self.save_checkpoint(checkpoint_path)
         return metrics
