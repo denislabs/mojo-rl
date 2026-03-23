@@ -785,7 +785,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         # For GPU, we unroll with bounded iteration
         var liberty_count = 0
         var stack_data = alloc[Int](BS)
-        var stack_top = 0
+        var stack_top: Int
         stack_data[0] = start
         stack_top = 1
         visited[start] = True
@@ -867,7 +867,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
         var count = 0
         var stack_data = alloc[Int](BS)
-        var stack_top = 0
+        var stack_top: Int
         stack_data[0] = start
         stack_top = 1
         visited[start] = True

@@ -330,13 +330,14 @@ def run_offpolicy_continuous_train_gpu[
         A: Agent type implementing GPUOffPolicyAgent.
         PROFILE: Whether to profile the training loop.
         L: Logger for diagnostics.
+        CurriculumType: Curriculum scheduler type.
 
     Args:
         agent: Off-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
         num_steps: Total env transitions across all parallel envs.
-        logger: Logger for diagnostics.
         timer: PerfTimer to add slots to.
+        logger: Logger for diagnostics.
         warmup_steps: Transitions before training starts (default: 1000).
         gradient_steps: Training steps per env collection iteration.
             Default 0 = n_envs (1:1 replay ratio with CleanRL convention).
@@ -347,7 +348,7 @@ def run_offpolicy_continuous_train_gpu[
         print_every: Print interval in transitions (default: 50000).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
-        logger: Optional metrics logger for diagnostics.
+        target_total_steps: Total steps for curriculum/annealing progress (default: 0 = disabled).
 
     Returns:
         TrainingMetrics with episode-level statistics.
@@ -794,12 +795,15 @@ def run_offpolicy_discrete_train_gpu[
         E: GPU environment type implementing GPUDiscreteEnv.
         A: Agent type implementing GPUOffPolicyAgent.
         PROFILE: Whether to profile the training loop.
+        L: Logger type for diagnostics.
+        CurriculumType: Curriculum scheduler type.
 
     Args:
         agent: Off-policy agent with GPU support (updated in-place).
         ctx: GPU device context.
         num_steps: Total env transitions across all parallel envs.
         timer: PerfTimer to add slots to.
+        logger: Optional metrics logger pointer (default: null = no logging).
         warmup_steps: Transitions before training starts (default: 1000).
         gradient_steps: Training steps per env collection iteration.
             Default 0 = n_envs (1:1 replay ratio with CleanRL convention).
@@ -810,7 +814,7 @@ def run_offpolicy_discrete_train_gpu[
         print_every: Print interval in transitions (default: 50000).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
-        logger: Optional metrics logger for diagnostics.
+        target_total_steps: Total steps for curriculum/annealing progress (default: 0 = disabled).
 
     Returns:
         TrainingMetrics with episode-level statistics.

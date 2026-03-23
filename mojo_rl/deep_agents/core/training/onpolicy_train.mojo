@@ -151,6 +151,7 @@ def run_onpolicy_discrete_train[
     Parameters:
         E: Environment type implementing BoxDiscreteActionEnv.
         A: Agent type implementing OnPolicyAgent and Checkpointable.
+        L: Logger type for diagnostics.
 
     Args:
         agent: On-policy agent (updated in-place).
@@ -243,6 +244,7 @@ def run_onpolicy_continuous_train[
     Parameters:
         E: Environment type implementing BoxContinuousActionEnv.
         A: Agent type implementing OnPolicyAgent and Checkpointable.
+        L: Logger type for diagnostics.
 
     Args:
         agent: On-policy agent (updated in-place).
@@ -498,6 +500,7 @@ def run_onpolicy_discrete_train[
     Parameters:
         E: Environment type implementing BoxDiscreteActionEnv.
         A: Agent type implementing OnPolicyDiscreteAgent and Checkpointable.
+        L: Logger type for diagnostics.
 
     Args:
         agent: On-policy agent (hyperparameters + update logic).
@@ -592,6 +595,7 @@ def run_onpolicy_continuous_train[
     Parameters:
         E: Environment type implementing BoxContinuousActionEnv.
         A: Agent type implementing OnPolicyContinuousAgent and Checkpointable.
+        L: Logger type for diagnostics.
 
     Args:
         agent: On-policy agent (hyperparameters + update logic).

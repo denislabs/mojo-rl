@@ -29,7 +29,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.deep_agents.core.agents import (
     RainbowCNNConfig,
-    GenericRainbowAgent,
+    GenericRainbowHostAgent,
 )
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 from mojo_rl.core.logger import RemoteLogger
@@ -44,8 +44,8 @@ comptime NUM_ACTIONS = 3  # NOOP, UP, DOWN
 comptime NUM_ATOMS = 51
 comptime N_STEP = 3
 
-# Smaller buffers/batch due to large obs size (28224 floats per transition)
-comptime BUFFER_CAPACITY = 10_000
+# Host-memory buffer allows large capacity without GPU OOM
+comptime BUFFER_CAPACITY = 100_000
 comptime BATCH_SIZE = 32
 comptime N_ENVS = 64  # Fewer envs — each needs pixel workspace
 
@@ -68,7 +68,7 @@ def main() raises:
     print()
 
     with DeviceContext() as ctx:
-        var agent = GenericRainbowAgent[
+        var agent = GenericRainbowHostAgent[
             RainbowCNNConfig[
                 NUM_ACTIONS,
                 NUM_ATOMS,

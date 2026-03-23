@@ -271,7 +271,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         # Plane 2: legal moves (broadcast: all cells in legal columns = 1.0)
         for col in range(COLS):
             var col_legal = self.state[_cell_idx(col, ROWS - 1)] == 0.0
-            for row in range(ROWS):
+            for _ in range(ROWS):
                 if col_legal:
                     obs.append(Scalar[Self.dtype](1.0))
                 else:

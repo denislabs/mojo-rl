@@ -103,7 +103,7 @@ def main() raises:
                 arena_env,
                 best_params,
                 num_games=40,
-                threshold=0.55,
+                threshold=0.50,  # Accept if not worse (draws = 0.5)
             )
             if accepted:
                 for i in range(PS):

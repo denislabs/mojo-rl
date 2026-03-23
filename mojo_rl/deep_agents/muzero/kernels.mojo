@@ -374,7 +374,7 @@ def add_scaled_kernel[
     src: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     scale: Scalar[dtype],
 ):
-    """dst += src * scale (elementwise)."""
+    """Formula : dst += src * scale (elementwise)."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= SIZE:
         return
@@ -391,7 +391,7 @@ def scale_kernel[
     data: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     scale: Scalar[dtype],
 ):
-    """data *= scale (elementwise)."""
+    """Formula : data *= scale (elementwise)."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= SIZE:
         return
@@ -405,7 +405,7 @@ def copy_kernel[
     dst: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     src: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
 ):
-    """dst = src (elementwise copy)."""
+    """Formula: dst = src (elementwise copy)."""
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= SIZE:
         return

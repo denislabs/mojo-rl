@@ -508,6 +508,7 @@ def run_offpolicy_discrete_train[
     Parameters:
         E: Environment type implementing BoxDiscreteActionEnv.
         A: Agent type implementing OffPolicyAgent.
+        L: Logger type for diagnostics.
 
     Args:
         agent: Off-policy agent (updated in-place).
@@ -656,6 +657,7 @@ def run_offpolicy_discrete_train[
     Parameters:
         E: Environment type implementing BoxDiscreteActionEnv.
         A: Agent type implementing OffPolicyDiscreteAgent.
+        L: Logger type for diagnostics.
 
     Args:
         agent: Off-policy agent (hyperparameters + algorithm only).
@@ -803,6 +805,7 @@ def run_offpolicy_continuous_train[
     Parameters:
         E: Environment type implementing BoxContinuousActionEnv.
         A: Agent type implementing OffPolicyAgent.
+        L: Logger type for diagnostics.
 
     Args:
         agent: Off-policy agent (updated in-place).
@@ -817,6 +820,8 @@ def run_offpolicy_continuous_train[
         print_every: Print every N episodes if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
+
 
     Returns:
         TrainingMetrics with per-episode rewards and statistics.
@@ -956,6 +961,7 @@ def run_offpolicy_continuous_train[
     Parameters:
         E: Environment type implementing BoxContinuousActionEnv.
         A: Agent type implementing OffPolicyContinuousAgent.
+        L: Logger type for diagnostics.
 
     Args:
         agent: Off-policy agent (hyperparameters + algorithm only).
@@ -971,6 +977,7 @@ def run_offpolicy_continuous_train[
         print_every: Print every N episodes if verbose (default: 10).
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
+        logger: Optional metrics logger pointer (default: null = no logging).
 
     Returns:
         TrainingMetrics with per-episode rewards and statistics.

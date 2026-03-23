@@ -425,6 +425,7 @@ def run_onpolicy_discrete_train_gpu[
         A: Agent type implementing GPUOnPolicyDiscreteAgent.
         PROFILE: Whether to profile the training loop.
         L: Logger type for diagnostics.
+        CurriculumType: Curriculum scheduler type.
 
     Args:
         agent: On-policy agent with GPU support (updated in-place).
@@ -432,6 +433,7 @@ def run_onpolicy_discrete_train_gpu[
         num_updates: Number of rollout + update cycles.
         timer: PerfTimer to add slots to.
         sync_every: GPU→CPU parameter sync interval in updates (default: 50).
+        target_total_steps: Total steps for curriculum/annealing progress (default: 0 = disabled).
         checkpoint_every: Save checkpoint every N updates (default: 0 = never).
         checkpoint_path: Path to save checkpoints (default: "").
         verbose: Print progress (default: False).

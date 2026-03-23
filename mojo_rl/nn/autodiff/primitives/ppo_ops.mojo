@@ -410,7 +410,8 @@ struct RatioOp[dim: Int = 1](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """grad_log_prob = grad_output * ratio, grad_old_log_prob = 0."""
+        """Formula: grad_log_prob = grad_output * ratio, grad_old_log_prob = 0.
+        """
         for b in range(BATCH):
             for i in range(Self.dim):
                 var g = Float64(rebind[Scalar[dtype]](grad_output[b, i]))

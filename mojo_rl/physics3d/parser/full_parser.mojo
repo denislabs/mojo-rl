@@ -369,7 +369,7 @@ def _find_texture_index_by_name(asset_sec: String, name: String) -> Int:
         var tag_end = asset_sec.find(">", t)
         if tag_end == -1:
             break
-        var tag = String(asset_sec[t : tag_end + 1])
+        var tag = String(asset_sec[byte = t : tag_end + 1])
         if tag.find(search) != -1:
             return count
         count += 1
@@ -524,7 +524,7 @@ def _fill_assets[
         var tag_end = asset_sec.find(">", t)
         if tag_end == -1:
             break
-        var tag = String(asset_sec[t : tag_end + 1])
+        var tag = String(asset_sec[byte = t : tag_end + 1])
 
         var td = TextureData()
 
@@ -584,7 +584,7 @@ def _fill_assets[
         var tag_end = asset_sec.find(">", t)
         if tag_end == -1:
             break
-        var tag = String(asset_sec[t : tag_end + 1])
+        var tag = String(asset_sec[byte = t : tag_end + 1])
 
         var md = MaterialData()
 
@@ -1450,7 +1450,7 @@ def _find_material_index_by_name(asset_sec: String, name: String) -> Int:
         var tag_end = asset_sec.find(">", t)
         if tag_end == -1:
             break
-        var tag = String(asset_sec[t : tag_end + 1])
+        var tag = String(asset_sec[byte = t : tag_end + 1])
         if tag.find(search) != -1:
             return count
         count += 1
@@ -1489,7 +1489,7 @@ def _resolve_geom_materials[
         var tag_end = worldbody.find(">", t)
         if tag_end == -1:
             break
-        var tag = String(worldbody[t : tag_end + 1])
+        var tag = String(worldbody[byte = t : tag_end + 1])
         var mat_name = _extract_attr(tag, "material")
         if len(mat_name) > 0:
             var mid = _find_material_index_by_name(asset_sec, mat_name)
@@ -1565,7 +1565,7 @@ def parse_xml_full[
     if compiler_t != -1:
         var compiler_end = xml.find(">", compiler_t)
         if compiler_end != -1:
-            var ctag = String(xml[compiler_t : compiler_end + 1])
+            var ctag = String(xml[byte = compiler_t : compiler_end + 1])
             var angle_val = _extract_attr(ctag, "angle")
             if _trim(angle_val) == "degree":
                 deg_factor = Float64(3.141592653589793) / Float64(180.0)

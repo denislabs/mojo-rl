@@ -615,12 +615,12 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         Does NOT filter moves that leave own king in check.
         """
         var moves = List[Move](capacity=128)
-        var pawn = _make_piece(1, player)
-        var knight = _make_piece(2, player)
-        var bishop = _make_piece(3, player)
-        var rook = _make_piece(4, player)
-        var queen = _make_piece(5, player)
-        var king = _make_piece(6, player)
+        # var pawn = _make_piece(1, player)
+        # var knight = _make_piece(2, player)
+        # var bishop = _make_piece(3, player)
+        # var rook = _make_piece(4, player)
+        # var queen = _make_piece(5, player)
+        # var king = _make_piece(6, player)
         var fwd = 1 if player == 0 else -1
         var start_row = 1 if player == 0 else 6
         var promo_row = 7 if player == 0 else 0
@@ -678,14 +678,14 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                             moves.append(Move(sq, _sq(nr, nc)))
 
             elif pt == 3 or pt == 4 or pt == 5:  # Bishop, Rook, Queen
-                var start_dir = 0
-                var end_dir = 8
-                if pt == 3:  # Bishop: diagonals only (1,3,5,7)
-                    start_dir = 1
-                    end_dir = 8
-                elif pt == 4:  # Rook: straights only (0,2,4,6)
-                    start_dir = 0
-                    end_dir = 8
+                # var start_dir: Int
+                # var end_dir: Int
+                # if pt == 3:  # Bishop: diagonals only (1,3,5,7)
+                #     start_dir = 1
+                #     end_dir = 8
+                # elif pt == 4:  # Rook: straights only (0,2,4,6)
+                #     start_dir = 0
+                #     end_dir = 8
 
                 for d in range(8):
                     # Bishop: skip straights. Rook: skip diags.
@@ -1070,7 +1070,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         for piece_type in range(1, 7):
             var target = piece_type + my_offset
             for sq in range(64):
-                var canonical_sq = sq if player == 0 else _flip_sq(sq)
+                # var canonical_sq = sq if player == 0 else _flip_sq(sq)
                 if self._piece_at(sq) == target:
                     obs.append(Scalar[Self.dtype](1.0))
                 else:
@@ -1096,7 +1096,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             my_ks = (castling & CASTLE_BK) != 0
             my_qs = (castling & CASTLE_BQ) != 0
 
-        for sq in range(64):
+        for _ in range(64):
             if my_ks or my_qs:
                 obs.append(Scalar[Self.dtype](1.0))
             else:
@@ -1333,7 +1333,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         for col in range(8):
             var lx = left_margin + col * sq_size + sq_size // 2 - 4
             var ly = top_margin + 8 * sq_size + 4
-            var fl = String("")
+            var fl: String
             if col == 0:
                 fl = "a"
             elif col == 1:

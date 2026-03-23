@@ -106,7 +106,6 @@ trait RainbowDQNConfig:
     comptime buffer_capacity: Int
     comptime QModel: Model
     comptime QOpt: Optimizer
-    comptime use_host_buffer: Bool
 
 
 # =============================================================================
@@ -152,8 +151,6 @@ struct RainbowConfig[
     comptime n_step: Int = Self.N_STEP
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
-    comptime use_host_buffer: Bool = False
-
     # Dueling noisy network: V(NUM_ATOMS) + A(ACT*NUM_ATOMS)
     comptime QModel = Sequential[
         NoisyLinearReLU[Self.OBS, Self.HIDDEN],
@@ -220,8 +217,6 @@ struct RainbowCNNConfig[
     comptime n_step: Int = Self.N_STEP
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
-
-    comptime use_host_buffer: Bool = True
 
     comptime QModel = Sequential[
         Conv2DReLU[4, 32, 8, 4, 0, 84, 84],

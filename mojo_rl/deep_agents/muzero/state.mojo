@@ -48,6 +48,7 @@ struct MuZeroCPUState[
     Parameters:
         Config: MuZeroConfig trait providing all dimensions, network types,
                 and training hyperparameters.
+        _CAP: Capacity of the replay buffer (default: 100000).
     """
 
     # ── Shorthand compile-time constants ─────────────────────────────────

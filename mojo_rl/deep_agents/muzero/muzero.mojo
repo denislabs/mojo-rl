@@ -118,7 +118,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
     Parameters:
         Config: MuZeroConfig trait providing all dimensions, network types,
                 and training hyperparameters.
-        Self.n_envs: Number of parallel GPU environments (default: 64).
+        n_envs: Number of parallel GPU environments (default: 64).
     """
 
     # ── State type alias ──────────────────────────────────────────────────
@@ -185,6 +185,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             v_max: Maximum value support for categorical encoding.
             temperature: Initial action selection temperature (default: 1.0).
             temperature_decay_steps: Steps to decay temperature to 0.
+            max_grad_norm: Maximum gradient norm for clipping (default: 10.0).
         """
         self.state = Self.StateType()
         self.mcts = MCTS[
@@ -2297,7 +2298,6 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
 
         Parameters:
             E: GPU environment type implementing GPUDiscreteEnv.
-            Self.n_envs: Number of parallel environments (default: 64).
 
         Args:
             ctx: GPU device context.
@@ -3000,7 +3000,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
           - Both players use the same network (canonical observations)
 
         Parameters:
-            E: GPU two-player environment (TicTacToe, Chess, Go, etc.)
+            E: GPU two-player environment (TicTacToe, Chess, Go, etc.).
 
         Args:
             ctx: GPU device context.

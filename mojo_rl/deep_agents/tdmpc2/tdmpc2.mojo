@@ -142,6 +142,7 @@ struct TDMPC2Agent[
         num_iterations: MPPI optimization iterations (default: 6).
         v_min: Minimum value for distribution (default: -10.0).
         v_max: Maximum value for distribution (default: 10.0).
+        L: Logger (default: NoOpLogger).
 
     Note: latent_dim must be divisible by simplex_dim.
     """
@@ -304,6 +305,7 @@ struct TDMPC2Agent[
             discount_denom: Denominator for dynamic gamma formula (default: 5.0).
             discount_min: Minimum dynamic gamma (default: 0.95).
             discount_max: Maximum dynamic gamma (default: 0.995).
+            diag_every: Log diagnostics every N steps (default: 0 = never).
         """
         self.state = Self.CPUStateType()
 

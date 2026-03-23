@@ -565,8 +565,6 @@ struct GenericOnPolicyContinuousAgent[
                             loss_cache_t,
                         )
 
-                        var policy_loss = Float64(loss_out_arr[0])
-
                         # Backward
                         var loss_go_arr = InlineArray[Scalar[dtype], LOSS_OUT](
                             uninitialized=True

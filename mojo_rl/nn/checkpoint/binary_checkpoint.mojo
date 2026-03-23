@@ -188,7 +188,7 @@ struct BinaryCheckpoint(Copyable, Movable):
         var prefix = key + "="
         for i in range(len(self.metadata)):
             if self.metadata[i].startswith(prefix):
-                return String(self.metadata[i][len(prefix) :])
+                return String(self.metadata[i][byte = len(prefix) :])
         return String("")
 
     def get_metadata_list(self) -> List[String]:

@@ -211,6 +211,7 @@ struct PPOContinuousGPUState[
         rollout_len: Steps per rollout per environment.
         n_envs: Number of parallel environments.
         gpu_minibatch: Minibatch size for update epochs.
+        loss_ws_size: Size of the loss workspace.
     """
 
     comptime OBS = Self.obs_dim

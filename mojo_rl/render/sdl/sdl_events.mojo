@@ -1346,7 +1346,7 @@ struct Event:
         """Initialize event for polling."""
         __mlir_op.`lit.ownership.mark_initialized`(__get_mvalue_as_litref(self))
 
-    def __getitem__[T: AnyType](ref self) -> ref[self._impl] T:
+    def __getitem_param__[T: AnyType](ref self) -> ref[self._impl] T:
         return rebind[Ptr[T, origin_of(self._impl)]](Ptr(to=self._impl))[]
 
 

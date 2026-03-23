@@ -96,7 +96,7 @@ def self_play_train_cpu[
                 break
 
         if (game + 1) % print_every == 0:
-            var total = p0_wins + p1_wins + draws
+            # var total = p0_wins + p1_wins + draws
             print(
                 "Game",
                 game + 1,
