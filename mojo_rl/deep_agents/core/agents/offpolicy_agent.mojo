@@ -1652,50 +1652,19 @@ struct GenericOffPolicyAgent[
             if self.max_grad_norm > 0.0:
                 comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
                 comptime A_BLOCKS = (A_PS + TPB - 1) // TPB
+                comptime norm_k = gradient_norm_kernel[dtype, A_PS, A_BLOCKS, TPB]
+                comptime clip_k = gradient_reduce_apply_fused_kernel[dtype, A_PS, A_BLOCKS, TPB]
                 var ps_t = LayoutTensor[
                     dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
                 ](gpu_state.grad_clip_ps.unsafe_ptr())
 
-                @always_inline
-                fn run_norm(
-                    p: LayoutTensor[
-                        dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
-                    ],
-                    g: LayoutTensor[
-                        dtype, Layout.row_major(A_PS), MutAnyOrigin
-                    ],
-                ):
-                    gradient_norm_kernel[dtype, A_PS, A_BLOCKS, TPB](p, g)
-
-                ctx.enqueue_function[run_norm, run_norm](
-                    ps_t,
-                    a_grads,
-                    grid_dim=(A_BLOCKS,),
-                    block_dim=(TPB,),
+                ctx.enqueue_function[norm_k, norm_k](
+                    ps_t, a_grads,
+                    grid_dim=(A_BLOCKS,), block_dim=(TPB,),
                 )
-
-                var mgn = Scalar[dtype](self.max_grad_norm)
-
-                @always_inline
-                fn run_clip(
-                    g: LayoutTensor[
-                        dtype, Layout.row_major(A_PS), MutAnyOrigin
-                    ],
-                    p: LayoutTensor[
-                        dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
-                    ],
-                    m: Scalar[dtype],
-                ):
-                    gradient_reduce_apply_fused_kernel[
-                        dtype, A_PS, A_BLOCKS, TPB
-                    ](g, p, m)
-
-                ctx.enqueue_function[run_clip, run_clip](
-                    a_grads,
-                    ps_t,
-                    mgn,
-                    grid_dim=(A_BLOCKS,),
-                    block_dim=(TPB,),
+                ctx.enqueue_function[clip_k, clip_k](
+                    a_grads, ps_t, Scalar[dtype](self.max_grad_norm),
+                    grid_dim=(A_BLOCKS,), block_dim=(TPB,),
                 )
 
             gpu_state.actor.online.optimizer_step(ctx)
