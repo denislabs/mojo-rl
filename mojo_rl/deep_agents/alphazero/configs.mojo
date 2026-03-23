@@ -209,6 +209,64 @@ struct AlphaZeroConnectFourConfig[
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ConnectFour Config (CNN — matches alpha-zero-general architecture)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct AlphaZeroConnectFourCNNConfig[
+    FILTERS: Int = 128,
+    LR: Float64 = 1e-3,
+    BS: Int = 64,
+    CAP: Int = 200000,
+    SIMS: Int = 25,
+    NODES: Int = 128,
+    C_PUCT: Float64 = 1.0,
+](AlphaZeroConfig):
+    """AlphaZero for ConnectFour — CNN variant.
+
+    Input 126D = 3 channels × 6 rows × 7 cols.
+    3× Conv2D(3×3, same) → Conv2D(3×3, valid) → flatten → FC → heads.
+
+    Alpha-zero-general uses 20 ResNet blocks with 128 filters.
+    We use a simpler 4-conv architecture for faster iteration.
+    """
+
+    comptime NAME: String = "AlphaZero-ConnectFour-CNN"
+    comptime obs_dim: Int = 126
+    comptime action_dim: Int = 7
+
+    # Conv2DReLU[ic, oc, k, s, p, h, w]
+    # Input: 3 channels, 6 rows, 7 cols (column-major in obs, but Conv2D is row-major)
+    # Note: obs layout is 3 planes of 42 = 7cols × 6rows (col-major)
+    # Conv2D expects (channels, height, width) = (3, 6, 7)
+    comptime PredModel = Sequential[
+        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],       # 3ch→F, 6×7→6×7
+        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],  # F→F, 6×7→6×7
+        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],  # F→F, 6×7→6×7
+        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # F→F, 6×7→4×5
+        FlattenLayer[Self.FILTERS * 4 * 5],                       # F×4×5 → 20F
+        LinearReLU[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
+        LinearReLU[Self.FILTERS * 2, Self.FILTERS],
+        Parallel[
+            Linear[Self.FILTERS, 7],   # Policy head
+            Linear[Self.FILTERS, 1],   # Value head
+        ],
+    ]
+    comptime OptType = Adam[LR=Self.LR]
+
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime history_window: Int = 20
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+    comptime temp_threshold: Int = 15
+
+    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
+    comptime Players = SelfPlay
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Chess Config
 # ═══════════════════════════════════════════════════════════════════════════
 

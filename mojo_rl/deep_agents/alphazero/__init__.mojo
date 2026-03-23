@@ -11,6 +11,7 @@ from .configs import (
     AlphaZeroTicTacToeConfig,
     AlphaZeroTicTacToeCNNConfig,
     AlphaZeroConnectFourConfig,
+    AlphaZeroConnectFourCNNConfig,
     AlphaZeroChessConfig,
 )
 from .state import AlphaZeroCPUState, AlphaZeroGPUState
