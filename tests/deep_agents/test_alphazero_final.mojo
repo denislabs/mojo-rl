@@ -8,8 +8,12 @@ from std.memory import alloc
 from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import (
-    Linear, LinearReLU, Sequential, Parallel,
-    Conv2DReLU, FlattenLayer,
+    Linear,
+    LinearReLU,
+    Sequential,
+    Parallel,
+    Conv2DReLU,
+    FlattenLayer,
 )
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.deep_agents.alphazero import (
@@ -17,7 +21,10 @@ from mojo_rl.deep_agents.alphazero import (
     AlphaZeroTicTacToeConfig,
     AlphaZeroTicTacToeCNNConfig,
 )
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, MinimaxTicTacToe
+from mojo_rl.deep_agents.muzero.evaluators import (
+    RandomOpponent,
+    MinimaxTicTacToe,
+)
 from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
@@ -49,15 +56,15 @@ def main() raises:
 
     # Fully integrated GPU training: self-play + training + GPU arena
     # All on GPU, no CPU round-trips during training
-    for chunk in range(5):
+    for chunk in range(20):
         _ = agent.train_selfplay_gpu[TTT](
             ctx,
-            num_steps=50000,
+            num_steps=100000,
             warmup_steps=500 if chunk == 0 else 0,
             gradient_steps=4,
             print_every=50000,
-            arena_every=25000,      # GPU arena every 25K steps
-            arena_games=64,         # n_envs parallel arena games
+            arena_every=25000,  # GPU arena every 25K steps
+            arena_games=64,  # n_envs parallel arena games
             arena_threshold=0.6,
         )
 
