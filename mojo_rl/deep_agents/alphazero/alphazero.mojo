@@ -1134,7 +1134,8 @@ struct GenericAlphaZeroAgent[
         var move_num = 0
         var all_done = False
 
-        while not all_done and move_num < 20:
+        comptime MAX_ARENA_MOVES = ACT * ACT
+        while not all_done and move_num < MAX_ARENA_MOVES:
             var p0_turn = move_num % 2 == 0
 
             # Pick params: even moves → P0, odd moves → P1
@@ -1584,7 +1585,10 @@ struct GenericAlphaZeroAgent[
         var eval_move = 0
         var eval_all_done = False
 
-        while not eval_all_done and eval_move < 20:
+        # Max moves: action_dim² is a safe upper bound for board games
+        # (TTT=81, C4=49, Chess=~200). Must exceed max game length.
+        comptime MAX_EVAL_MOVES = ACT * ACT
+        while not eval_all_done and eval_move < MAX_EVAL_MOVES:
             var agent_turn = eval_move % 2 == 0
 
             if agent_turn:
