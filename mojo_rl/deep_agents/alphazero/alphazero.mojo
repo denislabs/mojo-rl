@@ -750,8 +750,10 @@ struct GenericAlphaZeroAgent[
 
                     # Value MSE
                     var raw_v = Float64(pred_host[pred_off + ACT])
-                    var tanh_v: Float64
-                    if raw_v > 15.0:
+                    var tanh_v: Float64 = 0.0
+                    if raw_v != raw_v:
+                        pass  # NaN — leave tanh_v = 0
+                    elif raw_v > 15.0:
                         tanh_v = 1.0
                     elif raw_v < -15.0:
                         tanh_v = -1.0
@@ -763,14 +765,23 @@ struct GenericAlphaZeroAgent[
                     batch_vmean += tanh_v
 
                 var n = Float64(BATCH)
-                self.logger[].log_scalar("policy_ce", batch_ploss / n, step)
-                self.logger[].log_scalar(
-                    "policy_entropy", batch_entropy / n, step
-                )
-                self.logger[].log_scalar("value_mse", batch_vloss / n, step)
-                self.logger[].log_scalar("value_mean", batch_vmean / n, step)
-            except e:
-                print("  [diag error]:", e)
+                var pl = batch_ploss / n
+                var vl = batch_vloss / n
+                var pe = batch_entropy / n
+                var vm = batch_vmean / n
+
+                # Clamp to avoid NaN/inf being silently dropped by logger
+                if vl != vl or vl > 1e10:
+                    vl = 0.0
+                if vm != vm or vm > 1e10 or vm < -1e10:
+                    vm = 0.0
+
+                self.logger[].log_scalar("policy_ce", pl, step)
+                self.logger[].log_scalar("policy_entropy", pe, step)
+                self.logger[].log_scalar("value_mse", vl, step)
+                self.logger[].log_scalar("value_mean", vm, step)
+            except:
+                pass
 
     # ══════════════════════════════════════════════════════════════
     # Data Augmentation (via DataAugmentable trait on environment)
