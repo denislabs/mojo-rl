@@ -57,10 +57,10 @@ def main() raises:
     _ = agent.train_selfplay_gpu[C4, RandomOpponent](
         ctx,
         num_iters=200,
-        steps_per_iter=2000,
-        train_epochs=10,
-        warmup_iters=1,
-        arena_threshold=0.5,
+        steps_per_iter=4000,   # More self-play data (C4 games are longer)
+        train_epochs=5,        # Less overfitting per iteration
+        warmup_iters=2,        # More warmup for diverse initial data
+        arena_threshold=0.55,  # Slightly stricter to avoid accepting noise
         do_eval=True,
         do_arena=True,
         checkpoint_every=10,
