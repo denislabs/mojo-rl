@@ -120,8 +120,8 @@ struct AlphaZeroTicTacToeConfig[
 
 struct AlphaZeroTicTacToeCNNConfig[
     FILTERS: Int = 128,
-    LR: Float64 = 0.01,
-    BS: Int = 16,
+    LR: Float64 = 0.001,
+    BS: Int = 64,
     CAP: Int = 100_000,
     SIMS: Int = 100,
     NODES: Int = 128,
@@ -131,6 +131,7 @@ struct AlphaZeroTicTacToeCNNConfig[
 
     Input 27D = 3 channels × 3×3 board (one-hot: mine, opponent, empty).
     3× Conv2D(3×3, same padding) → Conv2D(3×3, valid) → flatten → FC heads.
+    LR=0.001 (not 0.01) to prevent dying ReLU in the deeper CNN backbone.
     """
 
     comptime NAME: String = "AlphaZero-TicTacToe-CNN"
@@ -175,8 +176,8 @@ struct AlphaZeroTicTacToeCNNConfig[
 
 struct AlphaZeroConnectFourConfig[
     HIDDEN: Int = 256,
-    LR: Float64 = 0.01,
-    BS: Int = 16,
+    LR: Float64 = 0.001,
+    BS: Int = 64,
     CAP: Int = 100000,
     SIMS: Int = 100,
     NODES: Int = 256,
@@ -217,8 +218,8 @@ struct AlphaZeroConnectFourConfig[
 
 struct AlphaZeroConnectFourCNNConfig[
     FILTERS: Int = 128,
-    LR: Float64 = 0.01,
-    BS: Int = 16,
+    LR: Float64 = 0.001,
+    BS: Int = 64,
     CAP: Int = 200000,
     SIMS: Int = 100,
     NODES: Int = 256,
@@ -292,8 +293,8 @@ comptime ResBlock3x3[F: Int] = Sequential[
 
 struct AlphaZeroConnectFourResNetConfig[
     FILTERS: Int = 128,
-    LR: Float64 = 0.01,
-    BS: Int = 16,
+    LR: Float64 = 0.001,
+    BS: Int = 64,
     CAP: Int = 200000,
     SIMS: Int = 100,
     NODES: Int = 256,

@@ -1,11 +1,9 @@
 """Weight initialization traits and implementations for neural networks.
 
-This module provides a trait-based initialization system:
-- Initializer trait: Base interface for all initializers
-- Xavier/Glorot: Good for tanh/sigmoid activations
-- Kaiming/He: Good for ReLU activations
-- Zeros, Ones, Constant: Simple initializers
-- Uniform, Normal: Distribution-based initializers
+Uses the MAX/Philox counter-based pattern: each element gets its own
+RNG instance via PhiloxRandom(seed, offset=base+i), producing fully
+independent streams. The base offset is derived from (FAN_IN, FAN_OUT)
+so different layers in a model get different random sequences.
 
 Usage:
     # In Trainer - initializer is a type parameter
@@ -22,6 +20,15 @@ from layout import LayoutTensor, Layout
 from ..constants import dtype
 from std.math import sqrt, log, cos, sin, pi
 from std.random.philox import Random as PhiloxRandom
+
+
+def _layer_offset[FAN_IN: Int, FAN_OUT: Int]() -> UInt64:
+    """Derive a unique base offset from layer dimensions.
+
+    Uses large primes so layers with different (FAN_IN, FAN_OUT)
+    get non-overlapping RNG streams without any signature changes.
+    """
+    return UInt64(FAN_IN) * 1000003 + UInt64(FAN_OUT) * 999983
 
 
 trait Initializer(Copyable & Movable & ImplicitlyCopyable):
@@ -52,7 +59,7 @@ trait Initializer(Copyable & Movable & ImplicitlyCopyable):
 struct Xavier[SEED: UInt64 = 0](Initializer):
     """Xavier/Glorot initialization.
 
-    Weights are drawn from U(-sqrt(6/(fan_in+fan_out)), sqrt(6/(fan_in+fan_out))).
+    Weights are drawn from U(-limit, limit) where limit = sqrt(6/(fan_in+fan_out)).
 
     This is optimal for linear activations and works well for tanh/sigmoid.
     """
@@ -70,19 +77,18 @@ struct Xavier[SEED: UInt64 = 0](Initializer):
     def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
-        var rand_vals = rng.step_uniform()
-        var std = sqrt(6.0 / Scalar[dtype](FAN_IN + FAN_OUT))
+        var limit = sqrt(6.0 / Scalar[dtype](FAN_IN + FAN_OUT))
+        var base = _layer_offset[FAN_IN, FAN_OUT]()
         for i in range(SIZE):
-            if i > 0 and i % 4 == 0:
-                rand_vals = rng.step_uniform()
-            params[i] = Scalar[dtype]((rand_vals[i % 4] * 2.0 - 1.0) * std)
+            var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
+            var val = rng.step_uniform()
+            params[i] = Scalar[dtype]((val[0] * 2.0 - 1.0) * limit)
 
 
 struct Kaiming[SEED: UInt64 = 0](Initializer):
     """Kaiming/He initialization.
 
-    Weights are drawn from U(-sqrt(6/fan_in), sqrt(6/fan_in)).
+    Weights are drawn from U(-limit, limit) where limit = sqrt(6/fan_in).
 
     This is optimal for ReLU activations, accounting for the fact that
     ReLU zeros out half the distribution.
@@ -101,19 +107,18 @@ struct Kaiming[SEED: UInt64 = 0](Initializer):
     def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        var std = sqrt(6.0 / Scalar[dtype](FAN_IN))
-        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
-        var rand_vals = rng.step_uniform()
+        var limit = sqrt(6.0 / Scalar[dtype](FAN_IN))
+        var base = _layer_offset[FAN_IN, FAN_OUT]()
         for i in range(SIZE):
-            if i > 0 and i % 4 == 0:
-                rand_vals = rng.step_uniform()
-            params[i] = Scalar[dtype]((rand_vals[i % 4] * 2.0 - 1.0) * std)
+            var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
+            var val = rng.step_uniform()
+            params[i] = Scalar[dtype]((val[0] * 2.0 - 1.0) * limit)
 
 
 struct LeCun[SEED: UInt64 = 0](Initializer):
     """LeCun initialization.
 
-    Weights are drawn from U(-sqrt(3/fan_in), sqrt(3/fan_in)).
+    Weights are drawn from U(-limit, limit) where limit = sqrt(3/fan_in).
 
     This is the original initialization proposed by LeCun for
     networks with tanh activations.
@@ -132,21 +137,16 @@ struct LeCun[SEED: UInt64 = 0](Initializer):
     def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        var std = sqrt(3.0 / Scalar[dtype](FAN_IN))
-        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
-        var rand_vals = rng.step_uniform()
+        var limit = sqrt(3.0 / Scalar[dtype](FAN_IN))
+        var base = _layer_offset[FAN_IN, FAN_OUT]()
         for i in range(SIZE):
-            if i > 0 and i % 4 == 0:
-                rand_vals = rng.step_uniform()
-            params[i] = Scalar[dtype]((rand_vals[i % 4] * 2.0 - 1.0) * std)
+            var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
+            var val = rng.step_uniform()
+            params[i] = Scalar[dtype]((val[0] * 2.0 - 1.0) * limit)
 
 
 struct Zeros(Initializer):
-    """Initialize all parameters to zero.
-
-    Useful for biases or when you want to start from a clean slate.
-    Note: Using zeros for weights will cause issues with gradient flow.
-    """
+    """Initialize all parameters to zero."""
 
     def __init__(out self):
         pass
@@ -204,38 +204,40 @@ struct Uniform[LOW: Float64, HIGH: Float64, SEED: UInt64 = 0](Initializer):
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         var range_val = Scalar[dtype](Self.HIGH - Self.LOW)
-        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
-        var rand_vals = rng.step_uniform()
+        var base = _layer_offset[FAN_IN, FAN_OUT]()
         for i in range(SIZE):
-            if i > 0 and i % 4 == 0:
-                rand_vals = rng.step_uniform()
+            var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
+            var val = rng.step_uniform()
             params[i] = Scalar[dtype](
-                rand_vals[i % 4] * range_val + Scalar[dtype](Self.LOW)
+                val[0] * range_val + Scalar[dtype](Self.LOW)
             )
 
 
 struct Normal[MEAN: Float64, STD: Float64, SEED: UInt64 = 0](Initializer):
     """Initialize parameters from normal distribution N(mean, std).
 
-    Uses Box-Muller transform to generate normal random numbers.
+    Uses Box-Muller transform on Philox uniform pairs.
     """
 
     @staticmethod
     def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        var rng = PhiloxRandom(seed=Self.SEED, offset=0)
-        var rand_vals = rng.step_uniform()
-        # Box-Muller transform generates pairs of normal random numbers
-        var pos = 0
+        var base = _layer_offset[FAN_IN, FAN_OUT]()
+        # Box-Muller: each pair of uniforms → 2 normals
         var i = 0
+        var pair_idx: UInt64 = 0
         while i < SIZE:
-            if pos + 1 >= 4:
-                rand_vals = rng.step_uniform()
-                pos = 0
-            var u1 = rand_vals[pos]
-            var u2 = rand_vals[pos + 1]
-            pos += 2
+            # Two independent uniform streams for each Box-Muller pair
+            var rng1 = PhiloxRandom(
+                seed=Self.SEED, offset=base + pair_idx * 2
+            )
+            var rng2 = PhiloxRandom(
+                seed=Self.SEED, offset=base + pair_idx * 2 + 1
+            )
+            var u1 = rng1.step_uniform()[0]
+            var u2 = rng2.step_uniform()[0]
+            pair_idx += 1
 
             # Avoid log(0)
             if u1 < 1e-10:
