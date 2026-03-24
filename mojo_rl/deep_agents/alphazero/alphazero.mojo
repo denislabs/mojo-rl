@@ -764,13 +764,13 @@ struct GenericAlphaZeroAgent[
 
                 var n = Float64(BATCH)
                 self.logger[].log_scalar("policy_ce", batch_ploss / n, step)
-                self.logger[].log_scalar("value_mse", batch_vloss / n, step)
                 self.logger[].log_scalar(
                     "policy_entropy", batch_entropy / n, step
                 )
+                self.logger[].log_scalar("value_mse", batch_vloss / n, step)
                 self.logger[].log_scalar("value_mean", batch_vmean / n, step)
-            except:
-                pass
+            except e:
+                print("  [diag error]:", e)
 
     # ══════════════════════════════════════════════════════════════
     # Data Augmentation (via DataAugmentable trait on environment)
