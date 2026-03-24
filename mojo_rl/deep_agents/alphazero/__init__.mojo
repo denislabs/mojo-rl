@@ -10,8 +10,10 @@ from .configs import (
     AlphaZeroConfig,
     AlphaZeroTicTacToeConfig,
     AlphaZeroTicTacToeCNNConfig,
+    AlphaZeroTicTacToeResNetConfig,
     AlphaZeroConnectFourConfig,
     AlphaZeroConnectFourCNNConfig,
+    AlphaZeroConnectFourResNetConfig,
     AlphaZeroChessConfig,
 )
 from .state import AlphaZeroCPUState, AlphaZeroGPUState

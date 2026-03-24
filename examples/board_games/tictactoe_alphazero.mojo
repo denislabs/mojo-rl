@@ -1,7 +1,11 @@
-"""AlphaZero — fully GPU batch-then-train.
+"""AlphaZero training on TicTacToe — fully GPU.
 
-Like alpha-zero-general: collect → train epochs → eval → arena → repeat.
-All on GPU: self-play, training, evaluation, arena.
+Usage:
+    pixi run -e nvidia mojo run -I . examples/board_games/tictactoe_alphazero.mojo
+    pixi run -e apple mojo run -I . examples/board_games/tictactoe_alphazero.mojo
+
+Then play against the trained agent:
+    pixi run -e apple mojo run -I . examples/board_games/tictactoe_play_vs_alphazero.mojo
 """
 
 from std.gpu.host import DeviceContext
@@ -9,6 +13,7 @@ from mojo_rl.deep_agents.alphazero import (
     GenericAlphaZeroAgent,
     AlphaZeroTicTacToeConfig,
     AlphaZeroTicTacToeCNNConfig,
+    AlphaZeroTicTacToeResNetConfig,
 )
 from mojo_rl.deep_agents.muzero.evaluators import (
     GPUMinimaxTicTacToe,
@@ -18,25 +23,28 @@ from mojo_rl.envs.board_games.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:
-    print("=== AlphaZero — Batch-Then-Train (Fully GPU) ===")
+    print("=== AlphaZero on TicTacToe ===")
     print()
 
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]
 
-    # Switch between MLP and CNN configs here
-    comptime Config = AlphaZeroTicTacToeCNNConfig[]
+    # Choose architecture:
+    # MLP (fastest, decent for TTT):
     # comptime Config = AlphaZeroTicTacToeConfig[]
+    # CNN (heavier but better features):
+    comptime Config = AlphaZeroTicTacToeCNNConfig[]
+    # ResNet (strongest, 50 MCTS sims):
+    # comptime Config = AlphaZeroTicTacToeResNetConfig[]
 
     var agent = GenericAlphaZeroAgent[Config, 64]()
 
-    # Single call — batch-then-train, all on GPU
     _ = agent.train_selfplay_gpu[TTT, RandomOpponent, GPUMinimaxTicTacToe](
         ctx,
-        num_iters=250,
-        steps_per_iter=1000,  # ~130 games per iter (64 envs × ~7 moves)
-        train_epochs=10,  # 10 epochs per iteration
-        warmup_iters=1,  # 1 iter warmup (random play)
+        num_iters=100,
+        steps_per_iter=1000,
+        train_epochs=10,
+        warmup_iters=1,
         arena_threshold=0.5,
         do_eval=True,
         do_eval2=True,

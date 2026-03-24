@@ -911,3 +911,36 @@ trait GPUTwoPlayerDiscreteEnv:
             legal_masks: Legal mask output [BATCH_SIZE * NUM_ACTIONS].
         """
         ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Saveable Trait — save/restore environment state
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+trait Saveable:
+    """Environments that support saving and restoring their full internal state.
+
+    Required for CPU MCTS with true game rules — each simulation needs to
+    save the current position, explore a tree path, then restore.
+
+    The state is stored as a flat array of Scalar[dtype] values plus a done flag.
+    This matches the GPU state layout used by GPUTwoPlayerDiscreteEnv.
+    """
+
+    comptime SAVE_SIZE: Int
+    """Size of the state array to save/restore."""
+
+    def save_env_state(
+        self,
+        dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ):
+        """Copy current state to output buffer [SAVE_SIZE]."""
+        ...
+
+    def load_env_state(
+        mut self,
+        data: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ):
+        """Restore state from buffer [SAVE_SIZE]."""
+        ...

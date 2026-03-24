@@ -17,7 +17,9 @@ from mojo_rl.nn.model import (
     Sequential,
     Parallel,
     Conv2DReLU,
+    Conv2DLayer,
     FlattenLayer,
+    ReLU,
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 from mojo_rl.nn.autodiff.combinators import Residual
@@ -250,6 +252,129 @@ struct AlphaZeroConnectFourCNNConfig[
         Parallel[
             Linear[Self.FILTERS, 7],   # Policy head
             Linear[Self.FILTERS, 1],   # Value head
+        ],
+    ]
+    comptime OptType = Adam[LR=Self.LR]
+
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime history_window: Int = 20
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+    comptime temp_threshold: Int = 15
+
+    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
+    comptime Players = SelfPlay
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ConnectFour Config (ResNet — closer to original AlphaZero)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Helper: one ResNet block for 6×7 board with F filters
+# ResBlock = Conv2DReLU(F,F,3,same) → Conv2D(F,F,3,same) → add skip → ReLU
+comptime ResBlock6x7[F: Int] = Sequential[
+    Residual[Sequential[
+        Conv2DReLU[F, F, 3, 1, 1, 6, 7],
+        Conv2DLayer[F, F, 3, 1, 1, 6, 7],
+    ]],
+    ReLU[F * 6 * 7],
+]
+
+# Helper: one ResNet block for 3×3 board
+comptime ResBlock3x3[F: Int] = Sequential[
+    Residual[Sequential[
+        Conv2DReLU[F, F, 3, 1, 1, 3, 3],
+        Conv2DLayer[F, F, 3, 1, 1, 3, 3],
+    ]],
+    ReLU[F * 3 * 3],
+]
+
+
+struct AlphaZeroConnectFourResNetConfig[
+    FILTERS: Int = 128,
+    LR: Float64 = 1e-3,
+    BS: Int = 64,
+    CAP: Int = 200000,
+    SIMS: Int = 100,
+    NODES: Int = 256,
+    C_PUCT: Float64 = 1.0,
+](AlphaZeroConfig):
+    """AlphaZero for ConnectFour — ResNet with 4 residual blocks.
+
+    Closer to original AlphaZero architecture:
+    - Initial Conv → 4× ResBlock(Conv+ReLU → Conv → skip+ReLU) → FC heads
+    - 100 MCTS simulations (vs 25 in CNN config)
+    - max_nodes=256 for deeper search trees
+    """
+
+    comptime NAME: String = "AlphaZero-ConnectFour-ResNet"
+    comptime obs_dim: Int = 126
+    comptime action_dim: Int = 7
+
+    comptime PredModel = Sequential[
+        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],       # Initial: 3ch→F
+        ResBlock6x7[Self.FILTERS],                          # ResBlock 1
+        ResBlock6x7[Self.FILTERS],                          # ResBlock 2
+        ResBlock6x7[Self.FILTERS],                          # ResBlock 3
+        ResBlock6x7[Self.FILTERS],                          # ResBlock 4
+        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # Reduce: 6×7→4×5
+        FlattenLayer[Self.FILTERS * 4 * 5],
+        LinearReLU[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
+        LinearReLU[Self.FILTERS * 2, Self.FILTERS],
+        Parallel[
+            Linear[Self.FILTERS, 7],
+            Linear[Self.FILTERS, 1],
+        ],
+    ]
+    comptime OptType = Adam[LR=Self.LR]
+
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime history_window: Int = 20
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+    comptime temp_threshold: Int = 15
+
+    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
+    comptime Players = SelfPlay
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TicTacToe ResNet Config
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct AlphaZeroTicTacToeResNetConfig[
+    FILTERS: Int = 128,
+    LR: Float64 = 1e-3,
+    BS: Int = 64,
+    CAP: Int = 50000,
+    SIMS: Int = 50,
+    NODES: Int = 64,
+    C_PUCT: Float64 = 1.0,
+](AlphaZeroConfig):
+    """AlphaZero for TicTacToe — ResNet with 4 residual blocks + 50 MCTS sims."""
+
+    comptime NAME: String = "AlphaZero-TicTacToe-ResNet"
+    comptime obs_dim: Int = 27
+    comptime action_dim: Int = 9
+
+    comptime PredModel = Sequential[
+        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],       # Initial: 3ch→F
+        ResBlock3x3[Self.FILTERS],                          # ResBlock 1
+        ResBlock3x3[Self.FILTERS],                          # ResBlock 2
+        ResBlock3x3[Self.FILTERS],                          # ResBlock 3
+        ResBlock3x3[Self.FILTERS],                          # ResBlock 4
+        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # Reduce: 3×3→1×1
+        FlattenLayer[Self.FILTERS],
+        LinearReLU[Self.FILTERS, Self.FILTERS * 2],
+        LinearReLU[Self.FILTERS * 2, Self.FILTERS],
+        Parallel[
+            Linear[Self.FILTERS, 9],
+            Linear[Self.FILTERS, 1],
         ],
     ]
     comptime OptType = Adam[LR=Self.LR]

@@ -161,9 +161,10 @@ def main() raises:
         if action >= 0 and not game_over and env.current_player() == 0:
             _ = env._step_impl(action)
 
-        # AI turn (player 1 = O) — use raw policy network
+        # AI turn (player 1 = O) — CPU MCTS with true game rules
         if not game_over and env.current_player() == 1:
             comptime OBS = Config.obs_dim
+            comptime TTTCPU = TicTacToeEnv[DType.float64]
             var obs = List[Scalar[dtype]](capacity=OBS)
             var obs_raw = env.get_obs_list()
             for i in range(OBS):
@@ -173,7 +174,9 @@ def main() raises:
                     obs.append(Scalar[dtype](0.0))
 
             var legal = env.legal_action_mask()
-            var ai_action = agent.select_action(obs, legal)
+            var ai_action = agent.select_action_mcts[TTTCPU](
+                obs, legal, env
+            )
 
             if ai_action >= 0 and ai_action < len(legal) and legal[ai_action]:
                 _ = env._step_impl(ai_action)

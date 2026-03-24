@@ -20,6 +20,7 @@ from .env_traits import (
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
     DataAugmentable,
+    Saveable,
 )
 from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent

@@ -20,6 +20,7 @@ from std.memory import alloc
 from mojo_rl.envs.board_games.connect_four import ConnectFourEnv
 from mojo_rl.deep_agents.alphazero import (
     GenericAlphaZeroAgent,
+    AlphaZeroConnectFourResNetConfig,
     AlphaZeroConnectFourCNNConfig,
     AlphaZeroConnectFourConfig,
 )
@@ -36,8 +37,8 @@ def main() raises:
     print()
 
     # Must match the config used during training!
-    comptime Config = AlphaZeroConnectFourCNNConfig[]
-    # comptime Config = AlphaZeroConnectFourConfig[]
+    comptime Config = AlphaZeroConnectFourResNetConfig[]
+    # comptime Config = AlphaZeroConnectFourCNNConfig[]
 
     var agent = GenericAlphaZeroAgent[Config, 64]()
 
@@ -136,9 +137,10 @@ def main() raises:
                 if action < len(legal) and legal[action]:
                     _ = env._step_impl(action)
 
-        # AI turn (player 1 = Yellow) — raw policy network
+        # AI turn (player 1 = Yellow) — CPU MCTS with true game rules
         if not game_over and env.current_player() == 1:
             comptime OBS = Config.obs_dim
+            comptime C4CPU = ConnectFourEnv[DType.float64]
             var obs = List[Scalar[dtype]](capacity=OBS)
             var obs_raw = env.get_obs_list()
             for i in range(OBS):
@@ -148,7 +150,9 @@ def main() raises:
                     obs.append(Scalar[dtype](0.0))
 
             var legal = env.legal_action_mask()
-            var ai_action = agent.select_action(obs, legal)
+            var ai_action = agent.select_action_mcts[C4CPU](
+                obs, legal, env
+            )
 
             if ai_action >= 0 and ai_action < len(legal) and legal[ai_action]:
                 _ = env._step_impl(ai_action)

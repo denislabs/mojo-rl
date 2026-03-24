@@ -31,6 +31,7 @@ from mojo_rl.core import (
     GPUTwoPlayerDiscreteEnv,
     RenderableEnv,
     DataAugmentable,
+    Saveable,
 )
 from mojo_rl.nn.constants import dtype as nn_dtype
 from mojo_rl.render import Renderer2D, SDL_Color
@@ -70,6 +71,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     & GPUTwoPlayerDiscreteEnv
     & RenderableEnv
     & DataAugmentable
+    & Saveable
 ):
     """ConnectFour environment — CPU+GPU dual path."""
 
@@ -85,6 +87,9 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
 
     # DataAugmentable: 2 symmetries (identity + horizontal flip)
     comptime NUM_SYMMETRIES: Int = 2
+
+    # Saveable
+    comptime SAVE_SIZE: Int = 47  # 46 state + 1 done flag
 
     @staticmethod
     def augment_obs[
@@ -248,6 +253,26 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
             c += dc
             r += dr
         return count
+
+    # ========================================================================
+    # Saveable
+    # ========================================================================
+
+    def save_env_state(
+        self,
+        dst: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
+    ):
+        for i in range(46):
+            dst[i] = Scalar[nn_dtype](Float64(self.state[i]))
+        dst[46] = Scalar[nn_dtype](1.0) if self.done else Scalar[nn_dtype](0.0)
+
+    def load_env_state(
+        mut self,
+        data: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
+    ):
+        for i in range(46):
+            self.state[i] = Scalar[Self.dtype](Float64(data[i]))
+        self.done = Float64(data[46]) > 0.5
 
     # ========================================================================
     # Env trait methods

@@ -29,6 +29,7 @@ from mojo_rl.core import (
     GPUTwoPlayerDiscreteEnv,
     RenderableEnv,
     DataAugmentable,
+    Saveable,
 )
 from mojo_rl.nn.constants import dtype as nn_dtype
 from mojo_rl.render import Renderer2D, SDL_Color
@@ -58,6 +59,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     & GPUTwoPlayerDiscreteEnv
     & RenderableEnv
     & DataAugmentable
+    & Saveable
 ):
     """TicTacToe environment — CPU+GPU dual path.
 
@@ -77,6 +79,9 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
     # DataAugmentable: 8 symmetries (4 rotations × 2 reflections)
     comptime NUM_SYMMETRIES: Int = 8
+
+    # Saveable
+    comptime SAVE_SIZE: Int = 13  # 12 state + 1 done flag
 
     # CPU state
     var state: InlineArray[Scalar[Self.dtype], 12]
@@ -176,6 +181,26 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
         if state[2] == mark and state[4] == mark and state[6] == mark:
             return True
         return False
+
+    # ========================================================================
+    # Saveable
+    # ========================================================================
+
+    def save_env_state(
+        self,
+        dst: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
+    ):
+        for i in range(12):
+            dst[i] = Scalar[nn_dtype](Float64(self.state[i]))
+        dst[12] = Scalar[nn_dtype](1.0) if self.done else Scalar[nn_dtype](0.0)
+
+    def load_env_state(
+        mut self,
+        data: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
+    ):
+        for i in range(12):
+            self.state[i] = Scalar[Self.dtype](Float64(data[i]))
+        self.done = Float64(data[12]) > 0.5
 
     # ========================================================================
     # Env trait methods
