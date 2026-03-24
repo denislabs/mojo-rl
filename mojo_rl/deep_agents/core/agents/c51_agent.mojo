@@ -750,6 +750,8 @@ struct GenericC51Agent[
                 var log_sm = Float64(raw_arr[pred_base + i]) - Float64(
                     log_sum_exp
                 )
+                if log_sm < -20.0:
+                    log_sm = -20.0
                 sample_loss -= Float64(projected[i]) * log_sm
             total_loss += sample_loss
 

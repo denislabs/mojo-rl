@@ -987,6 +987,8 @@ struct GenericRainbowAgent[
                 var log_sm = Float64(combined[pred_base + i]) - Float64(
                     log_sum_exp
                 )
+                if log_sm < -20.0:
+                    log_sm = -20.0
                 sample_loss -= Float64(projected[i]) * log_sm
             total_loss += sample_loss
             td_errors[b] = Scalar[dtype](sample_loss)
@@ -1757,15 +1759,21 @@ struct GenericRainbowAgent[
                 p_sum_exp += exp(
                     rebind[Scalar[dtype]](online_comb[b, p_base + i]) - p_max
                 )
+            # Guard against underflow: p_sum_exp should be >= 1 (exp(0) from max element)
+            if p_sum_exp < Scalar[dtype](1e-8):
+                p_sum_exp = Scalar[dtype](1e-8)
             var log_sum_exp = p_max + log(p_sum_exp)
 
-            # CE loss for priority
+            # CE loss for priority (clamp log-softmax to avoid -Inf)
             var sample_loss = Scalar[dtype](0)
             for i in range(ATOMS):
                 var log_sm = (
                     rebind[Scalar[dtype]](online_comb[b, p_base + i])
                     - log_sum_exp
                 )
+                # Clamp to prevent -Inf * 0 = NaN
+                if log_sm < Scalar[dtype](-20.0):
+                    log_sm = Scalar[dtype](-20.0)
                 sample_loss = sample_loss - projected[i] * log_sm
             td_err[b] = sample_loss
 
