@@ -1841,6 +1841,8 @@ struct GenericRainbowAgent[
             g,
             gpu_state.train_ws,
         )
+        # Clip gradients to prevent NaN from NoisyLinear gradient explosion
+        gpu_state.online.clip_grads(ctx, Scalar[dtype](10.0))
         gpu_state.online.optimizer_step(ctx)
 
         self.train_step_count += 1

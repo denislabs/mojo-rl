@@ -178,6 +178,42 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         """
         self.lr_scale = scale
 
+    def clip_grads(self, ctx: DeviceContext, max_val: Scalar[dtype]) raises:
+        """Clamp all gradient values to [-max_val, max_val] on GPU.
+
+        Simple per-element clipping to prevent gradient explosion.
+        Call between backward() and optimizer_step().
+
+        Args:
+            ctx: GPU device context.
+            max_val: Maximum absolute gradient value.
+        """
+        var g = self.grads_view()
+
+        @always_inline
+        def _clip_kernel(
+            grads: LayoutTensor[
+                dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            ],
+            clip_val: Scalar[dtype],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= Self.PARAM_SIZE:
+                return
+            var v = rebind[Scalar[dtype]](grads[idx])
+            if v > clip_val:
+                grads[idx] = clip_val
+            elif v < -clip_val:
+                grads[idx] = -clip_val
+            # Also clamp NaN to 0
+            elif v != v:
+                grads[idx] = Scalar[dtype](0.0)
+
+        comptime BLOCKS = (Self.PARAM_SIZE + TPB - 1) // TPB
+        ctx.enqueue_function[_clip_kernel, _clip_kernel](
+            g, max_val, grid_dim=(BLOCKS,), block_dim=(TPB,),
+        )
+
     def optimizer_step(mut self, ctx: DeviceContext) raises:
         """One GPU optimizer step + increment step_num.
 
