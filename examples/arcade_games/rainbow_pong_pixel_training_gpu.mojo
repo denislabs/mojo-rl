@@ -77,7 +77,7 @@ def main() raises:
                 N_STEP,
                 BUFFER_CAPACITY,
                 BATCH_SIZE,
-                1e-3,  # lr (higher for faster CNN feature learning)
+                6.25e-5,  # lr (CleanRL default)
             ],
             N_ENVS,
             RemoteLogger,
@@ -137,7 +137,7 @@ def main() raises:
         logger.set_config("agent", "Rainbow DQN CNN")
         logger.set_config("env", "Pong (Pixel)")
         logger.set_config("obs", "4x84x84")
-        logger.set_config("lr", "1e-3")
+        logger.set_config("lr", "6.25e-5")
         logger.set_config("gamma", "0.99")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("n_envs", String(N_ENVS))

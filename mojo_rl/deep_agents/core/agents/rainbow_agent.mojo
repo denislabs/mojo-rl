@@ -231,9 +231,9 @@ struct RainbowCNNConfig[
             NoisyLinear[512, Self.ACT * Self.NUM_ATOMS],
         ],
     ]
-    # CleanRL uses eps=1.5e-4 for Rainbow Atari (prevents gradient explosion
-    # with NoisyLinear + CNN in float32)
-    comptime QOpt = Adam[Self.lr, EPS=1.5e-4]
+    # CleanRL uses eps=1.5e-4 but with gradient clipping we can use standard eps.
+    # Gradient clipping (clip_grads=10.0 in do_gpu_train_step) handles explosion.
+    comptime QOpt = Adam[Self.lr, EPS=1e-8]
 
 
 # =============================================================================
