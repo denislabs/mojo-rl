@@ -507,13 +507,35 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
 
-        # Cache: first in_dim per sample = input (for matmul backward)
+        # Allocate separate matmul cache (stride mismatch: MM.CACHE_SIZE < Self.CACHE_SIZE)
+        comptime MM_CS = MM.CACHE_SIZE
+        var mm_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * MM_CS if MM_CS > 0 else 1)
         var mm_cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, MM.CACHE_SIZE), MutAnyOrigin
-        ](cache.ptr)
+            dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
+        ](mm_cache_buf.unsafe_ptr())
 
         # Step 1: MatMul → output (pre-bias)
         MM.eval_gpu[BATCH](ctx, output, input, mm_params, mm_cache, workspace.unsafe_ptr())
+
+        # Copy cached input from mm_cache into our cache (needed for backward)
+        comptime COPY_SIZE = BATCH * MM_CS
+        @always_inline
+        def copy_input_cache(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // MM_CS
+            var i = tid % MM_CS
+            dst.ptr[b * Self.CACHE_SIZE + i] = src.ptr[tid]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        ctx.enqueue_function[copy_input_cache, copy_input_cache](
+            cache, mm_cache,
+            grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
+        )
 
         # Step 2: BiasAdd in-place via simple kernel
         var bias = LayoutTensor[
@@ -578,10 +600,12 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
 
-        # Dummy cache for matmul (not needed for inference)
+        # Dummy cache for matmul (not needed for inference, separate buffer)
+        comptime MM_CS = MM.CACHE_SIZE
+        var dummy_buf = ctx.enqueue_create_buffer[dtype](BATCH * MM_CS if MM_CS > 0 else 1)
         var dummy_mm_cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, MM.CACHE_SIZE), MutAnyOrigin
-        ](workspace.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
+        ](dummy_buf.unsafe_ptr())
 
         MM.eval_gpu[BATCH](ctx, output, input, mm_params, dummy_mm_cache, workspace.unsafe_ptr())
 
@@ -728,12 +752,35 @@ struct LinearBatchNormReLU[
         )
 
         # Step 3: MatMul backward (dW, dx)
+        # Extract cached input from our cache into a separate buffer (stride mismatch)
+        comptime MM_CS = MM.CACHE_SIZE
+        var mm_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * MM_CS if MM_CS > 0 else 1)
+        var mm_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
+        ](mm_cache_buf.unsafe_ptr())
+
+        comptime COPY_SIZE = BATCH * MM_CS
+        @always_inline
+        def copy_input_bwd(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // MM_CS
+            var i = tid % MM_CS
+            dst.ptr[tid] = src.ptr[b * Self.CACHE_SIZE + i]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        ctx.enqueue_function[copy_input_bwd, copy_input_bwd](
+            mm_cache, cache,
+            grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
+        )
+
         var mm_params = LayoutTensor[
             dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
-        var mm_cache = LayoutTensor[
-            dtype, Layout.row_major(BATCH, MM.CACHE_SIZE), MutAnyOrigin
-        ](cache.ptr)
         var mm_grads = LayoutTensor[
             dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
         ](grads.ptr)
