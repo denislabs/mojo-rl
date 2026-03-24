@@ -60,10 +60,10 @@ def main() raises:
     _ = agent.train_selfplay_gpu[C4, RandomOpponent](
         ctx,
         num_iters=200,
-        steps_per_iter=4000,  # More self-play data (C4 games are longer)
-        train_epochs=2,  # Minimal overfitting (alpha-zero-general uses 10 with 25 sims)
-        warmup_iters=2,  # More warmup for diverse initial data
-        arena_threshold=0.55,  # Slightly stricter to avoid accepting noise
+        steps_per_iter=4000,   # ~100+ complete games per iter (C4 games are longer)
+        train_epochs=10,       # Matches alpha-zero-general
+        warmup_iters=1,        # Like alpha-zero-general
+        arena_threshold=0.6,   # Matches alpha-zero-general (60% win rate to accept)
         do_eval=True,
         do_arena=True,
         checkpoint_every=10,

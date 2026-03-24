@@ -193,7 +193,6 @@ struct AlphaZeroTicTacToeCNNConfig[
 struct AlphaZeroConnectFourConfig[
     HIDDEN: Int = 256,
     LR: Float64 = 0.001,
-    WD: Float64 = 1e-4,
     BS: Int = 64,
     CAP: Int = 100000,
     SIMS: Int = 25,
@@ -214,7 +213,7 @@ struct AlphaZeroConnectFourConfig[
             Linear[Self.HIDDEN, 1],
         ],
     ]
-    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
+    comptime OptType = Adam[LR=Self.LR]
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
@@ -236,7 +235,6 @@ struct AlphaZeroConnectFourConfig[
 struct AlphaZeroConnectFourCNNConfig[
     FILTERS: Int = 128,
     LR: Float64 = 0.001,
-    WD: Float64 = 1e-4,
     BS: Int = 64,
     CAP: Int = 200000,
     SIMS: Int = 25,
@@ -287,7 +285,7 @@ struct AlphaZeroConnectFourCNNConfig[
             Linear[Self.FILTERS, 1],
         ],
     ]
-    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
+    comptime OptType = Adam[LR=Self.LR]  # No weight decay (matches alpha-zero-general)
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
@@ -326,7 +324,6 @@ comptime ResBlock3x3[F: Int] = Sequential[
 struct AlphaZeroConnectFourResNetConfig[
     FILTERS: Int = 128,
     LR: Float64 = 0.001,
-    WD: Float64 = 1e-4,
     BS: Int = 64,
     CAP: Int = 200000,
     SIMS: Int = 25,
@@ -360,7 +357,7 @@ struct AlphaZeroConnectFourResNetConfig[
             Linear[Self.FILTERS, 1],
         ],
     ]
-    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
+    comptime OptType = Adam[LR=Self.LR]
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
