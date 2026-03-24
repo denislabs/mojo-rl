@@ -21,7 +21,7 @@ Training: n-step returns → PER buffer → IS-weighted CE loss → Bellman proj
 Reference: Hessel et al., "Rainbow: Combining Improvements in Deep RL" (2018)
 """
 
-from std.math import exp, log, floor, ceil
+from std.math import exp, log, floor, ceil, isnan
 from std.random import random_float64
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -1853,6 +1853,9 @@ struct GenericRainbowAgent[
             and self.train_step_count % self.diag_every == 0
         ):
             try:
+                # Ensure all GPU work is complete before reading
+                ctx.synchronize()
+
                 # Copy diagnostic data to host
                 ctx.enqueue_copy(gpu_state.diag_comb_host, gpu_state.q_combined)
                 ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
@@ -1865,6 +1868,36 @@ struct GenericRainbowAgent[
                 ctx.synchronize()
 
                 var step = self.train_step_count
+
+                # Debug: check for NaN in GPU buffers
+                var _nan_comb = 0
+                var _nan_td = 0
+                var _nan_w = 0
+                for _i in range(BATCH * COMB):
+                    if isnan(Float64(gpu_state.diag_comb_host[_i])):
+                        _nan_comb += 1
+                for _i in range(BATCH):
+                    if isnan(Float64(gpu_state.diag_td_host[_i])):
+                        _nan_td += 1
+                    if isnan(Float64(gpu_state.diag_weights_host[_i])):
+                        _nan_w += 1
+                if _nan_comb > 0 or _nan_td > 0 or _nan_w > 0:
+                    print(
+                        "[diag step",
+                        step,
+                        "] NaN count: q_combined=",
+                        _nan_comb,
+                        "/",
+                        BATCH * COMB,
+                        " td_errors=",
+                        _nan_td,
+                        "/",
+                        BATCH,
+                        " weights=",
+                        _nan_w,
+                        "/",
+                        BATCH,
+                    )
 
                 # Q-value stats: compute expected Q from combined logits
                 # Use Float64 softmax to avoid float32 overflow
