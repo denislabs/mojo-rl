@@ -1858,47 +1858,57 @@ struct GenericRainbowAgent[
 
                 var step = self.train_step_count
 
-                # Compute expected Q from combined logits on host
-                var comb_host_arr = InlineArray[Scalar[dtype], BATCH * COMB](
-                    uninitialized=True
-                )
-                for i in range(BATCH * COMB):
-                    comb_host_arr[i] = gpu_state.diag_comb_host[i]
-                var bins_host = InlineArray[Scalar[dtype], ATOMS](
-                    uninitialized=True
-                )
-                for i in range(ATOMS):
-                    bins_host[i] = Scalar[dtype](
-                        Self.Config.v_min
-                        + Float64(i)
-                        * (Self.Config.v_max - Self.Config.v_min)
-                        / Float64(ATOMS - 1)
-                    )
-                var eq_host = InlineArray[Scalar[dtype], BATCH * Self.ACTIONS](
-                    uninitialized=True
-                )
-                _rainbow_expected_q[BATCH, Self.ACTIONS, ATOMS, COMB](
-                    comb_host_arr, bins_host, eq_host
-                )
-
-                # Q-value stats (expected Q from distributional)
-                var q_min = Float64(eq_host[0])
-                var q_max = Float64(eq_host[0])
+                # Q-value stats: compute expected Q from combined logits
+                # Use Float64 softmax to avoid float32 overflow
+                var v_min_f = Self.Config.v_min
+                var v_max_f = Self.Config.v_max
+                var q_min: Float64 = 1e10
+                var q_max: Float64 = -1e10
                 var q_sum: Float64 = 0.0
-                for i in range(BATCH * Self.ACTIONS):
-                    var v = Float64(eq_host[i])
-                    q_sum += v
-                    if v < q_min:
-                        q_min = v
-                    if v > q_max:
-                        q_max = v
-                self.logger[].log_scalar(
-                    "q_mean",
-                    q_sum / Float64(BATCH * Self.ACTIONS),
-                    step,
-                )
-                self.logger[].log_scalar("q_min", q_min, step)
-                self.logger[].log_scalar("q_max", q_max, step)
+                var q_count = 0
+                for b in range(BATCH):
+                    for a in range(Self.ACTIONS):
+                        var base = b * COMB + a * ATOMS
+                        var max_val: Float64 = Float64(
+                            gpu_state.diag_comb_host[base]
+                        )
+                        for i in range(1, ATOMS):
+                            var v = Float64(
+                                gpu_state.diag_comb_host[base + i]
+                            )
+                            if v > max_val:
+                                max_val = v
+                        var sum_exp: Float64 = 0.0
+                        for i in range(ATOMS):
+                            sum_exp += exp(
+                                Float64(gpu_state.diag_comb_host[base + i])
+                                - max_val
+                            )
+                        if sum_exp > 0:
+                            var expected: Float64 = 0.0
+                            for i in range(ATOMS):
+                                var prob = exp(
+                                    Float64(
+                                        gpu_state.diag_comb_host[base + i]
+                                    )
+                                    - max_val
+                                ) / sum_exp
+                                var bin_val = v_min_f + Float64(i) * (
+                                    v_max_f - v_min_f
+                                ) / Float64(ATOMS - 1)
+                                expected += prob * bin_val
+                            q_sum += expected
+                            q_count += 1
+                            if expected < q_min:
+                                q_min = expected
+                            if expected > q_max:
+                                q_max = expected
+                if q_count > 0:
+                    self.logger[].log_scalar(
+                        "q_mean", q_sum / Float64(q_count), step,
+                    )
+                    self.logger[].log_scalar("q_min", q_min, step)
+                    self.logger[].log_scalar("q_max", q_max, step)
 
                 # Done fraction and reward stats
                 var done_count: Float64 = 0.0
@@ -1974,35 +1984,43 @@ struct GenericRainbowAgent[
 
                 # Distribution entropy
                 var entropy_sum: Float64 = 0.0
+                var entropy_count = 0
                 for b in range(BATCH):
                     var action = Int(Float64(gpu_state.diag_act_host[b]))
                     var pred_base = b * COMB + action * ATOMS
-                    var pred_max2 = Float64(gpu_state.diag_comb_host[pred_base])
+                    var pred_max2 = Float64(
+                        gpu_state.diag_comb_host[pred_base]
+                    )
                     for i in range(1, ATOMS):
-                        var v = Float64(gpu_state.diag_comb_host[pred_base + i])
+                        var v = Float64(
+                            gpu_state.diag_comb_host[pred_base + i]
+                        )
                         if v > pred_max2:
                             pred_max2 = v
                     var se2: Float64 = 0.0
                     for i in range(ATOMS):
                         se2 += exp(
-                            Float64(gpu_state.diag_comb_host[pred_base + i])
+                            Float64(
+                                gpu_state.diag_comb_host[pred_base + i]
+                            )
                             - pred_max2
                         )
-                    var h: Float64 = 0.0
-                    for i in range(ATOMS):
-                        var p = (
-                            exp(
-                                Float64(gpu_state.diag_comb_host[pred_base + i])
+                    if se2 > 0:
+                        var h: Float64 = 0.0
+                        for i in range(ATOMS):
+                            var p = exp(
+                                Float64(
+                                    gpu_state.diag_comb_host[pred_base + i]
+                                )
                                 - pred_max2
-                            )
-                            / se2
-                        )
-                        if p > 1e-8:
-                            h -= p * log(p)
-                    entropy_sum += h
+                            ) / se2
+                            if p > 1e-8:
+                                h -= p * log(p)
+                        entropy_sum += h
+                        entropy_count += 1
                 self.logger[].log_scalar(
                     "dist_entropy_mean",
-                    entropy_sum / Float64(BATCH),
+                    entropy_sum / Float64(max(1, entropy_count)),
                     step,
                 )
             except:

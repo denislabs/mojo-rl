@@ -387,28 +387,45 @@ struct HostPrioritizedReplayBuffer[
         Observations are dequantized from STORE_DTYPE back to float32 during gather.
         """
         # --- CPU: stratified priority sampling ---
+        from std.math import isnan
+
         var total_priority = self._total_priority()
-        var segment_size = total_priority / Scalar[dtype](BATCH)
+        # Fallback to uniform sampling if tree is corrupted
+        if isnan(total_priority) or total_priority <= 0:
+            for b in range(BATCH):
+                var idx = Int(random_float64() * Float64(self.size))
+                if idx >= self.size:
+                    idx = self.size - 1
+                self.host_indices[b] = Int32(idx)
+                self.host_weights[b] = Scalar[dtype](1.0)
+        else:
+            var segment_size = total_priority / Scalar[dtype](BATCH)
+            var min_prob = self._min_priority() / total_priority
+            var max_weight = (
+                Scalar[dtype](self.size) * min_prob
+            ) ** (-self.beta)
+            if isnan(max_weight) or max_weight <= 0:
+                max_weight = Scalar[dtype](1.0)
 
-        # Min probability for weight normalization
-        var min_prob = self._min_priority() / total_priority
-        var max_weight = (Scalar[dtype](self.size) * min_prob) ** (-self.beta)
+            for b in range(BATCH):
+                var low = segment_size * Scalar[dtype](b)
+                var high = segment_size * Scalar[dtype](b + 1)
+                var target = low + Scalar[dtype](
+                    random_float64()
+                ) * (high - low)
 
-        for b in range(BATCH):
-            var low = segment_size * Scalar[dtype](b)
-            var high = segment_size * Scalar[dtype](b + 1)
-            var target = low + Scalar[dtype](random_float64()) * (high - low)
+                var idx = self._sample_tree(target)
+                self.host_indices[b] = Int32(idx)
 
-            var idx = self._sample_tree(target)
-            self.host_indices[b] = Int32(idx)
-
-            # IS weight
-            var priority = self.tree[self._leaf_to_tree_idx(idx)]
-            var prob = priority / total_priority
-            var weight = (
-                (Scalar[dtype](self.size) * prob) ** (-self.beta)
-            ) / max_weight
-            self.host_weights[b] = weight
+                # IS weight
+                var priority = self.tree[self._leaf_to_tree_idx(idx)]
+                var prob = priority / total_priority
+                var weight = (
+                    (Scalar[dtype](self.size) * prob) ** (-self.beta)
+                ) / max_weight
+                if isnan(weight):
+                    weight = Scalar[dtype](1.0)
+                self.host_weights[b] = weight
 
         # --- CPU: gather + dequantize from host ring buffer into staging ---
         for b in range(BATCH):
@@ -451,14 +468,19 @@ struct HostPrioritizedReplayBuffer[
         BATCH: Int
     ](mut self, ctx: DeviceContext, td_errors_buf: DeviceBuffer[dtype]) raises:
         """Update priorities from GPU TD errors."""
+        from std.math import isnan, isinf
+
         # GPU→CPU copy
         ctx.enqueue_copy(self.host_td_errors, td_errors_buf)
         ctx.synchronize()
 
-        # CPU: update priorities
+        # CPU: update priorities (skip NaN/Inf to protect tree integrity)
         for b in range(BATCH):
             var idx = Int(self.host_indices[b])
             var td_error = self.host_td_errors[b]
+            # Guard: NaN/Inf td_error would poison the sum-tree
+            if isnan(td_error) or isinf(td_error):
+                continue
             var abs_error = td_error if td_error > 0 else -td_error
             var raw_priority = abs_error + self.epsilon
             var priority = raw_priority**self.alpha

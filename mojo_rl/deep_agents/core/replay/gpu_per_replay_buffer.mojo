@@ -548,10 +548,14 @@ struct GPUPrioritizedReplayBuffer[
         ctx.enqueue_copy(self.host_td_errors, td_errors_buf)
         ctx.synchronize()
 
-        # CPU: update priorities
+        # CPU: update priorities (skip NaN/Inf to protect tree integrity)
+        from std.math import isnan, isinf
+
         for b in range(BATCH):
             var idx = Int(self.host_indices[b])
             var td_error = self.host_td_errors[b]
+            if isnan(td_error) or isinf(td_error):
+                continue
             var abs_error = td_error if td_error > 0 else -td_error
             var raw_priority = abs_error + self.epsilon
             var priority = raw_priority**self.alpha
