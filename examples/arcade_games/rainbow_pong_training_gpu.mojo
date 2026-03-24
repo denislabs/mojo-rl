@@ -154,6 +154,7 @@ def main() raises:
                 print_every=100_000,
                 environment_name="Pong",
                 logger=UnsafePointer(to=logger),
+                diag_every=1000,
             )
 
             var end_time = perf_counter_ns()
