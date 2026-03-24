@@ -43,9 +43,9 @@ def main() raises:
 
     # Choose architecture:
     # MLP (fastest, decent for TTT):
-    comptime Config = AlphaZeroTicTacToeConfig[]
+    # comptime Config = AlphaZeroTicTacToeConfig[]
     # CNN (heavier but better features):
-    # comptime Config = AlphaZeroTicTacToeCNNConfig[]
+    comptime Config = AlphaZeroTicTacToeCNNConfig[]
     # ResNet (strongest, 50 MCTS sims):
     # comptime Config = AlphaZeroTicTacToeResNetConfig[]
 

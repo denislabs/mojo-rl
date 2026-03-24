@@ -4,7 +4,7 @@ from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
-from std.random import seed, random_ui64
+from std.random.philox import Random as PhiloxRandom
 from ..constants import TPB
 
 
@@ -14,12 +14,13 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     During training: y = x * mask / (1 - p) where mask ~ Bernoulli(1-p)
     During inference: y = x (identity)
 
-    The training flag is compile-time for zero overhead when disabled.
+    Training mode = forward WITH cache (drops + caches mask for backward).
+    Inference mode = forward WITHOUT cache (identity passthrough).
 
     Parameters:
         dim: Feature dimension.
         p: Dropout probability (fraction to drop).
-        SEED: Seed for random number generation.
+        SEED: Base seed for PhiloxRandom.
         training: Whether in training mode (compile-time flag).
 
     PARAM_SIZE = 0 (no learnable parameters)
@@ -44,16 +45,6 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         pass
 
     @staticmethod
-    def _random_from_seed(seed: UInt64) -> Float64:
-        """Generate random float in [0, 1) using xorshift64."""
-        var x = seed
-        x ^= x << 13
-        x ^= x >> 7
-        x ^= x << 17
-        # Convert to [0, 1)
-        return Float64(x & 0xFFFFFFFFFFFF) / Float64(0xFFFFFFFFFFFF)
-
-    @staticmethod
     def forward[
         BATCH: Int
     ](
@@ -70,27 +61,25 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        """Forward pass with caching."""
+        """Training forward: apply dropout mask, cache for backward."""
 
         comptime if Self.training:
-            # Training mode: apply dropout mask
             var scale = Scalar[dtype](1.0 / (1.0 - Self.p))
             var zero = Scalar[dtype](0.0)
+            var threshold = Scalar[dtype](Self.p)
 
             for batch in range(BATCH):
                 for i in range(Self.dim):
-                    # Generate deterministic random from element index
-                    var elem_seed = Self.SEED ^ UInt64(
-                        (batch * Self.dim + i) * 2654435761
+                    var rng = PhiloxRandom(
+                        seed=Self.SEED,
+                        offset=UInt64(batch * Self.dim + i),
                     )
-                    var rand = Self._random_from_seed(elem_seed)
-                    var keep = rand >= Self.p
-                    var mask: Scalar[dtype] = scale if keep else zero
-                    cache[batch, i] = mask  # Cache mask for backward
+                    var rand = rng.step_uniform()[0]
+                    var mask: Scalar[dtype] = scale if rand >= threshold else zero
+                    cache[batch, i] = mask
                     var in_val = rebind[Scalar[dtype]](input[batch, i])
                     output[batch, i] = in_val * mask
         else:
-            # Inference mode: identity pass-through
             for batch in range(BATCH):
                 for i in range(Self.dim):
                     output[batch, i] = rebind[Scalar[dtype]](input[batch, i])
@@ -109,29 +98,10 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Forward pass with caching."""
-
-        comptime if Self.training:
-            # Training mode: apply dropout mask
-            var scale = Scalar[dtype](1.0 / (1.0 - Self.p))
-            var zero = Scalar[dtype](0.0)
-
-            for batch in range(BATCH):
-                for i in range(Self.dim):
-                    # Generate deterministic random from element index
-                    var elem_seed = Self.SEED ^ UInt64(
-                        (batch * Self.dim + i) * 2654435761
-                    )
-                    var rand = Self._random_from_seed(elem_seed)
-                    var keep = rand >= Self.p
-                    var mask: Scalar[dtype] = scale if keep else zero
-                    var in_val = rebind[Scalar[dtype]](input[batch, i])
-                    output[batch, i] = in_val * mask
-        else:
-            # Inference mode: identity pass-through
-            for batch in range(BATCH):
-                for i in range(Self.dim):
-                    output[batch, i] = rebind[Scalar[dtype]](input[batch, i])
+        """Inference forward: identity passthrough (no dropout)."""
+        for batch in range(BATCH):
+            for i in range(Self.dim):
+                output[batch, i] = rebind[Scalar[dtype]](input[batch, i])
 
     @staticmethod
     def backward[
@@ -156,14 +126,12 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         """Backward pass: dx = dy * mask."""
 
         comptime if Self.training:
-            # Apply same mask as forward
             for batch in range(BATCH):
                 for i in range(Self.dim):
                     var mask = rebind[Scalar[dtype]](cache[batch, i])
                     var dy = rebind[Scalar[dtype]](grad_output[batch, i])
                     grad_input[batch, i] = dy * mask
         else:
-            # Inference mode: identity gradient
             for batch in range(BATCH):
                 for i in range(Self.dim):
                     grad_input[batch, i] = rebind[Scalar[dtype]](
@@ -172,10 +140,6 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
 
     # =========================================================================
     # GPU Kernel Implementations
-    # =========================================================================
-    #
-    # GPU dropout uses thread index as part of random seed to generate
-    # independent random numbers per element.
     # =========================================================================
 
     @always_inline
@@ -192,11 +156,10 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
-        seed_base: UInt64,
     ):
-        """Forward pass kernel with caching (training mode).
+        """Training forward kernel: dropout with PhiloxRandom.
 
-        Grid: ((batch_size * dim + TPB - 1) // TPB,)
+        Grid: ((BATCH * dim + TPB - 1) // TPB,)
         Block: (TPB,)
         """
 
@@ -208,23 +171,19 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             var row = idx // Self.dim
             var col = idx % Self.dim
 
-            # Generate random number using xorshift with unique seed per element
-            var x = seed_base ^ UInt64(idx * 2654435761)
-            x ^= x << 13
-            x ^= x >> 7
-            x ^= x << 17
-            var rand = Float64(x & 0xFFFFFFFFFFFF) / Float64(0xFFFFFFFFFFFF)
+            # PhiloxRandom per element — no Float64, Metal-safe
+            var rng = PhiloxRandom(seed=Self.SEED, offset=UInt64(idx))
+            var rand = rng.step_uniform()[0]  # Scalar[dtype]
 
-            var keep = rand >= Self.p
+            var threshold = Scalar[dtype](Self.p)
             var scale = Scalar[dtype](1.0 / (1.0 - Self.p))
             var zero = Scalar[dtype](0.0)
-            var mask: Scalar[dtype] = scale if keep else zero
+            var mask: Scalar[dtype] = scale if rand >= threshold else zero
 
             cache[row, col] = mask
             var in_val = rebind[Scalar[dtype]](input[row, col])
             output[row, col] = in_val * mask
         else:
-            # Inference mode
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx >= BATCH * Self.dim:
                 return
@@ -244,9 +203,9 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        """Forward pass kernel without caching (identity).
+        """Inference forward kernel: identity passthrough.
 
-        Grid: ((batch_size * dim + TPB - 1) // TPB,)
+        Grid: ((BATCH * dim + TPB - 1) // TPB,)
         Block: (TPB,)
         """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -272,9 +231,9 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ],
     ):
-        """Backward pass kernel: dx = dy * mask.
+        """Backward kernel: dx = dy * mask.
 
-        Grid: ((batch_size * dim + TPB - 1) // TPB,)
+        Grid: ((BATCH * dim + TPB - 1) // TPB,)
         Block: (TPB,)
         """
 
@@ -321,7 +280,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        """Launch forward pass on GPU with caching."""
+        """GPU training forward with caching."""
         var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
@@ -330,7 +289,6 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         var grid_x = (total + TPB - 1) // TPB
 
         comptime if Self.training:
-            # CACHE_SIZE == Self.dim when training=True, so cache has the right layout
             var cache_view = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ](cache.ptr)
@@ -346,15 +304,13 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                 cache: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
                 ],
-                seed: UInt64,
             ):
-                Self.forward_kernel_impl[BATCH](output, input, cache, seed)
+                Self.forward_kernel_impl[BATCH](output, input, cache)
 
             ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
                 output,
                 input_immut,
                 cache_view,
-                Self.SEED,
                 grid_dim=(grid_x,),
                 block_dim=(TPB,),
             )
@@ -396,7 +352,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        """Launch forward pass on GPU without caching (identity)."""
+        """GPU inference forward: identity passthrough (no dropout)."""
         var input_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
@@ -466,7 +422,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        """Launch backward pass on GPU."""
+        """GPU backward pass."""
         var grad_output_immut = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](grad_output.ptr)
@@ -475,7 +431,6 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         var grid_x = (total + TPB - 1) // TPB
 
         comptime if Self.training:
-            # CACHE_SIZE == Self.dim when training=True
             var cache_immut = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ](cache.ptr)

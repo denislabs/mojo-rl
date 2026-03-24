@@ -18,8 +18,12 @@ from mojo_rl.nn.model import (
     Parallel,
     Conv2DReLU,
     Conv2DLayer,
+    BatchNorm2D,
+    Dropout,
     FlattenLayer,
     ReLU,
+    Tanh,
+    Softmax,
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 from mojo_rl.nn.autodiff.combinators import Residual
@@ -138,28 +142,40 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime obs_dim: Int = 27
     comptime action_dim: Int = 9
 
-    # Conv2DReLU[ic, oc, k, s, p, h, w]
-    # 3 channels, 3×3 board with same padding (p=1)
-    # After 3× same-padding convs: still 3×3
-    # After valid conv (p=0): (3+0-3)/1+1 = 1×1
+    # Conv2D → BatchNorm → ReLU (matching alpha-zero-general)
     comptime PredModel = Sequential[
-        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],  # 3ch→F, 3×3→3×3
-        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],  # F→F, 3×3→3×3
-        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],  # F→F, 3×3→3×3
-        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # F→F, 3×3→1×1
-        FlattenLayer[Self.FILTERS],  # F×1×1 → F
-        LinearReLU[Self.FILTERS, Self.FILTERS * 2],  # F → 2F
-        LinearReLU[Self.FILTERS * 2, Self.FILTERS],  # 2F → F
+        Conv2DLayer[3, Self.FILTERS, 3, 1, 1, 3, 3],       # 3ch→F, 3×3→3×3
+        BatchNorm2D[Self.FILTERS, 3, 3],
+        ReLU[Self.FILTERS * 3 * 3],
+        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
+        BatchNorm2D[Self.FILTERS, 3, 3],
+        ReLU[Self.FILTERS * 3 * 3],
+        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
+        BatchNorm2D[Self.FILTERS, 3, 3],
+        ReLU[Self.FILTERS * 3 * 3],
+        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # 3×3→1×1
+        BatchNorm2D[Self.FILTERS, 1, 1],
+        ReLU[Self.FILTERS],
+        FlattenLayer[Self.FILTERS],
+        # FC: Linear → BN1D → ReLU → Dropout (matching alpha-zero-general)
+        Linear[Self.FILTERS, Self.FILTERS * 2],
+        BatchNorm2D[Self.FILTERS * 2, 1, 1],  # BN1D
+        ReLU[Self.FILTERS * 2],
+        Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        Linear[Self.FILTERS * 2, Self.FILTERS],
+        BatchNorm2D[Self.FILTERS, 1, 1],  # BN1D
+        ReLU[Self.FILTERS],
+        Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
-            Linear[Self.FILTERS, 9],  # Policy head
-            Linear[Self.FILTERS, 1],  # Value head
+            Linear[Self.FILTERS, 9],   # Policy (softmax applied in loss kernel)
+            Linear[Self.FILTERS, 1],   # Value (tanh applied in loss kernel)
         ],
     ]
     comptime OptType = Adam[LR=Self.LR]
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
-    comptime history_window: Int = 20  # Like alpha-zero-general
+    comptime history_window: Int = 20
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 15
@@ -242,21 +258,33 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime obs_dim: Int = 126
     comptime action_dim: Int = 7
 
-    # Conv2DReLU[ic, oc, k, s, p, h, w]
-    # Input: 3 channels, 6 rows, 7 cols (column-major in obs, but Conv2D is row-major)
-    # Note: obs layout is 3 planes of 42 = 7cols × 6rows (col-major)
-    # Conv2D expects (channels, height, width) = (3, 6, 7)
+    # Conv2D → BatchNorm → ReLU (matching alpha-zero-general)
     comptime PredModel = Sequential[
-        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],       # 3ch→F, 6×7→6×7
-        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],  # F→F, 6×7→6×7
-        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],  # F→F, 6×7→6×7
-        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # F→F, 6×7→4×5
-        FlattenLayer[Self.FILTERS * 4 * 5],                       # F×4×5 → 20F
-        LinearReLU[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
-        LinearReLU[Self.FILTERS * 2, Self.FILTERS],
+        Conv2DLayer[3, Self.FILTERS, 3, 1, 1, 6, 7],       # 3ch→F, 6×7→6×7
+        BatchNorm2D[Self.FILTERS, 6, 7],
+        ReLU[Self.FILTERS * 6 * 7],
+        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
+        BatchNorm2D[Self.FILTERS, 6, 7],
+        ReLU[Self.FILTERS * 6 * 7],
+        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
+        BatchNorm2D[Self.FILTERS, 6, 7],
+        ReLU[Self.FILTERS * 6 * 7],
+        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # 6×7→4×5
+        BatchNorm2D[Self.FILTERS, 4, 5],
+        ReLU[Self.FILTERS * 4 * 5],
+        FlattenLayer[Self.FILTERS * 4 * 5],
+        # FC: Linear → BN1D → ReLU → Dropout (matching alpha-zero-general)
+        Linear[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
+        BatchNorm2D[Self.FILTERS * 2, 1, 1],
+        ReLU[Self.FILTERS * 2],
+        Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        Linear[Self.FILTERS * 2, Self.FILTERS],
+        BatchNorm2D[Self.FILTERS, 1, 1],
+        ReLU[Self.FILTERS],
+        Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
-            Linear[Self.FILTERS, 7],   # Policy head
-            Linear[Self.FILTERS, 1],   # Value head
+            Linear[Self.FILTERS, 7],
+            Linear[Self.FILTERS, 1],
         ],
     ]
     comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]

@@ -594,10 +594,17 @@ struct GenericAlphaZeroAgent[
         mut self,
         ctx: DeviceContext,
         mut gpu: Self.GPUStateType,
+        diag_pred_host: HostBuffer[dtype],
+        diag_go_host: HostBuffer[dtype],
+        diag_params_host: HostBuffer[dtype],
+        diag_grads_host: HostBuffer[dtype],
     ) raises:
         """One training step: sample batch from CPU replay, train on GPU.
 
         loss = CE(policy, mcts_π) + MSE(value, outcome)
+
+        Diagnostic host buffers are pre-allocated by the caller
+        and reused across steps to avoid memory bloat.
         """
         comptime BATCH = Self.Config.batch_size
         comptime OBS = Self.Config.obs_dim
@@ -698,20 +705,19 @@ struct GenericAlphaZeroAgent[
         ):
             try:
                 comptime _PS = Self.Config.PredModel.PARAM_SIZE
-                var pre_params = ctx.enqueue_create_host_buffer[dtype](_PS)
-                ctx.enqueue_copy(pre_params, gpu.prediction.params_buf)
+                # Reuse pre-allocated buffers (diag_params_host for pre, diag_grads_host for post)
+                ctx.enqueue_copy(diag_params_host, gpu.prediction.params_buf)
                 ctx.synchronize()
 
                 gpu.prediction.optimizer_step(ctx)
 
-                var post_params = ctx.enqueue_create_host_buffer[dtype](_PS)
-                ctx.enqueue_copy(post_params, gpu.prediction.params_buf)
+                ctx.enqueue_copy(diag_grads_host, gpu.prediction.params_buf)
                 ctx.synchronize()
 
                 var delta_norm: Float64 = 0.0
                 var delta_max: Float64 = 0.0
                 for i in range(_PS):
-                    var d = Float64(post_params[i]) - Float64(pre_params[i])
+                    var d = Float64(diag_grads_host[i]) - Float64(diag_params_host[i])
                     delta_norm += d * d
                     var ad = d if d > 0 else -d
                     if ad > delta_max:
@@ -736,10 +742,8 @@ struct GenericAlphaZeroAgent[
             or self.train_step_count % self.diag_every == 0
         ):
             try:
-                var pred_host = ctx.enqueue_create_host_buffer[dtype](
-                    BATCH * Self.PRED_OUT
-                )
-                ctx.enqueue_copy(pred_host, gpu.pred_out)
+                # Reuse pre-allocated diagnostic buffers
+                ctx.enqueue_copy(diag_pred_host, gpu.pred_out)
                 ctx.synchronize()
 
                 var step = self.train_step_count
@@ -754,20 +758,20 @@ struct GenericAlphaZeroAgent[
                     # Policy CE
                     var max_l: Float64 = -1e18
                     for a in range(ACT):
-                        var l = Float64(pred_host[pred_off + a])
+                        var l = Float64(diag_pred_host[pred_off + a])
                         if l > max_l:
                             max_l = l
                     var sum_e: Float64 = 0.0
                     for a in range(ACT):
                         sum_e += exp(
-                            Float64(pred_host[pred_off + a]) - max_l
+                            Float64(diag_pred_host[pred_off + a]) - max_l
                         )
 
                     var ce: Float64 = 0.0
                     var ent: Float64 = 0.0
                     for a in range(ACT):
                         var prob = exp(
-                            Float64(pred_host[pred_off + a]) - max_l
+                            Float64(diag_pred_host[pred_off + a]) - max_l
                         ) / sum_e
                         var target = Float64(gpu.policy_host[b * ACT + a])
                         if target > 1e-8 and prob > 1e-8:
@@ -778,7 +782,7 @@ struct GenericAlphaZeroAgent[
                     batch_entropy += ent
 
                     # Value MSE
-                    var raw_v = Float64(pred_host[pred_off + ACT])
+                    var raw_v = Float64(diag_pred_host[pred_off + ACT])
                     var tanh_v: Float64 = 0.0
                     if raw_v != raw_v:
                         pass  # NaN — leave tanh_v = 0
@@ -831,26 +835,18 @@ struct GenericAlphaZeroAgent[
                     "target_max_prob", target_max_sum / n, step
                 )
 
-                # Gradient diagnostics: are gradients flowing?
-                # Download grad_output (the CE+MSE gradient) and param grads
-                var go_host = ctx.enqueue_create_host_buffer[dtype](
-                    BATCH * Self.PRED_OUT
-                )
-                ctx.enqueue_copy(go_host, gpu.grad_out)
-
+                # Gradient diagnostics: reuse pre-allocated buffers
                 comptime PS = Self.Config.PredModel.PARAM_SIZE
-                var grads_host = ctx.enqueue_create_host_buffer[dtype](PS)
-                ctx.enqueue_copy(grads_host, gpu.prediction.grads_buf)
-
-                var params_host = ctx.enqueue_create_host_buffer[dtype](PS)
-                ctx.enqueue_copy(params_host, gpu.prediction.params_buf)
+                ctx.enqueue_copy(diag_go_host, gpu.grad_out)
+                ctx.enqueue_copy(diag_grads_host, gpu.prediction.grads_buf)
+                ctx.enqueue_copy(diag_params_host, gpu.prediction.params_buf)
                 ctx.synchronize()
 
                 # Grad output norm (from az_policy_value_grad_kernel)
                 var go_norm: Float64 = 0.0
                 var go_max: Float64 = 0.0
                 for i in range(BATCH * Self.PRED_OUT):
-                    var g = Float64(go_host[i])
+                    var g = Float64(diag_go_host[i])
                     if g == g:  # skip NaN
                         go_norm += g * g
                         var ag = g if g > 0 else -g
@@ -864,7 +860,7 @@ struct GenericAlphaZeroAgent[
                 var grad_norm: Float64 = 0.0
                 var grad_max: Float64 = 0.0
                 for i in range(PS):
-                    var g = Float64(grads_host[i])
+                    var g = Float64(diag_grads_host[i])
                     if g == g:
                         grad_norm += g * g
                         var ag = g if g > 0 else -g
@@ -877,7 +873,7 @@ struct GenericAlphaZeroAgent[
                 # Param norm (are params changing?)
                 var param_norm: Float64 = 0.0
                 for i in range(PS):
-                    var p = Float64(params_host[i])
+                    var p = Float64(diag_params_host[i])
                     if p == p:
                         param_norm += p * p
                 var pn = sqrt(param_norm) if param_norm == param_norm else 0.0
@@ -2072,6 +2068,19 @@ struct GenericAlphaZeroAgent[
         var rewards_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
         var dones_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
 
+        # Pre-allocated diagnostic host buffers (reused every train step)
+        comptime _DIAG_BATCH = Self.Config.batch_size
+        comptime _DIAG_POUT = Self.Config.PredModel.OUT_DIM
+        comptime _DIAG_PS = Self.Config.PredModel.PARAM_SIZE
+        var diag_pred_host = ctx.enqueue_create_host_buffer[dtype](
+            _DIAG_BATCH * _DIAG_POUT
+        )
+        var diag_go_host = ctx.enqueue_create_host_buffer[dtype](
+            _DIAG_BATCH * _DIAG_POUT
+        )
+        var diag_params_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
+        var diag_grads_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
+
         # Per-env episode data for computing game outcomes
         var env_rewards = List[List[Float64]](capacity=Self.n_envs)
         var env_obs_history = List[List[List[Scalar[dtype]]]](
@@ -2561,7 +2570,14 @@ struct GenericAlphaZeroAgent[
                 # Upload latest params to GPU for training
                 gpu.upload_from(self.state, ctx)
                 for _ in range(num_train_steps):
-                    self.train_step_gpu(ctx, gpu)
+                    self.train_step_gpu(
+                        ctx,
+                        gpu,
+                        diag_pred_host,
+                        diag_go_host,
+                        diag_params_host,
+                        diag_grads_host,
+                    )
                 # Download trained params back to CPU
                 gpu.download_to(self.state, ctx)
 

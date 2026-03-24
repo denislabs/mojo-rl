@@ -6,6 +6,7 @@ from .tanh import Tanh
 from .sigmoid import Sigmoid
 from .softmax import Softmax
 from .layer_norm import LayerNorm
+from .batch_norm_2d import BatchNorm2D
 from .dropout import Dropout
 from .stochastic_actor import (
     StochasticActor,

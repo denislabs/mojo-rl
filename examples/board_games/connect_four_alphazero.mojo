@@ -13,6 +13,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.alphazero import (
     GenericAlphaZeroAgent,
+    AlphaZeroConnectFourConfig,
     AlphaZeroConnectFourResNetConfig,
     AlphaZeroConnectFourCNNConfig,
 )
@@ -36,10 +37,12 @@ def main() raises:
         api_key=api_key,
     )
 
-    # ResNet config (closer to original AlphaZero)
-    # comptime Config = AlphaZeroConnectFourResNetConfig[]
-    # Lighter CNN alternative:
+    # MLP config (best for ConnectFour — peaked initial policy helps MCTS)
+    # comptime Config = AlphaZeroConnectFourConfig[]
+    # CNN alternative (slower to bootstrap due to near-uniform initial prior):
     comptime Config = AlphaZeroConnectFourCNNConfig[]
+    # ResNet (closest to original AlphaZero):
+    # comptime Config = AlphaZeroConnectFourResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "ConnectFour")
@@ -57,9 +60,9 @@ def main() raises:
     _ = agent.train_selfplay_gpu[C4, RandomOpponent](
         ctx,
         num_iters=200,
-        steps_per_iter=4000,   # More self-play data (C4 games are longer)
-        train_epochs=2,        # Minimal overfitting (alpha-zero-general uses 10 with 25 sims)
-        warmup_iters=2,        # More warmup for diverse initial data
+        steps_per_iter=4000,  # More self-play data (C4 games are longer)
+        train_epochs=2,  # Minimal overfitting (alpha-zero-general uses 10 with 25 sims)
+        warmup_iters=2,  # More warmup for diverse initial data
         arena_threshold=0.55,  # Slightly stricter to avoid accepting noise
         do_eval=True,
         do_arena=True,
