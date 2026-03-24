@@ -37,9 +37,9 @@ def main() raises:
     )
 
     # ResNet config (closer to original AlphaZero)
-    comptime Config = AlphaZeroConnectFourResNetConfig[]
+    # comptime Config = AlphaZeroConnectFourResNetConfig[]
     # Lighter CNN alternative:
-    # comptime Config = AlphaZeroConnectFourCNNConfig[]
+    comptime Config = AlphaZeroConnectFourCNNConfig[]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "ConnectFour")
