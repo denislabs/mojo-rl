@@ -110,7 +110,7 @@ def main() raises:
         print("  PER: alpha=0.5, beta=0.4→1.0")
         print("  Noisy networks: factorized Gaussian (no epsilon-greedy)")
         print("  Warmup: 20000 steps")
-        print("  Gradient steps per env step: 2")
+        print("  Gradient steps per collection: 16 (replay ratio 0.25)")
         print("  Total transitions:", NUM_STEPS)
         print()
         print("Note: Pixel-based Rainbow is slower than clean obs due to:")
@@ -145,7 +145,7 @@ def main() raises:
         logger.set_config("n_step", String(N_STEP))
         logger.set_config("num_atoms", String(NUM_ATOMS))
         logger.set_config("warmup_steps", "20000")
-        logger.set_config("gradient_steps", "2")
+        logger.set_config("gradient_steps", "16")
 
         # =====================================================================
         # Train
@@ -161,7 +161,7 @@ def main() raises:
                 ctx,
                 num_steps=NUM_STEPS,
                 warmup_steps=20_000,
-                gradient_steps=2,
+                gradient_steps=16,  # replay ratio 16/64=0.25 (matches CleanRL)
                 sync_every=10_000,
                 verbose=True,
                 print_every=100_000,
