@@ -780,6 +780,60 @@ struct GenericAlphaZeroAgent[
                 self.logger[].log_scalar("policy_entropy", pe, step)
                 self.logger[].log_scalar("value_mse", vl, step)
                 self.logger[].log_scalar("value_mean", vm, step)
+
+                # Gradient diagnostics: are gradients flowing?
+                # Download grad_output (the CE+MSE gradient) and param grads
+                var go_host = ctx.enqueue_create_host_buffer[dtype](
+                    BATCH * Self.PRED_OUT
+                )
+                ctx.enqueue_copy(go_host, gpu.grad_out)
+
+                comptime PS = Self.Config.PredModel.PARAM_SIZE
+                var grads_host = ctx.enqueue_create_host_buffer[dtype](PS)
+                ctx.enqueue_copy(grads_host, gpu.prediction.grads_buf)
+
+                var params_host = ctx.enqueue_create_host_buffer[dtype](PS)
+                ctx.enqueue_copy(params_host, gpu.prediction.params_buf)
+                ctx.synchronize()
+
+                # Grad output norm (from az_policy_value_grad_kernel)
+                var go_norm: Float64 = 0.0
+                for i in range(BATCH * Self.PRED_OUT):
+                    var g = Float64(go_host[i])
+                    go_norm += g * g
+                self.logger[].log_scalar("grad_output_norm", sqrt(go_norm), step)
+
+                # Param gradient norm (after backward)
+                var grad_norm: Float64 = 0.0
+                for i in range(PS):
+                    var g = Float64(grads_host[i])
+                    grad_norm += g * g
+                self.logger[].log_scalar("grad_param_norm", sqrt(grad_norm), step)
+
+                # Param norm (are params changing?)
+                var param_norm: Float64 = 0.0
+                for i in range(PS):
+                    var p = Float64(params_host[i])
+                    param_norm += p * p
+                self.logger[].log_scalar("param_norm", sqrt(param_norm), step)
+
+                # Value target stats (what is the network trying to learn?)
+                var vt_sum: Float64 = 0.0
+                var vt_pos = 0
+                var vt_neg = 0
+                for b2 in range(BATCH):
+                    var t = Float64(gpu.value_host[b2])
+                    vt_sum += t
+                    if t > 0.5:
+                        vt_pos += 1
+                    elif t < -0.5:
+                        vt_neg += 1
+                self.logger[].log_scalar("value_target_mean", vt_sum / n, step)
+                self.logger[].log_scalar(
+                    "value_target_pos_frac",
+                    Float64(vt_pos) / n,
+                    step,
+                )
             except:
                 pass
 
