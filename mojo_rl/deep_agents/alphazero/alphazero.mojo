@@ -1358,21 +1358,33 @@ struct GenericAlphaZeroAgent[
                     block_dim=(TPB,),
                 )
 
-            # Extract greedy actions (temp=0)
+            # Extract actions with temperature: temp=1 for first few moves
+            # (creates game diversity), temp=0 after threshold (strong play).
+            # Uses temp_threshold / 2 since move_num counts both players' moves
+            # but ep_steps is per-game total moves.
             var act_out = LayoutTensor[
                 dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
             ](actions_buf.unsafe_ptr())
             var pol_out = LayoutTensor[
                 dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
             ](gpu_mcts.policies_out.unsafe_ptr())
-            comptime run_act = gpu_mcts_extract_actions_masked_kernel[
+            # Use move_num as ep_steps (all envs start together)
+            var ep_steps_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
+            ep_steps_buf.enqueue_fill(Scalar[dtype](move_num))
+            var ep_steps_t = LayoutTensor[
+                dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+            ](ep_steps_buf.unsafe_ptr())
+            comptime run_act = gpu_mcts_extract_actions_temp_kernel[
                 Self.n_envs, MAX_NODES, ACT, dtype
             ]
             ctx.enqueue_function[run_act, run_act](
                 vc,
                 lm,
+                ep_steps_t,
                 act_out,
                 pol_out,
+                Self.Config.temp_threshold,
+                Scalar[DType.uint32](UInt32(rng_offset + move_num)),
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )

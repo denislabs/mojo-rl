@@ -177,10 +177,11 @@ struct AlphaZeroTicTacToeCNNConfig[
 struct AlphaZeroConnectFourConfig[
     HIDDEN: Int = 256,
     LR: Float64 = 0.001,
+    WD: Float64 = 1e-4,
     BS: Int = 64,
     CAP: Int = 100000,
-    SIMS: Int = 100,
-    NODES: Int = 256,
+    SIMS: Int = 25,
+    NODES: Int = 64,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour (126D obs, 7 actions)."""
 
@@ -197,7 +198,7 @@ struct AlphaZeroConnectFourConfig[
             Linear[Self.HIDDEN, 1],
         ],
     ]
-    comptime OptType = Adam[LR=Self.LR]
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
@@ -219,10 +220,11 @@ struct AlphaZeroConnectFourConfig[
 struct AlphaZeroConnectFourCNNConfig[
     FILTERS: Int = 128,
     LR: Float64 = 0.001,
+    WD: Float64 = 1e-4,
     BS: Int = 64,
     CAP: Int = 200000,
-    SIMS: Int = 100,
-    NODES: Int = 256,
+    SIMS: Int = 25,
+    NODES: Int = 64,
     C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — CNN variant.
@@ -230,8 +232,10 @@ struct AlphaZeroConnectFourCNNConfig[
     Input 126D = 3 channels × 6 rows × 7 cols.
     3× Conv2D(3×3, same) → Conv2D(3×3, valid) → flatten → FC → heads.
 
-    Alpha-zero-general uses 20 ResNet blocks with 128 filters.
-    We use a simpler 4-conv architecture for faster iteration.
+    Tuned to match alpha-zero-general proven settings:
+    - 25 MCTS sims (not 100) so prior matters for the feedback loop
+    - AdamW with weight decay 1e-4 to prevent weight explosion
+    - max_nodes=64 (enough for 25 sims)
     """
 
     comptime NAME: String = "AlphaZero-ConnectFour-CNN"
@@ -255,7 +259,7 @@ struct AlphaZeroConnectFourCNNConfig[
             Linear[Self.FILTERS, 1],   # Value head
         ],
     ]
-    comptime OptType = Adam[LR=Self.LR]
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
@@ -294,10 +298,11 @@ comptime ResBlock3x3[F: Int] = Sequential[
 struct AlphaZeroConnectFourResNetConfig[
     FILTERS: Int = 128,
     LR: Float64 = 0.001,
+    WD: Float64 = 1e-4,
     BS: Int = 64,
     CAP: Int = 200000,
-    SIMS: Int = 100,
-    NODES: Int = 256,
+    SIMS: Int = 25,
+    NODES: Int = 64,
     C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — ResNet with 4 residual blocks.
@@ -327,7 +332,7 @@ struct AlphaZeroConnectFourResNetConfig[
             Linear[Self.FILTERS, 1],
         ],
     ]
-    comptime OptType = Adam[LR=Self.LR]
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
