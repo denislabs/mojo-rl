@@ -32,7 +32,7 @@ Usage:
 
 from std.time import perf_counter_ns
 from std.python import Python, PythonObject
-
+from std.math import isnan, isinf
 
 # =============================================================================
 # MetricEntry — single buffered data point
@@ -77,7 +77,7 @@ struct MetricEntry(Copyable, Movable):
 # =============================================================================
 
 
-trait Logger(Copyable, Movable, ImplicitlyDestructible):
+trait Logger(Copyable, ImplicitlyDestructible, Movable):
     """Interface for training metrics loggers.
 
     All deep RL training loops and agent structs are parameterized on
@@ -188,6 +188,8 @@ struct CsvLogger(Logger):
         self._total_logged = take._total_logged
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+        if isnan(value) or isinf(value):
+            return
         var elapsed_ns = perf_counter_ns() - self._start_ns
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
         self.entries.append(MetricEntry(step, wall_time_ms, name, value))
@@ -202,6 +204,8 @@ struct CsvLogger(Logger):
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
         var n = min(len(names), len(values))
         for i in range(n):
+            if isnan(values[i]) or isinf(values[i]):
+                continue
             self.entries.append(
                 MetricEntry(step, wall_time_ms, names[i], values[i])
             )
@@ -309,6 +313,8 @@ struct RemoteLogger(Logger):
         self._total_logged = take._total_logged
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+        if isnan(value) or isinf(value):
+            return
         var elapsed_ns = perf_counter_ns() - self._start_ns
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
         self.entries.append(MetricEntry(step, wall_time_ms, name, value))
@@ -323,6 +329,8 @@ struct RemoteLogger(Logger):
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
         var n = min(len(names), len(values))
         for i in range(n):
+            if isnan(values[i]) or isinf(values[i]):
+                continue
             self.entries.append(
                 MetricEntry(step, wall_time_ms, names[i], values[i])
             )
