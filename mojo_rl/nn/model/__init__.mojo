@@ -28,6 +28,7 @@ from .conv2d_layer import (
 )
 from .pool_layer import MaxPoolLayer, AvgPoolLayer
 from .flatten_layer import FlattenLayer
+from .resblock_conv2d import ResBlockConv2D
 
 # Combinators (canonical home: nn.autodiff.combinators, re-exported here)
 from ..autodiff.combinators import Parallel, Residual, Repeat, SkipConcat, DualPath, SplitApply, FanOut

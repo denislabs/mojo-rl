@@ -34,6 +34,7 @@ from mojo_rl.core import (
     DataAugmentable,
     Saveable,
 )
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
     clear_progress_bar,
@@ -151,13 +152,18 @@ def az_policy_value_grad_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
-    Movable
-):
+struct GenericAlphaZeroAgent[
+    Config: AlphaZeroConfig, n_envs: Int = 64, L: Logger = NoOpLogger
+](Movable):
     """AlphaZero agent for two-player board games.
 
     Uses GPU MCTS with true game rules for self-play, trains a single
     prediction network with supervised policy + value loss.
+
+    Parameters:
+        Config: Compile-time config (AlphaZeroTicTacToeConfig, etc.).
+        n_envs: Number of parallel environments for GPU training.
+        L: Logger type for diagnostic logging (default: NoOpLogger).
     """
 
     comptime StateType = AlphaZeroCPUState[Self.Config]
@@ -169,15 +175,23 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
     var train_step_count: Int
     var total_steps: Int
 
+    # Logger
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var diag_every: Int
+
     def __init__(out self):
         self.state = Self.StateType()
         self.train_step_count = 0
         self.total_steps = 0
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.diag_every = 0
 
     def __init__(out self, *, deinit take: Self):
         self.state = take.state^
         self.train_step_count = take.train_step_count
         self.total_steps = take.total_steps
+        self.logger = take.logger
+        self.diag_every = take.diag_every
 
     # ══════════════════════════════════════════════════════════════
     # Policy-only action selection (for evaluation)
@@ -686,6 +700,77 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
         )
         gpu.prediction.optimizer_step(ctx)
         self.train_step_count += 1
+
+        # ── Log training diagnostics ────────────────────────────────
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var pred_host = ctx.enqueue_create_host_buffer[dtype](
+                    BATCH * Self.PRED_OUT
+                )
+                ctx.enqueue_copy(pred_host, gpu.pred_out)
+                ctx.synchronize()
+
+                var step = self.train_step_count
+                var batch_ploss: Float64 = 0.0
+                var batch_vloss: Float64 = 0.0
+                var batch_entropy: Float64 = 0.0
+                var batch_vmean: Float64 = 0.0
+
+                for b in range(BATCH):
+                    var pred_off = b * Self.PRED_OUT
+
+                    # Policy CE
+                    var max_l: Float64 = -1e18
+                    for a in range(ACT):
+                        var l = Float64(pred_host[pred_off + a])
+                        if l > max_l:
+                            max_l = l
+                    var sum_e: Float64 = 0.0
+                    for a in range(ACT):
+                        sum_e += exp(
+                            Float64(pred_host[pred_off + a]) - max_l
+                        )
+
+                    var ce: Float64 = 0.0
+                    var ent: Float64 = 0.0
+                    for a in range(ACT):
+                        var prob = exp(
+                            Float64(pred_host[pred_off + a]) - max_l
+                        ) / sum_e
+                        var target = Float64(gpu.policy_host[b * ACT + a])
+                        if target > 1e-8 and prob > 1e-8:
+                            ce -= target * log(prob)
+                        if prob > 1e-8:
+                            ent -= prob * log(prob)
+                    batch_ploss += ce
+                    batch_entropy += ent
+
+                    # Value MSE
+                    var raw_v = Float64(pred_host[pred_off + ACT])
+                    var tanh_v: Float64
+                    if raw_v > 15.0:
+                        tanh_v = 1.0
+                    elif raw_v < -15.0:
+                        tanh_v = -1.0
+                    else:
+                        var e2 = exp(2.0 * raw_v)
+                        tanh_v = (e2 - 1.0) / (e2 + 1.0)
+                    var target_v = Float64(gpu.value_host[b])
+                    batch_vloss += (tanh_v - target_v) * (tanh_v - target_v)
+                    batch_vmean += tanh_v
+
+                var n = Float64(BATCH)
+                self.logger[].log_scalar("policy_ce", batch_ploss / n, step)
+                self.logger[].log_scalar("value_mse", batch_vloss / n, step)
+                self.logger[].log_scalar(
+                    "policy_entropy", batch_entropy / n, step
+                )
+                self.logger[].log_scalar("value_mean", batch_vmean / n, step)
+            except:
+                pass
 
     # ══════════════════════════════════════════════════════════════
     # Data Augmentation (via DataAugmentable trait on environment)
@@ -1758,6 +1843,10 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
         do_arena: Bool = True,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "alphazero.ckpt",
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
+        diag_every: Int = 50,
     ) raises -> TrainingMetrics:
         """Train via batch-then-train (like alpha-zero-general).
 
@@ -1861,6 +1950,10 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
         rew_sum_buf.enqueue_fill(Scalar[dtype](0.0))
         ep_count_buf.enqueue_fill(Scalar[dtype](0.0))
         ctx.synchronize()
+
+        # Set logger for diagnostics
+        self.logger = logger
+        self.diag_every = diag_every
 
         var metrics = TrainingMetrics(algorithm_name="AlphaZero")
         var total_steps = 0
@@ -2425,4 +2518,5 @@ struct GenericAlphaZeroAgent[Config: AlphaZeroConfig, n_envs: Int = 64](
             print("Arena: accepted", arena_accepts, "/ rejected", arena_rejects)
         if checkpoint_every > 0:
             self.save_checkpoint(checkpoint_path)
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics

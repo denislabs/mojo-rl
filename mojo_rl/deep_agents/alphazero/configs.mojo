@@ -272,8 +272,7 @@ struct AlphaZeroConnectFourCNNConfig[
 # ConnectFour Config (ResNet — closer to original AlphaZero)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Helper: one ResNet block for 6×7 board with F filters
-# ResBlock = Conv2DReLU(F,F,3,same) → Conv2D(F,F,3,same) → add skip → ReLU
+# ResNet blocks via composition: Conv2DReLU → Conv2D → Residual add → ReLU
 comptime ResBlock6x7[F: Int] = Sequential[
     Residual[Sequential[
         Conv2DReLU[F, F, 3, 1, 1, 6, 7],
@@ -282,7 +281,6 @@ comptime ResBlock6x7[F: Int] = Sequential[
     ReLU[F * 6 * 7],
 ]
 
-# Helper: one ResNet block for 3×3 board
 comptime ResBlock3x3[F: Int] = Sequential[
     Residual[Sequential[
         Conv2DReLU[F, F, 3, 1, 1, 3, 3],
@@ -315,10 +313,10 @@ struct AlphaZeroConnectFourResNetConfig[
 
     comptime PredModel = Sequential[
         Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],       # Initial: 3ch→F
-        ResBlock6x7[Self.FILTERS],                          # ResBlock 1
-        ResBlock6x7[Self.FILTERS],                          # ResBlock 2
-        ResBlock6x7[Self.FILTERS],                          # ResBlock 3
-        ResBlock6x7[Self.FILTERS],                          # ResBlock 4
+        ResBlock6x7[Self.FILTERS],                              # ResBlock 1
+        ResBlock6x7[Self.FILTERS],                              # ResBlock 2
+        ResBlock6x7[Self.FILTERS],                              # ResBlock 3
+        ResBlock6x7[Self.FILTERS],                              # ResBlock 4
         Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # Reduce: 6×7→4×5
         FlattenLayer[Self.FILTERS * 4 * 5],
         LinearReLU[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
@@ -364,10 +362,10 @@ struct AlphaZeroTicTacToeResNetConfig[
 
     comptime PredModel = Sequential[
         Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],       # Initial: 3ch→F
-        ResBlock3x3[Self.FILTERS],                          # ResBlock 1
-        ResBlock3x3[Self.FILTERS],                          # ResBlock 2
-        ResBlock3x3[Self.FILTERS],                          # ResBlock 3
-        ResBlock3x3[Self.FILTERS],                          # ResBlock 4
+        ResBlock3x3[Self.FILTERS],                              # ResBlock 1
+        ResBlock3x3[Self.FILTERS],                              # ResBlock 2
+        ResBlock3x3[Self.FILTERS],                              # ResBlock 3
+        ResBlock3x3[Self.FILTERS],                              # ResBlock 4
         Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # Reduce: 3×3→1×1
         FlattenLayer[Self.FILTERS],
         LinearReLU[Self.FILTERS, Self.FILTERS * 2],
