@@ -231,7 +231,9 @@ struct RainbowCNNConfig[
             NoisyLinear[512, Self.ACT * Self.NUM_ATOMS],
         ],
     ]
-    comptime QOpt = Adam[Self.lr]
+    # CleanRL uses eps=1.5e-4 for Rainbow Atari (prevents gradient explosion
+    # with NoisyLinear + CNN in float32)
+    comptime QOpt = Adam[Self.lr, EPS=1.5e-4]
 
 
 # =============================================================================
