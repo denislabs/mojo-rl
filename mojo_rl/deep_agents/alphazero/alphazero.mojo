@@ -117,21 +117,14 @@ def az_policy_value_grad_kernel[
         sum_exp += exp(
             rebind[Scalar[dtype]](pred_out[pred_off + a]) - max_logit
         )
-    # Entropy regularization coefficient (prevents policy collapse)
-    var entropy_coef = Scalar[dtype](0.01)
+    # Pure CE gradient: softmax(logits) - target
     for a in range(ACT):
         var prob = (
             exp(rebind[Scalar[dtype]](pred_out[pred_off + a]) - max_logit)
             / sum_exp
         )
         var target = rebind[Scalar[dtype]](target_policy[pol_off + a])
-        # CE gradient + entropy bonus: d/d_logit = (prob - target) + entropy_coef * (1 + log(prob))
-        # Simplified: entropy gradient = entropy_coef * (log(prob) + 1) * prob * (1 - prob)
-        # But simpler: just add entropy_coef to push prob toward uniform
-        var entropy_grad = entropy_coef * (
-            prob - Scalar[dtype](1.0) / Scalar[dtype](ACT)
-        )
-        grad_out[pred_off + a] = ((prob - target) + entropy_grad) * inv_batch
+        grad_out[pred_off + a] = (prob - target) * inv_batch
 
     # Value gradient: MSE through tanh activation
     # loss = (tanh(raw) - target)^2
@@ -698,7 +691,43 @@ struct GenericAlphaZeroAgent[
             grads,
             gpu.workspace,
         )
-        gpu.prediction.optimizer_step(ctx)
+        # Log param delta across optimizer step (every diag_every steps)
+        if self.logger and self.train_step_count > 0 and (
+            self.diag_every <= 0
+            or (self.train_step_count + 1) % self.diag_every == 0
+        ):
+            try:
+                comptime _PS = Self.Config.PredModel.PARAM_SIZE
+                var pre_params = ctx.enqueue_create_host_buffer[dtype](_PS)
+                ctx.enqueue_copy(pre_params, gpu.prediction.params_buf)
+                ctx.synchronize()
+
+                gpu.prediction.optimizer_step(ctx)
+
+                var post_params = ctx.enqueue_create_host_buffer[dtype](_PS)
+                ctx.enqueue_copy(post_params, gpu.prediction.params_buf)
+                ctx.synchronize()
+
+                var delta_norm: Float64 = 0.0
+                var delta_max: Float64 = 0.0
+                for i in range(_PS):
+                    var d = Float64(post_params[i]) - Float64(pre_params[i])
+                    delta_norm += d * d
+                    var ad = d if d > 0 else -d
+                    if ad > delta_max:
+                        delta_max = ad
+                self.logger[].log_scalar(
+                    "param_delta_norm",
+                    sqrt(delta_norm) if delta_norm == delta_norm else 0.0,
+                    self.train_step_count + 1,
+                )
+                self.logger[].log_scalar(
+                    "param_delta_max", delta_max, self.train_step_count + 1
+                )
+            except:
+                gpu.prediction.optimizer_step(ctx)
+        else:
+            gpu.prediction.optimizer_step(ctx)
         self.train_step_count += 1
 
         # ── Log training diagnostics ────────────────────────────────
@@ -780,6 +809,27 @@ struct GenericAlphaZeroAgent[
                 self.logger[].log_scalar("policy_entropy", pe, step)
                 self.logger[].log_scalar("value_mse", vl, step)
                 self.logger[].log_scalar("value_mean", vm, step)
+
+                # MCTS target entropy — are targets sharp or uniform?
+                var target_entropy_sum: Float64 = 0.0
+                var target_max_sum: Float64 = 0.0
+                for b2 in range(BATCH):
+                    var tent: Float64 = 0.0
+                    var tmax: Float64 = 0.0
+                    for a2 in range(ACT):
+                        var tp = Float64(gpu.policy_host[b2 * ACT + a2])
+                        if tp > 1e-8:
+                            tent -= tp * log(tp)
+                        if tp > tmax:
+                            tmax = tp
+                    target_entropy_sum += tent
+                    target_max_sum += tmax
+                self.logger[].log_scalar(
+                    "target_entropy", target_entropy_sum / n, step
+                )
+                self.logger[].log_scalar(
+                    "target_max_prob", target_max_sum / n, step
+                )
 
                 # Gradient diagnostics: are gradients flowing?
                 # Download grad_output (the CE+MSE gradient) and param grads

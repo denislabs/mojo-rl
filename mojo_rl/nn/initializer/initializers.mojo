@@ -52,8 +52,7 @@ trait Initializer(Copyable & Movable & ImplicitlyCopyable):
 struct Xavier[SEED: UInt64 = 0](Initializer):
     """Xavier/Glorot initialization.
 
-    Weights are drawn from U(-sqrt(6/(fan_in+fan_out)), sqrt(6/(fan_in+fan_out)))
-    or equivalently scaled normal distribution.
+    Weights are drawn from U(-sqrt(6/(fan_in+fan_out)), sqrt(6/(fan_in+fan_out))).
 
     This is optimal for linear activations and works well for tanh/sigmoid.
     """
@@ -73,15 +72,17 @@ struct Xavier[SEED: UInt64 = 0](Initializer):
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         var rng = PhiloxRandom(seed=Self.SEED, offset=0)
         var rand_vals = rng.step_uniform()
-        var std = sqrt(2.0 / Scalar[dtype](FAN_IN + FAN_OUT))
+        var std = sqrt(6.0 / Scalar[dtype](FAN_IN + FAN_OUT))
         for i in range(SIZE):
-            params[i] = Scalar[dtype]((rand_vals[i] * 2.0 - 1.0) * std)
+            if i > 0 and i % 4 == 0:
+                rand_vals = rng.step_uniform()
+            params[i] = Scalar[dtype]((rand_vals[i % 4] * 2.0 - 1.0) * std)
 
 
 struct Kaiming[SEED: UInt64 = 0](Initializer):
     """Kaiming/He initialization.
 
-    Weights are drawn from N(0, sqrt(2/fan_in)).
+    Weights are drawn from U(-sqrt(6/fan_in), sqrt(6/fan_in)).
 
     This is optimal for ReLU activations, accounting for the fact that
     ReLU zeros out half the distribution.
@@ -100,17 +101,19 @@ struct Kaiming[SEED: UInt64 = 0](Initializer):
     def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        var std = sqrt(2.0 / Scalar[dtype](FAN_IN))
+        var std = sqrt(6.0 / Scalar[dtype](FAN_IN))
         var rng = PhiloxRandom(seed=Self.SEED, offset=0)
         var rand_vals = rng.step_uniform()
         for i in range(SIZE):
-            params[i] = Scalar[dtype]((rand_vals[i] * 2.0 - 1.0) * std)
+            if i > 0 and i % 4 == 0:
+                rand_vals = rng.step_uniform()
+            params[i] = Scalar[dtype]((rand_vals[i % 4] * 2.0 - 1.0) * std)
 
 
 struct LeCun[SEED: UInt64 = 0](Initializer):
     """LeCun initialization.
 
-    Weights are drawn from N(0, sqrt(1/fan_in)).
+    Weights are drawn from U(-sqrt(3/fan_in), sqrt(3/fan_in)).
 
     This is the original initialization proposed by LeCun for
     networks with tanh activations.
@@ -129,11 +132,13 @@ struct LeCun[SEED: UInt64 = 0](Initializer):
     def init[
         SIZE: Int, FAN_IN: Int, FAN_OUT: Int
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        var std = sqrt(1.0 / Scalar[dtype](FAN_IN))
+        var std = sqrt(3.0 / Scalar[dtype](FAN_IN))
         var rng = PhiloxRandom(seed=Self.SEED, offset=0)
         var rand_vals = rng.step_uniform()
         for i in range(SIZE):
-            params[i] = Scalar[dtype]((rand_vals[i] * 2.0 - 1.0) * std)
+            if i > 0 and i % 4 == 0:
+                rand_vals = rng.step_uniform()
+            params[i] = Scalar[dtype]((rand_vals[i % 4] * 2.0 - 1.0) * std)
 
 
 struct Zeros(Initializer):
@@ -202,8 +207,10 @@ struct Uniform[LOW: Float64, HIGH: Float64, SEED: UInt64 = 0](Initializer):
         var rng = PhiloxRandom(seed=Self.SEED, offset=0)
         var rand_vals = rng.step_uniform()
         for i in range(SIZE):
+            if i > 0 and i % 4 == 0:
+                rand_vals = rng.step_uniform()
             params[i] = Scalar[dtype](
-                rand_vals[i] * range_val + Scalar[dtype](Self.LOW)
+                rand_vals[i % 4] * range_val + Scalar[dtype](Self.LOW)
             )
 
 
@@ -220,10 +227,15 @@ struct Normal[MEAN: Float64, STD: Float64, SEED: UInt64 = 0](Initializer):
         var rng = PhiloxRandom(seed=Self.SEED, offset=0)
         var rand_vals = rng.step_uniform()
         # Box-Muller transform generates pairs of normal random numbers
+        var pos = 0
         var i = 0
         while i < SIZE:
-            var u1 = rand_vals[i]
-            var u2 = rand_vals[i + 1]
+            if pos + 1 >= 4:
+                rand_vals = rng.step_uniform()
+                pos = 0
+            var u1 = rand_vals[pos]
+            var u2 = rand_vals[pos + 1]
+            pos += 2
 
             # Avoid log(0)
             if u1 < 1e-10:

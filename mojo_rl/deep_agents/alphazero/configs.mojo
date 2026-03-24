@@ -78,11 +78,11 @@ trait AlphaZeroConfig:
 
 struct AlphaZeroTicTacToeConfig[
     HIDDEN: Int = 128,
-    LR: Float64 = 1e-3,
-    BS: Int = 64,
+    LR: Float64 = 0.01,
+    BS: Int = 16,
     CAP: Int = 50000,
-    SIMS: Int = 25,
-    NODES: Int = 64,
+    SIMS: Int = 100,
+    NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
     """AlphaZero for TicTacToe (27D obs, 9 actions) — MLP variant."""
@@ -120,11 +120,11 @@ struct AlphaZeroTicTacToeConfig[
 
 struct AlphaZeroTicTacToeCNNConfig[
     FILTERS: Int = 128,
-    LR: Float64 = 1e-3,
-    BS: Int = 64,
+    LR: Float64 = 0.01,
+    BS: Int = 16,
     CAP: Int = 100_000,
-    SIMS: Int = 25,
-    NODES: Int = 64,
+    SIMS: Int = 100,
+    NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
     """AlphaZero for TicTacToe — CNN variant matching alpha-zero-general.
@@ -175,11 +175,11 @@ struct AlphaZeroTicTacToeCNNConfig[
 
 struct AlphaZeroConnectFourConfig[
     HIDDEN: Int = 256,
-    LR: Float64 = 5e-4,
-    BS: Int = 128,
+    LR: Float64 = 0.01,
+    BS: Int = 16,
     CAP: Int = 100000,
     SIMS: Int = 100,
-    NODES: Int = 128,
+    NODES: Int = 256,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour (126D obs, 7 actions)."""
 
@@ -217,11 +217,11 @@ struct AlphaZeroConnectFourConfig[
 
 struct AlphaZeroConnectFourCNNConfig[
     FILTERS: Int = 128,
-    LR: Float64 = 1e-3,
-    BS: Int = 64,
+    LR: Float64 = 0.01,
+    BS: Int = 16,
     CAP: Int = 200000,
-    SIMS: Int = 25,
-    NODES: Int = 128,
+    SIMS: Int = 100,
+    NODES: Int = 256,
     C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — CNN variant.
@@ -292,8 +292,8 @@ comptime ResBlock3x3[F: Int] = Sequential[
 
 struct AlphaZeroConnectFourResNetConfig[
     FILTERS: Int = 128,
-    LR: Float64 = 1e-3,
-    BS: Int = 64,
+    LR: Float64 = 0.01,
+    BS: Int = 16,
     CAP: Int = 200000,
     SIMS: Int = 100,
     NODES: Int = 256,
