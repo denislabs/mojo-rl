@@ -798,24 +798,40 @@ struct GenericAlphaZeroAgent[
 
                 # Grad output norm (from az_policy_value_grad_kernel)
                 var go_norm: Float64 = 0.0
+                var go_max: Float64 = 0.0
                 for i in range(BATCH * Self.PRED_OUT):
                     var g = Float64(go_host[i])
-                    go_norm += g * g
-                self.logger[].log_scalar("grad_output_norm", sqrt(go_norm), step)
+                    if g == g:  # skip NaN
+                        go_norm += g * g
+                        var ag = g if g > 0 else -g
+                        if ag > go_max:
+                            go_max = ag
+                var go_n = sqrt(go_norm) if go_norm == go_norm else 0.0
+                self.logger[].log_scalar("grad_output_norm", go_n, step)
+                self.logger[].log_scalar("grad_output_max", go_max, step)
 
                 # Param gradient norm (after backward)
                 var grad_norm: Float64 = 0.0
+                var grad_max: Float64 = 0.0
                 for i in range(PS):
                     var g = Float64(grads_host[i])
-                    grad_norm += g * g
-                self.logger[].log_scalar("grad_param_norm", sqrt(grad_norm), step)
+                    if g == g:
+                        grad_norm += g * g
+                        var ag = g if g > 0 else -g
+                        if ag > grad_max:
+                            grad_max = ag
+                var gn = sqrt(grad_norm) if grad_norm == grad_norm else 0.0
+                self.logger[].log_scalar("grad_param_norm", gn, step)
+                self.logger[].log_scalar("grad_param_max", grad_max, step)
 
                 # Param norm (are params changing?)
                 var param_norm: Float64 = 0.0
                 for i in range(PS):
                     var p = Float64(params_host[i])
-                    param_norm += p * p
-                self.logger[].log_scalar("param_norm", sqrt(param_norm), step)
+                    if p == p:
+                        param_norm += p * p
+                var pn = sqrt(param_norm) if param_norm == param_norm else 0.0
+                self.logger[].log_scalar("param_norm", pn, step)
 
                 # Value target stats (what is the network trying to learn?)
                 var vt_sum: Float64 = 0.0
