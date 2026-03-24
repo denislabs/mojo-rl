@@ -7,6 +7,8 @@ from .sigmoid import Sigmoid
 from .softmax import Softmax
 from .layer_norm import LayerNorm
 from .batch_norm_2d import BatchNorm2D
+from .conv2d_bn_relu import Conv2DBatchNormReLU
+from .linear_bn_relu import LinearBatchNormReLU
 from .dropout import Dropout
 from .stochastic_actor import (
     StochasticActor,

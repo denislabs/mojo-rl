@@ -14,11 +14,13 @@ from mojo_rl.nn.model import (
     Linear,
     LinearReLU,
     LinearMish,
+    LinearBatchNormReLU,
     Sequential,
     Parallel,
     Conv2DReLU,
     Conv2DLayer,
     BatchNorm2D,
+    Conv2DBatchNormReLU,
     Dropout,
     FlattenLayer,
     ReLU,
@@ -142,29 +144,17 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime obs_dim: Int = 27
     comptime action_dim: Int = 9
 
-    # Conv2D → BatchNorm → ReLU (matching alpha-zero-general)
+    # Fused Conv2D+BN+ReLU (matching alpha-zero-general, fewer kernel launches)
     comptime PredModel = Sequential[
-        Conv2DLayer[3, Self.FILTERS, 3, 1, 1, 3, 3],       # 3ch→F, 3×3→3×3
-        BatchNorm2D[Self.FILTERS, 3, 3],
-        ReLU[Self.FILTERS * 3 * 3],
-        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
-        BatchNorm2D[Self.FILTERS, 3, 3],
-        ReLU[Self.FILTERS * 3 * 3],
-        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
-        BatchNorm2D[Self.FILTERS, 3, 3],
-        ReLU[Self.FILTERS * 3 * 3],
-        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # 3×3→1×1
-        BatchNorm2D[Self.FILTERS, 1, 1],
-        ReLU[Self.FILTERS],
+        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],          # 3ch→F, 3×3→3×3
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # 3×3→1×1
         FlattenLayer[Self.FILTERS],
-        # FC: Linear → BN1D → ReLU → Dropout (matching alpha-zero-general)
-        Linear[Self.FILTERS, Self.FILTERS * 2],
-        BatchNorm2D[Self.FILTERS * 2, 1, 1],  # BN1D
-        ReLU[Self.FILTERS * 2],
+        # FC: Fused Linear+BN+ReLU → Dropout (matching alpha-zero-general)
+        LinearBatchNormReLU[Self.FILTERS, Self.FILTERS * 2],
         Dropout[Self.FILTERS * 2, 0.3, 42, True],
-        Linear[Self.FILTERS * 2, Self.FILTERS],
-        BatchNorm2D[Self.FILTERS, 1, 1],  # BN1D
-        ReLU[Self.FILTERS],
+        LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
         Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 9],   # Policy (softmax applied in loss kernel)
@@ -237,8 +227,8 @@ struct AlphaZeroConnectFourCNNConfig[
     LR: Float64 = 0.001,
     BS: Int = 64,
     CAP: Int = 200000,
-    SIMS: Int = 25,
-    NODES: Int = 64,
+    SIMS: Int = 50,
+    NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — CNN variant.
@@ -256,29 +246,17 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime obs_dim: Int = 126
     comptime action_dim: Int = 7
 
-    # Conv2D → BatchNorm → ReLU (matching alpha-zero-general)
+    # Fused Conv2D+BN+ReLU (matching alpha-zero-general, fewer kernel launches)
     comptime PredModel = Sequential[
-        Conv2DLayer[3, Self.FILTERS, 3, 1, 1, 6, 7],       # 3ch→F, 6×7→6×7
-        BatchNorm2D[Self.FILTERS, 6, 7],
-        ReLU[Self.FILTERS * 6 * 7],
-        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
-        BatchNorm2D[Self.FILTERS, 6, 7],
-        ReLU[Self.FILTERS * 6 * 7],
-        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
-        BatchNorm2D[Self.FILTERS, 6, 7],
-        ReLU[Self.FILTERS * 6 * 7],
-        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # 6×7→4×5
-        BatchNorm2D[Self.FILTERS, 4, 5],
-        ReLU[Self.FILTERS * 4 * 5],
+        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],          # 3ch→F, 6×7→6×7
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # 6×7→4×5
         FlattenLayer[Self.FILTERS * 4 * 5],
-        # FC: Linear → BN1D → ReLU → Dropout (matching alpha-zero-general)
-        Linear[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
-        BatchNorm2D[Self.FILTERS * 2, 1, 1],
-        ReLU[Self.FILTERS * 2],
+        # FC: Fused Linear+BN+ReLU → Dropout (matching alpha-zero-general)
+        LinearBatchNormReLU[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
         Dropout[Self.FILTERS * 2, 0.3, 42, True],
-        Linear[Self.FILTERS * 2, Self.FILTERS],
-        BatchNorm2D[Self.FILTERS, 1, 1],
-        ReLU[Self.FILTERS],
+        LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
         Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 7],
