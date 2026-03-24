@@ -602,14 +602,39 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
 
-        # Rebind cache to Conv2D's expected layout (im2col part)
+        # Allocate separate conv cache (can't rebind — stride mismatch with our larger CACHE_SIZE)
         comptime CONV_CS = ConvOp.CACHE_SIZE
-        var conv_cache = rebind[LayoutTensor[
+        var conv_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * CONV_CS if CONV_CS > 0 else 1)
+        var conv_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
-        ]](cache)
+        ](conv_cache_buf.unsafe_ptr())
 
-        # Run Conv2D GPU forward (writes pre-BN output to `output`)
+        # Run Conv2D GPU forward (writes pre-BN output to `output`, im2col to conv_cache)
         ConvOp.eval_gpu[BATCH](ctx, output, input, conv_params, conv_cache, workspace.unsafe_ptr())
+
+        # Copy im2col from conv_cache into our cache (needed for backward)
+        # The BN+ReLU kernel reads x_hat/inv_std from our cache, and backward needs im2col
+        comptime COPY_SIZE = BATCH * CONV_CS
+        @always_inline
+        def copy_im2col(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin],
+        ):
+            # Copy im2col: for each sample, copy CONV_CS elements
+            # Source stride = CONV_CS, dest stride = CACHE_SIZE
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // CONV_CS
+            var i = tid % CONV_CS
+            dst.ptr[b * Self.CACHE_SIZE + i] = src.ptr[tid]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        ctx.enqueue_function[copy_im2col, copy_im2col](
+            cache, conv_cache,
+            grid_dim=(COPY_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
         # Run fused BN+ReLU kernel
         @always_inline
@@ -774,11 +799,35 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
         ](grads.ptr)
 
-        # Rebind cache to Conv2D's expected layout (im2col portion = first CONV_CACHE per sample)
+        # Extract im2col from our cache into a separate conv-sized buffer
+        # (can't rebind — stride mismatch between CACHE_SIZE and CONV_CS)
         comptime CONV_CS = ConvOp.CACHE_SIZE
-        var conv_cache = rebind[LayoutTensor[
+        var conv_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * CONV_CS if CONV_CS > 0 else 1)
+        var conv_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
-        ]](cache)
+        ](conv_cache_buf.unsafe_ptr())
+
+        # Copy im2col from our cache (stride=CACHE_SIZE) to conv_cache (stride=CONV_CS)
+        comptime COPY_SIZE = BATCH * CONV_CS
+        @always_inline
+        def copy_im2col_bwd(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // CONV_CS
+            var i = tid % CONV_CS
+            dst.ptr[tid] = src.ptr[b * Self.CACHE_SIZE + i]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        ctx.enqueue_function[copy_im2col_bwd, copy_im2col_bwd](
+            conv_cache, cache,
+            grid_dim=(COPY_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
         ConvOp.vjp_gpu[BATCH](
             ctx, grad_pre_bn, grad_input, conv_params, conv_cache, conv_grads, workspace.unsafe_ptr()
         )
