@@ -184,11 +184,11 @@ struct AlphaZeroTicTacToeCNNConfig[
 
 struct AlphaZeroConnectFourConfig[
     HIDDEN: Int = 256,
-    LR: Float64 = 0.001,
+    LR: Float64 = 2e-3,
     BS: Int = 64,
-    CAP: Int = 100000,
-    SIMS: Int = 25,
-    NODES: Int = 64,
+    CAP: Int = 400000,
+    SIMS: Int = 600,
+    NODES: Int = 1024,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour (126D obs, 7 actions)."""
 
@@ -212,10 +212,10 @@ struct AlphaZeroConnectFourConfig[
     comptime history_window: Int = 20
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
-    comptime temp_threshold: Int = 15
+    comptime temp_threshold: Int = 20
 
-    comptime Noise = DirichletNoise[0.25, 0.25]
-    comptime PUCT = AlphaGoPUCT[2.5]
+    comptime Noise = DirichletNoise[0.25, 1.0]  # alpha=1.0 for C4
+    comptime PUCT = AlphaGoPUCT[2.0]
     comptime Players = SelfPlay
 
 
@@ -226,12 +226,12 @@ struct AlphaZeroConnectFourConfig[
 
 struct AlphaZeroConnectFourCNNConfig[
     FILTERS: Int = 128,
-    LR: Float64 = 0.001,
+    LR: Float64 = 2e-3,
     BS: Int = 64,
-    CAP: Int = 200000,
-    SIMS: Int = 50,
-    NODES: Int = 128,
-    C_PUCT: Float64 = 1.0,
+    CAP: Int = 400000,
+    SIMS: Int = 600,
+    NODES: Int = 1024,
+    C_PUCT: Float64 = 2.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — CNN variant.
 
@@ -250,27 +250,17 @@ struct AlphaZeroConnectFourCNNConfig[
 
     # Non-fused Conv2D → BN → ReLU (for debugging — isolate fusion issues)
     comptime PredModel = Sequential[
-        Conv2DLayer[3, Self.FILTERS, 3, 1, 1, 6, 7],  # 3ch→F, 6×7→6×7
-        BatchNorm2D[Self.FILTERS, 6, 7],
-        ReLU[Self.FILTERS * 6 * 7],
-        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
-        BatchNorm2D[Self.FILTERS, 6, 7],
-        ReLU[Self.FILTERS * 6 * 7],
-        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
-        BatchNorm2D[Self.FILTERS, 6, 7],
-        ReLU[Self.FILTERS * 6 * 7],
-        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # 6×7→4×5
-        BatchNorm2D[Self.FILTERS, 4, 5],
-        ReLU[Self.FILTERS * 4 * 5],
+        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],  # 3ch→F, 6×7→6×7
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
+        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
+        Conv2DBatchNormReLU[
+            Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7
+        ],  # 6×7→4×5
         FlattenLayer[Self.FILTERS * 4 * 5],
-        # FC: Linear → BN1D → ReLU → Dropout
-        Linear[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
-        BatchNorm2D[Self.FILTERS * 2, 1, 1],
-        ReLU[Self.FILTERS * 2],
+        # FC: Fused Linear+BN+ReLU → Dropout (matching alpha-zero-general)
+        LinearBatchNormReLU[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
         Dropout[Self.FILTERS * 2, 0.3, 42, True],
-        Linear[Self.FILTERS * 2, Self.FILTERS],
-        BatchNorm2D[Self.FILTERS, 1, 1],
-        ReLU[Self.FILTERS],
+        LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
         Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 7],
@@ -286,9 +276,11 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime history_window: Int = 20
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
-    comptime temp_threshold: Int = 15
+    comptime temp_threshold: Int = 20  # AlphaZero.jl uses 20
 
-    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime Noise = DirichletNoise[
+        0.25, 1.0
+    ]  # alpha=1.0 for C4 (AlphaZero.jl)
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Players = SelfPlay
 
