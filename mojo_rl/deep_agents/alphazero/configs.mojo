@@ -146,10 +146,12 @@ struct AlphaZeroTicTacToeCNNConfig[
 
     # Fused Conv2D+BN+ReLU (matching alpha-zero-general, fewer kernel launches)
     comptime PredModel = Sequential[
-        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],          # 3ch→F, 3×3→3×3
+        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],  # 3ch→F, 3×3→3×3
         Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
         Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 3, 3],
-        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # 3×3→1×1
+        Conv2DBatchNormReLU[
+            Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3
+        ],  # 3×3→1×1
         FlattenLayer[Self.FILTERS],
         # FC: Fused Linear+BN+ReLU → Dropout (matching alpha-zero-general)
         LinearBatchNormReLU[Self.FILTERS, Self.FILTERS * 2],
@@ -157,8 +159,8 @@ struct AlphaZeroTicTacToeCNNConfig[
         LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
         Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
-            Linear[Self.FILTERS, 9],   # Policy (softmax applied in loss kernel)
-            Linear[Self.FILTERS, 1],   # Value (tanh applied in loss kernel)
+            Linear[Self.FILTERS, 9],  # Policy (softmax applied in loss kernel)
+            Linear[Self.FILTERS, 1],  # Value (tanh applied in loss kernel)
         ],
     ]
     comptime OptType = Adam[LR=Self.LR]
@@ -248,7 +250,7 @@ struct AlphaZeroConnectFourCNNConfig[
 
     # Non-fused Conv2D → BN → ReLU (for debugging — isolate fusion issues)
     comptime PredModel = Sequential[
-        Conv2DLayer[3, Self.FILTERS, 3, 1, 1, 6, 7],       # 3ch→F, 6×7→6×7
+        Conv2DLayer[3, Self.FILTERS, 3, 1, 1, 6, 7],  # 3ch→F, 6×7→6×7
         BatchNorm2D[Self.FILTERS, 6, 7],
         ReLU[Self.FILTERS * 6 * 7],
         Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
@@ -265,17 +267,19 @@ struct AlphaZeroConnectFourCNNConfig[
         Linear[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
         BatchNorm2D[Self.FILTERS * 2, 1, 1],
         ReLU[Self.FILTERS * 2],
-        Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        # Dropout[Self.FILTERS * 2, 0.3, 42, True],
         Linear[Self.FILTERS * 2, Self.FILTERS],
         BatchNorm2D[Self.FILTERS, 1, 1],
         ReLU[Self.FILTERS],
-        Dropout[Self.FILTERS, 0.3, 137, True],
+        # Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 7],
             Linear[Self.FILTERS, 1],
         ],
     ]
-    comptime OptType = Adam[LR=Self.LR]  # No weight decay (matches alpha-zero-general)
+    comptime OptType = Adam[
+        LR=Self.LR
+    ]  # No weight decay (matches alpha-zero-general)
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
@@ -295,18 +299,22 @@ struct AlphaZeroConnectFourCNNConfig[
 
 # ResNet blocks via composition: Conv2DReLU → Conv2D → Residual add → ReLU
 comptime ResBlock6x7[F: Int] = Sequential[
-    Residual[Sequential[
-        Conv2DReLU[F, F, 3, 1, 1, 6, 7],
-        Conv2DLayer[F, F, 3, 1, 1, 6, 7],
-    ]],
+    Residual[
+        Sequential[
+            Conv2DReLU[F, F, 3, 1, 1, 6, 7],
+            Conv2DLayer[F, F, 3, 1, 1, 6, 7],
+        ]
+    ],
     ReLU[F * 6 * 7],
 ]
 
 comptime ResBlock3x3[F: Int] = Sequential[
-    Residual[Sequential[
-        Conv2DReLU[F, F, 3, 1, 1, 3, 3],
-        Conv2DLayer[F, F, 3, 1, 1, 3, 3],
-    ]],
+    Residual[
+        Sequential[
+            Conv2DReLU[F, F, 3, 1, 1, 3, 3],
+            Conv2DLayer[F, F, 3, 1, 1, 3, 3],
+        ]
+    ],
     ReLU[F * 3 * 3],
 ]
 
@@ -333,12 +341,14 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime action_dim: Int = 7
 
     comptime PredModel = Sequential[
-        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],       # Initial: 3ch→F
-        ResBlock6x7[Self.FILTERS],                              # ResBlock 1
-        ResBlock6x7[Self.FILTERS],                              # ResBlock 2
-        ResBlock6x7[Self.FILTERS],                              # ResBlock 3
-        ResBlock6x7[Self.FILTERS],                              # ResBlock 4
-        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # Reduce: 6×7→4×5
+        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],  # Initial: 3ch→F
+        ResBlock6x7[Self.FILTERS],  # ResBlock 1
+        ResBlock6x7[Self.FILTERS],  # ResBlock 2
+        ResBlock6x7[Self.FILTERS],  # ResBlock 3
+        ResBlock6x7[Self.FILTERS],  # ResBlock 4
+        Conv2DReLU[
+            Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7
+        ],  # Reduce: 6×7→4×5
         FlattenLayer[Self.FILTERS * 4 * 5],
         LinearReLU[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
         LinearReLU[Self.FILTERS * 2, Self.FILTERS],
@@ -375,19 +385,22 @@ struct AlphaZeroTicTacToeResNetConfig[
     NODES: Int = 64,
     C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
-    """AlphaZero for TicTacToe — ResNet with 4 residual blocks + 50 MCTS sims."""
+    """AlphaZero for TicTacToe — ResNet with 4 residual blocks + 50 MCTS sims.
+    """
 
     comptime NAME: String = "AlphaZero-TicTacToe-ResNet"
     comptime obs_dim: Int = 27
     comptime action_dim: Int = 9
 
     comptime PredModel = Sequential[
-        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],       # Initial: 3ch→F
-        ResBlock3x3[Self.FILTERS],                              # ResBlock 1
-        ResBlock3x3[Self.FILTERS],                              # ResBlock 2
-        ResBlock3x3[Self.FILTERS],                              # ResBlock 3
-        ResBlock3x3[Self.FILTERS],                              # ResBlock 4
-        Conv2DReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3],  # Reduce: 3×3→1×1
+        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],  # Initial: 3ch→F
+        ResBlock3x3[Self.FILTERS],  # ResBlock 1
+        ResBlock3x3[Self.FILTERS],  # ResBlock 2
+        ResBlock3x3[Self.FILTERS],  # ResBlock 3
+        ResBlock3x3[Self.FILTERS],  # ResBlock 4
+        Conv2DReLU[
+            Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3
+        ],  # Reduce: 3×3→1×1
         FlattenLayer[Self.FILTERS],
         LinearReLU[Self.FILTERS, Self.FILTERS * 2],
         LinearReLU[Self.FILTERS * 2, Self.FILTERS],
