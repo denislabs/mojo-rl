@@ -21,7 +21,8 @@ from ..constants import dtype, TPB
 from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.memory import AddressSpace
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.math import sqrt
 
@@ -324,49 +325,83 @@ struct LinearBatchNormReLU[
     ):
         """Fused BN+ReLU kernel. Reads pre-BN from output, writes final output.
 
-        Grid: (out_dim,), Block: (1,)
-        One thread per feature — computes stats across BATCH.
+        Grid: (out_dim,), Block: (TPB,)
+        Block-parallel reduction across BATCH per feature.
         """
         var f = Int(block_idx.x)
-        if f >= Self.out_dim or thread_idx.x != 0:
+        if f >= Self.out_dim:
             return
+        var tid = Int(thread_idx.x)
 
         var eps = Scalar[dtype](Self.BN_EPSILON)
         var mom = Scalar[dtype](Self.BN_MOMENTUM)
         var one_m = Scalar[dtype](1.0) - mom
-        var n = Scalar[dtype](BATCH)
+        var n_f = Scalar[dtype](BATCH)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + f])
 
-        # Compute batch mean
-        var mean = Scalar[dtype](0.0)
-        for b in range(BATCH):
-            mean += rebind[Scalar[dtype]](output[b, f])
-        mean = mean / n
+        var smem = LayoutTensor[
+            dtype, Layout.row_major(TPB), MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
 
-        # Compute batch variance
-        var var_ = Scalar[dtype](0.0)
-        for b in range(BATCH):
-            var diff = rebind[Scalar[dtype]](output[b, f]) - mean
-            var_ += diff * diff
-        var_ = var_ / n
+        # Pass 1: Compute mean via block reduction
+        var local_sum = Scalar[dtype](0.0)
+        var idx = tid
+        while idx < BATCH:
+            local_sum += rebind[Scalar[dtype]](output[idx, f])
+            idx += TPB
+        smem[tid] = local_sum
+        barrier()
 
+        var stride = TPB // 2
+        while stride > 0:
+            if tid < stride:
+                smem[tid] = smem[tid] + smem[tid + stride]
+            barrier()
+            stride = stride // 2
+
+        var mean = rebind[Scalar[dtype]](smem[0]) / n_f
+        barrier()
+
+        # Pass 2: Compute variance via block reduction
+        var local_var = Scalar[dtype](0.0)
+        idx = tid
+        while idx < BATCH:
+            var diff = rebind[Scalar[dtype]](output[idx, f]) - mean
+            local_var += diff * diff
+            idx += TPB
+        smem[tid] = local_var
+        barrier()
+
+        stride = TPB // 2
+        while stride > 0:
+            if tid < stride:
+                smem[tid] = smem[tid] + smem[tid + stride]
+            barrier()
+            stride = stride // 2
+
+        var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
         var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
+        barrier()
 
-        # Normalize + scale + shift + ReLU
-        for b in range(BATCH):
-            var x = rebind[Scalar[dtype]](output[b, f])
+        # Pass 3: Normalize + scale + shift + ReLU (parallel scatter)
+        idx = tid
+        while idx < BATCH:
+            var x = rebind[Scalar[dtype]](output[idx, f])
             var x_hat = (x - mean) * inv_std
-            cache[b, Self.XHAT_OFF + f] = x_hat
+            cache[idx, Self.XHAT_OFF + f] = x_hat
             var pre_relu = gamma * x_hat + beta
-            output[b, f] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
-            cache[b, Self.INVSTD_OFF + f] = inv_std
+            output[idx, f] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+            cache[idx, Self.INVSTD_OFF + f] = inv_std
+            idx += TPB
 
-        # Update running stats
-        var rm = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
-        var rv = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
-        params.ptr[Self.RMEAN_OFF + f] = one_m * rm + mom * mean
-        params.ptr[Self.RVAR_OFF + f] = one_m * rv + mom * var_
+        # Update running stats (thread 0 only)
+        if tid == 0:
+            var rm = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
+            var rv = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
+            params.ptr[Self.RMEAN_OFF + f] = one_m * rm + mom * mean
+            params.ptr[Self.RVAR_OFF + f] = one_m * rv + mom * var_
 
     @always_inline
     @staticmethod
@@ -382,34 +417,71 @@ struct LinearBatchNormReLU[
     ):
         """Fused BN+ReLU inference kernel (batch stats, no cache).
 
-        Grid: (out_dim,), Block: (1,)
+        Grid: (out_dim,), Block: (TPB,)
+        Block-parallel reduction across BATCH per feature.
         """
         var f = Int(block_idx.x)
-        if f >= Self.out_dim or thread_idx.x != 0:
+        if f >= Self.out_dim:
             return
+        var tid = Int(thread_idx.x)
 
         var eps = Scalar[dtype](Self.BN_EPSILON)
-        var n = Scalar[dtype](BATCH)
+        var n_f = Scalar[dtype](BATCH)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + f])
 
-        var mean = Scalar[dtype](0.0)
-        for b in range(BATCH):
-            mean += rebind[Scalar[dtype]](output[b, f])
-        mean = mean / n
+        var smem = LayoutTensor[
+            dtype, Layout.row_major(TPB), MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
 
-        var var_ = Scalar[dtype](0.0)
-        for b in range(BATCH):
-            var diff = rebind[Scalar[dtype]](output[b, f]) - mean
-            var_ += diff * diff
-        var_ = var_ / n
+        # Pass 1: Compute mean
+        var local_sum = Scalar[dtype](0.0)
+        var idx = tid
+        while idx < BATCH:
+            local_sum += rebind[Scalar[dtype]](output[idx, f])
+            idx += TPB
+        smem[tid] = local_sum
+        barrier()
 
+        var stride = TPB // 2
+        while stride > 0:
+            if tid < stride:
+                smem[tid] = smem[tid] + smem[tid + stride]
+            barrier()
+            stride = stride // 2
+
+        var mean = rebind[Scalar[dtype]](smem[0]) / n_f
+        barrier()
+
+        # Pass 2: Compute variance
+        var local_var = Scalar[dtype](0.0)
+        idx = tid
+        while idx < BATCH:
+            var diff = rebind[Scalar[dtype]](output[idx, f]) - mean
+            local_var += diff * diff
+            idx += TPB
+        smem[tid] = local_var
+        barrier()
+
+        stride = TPB // 2
+        while stride > 0:
+            if tid < stride:
+                smem[tid] = smem[tid] + smem[tid + stride]
+            barrier()
+            stride = stride // 2
+
+        var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
         var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
+        barrier()
 
-        for b in range(BATCH):
-            var x = rebind[Scalar[dtype]](output[b, f])
+        # Pass 3: Normalize + ReLU (parallel scatter)
+        idx = tid
+        while idx < BATCH:
+            var x = rebind[Scalar[dtype]](output[idx, f])
             var pre_relu = gamma * (x - mean) * inv_std + beta
-            output[b, f] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+            output[idx, f] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+            idx += TPB
 
     @always_inline
     @staticmethod
@@ -434,45 +506,108 @@ struct LinearBatchNormReLU[
     ):
         """Fused ReLU+BN backward kernel. Produces grad w.r.t. linear output.
 
-        Grid: (out_dim,), Block: (1,)
+        Grid: (out_dim,), Block: (TPB,)
+        Block-parallel reduction for gradient accumulation.
         """
         var f = Int(block_idx.x)
-        if f >= Self.out_dim or thread_idx.x != 0:
+        if f >= Self.out_dim:
             return
+        var tid = Int(thread_idx.x)
 
-        var n = Scalar[dtype](BATCH)
+        var n_f = Scalar[dtype](BATCH)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + f])
         var inv_std = rebind[Scalar[dtype]](cache[0, Self.INVSTD_OFF + f])
 
-        var d_gamma = Scalar[dtype](0.0)
-        var d_beta = Scalar[dtype](0.0)
-        var sum_dy_g = Scalar[dtype](0.0)
-        var sum_dy_g_xh = Scalar[dtype](0.0)
+        var smem = LayoutTensor[
+            dtype, Layout.row_major(TPB), MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
 
-        for b in range(BATCH):
-            var x_hat = rebind[Scalar[dtype]](cache[b, Self.XHAT_OFF + f])
+        # Pass 1: Accumulate 4 partial sums per thread
+        var local_d_gamma = Scalar[dtype](0.0)
+        var local_d_beta = Scalar[dtype](0.0)
+        var local_sum_dy_g = Scalar[dtype](0.0)
+        var local_sum_dy_g_xh = Scalar[dtype](0.0)
+
+        var idx = tid
+        while idx < BATCH:
+            var x_hat = rebind[Scalar[dtype]](cache[idx, Self.XHAT_OFF + f])
             var pre_relu = gamma * x_hat + beta
-            var dy = rebind[Scalar[dtype]](grad_output[b, f])
+            var dy = rebind[Scalar[dtype]](grad_output[idx, f])
             if pre_relu <= Scalar[dtype](0.0):
                 dy = Scalar[dtype](0.0)
-            d_gamma += dy * x_hat
-            d_beta += dy
-            sum_dy_g += dy * gamma
-            sum_dy_g_xh += dy * gamma * x_hat
+            local_d_gamma += dy * x_hat
+            local_d_beta += dy
+            local_sum_dy_g += dy * gamma
+            local_sum_dy_g_xh += dy * gamma * x_hat
+            idx += TPB
 
-        grads.ptr[Self.GAMMA_OFF + f] = rebind[Scalar[dtype]](grads[Self.GAMMA_OFF + f]) + d_gamma
-        grads.ptr[Self.BETA_OFF + f] = rebind[Scalar[dtype]](grads[Self.BETA_OFF + f]) + d_beta
+        # Reduce d_gamma
+        smem[tid] = local_d_gamma
+        barrier()
+        var stride = TPB // 2
+        while stride > 0:
+            if tid < stride:
+                smem[tid] = smem[tid] + smem[tid + stride]
+            barrier()
+            stride = stride // 2
+        var d_gamma = rebind[Scalar[dtype]](smem[0])
+        barrier()
 
-        for b in range(BATCH):
-            var x_hat = rebind[Scalar[dtype]](cache[b, Self.XHAT_OFF + f])
+        # Reduce d_beta
+        smem[tid] = local_d_beta
+        barrier()
+        stride = TPB // 2
+        while stride > 0:
+            if tid < stride:
+                smem[tid] = smem[tid] + smem[tid + stride]
+            barrier()
+            stride = stride // 2
+        var d_beta = rebind[Scalar[dtype]](smem[0])
+        barrier()
+
+        # Reduce sum_dy_g
+        smem[tid] = local_sum_dy_g
+        barrier()
+        stride = TPB // 2
+        while stride > 0:
+            if tid < stride:
+                smem[tid] = smem[tid] + smem[tid + stride]
+            barrier()
+            stride = stride // 2
+        var sum_dy_g = rebind[Scalar[dtype]](smem[0])
+        barrier()
+
+        # Reduce sum_dy_g_xh
+        smem[tid] = local_sum_dy_g_xh
+        barrier()
+        stride = TPB // 2
+        while stride > 0:
+            if tid < stride:
+                smem[tid] = smem[tid] + smem[tid + stride]
+            barrier()
+            stride = stride // 2
+        var sum_dy_g_xh = rebind[Scalar[dtype]](smem[0])
+        barrier()
+
+        # Write param grads (thread 0 only)
+        if tid == 0:
+            grads.ptr[Self.GAMMA_OFF + f] = rebind[Scalar[dtype]](grads[Self.GAMMA_OFF + f]) + d_gamma
+            grads.ptr[Self.BETA_OFF + f] = rebind[Scalar[dtype]](grads[Self.BETA_OFF + f]) + d_beta
+
+        # Pass 2: Compute grad_input (parallel scatter)
+        idx = tid
+        while idx < BATCH:
+            var x_hat = rebind[Scalar[dtype]](cache[idx, Self.XHAT_OFF + f])
             var pre_relu = gamma * x_hat + beta
-            var dy = rebind[Scalar[dtype]](grad_output[b, f])
+            var dy = rebind[Scalar[dtype]](grad_output[idx, f])
             if pre_relu <= Scalar[dtype](0.0):
                 dy = Scalar[dtype](0.0)
-            grad_pre_bn[b, f] = inv_std * (
-                dy * gamma - sum_dy_g / n - x_hat * sum_dy_g_xh / n
+            grad_pre_bn[idx, f] = inv_std * (
+                dy * gamma - sum_dy_g / n_f - x_hat * sum_dy_g_xh / n_f
             )
+            idx += TPB
 
     # =========================================================================
     # GPU Launchers
@@ -571,7 +706,7 @@ struct LinearBatchNormReLU[
         ctx.enqueue_function[bn_relu_wrapper, bn_relu_wrapper](
             output, cache, params,
             grid_dim=(Self.out_dim,),
-            block_dim=(1,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
@@ -644,7 +779,7 @@ struct LinearBatchNormReLU[
         ctx.enqueue_function[bn_relu_nc_wrapper, bn_relu_nc_wrapper](
             output, params_immut,
             grid_dim=(Self.out_dim,),
-            block_dim=(1,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
@@ -724,7 +859,7 @@ struct LinearBatchNormReLU[
         ctx.enqueue_function[relu_bn_bwd_wrapper, relu_bn_bwd_wrapper](
             grad_pre_bn, grad_output_immut, params_immut, cache_immut, grads,
             grid_dim=(Self.out_dim,),
-            block_dim=(1,),
+            block_dim=(TPB,),
         )
 
         # Step 2: Bias grad accumulation: db[j] += sum_b(grad_pre_bn[b, j])

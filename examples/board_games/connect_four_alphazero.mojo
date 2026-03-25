@@ -17,7 +17,10 @@ from mojo_rl.deep_agents.alphazero import (
     AlphaZeroConnectFourResNetConfig,
     AlphaZeroConnectFourCNNConfig,
 )
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, GPUMinimaxConnectFour
+from mojo_rl.deep_agents.muzero.evaluators import (
+    RandomOpponent,
+    GPUMinimaxConnectFour,
+)
 from mojo_rl.envs.board_games.connect_four import ConnectFourEnv
 
 
@@ -40,9 +43,9 @@ def main() raises:
     # MLP config (best for ConnectFour — peaked initial policy helps MCTS)
     # comptime Config = AlphaZeroConnectFourConfig[]
     # CNN (Conv+BN+ReLU, matching alpha-zero-general):
-    comptime Config = AlphaZeroConnectFourCNNConfig[]
+    # comptime Config = AlphaZeroConnectFourCNNConfig[]
     # ResNet (closest to original AlphaZero):
-    # comptime Config = AlphaZeroConnectFourResNetConfig[]
+    comptime Config = AlphaZeroConnectFourResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "ConnectFour")
@@ -61,11 +64,11 @@ def main() raises:
         ctx,
         num_iters=50,
         steps_per_iter=16000,  # ~500+ games per iter (AlphaZero.jl uses 5000)
-        train_epochs=4,        # 600 sims = high quality data, can train more
+        train_epochs=4,  # 600 sims = high quality data, can train more
         warmup_iters=1,
         arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
         do_eval=True,
-        do_eval2=True,         # Eval vs Minimax depth 5
+        do_eval2=True,  # Eval vs Minimax depth 5
         do_arena=True,
         checkpoint_every=10,
         checkpoint_path="connect_four_alphazero.ckpt",
