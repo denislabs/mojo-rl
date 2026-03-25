@@ -97,7 +97,7 @@ def main() raises:
     print("  Avg dispatch: ", Float64(avg_ns) / 1000.0, " us")
 
     # Step 4: Compare with compile-every-time
-    print("\nBenchmark: 1000 compile+dispatch (current pattern)...")
+    print("\nBenchmark: 1000 compile+dispatch (current fused op pattern)...")
     var total2: UInt = 0
     for _ in range(1000):
         var start = perf_counter_ns()
@@ -111,10 +111,53 @@ def main() raises:
     var avg_ns2 = total2 // 1000
     print("  Avg compile+dispatch: ", Float64(avg_ns2) / 1000.0, " us")
 
+    # Step 5: Compare with ctx.enqueue_function (no compile, no stream)
+    print("\nBenchmark: 1000 ctx.enqueue_function (baseline)...")
+    comptime kernel_ref = wrapper
+    var total3: UInt = 0
+    for _ in range(1000):
+        var start = perf_counter_ns()
+        ctx.enqueue_function[kernel_ref, kernel_ref](
+            out_t, a_t, b_t, grid_dim=grid, block_dim=block
+        )
+        ctx.synchronize()
+        total3 += perf_counter_ns() - start
+
+    var avg_ns3 = total3 // 1000
+    print("  Avg ctx.enqueue:      ", Float64(avg_ns3) / 1000.0, " us")
+
+    print("\n  --- Summary ---")
+    print(
+        "  A) Stored compiled + stream.enqueue:     ",
+        Float64(avg_ns) / 1000.0,
+        " us",
+    )
+    print(
+        "  B) compile_function + stream.enqueue:     ",
+        Float64(avg_ns2) / 1000.0,
+        " us",
+    )
+    print(
+        "  C) ctx.enqueue_function (baseline):       ",
+        Float64(avg_ns3) / 1000.0,
+        " us",
+    )
     if avg_ns > 0:
         print(
-            "\n  Speedup from caching: ",
+            "\n  Cache vs compile-each (A vs B):  ",
             Float64(avg_ns2) / Float64(avg_ns),
+            "x",
+        )
+    if avg_ns > 0 and avg_ns3 > 0:
+        print(
+            "  Stream vs ctx (B vs C):          ",
+            Float64(avg_ns3) / Float64(avg_ns2),
+            "x",
+        )
+    if avg_ns > 0 and avg_ns3 > 0:
+        print(
+            "  Best vs baseline (A vs C):       ",
+            Float64(avg_ns3) / Float64(avg_ns),
             "x",
         )
 
