@@ -246,17 +246,29 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime obs_dim: Int = 126
     comptime action_dim: Int = 7
 
-    # Fused Conv2D+BN+ReLU (matching alpha-zero-general, fewer kernel launches)
+    # Non-fused Conv2D → BN → ReLU (for debugging — isolate fusion issues)
     comptime PredModel = Sequential[
-        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],          # 3ch→F, 6×7→6×7
-        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
-        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
-        Conv2DBatchNormReLU[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # 6×7→4×5
+        Conv2DLayer[3, Self.FILTERS, 3, 1, 1, 6, 7],       # 3ch→F, 6×7→6×7
+        BatchNorm2D[Self.FILTERS, 6, 7],
+        ReLU[Self.FILTERS * 6 * 7],
+        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
+        BatchNorm2D[Self.FILTERS, 6, 7],
+        ReLU[Self.FILTERS * 6 * 7],
+        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 1, 6, 7],
+        BatchNorm2D[Self.FILTERS, 6, 7],
+        ReLU[Self.FILTERS * 6 * 7],
+        Conv2DLayer[Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7],  # 6×7→4×5
+        BatchNorm2D[Self.FILTERS, 4, 5],
+        ReLU[Self.FILTERS * 4 * 5],
         FlattenLayer[Self.FILTERS * 4 * 5],
-        # FC: Fused Linear+BN+ReLU → Dropout (matching alpha-zero-general)
-        LinearBatchNormReLU[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
+        # FC: Linear → BN1D → ReLU → Dropout
+        Linear[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
+        BatchNorm2D[Self.FILTERS * 2, 1, 1],
+        ReLU[Self.FILTERS * 2],
         Dropout[Self.FILTERS * 2, 0.3, 42, True],
-        LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
+        Linear[Self.FILTERS * 2, Self.FILTERS],
+        BatchNorm2D[Self.FILTERS, 1, 1],
+        ReLU[Self.FILTERS],
         Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 7],
