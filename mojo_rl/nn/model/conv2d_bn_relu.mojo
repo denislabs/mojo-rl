@@ -76,8 +76,12 @@ struct Conv2DBatchNormReLU[
     comptime XHAT_OFF: Int = Self.CONV_CACHE
     comptime INVSTD_OFF: Int = Self.CONV_CACHE + Self.OUT_DIM
 
-    # Workspace for GPU conv matmul
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.CONV_CACHE + Self.OUT_DIM + Self.col_size * Self.out_channels
+    # Workspace for GPU conv matmul + temp buffers (conv cache, grad_pre_bn)
+    # Conv2D internal workspace: CONV_CACHE + col_size*OC (out_temp/dcol + w_t)
+    # Temp conv cache: CONV_CACHE (for stride-mismatch copy to/from our cache)
+    # grad_pre_bn (backward): OUT_DIM (reuses temp conv cache region in forward)
+    comptime CONV2D_WS: Int = Self.CONV_CACHE + Self.col_size * Self.out_channels
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.CONV2D_WS + Self.CONV_CACHE + Self.OUT_DIM
 
     # =========================================================================
     # Initialization
@@ -602,12 +606,14 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
 
-        # Allocate separate conv cache (can't rebind — stride mismatch with our larger CACHE_SIZE)
+        # Temp conv cache in workspace (after Conv2D's internal region)
+        # Conv2D uses workspace[0 : BATCH*CONV_CACHE + col_size*OC] internally.
+        # We place the temp cache right after that.
         comptime CONV_CS = ConvOp.CACHE_SIZE
-        var conv_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * CONV_CS if CONV_CS > 0 else 1)
+        comptime TEMP_CACHE_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels
         var conv_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
-        ](conv_cache_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
 
         # Run Conv2D GPU forward (writes pre-BN output to `output`, im2col to conv_cache)
         ConvOp.eval_gpu[BATCH](ctx, output, input, conv_params, conv_cache, workspace.unsafe_ptr())
@@ -681,12 +687,12 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
 
-        # Allocate dummy cache for Conv2D (needed by eval_gpu)
+        # Dummy cache in workspace (after Conv2D's internal region — data discarded)
         comptime CONV_CS = ConvOp.CACHE_SIZE
-        var dummy_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * CONV_CS if CONV_CS > 0 else 1)
+        comptime TEMP_CACHE_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels
         var dummy_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
-        ](dummy_cache_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
 
         ConvOp.eval_gpu[BATCH](ctx, output, input, conv_params, dummy_cache, workspace.unsafe_ptr())
 
@@ -758,11 +764,12 @@ struct Conv2DBatchNormReLU[
             Self.in_h, Self.in_w,
         ]
 
-        # Allocate temp buffer for grad_pre_bn (same size as output)
-        var grad_pre_bn_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.OUT_DIM)
+        # grad_pre_bn in workspace (after Conv2D's region + temp conv cache)
+        # Layout: [Conv2D WS | temp_conv_cache: CONV_CACHE | grad_pre_bn: OUT_DIM]
+        comptime GRAD_PRE_BN_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels + BATCH * Self.CONV_CACHE
         var grad_pre_bn = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](grad_pre_bn_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr() + GRAD_PRE_BN_OFF)
 
         # Step 1: Fused ReLU+BN backward
         var grad_output_immut = LayoutTensor[
@@ -799,13 +806,12 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
         ](grads.ptr)
 
-        # Extract im2col from our cache into a separate conv-sized buffer
-        # (can't rebind — stride mismatch between CACHE_SIZE and CONV_CS)
+        # Temp conv cache in workspace (after Conv2D's region, same offset as forward)
         comptime CONV_CS = ConvOp.CACHE_SIZE
-        var conv_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * CONV_CS if CONV_CS > 0 else 1)
+        comptime TEMP_CACHE_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels
         var conv_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
-        ](conv_cache_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
 
         # Copy im2col from our cache (stride=CACHE_SIZE) to conv_cache (stride=CONV_CS)
         comptime COPY_SIZE = BATCH * CONV_CS

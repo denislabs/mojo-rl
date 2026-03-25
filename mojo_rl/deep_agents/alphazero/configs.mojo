@@ -185,6 +185,7 @@ struct AlphaZeroTicTacToeCNNConfig[
 struct AlphaZeroConnectFourConfig[
     HIDDEN: Int = 256,
     LR: Float64 = 2e-3,
+    WD: Float64 = 1e-4,
     BS: Int = 64,
     CAP: Int = 400000,
     SIMS: Int = 600,
@@ -205,7 +206,7 @@ struct AlphaZeroConnectFourConfig[
             Linear[Self.HIDDEN, 1],
         ],
     ]
-    comptime OptType = Adam[LR=Self.LR]
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
@@ -227,6 +228,7 @@ struct AlphaZeroConnectFourConfig[
 struct AlphaZeroConnectFourCNNConfig[
     FILTERS: Int = 128,
     LR: Float64 = 2e-3,
+    WD: Float64 = 1e-4,
     BS: Int = 64,
     CAP: Int = 400000,
     SIMS: Int = 600,
@@ -267,16 +269,16 @@ struct AlphaZeroConnectFourCNNConfig[
             Linear[Self.FILTERS, 1],
         ],
     ]
-    comptime OptType = Adam[
-        LR=Self.LR
-    ]  # No weight decay (matches alpha-zero-general)
+    comptime OptType = AdamW[
+        LR=Self.LR, WEIGHT_DECAY=Self.WD
+    ]  # L2=1e-4 (matches AlphaZero.jl)
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
     comptime history_window: Int = 20
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
-    comptime temp_threshold: Int = 20  # AlphaZero.jl uses 20
+    comptime temp_threshold: Int = 20
 
     comptime Noise = DirichletNoise[
         0.25, 1.0
@@ -289,43 +291,60 @@ struct AlphaZeroConnectFourCNNConfig[
 # ConnectFour Config (ResNet — closer to original AlphaZero)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# ResNet blocks via composition: Conv2DReLU → Conv2D → Residual add → ReLU
+# ResNet blocks with BatchNorm (matching alpha-zero-general):
+# Conv1 → BN → ReLU → Conv2 → BN → (+skip) → ReLU
+comptime ResBlockBN6x7[F: Int] = Sequential[
+    Residual[Sequential[
+        Conv2DBatchNormReLU[F, F, 3, 1, 1, 6, 7],  # Conv1 → BN1 → ReLU
+        Conv2DLayer[F, F, 3, 1, 1, 6, 7],           # Conv2 (no act)
+        BatchNorm2D[F, 6, 7],                        # BN2
+    ]],
+    ReLU[F * 6 * 7],                                 # skip add → ReLU
+]
+
+comptime ResBlockBN3x3[F: Int] = Sequential[
+    Residual[Sequential[
+        Conv2DBatchNormReLU[F, F, 3, 1, 1, 3, 3],
+        Conv2DLayer[F, F, 3, 1, 1, 3, 3],
+        BatchNorm2D[F, 3, 3],
+    ]],
+    ReLU[F * 3 * 3],
+]
+
+# Legacy ResBlocks without BN (for backwards compatibility)
 comptime ResBlock6x7[F: Int] = Sequential[
-    Residual[
-        Sequential[
-            Conv2DReLU[F, F, 3, 1, 1, 6, 7],
-            Conv2DLayer[F, F, 3, 1, 1, 6, 7],
-        ]
-    ],
+    Residual[Sequential[
+        Conv2DReLU[F, F, 3, 1, 1, 6, 7],
+        Conv2DLayer[F, F, 3, 1, 1, 6, 7],
+    ]],
     ReLU[F * 6 * 7],
 ]
 
 comptime ResBlock3x3[F: Int] = Sequential[
-    Residual[
-        Sequential[
-            Conv2DReLU[F, F, 3, 1, 1, 3, 3],
-            Conv2DLayer[F, F, 3, 1, 1, 3, 3],
-        ]
-    ],
+    Residual[Sequential[
+        Conv2DReLU[F, F, 3, 1, 1, 3, 3],
+        Conv2DLayer[F, F, 3, 1, 1, 3, 3],
+    ]],
     ReLU[F * 3 * 3],
 ]
 
 
 struct AlphaZeroConnectFourResNetConfig[
     FILTERS: Int = 128,
-    LR: Float64 = 0.001,
+    LR: Float64 = 2e-3,
+    WD: Float64 = 1e-4,
     BS: Int = 64,
-    CAP: Int = 200000,
-    SIMS: Int = 25,
-    NODES: Int = 64,
-    C_PUCT: Float64 = 1.0,
+    CAP: Int = 400000,
+    SIMS: Int = 600,
+    NODES: Int = 1024,
+    C_PUCT: Float64 = 2.0,
 ](AlphaZeroConfig):
-    """AlphaZero for ConnectFour — ResNet with 4 residual blocks.
+    """AlphaZero for ConnectFour — ResNet with 5 residual blocks + BatchNorm.
 
-    Closer to original AlphaZero architecture:
-    - Initial Conv → 4× ResBlock(Conv+ReLU → Conv → skip+ReLU) → FC heads
-    - 100 MCTS simulations (vs 25 in CNN config)
-    - max_nodes=256 for deeper search trees
+    Matches AlphaZero.jl proven architecture:
+    - Initial Conv+BN+ReLU → 5× ResBlock(Conv+BN+ReLU → Conv+BN → skip+ReLU)
+    - 600 MCTS sims, CPUCT=2.0
+    - Separate policy/value heads with Conv2D reduction
     """
 
     comptime NAME: String = "AlphaZero-ConnectFour-ResNet"
@@ -333,32 +352,32 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime action_dim: Int = 7
 
     comptime PredModel = Sequential[
-        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],  # Initial: 3ch→F
-        ResBlock6x7[Self.FILTERS],  # ResBlock 1
-        ResBlock6x7[Self.FILTERS],  # ResBlock 2
-        ResBlock6x7[Self.FILTERS],  # ResBlock 3
-        ResBlock6x7[Self.FILTERS],  # ResBlock 4
-        Conv2DReLU[
-            Self.FILTERS, Self.FILTERS, 3, 1, 0, 6, 7
-        ],  # Reduce: 6×7→4×5
-        FlattenLayer[Self.FILTERS * 4 * 5],
-        LinearReLU[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
-        LinearReLU[Self.FILTERS * 2, Self.FILTERS],
+        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],  # Initial: 3ch→F
+        ResBlockBN6x7[Self.FILTERS],  # ResBlock 1
+        ResBlockBN6x7[Self.FILTERS],  # ResBlock 2
+        ResBlockBN6x7[Self.FILTERS],  # ResBlock 3
+        ResBlockBN6x7[Self.FILTERS],  # ResBlock 4
+        ResBlockBN6x7[Self.FILTERS],  # ResBlock 5
+        FlattenLayer[Self.FILTERS * 6 * 7],
+        LinearBatchNormReLU[Self.FILTERS * 6 * 7, Self.FILTERS * 2],
+        Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
+        Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 7],
             Linear[Self.FILTERS, 1],
         ],
     ]
-    comptime OptType = Adam[LR=Self.LR]
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
 
     comptime batch_size: Int = Self.BS
     comptime buffer_capacity: Int = Self.CAP
     comptime history_window: Int = 20
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
-    comptime temp_threshold: Int = 15
+    comptime temp_threshold: Int = 20
 
-    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime Noise = DirichletNoise[0.25, 1.0]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Players = SelfPlay
 
@@ -377,25 +396,26 @@ struct AlphaZeroTicTacToeResNetConfig[
     NODES: Int = 64,
     C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
-    """AlphaZero for TicTacToe — ResNet with 4 residual blocks + 50 MCTS sims.
-    """
+    """AlphaZero for TicTacToe — ResNet with BN + 4 residual blocks."""
 
     comptime NAME: String = "AlphaZero-TicTacToe-ResNet"
     comptime obs_dim: Int = 27
     comptime action_dim: Int = 9
 
     comptime PredModel = Sequential[
-        Conv2DReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],  # Initial: 3ch→F
-        ResBlock3x3[Self.FILTERS],  # ResBlock 1
-        ResBlock3x3[Self.FILTERS],  # ResBlock 2
-        ResBlock3x3[Self.FILTERS],  # ResBlock 3
-        ResBlock3x3[Self.FILTERS],  # ResBlock 4
-        Conv2DReLU[
+        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],  # Initial: 3ch→F
+        ResBlockBN3x3[Self.FILTERS],  # ResBlock 1
+        ResBlockBN3x3[Self.FILTERS],  # ResBlock 2
+        ResBlockBN3x3[Self.FILTERS],  # ResBlock 3
+        ResBlockBN3x3[Self.FILTERS],  # ResBlock 4
+        Conv2DBatchNormReLU[
             Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3
         ],  # Reduce: 3×3→1×1
         FlattenLayer[Self.FILTERS],
-        LinearReLU[Self.FILTERS, Self.FILTERS * 2],
-        LinearReLU[Self.FILTERS * 2, Self.FILTERS],
+        LinearBatchNormReLU[Self.FILTERS, Self.FILTERS * 2],
+        Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
+        Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 9],
             Linear[Self.FILTERS, 1],

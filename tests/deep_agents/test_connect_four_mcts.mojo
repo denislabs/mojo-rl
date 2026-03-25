@@ -39,7 +39,9 @@ def main() raises:
         print("  FAIL: Fresh MLP+MCTS LOSES to Random!")
 
     # Run again with different seed to check consistency
-    var r1b = mlp_agent.gpu_eval[C4, RandomOpponent](ctx, mlp_gpu, rng_offset=9999)
+    var r1b = mlp_agent.gpu_eval[C4, RandomOpponent](
+        ctx, mlp_gpu, rng_offset=9999
+    )
     print("  (seed 2) W", r1b[0], "D", r1b[1], "L", r1b[2])
 
     print()
@@ -52,7 +54,9 @@ def main() raises:
     var cnn_agent = GenericAlphaZeroAgent[CNNConfig, 64]()
     var cnn_gpu = cnn_agent.GPUStateType(ctx)
     cnn_gpu.upload_from(cnn_agent.state, ctx)
+    print(" Test beginning")
     var r2 = cnn_agent.gpu_eval[C4, RandomOpponent](ctx, cnn_gpu, rng_offset=42)
+    print(" Test ending")
     print("  W", r2[0], "D", r2[1], "L", r2[2])
     if r2[0] > r2[2]:
         print("  PASS: Fresh CNN+MCTS beats Random")
@@ -61,7 +65,9 @@ def main() raises:
     else:
         print("  FAIL: Fresh CNN+MCTS LOSES to Random!")
 
-    var r2b = cnn_agent.gpu_eval[C4, RandomOpponent](ctx, cnn_gpu, rng_offset=9999)
+    var r2b = cnn_agent.gpu_eval[C4, RandomOpponent](
+        ctx, cnn_gpu, rng_offset=9999
+    )
     print("  (seed 2) W", r2b[0], "D", r2b[1], "L", r2b[2])
 
     print()

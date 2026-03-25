@@ -63,8 +63,10 @@ struct LinearBatchNormReLU[
     comptime XHAT_OFF: Int = Self.LINEAR_CACHE
     comptime INVSTD_OFF: Int = Self.LINEAR_CACHE + Self.out_dim
 
-    # Workspace for GPU matmul backward (grad_pre_bn buffer)
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.out_dim
+    # Workspace for temp buffers (matmul cache + grad_pre_bn)
+    # MatMul doesn't use workspace internally (OP_WORKSPACE_PER_SAMPLE=0).
+    # Layout: [mm_cache: in_dim | grad_pre_bn: out_dim]
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.in_dim + Self.out_dim
 
     # =========================================================================
     # Initialization
@@ -507,12 +509,11 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
 
-        # Allocate separate matmul cache (stride mismatch: MM.CACHE_SIZE < Self.CACHE_SIZE)
+        # Matmul cache in workspace (at offset 0 — MatMul doesn't use workspace)
         comptime MM_CS = MM.CACHE_SIZE
-        var mm_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * MM_CS if MM_CS > 0 else 1)
         var mm_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
-        ](mm_cache_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr())
 
         # Step 1: MatMul → output (pre-bias)
         MM.eval_gpu[BATCH](ctx, output, input, mm_params, mm_cache, workspace.unsafe_ptr())
@@ -600,12 +601,11 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
 
-        # Dummy cache for matmul (not needed for inference, separate buffer)
+        # Dummy matmul cache in workspace (at offset 0 — data discarded)
         comptime MM_CS = MM.CACHE_SIZE
-        var dummy_buf = ctx.enqueue_create_buffer[dtype](BATCH * MM_CS if MM_CS > 0 else 1)
         var dummy_mm_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
-        ](dummy_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr())
 
         MM.eval_gpu[BATCH](ctx, output, input, mm_params, dummy_mm_cache, workspace.unsafe_ptr())
 
@@ -695,11 +695,10 @@ struct LinearBatchNormReLU[
 
         comptime MM = MatMul[Self.in_dim, Self.out_dim]
 
-        # Allocate temp buffer for grad_pre_bn (same size as output)
-        var grad_pre_bn_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.out_dim)
+        # grad_pre_bn in workspace (at offset 0, before mm_cache region)
         var grad_pre_bn = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](grad_pre_bn_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr())
 
         # Step 1: Fused ReLU+BN backward
         var grad_output_immut = LayoutTensor[
@@ -752,12 +751,12 @@ struct LinearBatchNormReLU[
         )
 
         # Step 3: MatMul backward (dW, dx)
-        # Extract cached input from our cache into a separate buffer (stride mismatch)
+        # Matmul cache in workspace (after grad_pre_bn region)
         comptime MM_CS = MM.CACHE_SIZE
-        var mm_cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * MM_CS if MM_CS > 0 else 1)
+        comptime MM_CACHE_BWD_OFF = BATCH * Self.out_dim
         var mm_cache = LayoutTensor[
             dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
-        ](mm_cache_buf.unsafe_ptr())
+        ](workspace.unsafe_ptr() + MM_CACHE_BWD_OFF)
 
         comptime COPY_SIZE = BATCH * MM_CS
         @always_inline

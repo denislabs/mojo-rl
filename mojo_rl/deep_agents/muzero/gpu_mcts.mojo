@@ -1489,12 +1489,15 @@ def gpu_mcts_batched_expand_backup_kernel[
         node_count[e] = Scalar[dtype](child_node_idx + 1)
 
         # ── Decode leaf value ───────────────────────────────
-        # If terminal (|reward| > 0.5), use game outcome directly
+        # leaf_value must be from the CHILD's perspective so that the
+        # backup loop's first negation converts it to the parent's perspective.
+        # Terminal reward is from the PARENT's perspective (player who moved),
+        # so we negate it to get the child's (opponent's) perspective.
         var step_rew = rebind[Scalar[dtype]](step_rewards[sim_off])
         var abs_rew = step_rew if step_rew >= Scalar[dtype](0.0) else -step_rew
         var leaf_value: Scalar[dtype]
         if abs_rew > Scalar[dtype](0.5):
-            leaf_value = step_rew  # Terminal: use actual game outcome
+            leaf_value = -step_rew  # Terminal: negate (reward is parent's perspective)
         else:
             var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
             var ev_p = exp(raw_v)
