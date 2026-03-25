@@ -20,7 +20,6 @@ Usage:
 from mojo_rl.nn.model import (
     Model,
     Linear,
-    LinearReLU,
     LinearMish,
     Sequential,
     Parallel,
@@ -31,29 +30,19 @@ from mojo_rl.nn.autodiff.combinators import Residual
 from .strategies import (
     SearchMode,
     LearnedDynamics,
-    TrueGameRules,
     ValueEncoding,
     CategoricalEncoding,
-    ScalarEncoding,
-    SymlogEncoding,
     HiddenScaling,
     MinMaxScale,
-    NoScale,
     ExplorationNoise,
     DirichletNoise,
-    EpsilonNoise,
-    NoNoise,
     PUCTFormula,
     MuZeroPUCT,
-    AlphaGoPUCT,
-    UCB1Formula,
     BackupMode,
     NStepBootstrap,
-    MonteCarloReturn,
     LambdaReturn,
     PlayerMode,
     SinglePlayer,
-    SelfPlay,
 )
 
 
@@ -439,81 +428,6 @@ struct MuZeroLargeConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# AlphaZero Config (true game rules, no learned dynamics)
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-struct AlphaZeroConfig[
-    OBS: Int,
-    ACT: Int,
-    HIDDEN: Int = 256,
-    LR: Float64 = 1e-3,
-    BS: Int = 256,
-    SIMS: Int = 800,
-    NODES: Int = 512,
-](MuZeroConfig):
-    """AlphaZero-style config: true game rules, no learned dynamics.
-
-    Uses real game simulator for state transitions. Only learns
-    policy + value networks. For board games (Chess, Go, etc.)
-    where the game rules are known and deterministic.
-
-    The DynModel is still required by the trait but is a minimal stub
-    (unused when Search = TrueGameRules).
-    """
-
-    comptime NAME: String = "AlphaZero"
-    comptime obs_dim: Int = Self.OBS
-    comptime action_dim: Int = Self.ACT
-    comptime latent_dim: Int = Self.OBS  # Latent = obs space for AlphaZero
-    comptime num_bins: Int = 1           # No distributional (scalar values)
-    comptime DYN_IN: Int = Self.OBS + Self.ACT
-    comptime DYN_OUT: Int = Self.OBS + 1  # Stub
-    comptime PRED_OUT: Int = Self.ACT + 1  # Policy + scalar value
-
-    # Policy + Value heads (no representation needed)
-    comptime RepModel = Sequential[
-        Linear[Self.OBS, Self.OBS],  # Identity-like (pass-through)
-    ]
-
-    # Dynamics stub (unused with TrueGameRules)
-    comptime DynModel = Sequential[
-        Linear[Self.DYN_IN, Self.DYN_OUT],
-    ]
-
-    # Policy + scalar value prediction
-    comptime PredModel = Sequential[
-        LinearReLU[Self.OBS, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Parallel[
-            Linear[Self.HIDDEN, Self.ACT],    # Policy head
-            Linear[Self.HIDDEN, 1],            # Scalar value head
-        ],
-    ]
-
-    comptime OptType = Adam[LR=Self.LR]
-
-    comptime batch_size: Int = Self.BS
-    comptime buffer_capacity: Int = 100000
-    comptime unroll_steps: Int = 1   # No unroll needed (true rules)
-    comptime td_steps: Int = 0       # Full episode returns for board games
-
-    comptime num_simulations: Int = Self.SIMS
-    comptime max_nodes: Int = Self.NODES
-
-    # AlphaZero strategy choices:
-    comptime Search = TrueGameRules           # Use real game rules, not learned model
-    comptime Encoding = ScalarEncoding         # Scalar value (game outcome in [-1, 1])
-    comptime Scaling = NoScale                 # No hidden scaling (obs space is stable)
-    comptime Noise = DirichletNoise[0.25, 0.03]  # Lower alpha for large action spaces
-    comptime PUCT = AlphaGoPUCT[2.5]          # Constant c (not log-based)
-    comptime Backup = MonteCarloReturn         # Full episode returns for board games
-    comptime Players = SelfPlay                # Two-player self-play with legal masking
-
-    comptime USE_REANALYZE: Bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════

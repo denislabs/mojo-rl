@@ -37,8 +37,8 @@ def main() raises:
     print()
 
     # Must match the config used during training!
-    comptime Config = AlphaZeroConnectFourResNetConfig[]
-    # comptime Config = AlphaZeroConnectFourCNNConfig[]
+    # comptime Config = AlphaZeroConnectFourResNetConfig[]
+    comptime Config = AlphaZeroConnectFourCNNConfig[]
 
     var agent = GenericAlphaZeroAgent[Config, 64]()
 
@@ -150,9 +150,7 @@ def main() raises:
                     obs.append(Scalar[dtype](0.0))
 
             var legal = env.legal_action_mask()
-            var ai_action = agent.select_action_mcts[C4CPU](
-                obs, legal, env
-            )
+            var ai_action = agent.select_action_mcts[C4CPU](obs, legal, env)
 
             if ai_action >= 0 and ai_action < len(legal) and legal[ai_action]:
                 _ = env._step_impl(ai_action)

@@ -521,3 +521,223 @@ struct GPUMinimaxTicTacToe(GPUEvaluator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ConnectFour Minimax (GPU, depth-limited with alpha-beta pruning)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _c4_count_dir(
+    board: InlineArray[Int, 42], col: Int, row: Int, mark: Int, dc: Int, dr: Int
+) -> Int:
+    """Count consecutive marks in one direction from (col, row)."""
+    comptime ROWS = 6
+    comptime COLS = 7
+    var cnt = 0
+    var c = col + dc
+    var r = row + dr
+    while c >= 0 and c < COLS and r >= 0 and r < ROWS and board[c * ROWS + r] == mark:
+        cnt += 1
+        c += dc
+        r += dr
+    return cnt
+
+
+def _c4_check_win(board: InlineArray[Int, 42], col: Int, row: Int, mark: Int) -> Bool:
+    """Check if placing mark at (col, row) creates 4-in-a-row."""
+    return (
+        _c4_count_dir(board, col, row, mark, 1, 0)
+        + _c4_count_dir(board, col, row, mark, -1, 0) >= 3
+        or _c4_count_dir(board, col, row, mark, 0, 1)
+        + _c4_count_dir(board, col, row, mark, 0, -1) >= 3
+        or _c4_count_dir(board, col, row, mark, 1, 1)
+        + _c4_count_dir(board, col, row, mark, -1, -1) >= 3
+        or _c4_count_dir(board, col, row, mark, 1, -1)
+        + _c4_count_dir(board, col, row, mark, -1, 1) >= 3
+    )
+
+
+def _c4_find_row(board: InlineArray[Int, 42], col: Int) -> Int:
+    """Find lowest empty row in column. Returns -1 if full."""
+    comptime ROWS = 6
+    for r in range(ROWS):
+        if board[col * ROWS + r] == 0:
+            return r
+    return -1
+
+
+def _c4_minimax_ab(
+    mut board: InlineArray[Int, 42],
+    depth: Int,
+    alpha_in: Int,
+    beta_in: Int,
+    is_max: Int,  # 1=maximizing, 0=minimizing
+    max_mark: Int,
+    min_mark: Int,
+) -> Int:
+    """Alpha-beta minimax for ConnectFour. Depth-limited.
+
+    Returns score: +100=max wins, -100=min wins, 0=draw/unknown.
+    """
+    comptime ROWS = 6
+    comptime COLS = 7
+    var alpha = alpha_in
+    var beta = beta_in
+
+    if is_max != 0:
+        var best = -200
+        for col in range(COLS):
+            var row = _c4_find_row(board, col)
+            if row < 0:
+                continue
+            board[col * ROWS + row] = max_mark
+            if _c4_check_win(board, col, row, max_mark):
+                board[col * ROWS + row] = 0
+                return 100 + depth  # Win sooner = better
+            if depth <= 1:
+                board[col * ROWS + row] = 0
+                if 0 > best:
+                    best = 0
+                continue
+            var val = _c4_minimax_ab(
+                board, depth - 1, alpha, beta, 0, max_mark, min_mark
+            )
+            board[col * ROWS + row] = 0
+            if val > best:
+                best = val
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+        return best
+    else:
+        var best = 200
+        for col in range(COLS):
+            var row = _c4_find_row(board, col)
+            if row < 0:
+                continue
+            board[col * ROWS + row] = min_mark
+            if _c4_check_win(board, col, row, min_mark):
+                board[col * ROWS + row] = 0
+                return -(100 + depth)  # Loss sooner = worse
+            if depth <= 1:
+                board[col * ROWS + row] = 0
+                if 0 < best:
+                    best = 0
+                continue
+            var val = _c4_minimax_ab(
+                board, depth - 1, alpha, beta, 1, max_mark, min_mark
+            )
+            board[col * ROWS + row] = 0
+            if val < best:
+                best = val
+            if val < beta:
+                beta = val
+            if alpha >= beta:
+                break
+        return best
+
+
+def _gpu_minimax_c4_kernel[
+    N_ENVS: Int,
+    STATE_SIZE: Int,
+    DEPTH: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    actions_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
+):
+    """GPU ConnectFour minimax kernel. One thread per environment.
+
+    Reads board from game_states, runs alpha-beta minimax at DEPTH,
+    writes best action to actions_out.
+    """
+    comptime ROWS = 6
+    comptime COLS = 7
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var s_off = e * STATE_SIZE
+
+    # Read board and current player
+    var board = InlineArray[Int, 42](fill=0)
+    for i in range(42):
+        board[i] = Int(rebind[Scalar[dtype]](game_states[s_off + i]))
+    var player = Int(rebind[Scalar[dtype]](game_states[s_off + 42]))
+    var my_mark = player + 1
+    var opp_mark = 2 - player
+
+    # Try each column, pick best via alpha-beta
+    var best_score = -300
+    var best_action = -1
+
+    for col in range(COLS):
+        var row = _c4_find_row(board, col)
+        if row < 0:
+            continue
+
+        board[col * ROWS + row] = my_mark
+
+        var score: Int
+        if _c4_check_win(board, col, row, my_mark):
+            score = 200  # Immediate win
+        else:
+            score = _c4_minimax_ab(
+                board, DEPTH - 1, -300, 300, 0, my_mark, opp_mark
+            )
+
+        board[col * ROWS + row] = 0
+
+        if score > best_score or best_action < 0:
+            best_score = score
+            best_action = col
+
+    if best_action < 0:
+        best_action = 0
+    actions_out[e] = Scalar[dtype](best_action)
+
+
+struct GPUMinimaxConnectFour[DEPTH: Int = 5](GPUEvaluator):
+    """Depth-limited minimax with alpha-beta for ConnectFour on GPU.
+
+    Each thread runs full alpha-beta search from the current board state.
+    Default depth 5 (looks ~5 moves ahead).
+    """
+
+    comptime NAME: String = "Minimax-D5"
+
+    @staticmethod
+    def select_action_gpu[
+        N_ENVS: Int, ACT: Int, STATE_SIZE: Int
+    ](
+        ctx: DeviceContext,
+        actions_out: DeviceBuffer[dtype],
+        legal_masks: DeviceBuffer[dtype],
+        game_states: DeviceBuffer[dtype],
+        rng_seed: UInt64,
+    ) raises:
+        _ = legal_masks
+        _ = rng_seed
+
+        # Use fewer threads per block — minimax is compute-heavy
+        comptime TPB = 32
+        comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
+        comptime run = _gpu_minimax_c4_kernel[
+            N_ENVS, STATE_SIZE, Self.DEPTH, dtype
+        ]
+        var act_t = LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin](
+            actions_out.unsafe_ptr()
+        )
+        var gs_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+        ](game_states.unsafe_ptr())
+        ctx.enqueue_function[run, run](
+            act_t,
+            gs_t,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )

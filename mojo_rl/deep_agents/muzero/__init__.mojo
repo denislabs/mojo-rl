@@ -12,7 +12,6 @@ from .configs import (
     MuZeroCNNConfig,
     MuZeroResNetConfig,
     MuZeroLargeConfig,
-    AlphaZeroConfig,
     EfficientZeroConfig,
 )
 from .strategies import (
@@ -31,5 +30,5 @@ from .gpu_mcts import GPUMCTSState
 from .utils import scalar_transform, inverse_scalar_transform, MinMaxStats
 from .evaluators import (
     Evaluator, GPUEvaluator,
-    RandomOpponent, MinimaxTicTacToe, GPUMinimaxTicTacToe,
+    RandomOpponent, MinimaxTicTacToe, GPUMinimaxTicTacToe, GPUMinimaxConnectFour,
 )

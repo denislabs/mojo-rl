@@ -17,7 +17,7 @@ from mojo_rl.deep_agents.alphazero import (
     AlphaZeroConnectFourResNetConfig,
     AlphaZeroConnectFourCNNConfig,
 )
-from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent
+from mojo_rl.deep_agents.muzero.evaluators import RandomOpponent, GPUMinimaxConnectFour
 from mojo_rl.envs.board_games.connect_four import ConnectFourEnv
 
 
@@ -57,7 +57,7 @@ def main() raises:
 
     var agent = GenericAlphaZeroAgent[Config, 64, RemoteLogger]()
 
-    _ = agent.train_selfplay_gpu[C4, RandomOpponent](
+    _ = agent.train_selfplay_gpu[C4, RandomOpponent, GPUMinimaxConnectFour[5]](
         ctx,
         num_iters=50,
         steps_per_iter=16000,  # ~500+ games per iter (AlphaZero.jl uses 5000)
@@ -65,6 +65,7 @@ def main() raises:
         warmup_iters=1,
         arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
         do_eval=True,
+        do_eval2=True,         # Eval vs Minimax depth 5
         do_arena=True,
         checkpoint_every=10,
         checkpoint_path="connect_four_alphazero.ckpt",
