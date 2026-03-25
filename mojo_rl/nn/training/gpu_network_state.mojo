@@ -31,8 +31,9 @@ from ..constants import dtype, TPB
 from .network_state import NetworkState
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer, DeviceStream
 from std.gpu import block_dim, block_idx, thread_idx
+from std.sys import has_nvidia_gpu_accelerator
 
 
 @always_inline
@@ -87,6 +88,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         dtype
     ]  # pinned host mirror — fast DMA for params
     var state_host: HostBuffer[dtype]  # pinned host mirror — fast DMA for state
+    var stream: DeviceStream  # NVIDIA: for compile_function dispatch
     var step_num: Int
     var lr_scale: Float64
 
@@ -98,6 +100,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         """
         self.step_num = 0
         self.lr_scale = 1.0
+        self.stream = ctx.create_stream()
         self.params_buf = ctx.enqueue_create_buffer[dtype](Self.PARAM_SIZE)
         self.grads_buf = ctx.enqueue_create_buffer[dtype](Self.PARAM_SIZE)
         self.state_buf = ctx.enqueue_create_buffer[dtype](Self.STATE_SIZE)
@@ -113,6 +116,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     def __init__(out self, *, copy: Self):
         self.step_num = copy.step_num
         self.lr_scale = copy.lr_scale
+        self.stream = copy.stream
         self.params_buf = copy.params_buf.copy()
         self.grads_buf = copy.grads_buf.copy()
         self.state_buf = copy.state_buf.copy()
@@ -122,6 +126,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     def __init__(out self, *, deinit take: Self):
         self.step_num = take.step_num
         self.lr_scale = take.lr_scale
+        self.stream = take.stream
         self.params_buf = take.params_buf^
         self.grads_buf = take.grads_buf^
         self.state_buf = take.state_buf^

@@ -1376,3 +1376,130 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             grid_dim=(db_grid_x,),
             block_dim=(TPB,),
         )
+
+    @staticmethod
+    def vjp_gpu_on_stream[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grad_params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        """Backward pass using compile_function + stream dispatch (NVIDIA)."""
+        var W = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin
+        ](params.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+        ](cache.ptr)
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var dW = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+        ](grad_params.ptr)
+        var db = LayoutTensor[
+            dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
+        ](grad_params.ptr + Self.in_dim * Self.out_dim)
+
+        # Kernel 1: dx = grad_output @ W.T
+        comptime dx_grid_x = (Self.in_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+        @always_inline
+        def dx_wrapper(
+            grad_input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
+            ],
+            W: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.out_dim),
+                ImmutAnyOrigin,
+            ],
+        ):
+            comptime if is_nvidia_gpu():
+                Self.backward_dx_kernel_mma[BATCH](grad_input, grad_output, W)
+            else:
+                Self.backward_dx_kernel_2x2[BATCH](grad_input, grad_output, W)
+
+        var compiled_dx = ctx.compile_function[dx_wrapper, dx_wrapper]()
+        stream.enqueue_function(
+            compiled_dx,
+            grad_input,
+            grad_output_immut,
+            W,
+            grid_dim=(dx_grid_x, dx_grid_y),
+            block_dim=(MMA_BLOCK_THREADS, 1),
+        )
+
+        # Kernel 2: dW = cache.T @ grad_output
+        comptime dW_grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime dW_grid_y = (Self.in_dim + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+        @always_inline
+        def dW_wrapper(
+            dW: LayoutTensor[
+                dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
+            ],
+        ):
+            comptime if is_nvidia_gpu():
+                Self.backward_dW_kernel_mma[BATCH](dW, cache, grad_output)
+            else:
+                Self.backward_dW_kernel_2x2[BATCH](dW, cache, grad_output)
+
+        var compiled_dW = ctx.compile_function[dW_wrapper, dW_wrapper]()
+        stream.enqueue_function(
+            compiled_dW,
+            dW,
+            cache_immut,
+            grad_output_immut,
+            grid_dim=(dW_grid_x, dW_grid_y),
+            block_dim=(MMA_BLOCK_THREADS, 1),
+        )
+
+        # Kernel 3: db = sum(grad_output, axis=0)
+        comptime db_grid_x = (Self.out_dim + TPB - 1) // TPB
+
+        @always_inline
+        def db_wrapper(
+            db: LayoutTensor[
+                dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
+            ],
+        ):
+            Self.backward_db_kernel[BATCH](db, grad_output)
+
+        var compiled_db = ctx.compile_function[db_wrapper, db_wrapper]()
+        stream.enqueue_function(
+            compiled_db,
+            db,
+            grad_output_immut,
+            grid_dim=(db_grid_x,),
+            block_dim=(TPB,),
+        )
