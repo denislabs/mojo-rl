@@ -288,3 +288,62 @@ this is a cleanliness improvement, not a capability one.
 - **Eager-mode DX** (`x = relu(linear(x))` with automatic backward): Needs closures/lambdas
 - **Dynamic model building** (`layers.append(Linear(64))`): Needs runtime polymorphism
 - These are language-level gaps. Our compile-time approach is the best possible given current Mojo.
+
+
+
+Research Summary: Kernel Launch Overhead & Fusion Options
+                                                                                                                                                                                                         
+  Current State in mojo-rl                                                                                                                                                                               
+                                                                                                                                                                                                         
+  Your AutoFused system already handles MatMul+Bias(+Act) and Conv2D+Act forward fusion well. But there are clear gaps:                                                                                  
+                                                                                                                                                                                                         
+  ┌────────────────────────────────────────────┬────────────────────────────┬───────────────────┐                                                                                                        
+  │                    Area                    │           Status           │     Launches      │                                                                                                      
+  ├────────────────────────────────────────────┼────────────────────────────┼───────────────────┤                                                                                                        
+  │ Linear forward (fused)                     │ MatMul+Bias+Act → 1 kernel │ 1                 │                                                                                                      
+  ├────────────────────────────────────────────┼────────────────────────────┼───────────────────┤
+  │ Linear backward (MMA path)                 │ dx, dW, db separate        │ 3                 │                                                                                                        
+  ├────────────────────────────────────────────┼────────────────────────────┼───────────────────┤                                                                                                        
+  │ Element-wise chains (Scale→Negate→BiasAdd) │ Not fused at all           │ 1 per op          │                                                                                                        
+  ├────────────────────────────────────────────┼────────────────────────────┼───────────────────┤                                                                                                        
+  │ ComputeGraph nodes (SAC loss)              │ Each node separate         │ Dozens per update │                                                                                                      
+  └────────────────────────────────────────────┴────────────────────────────┴───────────────────┘                                                                                                        
+                                                                                                                                                                                                       
+  For RL's typical small batches (32-256), launch overhead dominates compute time.                                                                                                                       
+                                                                                                                                                                                                       
+  ---                                                                                                                                                                                                    
+  What Can Be Done                                                                                                                                                                                     
+                  
+  1. Element-Wise Fusion Pass (most bang for buck)
+                                                                                                                                                                                                         
+  Your DESIGN_NEXT_IMPROVEMENTS.md already identifies this. An ElementWiseOp trait + compile-time pass in AutoFused could collapse chains like Scale → Negate → BiasAdd into 1 kernel. ~500-800 LOC. 2-3x
+   speedup for SAC/Dreamer.                                                                                                                                                                              
+                                                                                                                                                                                                         
+  2. Kernel Precompilation                                                                                                                                                                             
+
+  Each enqueue_function JIT-compiles on first call. You can precompile:                                                                                                                                  
+  compiled_fn = ctx.compile_function_checked[kernel[params]](...)
+  Drops per-launch overhead from ms to ~tens of microseconds. Doesn't reduce launch count but reduces per-launch cost.                                                                                   
+                                                                                                                                                                                                         
+  3. Backward Pass Fusion (MMA path)                                                                                                                                                                     
+                                                                                                                                                                                                         
+  Your tiled kernels already fuse backward (dual-region grid for dx+dW). The MMA path doesn't — it launches 3 separate kernels. Making MMA backward consistent with tiled would cut backward launches    
+  from 3→1.                                                                                                                                                                                              
+                                                                                                                                                                                                         
+  4. No CUDA Graphs Equivalent (yet)                                                                                                                                                                     
+  
+  There's no CUDA Graphs analog in Mojo/MAX today. The closest thing is MAX's graph compiler (model.compile()), which operates at the MLIR level and can fuse across ops. But that's the MAX Python API  
+  (@F.functional), not raw Mojo GPU kernels.                                                                                                                                                           
+                                                                                                                                                                                                         
+  5. TileTensor — Not Directly Relevant                                                                                                                                                                  
+  
+  TileTensor is about intra-kernel composition (thread distribution, tiling, swizzling) — it replaces LayoutTensor for writing individual kernels more cleanly. It doesn't help with inter-kernel fusion 
+  or launch overhead. It's the newer abstraction used in Modular's "Structured Mojo Kernels" (48% less code, same perf), but it solves a different problem than yours.                                 
+                                                                                                                                                                                                         
+  ---                                                                                                                                                                                                  
+  Recommended Priority
+                      
+  1. Element-wise fusion pass in AutoFused — highest ROI, directly addresses SAC/Dreamer/MuZero bottleneck
+  2. MMA backward fusion — make dual-region grid consistent with tiled path                                                                                                                              
+  3. Kernel precompilation — low effort, reduces per-launch JIT cost                                                                                                                                     
+  4. MAX graph compiler — long-term path if/when you migrate training loops to MAX graph API  

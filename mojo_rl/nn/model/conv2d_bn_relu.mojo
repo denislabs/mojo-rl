@@ -432,12 +432,12 @@ struct Conv2DBatchNormReLU[
         smem[tid] = local_sum
         barrier()
 
-        var stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
+        var st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
             barrier()
-            stride = stride // 2
+            st = st // 2
 
         var mean = rebind[Scalar[dtype]](smem[0]) / n_f
         barrier()
@@ -454,12 +454,12 @@ struct Conv2DBatchNormReLU[
         smem[tid] = local_var
         barrier()
 
-        stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
+        st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
             barrier()
-            stride = stride // 2
+            st = st // 2
 
         var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
         var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
@@ -530,12 +530,12 @@ struct Conv2DBatchNormReLU[
         smem[tid] = local_sum
         barrier()
 
-        var stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
+        var st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
             barrier()
-            stride = stride // 2
+            st = st // 2
 
         var mean = rebind[Scalar[dtype]](smem[0]) / n_f
         barrier()
@@ -552,12 +552,12 @@ struct Conv2DBatchNormReLU[
         smem[tid] = local_var
         barrier()
 
-        stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
+        st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
             barrier()
-            stride = stride // 2
+            st = st // 2
 
         var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
         var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
@@ -639,48 +639,48 @@ struct Conv2DBatchNormReLU[
         # Reduce d_gamma
         smem[tid] = local_d_gamma
         barrier()
-        var stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
+        var st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
             barrier()
-            stride = stride // 2
+            st = st // 2
         var d_gamma = rebind[Scalar[dtype]](smem[0])
         barrier()
 
         # Reduce d_beta
         smem[tid] = local_d_beta
         barrier()
-        stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
+        st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
             barrier()
-            stride = stride // 2
+            st = st // 2
         var d_beta = rebind[Scalar[dtype]](smem[0])
         barrier()
 
         # Reduce sum_dy_g
         smem[tid] = local_sum_dy_g
         barrier()
-        stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
+        st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
             barrier()
-            stride = stride // 2
+            st = st // 2
         var sum_dy_g = rebind[Scalar[dtype]](smem[0])
         barrier()
 
         # Reduce sum_dy_g_xh
         smem[tid] = local_sum_dy_g_xh
         barrier()
-        stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
+        st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
             barrier()
-            stride = stride // 2
+            st = st // 2
         var sum_dy_g_xh = rebind[Scalar[dtype]](smem[0])
         barrier()
 
