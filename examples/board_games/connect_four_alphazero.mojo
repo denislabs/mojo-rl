@@ -38,9 +38,9 @@ def main() raises:
     )
 
     # MLP config (best for ConnectFour — peaked initial policy helps MCTS)
-    # comptime Config = AlphaZeroConnectFourConfig[]
+    comptime Config = AlphaZeroConnectFourConfig[]
     # CNN alternative (slower to bootstrap due to near-uniform initial prior):
-    comptime Config = AlphaZeroConnectFourCNNConfig[]
+    # comptime Config = AlphaZeroConnectFourCNNConfig[]
     # ResNet (closest to original AlphaZero):
     # comptime Config = AlphaZeroConnectFourResNetConfig[]
 
@@ -60,10 +60,10 @@ def main() raises:
     _ = agent.train_selfplay_gpu[C4, RandomOpponent](
         ctx,
         num_iters=200,
-        steps_per_iter=4000,   # ~100+ complete games per iter (C4 games are longer)
-        train_epochs=5,        # 5 epochs (10 overtrains with noisy early data)
-        warmup_iters=1,        # Like alpha-zero-general
-        arena_threshold=0.6,   # Matches alpha-zero-general (60% win rate to accept)
+        steps_per_iter=4000,  # ~100+ complete games per iter (C4 games are longer)
+        train_epochs=5,  # 5 epochs (10 overtrains with noisy early data)
+        warmup_iters=1,  # Like alpha-zero-general
+        arena_threshold=0.6,  # Matches alpha-zero-general (60% win rate to accept)
         do_eval=True,
         do_arena=True,
         checkpoint_every=10,

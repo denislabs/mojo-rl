@@ -267,11 +267,11 @@ struct AlphaZeroConnectFourCNNConfig[
         Linear[Self.FILTERS * 4 * 5, Self.FILTERS * 2],
         BatchNorm2D[Self.FILTERS * 2, 1, 1],
         ReLU[Self.FILTERS * 2],
-        # Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        Dropout[Self.FILTERS * 2, 0.3, 42, True],
         Linear[Self.FILTERS * 2, Self.FILTERS],
         BatchNorm2D[Self.FILTERS, 1, 1],
         ReLU[Self.FILTERS],
-        # Dropout[Self.FILTERS, 0.3, 137, True],
+        Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 7],
             Linear[Self.FILTERS, 1],
