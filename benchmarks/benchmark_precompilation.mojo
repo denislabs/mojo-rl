@@ -16,7 +16,7 @@ Run with:
 
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu import thread_idx, block_idx, block_dim
-from std.sys import is_nvidia_gpu
+from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 from std.time import perf_counter_ns
 
@@ -202,8 +202,10 @@ def benchmark_cold_vs_warm[N: Int](ctx: DeviceContext) raises:
             "x",
         )
         print(
-            "\n  -> Mojo caches kernels after 1st launch. Cold cost is JIT"
-            " compilation.",
+            (
+                "\n  -> Mojo caches kernels after 1st launch. Cold cost is JIT"
+                " compilation."
+            ),
         )
 
 
@@ -571,7 +573,7 @@ def benchmark_chain_scaling[N: Int](ctx: DeviceContext) raises:
 
 
 def benchmark_precompile[N: Int](ctx: DeviceContext) raises:
-    comptime if not is_nvidia_gpu():
+    comptime if not has_nvidia_gpu_accelerator():
         print("\n" + "=" * 70)
         print("TEST 4: Precompilation — SKIPPED (Metal: unimplemented)")
         print("=" * 70)
