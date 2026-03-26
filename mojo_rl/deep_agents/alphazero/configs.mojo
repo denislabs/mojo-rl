@@ -28,7 +28,7 @@ from mojo_rl.nn.model import (
     Softmax,
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
-from mojo_rl.nn.autodiff.combinators import Residual
+from mojo_rl.nn.autodiff.combinators import Residual, Repeat
 from mojo_rl.nn.model.resblock_conv2d_bn import ResBlockConv2DBN
 from mojo_rl.deep_agents.muzero.strategies import (
     ExplorationNoise,
@@ -226,7 +226,7 @@ struct AlphaZeroConnectFourConfig[
     comptime value_target_q_weight: Float64 = 0.5
 
     comptime Noise = DirichletNoise[0.25, 1.0]  # alpha=1.0 for C4
-    comptime PUCT = AlphaGoPUCT[4.0]  # CPUCT=4 (Oracle article: 3-4 optimal for C4)
+    comptime PUCT = AlphaGoPUCT[2.0]
     comptime Players = SelfPlay
 
 
@@ -243,7 +243,7 @@ struct AlphaZeroConnectFourCNNConfig[
     CAP: Int = 400000,
     SIMS: Int = 600,
     NODES: Int = 1024,
-    C_PUCT: Float64 = 4.0,
+    C_PUCT: Float64 = 2.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — CNN variant.
 
@@ -354,20 +354,22 @@ comptime ResBlock3x3[F: Int] = Sequential[
 
 struct AlphaZeroConnectFourResNetConfig[
     FILTERS: Int = 128,
+    NUM_BLOCKS: Int = 5,
     LR: Float64 = 2e-3,
     WD: Float64 = 1e-4,
     BS: Int = 64,
     CAP: Int = 400000,
     SIMS: Int = 600,
     NODES: Int = 1024,
-    C_PUCT: Float64 = 4.0,
+    C_PUCT: Float64 = 2.0,
 ](AlphaZeroConfig):
-    """AlphaZero for ConnectFour — ResNet with 5 residual blocks + BatchNorm.
+    """AlphaZero for ConnectFour — ResNet with BatchNorm.
 
-    Matches AlphaZero.jl proven architecture:
-    - Initial Conv+BN+ReLU → 5× ResBlock(Conv+BN+ReLU → Conv+BN → skip+ReLU)
-    - 600 MCTS sims, CPUCT=1.0
-    - Separate policy/value heads with Conv2D reduction
+    NUM_BLOCKS controls depth (5=AlphaZero.jl, 10=medium, 20=original AZ).
+    Uses Repeat[N] for weight-shared blocks (efficient parameter usage).
+
+    Note: Repeat shares weights across all N blocks. For independent weights,
+    list blocks explicitly or use the FusedResNet config.
     """
 
     comptime NAME: String = "AlphaZero-ConnectFour-ResNet"
@@ -376,11 +378,7 @@ struct AlphaZeroConnectFourResNetConfig[
 
     comptime PredModel = Sequential[
         Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],  # Initial: 3ch→F
-        ResBlockBN6x7[Self.FILTERS],  # ResBlock 1
-        ResBlockBN6x7[Self.FILTERS],  # ResBlock 2
-        ResBlockBN6x7[Self.FILTERS],  # ResBlock 3
-        ResBlockBN6x7[Self.FILTERS],  # ResBlock 4
-        ResBlockBN6x7[Self.FILTERS],  # ResBlock 5
+        Repeat[Self.NUM_BLOCKS, ResBlockBN6x7[Self.FILTERS], shared=False],  # N× independent ResBlocks
         FlattenLayer[Self.FILTERS * 6 * 7],
         LinearBatchNormReLU[Self.FILTERS * 6 * 7, Self.FILTERS * 2],
         Dropout[Self.FILTERS * 2, 0.3, 42, True],
@@ -419,7 +417,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     CAP: Int = 400000,
     SIMS: Int = 600,
     NODES: Int = 1024,
-    C_PUCT: Float64 = 4.0,
+    C_PUCT: Float64 = 2.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — Fused ResNet with ResBlockConv2DBN.
 
@@ -471,6 +469,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
 
 struct AlphaZeroTicTacToeResNetConfig[
     FILTERS: Int = 128,
+    NUM_BLOCKS: Int = 4,
     LR: Float64 = 1e-3,
     BS: Int = 64,
     CAP: Int = 50000,
@@ -478,7 +477,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     NODES: Int = 64,
     C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
-    """AlphaZero for TicTacToe — ResNet with BN + 4 residual blocks."""
+    """AlphaZero for TicTacToe — ResNet with BN. NUM_BLOCKS controls depth."""
 
     comptime NAME: String = "AlphaZero-TicTacToe-ResNet"
     comptime obs_dim: Int = 27
@@ -486,10 +485,7 @@ struct AlphaZeroTicTacToeResNetConfig[
 
     comptime PredModel = Sequential[
         Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],  # Initial: 3ch→F
-        ResBlockBN3x3[Self.FILTERS],  # ResBlock 1
-        ResBlockBN3x3[Self.FILTERS],  # ResBlock 2
-        ResBlockBN3x3[Self.FILTERS],  # ResBlock 3
-        ResBlockBN3x3[Self.FILTERS],  # ResBlock 4
+        Repeat[Self.NUM_BLOCKS, ResBlockBN3x3[Self.FILTERS], shared=False],  # N× independent ResBlocks
         Conv2DBatchNormReLU[
             Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3
         ],  # Reduce: 3×3→1×1

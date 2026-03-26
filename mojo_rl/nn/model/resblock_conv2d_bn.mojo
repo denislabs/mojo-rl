@@ -78,43 +78,47 @@ def _bn_skip_relu_fwd_kernel[
         dtype, Layout.row_major(TPB), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
-    var smem2 = LayoutTensor[
-        dtype, Layout.row_major(TPB), MutAnyOrigin,
-        address_space=AddressSpace.SHARED,
-    ].stack_allocation()
 
-    # ── Pass 1: Mean + Variance in single pass (two-pass parallel Welford) ──
-    # Each thread accumulates local sum and sum-of-squares, then we reduce both.
+    # ── Pass 1: Mean ──
     var local_sum = Scalar[dtype](0.0)
-    var local_sq = Scalar[dtype](0.0)
-
-    # Flat pointer iteration: for each element in channel c across batch × spatial
     var base = output.ptr + c_off
     var idx = tid
     while idx < N:
-        # Flat index → (b, s): b = idx // spatial, offset = b * OUT_STRIDE + s
         var b = idx // spatial
-        var s = idx - b * spatial  # cheaper than idx % spatial
-        var x = (base + b * OUT_STRIDE + s)[]
-        local_sum += x
-        local_sq += x * x
+        var s = idx - b * spatial
+        local_sum += (base + b * OUT_STRIDE + s)[]
         idx += TPB
 
-    # Reduce sum
     smem[tid] = local_sum
-    smem2[tid] = local_sq
     barrier()
     var st = TPB // 2
     while st > 0:
         if tid < st:
             smem[tid] = smem[tid] + smem[tid + st]
-            smem2[tid] = smem2[tid] + smem2[tid + st]
         barrier()
         st = st // 2
-
     var mean = rebind[Scalar[dtype]](smem[0]) / n_f
-    # var = E[x^2] - E[x]^2
-    var var_ = rebind[Scalar[dtype]](smem2[0]) / n_f - mean * mean
+    barrier()
+
+    # ── Pass 1b: Variance using (x - mean)² (numerically stable) ──
+    var local_var = Scalar[dtype](0.0)
+    idx = tid
+    while idx < N:
+        var b = idx // spatial
+        var s = idx - b * spatial
+        var diff = (base + b * OUT_STRIDE + s)[] - mean
+        local_var += diff * diff
+        idx += TPB
+
+    smem[tid] = local_var
+    barrier()
+    st = TPB // 2
+    while st > 0:
+        if tid < st:
+            smem[tid] = smem[tid] + smem[tid + st]
+        barrier()
+        st = st // 2
+    var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
     var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
     barrier()
 
@@ -355,7 +359,8 @@ struct ResBlockConv2DBN[
     comptime CONV1_WS: Int = Self.Conv1.WORKSPACE_SIZE_PER_SAMPLE
     comptime CONV2_WS: Int = Self.Conv2.WORKSPACE_SIZE_PER_SAMPLE
     comptime MAX_CONV_WS: Int = Self.CONV1_WS if Self.CONV1_WS > Self.CONV2_WS else Self.CONV2_WS
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MAX_CONV_WS + Self.DIM  # conv ws + inter buffer
+    # conv ws + grad_conv2 buffer + temp_gi buffer + grad_inter buffer
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MAX_CONV_WS + Self.DIM + Self.DIM + Self.DIM
 
     # ── Initialization ─────────────────────────────────────────────
 
@@ -539,17 +544,22 @@ struct ResBlockConv2DBN[
         comptime TOTAL = BATCH * Self.DIM
         comptime BLOCKS = ceildiv(TOTAL, TPB)
 
+        # Workspace layout:
+        #   [0, MAX_CONV_WS)         — conv workspace (shared by Conv1/Conv2 backward)
+        #   [MAX_CONV_WS, +DIM)      — grad_conv2 (BN backward output)
+        #   [MAX_CONV_WS+DIM, +DIM)  — temp_gi (Conv1 backward output)
+        #   [MAX_CONV_WS+2*DIM, +DIM) — grad_inter (Conv2 backward output)
+        var grad_conv2_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
+        var temp_gi_ptr = grad_conv2_ptr + BATCH * Self.DIM
+        var grad_inter_ptr = temp_gi_ptr + BATCH * Self.DIM
+
         # 1. Fused BN2+skip+ReLU backward: grad_output → grad_conv2 + grad_skip
-        #    grad_conv2 goes to grad_output buffer (reused), grad_skip accumulates into grad_input
         var bn2_params = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), MutAnyOrigin](params.ptr + Self.BN2_OFF)
         var bn2_cache = LayoutTensor[dtype, Layout.row_major(BATCH, Self.BN2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.BN2_CACHE_OFF)
         var bn2_grads = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), MutAnyOrigin](grads.ptr + Self.BN2_OFF)
         var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](grad_output.ptr)
         var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](grad_input.ptr)
-
-        # grad_conv2 output goes into workspace inter region
-        var inter_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
-        var grad_conv2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](inter_ptr)
+        var grad_conv2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](grad_conv2_ptr)
 
         comptime bwd_k = _bn_skip_relu_bwd_kernel[
             BATCH, Self.channels, Self.spatial, Self.BN2_PS, Self.BN2_CS,
@@ -561,16 +571,16 @@ struct ResBlockConv2DBN[
             grid_dim=(Self.channels,), block_dim=(TPB,),
         )
 
-        # 2. Conv2 backward: grad_conv2 → grad_inter (reuse grad_output buffer)
-        var grad_inter = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](grad_output.ptr)
-        var go_c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin](inter_ptr)
+        # 2. Conv2 backward: grad_conv2 → grad_inter (separate workspace region)
+        var grad_inter = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](grad_inter_ptr)
+        var go_c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin](grad_conv2_ptr)
         var c2_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
         var g2_v = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
         Self.Conv2.backward_gpu[BATCH](ctx, grad_inter, go_c2, p2, c2_v, g2_v, conv_ws)
 
-        # 3. Conv1 backward: grad_inter → temp_gi (reuse inter region in workspace)
-        var go_c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](grad_output.ptr)
-        var temp_gi = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](inter_ptr)
+        # 3. Conv1 backward: grad_inter → temp_gi (separate workspace region)
+        var go_c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](grad_inter_ptr)
+        var temp_gi = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](temp_gi_ptr)
         var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
         var g1_v = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
         Self.Conv1.backward_gpu[BATCH](ctx, temp_gi, go_c1, p1, c1_v, g1_v, conv_ws)
@@ -586,7 +596,7 @@ struct ResBlockConv2DBN[
                 return
             a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
 
-        var temp_flat = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](inter_ptr)
+        var temp_flat = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](temp_gi_ptr)
         ctx.enqueue_function[add_wrapper, add_wrapper](
             grad_input, temp_flat,
             grid_dim=(BLOCKS,), block_dim=(TPB,),

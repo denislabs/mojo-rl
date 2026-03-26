@@ -422,37 +422,47 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(TPB), MutAnyOrigin,
             address_space=AddressSpace.SHARED,
         ].stack_allocation()
-        var smem2 = LayoutTensor[
-            dtype, Layout.row_major(TPB), MutAnyOrigin,
-            address_space=AddressSpace.SHARED,
-        ].stack_allocation()
 
-        # Pass 1: Accumulate sum + sum-of-squares simultaneously
+        # Pass 1: Mean
         var local_sum = Scalar[dtype](0.0)
-        var local_sq = Scalar[dtype](0.0)
         var base = output.ptr + c_off
         var idx = tid
         while idx < N:
             var b = idx // Self.spatial_out
             var s = idx - b * Self.spatial_out
-            var x = (base + b * OUT_STRIDE + s)[]
-            local_sum += x
-            local_sq += x * x
+            local_sum += (base + b * OUT_STRIDE + s)[]
             idx += TPB
 
         smem[tid] = local_sum
-        smem2[tid] = local_sq
         barrier()
         var st = TPB // 2
         while st > 0:
             if tid < st:
                 smem[tid] = smem[tid] + smem[tid + st]
-                smem2[tid] = smem2[tid] + smem2[tid + st]
             barrier()
             st = st // 2
-
         var mean = rebind[Scalar[dtype]](smem[0]) / n_f
-        var var_ = rebind[Scalar[dtype]](smem2[0]) / n_f - mean * mean
+        barrier()
+
+        # Pass 1b: Variance using (x - mean)² — numerically stable
+        var local_var = Scalar[dtype](0.0)
+        idx = tid
+        while idx < N:
+            var b = idx // Self.spatial_out
+            var s = idx - b * Self.spatial_out
+            var diff = (base + b * OUT_STRIDE + s)[] - mean
+            local_var += diff * diff
+            idx += TPB
+
+        smem[tid] = local_var
+        barrier()
+        st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
+            barrier()
+            st = st // 2
+        var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
         var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
         barrier()
 
@@ -512,37 +522,47 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(TPB), MutAnyOrigin,
             address_space=AddressSpace.SHARED,
         ].stack_allocation()
-        var smem2 = LayoutTensor[
-            dtype, Layout.row_major(TPB), MutAnyOrigin,
-            address_space=AddressSpace.SHARED,
-        ].stack_allocation()
 
-        # Pass 1: sum + sum-of-squares
+        # Pass 1: Mean
         var local_sum = Scalar[dtype](0.0)
-        var local_sq = Scalar[dtype](0.0)
         var base = output.ptr + c_off
         var idx = tid
         while idx < N:
             var b = idx // Self.spatial_out
             var s = idx - b * Self.spatial_out
-            var x = (base + b * OUT_STRIDE + s)[]
-            local_sum += x
-            local_sq += x * x
+            local_sum += (base + b * OUT_STRIDE + s)[]
             idx += TPB
 
         smem[tid] = local_sum
-        smem2[tid] = local_sq
         barrier()
         var st = TPB // 2
         while st > 0:
             if tid < st:
                 smem[tid] = smem[tid] + smem[tid + st]
-                smem2[tid] = smem2[tid] + smem2[tid + st]
             barrier()
             st = st // 2
-
         var mean = rebind[Scalar[dtype]](smem[0]) / n_f
-        var var_ = rebind[Scalar[dtype]](smem2[0]) / n_f - mean * mean
+        barrier()
+
+        # Pass 1b: Variance using (x - mean)² — numerically stable
+        var local_var = Scalar[dtype](0.0)
+        idx = tid
+        while idx < N:
+            var b = idx // Self.spatial_out
+            var s = idx - b * Self.spatial_out
+            var diff = (base + b * OUT_STRIDE + s)[] - mean
+            local_var += diff * diff
+            idx += TPB
+
+        smem[tid] = local_var
+        barrier()
+        st = TPB // 2
+        while st > 0:
+            if tid < st:
+                smem[tid] = smem[tid] + smem[tid + st]
+            barrier()
+            st = st // 2
+        var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
         var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
         barrier()
 

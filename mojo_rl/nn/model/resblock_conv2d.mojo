@@ -115,7 +115,8 @@ struct ResBlockConv2D[
     comptime CONV1_WS: Int = Self.Conv1.WORKSPACE_SIZE_PER_SAMPLE
     comptime CONV2_WS: Int = Self.Conv2.WORKSPACE_SIZE_PER_SAMPLE
     comptime MAX_CONV_WS: Int = Self.CONV1_WS if Self.CONV1_WS > Self.CONV2_WS else Self.CONV2_WS
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MAX_CONV_WS + Self.DIM
+    # conv ws + inter buffer + temp_gi buffer (no grad_output reuse in backward)
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MAX_CONV_WS + Self.DIM + Self.DIM
 
     # ── Initialization ─────────────────────────────────────────────
 
@@ -341,9 +342,10 @@ struct ResBlockConv2D[
         var g2_v = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
         Self.Conv2.backward_gpu[BATCH](ctx, grad_inter, go_c2, p2, c2_v, g2_v, conv_ws)
 
-        # 3. Conv1 backward: grad_inter → temp (reuse grad_output buffer)
+        # 3. Conv1 backward: grad_inter → temp_gi (separate workspace region)
+        var temp_gi_ptr = workspace.unsafe_ptr() + BATCH * (Self.MAX_CONV_WS + Self.DIM)
         var go_c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter_ptr)
-        var temp_gi = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](grad_output.ptr)
+        var temp_gi = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](temp_gi_ptr)
         var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.CACHE_SIZE), MutAnyOrigin](cache.ptr)
         var g1_v = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
         Self.Conv1.backward_gpu[BATCH](ctx, temp_gi, go_c1, p1, c1_v, g1_v, conv_ws)
@@ -352,6 +354,6 @@ struct ResBlockConv2D[
         comptime add_k = _add_kernel[TOTAL, dtype]
         ctx.enqueue_function[add_k, add_k](
             gi_flat,
-            LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](grad_output.ptr),
+            LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](temp_gi_ptr),
             grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
