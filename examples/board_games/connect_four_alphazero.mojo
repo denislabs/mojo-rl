@@ -70,8 +70,10 @@ def main() raises:
         warmup_iters=1,
         arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
         do_eval=True,
-        do_eval2=True,  # Eval vs Minimax depth 5
+        do_eval2=True,         # Eval vs Minimax depth 5
         do_arena=True,
+        slow_window_start=4,   # Start with 4 iters of history, grow to full
+        slow_window_growth=2,  # Grow by 1 every 2 iterations
         checkpoint_every=10,
         checkpoint_path="connect_four_alphazero.ckpt",
         logger=UnsafePointer(to=logger),

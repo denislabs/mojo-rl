@@ -1974,6 +1974,8 @@ struct GenericAlphaZeroAgent[
         do_eval: Bool = True,
         do_eval2: Bool = False,
         do_arena: Bool = True,
+        slow_window_start: Int = 0,  # 0=disabled. >0: start with this window, grow to full
+        slow_window_growth: Int = 2,  # Grow window by 1 every N iterations
         checkpoint_every: Int = 0,
         checkpoint_path: String = "alphazero.ckpt",
         logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
@@ -2071,6 +2073,12 @@ struct GenericAlphaZeroAgent[
         var diag_params_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
         var diag_grads_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
 
+        # Pre-allocated Q-value host buffers (for q-value training targets)
+        comptime _Q_WEIGHT = Self.Config.value_target_q_weight
+        comptime _Q_BUF_SIZE = Self.n_envs * MAX_NODES * ACT if _Q_WEIGHT > 0.0 else 1
+        var q_vc_host = ctx.enqueue_create_host_buffer[dtype](_Q_BUF_SIZE)
+        var q_tv_host = ctx.enqueue_create_host_buffer[dtype](_Q_BUF_SIZE)
+
         # Per-env episode data for computing game outcomes
         var env_rewards = List[List[Float64]](capacity=Self.n_envs)
         var env_obs_history = List[List[List[Scalar[dtype]]]](
@@ -2079,10 +2087,15 @@ struct GenericAlphaZeroAgent[
         var env_policy_history = List[List[List[Scalar[dtype]]]](
             capacity=Self.n_envs
         )
+        # Per-env root Q-value history (for q-value training targets)
+        var env_q_history = List[List[Float64]](capacity=Self.n_envs)
+        var root_q_host = List[Float64](capacity=Self.n_envs)
         for _ in range(Self.n_envs):
             env_rewards.append(List[Float64]())
             env_obs_history.append(List[List[Scalar[dtype]]]())
             env_policy_history.append(List[List[Scalar[dtype]]]())
+            env_q_history.append(List[Float64]())
+            root_q_host.append(0.0)
 
         # Initialize envs
         E.reset_kernel_gpu[Self.n_envs, E.STATE_SIZE](
@@ -2118,6 +2131,16 @@ struct GenericAlphaZeroAgent[
         for iter in range(num_iters):
             # ── 1. Mark new iteration (sliding window eviction) ──
             self.state.start_new_iteration()
+
+            # Slow window: limit effective history to a growing window
+            # that starts small and reaches full size over time.
+            if slow_window_start > 0:
+                var effective_window = slow_window_start + iter // slow_window_growth
+                comptime FULL_WINDOW = Self.Config.history_window
+                if effective_window > FULL_WINDOW:
+                    effective_window = FULL_WINDOW
+                while self.state.num_iters > effective_window + 1:
+                    self.state._evict_oldest()
 
             # Determine if this is a warmup iteration (random actions)
             var use_mcts = iter >= warmup_iters
@@ -2403,6 +2426,25 @@ struct GenericAlphaZeroAgent[
 
                     # Download policies for training data
                     ctx.enqueue_copy(policy_host, gpu_mcts.policies_out)
+
+                    # Compute root Q-value per env for q-value targets
+                    # Q = sum(total_value[root,a]) / sum(visit_count[root,a])
+                    comptime Q_WEIGHT = Self.Config.value_target_q_weight
+                    comptime if Q_WEIGHT > 0.0:
+                        ctx.enqueue_copy(q_vc_host, gpu_mcts.visit_count)
+                        ctx.enqueue_copy(q_tv_host, gpu_mcts.total_value)
+                        ctx.synchronize()
+                        for e_q in range(Self.n_envs):
+                            var root_off = e_q * MAX_NODES * ACT  # root = node 0
+                            var total_v: Float64 = 0.0
+                            var total_n: Float64 = 0.0
+                            for a_q in range(ACT):
+                                total_v += Float64(q_tv_host[root_off + a_q])
+                                total_n += Float64(q_vc_host[root_off + a_q])
+                            if total_n > 0.5:
+                                root_q_host[e_q] = total_v / total_n
+                            else:
+                                root_q_host[e_q] = 0.0
                 else:
                     # Warmup: random legal actions
                     comptime run_warmup = uniform_random_discrete_actions_kernel[
@@ -2492,6 +2534,7 @@ struct GenericAlphaZeroAgent[
                         env_obs_history[e].append(step_obs^)
                         env_policy_history[e].append(step_pol^)
                         env_rewards[e].append(Float64(rewards_host[e]))
+                        env_q_history[e].append(root_q_host[e])
 
                         if Float64(dones_host[e]) > 0.5:
                             # Game ended — compute outcome and add all moves
@@ -2500,25 +2543,35 @@ struct GenericAlphaZeroAgent[
 
                             var is_draw = last_reward > -0.01 and last_reward < 0.01
 
+                            comptime QW = Self.Config.value_target_q_weight
+
                             for t in range(ep_len):
                                 var steps_from_end = ep_len - 1 - t
-                                var outcome: Float64
+                                # z = game outcome from this player's perspective
+                                var z: Float64
                                 if is_draw:
-                                    outcome = 1e-4
+                                    z = 1e-4
                                 elif steps_from_end % 2 == 0:
-                                    outcome = last_reward
+                                    z = last_reward
                                 else:
-                                    outcome = -last_reward
+                                    z = -last_reward
+
+                                # Blend z with MCTS root Q-value
+                                var value_target = z
+                                comptime if QW > 0.0:
+                                    var q = env_q_history[e][t]
+                                    value_target = (1.0 - QW) * z + QW * q
 
                                 self._add_with_augmentation[E](
                                     env_obs_history[e][t],
                                     env_policy_history[e][t],
-                                    Scalar[dtype](outcome),
+                                    Scalar[dtype](value_target),
                                 )
 
                             env_obs_history[e].clear()
                             env_policy_history[e].clear()
                             env_rewards[e].clear()
+                            env_q_history[e].clear()
                 else:
                     # During warmup, just clear episode data on done
                     for e in range(Self.n_envs):
@@ -2526,6 +2579,7 @@ struct GenericAlphaZeroAgent[
                             env_obs_history[e].clear()
                             env_policy_history[e].clear()
                             env_rewards[e].clear()
+                            env_q_history[e].clear()
 
                 # Selective reset
                 E.selective_reset_kernel_gpu[Self.n_envs, E.STATE_SIZE](
