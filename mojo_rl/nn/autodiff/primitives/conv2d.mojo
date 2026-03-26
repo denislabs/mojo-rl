@@ -1024,9 +1024,12 @@ struct Conv2D[
             comptime K_TOTAL = BATCH * Self.spatial_out
             comptime KS2 = Self.kernel_size * Self.kernel_size
 
-            # 1. Explicit im2col: input → cache (s*col_size+k layout)
-            comptime im2col_elems = BATCH * Self.CACHE_SIZE
-            comptime im2col_blocks = (im2col_elems + TPB - 1) // TPB
+            # 1. Optimized im2col: one thread per (batch, spatial_position),
+            #    each thread writes col_size elements (one full column).
+            #    Eliminates 7 divmods per element → 2 divmods per thread.
+            #    Better input locality: each thread reads from one spatial neighborhood.
+            comptime SPATIAL_TOTAL = BATCH * Self.spatial_out
+            comptime im2col_blocks = (SPATIAL_TOTAL + TPB - 1) // TPB
 
             @always_inline
             def im2col_wrapper(
@@ -1041,30 +1044,31 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
-                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if idx >= im2col_elems:
+                var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if tid >= SPATIAL_TOTAL:
                     return
-                var b = idx // Self.CACHE_SIZE
-                var pos = idx % Self.CACHE_SIZE
-                # New layout: pos = s * col_size + k
-                var s = pos // Self.col_size
-                var k = pos % Self.col_size
+                # 2 divmods total (vs 7+ before)
+                var b = tid // Self.spatial_out
+                var s = tid - b * Self.spatial_out
                 var oh = s // Self.out_w
-                var ow = s % Self.out_w
-                var ch = k // KS2
-                var rem_k = k % KS2
-                var kh = rem_k // Self.kernel_size
-                var kw = rem_k % Self.kernel_size
-                var ih = oh * Self.stride - Self.padding + kh
-                var iw = ow * Self.stride - Self.padding + kw
-                var val: Scalar[dtype] = 0
-                if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                    val = rebind[Scalar[dtype]](
-                        input[
-                            b, ch * Self.in_h * Self.in_w + ih * Self.in_w + iw
-                        ]
-                    )
-                cache_out[b, pos] = val
+                var ow = s - oh * Self.out_w
+
+                var cache_base = cache_out.ptr + b * Self.CACHE_SIZE + s * Self.col_size
+                var in_base = input.ptr + b * Self.IN_DIM
+
+                # Iterate over all kernel positions for this spatial location
+                for ch in range(Self.in_channels):
+                    var ch_base = ch * Self.in_h * Self.in_w
+                    var k_ch = ch * KS2
+                    for kh in range(Self.kernel_size):
+                        var ih = oh * Self.stride - Self.padding + kh
+                        var kh_off = kh * Self.kernel_size
+                        for kw in range(Self.kernel_size):
+                            var iw = ow * Self.stride - Self.padding + kw
+                            var val: Scalar[dtype] = 0
+                            if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
+                                val = (in_base + ch_base + ih * Self.in_w + iw)[]
+                            (cache_base + k_ch + kh_off + kw)[] = val
 
             ctx.enqueue_function[im2col_wrapper, im2col_wrapper](
                 cache,
