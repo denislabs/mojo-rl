@@ -1078,50 +1078,21 @@ struct Conv2D[
                 dtype, Layout.row_major(K_TOTAL, Self.col_size), MutAnyOrigin
             ](cache.ptr)
 
-            # 2. Transpose W: (OC, col_size) → W.T (col_size, OC) — tiny
-            # Workspace: [out_temp/dcol: BATCH*CACHE_SIZE | w_t: col_size*OC]
-            comptime w_t_offset = BATCH * Self.CACHE_SIZE
-            comptime w_elems = Self.out_channels * Self.col_size
-            comptime w_blocks = (w_elems + TPB - 1) // TPB
-            var w_t = LayoutTensor[
+            # 2. max_matmul with transpose_b: out = col_flat @ W.T
+            #    W is stored as (OC, col_size), transpose_b transposes it internally
+            var W_mat = LayoutTensor[
                 dtype,
-                Layout.row_major(Self.col_size, Self.out_channels),
+                Layout.row_major(Self.out_channels, Self.col_size),
                 MutAnyOrigin,
-            ](workspace + w_t_offset)
+            ](params.ptr)
 
-            @always_inline
-            def transpose_w_fwd(
-                dst: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.col_size, Self.out_channels),
-                    MutAnyOrigin,
-                ],
-                src: LayoutTensor[
-                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
-                ],
-            ):
-                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if idx >= w_elems:
-                    return
-                var k = idx // Self.out_channels
-                var oc = idx % Self.out_channels
-                dst[k, oc] = src[oc * Self.col_size + k]
-
-            ctx.enqueue_function[transpose_w_fwd, transpose_w_fwd](
-                w_t,
-                params_immut,
-                grid_dim=(w_blocks,),
-                block_dim=(TPB,),
-            )
-
-            # 3. max_matmul: output_temp = col_flat @ W.T → (K_TOTAL, OC)
             var out_temp = LayoutTensor[
                 dtype,
                 Layout.row_major(K_TOTAL, Self.out_channels),
                 MutAnyOrigin,
             ](workspace)
 
-            max_matmul[target="gpu"](out_temp, col_flat, w_t, ctx)
+            max_matmul[target="gpu", transpose_b=True](out_temp, col_flat, W_mat, ctx)
 
             # 4. Transpose output + bias: (K_TOTAL, OC) → (BATCH, OC*S)
             # out_temp[b*S+s, oc] → output[b, oc*S+s] + bias[oc]
@@ -1306,7 +1277,13 @@ struct Conv2D[
             # dcol = W.T @ grad_reshaped, then col2im gather
             # grad_reshaped (OC, K_TOTAL) is still in grad_input.ptr
 
-            # W.T in workspace (same offset as forward)
+            # dcol = W.T @ grad_reshaped  →  dcol_t = grad_reshaped.T @ W
+            # grad_reshaped is (OC, K_TOTAL) row-major = (K_TOTAL, OC) col-major
+            # Reinterpret as (K_TOTAL, OC) row-major via transpose_b on W:
+            # dcol_t(K_TOTAL, col_size) = grad_t(K_TOTAL, OC) @ W(OC, col_size)
+            # But we can't reinterpret grad without transpose_a (unsupported).
+            # So we keep the explicit transpose for backward.
+            # TODO: Remove when max_matmul supports transpose_a
             comptime w_t_bwd_offset = BATCH * Self.CACHE_SIZE
             comptime w_elems_bwd = Self.out_channels * Self.col_size
             comptime w_blocks_bwd = (w_elems_bwd + TPB - 1) // TPB
@@ -1341,14 +1318,12 @@ struct Conv2D[
                 block_dim=(TPB,),
             )
 
-            # dcol at workspace offset 0 (reuses out_temp/col_flat region)
             var dcol = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.col_size, K_TOTAL),
                 MutAnyOrigin,
             ](workspace)
 
-            # max_matmul: dcol = W.T @ grad_reshaped
             max_matmul[target="gpu"](dcol, w_t_bwd, grad_reshaped, ctx)
 
             # col2im gather: one thread per input element
