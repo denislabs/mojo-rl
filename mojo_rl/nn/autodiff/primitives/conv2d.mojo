@@ -1024,12 +1024,11 @@ struct Conv2D[
             comptime K_TOTAL = BATCH * Self.spatial_out
             comptime KS2 = Self.kernel_size * Self.kernel_size
 
-            # 1. Optimized im2col: one thread per (batch, spatial_position),
-            #    each thread writes col_size elements (one full column).
-            #    Eliminates 7 divmods per element → 2 divmods per thread.
-            #    Better input locality: each thread reads from one spatial neighborhood.
-            comptime SPATIAL_TOTAL = BATCH * Self.spatial_out
-            comptime im2col_blocks = (SPATIAL_TOTAL + TPB - 1) // TPB
+            # 1. im2col with 3D grid: (k_blocks, spatial, BATCH)
+            #    Each thread handles one element: cache[b, s*col_size + k].
+            #    Grid dimensions give (b, s) for free → eliminates 4 of 7 divmods.
+            #    Only 2 cheap divmods remain: k → (ch, kh, kw).
+            comptime k_blocks = (Self.col_size + TPB - 1) // TPB
 
             @always_inline
             def im2col_wrapper(
@@ -1044,36 +1043,33 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
-                var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if tid >= SPATIAL_TOTAL:
+                var k = Int(block_idx.x) * TPB + Int(thread_idx.x)
+                if k >= Self.col_size:
                     return
-                # 2 divmods total (vs 7+ before)
-                var b = tid // Self.spatial_out
-                var s = tid - b * Self.spatial_out
+                var s = Int(block_idx.y)
+                var b = Int(block_idx.z)
+
+                # s → (oh, ow): one divmod
                 var oh = s // Self.out_w
                 var ow = s - oh * Self.out_w
 
-                var cache_base = cache_out.ptr + b * Self.CACHE_SIZE + s * Self.col_size
-                var in_base = input.ptr + b * Self.IN_DIM
+                # k → (ch, kh, kw): two divmods
+                var ch = k // KS2
+                var rem_k = k - ch * KS2
+                var kh = rem_k // Self.kernel_size
+                var kw = rem_k - kh * Self.kernel_size
 
-                # Iterate over all kernel positions for this spatial location
-                for ch in range(Self.in_channels):
-                    var ch_base = ch * Self.in_h * Self.in_w
-                    var k_ch = ch * KS2
-                    for kh in range(Self.kernel_size):
-                        var ih = oh * Self.stride - Self.padding + kh
-                        var kh_off = kh * Self.kernel_size
-                        for kw in range(Self.kernel_size):
-                            var iw = ow * Self.stride - Self.padding + kw
-                            var val: Scalar[dtype] = 0
-                            if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                                val = (in_base + ch_base + ih * Self.in_w + iw)[]
-                            (cache_base + k_ch + kh_off + kw)[] = val
+                var ih = oh * Self.stride - Self.padding + kh
+                var iw = ow * Self.stride - Self.padding + kw
+                var val: Scalar[dtype] = 0
+                if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
+                    val = (input.ptr + b * Self.IN_DIM + ch * Self.in_h * Self.in_w + ih * Self.in_w + iw)[]
+                (cache_out.ptr + b * Self.CACHE_SIZE + s * Self.col_size + k)[] = val
 
             ctx.enqueue_function[im2col_wrapper, im2col_wrapper](
                 cache,
                 input_immut,
-                grid_dim=(im2col_blocks,),
+                grid_dim=(k_blocks, Self.spatial_out, BATCH),
                 block_dim=(TPB,),
             )
 
