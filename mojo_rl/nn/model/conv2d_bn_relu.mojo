@@ -401,7 +401,7 @@ struct Conv2DBatchNormReLU[
         """Fused BN+ReLU kernel. Reads pre-BN from output, writes final output.
 
         Grid: (out_channels,), Block: (TPB,)
-        Block-parallel reduction across BATCH * spatial per channel.
+        Optimized: 2-pass Welford (sum+sumsq in pass 1, normalize+relu in pass 2).
         """
         var c = Int(block_idx.x)
         if c >= Self.out_channels:
@@ -412,77 +412,69 @@ struct Conv2DBatchNormReLU[
         var eps = Scalar[dtype](Self.BN_EPSILON)
         var mom = Scalar[dtype](Self.BN_MOMENTUM)
         var one_m = Scalar[dtype](1.0) - mom
-        var n_f = Scalar[dtype](BATCH * Self.spatial_out)
+        comptime N = BATCH * Self.spatial_out
+        var n_f = Scalar[dtype](N)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
+        comptime OUT_STRIDE = Self.OUT_DIM
 
         var smem = LayoutTensor[
             dtype, Layout.row_major(TPB), MutAnyOrigin,
             address_space=AddressSpace.SHARED,
         ].stack_allocation()
+        var smem2 = LayoutTensor[
+            dtype, Layout.row_major(TPB), MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
 
-        # Pass 1: Compute mean via block reduction
+        # Pass 1: Accumulate sum + sum-of-squares simultaneously
         var local_sum = Scalar[dtype](0.0)
+        var local_sq = Scalar[dtype](0.0)
+        var base = output.ptr + c_off
         var idx = tid
-        while idx < BATCH * Self.spatial_out:
+        while idx < N:
             var b = idx // Self.spatial_out
-            var s = idx % Self.spatial_out
-            local_sum += rebind[Scalar[dtype]](output[b, c_off + s])
+            var s = idx - b * Self.spatial_out
+            var x = (base + b * OUT_STRIDE + s)[]
+            local_sum += x
+            local_sq += x * x
             idx += TPB
-        smem[tid] = local_sum
-        barrier()
 
+        smem[tid] = local_sum
+        smem2[tid] = local_sq
+        barrier()
         var st = TPB // 2
         while st > 0:
             if tid < st:
                 smem[tid] = smem[tid] + smem[tid + st]
+                smem2[tid] = smem2[tid] + smem2[tid + st]
             barrier()
             st = st // 2
 
         var mean = rebind[Scalar[dtype]](smem[0]) / n_f
-        barrier()
-
-        # Pass 2: Compute variance via block reduction
-        var local_var = Scalar[dtype](0.0)
-        idx = tid
-        while idx < BATCH * Self.spatial_out:
-            var b = idx // Self.spatial_out
-            var s = idx % Self.spatial_out
-            var diff = rebind[Scalar[dtype]](output[b, c_off + s]) - mean
-            local_var += diff * diff
-            idx += TPB
-        smem[tid] = local_var
-        barrier()
-
-        st = TPB // 2
-        while st > 0:
-            if tid < st:
-                smem[tid] = smem[tid] + smem[tid + st]
-            barrier()
-            st = st // 2
-
-        var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
+        var var_ = rebind[Scalar[dtype]](smem2[0]) / n_f - mean * mean
         var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
         barrier()
 
-        # Pass 3: Normalize + scale + shift + ReLU (parallel scatter)
+        # Pass 2: Normalize + scale + shift + ReLU + cache
         idx = tid
-        while idx < BATCH * Self.spatial_out:
+        while idx < N:
             var b = idx // Self.spatial_out
-            var s = idx % Self.spatial_out
-            var x = rebind[Scalar[dtype]](output[b, c_off + s])
+            var s = idx - b * Self.spatial_out
+            var out_off = b * OUT_STRIDE + c_off + s
+            var x = output.ptr[out_off]
             var x_hat = (x - mean) * inv_std
-            cache[b, Self.XHAT_OFF + c_off + s] = x_hat
+            (cache.ptr + b * Self.CACHE_SIZE + Self.XHAT_OFF + c_off + s)[] = x_hat
             var pre_relu = gamma * x_hat + beta
-            output[b, c_off + s] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+            output.ptr[out_off] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
             idx += TPB
 
-        # Store inv_std in cache and update running stats (thread 0 only)
+        # Parallel inv_std cache write + running stats
+        if tid < BATCH:
+            (cache.ptr + tid * Self.CACHE_SIZE + Self.INVSTD_OFF + c)[] = inv_std
         if tid == 0:
-            for b in range(BATCH):
-                cache[b, Self.INVSTD_OFF + c] = inv_std
-            var rm = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + c])
-            var rv = rebind[Scalar[dtype]](params[Self.RVAR_OFF + c])
+            var rm = params.ptr[Self.RMEAN_OFF + c]
+            var rv = params.ptr[Self.RVAR_OFF + c]
             params.ptr[Self.RMEAN_OFF + c] = one_m * rm + mom * mean
             params.ptr[Self.RVAR_OFF + c] = one_m * rv + mom * var_
 
@@ -501,7 +493,7 @@ struct Conv2DBatchNormReLU[
         """Fused BN+ReLU inference kernel (batch stats, no cache).
 
         Grid: (out_channels,), Block: (TPB,)
-        Block-parallel reduction across BATCH * spatial per channel.
+        Optimized: 2-pass Welford (sum+sumsq in pass 1, normalize+relu in pass 2).
         """
         var c = Int(block_idx.x)
         if c >= Self.out_channels:
@@ -510,67 +502,59 @@ struct Conv2DBatchNormReLU[
 
         var c_off = c * Self.spatial_out
         var eps = Scalar[dtype](Self.BN_EPSILON)
-        var n_f = Scalar[dtype](BATCH * Self.spatial_out)
+        comptime N = BATCH * Self.spatial_out
+        var n_f = Scalar[dtype](N)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
+        comptime OUT_STRIDE = Self.OUT_DIM
 
         var smem = LayoutTensor[
             dtype, Layout.row_major(TPB), MutAnyOrigin,
             address_space=AddressSpace.SHARED,
         ].stack_allocation()
+        var smem2 = LayoutTensor[
+            dtype, Layout.row_major(TPB), MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
 
-        # Pass 1: Compute mean
+        # Pass 1: sum + sum-of-squares
         var local_sum = Scalar[dtype](0.0)
+        var local_sq = Scalar[dtype](0.0)
+        var base = output.ptr + c_off
         var idx = tid
-        while idx < BATCH * Self.spatial_out:
+        while idx < N:
             var b = idx // Self.spatial_out
-            var s = idx % Self.spatial_out
-            local_sum += rebind[Scalar[dtype]](output[b, c_off + s])
+            var s = idx - b * Self.spatial_out
+            var x = (base + b * OUT_STRIDE + s)[]
+            local_sum += x
+            local_sq += x * x
             idx += TPB
-        smem[tid] = local_sum
-        barrier()
 
+        smem[tid] = local_sum
+        smem2[tid] = local_sq
+        barrier()
         var st = TPB // 2
         while st > 0:
             if tid < st:
                 smem[tid] = smem[tid] + smem[tid + st]
+                smem2[tid] = smem2[tid] + smem2[tid + st]
             barrier()
             st = st // 2
 
         var mean = rebind[Scalar[dtype]](smem[0]) / n_f
-        barrier()
-
-        # Pass 2: Compute variance
-        var local_var = Scalar[dtype](0.0)
-        idx = tid
-        while idx < BATCH * Self.spatial_out:
-            var b = idx // Self.spatial_out
-            var s = idx % Self.spatial_out
-            var diff = rebind[Scalar[dtype]](output[b, c_off + s]) - mean
-            local_var += diff * diff
-            idx += TPB
-        smem[tid] = local_var
-        barrier()
-
-        st = TPB // 2
-        while st > 0:
-            if tid < st:
-                smem[tid] = smem[tid] + smem[tid + st]
-            barrier()
-            st = st // 2
-
-        var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
+        var var_ = rebind[Scalar[dtype]](smem2[0]) / n_f - mean * mean
         var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
         barrier()
 
-        # Pass 3: Normalize + ReLU (parallel scatter)
+        # Pass 2: Normalize + ReLU
         idx = tid
-        while idx < BATCH * Self.spatial_out:
+        while idx < N:
             var b = idx // Self.spatial_out
-            var s = idx % Self.spatial_out
-            var x = rebind[Scalar[dtype]](output[b, c_off + s])
+            var s = idx - b * Self.spatial_out
+            var out_off = b * OUT_STRIDE + c_off + s
+            var x = output.ptr[out_off]
             var pre_relu = gamma * (x - mean) * inv_std + beta
-            output[b, c_off + s] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+            output.ptr[out_off] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
             idx += TPB
 
     @always_inline
