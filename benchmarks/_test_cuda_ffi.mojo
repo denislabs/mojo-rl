@@ -1,15 +1,10 @@
-"""CUDA Graph capture — bypass AsyncRT, launch kernels via cuLaunchKernel.
+"""CUDA Graph capture of Mojo GPU kernels — PROVEN WORKING.
 
-Since we can't rebind a CUstream as DeviceStream (AsyncRT dereferences
-the C++ wrapper), we try a different approach:
-- Use ctx.enqueue_function on the DEFAULT stream for the capture
-- Capture the default stream instead of a custom stream
+ctx.enqueue_function dispatches on CU_STREAM_PER_THREAD.
+Graph capture on a fresh cuStreamCreate also captures Mojo kernels.
 
-The default CUDA stream can be captured if we use cuStreamBeginCapture
-on the stream that Mojo's ctx.enqueue_function dispatches to.
-
-Strategy: find which CUstream Mojo uses internally by checking if
-the default stream (0) or a per-thread default stream works.
+This test captures a chain of 5 kernels (simulating a mini forward pass)
+and benchmarks graph replay vs direct dispatch.
 
 Run with:
     pixi run -e nvidia mojo run -I . benchmarks/_test_cuda_ffi.mojo
@@ -27,7 +22,6 @@ from mojo_rl.nn.constants import dtype
 comptime CUptr = UnsafePointer[NoneType, MutAnyOrigin]
 
 
-# Simple test kernel
 def add_kernel[N: Int](
     output: LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin],
     a: LayoutTensor[dtype, Layout.row_major(N), ImmutAnyOrigin],
@@ -38,25 +32,40 @@ def add_kernel[N: Int](
         output[tid] = a[tid] + b[tid]
 
 
-def main() raises:
-    print("=== CUDA Graph — Default Stream Capture ===\n")
+def scale_kernel[N: Int](
+    output: LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin],
+    input: LayoutTensor[dtype, Layout.row_major(N), ImmutAnyOrigin],
+):
+    var tid = Int(thread_idx.x) + Int(block_idx.x) * Int(block_dim.x)
+    if tid < N:
+        output[tid] = input[tid] * Scalar[dtype](2.0)
 
-    var mojo_ctx = DeviceContext()
-    mojo_ctx.synchronize()
+
+def relu_kernel[N: Int](
+    data: LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin],
+):
+    var tid = Int(thread_idx.x) + Int(block_idx.x) * Int(block_dim.x)
+    if tid < N:
+        var v = data.ptr[tid]
+        data.ptr[tid] = v if v > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+
+
+def main() raises:
+    print("=== CUDA Graph Capture — Mojo Kernel Benchmark ===\n")
+
+    var ctx = DeviceContext()
+    ctx.synchronize()
 
     var cuda = OwnedDLHandle("libcuda.so")
-    var cuStreamIsCapturing = cuda.get_function[
-        def (CUptr, UnsafePointer[c_int, MutAnyOrigin]) -> c_int
-    ]("cuStreamIsCapturing")
+    var cuStreamCreate = cuda.get_function[
+        def (UnsafePointer[CUptr, MutAnyOrigin], UInt32) -> c_int
+    ]("cuStreamCreate")
     var cuStreamBeginCapture = cuda.get_function[
         def (CUptr, c_int) -> c_int
     ]("cuStreamBeginCapture")
     var cuStreamEndCapture = cuda.get_function[
         def (CUptr, UnsafePointer[CUptr, MutAnyOrigin]) -> c_int
     ]("cuStreamEndCapture")
-    var cuStreamCreate = cuda.get_function[
-        def (UnsafePointer[CUptr, MutAnyOrigin], UInt32) -> c_int
-    ]("cuStreamCreate")
     var cuGraphInstantiate = cuda.get_function[
         def (UnsafePointer[CUptr, MutAnyOrigin], CUptr, UInt64) -> c_int
     ]("cuGraphInstantiate")
@@ -72,113 +81,138 @@ def main() raises:
     var cuGraphExecDestroy = cuda.get_function[
         def (CUptr) -> c_int
     ]("cuGraphExecDestroy")
-    var cuCtxGetStreamPriorityRange = cuda.get_function[
-        def (UnsafePointer[c_int, MutAnyOrigin], UnsafePointer[c_int, MutAnyOrigin]) -> c_int
-    ]("cuCtxGetStreamPriorityRange")
 
-    # Allocate test buffers
-    comptime N = 1024
+    # Create capture stream
+    var stream_buf = alloc[CUptr](1)
+    stream_buf[] = CUptr()
+    _ = cuStreamCreate(stream_buf, UInt32(0))
+    var capture_stream = stream_buf[]
+
+    # Buffers
+    comptime N = 8192
     comptime TPB = 256
     comptime grid = ((N + TPB - 1) // TPB,)
     comptime block = (TPB,)
-    comptime kernel = add_kernel[N]
 
-    var a_buf = mojo_ctx.enqueue_create_buffer[dtype](N)
-    var b_buf = mojo_ctx.enqueue_create_buffer[dtype](N)
-    var out_buf = mojo_ctx.enqueue_create_buffer[dtype](N)
+    var a_buf = ctx.enqueue_create_buffer[dtype](N)
+    var b_buf = ctx.enqueue_create_buffer[dtype](N)
+    var c_buf = ctx.enqueue_create_buffer[dtype](N)
+    var d_buf = ctx.enqueue_create_buffer[dtype](N)
     a_buf.enqueue_fill(Scalar[dtype](1.0))
     b_buf.enqueue_fill(Scalar[dtype](2.0))
-    out_buf.enqueue_fill(Scalar[dtype](0.0))
-    mojo_ctx.synchronize()
+    c_buf.enqueue_fill(Scalar[dtype](0.0))
+    d_buf.enqueue_fill(Scalar[dtype](0.0))
+    ctx.synchronize()
 
     var a_t = LayoutTensor[dtype, Layout.row_major(N), ImmutAnyOrigin](a_buf)
     var b_t = LayoutTensor[dtype, Layout.row_major(N), ImmutAnyOrigin](b_buf)
-    var out_t = LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin](out_buf)
+    var c_t = LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin](c_buf)
+    var c_i = LayoutTensor[dtype, Layout.row_major(N), ImmutAnyOrigin](c_buf)
+    var d_t = LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin](d_buf)
+    var d_i = LayoutTensor[dtype, Layout.row_major(N), ImmutAnyOrigin](d_buf)
 
-    # Test: dispatch a kernel via ctx.enqueue_function and see which stream it uses.
-    # We check several candidate streams before and after dispatch.
-    print("--- Probing: which CUstream does ctx.enqueue_function use? ---\n")
+    comptime k_add = add_kernel[N]
+    comptime k_scale = scale_kernel[N]
+    comptime k_relu = relu_kernel[N]
 
-    # Candidate 1: Legacy default stream (CU_STREAM_LEGACY = 0x1)
-    # Candidate 2: Per-thread default stream (CU_STREAM_PER_THREAD = 0x2)
-    # Candidate 3: NULL stream (0x0)
-    # Candidate 4: A fresh CUDA stream we create
+    # Define a 5-kernel chain: add → scale → relu → scale → relu
+    # Simulates a mini forward pass
 
-    var status_buf = alloc[c_int](1)
+    def run_chain() raises:
+        ctx.enqueue_function[k_add, k_add](c_t, a_t, b_t, grid_dim=grid, block_dim=block)
+        ctx.enqueue_function[k_scale, k_scale](d_t, c_i, grid_dim=grid, block_dim=block)
+        ctx.enqueue_function[k_relu, k_relu](d_t, grid_dim=grid, block_dim=block)
+        ctx.enqueue_function[k_scale, k_scale](c_t, d_i, grid_dim=grid, block_dim=block)
+        ctx.enqueue_function[k_relu, k_relu](c_t, grid_dim=grid, block_dim=block)
 
-    var candidates = alloc[CUptr](4)
-    candidates[0] = CUptr()  # NULL (0)
-    candidates[1] = CUptr(unsafe_from_address=1)  # CU_STREAM_LEGACY
-    candidates[2] = CUptr(unsafe_from_address=2)  # CU_STREAM_PER_THREAD
+    # Warmup
+    run_chain()
+    ctx.synchronize()
+    with c_buf.map_to_host() as h:
+        print("Direct dispatch result: c[0] =", h[0], "(expected 12.0)")
 
-    var fresh_buf = alloc[CUptr](1)
-    fresh_buf[] = CUptr()
-    _ = cuStreamCreate(fresh_buf, UInt32(0))
-    candidates[3] = fresh_buf[]
+    # --- Capture the chain ---
+    print("\n--- Capturing 5-kernel chain ---")
+    c_buf.enqueue_fill(Scalar[dtype](0.0))
+    d_buf.enqueue_fill(Scalar[dtype](0.0))
+    ctx.synchronize()
 
-    var names = ["NULL (0)", "LEGACY (1)", "PER_THREAD (2)", "fresh cuStreamCreate"]
+    var r_begin = cuStreamBeginCapture(capture_stream, c_int(0))
+    print("BeginCapture:", r_begin)
 
-    for i in range(4):
-        status_buf[] = c_int(-1)
-        var r = cuStreamIsCapturing(candidates[i], status_buf)
-        print("  ", names[i], ": IsCapturing result=", r, " status=", status_buf[])
+    run_chain()
 
-    # Try to begin capture on each, dispatch a Mojo kernel, end capture
-    print("\n--- Attempting graph capture on each stream ---\n")
+    var graph_buf = alloc[CUptr](1)
+    graph_buf[] = CUptr()
+    var r_end = cuStreamEndCapture(capture_stream, graph_buf)
+    var graph = graph_buf[]
+    print("EndCapture:", r_end, "Graph:", Int(graph))
 
-    for i in range(4):
-        print("Stream:", names[i])
-        out_buf.enqueue_fill(Scalar[dtype](0.0))
-        mojo_ctx.synchronize()
+    var exec_buf = alloc[CUptr](1)
+    exec_buf[] = CUptr()
+    var r_inst = cuGraphInstantiate(exec_buf, graph, UInt64(0))
+    print("Instantiate:", r_inst)
 
-        var r_begin = cuStreamBeginCapture(candidates[i], c_int(0))  # GLOBAL mode
-        if r_begin != 0:
-            print("  BeginCapture failed:", r_begin, "\n")
-            continue
+    if r_inst != 0:
+        print("FAILED")
+        return
 
-        # Dispatch kernel via Mojo's ctx.enqueue_function
-        mojo_ctx.enqueue_function[kernel, kernel](
-            out_t, a_t, b_t, grid_dim=grid, block_dim=block
-        )
+    # Verify graph replay
+    c_buf.enqueue_fill(Scalar[dtype](0.0))
+    d_buf.enqueue_fill(Scalar[dtype](0.0))
+    ctx.synchronize()
 
-        var graph_buf = alloc[CUptr](1)
-        graph_buf[] = CUptr()
-        var r_end = cuStreamEndCapture(candidates[i], graph_buf)
-        var graph = graph_buf[]
+    var r_launch = cuGraphLaunch(exec_buf[], capture_stream)
+    _ = cuStreamSynchronize(capture_stream)
+    with c_buf.map_to_host() as h:
+        print("Graph replay result: c[0] =", h[0], "(expected 12.0)")
+        if h[0] != Scalar[dtype](12.0):
+            print("MISMATCH — graph didn't capture all kernels")
+            return
 
-        if r_end != 0:
-            print("  EndCapture failed:", r_end, "\n")
-            graph_buf.free()
-            continue
+    print("\n--- Benchmark: 5 kernels × 1000 iterations ---\n")
 
-        # Check if graph has nodes (kernel was captured)
-        var exec_buf2 = alloc[CUptr](1)
-        exec_buf2[] = CUptr()
-        var r_inst = cuGraphInstantiate(exec_buf2, graph, UInt64(0))
-        if r_inst != 0:
-            print("  Instantiate failed:", r_inst, "\n")
-            _ = cuGraphDestroy(graph)
-            graph_buf.free()
-            exec_buf2.free()
-            continue
+    # Direct dispatch benchmark
+    var warmup = 100
+    var iters = 1000
 
-        # Try to launch
-        var r_launch = cuGraphLaunch(exec_buf2[], candidates[i])
-        _ = cuStreamSynchronize(candidates[i])
+    for _ in range(warmup):
+        run_chain()
+        ctx.synchronize()
 
-        with out_buf.map_to_host() as h:
-            print("  EndCapture OK, Instantiate OK, Launch:", r_launch, "out[0]=", h[0])
-            if h[0] == Scalar[dtype](3.0):
-                print("  >>> KERNEL CAPTURED AND REPLAYED SUCCESSFULLY! <<<\n")
-            else:
-                print("  Graph empty or kernel not on this stream\n")
+    var total_direct: UInt = 0
+    for _ in range(iters):
+        var start = perf_counter_ns()
+        run_chain()
+        ctx.synchronize()
+        total_direct += perf_counter_ns() - start
 
-        _ = cuGraphExecDestroy(exec_buf2[])
-        _ = cuGraphDestroy(graph)
-        graph_buf.free()
-        exec_buf2.free()
+    # Graph replay benchmark
+    for _ in range(warmup):
+        _ = cuGraphLaunch(exec_buf[], capture_stream)
+        _ = cuStreamSynchronize(capture_stream)
 
-    status_buf.free()
-    candidates.free()
-    fresh_buf.free()
-    print("=== Done ===")
+    var total_graph: UInt = 0
+    for _ in range(iters):
+        var start = perf_counter_ns()
+        _ = cuGraphLaunch(exec_buf[], capture_stream)
+        _ = cuStreamSynchronize(capture_stream)
+        total_graph += perf_counter_ns() - start
+
+    var avg_direct = Float64(total_direct // UInt(iters)) / 1000.0
+    var avg_graph = Float64(total_graph // UInt(iters)) / 1000.0
+
+    print("  Direct dispatch (5 kernels): ", avg_direct, " us")
+    print("  Graph replay (5 kernels):    ", avg_graph, " us")
+    if avg_graph > 0.0:
+        print("  Speedup:                     ", avg_direct / avg_graph, "x")
+        print("  Savings per call:            ", avg_direct - avg_graph, " us")
+
+    # Cleanup
+    _ = cuGraphExecDestroy(exec_buf[])
+    _ = cuGraphDestroy(graph)
+    stream_buf.free()
+    graph_buf.free()
+    exec_buf.free()
+
+    print("\n=== CUDA Graph Capture of Mojo Kernels: WORKING ===")
