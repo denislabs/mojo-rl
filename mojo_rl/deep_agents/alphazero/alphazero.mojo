@@ -1205,7 +1205,8 @@ struct GenericAlphaZeroAgent[
                 ctx, pred_obs, pred_out, active_params, mcts_ws
             )
 
-            # Init root from prediction (no noise for arena)
+            # Zero tree data via bulk memset, then init root
+            gpu_mcts.zero_tree(ctx)
             comptime run_init = gpu_mcts_init_root_kernel[
                 Self.n_envs, MAX_NODES, ACT, OBS, MCTS_PRED_OUT, dtype
             ]
@@ -1673,7 +1674,8 @@ struct GenericAlphaZeroAgent[
                     MutAnyOrigin,
                 ](eval_states.unsafe_ptr())
 
-                # Init root (no noise for evaluation)
+                # Zero tree data via bulk memset, then init root
+                eval_mcts.zero_tree(ctx)
                 comptime e_run_init = gpu_mcts_init_root_kernel[
                     Self.n_envs,
                     MAX_NODES,
@@ -2201,6 +2203,7 @@ struct GenericAlphaZeroAgent[
                         dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                     ](gpu_mcts.max_q.unsafe_ptr())
 
+                    gpu_mcts.zero_tree(ctx)
                     comptime run_init = gpu_mcts_init_root_kernel[
                         Self.n_envs, MAX_NODES, ACT, OBS, MCTS_PRED_OUT, dtype
                     ]

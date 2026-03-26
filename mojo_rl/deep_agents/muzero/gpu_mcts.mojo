@@ -102,23 +102,16 @@ def gpu_mcts_init_root_kernel[
 
     Sets prior from softmax of policy logits, adds Dirichlet noise.
     One thread per environment.
+
+    IMPORTANT: Caller must zero visit_count, total_value, reward, total_visits
+    and set child_idx to -1 via memset BEFORE launching this kernel.
+    Prior is set here from softmax, so it doesn't need zeroing.
     """
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
         return
 
     var tree_off = e * MAX_NODES * ACT
-
-    # Zero all node data for this env's tree
-    for n in range(MAX_NODES):
-        for a in range(ACT):
-            var idx = tree_off + n * ACT + a
-            visit_count[idx] = Scalar[dtype](0.0)
-            total_value[idx] = Scalar[dtype](0.0)
-            prior[idx] = Scalar[dtype](1.0) / Scalar[dtype](ACT)
-            reward[idx] = Scalar[dtype](0.0)
-            child_idx[idx] = Scalar[dtype](-1.0)
-        total_visits[e * MAX_NODES + n] = Scalar[dtype](0.0)
 
     # Set root prior from softmax of policy logits
     var pred_off = e * PRED_OUT
@@ -2195,6 +2188,18 @@ struct GPUMCTSState[
         self.expansion_legal_masks = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * BS * Self.ACT
         )
+
+    def zero_tree(self, ctx: DeviceContext) raises:
+        """Zero all tree node data via GPU memset/fill.
+
+        Must be called before gpu_mcts_init_root_kernel to replace the
+        serial zeroing loop that was previously in the kernel.
+        """
+        ctx.enqueue_memset(self.visit_count, 0)
+        ctx.enqueue_memset(self.total_value, 0)
+        ctx.enqueue_memset(self.reward, 0)
+        ctx.enqueue_memset(self.total_visits, 0)
+        self.child_idx.enqueue_fill(Scalar[dtype](-1.0))
 
     def __init__(out self, *, deinit take: Self):
         self.visit_count = take.visit_count^
