@@ -295,22 +295,26 @@ struct AlphaZeroConnectFourCNNConfig[
 # ResNet blocks with BatchNorm (matching alpha-zero-general):
 # Conv1 → BN → ReLU → Conv2 → BN → (+skip) → ReLU
 comptime ResBlockBN6x7[F: Int] = Sequential[
-    Residual[Sequential[
-        Conv2DBatchNormReLU[F, F, 3, 1, 1, 6, 7],  # Conv1 → BN1 → ReLU
-        Conv2DLayer[F, F, 3, 1, 1, 6, 7],           # Conv2 (no act)
-        BatchNorm2D[F, 6, 7],                        # BN2
-    ]],
-    ReLU[F * 6 * 7],                                 # skip add → ReLU
+    Residual[
+        Sequential[
+            Conv2DBatchNormReLU[F, F, 3, 1, 1, 6, 7],  # Conv1 → BN1 → ReLU
+            Conv2DLayer[F, F, 3, 1, 1, 6, 7],  # Conv2 (no act)
+            BatchNorm2D[F, 6, 7],  # BN2
+        ]
+    ],
+    ReLU[F * 6 * 7],  # skip add → ReLU
 ]
 
 comptime ResBlockBNFused6x7[F: Int] = ResBlockConv2DBN[F, 3, 1, 6, 7]
 
 comptime ResBlockBN3x3[F: Int] = Sequential[
-    Residual[Sequential[
-        Conv2DBatchNormReLU[F, F, 3, 1, 1, 3, 3],
-        Conv2DLayer[F, F, 3, 1, 1, 3, 3],
-        BatchNorm2D[F, 3, 3],
-    ]],
+    Residual[
+        Sequential[
+            Conv2DBatchNormReLU[F, F, 3, 1, 1, 3, 3],
+            Conv2DLayer[F, F, 3, 1, 1, 3, 3],
+            BatchNorm2D[F, 3, 3],
+        ]
+    ],
     ReLU[F * 3 * 3],
 ]
 
@@ -318,18 +322,22 @@ comptime ResBlockBNFused3x3[F: Int] = ResBlockConv2DBN[F, 3, 1, 3, 3]
 
 # Legacy ResBlocks without BN (for backwards compatibility)
 comptime ResBlock6x7[F: Int] = Sequential[
-    Residual[Sequential[
-        Conv2DReLU[F, F, 3, 1, 1, 6, 7],
-        Conv2DLayer[F, F, 3, 1, 1, 6, 7],
-    ]],
+    Residual[
+        Sequential[
+            Conv2DReLU[F, F, 3, 1, 1, 6, 7],
+            Conv2DLayer[F, F, 3, 1, 1, 6, 7],
+        ]
+    ],
     ReLU[F * 6 * 7],
 ]
 
 comptime ResBlock3x3[F: Int] = Sequential[
-    Residual[Sequential[
-        Conv2DReLU[F, F, 3, 1, 1, 3, 3],
-        Conv2DLayer[F, F, 3, 1, 1, 3, 3],
-    ]],
+    Residual[
+        Sequential[
+            Conv2DReLU[F, F, 3, 1, 1, 3, 3],
+            Conv2DLayer[F, F, 3, 1, 1, 3, 3],
+        ]
+    ],
     ReLU[F * 3 * 3],
 ]
 
@@ -342,13 +350,13 @@ struct AlphaZeroConnectFourResNetConfig[
     CAP: Int = 400000,
     SIMS: Int = 600,
     NODES: Int = 1024,
-    C_PUCT: Float64 = 2.0,
+    C_PUCT: Float64 = 1.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — ResNet with 5 residual blocks + BatchNorm.
 
     Matches AlphaZero.jl proven architecture:
     - Initial Conv+BN+ReLU → 5× ResBlock(Conv+BN+ReLU → Conv+BN → skip+ReLU)
-    - 600 MCTS sims, CPUCT=2.0
+    - 600 MCTS sims, CPUCT=1.0
     - Separate policy/value heads with Conv2D reduction
     """
 
