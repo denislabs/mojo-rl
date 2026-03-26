@@ -671,6 +671,59 @@ struct BatchNorm2D[
         )
 
     @staticmethod
+    def forward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU training forward on stream: batch stats + running stats update."""
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
+
+        @always_inline
+        def kernel_wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ],
+            params: LayoutTensor[
+                dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+            ],
+        ):
+            Self.forward_kernel_impl[BATCH](output, input, params, cache)
+
+        var compiled = ctx.compile_function[kernel_wrapper, kernel_wrapper]()
+        stream.enqueue_function(
+            compiled,
+            output,
+            input_immut,
+            params,
+            cache,
+            grid_dim=(Self.channels,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
     def forward_gpu_no_cache[
         BATCH: Int,
     ](
@@ -803,4 +856,67 @@ struct BatchNorm2D[
             grads,
             grid_dim=(Self.channels,),
             block_dim=(TPB,),
+        )
+
+    @staticmethod
+    def backward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """Backward using stream dispatch."""
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ](cache.ptr)
+
+        @always_inline
+        def kernel_wrapper(
+            grad_input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ],
+            params: LayoutTensor[
+                dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+            ],
+            grads: LayoutTensor[
+                dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            ],
+        ):
+            Self.backward_kernel_impl[BATCH](
+                grad_input, grad_output, params, cache, grads
+            )
+
+        var compiled = ctx.compile_function[kernel_wrapper, kernel_wrapper]()
+        stream.enqueue_function(
+            compiled,
+            grad_input, grad_output_immut, params_immut, cache_immut, grads,
+            grid_dim=(Self.channels,), block_dim=(TPB,),
         )

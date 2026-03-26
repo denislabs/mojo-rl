@@ -710,6 +710,105 @@ struct LinearBatchNormReLU[
         )
 
     @staticmethod
+    def forward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU training forward on stream: Linear matmul -> fused BN+ReLU."""
+        from ..autodiff.primitives.matmul import MatMul
+
+        comptime MM = MatMul[Self.in_dim, Self.out_dim]
+
+        var mm_params = LayoutTensor[
+            dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
+        ](params.ptr)
+
+        comptime MM_CS = MM.CACHE_SIZE
+        var mm_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
+        ](workspace.unsafe_ptr())
+
+        # Step 1: MatMul stays on ctx
+        MM.eval_gpu[BATCH](ctx, output, input, mm_params, mm_cache, workspace.unsafe_ptr())
+
+        # Step 2: Copy cached input from mm_cache into our cache
+        comptime COPY_SIZE = BATCH * MM_CS
+        @always_inline
+        def copy_input_cache(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // MM_CS
+            var i = tid % MM_CS
+            dst.ptr[b * Self.CACHE_SIZE + i] = src.ptr[tid]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        var compiled_copy = ctx.compile_function[copy_input_cache, copy_input_cache]()
+        stream.enqueue_function(
+            compiled_copy,
+            cache, mm_cache,
+            grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
+        )
+
+        # Step 3: BiasAdd in-place
+        var bias = LayoutTensor[
+            dtype, Layout.row_major(Self.out_dim), ImmutAnyOrigin
+        ](params.ptr + Self.BIAS_OFF)
+        comptime TOTAL = BATCH * Self.out_dim
+        comptime BLOCKS = (TOTAL + TPB - 1) // TPB
+
+        @always_inline
+        def bias_add_wrapper(
+            output: LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin],
+            bias: LayoutTensor[dtype, Layout.row_major(Self.out_dim), ImmutAnyOrigin],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx < TOTAL:
+                output[idx] = rebind[Scalar[dtype]](output[idx]) + rebind[Scalar[dtype]](bias[idx % Self.out_dim])
+
+        var out_flat = LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](output.ptr)
+        var compiled_bias = ctx.compile_function[bias_add_wrapper, bias_add_wrapper]()
+        stream.enqueue_function(
+            compiled_bias,
+            out_flat, bias, grid_dim=(BLOCKS,), block_dim=(TPB,),
+        )
+
+        # Step 4: Fused BN+ReLU kernel
+        @always_inline
+        def bn_relu_wrapper(
+            output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+            cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+            params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        ):
+            Self.bn_relu_kernel_impl[BATCH](output, cache, params)
+
+        var compiled_bn = ctx.compile_function[bn_relu_wrapper, bn_relu_wrapper]()
+        stream.enqueue_function(
+            compiled_bn,
+            output, cache, params,
+            grid_dim=(Self.out_dim,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
     def forward_gpu_no_cache[
         BATCH: Int,
     ](
@@ -799,7 +898,62 @@ struct LinearBatchNormReLU[
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        """GPU inference forward using stream dispatch for wrapper kernels."""
+        from ..autodiff.primitives.matmul import MatMul
+
+        comptime MM = MatMul[Self.in_dim, Self.out_dim]
+
+        var mm_params = LayoutTensor[
+            dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
+        ](params.ptr)
+
+        comptime MM_CS = MM.CACHE_SIZE
+        var dummy_mm_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
+        ](workspace.unsafe_ptr())
+
+        # MatMul — still on ctx (DiffOp primitive)
+        MM.eval_gpu[BATCH](ctx, output, input, mm_params, dummy_mm_cache, workspace.unsafe_ptr())
+
+        # BiasAdd — stream dispatch
+        var bias = LayoutTensor[
+            dtype, Layout.row_major(Self.out_dim), ImmutAnyOrigin
+        ](params.ptr + Self.BIAS_OFF)
+        comptime TOTAL = BATCH * Self.out_dim
+        comptime BLOCKS = (TOTAL + TPB - 1) // TPB
+
+        @always_inline
+        def bias_add_wrapper(
+            output: LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin],
+            bias: LayoutTensor[dtype, Layout.row_major(Self.out_dim), ImmutAnyOrigin],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx < TOTAL:
+                output[idx] = rebind[Scalar[dtype]](output[idx]) + rebind[Scalar[dtype]](bias[idx % Self.out_dim])
+
+        var out_flat = LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](output.ptr)
+        var compiled_bias = ctx.compile_function[bias_add_wrapper, bias_add_wrapper]()
+        stream.enqueue_function(
+            compiled_bias, out_flat, bias, grid_dim=(BLOCKS,), block_dim=(TPB,),
+        )
+
+        # BN+ReLU — stream dispatch
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+
+        @always_inline
+        def bn_relu_nc_wrapper(
+            output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+            params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+        ):
+            Self.bn_relu_kernel_impl_no_cache[BATCH](output, params)
+
+        var compiled_bn = ctx.compile_function[bn_relu_nc_wrapper, bn_relu_nc_wrapper]()
+        stream.enqueue_function(
+            compiled_bn, output, params_immut,
+            grid_dim=(Self.out_dim,), block_dim=(TPB,),
+        )
 
     @staticmethod
     def backward_gpu[
@@ -912,6 +1066,129 @@ struct LinearBatchNormReLU[
             grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
         )
 
+        var mm_params = LayoutTensor[
+            dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
+        ](params.ptr)
+        var mm_grads = LayoutTensor[
+            dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
+        ](grads.ptr)
+        MM.vjp_gpu[BATCH](ctx, grad_pre_bn, grad_input, mm_params, mm_cache, mm_grads, workspace.unsafe_ptr())
+
+    @staticmethod
+    def backward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU backward using compile_function + stream dispatch."""
+        from ..autodiff.primitives.matmul import MatMul
+
+        comptime MM = MatMul[Self.in_dim, Self.out_dim]
+
+        var grad_pre_bn = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ](workspace.unsafe_ptr())
+
+        # Step 1: Fused ReLU+BN backward — stream dispatch
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ](cache.ptr)
+
+        @always_inline
+        def relu_bn_bwd_wrapper(
+            grad_pre_bn: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+            grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin],
+            params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+            cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin],
+            grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        ):
+            Self.relu_bn_backward_kernel_impl[BATCH](grad_pre_bn, grad_output, params, cache, grads)
+
+        var compiled_relu_bn = ctx.compile_function[relu_bn_bwd_wrapper, relu_bn_bwd_wrapper]()
+        stream.enqueue_function(
+            compiled_relu_bn,
+            grad_pre_bn, grad_output_immut, params_immut, cache_immut, grads,
+            grid_dim=(Self.out_dim,),
+            block_dim=(TPB,),
+        )
+
+        # Step 2: Bias grad — stream dispatch
+        var bias_grads = LayoutTensor[
+            dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
+        ](grads.ptr + Self.BIAS_OFF)
+
+        @always_inline
+        def bias_grad_wrapper(
+            db: LayoutTensor[dtype, Layout.row_major(Self.out_dim), MutAnyOrigin],
+            gpb: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        ):
+            var j = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if j < Self.out_dim:
+                var acc = Scalar[dtype](0.0)
+                for b in range(BATCH):
+                    acc += rebind[Scalar[dtype]](gpb[b, j])
+                db[j] = rebind[Scalar[dtype]](db[j]) + acc
+
+        comptime BG_BLOCKS = (Self.out_dim + TPB - 1) // TPB
+        var compiled_bg = ctx.compile_function[bias_grad_wrapper, bias_grad_wrapper]()
+        stream.enqueue_function(
+            compiled_bg,
+            bias_grads, grad_pre_bn,
+            grid_dim=(BG_BLOCKS,), block_dim=(TPB,),
+        )
+
+        # Step 3: Copy input cache — stream dispatch
+        comptime MM_CS = MM.CACHE_SIZE
+        comptime MM_CACHE_BWD_OFF = BATCH * Self.out_dim
+        var mm_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
+        ](workspace.unsafe_ptr() + MM_CACHE_BWD_OFF)
+
+        comptime COPY_SIZE = BATCH * MM_CS
+        @always_inline
+        def copy_input_bwd(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // MM_CS
+            var i = tid % MM_CS
+            dst.ptr[tid] = src.ptr[b * Self.CACHE_SIZE + i]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        var compiled_copy = ctx.compile_function[copy_input_bwd, copy_input_bwd]()
+        stream.enqueue_function(
+            compiled_copy,
+            mm_cache, cache,
+            grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
+        )
+
+        # Step 4: MatMul backward — still on ctx (DiffOp primitive)
         var mm_params = LayoutTensor[
             dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)

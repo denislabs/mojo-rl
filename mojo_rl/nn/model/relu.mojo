@@ -291,6 +291,58 @@ struct ReLU[dim: Int](Model):
         )
 
     @staticmethod
+    def forward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """Launch forward pass on GPU with caching, using stream dispatch."""
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ](input.ptr)
+
+        var total_elements = BATCH * Self.dim
+        var grid_x = (total_elements + TPB - 1) // TPB
+
+        @always_inline
+        def kernel_wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+            ],
+        ):
+            Self.forward_kernel_impl[BATCH](output, input, cache)
+
+        var compiled = ctx.compile_function[kernel_wrapper, kernel_wrapper]()
+        stream.enqueue_function(
+            compiled,
+            output,
+            input_immut,
+            cache,
+            grid_dim=(grid_x,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
     def forward_gpu_no_cache[
         BATCH: Int,
     ](
@@ -409,4 +461,56 @@ struct ReLU[dim: Int](Model):
             cache_immut,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
+        )
+
+    @staticmethod
+    def backward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """Backward using stream dispatch."""
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ](cache.ptr)
+        var grid_x = (BATCH * Self.dim + TPB - 1) // TPB
+
+        @always_inline
+        def kernel_wrapper(
+            grad_input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+            ],
+        ):
+            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
+
+        var compiled = ctx.compile_function[kernel_wrapper, kernel_wrapper]()
+        stream.enqueue_function(
+            compiled, grad_input, grad_output_immut, cache_immut,
+            grid_dim=(grid_x,), block_dim=(TPB,),
         )

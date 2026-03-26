@@ -37,7 +37,7 @@ def main() raises:
     comptime C4 = ConnectFourEnv[DType.float32]
 
     # Default NoOpLogger — no remote logging overhead in profile.
-    var agent = GenericAlphaZeroAgent[Config, 64]()
+    var agent = GenericAlphaZeroAgent[Config, 64, USE_STREAM=False]()
 
     # Short run: 1 iter, 500 steps — enough to capture all kernel patterns.
     # No eval/arena/checkpoint to keep it focused on training kernels.

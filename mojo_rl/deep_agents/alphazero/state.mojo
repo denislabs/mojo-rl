@@ -5,7 +5,8 @@ buffer storing (obs, mcts_policy, game_outcome) tuples.
 """
 
 from std.memory import alloc, memset
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer, DeviceStream
+from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.initializer import Kaiming
@@ -196,8 +197,12 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
     var policy_host: HostBuffer[dtype]  # [BATCH * ACT]
     var value_host: HostBuffer[dtype]  # [BATCH]
 
+    # Stream for compile_function dispatch (NVIDIA only)
+    var stream: DeviceStream
+
     def __init__(out self, ctx: DeviceContext) raises:
         self.prediction = GPUNetworkState[Self.PredModel, Self.OptType](ctx)
+        self.stream = ctx.create_stream()
 
         self.batch_obs = ctx.enqueue_create_buffer[dtype](Self.BATCH * Self.OBS)
         self.batch_policy = ctx.enqueue_create_buffer[dtype](
@@ -245,6 +250,7 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
         self.obs_host = take.obs_host^
         self.policy_host = take.policy_host^
         self.value_host = take.value_host^
+        self.stream = take.stream
 
     def upload_from(
         mut self, cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext

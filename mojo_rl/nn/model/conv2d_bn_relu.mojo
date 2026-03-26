@@ -802,6 +802,89 @@ struct Conv2DBatchNormReLU[
         )
 
     @staticmethod
+    def forward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU training forward on stream: Conv matmul -> fused BN+ReLU."""
+        from ..autodiff.fused import FusedConv2DActivation
+        from ..autodiff.fused.activation import ReLUActivation
+        from ..autodiff import Conv2D
+        comptime ConvOp = Conv2D[
+            Self.in_channels, Self.out_channels,
+            Self.kernel_size, Self.stride, Self.padding,
+            Self.in_h, Self.in_w,
+        ]
+
+        var conv_params = LayoutTensor[
+            dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
+        ](params.ptr)
+
+        comptime CONV_CS = ConvOp.CACHE_SIZE
+        comptime TEMP_CACHE_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels
+        var conv_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
+        ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
+
+        # Conv2D GPU forward stays on ctx
+        ConvOp.eval_gpu[BATCH](ctx, output, input, conv_params, conv_cache, workspace.unsafe_ptr())
+
+        # Copy im2col from conv_cache into our cache
+        comptime COPY_SIZE = BATCH * CONV_CS
+        @always_inline
+        def copy_im2col(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // CONV_CS
+            var i = tid % CONV_CS
+            dst.ptr[b * Self.CACHE_SIZE + i] = src.ptr[tid]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        var compiled_copy = ctx.compile_function[copy_im2col, copy_im2col]()
+        stream.enqueue_function(
+            compiled_copy,
+            cache, conv_cache,
+            grid_dim=(COPY_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Fused BN+ReLU kernel
+        @always_inline
+        def bn_relu_wrapper(
+            output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+            cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+            params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        ):
+            Self.bn_relu_kernel_impl[BATCH](output, cache, params)
+
+        var compiled_bn = ctx.compile_function[bn_relu_wrapper, bn_relu_wrapper]()
+        stream.enqueue_function(
+            compiled_bn,
+            output, cache, params,
+            grid_dim=(Self.out_channels,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
     def forward_gpu_no_cache[
         BATCH: Int,
     ](
@@ -874,7 +957,46 @@ struct Conv2DBatchNormReLU[
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        """GPU inference forward using stream dispatch for wrapper kernels."""
+        from ..autodiff import Conv2D
+        comptime ConvOp = Conv2D[
+            Self.in_channels, Self.out_channels,
+            Self.kernel_size, Self.stride, Self.padding,
+            Self.in_h, Self.in_w,
+        ]
+
+        var conv_params = LayoutTensor[
+            dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
+        ](params.ptr)
+
+        comptime CONV_CS = ConvOp.CACHE_SIZE
+        comptime TEMP_CACHE_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels
+        var dummy_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
+        ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
+
+        # Conv2D forward — still on ctx (DiffOp primitive)
+        ConvOp.eval_gpu[BATCH](ctx, output, input, conv_params, dummy_cache, workspace.unsafe_ptr())
+
+        # BN+ReLU — stream dispatch
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+
+        @always_inline
+        def bn_relu_nc_wrapper(
+            output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+            params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+        ):
+            Self.bn_relu_kernel_impl_no_cache[BATCH](output, params)
+
+        var compiled_bn = ctx.compile_function[bn_relu_nc_wrapper, bn_relu_nc_wrapper]()
+        stream.enqueue_function(
+            compiled_bn,
+            output, params_immut,
+            grid_dim=(Self.out_channels,),
+            block_dim=(TPB,),
+        )
 
     @staticmethod
     def backward_gpu[
@@ -978,6 +1100,112 @@ struct Conv2DBatchNormReLU[
             block_dim=(TPB,),
         )
 
+        ConvOp.vjp_gpu[BATCH](
+            ctx, grad_pre_bn, grad_input, conv_params, conv_cache, conv_grads, workspace.unsafe_ptr()
+        )
+
+    @staticmethod
+    def backward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU backward using compile_function + stream dispatch."""
+        from ..autodiff import Conv2D
+        comptime ConvOp = Conv2D[
+            Self.in_channels, Self.out_channels,
+            Self.kernel_size, Self.stride, Self.padding,
+            Self.in_h, Self.in_w,
+        ]
+
+        comptime GRAD_PRE_BN_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels + BATCH * Self.CONV_CACHE
+        var grad_pre_bn = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ](workspace.unsafe_ptr() + GRAD_PRE_BN_OFF)
+
+        # Step 1: Fused ReLU+BN backward — stream dispatch
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ](cache.ptr)
+
+        @always_inline
+        def relu_bn_bwd_wrapper(
+            grad_pre_bn: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+            grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin],
+            params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+            cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin],
+            grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        ):
+            Self.relu_bn_backward_kernel_impl[BATCH](grad_pre_bn, grad_output, params, cache, grads)
+
+        var compiled_relu_bn = ctx.compile_function[relu_bn_bwd_wrapper, relu_bn_bwd_wrapper]()
+        stream.enqueue_function(
+            compiled_relu_bn,
+            grad_pre_bn, grad_output_immut, params_immut, cache_immut, grads,
+            grid_dim=(Self.out_channels,),
+            block_dim=(TPB,),
+        )
+
+        # Step 2: Copy im2col — stream dispatch
+        var conv_params = LayoutTensor[
+            dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
+        ](params.ptr)
+        var conv_grads = LayoutTensor[
+            dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
+        ](grads.ptr)
+
+        comptime CONV_CS = ConvOp.CACHE_SIZE
+        comptime TEMP_CACHE_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels
+        var conv_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
+        ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
+
+        comptime COPY_SIZE = BATCH * CONV_CS
+        @always_inline
+        def copy_im2col_bwd(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // CONV_CS
+            var i = tid % CONV_CS
+            dst.ptr[tid] = src.ptr[b * Self.CACHE_SIZE + i]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        var compiled_copy = ctx.compile_function[copy_im2col_bwd, copy_im2col_bwd]()
+        stream.enqueue_function(
+            compiled_copy,
+            conv_cache, cache,
+            grid_dim=(COPY_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Step 3: Conv backward — still on ctx (DiffOp primitive, no stream variant)
         ConvOp.vjp_gpu[BATCH](
             ctx, grad_pre_bn, grad_input, conv_params, conv_cache, conv_grads, workspace.unsafe_ptr()
         )

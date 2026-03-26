@@ -46,7 +46,7 @@ from ..optimizer import Optimizer
 from ..constants import dtype
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 
 
 struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
@@ -236,6 +236,41 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
         )
 
     @staticmethod
+    def forward_gpu_with_cache_on_stream[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace_buf: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward pass with caching on stream.
+
+        Args:
+            ctx: GPU device context.
+            stream: Device stream for kernel dispatch.
+            input: Device input tensor [BATCH, IN_DIM].
+            output: Device output tensor [BATCH, OUT_DIM] (written).
+            params: Device params tensor [PARAM_SIZE].
+            cache: Device cache tensor [BATCH, CACHE_SIZE] (written).
+            workspace_buf: Pre-allocated workspace.
+        """
+        Self.MODEL.forward_gpu_on_stream[BATCH](
+            ctx, stream, output, input, params, cache, workspace_buf
+        )
+
+    @staticmethod
     def backward_gpu[
         BATCH: Int
     ](
@@ -282,4 +317,39 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
             workspace_buf,
             perf,
             perf_slot,
+        )
+
+    @staticmethod
+    def backward_gpu_on_stream[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace_buf: DeviceBuffer[dtype],
+    ) raises:
+        """GPU backward using stream dispatch."""
+        Self.MODEL.backward_gpu_on_stream[BATCH](
+            ctx,
+            stream,
+            grad_input,
+            grad_output,
+            params,
+            cache,
+            grads,
+            workspace_buf,
         )

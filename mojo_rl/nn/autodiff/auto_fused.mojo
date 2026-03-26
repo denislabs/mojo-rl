@@ -2317,6 +2317,44 @@ struct AutoFused[*OPS: DiffOp](Model):
             0,
         )
 
+    @staticmethod
+    def forward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward on stream with caching."""
+        var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
+            Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
+        )
+        _auto_fused_forward_gpu_on_stream[BATCH, *Self.OPS](
+            ctx,
+            stream,
+            input.ptr,
+            output.ptr,
+            params.ptr,
+            cache.ptr,
+            workspace.unsafe_ptr(),
+            op_ws_ptr,
+            0,
+            0,
+            0,
+        )
+
     # =========================================================================
     # GPU Forward (no cache — inference)
     # =========================================================================

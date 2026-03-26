@@ -453,6 +453,110 @@ struct Parallel[*BRANCHES: Model](Model):
                 block_dim=(TPB,),
             )
 
+    @staticmethod
+    def forward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """GPU forward on stream: run branches then interleave outputs."""
+        var ws_ptr = workspace.unsafe_ptr()
+
+        # Run each branch forward into its workspace output buffer
+        comptime for i in range(Self.N):
+            var buf_i = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+            var pi = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr + Self._param_offset[i]())
+            var ci = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr + BATCH * Self._cache_offset[i]())
+
+            var ws_i_size = (
+                BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            )
+            var ws_i = DeviceBuffer[dtype](
+                ctx,
+                ws_ptr + BATCH * Self._ws_branch_offset[i](),
+                ws_i_size if ws_i_size > 0 else 1,
+                owning=False,
+            )
+
+            var inp_i = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.branch_types[i].IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](input)
+            Self.branch_types[i].forward_gpu_on_stream[BATCH](
+                ctx, stream, buf_i, inp_i, pi, ci, ws_i
+            )
+
+        # Interleave all branch outputs into final output via per-branch copy kernels
+        comptime for i in range(Self.N):
+            comptime BRANCH_OUT = Self.branch_types[i].OUT_DIM
+            comptime BRANCH_OFF = Self._out_offset[i]()
+            comptime TOTAL_OUT = Self.OUT_DIM
+
+            var buf_i_immut = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                ImmutAnyOrigin,
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+
+            @always_inline
+            def copy_branch_fwd_stream(
+                dst: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                src: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if tid >= BATCH * BRANCH_OUT:
+                    return
+                var row = tid // BRANCH_OUT
+                var col = tid % BRANCH_OUT
+                dst.ptr[row * TOTAL_OUT + BRANCH_OFF + col] = src.ptr[tid]
+
+            var grid_x = (BATCH * BRANCH_OUT + TPB - 1) // TPB
+            var compiled = ctx.compile_function[copy_branch_fwd_stream, copy_branch_fwd_stream]()
+            stream.enqueue_function(
+                compiled,
+                output,
+                buf_i_immut,
+                grid_dim=(grid_x,),
+                block_dim=(TPB,),
+            )
+
     # =========================================================================
     # GPU Forward (no cache)
     # =========================================================================
@@ -732,4 +836,162 @@ struct Parallel[*BRANCHES: Model](Model):
             gi_immut,
             grid_dim=(grid_sum,),
             block_dim=(TPB,),
+        )
+
+    @staticmethod
+    def backward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """Backward using stream dispatch."""
+        var ws_ptr = workspace.unsafe_ptr()
+
+        var go_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+
+        # De-interleave grad_output — stream dispatch
+        comptime for i in range(Self.N):
+            comptime BRANCH_OUT = Self.branch_types[i].OUT_DIM
+            comptime BRANCH_OFF = Self._out_offset[i]()
+            comptime TOTAL_OUT = Self.OUT_DIM
+
+            var grad_i = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+
+            @always_inline
+            def split_branch(
+                gi: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                go: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if tid >= BATCH * BRANCH_OUT:
+                    return
+                var row = tid // BRANCH_OUT
+                var col = tid % BRANCH_OUT
+                gi.ptr[tid] = go.ptr[row * TOTAL_OUT + BRANCH_OFF + col]
+
+            var grid_x = (BATCH * BRANCH_OUT + TPB - 1) // TPB
+            var compiled_split = ctx.compile_function[split_branch, split_branch]()
+            stream.enqueue_function(
+                compiled_split, grad_i, go_immut,
+                grid_dim=(grid_x,), block_dim=(TPB,),
+            )
+
+        var gi_buf_ptr = ws_ptr
+
+        # Run backward for each branch — pass stream through
+        comptime for i in range(Self.N):
+            var grad_i = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+            var gi_i = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.IN_DIM),
+                MutAnyOrigin,
+            ](gi_buf_ptr + i * BATCH * Self.IN_DIM)
+            var pi = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr + Self._param_offset[i]())
+            var ci = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr + BATCH * Self._cache_offset[i]())
+            var gp_i = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr + Self._param_offset[i]())
+
+            var ws_i_size = (
+                BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            )
+            var ws_i = DeviceBuffer[dtype](
+                ctx,
+                ws_ptr + BATCH * Self._ws_branch_offset[i](),
+                ws_i_size if ws_i_size > 0 else 1,
+                owning=False,
+            )
+
+            var gi_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.branch_types[i].IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](gi_i)
+            Self.branch_types[i].backward_gpu_on_stream[BATCH](
+                ctx, stream, gi_rb, grad_i, pi, ci, gp_i, ws_i
+            )
+
+        # Sum all N grad_input contributions — stream dispatch
+        var gi_immut = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.N * BATCH, Self.IN_DIM),
+            ImmutAnyOrigin,
+        ](gi_buf_ptr)
+
+        comptime GI_TOTAL = BATCH * Self.IN_DIM
+        comptime N_BRANCHES = Self.N
+
+        @always_inline
+        def sum_gi_wrapper(
+            dst: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.IN_DIM),
+                MutAnyOrigin,
+            ],
+            all_gi: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.N * BATCH, Self.IN_DIM),
+                ImmutAnyOrigin,
+            ],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= GI_TOTAL:
+                return
+            var s = all_gi.ptr[tid]
+            for b in range(1, N_BRANCHES):
+                s += all_gi.ptr[b * GI_TOTAL + tid]
+            dst.ptr[tid] = s
+
+        var grid_sum = (BATCH * Self.IN_DIM + TPB - 1) // TPB
+        var compiled_sum = ctx.compile_function[sum_gi_wrapper, sum_gi_wrapper]()
+        stream.enqueue_function(
+            compiled_sum, grad_input, gi_immut,
+            grid_dim=(grid_sum,), block_dim=(TPB,),
         )

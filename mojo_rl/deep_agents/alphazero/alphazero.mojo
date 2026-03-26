@@ -15,6 +15,7 @@ from std.random import random_float64
 from std.memory import alloc, memset
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
@@ -146,7 +147,10 @@ def az_policy_value_grad_kernel[
 
 
 struct GenericAlphaZeroAgent[
-    Config: AlphaZeroConfig, n_envs: Int = 64, L: Logger = NoOpLogger
+    Config: AlphaZeroConfig,
+    n_envs: Int = 64,
+    L: Logger = NoOpLogger,
+    USE_STREAM: Bool = True,
 ](Movable):
     """AlphaZero agent for two-player board games.
 
@@ -643,14 +647,25 @@ struct GenericAlphaZeroAgent[
             dtype, Layout.row_major(BATCH, PRED_CS), MutAnyOrigin
         ](gpu.pred_cache.unsafe_ptr())
 
-        Self.PredNet.forward_gpu_with_cache[BATCH](
-            ctx,
-            obs_t,
-            pred_t,
-            gpu.prediction.params_view(),
-            cache_t,
-            gpu.workspace,
-        )
+        comptime if has_nvidia_gpu_accelerator() and Self.USE_STREAM:
+            Self.PredNet.forward_gpu_with_cache_on_stream[BATCH](
+                ctx,
+                gpu.stream,
+                obs_t,
+                pred_t,
+                gpu.prediction.params_view(),
+                cache_t,
+                gpu.workspace,
+            )
+        else:
+            Self.PredNet.forward_gpu_with_cache[BATCH](
+                ctx,
+                obs_t,
+                pred_t,
+                gpu.prediction.params_view(),
+                cache_t,
+                gpu.workspace,
+            )
 
         # ── Compute gradient on GPU ──────────────────────────────
         var grad_1d = LayoutTensor[
@@ -689,15 +704,27 @@ struct GenericAlphaZeroAgent[
 
         gpu.prediction.zero_grads(ctx)
         var grads = gpu.prediction.grads_view()
-        Self.PredNet.backward_gpu[BATCH](
-            ctx,
-            grad_out_t,
-            grad_in_t,
-            gpu.prediction.params_view(),
-            cache_t,
-            grads,
-            gpu.workspace,
-        )
+        comptime if has_nvidia_gpu_accelerator() and Self.USE_STREAM:
+            Self.PredNet.backward_gpu_on_stream[BATCH](
+                ctx,
+                gpu.stream,
+                grad_out_t,
+                grad_in_t,
+                gpu.prediction.params_view(),
+                cache_t,
+                grads,
+                gpu.workspace,
+            )
+        else:
+            Self.PredNet.backward_gpu[BATCH](
+                ctx,
+                grad_out_t,
+                grad_in_t,
+                gpu.prediction.params_view(),
+                cache_t,
+                grads,
+                gpu.workspace,
+            )
         # Log param delta across optimizer step (every diag_every steps)
         if self.logger and self.train_step_count > 0 and (
             self.diag_every <= 0
