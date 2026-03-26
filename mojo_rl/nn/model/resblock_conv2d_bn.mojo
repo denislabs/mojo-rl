@@ -568,9 +568,18 @@ struct ResBlockConv2DBN[
         Self.Conv1.backward_gpu[BATCH](ctx, temp_gi, go_c1, p1, c1_v, g1_v, conv_ws)
 
         # 4. Add conv1's grad_input to skip grad
-        comptime add_k = _add_kernel_flat[TOTAL, dtype]
-        ctx.enqueue_function[add_k, add_k](
-            gi_t,
-            LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin](inter_ptr),
+        @always_inline
+        def add_wrapper(
+            a: LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin],
+            b: LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= TOTAL:
+                return
+            a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
+
+        var temp_flat = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](inter_ptr)
+        ctx.enqueue_function[add_wrapper, add_wrapper](
+            grad_input, temp_flat,
             grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
