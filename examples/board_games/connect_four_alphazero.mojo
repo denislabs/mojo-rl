@@ -15,6 +15,7 @@ from mojo_rl.deep_agents.alphazero import (
     GenericAlphaZeroAgent,
     AlphaZeroConnectFourConfig,
     AlphaZeroConnectFourResNetConfig,
+    AlphaZeroConnectFourFusedResNetConfig,
     AlphaZeroConnectFourCNNConfig,
 )
 from mojo_rl.deep_agents.muzero.evaluators import (
@@ -45,7 +46,7 @@ def main() raises:
     # CNN (Conv+BN+ReLU, matching alpha-zero-general):
     # comptime Config = AlphaZeroConnectFourCNNConfig[]
     # ResNet (closest to original AlphaZero):
-    comptime Config = AlphaZeroConnectFourResNetConfig[]
+    comptime Config = AlphaZeroConnectFourFusedResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "ConnectFour")
