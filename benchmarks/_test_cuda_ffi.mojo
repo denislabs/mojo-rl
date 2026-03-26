@@ -1,13 +1,14 @@
-"""Probe CUDA FFI feasibility — test graph capture with CUDA-created stream.
+"""Probe CUDA FFI — find CUstream inside DeviceStream._handle (C++ object).
 
-Instead of extracting CUstream from Mojo's DeviceStream (hard to probe),
-create a CUDA stream directly via the driver API and test graph capture.
+DeviceStream._handle is a UnsafePointer[_DeviceStreamCpp].
+The _DeviceStreamCpp is a C++ object wrapping a CUstream.
+We scan its memory to find the valid CUstream handle.
 
 Run with:
     pixi run -e nvidia mojo run -I . benchmarks/_test_cuda_ffi.mojo
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceStream
 from std.ffi import OwnedDLHandle, c_int
 from std.memory import alloc
 
@@ -16,21 +17,12 @@ comptime CUptr = UnsafePointer[NoneType, MutAnyOrigin]
 
 
 def main() raises:
-    print("=== CUDA Graph FFI Probe ===\n")
+    print("=== CUDA Graph FFI — Find CUstream in DeviceStream ===\n")
 
-    # Ensure CUDA context is initialized by creating a DeviceContext first
     var ctx = DeviceContext()
     ctx.synchronize()
-    print("Mojo DeviceContext initialized")
 
-    # Load CUDA driver library
     var cuda = OwnedDLHandle("libcuda.so")
-    print("Loaded libcuda.so")
-
-    # Get function pointers
-    var cuStreamCreate = cuda.get_function[
-        def (UnsafePointer[CUptr, MutAnyOrigin], UInt32) -> c_int
-    ]("cuStreamCreate")
     var cuStreamIsCapturing = cuda.get_function[
         def (CUptr, UnsafePointer[c_int, MutAnyOrigin]) -> c_int
     ]("cuStreamIsCapturing")
@@ -55,104 +47,86 @@ def main() raises:
     var cuGraphExecDestroy = cuda.get_function[
         def (CUptr) -> c_int
     ]("cuGraphExecDestroy")
-    var cuStreamDestroy = cuda.get_function[
-        def (CUptr) -> c_int
-    ]("cuStreamDestroy_v2")
-    print("Got CUDA function pointers")
 
-    # Create a CUDA stream directly via driver API
-    var stream_buf = alloc[CUptr](1)
-    stream_buf[] = CUptr()
-    var r_create = cuStreamCreate(stream_buf, UInt32(0))
-    var cuda_stream = stream_buf[]
-    print("\ncuStreamCreate:", r_create, "handle:", Int(cuda_stream))
+    var stream = ctx.create_stream()
 
-    if r_create != 0:
-        print("FAILED: Could not create CUDA stream")
-        stream_buf.free()
-        return
+    # DeviceStream has one field: _handle: UnsafePointer[_DeviceStreamCpp]
+    # _handle is a pointer to a C++ object. Rebind to get that pointer.
+    var cpp_obj_ptr = rebind[CUptr](stream)
+    print("DeviceStream._handle (C++ obj ptr):", Int(cpp_obj_ptr))
 
-    # Test 1: cuStreamIsCapturing
-    print("\n--- Test 1: cuStreamIsCapturing ---")
+    # The C++ object likely has the CUstream as one of its first fields.
+    # Treat the C++ object as an array of pointer-sized values and probe each.
+    var fields = cpp_obj_ptr.bitcast[CUptr]()
+
     var status_buf = alloc[c_int](1)
-    status_buf[] = c_int(-1)
-    var r1 = cuStreamIsCapturing(cuda_stream, status_buf)
-    print("Result:", r1, "Status:", status_buf[], "(0=none)")
+    var found_offset = -1
+    var found_handle = CUptr()
 
-    if r1 != 0:
-        print("FAILED: IsCapturing error", r1)
+    print("\nScanning _DeviceStreamCpp fields for valid CUstream:")
+    for offset in range(16):  # probe first 16 pointer-sized slots
+        var candidate = (fields + offset)[]
+        status_buf[] = c_int(-1)
+        var r = cuStreamIsCapturing(candidate, status_buf)
+        var marker = "  <<<" if r == 0 else ""
+        print(
+            "  [", offset, "] ptr=", Int(candidate),
+            " result=", r, " status=", status_buf[], marker,
+        )
+        if r == 0 and found_offset == -1:
+            found_offset = offset
+            found_handle = candidate
+
+    if found_offset == -1:
+        print("\nNo valid CUstream found in first 16 fields.")
         status_buf.free()
-        stream_buf.free()
         return
 
-    # Test 2: Begin capture
-    print("\n--- Test 2: cuStreamBeginCapture ---")
-    var r2 = cuStreamBeginCapture(cuda_stream, c_int(2))  # RELAXED
-    print("Result:", r2)
+    print("\n=== Found CUstream at offset", found_offset, "===")
+    print("Handle:", Int(found_handle))
+
+    # Now test full graph capture with the extracted handle
+    print("\n--- Graph Capture Test ---")
+    var r2 = cuStreamBeginCapture(found_handle, c_int(2))
+    print("BeginCapture:", r2)
 
     if r2 != 0:
-        print("FAILED: BeginCapture error", r2)
+        print("BeginCapture failed:", r2)
         status_buf.free()
-        stream_buf.free()
         return
 
-    # Verify capture active
     status_buf[] = c_int(-1)
-    _ = cuStreamIsCapturing(cuda_stream, status_buf)
-    print("Capture active:", status_buf[], "(1=active)")
+    _ = cuStreamIsCapturing(found_handle, status_buf)
+    print("Capture active:", status_buf[])
 
-    # Test 3: End capture (empty graph — no kernels between begin/end)
-    print("\n--- Test 3: cuStreamEndCapture ---")
     var graph_buf = alloc[CUptr](1)
     graph_buf[] = CUptr()
-    var r3 = cuStreamEndCapture(cuda_stream, graph_buf)
+    var r3 = cuStreamEndCapture(found_handle, graph_buf)
     var graph = graph_buf[]
-    print("Result:", r3, "Graph:", Int(graph))
+    print("EndCapture:", r3, "Graph:", Int(graph))
 
-    if r3 != 0:
-        print("FAILED: EndCapture error", r3)
-        status_buf.free()
-        stream_buf.free()
-        graph_buf.free()
-        return
+    if r3 == 0:
+        var exec_buf = alloc[CUptr](1)
+        exec_buf[] = CUptr()
+        var r4 = cuGraphInstantiate(exec_buf, graph, UInt64(0))
+        print("Instantiate:", r4)
 
-    # Test 4: Instantiate
-    print("\n--- Test 4: cuGraphInstantiate ---")
-    var exec_buf = alloc[CUptr](1)
-    exec_buf[] = CUptr()
-    var r4 = cuGraphInstantiate(exec_buf, graph, UInt64(0))
-    print("Result:", r4)
+        if r4 == 0:
+            var r5 = cuGraphLaunch(exec_buf[], found_handle)
+            _ = cuStreamSynchronize(found_handle)
+            print("Launch:", r5)
 
-    if r4 != 0:
-        print("FAILED: Instantiate error", r4)
+            if r5 == 0:
+                print("\n========================================")
+                print("FULL SUCCESS!")
+                print("CUstream extracted from DeviceStream at offset", found_offset)
+                print("CUDA Graph capture works on Mojo's own stream!")
+                print("========================================")
+
+            _ = cuGraphExecDestroy(exec_buf[])
+
         _ = cuGraphDestroy(graph)
-        status_buf.free()
-        stream_buf.free()
-        graph_buf.free()
         exec_buf.free()
-        return
 
-    # Test 5: Launch
-    print("\n--- Test 5: cuGraphLaunch ---")
-    var r5 = cuGraphLaunch(exec_buf[], cuda_stream)
-    print("Result:", r5)
-    _ = cuStreamSynchronize(cuda_stream)
-
-    # Cleanup
-    _ = cuGraphExecDestroy(exec_buf[])
-    _ = cuGraphDestroy(graph)
-    _ = cuStreamDestroy(cuda_stream)
     status_buf.free()
-    stream_buf.free()
     graph_buf.free()
-    exec_buf.free()
-
-    if r5 == 0:
-        print("\n========================================")
-        print("ALL TESTS PASSED")
-        print("CUDA Graph lifecycle works from Mojo!")
-        print("========================================")
-        print("\nNext: capture actual Mojo GPU kernels")
-        print("between BeginCapture/EndCapture.")
-    else:
-        print("\nGraphLaunch failed with error", r5)
