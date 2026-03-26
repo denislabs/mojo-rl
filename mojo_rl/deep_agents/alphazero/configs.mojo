@@ -378,7 +378,9 @@ struct AlphaZeroConnectFourResNetConfig[
 
     comptime PredModel = Sequential[
         Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],  # Initial: 3ch→F
-        Repeat[Self.NUM_BLOCKS, ResBlockBN6x7[Self.FILTERS], shared=False],  # N× independent ResBlocks
+        Repeat[
+            Self.NUM_BLOCKS, ResBlockBN6x7[Self.FILTERS], shared=False
+        ],  # N× independent ResBlocks
         FlattenLayer[Self.FILTERS * 6 * 7],
         LinearBatchNormReLU[Self.FILTERS * 6 * 7, Self.FILTERS * 2],
         Dropout[Self.FILTERS * 2, 0.3, 42, True],
@@ -411,6 +413,7 @@ struct AlphaZeroConnectFourResNetConfig[
 
 struct AlphaZeroConnectFourFusedResNetConfig[
     FILTERS: Int = 128,
+    NUM_BLOCKS: Int = 5,
     LR: Float64 = 2e-3,
     WD: Float64 = 1e-4,
     BS: Int = 64,
@@ -432,11 +435,9 @@ struct AlphaZeroConnectFourFusedResNetConfig[
 
     comptime PredModel = Sequential[
         Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],  # Initial: 3ch→F
-        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 1 (fused)
-        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 2 (fused)
-        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 3 (fused)
-        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 4 (fused)
-        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 5 (fused)
+        Repeat[
+            Self.NUM_BLOCKS, ResBlockBNFused6x7[Self.FILTERS], shared=False
+        ],  # N× independent ResBlocks
         FlattenLayer[Self.FILTERS * 6 * 7],
         LinearBatchNormReLU[Self.FILTERS * 6 * 7, Self.FILTERS * 2],
         Dropout[Self.FILTERS * 2, 0.3, 42, True],
@@ -485,7 +486,9 @@ struct AlphaZeroTicTacToeResNetConfig[
 
     comptime PredModel = Sequential[
         Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 3, 3],  # Initial: 3ch→F
-        Repeat[Self.NUM_BLOCKS, ResBlockBN3x3[Self.FILTERS], shared=False],  # N× independent ResBlocks
+        Repeat[
+            Self.NUM_BLOCKS, ResBlockBN3x3[Self.FILTERS], shared=False
+        ],  # N× independent ResBlocks
         Conv2DBatchNormReLU[
             Self.FILTERS, Self.FILTERS, 3, 1, 0, 3, 3
         ],  # Reduce: 3×3→1×1
