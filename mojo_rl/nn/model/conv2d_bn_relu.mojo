@@ -841,8 +841,8 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
         ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
 
-        # Conv2D GPU forward stays on ctx
-        ConvOp.eval_gpu[BATCH](ctx, output, input, conv_params, conv_cache, workspace.unsafe_ptr())
+        # Conv2D GPU forward — stream dispatch
+        ConvOp.eval_gpu_on_stream[BATCH](ctx, stream, output, input, conv_params, conv_cache, workspace.unsafe_ptr())
 
         # Copy im2col from conv_cache into our cache
         comptime COPY_SIZE = BATCH * CONV_CS
@@ -975,8 +975,8 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
         ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
 
-        # Conv2D forward — still on ctx (DiffOp primitive)
-        ConvOp.eval_gpu[BATCH](ctx, output, input, conv_params, dummy_cache, workspace.unsafe_ptr())
+        # Conv2D forward — stream dispatch
+        ConvOp.eval_gpu_on_stream[BATCH](ctx, stream, output, input, conv_params, dummy_cache, workspace.unsafe_ptr())
 
         # BN+ReLU — stream dispatch
         var params_immut = LayoutTensor[
@@ -1205,7 +1205,7 @@ struct Conv2DBatchNormReLU[
             block_dim=(TPB,),
         )
 
-        # Step 3: Conv backward — still on ctx (DiffOp primitive, no stream variant)
-        ConvOp.vjp_gpu[BATCH](
-            ctx, grad_pre_bn, grad_input, conv_params, conv_cache, conv_grads, workspace.unsafe_ptr()
+        # Step 3: Conv backward — stream dispatch
+        ConvOp.vjp_gpu_on_stream[BATCH](
+            ctx, stream, grad_pre_bn, grad_input, conv_params, conv_cache, conv_grads, workspace.unsafe_ptr()
         )

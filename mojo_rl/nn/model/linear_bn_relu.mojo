@@ -743,8 +743,8 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
         ](workspace.unsafe_ptr())
 
-        # Step 1: MatMul stays on ctx
-        MM.eval_gpu[BATCH](ctx, output, input, mm_params, mm_cache, workspace.unsafe_ptr())
+        # Step 1: MatMul — stream dispatch
+        MM.eval_gpu_on_stream[BATCH](ctx, stream, output, input, mm_params, mm_cache, workspace.unsafe_ptr())
 
         # Step 2: Copy cached input from mm_cache into our cache
         comptime COPY_SIZE = BATCH * MM_CS
@@ -912,8 +912,8 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin
         ](workspace.unsafe_ptr())
 
-        # MatMul — still on ctx (DiffOp primitive)
-        MM.eval_gpu[BATCH](ctx, output, input, mm_params, dummy_mm_cache, workspace.unsafe_ptr())
+        # MatMul — stream dispatch
+        MM.eval_gpu_on_stream[BATCH](ctx, stream, output, input, mm_params, dummy_mm_cache, workspace.unsafe_ptr())
 
         # BiasAdd — stream dispatch
         var bias = LayoutTensor[
@@ -1074,6 +1074,8 @@ struct LinearBatchNormReLU[
         ](grads.ptr)
         MM.vjp_gpu[BATCH](ctx, grad_pre_bn, grad_input, mm_params, mm_cache, mm_grads, workspace.unsafe_ptr())
 
+    # Keep first vjp_gpu call on ctx (above). Stream variant below uses vjp_gpu_on_stream.
+
     @staticmethod
     def backward_gpu_on_stream[
         BATCH: Int,
@@ -1188,11 +1190,11 @@ struct LinearBatchNormReLU[
             grid_dim=(COPY_BLOCKS,), block_dim=(TPB,),
         )
 
-        # Step 4: MatMul backward — still on ctx (DiffOp primitive)
+        # Step 4: MatMul backward — stream dispatch
         var mm_params = LayoutTensor[
             dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
         var mm_grads = LayoutTensor[
             dtype, Layout.row_major(MM.PARAM_SIZE), MutAnyOrigin
         ](grads.ptr)
-        MM.vjp_gpu[BATCH](ctx, grad_pre_bn, grad_input, mm_params, mm_cache, mm_grads, workspace.unsafe_ptr())
+        MM.vjp_gpu_on_stream[BATCH](ctx, stream, grad_pre_bn, grad_input, mm_params, mm_cache, mm_grads, workspace.unsafe_ptr())

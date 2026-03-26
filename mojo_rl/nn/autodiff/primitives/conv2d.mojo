@@ -15,7 +15,7 @@ from ...constants import (
 from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceStream
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
@@ -1205,6 +1205,123 @@ struct Conv2D[
             )
 
     @staticmethod
+    def eval_gpu_on_stream[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        """Forward using compile_function + stream dispatch."""
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+
+        comptime if has_nvidia_gpu_accelerator():
+            comptime K_TOTAL = BATCH * Self.spatial_out
+            comptime KS2 = Self.kernel_size * Self.kernel_size
+
+            # 1. im2col — stream
+            comptime im2col_elems = BATCH * Self.CACHE_SIZE
+            comptime im2col_blocks = (im2col_elems + TPB - 1) // TPB
+
+            @always_inline
+            def im2col_wrapper(
+                cache_out: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+                input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= im2col_elems:
+                    return
+                var b = idx // Self.CACHE_SIZE
+                var pos = idx % Self.CACHE_SIZE
+                var s = pos // Self.col_size
+                var k = pos % Self.col_size
+                var oh = s // Self.out_w
+                var ow = s % Self.out_w
+                var ch = k // KS2
+                var rem_k = k % KS2
+                var kh = rem_k // Self.kernel_size
+                var kw = rem_k % Self.kernel_size
+                var ih = oh * Self.stride - Self.padding + kh
+                var iw = ow * Self.stride - Self.padding + kw
+                var val: Scalar[dtype] = 0
+                if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
+                    val = rebind[Scalar[dtype]](input[b, ch * Self.in_h * Self.in_w + ih * Self.in_w + iw])
+                cache_out[b, pos] = val
+
+            var c_im2col = ctx.compile_function[im2col_wrapper, im2col_wrapper]()
+            stream.enqueue_function(c_im2col, cache, input_immut, grid_dim=(im2col_blocks,), block_dim=(TPB,))
+
+            var col_flat = LayoutTensor[dtype, Layout.row_major(K_TOTAL, Self.col_size), MutAnyOrigin](cache.ptr)
+
+            # 2. Transpose W — stream
+            comptime w_t_offset = BATCH * Self.CACHE_SIZE
+            comptime w_elems = Self.out_channels * Self.col_size
+            comptime w_blocks = (w_elems + TPB - 1) // TPB
+            var w_t = LayoutTensor[dtype, Layout.row_major(Self.col_size, Self.out_channels), MutAnyOrigin](workspace + w_t_offset)
+
+            @always_inline
+            def transpose_w_fwd(
+                dst: LayoutTensor[dtype, Layout.row_major(Self.col_size, Self.out_channels), MutAnyOrigin],
+                src: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= w_elems:
+                    return
+                var k = idx // Self.out_channels
+                var oc = idx % Self.out_channels
+                dst[k, oc] = src[oc * Self.col_size + k]
+
+            var c_tw = ctx.compile_function[transpose_w_fwd, transpose_w_fwd]()
+            stream.enqueue_function(c_tw, w_t, params_immut, grid_dim=(w_blocks,), block_dim=(TPB,))
+
+            # 3. max_matmul — stays on ctx (library call)
+            var out_temp = LayoutTensor[dtype, Layout.row_major(K_TOTAL, Self.out_channels), MutAnyOrigin](workspace)
+            max_matmul[target="gpu"](out_temp, col_flat, w_t, ctx)
+
+            # 4. Transpose output + bias — stream
+            comptime out_elems = BATCH * Self.OUT_DIM
+            comptime out_blocks = (out_elems + TPB - 1) // TPB
+            var b_ptr = LayoutTensor[dtype, Layout.row_major(Self.out_channels), ImmutAnyOrigin](params.ptr + Self.out_channels * Self.col_size)
+
+            @always_inline
+            def transpose_output_bias_wrapper(
+                output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+                out_temp: LayoutTensor[dtype, Layout.row_major(K_TOTAL, Self.out_channels), MutAnyOrigin],
+                bias: LayoutTensor[dtype, Layout.row_major(Self.out_channels), ImmutAnyOrigin],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= out_elems:
+                    return
+                var b = idx // Self.OUT_DIM
+                var out_pos = idx % Self.OUT_DIM
+                var oc = out_pos // Self.spatial_out
+                var s = out_pos % Self.spatial_out
+                output[b, out_pos] = rebind[Scalar[dtype]](out_temp[b * Self.spatial_out + s, oc]) + rebind[Scalar[dtype]](bias[oc])
+
+            var c_tb = ctx.compile_function[transpose_output_bias_wrapper, transpose_output_bias_wrapper]()
+            stream.enqueue_function(c_tb, output, out_temp, b_ptr, grid_dim=(out_blocks,), block_dim=(TPB,))
+        else:
+            # Apple: fall back to ctx dispatch
+            Self.eval_gpu[BATCH](ctx, output, input, params, cache, workspace)
+
+    @staticmethod
     def vjp_gpu[
         BATCH: Int
     ](
@@ -1494,3 +1611,158 @@ struct Conv2D[
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
         )
+
+    @staticmethod
+    def vjp_gpu_on_stream[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grad_params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        """Backward using compile_function + stream dispatch."""
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ](cache.ptr)
+
+        var dW = LayoutTensor[
+            dtype, Layout.row_major(Self.out_channels, Self.col_size), MutAnyOrigin
+        ](grad_params.ptr)
+
+        comptime if has_nvidia_gpu_accelerator():
+            comptime K_TOTAL = BATCH * Self.spatial_out
+
+            var grad_reshaped = LayoutTensor[
+                dtype, Layout.row_major(Self.out_channels, K_TOTAL), MutAnyOrigin
+            ](grad_input.ptr)
+            var col_flat = LayoutTensor[
+                dtype, Layout.row_major(K_TOTAL, Self.col_size), MutAnyOrigin
+            ](cache.ptr)
+
+            # 1. Transpose grad — stream
+            comptime grad_elems = Self.out_channels * K_TOTAL
+            comptime grad_blocks = (grad_elems + TPB - 1) // TPB
+
+            @always_inline
+            def transpose_grad_wrapper(
+                dst: LayoutTensor[dtype, Layout.row_major(Self.out_channels, K_TOTAL), MutAnyOrigin],
+                src: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= grad_elems:
+                    return
+                var oc = idx // K_TOTAL
+                var bs = idx % K_TOTAL
+                var b = bs // Self.spatial_out
+                var s = bs % Self.spatial_out
+                dst[oc, bs] = src[b, oc * Self.spatial_out + s]
+
+            var c_tg = ctx.compile_function[transpose_grad_wrapper, transpose_grad_wrapper]()
+            stream.enqueue_function(c_tg, grad_reshaped, grad_output_immut, grid_dim=(grad_blocks,), block_dim=(TPB,))
+
+            # 2. dW = grad_reshaped @ col_flat — stays on ctx
+            max_matmul[target="gpu"](dW, grad_reshaped, col_flat, ctx)
+
+            # 3. Transpose W — stream
+            comptime w_t_bwd_offset = BATCH * Self.CACHE_SIZE
+            comptime w_elems_bwd = Self.out_channels * Self.col_size
+            comptime w_blocks_bwd = (w_elems_bwd + TPB - 1) // TPB
+            var w_t_bwd = LayoutTensor[
+                dtype, Layout.row_major(Self.col_size, Self.out_channels), MutAnyOrigin
+            ](workspace + w_t_bwd_offset)
+
+            @always_inline
+            def transpose_w_bwd(
+                dst: LayoutTensor[dtype, Layout.row_major(Self.col_size, Self.out_channels), MutAnyOrigin],
+                src: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= w_elems_bwd:
+                    return
+                var k = idx // Self.out_channels
+                var oc = idx % Self.out_channels
+                dst[k, oc] = src[oc * Self.col_size + k]
+
+            var c_tw = ctx.compile_function[transpose_w_bwd, transpose_w_bwd]()
+            stream.enqueue_function(c_tw, w_t_bwd, params_immut, grid_dim=(w_blocks_bwd,), block_dim=(TPB,))
+
+            # 4. dcol = W.T @ grad_reshaped — stays on ctx
+            var dcol = LayoutTensor[
+                dtype, Layout.row_major(Self.col_size, K_TOTAL), MutAnyOrigin
+            ](workspace)
+            max_matmul[target="gpu"](dcol, w_t_bwd, grad_reshaped, ctx)
+
+            # 5. col2im gather — stream
+            var total_dx = BATCH * Self.IN_DIM
+            var grid_dx = (total_dx + TPB - 1) // TPB
+
+            @always_inline
+            def col2im_gather(
+                grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+                dcol: LayoutTensor[dtype, Layout.row_major(Self.col_size, K_TOTAL), MutAnyOrigin],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= BATCH * Self.IN_DIM:
+                    return
+                var b = idx // Self.IN_DIM
+                var in_pos = idx % Self.IN_DIM
+                var c = in_pos // (Self.in_h * Self.in_w)
+                var rem = in_pos % (Self.in_h * Self.in_w)
+                var ih = rem // Self.in_w
+                var iw = rem % Self.in_w
+
+                var acc: Scalar[dtype] = 0
+                for kh in range(Self.kernel_size):
+                    for kw in range(Self.kernel_size):
+                        var oh_num = ih + Self.padding - kh
+                        var ow_num = iw + Self.padding - kw
+                        if oh_num >= 0 and oh_num % Self.stride == 0 and ow_num >= 0 and ow_num % Self.stride == 0:
+                            var oh = oh_num // Self.stride
+                            var ow = ow_num // Self.stride
+                            if oh < Self.out_h and ow < Self.out_w:
+                                var s = oh * Self.out_w + ow
+                                var c_k = c * Self.kernel_size * Self.kernel_size + kh * Self.kernel_size + kw
+                                acc += rebind[Scalar[dtype]](dcol[c_k, b * Self.spatial_out + s])
+                grad_input[b, in_pos] = acc
+
+            var c_c2i = ctx.compile_function[col2im_gather, col2im_gather]()
+            stream.enqueue_function(c_c2i, grad_input, dcol, grid_dim=(grid_dx,), block_dim=(TPB,))
+        else:
+            # Apple: fall back to ctx dispatch
+            Self.vjp_gpu[BATCH](ctx, grad_output, grad_input, params, cache, grad_params, workspace)
+
+        # db — stream
+        var db = LayoutTensor[
+            dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
+        ](grad_params.ptr + Self.out_channels * Self.col_size)
+
+        @always_inline
+        def db_wrapper(
+            db: LayoutTensor[dtype, Layout.row_major(Self.out_channels), MutAnyOrigin],
+            grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin],
+        ):
+            Self.backward_db_kernel[BATCH](db, grad_output)
+
+        var c_db = ctx.compile_function[db_wrapper, db_wrapper]()
+        stream.enqueue_function(c_db, db, grad_output_immut, grid_dim=(Self.out_channels,), block_dim=(TPB,))

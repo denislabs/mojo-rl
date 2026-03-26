@@ -15,7 +15,7 @@ from ...constants import (
 from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceStream
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu
@@ -1222,4 +1222,130 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             grad_output_immut,
             grid_dim=(dW_grid_x, dW_grid_y),
             block_dim=(MMA_BLOCK_THREADS, 1),
+        )
+
+    @staticmethod
+    def eval_gpu_on_stream[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        """Forward using stream dispatch."""
+        var W = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin
+        ](params.ptr)
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+        ](input.ptr)
+
+        comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+        @always_inline
+        def wrapper(
+            output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin],
+            input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin],
+            W: LayoutTensor[dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin],
+            cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin],
+        ):
+            comptime if is_nvidia_gpu():
+                Self.eval_kernel_mma[BATCH](output, input, W, cache)
+            else:
+                Self.eval_kernel_2x2[BATCH](output, input, W, cache)
+
+        var compiled = ctx.compile_function[wrapper, wrapper]()
+        stream.enqueue_function(
+            compiled, output, input_immut, W, cache,
+            grid_dim=(grid_x, grid_y), block_dim=(MMA_BLOCK_THREADS, 1),
+        )
+
+    @staticmethod
+    def vjp_gpu_on_stream[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grad_params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        """Backward using stream dispatch."""
+        var W = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin
+        ](params.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+        ](cache.ptr)
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var dW = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+        ](grad_params.ptr)
+
+        comptime dx_grid_x = (Self.in_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+        @always_inline
+        def dx_wrapper(
+            grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin],
+            grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin],
+            W: LayoutTensor[dtype, Layout.row_major(Self.in_dim, Self.out_dim), ImmutAnyOrigin],
+        ):
+            comptime if is_nvidia_gpu():
+                Self.backward_dx_kernel_mma[BATCH](grad_input, grad_output, W)
+            else:
+                Self.backward_dx_kernel_2x2[BATCH](grad_input, grad_output, W)
+
+        var c_dx = ctx.compile_function[dx_wrapper, dx_wrapper]()
+        stream.enqueue_function(
+            c_dx, grad_input, grad_output_immut, W,
+            grid_dim=(dx_grid_x, dx_grid_y), block_dim=(MMA_BLOCK_THREADS, 1),
+        )
+
+        comptime dW_grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime dW_grid_y = (Self.in_dim + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+        @always_inline
+        def dW_wrapper(
+            dW: LayoutTensor[dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin],
+            cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin],
+            grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin],
+        ):
+            comptime if is_nvidia_gpu():
+                Self.backward_dW_kernel_mma[BATCH](dW, cache, grad_output)
+            else:
+                Self.backward_dW_kernel_2x2[BATCH](dW, cache, grad_output)
+
+        var c_dW = ctx.compile_function[dW_wrapper, dW_wrapper]()
+        stream.enqueue_function(
+            c_dW, dW, cache_immut, grad_output_immut,
+            grid_dim=(dW_grid_x, dW_grid_y), block_dim=(MMA_BLOCK_THREADS, 1),
         )
