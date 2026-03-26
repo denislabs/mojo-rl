@@ -1,0 +1,110 @@
+Generating SQLite file connect_four_alphazero_profile_stream.sqlite from connect_four_alphazero_profile_stream.nsys-rep
+Processing [connect_four_alphazero_profile_stream.sqlite] with [/opt/nvidia/nsight-compute/2024.1.1/host/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+
+ ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
+
+ Time (%)  Total Time (ns)  Instances  Avg (ns)   Med (ns)   Min (ns)  Max (ns)  StdDev (ns)                               Name                              
+ --------  ---------------  ---------  ---------  ---------  --------  --------  -----------  ---------------------------------------------------------------
+     36.2        887289270       6000   147881.5   147681.0    145792    152641       1065.3  linalg_matmul_gpu__multistage6A6A6A6A6A6A_10017ba420524282     
+     28.0        685471193       6000   114245.2   113377.0    110304    119489       2509.7  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_ed8bbbfa0fa55a73     
+      7.1        174306078        600   290510.1   289777.5    288002    300354       2785.0  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_ac48b78f5fa257c7     
+      6.9        169647944        600   282746.6   288978.0     58113    469123      64113.8  mojo_rl_deep_agents_muzero_gp6A6A6A6A6A6A_4208def868aac6cf     
+      4.0         98266777       3000    32755.6    32704.0     31904     34656        461.8  mojo_rl_nn_model_batch_norm_26A6A6A6A6A6A_f453f7fb3a26a74d     
+      4.0         98048658       3000    32682.9    32577.0     31841     34816        512.0  mojo_rl_nn_model_conv2d_bn_re6A6A6A6A6A6A_f74826bbc580ef51     
+      3.3         80446825       6600    12188.9    11136.0     11040     22880       3182.7  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_32dae285f68825b8     
+      2.8         67797575        600   112996.0   113136.5     77696    166081      11743.8  mojo_rl_deep_agents_muzero_gp6A6A6A6A6A6A_64df614ad5598008     
+      1.6         38862852       3000    12954.3    12960.0     12672     13504        101.1  mojo_rl_nn_autodiff_combinato6A6A6A6A6A6A_b765db99c76649a8     
+      0.9         22571668       6080     3712.4     3680.0      2656      4512        191.4  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_d14226e35d601718     
+      0.9         22023331       3000     7341.1     7328.0      7232      7712         88.9  mojo_rl_nn_model_relu_ReLU6A6A6A6A6A6A6A6A6A6A_601dbd2f340466a6
+      0.8         19646701        600    32744.5    32672.0     31872     34592        471.6  mojo_rl_nn_model_conv2d_bn_re6A6A6A6A6A6A_ed089b6dada59442     
+      0.8         18373178        600    30622.0    30560.0     29760     31904        339.6  mojo_rl_envs_board_games_conn6A6A6A6A6A6A_6facad3636492b2d     
+      0.6         14444937          8  1805617.1  1795337.0   1795017   1878090      29283.9  mojo_rl_deep_agents_muzero_gp6A6A6A6A6A6A_b72798854c9f0903     
+      0.3          8441356        600    14068.9    14048.0     13696     14816        184.3  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_801eda6057281feb     
+      0.3          6190297        600    10317.2    10272.0      9984     11104        179.3  ampere_sgemm_128x32_nn                                         
+      0.2          6048801        600    10081.3    10048.0      9824     10720        147.1  mojo_rl_nn_model_linear_bn_re6A6A6A6A6A6A_7e0370d5c4590d31     
+      0.2          4751735         80    59396.7    59072.0     58912     61985        936.4  linalg_matmul_gpu__multistage6A6A6A6A6A6A_aae6cfe4ea08b0e5     
+      0.2          4558003        600     7596.7     7584.0      7232      8032         99.8  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_571306bac087712e     
+      0.1          2761391        600     4602.3     4576.0      4543      4800         55.7  mojo_rl_nn_model_linear_bn_re6A6A6A6A6A6A_84761ec1434fb6d1     
+      0.1          2523557        608     4150.6     4128.0      4064      4480         68.7  ampere_sgemm_32x32_sliced1x4_nn                                
+      0.1          2312587          8   289073.4   287745.5    286818    298561       3896.3  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_8deab0a3b4751c24     
+      0.1          1829690        600     3049.5     3040.0      2976      3296         45.8  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_60a0cb8bf976babb     
+      0.1          1293141       1200     1077.6     1088.0      1055      1153         21.4  mojo_rl_nn_autodiff_fused_ma6A6A6A6A6A6A6A6A_c6324a8de34b6159  
+      0.1          1237028        608     2034.6     2016.0      1983      2209         39.7  linalg_gemv_gemv_kernel_DTyp6A6A6A6AcB6A6A_0a74b18cc5ab2303    
+      0.0          1049573        600     1749.3     1728.0      1696      2176         37.6  mojo_rl_nn_model_linear_bn_re6A6A6A6A6A6A_866380672315aa50     
+      0.0           908838         80    11360.5    11263.5     11200     12705        301.6  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_713f1f2c489d7d2a     
+      0.0           834244        600     1390.4     1376.0      1343      1472         24.8  mojo_rl_nn_model_linear_bn_re6A6A6A6A6A6A_bfee2e3abc0f39dc     
+      0.0           750256        600     1250.4     1248.0      1215      1313         19.7  mojo_rl_nn_model_dropout_Dro6A6A6A6A6A6A6A6A_d5dbfdb095efa7e4  
+      0.0           741004        608     1218.8     1216.0      1152      1408         46.4  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_621776328ffb4eee     
+      0.0           655169        600     1091.9     1088.0      1055      1153         18.6  mojo_rl_nn_model_dropout_Dro6A6A6A6A6A6A6A6A_3d6b9d3652512dc4  
+      0.0           645738        600     1076.2     1057.0      1055      1249         28.6  mojo_rl_nn_autodiff_fused_ma6A6A6A6A6A6A6A6A_1da01752f9eb3368  
+      0.0           620678        600     1034.5     1024.0       992      1089         19.0  mojo_rl_nn_autodiff_combinato6A6A6A6A6A6A_ee39d518a91cdadf     
+      0.0           608737        600     1014.6     1024.0       991      1088         20.4  mojo_rl_nn_autodiff_fused_ma6A6A6A6A6A6A6A6A_6afe34ec4f1eb628  
+      0.0           602853        600     1004.8      992.0       991      1057         19.1  mojo_rl_nn_autodiff_combinato6A6A6A6A6A6A_49e1d8e83c81db0f     
+      0.0           227520         88     2585.5     2560.0      2495      2912         77.8  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_499fc9068b4c002c     
+      0.0           203488         40     5087.2     5248.0      4576      5664        370.6  mojo_rl_nn_model_batch_norm_26A6A6A6A6A6A_6f3de3c994f59d56     
+      0.0           187452         40     4686.3     4640.0      4320      5312        260.0  mojo_rl_nn_model_conv2d_bn_re6A6A6A6A6A6A_54fd8a3c3708af81     
+      0.0           112862          8    14107.8    14064.0     12992     15167        728.7  mojo_rl_envs_board_games_conn6A6A6A6A6A6A_332cdb966cea9cb1     
+      0.0           112768          8    14096.0    14000.0     13952     14496        198.0  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_914f62bb072f2327     
+      0.0            84193         40     2104.8     2111.5      2080      2208         32.0  mojo_rl_nn_autodiff_combinato6A6A6A6A6A6A_2bd745846f7ae351     
+      0.0            78466         40     1961.7     1952.0      1920      2080         37.1  mojo_rl_nn_model_relu_ReLU6A6A6A6A6A6A6A6A6A6A_4419a1109d95c8c4
+      0.0            69312          8     8664.0     8671.5      8512      8864        118.0  mojo_rl_deep_agents_muzero_gp6A6A6A6A6A6A_395bf7aea7670299     
+      0.0            68193          9     7577.0     7552.0      7520      7872        111.7  mojo_rl_envs_board_games_conn6A6A6A6A6A6A_fe40fd589093b587     
+      0.0            41311          8     5163.9     5152.0      5152      5184         16.4  mojo_rl_nn_model_conv2d_bn_re6A6A6A6A6A6A_cfd6484943612f8f     
+      0.0            35905          8     4488.1     4448.5      4415      4736        107.8  mojo_rl_deep_agents_core_kern6A6A6A6A6A6A_ab9055adf70f275f     
+      0.0            27201          8     3400.1     3360.0      3360      3617         88.8  ampere_sgemm_32x128_nn                                         
+      0.0            27104          8     3388.0     3375.5      3233      3616        142.5  mojo_rl_deep_agents_muzero_gp6A6A6A6A6A6A_c8f22385d4e3dbfa     
+      0.0            19424          8     2428.0     2416.0      2400      2528         43.4  mojo_rl_nn_model_linear_bn_re6A6A6A6A6A6A_4eb78940d2c93fe0     
+      0.0            18529          8     2316.1     2304.0      2272      2400         45.0  mojo_rl_deep_agents_muzero_gp6A6A6A6A6A6A_4c20f3a80f2d0ae7     
+      0.0            16930          8     2116.3     2112.0      2080      2177         27.0  mojo_rl_nn_model_linear_bn_re6A6A6A6A6A6A_ab2b7aaedcbef1c9     
+      0.0            15840         16      990.0      976.0       960      1152         50.2  mojo_rl_nn_autodiff_fused_ma6A6A6A6A6A6A6A6A_a98740954773fb8a  
+      0.0            15745          8     1968.1     1952.5      1951      2048         34.1  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_f7c8754b6b6a03c5     
+      0.0            11007          8     1375.9     1311.5      1280      1856        196.6  mojo_rl_nn_autodiff_primitive6A6A6A6A6A6A_7bb91b20dc860ecc     
+      0.0            10720          8     1340.0     1344.0      1312      1376         20.5  mojo_rl_nn_model_linear_bn_re6A6A6A6A6A6A_809bd5622677b24f     
+      0.0             9123          8     1140.4     1152.0      1120      1153         16.9  mojo_rl_deep_agents_core_kern6A6A6A6A6A6A_8ceadfeba57acc9f     
+      0.0             9088          8     1136.0     1120.0      1120      1184         24.2  mojo_rl_nn_autodiff_fused_ma6A6A6A6A6A6A6A6A_e0dcd3b109d545d0  
+      0.0             9024          8     1128.0     1120.0      1120      1152         14.8  mojo_rl_nn_model_linear_bn_re6A6A6A6A6A6A_c7ba14f50aa6811d     
+      0.0             8097          8     1012.1      976.5       960      1152         78.2  mojo_rl_envs_board_games_conn6A6A6A6A6A6A_182ed678e254d33f     
+      0.0             8033          8     1004.1      992.0       992      1056         23.7  mojo_rl_nn_autodiff_fused_ma6A6A6A6A6A6A6A6A_f23fd0a38374fe8e  
+      0.0             8001          8     1000.1      992.0       992      1024         14.7  mojo_rl_nn_model_dropout_Dro6A6A6A6A6A6A6A6A_547f242d23e5a809  
+      0.0             7937          8      992.1      992.0       960      1024         17.1  mojo_rl_nn_model_dropout_Dro6A6A6A6A6A6A6A6A_ddba6f9e9115eba6  
+      0.0             7873          8      984.1      992.0       960       993         14.9  mojo_rl_deep_agents_core_kern6A6A6A6A6A6A_af7a5382f57f4dbd     
+      0.0             7872          8      984.0      992.0       960      1024         22.6  mojo_rl_nn_autodiff_combinato6A6A6A6A6A6A_20eddf8b7b361a4f     
+      0.0             7839          8      979.9      975.5       960      1024         23.7  mojo_rl_nn_autodiff_combinato6A6A6A6A6A6A_09d71319e21fdbe7     
+      0.0             3423          1     3423.0     3423.0      3423      3423          0.0  mojo_rl_envs_board_games_conn6A6A6A6A6A6A_d89de0c9cad1b040     
+
+Processing [connect_four_alphazero_profile_stream.sqlite] with [/opt/nvidia/nsight-compute/2024.1.1/host/target-linux-x64/reports/cuda_api_sum.py]... 
+
+ ** CUDA API Summary (cuda_api_sum):
+
+ Time (%)  Total Time (ns)  Num Calls   Avg (ns)     Med (ns)    Min (ns)   Max (ns)   StdDev (ns)                      Name                     
+ --------  ---------------  ---------  -----------  -----------  ---------  ---------  -----------  ---------------------------------------------
+     75.8       2020425520      50522      39991.0      10490.0       2100     468664      60913.5  cuLaunchKernelEx                             
+     13.1        349576382         20   17478819.1      13400.0        700   50549984   24334403.9  cuStreamSynchronize                          
+      7.1        189262782          1  189262782.0  189262782.0  189262782  189262782          0.0  cuMemAllocHost_v2                            
+      2.2         58287049         63     925191.3      40440.0      17600   50273131    6328086.4  cuModuleLoadDataEx                           
+      0.4         11458030          4    2864507.5    3210218.0     740406    4297188    1507917.7  cuLibraryLoadData                            
+      0.3          8183652          1    8183652.0    8183652.0    8183652    8183652          0.0  cudaFree                                     
+      0.2          6545637        620      10557.5        730.0        500    5965512     239551.2  cudaOccupancyMaxActiveBlocksPerMultiprocessor
+      0.2          6269412      61145        102.5         90.0         60      26390        143.4  cuStreamIsCapturing                          
+      0.2          4872594          4    1218148.5    1592079.0       1361    1687075     813120.1  cuLibraryGetKernel                           
+      0.2          4526759       1216       3722.7       3470.5       2730      51530       1754.3  cudaLaunchKernel                             
+      0.1          1827506          2     913753.0     913753.0     696166    1131340     307714.5  cuLibraryUnload                              
+      0.1          1661296          3     553765.3     443704.0     246463     971129     374660.3  cuMemAlloc_v2                                
+      0.1          1424650        838       1700.1        420.0        190    1042889      36010.8  cuGetProcAddress_v2                          
+      0.0          1323268         18      73514.9        825.0        640    1307422     307942.8  cudaEventCreateWithFlags                     
+      0.0           517565          3     172521.7     236552.0      10301     270712     141521.7  cudaMalloc                                   
+      0.0           288432          3      96144.0      97270.0      48940     142222      46651.2  cuMemGetInfo_v2                              
+      0.0           171843         34       5054.2       4315.5       2210      11790       2613.6  cuMemcpyDtoHAsync_v2                         
+      0.0            99529          9      11058.8       4969.0       1509      63700      20074.5  cuMemsetD32Async                             
+      0.0            94920          4      23730.0      23765.0      13470      33920       9548.4  cuMemcpyHtoDAsync_v2                         
+      0.0            35024         83        422.0        400.0        290       1020        118.7  cuEventQuery                                 
+      0.0            27960         83        336.9        300.0        200       2560        265.2  cuEventRecord                                
+      0.0            25830          2      12915.0      12915.0       4450      21380      11971.3  cuStreamDestroy                              
+      0.0            16940          1      16940.0      16940.0      16940      16940          0.0  cuStreamCreate                               
+      0.0            15350          4       3837.5       3180.0       2640       6350       1703.7  cuInit                                       
+      0.0            15130          1      15130.0      15130.0      15130      15130          0.0  cuStreamCreateWithPriority                   
+      0.0             2380          2       1190.0       1190.0        390       1990       1131.4  cuEventCreate                                
+      0.0             1730          2        865.0        865.0        580       1150        403.1  cudaGetDriverEntryPoint_v11030               
+      0.0             1120          1       1120.0       1120.0       1120       1120          0.0  cuCtxSetCurrent                              
+      0.0              900          2        450.0        450.0        300        600        212.1  cuModuleGetLoadingMode                       
+
