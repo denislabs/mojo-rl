@@ -1208,42 +1208,13 @@ struct FusedConv2DActivation[
                 block_dim=(TPB,),
             )
 
-            # 3. Transpose W → W.T (tiny) — in workspace after col_flat + out_temp
-            comptime w_elems = W_SIZE
-            comptime w_blocks = (w_elems + TPB - 1) // TPB
-            comptime w_t_ws_offset = BATCH * Self.CONV_CACHE + BATCH * Self.OUT_DIM
-            var w_t = LayoutTensor[
+            # 3. max_matmul with transpose_b: out = col_flat @ W.T
+            var W_mat = LayoutTensor[
                 dtype,
-                Layout.row_major(Self.col_size, Self.out_channels),
+                Layout.row_major(Self.out_channels, Self.col_size),
                 MutAnyOrigin,
-            ](workspace + w_t_ws_offset)
+            ](params.ptr)
 
-            @always_inline
-            def transpose_w_fwd(
-                dst: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.col_size, Self.out_channels),
-                    MutAnyOrigin,
-                ],
-                src: LayoutTensor[
-                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
-                ],
-            ):
-                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if idx >= w_elems:
-                    return
-                var k = idx // Self.out_channels
-                var oc = idx % Self.out_channels
-                dst[k, oc] = src[oc * Self.col_size + k]
-
-            ctx.enqueue_function[transpose_w_fwd, transpose_w_fwd](
-                w_t,
-                params_immut,
-                grid_dim=(w_blocks,),
-                block_dim=(TPB,),
-            )
-
-            # 4. max_matmul: out_temp = col_flat @ W.T → (K_TOTAL, OC)
             comptime out_temp_ws_offset = BATCH * Self.CONV_CACHE
             var out_temp = LayoutTensor[
                 dtype,
@@ -1251,7 +1222,7 @@ struct FusedConv2DActivation[
                 MutAnyOrigin,
             ](workspace + out_temp_ws_offset)
 
-            max_matmul[target="gpu"](out_temp, col_flat, w_t, ctx)
+            max_matmul[target="gpu", transpose_b=True](out_temp, col_flat, W_mat, ctx)
 
             # 5. Transpose output + bias + activation + cache act values
             # out_temp[b*S+s, oc] → output[b, oc*S+s] = act(val + bias[oc])
