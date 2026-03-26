@@ -55,8 +55,8 @@ def _bn_skip_relu_fwd_kernel[
 ):
     """Fused BN + skip-add + ReLU + cache. One block per channel.
 
-    output = ReLU(gamma * (conv2_out - mean) / sqrt(var + eps) + beta + skip)
-    Caches x_hat and inv_std for backward.
+    Optimized: 2-pass (Welford mean+var in pass 1, normalize+skip+relu in pass 2).
+    Uses flat pointer math to avoid divmod per element.
     """
     var c = Int(block_idx.x)
     if c >= channels:
@@ -66,75 +66,83 @@ def _bn_skip_relu_fwd_kernel[
     var eps = Scalar[dtype](BN_EPSILON)
     var mom = Scalar[dtype](BN_MOMENTUM)
     var one_m = Scalar[dtype](1.0) - mom
-    var n_f = Scalar[dtype](BATCH * spatial)
+    comptime N = BATCH * spatial
+    var n_f = Scalar[dtype](N)
     var gamma = rebind[Scalar[dtype]](params[GAMMA_OFF + c])
     var beta = rebind[Scalar[dtype]](params[BETA_OFF + c])
+
+    # Stride for output/skip: elements between output[b, c_off] and output[b+1, c_off]
+    comptime OUT_STRIDE = channels * spatial
 
     var smem = LayoutTensor[
         dtype, Layout.row_major(TPB), MutAnyOrigin,
         address_space=AddressSpace.SHARED,
     ].stack_allocation()
+    var smem2 = LayoutTensor[
+        dtype, Layout.row_major(TPB), MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
 
-    # Pass 1: mean
+    # ── Pass 1: Mean + Variance in single pass (two-pass parallel Welford) ──
+    # Each thread accumulates local sum and sum-of-squares, then we reduce both.
     var local_sum = Scalar[dtype](0.0)
+    var local_sq = Scalar[dtype](0.0)
+
+    # Flat pointer iteration: for each element in channel c across batch × spatial
+    var base = output.ptr + c_off
     var idx = tid
-    while idx < BATCH * spatial:
+    while idx < N:
+        # Flat index → (b, s): b = idx // spatial, offset = b * OUT_STRIDE + s
         var b = idx // spatial
-        var s = idx % spatial
-        local_sum += rebind[Scalar[dtype]](output[b, c_off + s])
+        var s = idx - b * spatial  # cheaper than idx % spatial
+        var x = (base + b * OUT_STRIDE + s)[]
+        local_sum += x
+        local_sq += x * x
         idx += TPB
+
+    # Reduce sum
     smem[tid] = local_sum
+    smem2[tid] = local_sq
     barrier()
     var st = TPB // 2
     while st > 0:
         if tid < st:
             smem[tid] = smem[tid] + smem[tid + st]
+            smem2[tid] = smem2[tid] + smem2[tid + st]
         barrier()
         st = st // 2
-    var mean = rebind[Scalar[dtype]](smem[0]) / n_f
-    barrier()
 
-    # Pass 2: variance
-    var local_var = Scalar[dtype](0.0)
-    idx = tid
-    while idx < BATCH * spatial:
-        var b = idx // spatial
-        var s = idx % spatial
-        local_var += (rebind[Scalar[dtype]](output[b, c_off + s]) - mean) ** 2
-        idx += TPB
-    smem[tid] = local_var
-    barrier()
-    st = TPB // 2
-    while st > 0:
-        if tid < st:
-            smem[tid] = smem[tid] + smem[tid + st]
-        barrier()
-        st = st // 2
-    var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
+    var mean = rebind[Scalar[dtype]](smem[0]) / n_f
+    # var = E[x^2] - E[x]^2
+    var var_ = rebind[Scalar[dtype]](smem2[0]) / n_f - mean * mean
     var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
     barrier()
 
-    # Pass 3: normalize + skip + relu + cache
+    # ── Pass 2: Normalize + skip + ReLU + cache ──
+    var skip_base = skip.ptr + c_off
+    var cache_xhat_base = cache.ptr  # cache layout: [BATCH, CACHE_SIZE]
     idx = tid
-    while idx < BATCH * spatial:
+    while idx < N:
         var b = idx // spatial
-        var s = idx % spatial
-        var x = rebind[Scalar[dtype]](output[b, c_off + s])
+        var s = idx - b * spatial
+        var out_off = b * OUT_STRIDE + c_off + s
+        var x = output.ptr[out_off]
         var x_hat = (x - mean) * inv_std
-        cache[b, XHAT_OFF + c_off + s] = x_hat
+        # Cache x_hat
+        (cache.ptr + b * CACHE_SIZE + XHAT_OFF + c_off + s)[] = x_hat
         var bn_out = gamma * x_hat + beta
-        var val = bn_out + rebind[Scalar[dtype]](skip[b, c_off + s])
-        # Cache pre-relu for backward
-        cache[b, INVSTD_OFF + channels + c_off + s] = val
-        output[b, c_off + s] = val if val > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+        var val = bn_out + (skip_base + b * OUT_STRIDE + s)[]
+        # Cache pre-relu
+        (cache.ptr + b * CACHE_SIZE + INVSTD_OFF + channels + c_off + s)[] = val
+        output.ptr[out_off] = val if val > Scalar[dtype](0.0) else Scalar[dtype](0.0)
         idx += TPB
 
-    # Running stats + inv_std cache
+    # Running stats + inv_std cache (parallel across threads)
+    if tid < BATCH:
+        (cache.ptr + tid * CACHE_SIZE + INVSTD_OFF + c)[] = inv_std
     if tid == 0:
-        for b in range(BATCH):
-            cache[b, INVSTD_OFF + c] = inv_std
-        var rm = rebind[Scalar[dtype]](params[RMEAN_OFF + c])
-        var rv = rebind[Scalar[dtype]](params[RVAR_OFF + c])
+        var rm = params.ptr[RMEAN_OFF + c]
+        var rv = params.ptr[RVAR_OFF + c]
         params.ptr[RMEAN_OFF + c] = one_m * rm + mom * mean
         params.ptr[RVAR_OFF + c] = one_m * rv + mom * var_
 
