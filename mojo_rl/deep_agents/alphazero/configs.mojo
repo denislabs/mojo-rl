@@ -29,6 +29,7 @@ from mojo_rl.nn.model import (
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 from mojo_rl.nn.autodiff.combinators import Residual
+from mojo_rl.nn.model.resblock_conv2d_bn import ResBlockConv2DBN
 from mojo_rl.deep_agents.muzero.strategies import (
     ExplorationNoise,
     DirichletNoise,
@@ -302,6 +303,8 @@ comptime ResBlockBN6x7[F: Int] = Sequential[
     ReLU[F * 6 * 7],                                 # skip add → ReLU
 ]
 
+comptime ResBlockBNFused6x7[F: Int] = ResBlockConv2DBN[F, 3, 1, 6, 7]
+
 comptime ResBlockBN3x3[F: Int] = Sequential[
     Residual[Sequential[
         Conv2DBatchNormReLU[F, F, 3, 1, 1, 3, 3],
@@ -310,6 +313,8 @@ comptime ResBlockBN3x3[F: Int] = Sequential[
     ]],
     ReLU[F * 3 * 3],
 ]
+
+comptime ResBlockBNFused3x3[F: Int] = ResBlockConv2DBN[F, 3, 1, 3, 3]
 
 # Legacy ResBlocks without BN (for backwards compatibility)
 comptime ResBlock6x7[F: Int] = Sequential[
@@ -358,6 +363,63 @@ struct AlphaZeroConnectFourResNetConfig[
         ResBlockBN6x7[Self.FILTERS],  # ResBlock 3
         ResBlockBN6x7[Self.FILTERS],  # ResBlock 4
         ResBlockBN6x7[Self.FILTERS],  # ResBlock 5
+        FlattenLayer[Self.FILTERS * 6 * 7],
+        LinearBatchNormReLU[Self.FILTERS * 6 * 7, Self.FILTERS * 2],
+        Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
+        Dropout[Self.FILTERS, 0.3, 137, True],
+        Parallel[
+            Linear[Self.FILTERS, 7],
+            Linear[Self.FILTERS, 1],
+        ],
+    ]
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
+
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime history_window: Int = 20
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+    comptime temp_threshold: Int = 20
+
+    comptime Noise = DirichletNoise[0.25, 1.0]
+    comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
+    comptime Players = SelfPlay
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ConnectFour Config (ResNet — Fused ResBlocks for fewer kernel launches)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct AlphaZeroConnectFourFusedResNetConfig[
+    FILTERS: Int = 128,
+    LR: Float64 = 2e-3,
+    WD: Float64 = 1e-4,
+    BS: Int = 64,
+    CAP: Int = 400000,
+    SIMS: Int = 600,
+    NODES: Int = 1024,
+    C_PUCT: Float64 = 2.0,
+](AlphaZeroConfig):
+    """AlphaZero for ConnectFour — Fused ResNet with ResBlockConv2DBN.
+
+    Same architecture as AlphaZeroConnectFourResNetConfig but uses
+    fused ResBlockConv2DBN which merges BN2+skip+ReLU into one kernel.
+    Fewer kernel launches per training step and smaller workspace.
+    """
+
+    comptime NAME: String = "AlphaZero-ConnectFour-FusedResNet"
+    comptime obs_dim: Int = 126
+    comptime action_dim: Int = 7
+
+    comptime PredModel = Sequential[
+        Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],  # Initial: 3ch→F
+        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 1 (fused)
+        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 2 (fused)
+        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 3 (fused)
+        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 4 (fused)
+        ResBlockBNFused6x7[Self.FILTERS],  # ResBlock 5 (fused)
         FlattenLayer[Self.FILTERS * 6 * 7],
         LinearBatchNormReLU[Self.FILTERS * 6 * 7, Self.FILTERS * 2],
         Dropout[Self.FILTERS * 2, 0.3, 42, True],

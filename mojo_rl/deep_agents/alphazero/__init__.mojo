@@ -14,6 +14,7 @@ from .configs import (
     AlphaZeroConnectFourConfig,
     AlphaZeroConnectFourCNNConfig,
     AlphaZeroConnectFourResNetConfig,
+    AlphaZeroConnectFourFusedResNetConfig,
     AlphaZeroChessConfig,
 )
 from .state import AlphaZeroCPUState, AlphaZeroGPUState
