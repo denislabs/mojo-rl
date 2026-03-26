@@ -7,89 +7,113 @@ Run with:
 """
 
 from std.gpu.host import DeviceContext, DeviceStream
-from std.ffi import external_call
+from std.ffi import OwnedDLHandle, c_int
 from std.memory import alloc
+
+# All CUDA handles are opaque pointers
+comptime CUptr = UnsafePointer[NoneType, MutAnyOrigin]
 
 
 def main() raises:
     print("=== CUDA Graph FFI Probe ===\n")
 
+    # Load CUDA driver library
+    var cuda = OwnedDLHandle("libcuda.so")
+    print("Loaded libcuda.so")
+
     var ctx = DeviceContext()
     var stream = ctx.create_stream()
 
-    # DeviceStream likely wraps a CUstream (void*) as its first field.
-    # Use rebind to reinterpret the bits as a raw pointer.
-    var raw_handle = rebind[UnsafePointer[NoneType, MutAnyOrigin]](stream)
-    print("Raw stream handle:", Int(raw_handle))
+    # DeviceStream → raw CUstream handle via rebind
+    var raw_stream = rebind[CUptr](stream)
+    print("Raw stream handle:", Int(raw_stream))
 
-    # Test: cuStreamIsCapturing(CUstream, CUstreamCaptureStatus*)
-    # If this succeeds with result=0 (CUDA_SUCCESS), the handle is a valid CUstream.
-    var cs_ptr = alloc[Int32](1)
-    cs_ptr[] = Int32(0)
-    var result = external_call[
-        "cuStreamIsCapturing", Int32
-    ](raw_handle, cs_ptr)
-    var capture_status = cs_ptr[]
-    print("cuStreamIsCapturing result:", result, "(0=CUDA_SUCCESS)")
-    print("Capture status:", capture_status, "(0=none)")
+    # --- Test 1: cuStreamIsCapturing ---
+    print("\n--- Test 1: cuStreamIsCapturing ---")
+    var status_buf = alloc[c_int](1)
+    status_buf[] = c_int(0)
 
-    if result == 0:
-        print("\n=== SUCCESS: CUDA FFI works! ===")
-        print("DeviceStream handle is a valid CUstream.")
+    # Call via get_function with simple signature
+    var fn_is_cap = cuda.get_function[def (CUptr, UnsafePointer[c_int, MutAnyOrigin]) -> c_int]("cuStreamIsCapturing")
+    var r1 = fn_is_cap(raw_stream, status_buf)
+    print("Result:", r1, "(0=CUDA_SUCCESS)")
+    print("Status:", status_buf[], "(0=none)")
 
-        # Test graph capture cycle
-        var begin_result = external_call[
-            "cuStreamBeginCapture", Int32
-        ](raw_handle, Int32(2))  # CU_STREAM_CAPTURE_MODE_RELAXED
-        print("\ncuStreamBeginCapture result:", begin_result, "(0=success)")
+    if r1 != 0:
+        print("FAILED: not a valid CUstream")
+        status_buf.free()
+        return
 
-        if begin_result == 0:
-            # Verify capture is active
-            cs_ptr[] = Int32(0)
-            _ = external_call[
-                "cuStreamIsCapturing", Int32
-            ](raw_handle, cs_ptr)
-            print("Capture active:", cs_ptr[], "(1=active)")
+    print("OK: DeviceStream is a valid CUstream")
 
-            # End capture → get graph
-            var graph_ptr = alloc[UnsafePointer[NoneType, MutAnyOrigin]](1)
-            graph_ptr[] = UnsafePointer[NoneType, MutAnyOrigin]()
-            var end_result = external_call[
-                "cuStreamEndCapture", Int32
-            ](raw_handle, graph_ptr)
-            var graph_handle = graph_ptr[]
-            print("cuStreamEndCapture result:", end_result)
-            print("Graph handle:", Int(graph_handle))
+    # --- Test 2: cuStreamBeginCapture ---
+    print("\n--- Test 2: cuStreamBeginCapture ---")
+    var fn_begin = cuda.get_function[def (CUptr, c_int) -> c_int]("cuStreamBeginCapture")
+    var r2 = fn_begin(raw_stream, c_int(2))  # CU_STREAM_CAPTURE_MODE_RELAXED
+    print("Result:", r2)
 
-            if end_result == 0:
-                print("\n=== FULL SUCCESS: CUDA Graph capture works from Mojo! ===")
+    if r2 != 0:
+        print("FAILED: BeginCapture error", r2)
+        status_buf.free()
+        return
 
-                # Instantiate the graph (even though it's empty)
-                var exec_ptr = alloc[UnsafePointer[NoneType, MutAnyOrigin]](1)
-                exec_ptr[] = UnsafePointer[NoneType, MutAnyOrigin]()
-                var inst_result = external_call[
-                    "cuGraphInstantiate", Int32
-                ](exec_ptr, graph_handle, UInt64(0))
-                print("cuGraphInstantiate result:", inst_result)
+    # Verify active
+    status_buf[] = c_int(0)
+    _ = fn_is_cap(raw_stream, status_buf)
+    print("Capture active:", status_buf[], "(1=active)")
 
-                if inst_result == 0:
-                    # Launch the graph (empty, just proves the API works)
-                    var launch_result = external_call[
-                        "cuGraphLaunch", Int32
-                    ](exec_ptr[], raw_handle)
-                    print("cuGraphLaunch result:", launch_result)
-                    print("\n=== COMPLETE: Full CUDA Graph lifecycle works! ===")
+    # --- Test 3: cuStreamEndCapture ---
+    print("\n--- Test 3: cuStreamEndCapture ---")
+    var graph_buf = alloc[CUptr](1)
+    graph_buf[] = CUptr()
+    var fn_end = cuda.get_function[def (CUptr, UnsafePointer[CUptr, MutAnyOrigin]) -> c_int]("cuStreamEndCapture")
+    var r3 = fn_end(raw_stream, graph_buf)
+    var graph = graph_buf[]
+    print("Result:", r3, "Graph:", Int(graph))
 
-                    _ = external_call["cuGraphExecDestroy", Int32](exec_ptr[])
+    if r3 != 0:
+        print("FAILED: EndCapture error", r3)
+        status_buf.free()
+        graph_buf.free()
+        return
 
-                _ = external_call["cuGraphDestroy", Int32](graph_handle)
-                exec_ptr.free()
-            graph_ptr.free()
-        else:
-            print("BeginCapture failed with error:", begin_result)
+    # --- Test 4: cuGraphInstantiate ---
+    print("\n--- Test 4: cuGraphInstantiate ---")
+    var exec_buf = alloc[CUptr](1)
+    exec_buf[] = CUptr()
+    var fn_inst = cuda.get_function[def (UnsafePointer[CUptr, MutAnyOrigin], CUptr, UInt64) -> c_int]("cuGraphInstantiate")
+    var r4 = fn_inst(exec_buf, graph, UInt64(0))
+    print("Result:", r4)
+
+    if r4 != 0:
+        print("FAILED: Instantiate error", r4)
+        var fn_gd = cuda.get_function[def (CUptr) -> c_int]("cuGraphDestroy")
+        _ = fn_gd(graph)
+        status_buf.free()
+        graph_buf.free()
+        exec_buf.free()
+        return
+
+    # --- Test 5: cuGraphLaunch ---
+    print("\n--- Test 5: cuGraphLaunch ---")
+    var fn_launch = cuda.get_function[def (CUptr, CUptr) -> c_int]("cuGraphLaunch")
+    var r5 = fn_launch(exec_buf[], raw_stream)
+    print("Result:", r5)
+
+    # Cleanup
+    var fn_ged = cuda.get_function[def (CUptr) -> c_int]("cuGraphExecDestroy")
+    var fn_gd = cuda.get_function[def (CUptr) -> c_int]("cuGraphDestroy")
+    _ = fn_ged(exec_buf[])
+    _ = fn_gd(graph)
+
+    status_buf.free()
+    graph_buf.free()
+    exec_buf.free()
+
+    if r5 == 0:
+        print("\n========================================")
+        print("ALL TESTS PASSED")
+        print("CUDA Graph lifecycle works from Mojo!")
+        print("========================================")
     else:
-        print("\n=== FAILED: Handle is not a valid CUstream ===")
-        print("Error code:", result)
-
-    cs_ptr.free()
-    print("\n=== Done ===")
+        print("\nGraphLaunch failed with error", r5)
