@@ -66,7 +66,7 @@ def main() raises:
         ctx,
         num_iters=50,
         steps_per_iter=16000,  # ~500+ games per iter (AlphaZero.jl uses 5000)
-        train_epochs=4,  # 600 sims = high quality data, can train more
+        train_epochs=2,  # Oracle article: 2 epochs optimal for C4
         warmup_iters=1,
         arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
         do_eval=True,

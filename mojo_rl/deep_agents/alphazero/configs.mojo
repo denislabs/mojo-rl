@@ -217,7 +217,7 @@ struct AlphaZeroConnectFourConfig[
     comptime temp_threshold: Int = 20
 
     comptime Noise = DirichletNoise[0.25, 1.0]  # alpha=1.0 for C4
-    comptime PUCT = AlphaGoPUCT[2.0]
+    comptime PUCT = AlphaGoPUCT[4.0]  # CPUCT=4 (Oracle article: 3-4 optimal for C4)
     comptime Players = SelfPlay
 
 
@@ -234,7 +234,7 @@ struct AlphaZeroConnectFourCNNConfig[
     CAP: Int = 400000,
     SIMS: Int = 600,
     NODES: Int = 1024,
-    C_PUCT: Float64 = 2.0,
+    C_PUCT: Float64 = 4.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — CNN variant.
 
@@ -350,7 +350,7 @@ struct AlphaZeroConnectFourResNetConfig[
     CAP: Int = 400000,
     SIMS: Int = 600,
     NODES: Int = 1024,
-    C_PUCT: Float64 = 1.0,
+    C_PUCT: Float64 = 4.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — ResNet with 5 residual blocks + BatchNorm.
 
@@ -408,7 +408,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     CAP: Int = 400000,
     SIMS: Int = 600,
     NODES: Int = 1024,
-    C_PUCT: Float64 = 2.0,
+    C_PUCT: Float64 = 4.0,
 ](AlphaZeroConfig):
     """AlphaZero for ConnectFour — Fused ResNet with ResBlockConv2DBN.
 
