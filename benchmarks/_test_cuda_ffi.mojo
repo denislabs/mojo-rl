@@ -82,11 +82,14 @@ def main() raises:
         def (CUptr) -> c_int
     ]("cuGraphExecDestroy")
 
-    # Create capture stream
-    var stream_buf = alloc[CUptr](1)
-    stream_buf[] = CUptr()
-    _ = cuStreamCreate(stream_buf, UInt32(0))
-    var capture_stream = stream_buf[]
+    # Mojo's ctx.enqueue_function dispatches on CU_STREAM_PER_THREAD
+    var capture_stream = CUptr(unsafe_from_address=2)  # CU_STREAM_PER_THREAD
+
+    # Create a separate stream for graph replay (can't replay on PER_THREAD easily)
+    var replay_buf = alloc[CUptr](1)
+    replay_buf[] = CUptr()
+    _ = cuStreamCreate(replay_buf, UInt32(0))
+    var replay_stream = replay_buf[]
 
     # Buffers
     comptime N = 8192
@@ -162,8 +165,8 @@ def main() raises:
     d_buf.enqueue_fill(Scalar[dtype](0.0))
     ctx.synchronize()
 
-    var r_launch = cuGraphLaunch(exec_buf[], capture_stream)
-    _ = cuStreamSynchronize(capture_stream)
+    var r_launch = cuGraphLaunch(exec_buf[], replay_stream)
+    _ = cuStreamSynchronize(replay_stream)
     with c_buf.map_to_host() as h:
         print("Graph replay result: c[0] =", h[0], "(expected 12.0)")
         if h[0] != Scalar[dtype](12.0):
@@ -189,14 +192,14 @@ def main() raises:
 
     # Graph replay benchmark
     for _ in range(warmup):
-        _ = cuGraphLaunch(exec_buf[], capture_stream)
-        _ = cuStreamSynchronize(capture_stream)
+        _ = cuGraphLaunch(exec_buf[], replay_stream)
+        _ = cuStreamSynchronize(replay_stream)
 
     var total_graph: UInt = 0
     for _ in range(iters):
         var start = perf_counter_ns()
-        _ = cuGraphLaunch(exec_buf[], capture_stream)
-        _ = cuStreamSynchronize(capture_stream)
+        _ = cuGraphLaunch(exec_buf[], replay_stream)
+        _ = cuStreamSynchronize(replay_stream)
         total_graph += perf_counter_ns() - start
 
     var avg_direct = Float64(total_direct // UInt(iters)) / 1000.0
@@ -211,8 +214,8 @@ def main() raises:
     # Cleanup
     _ = cuGraphExecDestroy(exec_buf[])
     _ = cuGraphDestroy(graph)
-    stream_buf.free()
     graph_buf.free()
     exec_buf.free()
+    replay_buf.free()
 
     print("\n=== CUDA Graph Capture of Mojo Kernels: WORKING ===")
