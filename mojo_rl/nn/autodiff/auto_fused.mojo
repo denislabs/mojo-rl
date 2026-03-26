@@ -1734,6 +1734,358 @@ def _auto_fused_backward_gpu[
 
 
 # =============================================================================
+# Auto-fused backward on stream (compile_function + stream dispatch)
+# =============================================================================
+
+
+def _auto_fused_backward_gpu_on_stream[
+    BATCH: Int, *OPS: DiffOp
+](
+    ctx: DeviceContext,
+    stream: DeviceStream,
+    grad_in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    grad_chain_out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    params_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    cache_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    grads_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    gi_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    op_ws_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    param_off: Int,
+    cache_off: Int,
+    inter_off: Int,
+) raises:
+    """Same as _auto_fused_backward_gpu but dispatches via stream."""
+    comptime ops = Variadic.types[T=DiffOp, *OPS]
+    comptime N = Variadic.size(ops)
+
+    comptime if N == 0:
+        pass
+    elif N >= 3:
+        comptime assert Variadic.size(ops) >= 3
+        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime if (
+            ops[0].OP_ID == OpID.MATMUL._value
+            and ops[1].OP_ID == OpID.BIAS_ADD._value
+            and _is_act(ops[2].OP_ID)
+        ):
+            comptime G_IN = ops[0].IN_DIM
+            comptime G_OUT = ops[0].OUT_DIM
+            comptime FPS = G_IN * G_OUT + G_OUT
+            comptime FCS = G_IN + G_OUT
+
+            comptime if N == 3:
+                var go_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
+                ](grad_chain_out_ptr)
+                var gi_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_IN), MutAnyOrigin
+                ](grad_in_ptr)
+                var p_v = LayoutTensor[
+                    dtype, Layout.row_major(FPS), MutAnyOrigin
+                ](params_ptr + param_off)
+                var c_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, FCS), MutAnyOrigin
+                ](cache_ptr + BATCH * cache_off)
+                var g_v = LayoutTensor[
+                    dtype, Layout.row_major(FPS), MutAnyOrigin
+                ](grads_ptr + param_off)
+                comptime if ops[2].OP_ID == OpID.RELU._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, ReLUActivation
+                    ].vjp_gpu_on_stream[BATCH](
+                        ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                    )
+                elif ops[2].OP_ID == OpID.TANH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, TanhActivation
+                    ].vjp_gpu_on_stream[BATCH](
+                        ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                    )
+                elif ops[2].OP_ID == OpID.SIGMOID._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SigmoidActivation
+                    ].vjp_gpu_on_stream[BATCH](
+                        ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                    )
+                else:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, MishActivation
+                    ].vjp_gpu_on_stream[BATCH](
+                        ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                    )
+            else:
+                var out_inter = gi_ptr + BATCH * inter_off
+                comptime rest = Variadic.slice_types[
+                    element_types=ops, start=3, end=Variadic.size(ops)
+                ]
+                _auto_fused_backward_gpu_on_stream[BATCH, *rest](
+                    ctx,
+                    stream,
+                    out_inter,
+                    grad_chain_out_ptr,
+                    params_ptr,
+                    cache_ptr,
+                    grads_ptr,
+                    gi_ptr,
+                    op_ws_ptr,
+                    param_off + FPS,
+                    cache_off + FCS,
+                    inter_off + G_OUT,
+                )
+                var go_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
+                ](out_inter)
+                var gi_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_IN), MutAnyOrigin
+                ](grad_in_ptr)
+                var p_v = LayoutTensor[
+                    dtype, Layout.row_major(FPS), MutAnyOrigin
+                ](params_ptr + param_off)
+                var c_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, FCS), MutAnyOrigin
+                ](cache_ptr + BATCH * cache_off)
+                var g_v = LayoutTensor[
+                    dtype, Layout.row_major(FPS), MutAnyOrigin
+                ](grads_ptr + param_off)
+                comptime if ops[2].OP_ID == OpID.RELU._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, ReLUActivation
+                    ].vjp_gpu_on_stream[BATCH](
+                        ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                    )
+                elif ops[2].OP_ID == OpID.TANH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, TanhActivation
+                    ].vjp_gpu_on_stream[BATCH](
+                        ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                    )
+                elif ops[2].OP_ID == OpID.SIGMOID._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SigmoidActivation
+                    ].vjp_gpu_on_stream[BATCH](
+                        ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                    )
+                else:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, MishActivation
+                    ].vjp_gpu_on_stream[BATCH](
+                        ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                    )
+        elif (
+            ops[0].OP_ID == OpID.MATMUL._value
+            and ops[1].OP_ID == OpID.BIAS_ADD._value
+        ):
+            comptime G_IN = ops[0].IN_DIM
+            comptime G_OUT = ops[0].OUT_DIM
+            comptime FPS = G_IN * G_OUT + G_OUT
+            comptime FCS = G_IN
+            comptime if N == 2:
+                var go_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
+                ](grad_chain_out_ptr)
+                var gi_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_IN), MutAnyOrigin
+                ](grad_in_ptr)
+                var p_v = LayoutTensor[
+                    dtype, Layout.row_major(FPS), MutAnyOrigin
+                ](params_ptr + param_off)
+                var c_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, FCS), MutAnyOrigin
+                ](cache_ptr + BATCH * cache_off)
+                var g_v = LayoutTensor[
+                    dtype, Layout.row_major(FPS), MutAnyOrigin
+                ](grads_ptr + param_off)
+                FusedMatMulBias[G_IN, G_OUT].vjp_gpu_on_stream[BATCH](
+                    ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                )
+            else:
+                var out_inter = gi_ptr + BATCH * inter_off
+                comptime assert Variadic.size(ops) >= 2
+                comptime rest = Variadic.slice_types[
+                    element_types=ops, start=2, end=Variadic.size(ops)
+                ]
+                _auto_fused_backward_gpu_on_stream[BATCH, *rest](
+                    ctx,
+                    stream,
+                    out_inter,
+                    grad_chain_out_ptr,
+                    params_ptr,
+                    cache_ptr,
+                    grads_ptr,
+                    gi_ptr,
+                    op_ws_ptr,
+                    param_off + FPS,
+                    cache_off + FCS,
+                    inter_off + G_OUT,
+                )
+                var go_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
+                ](out_inter)
+                var gi_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_IN), MutAnyOrigin
+                ](grad_in_ptr)
+                var p_v = LayoutTensor[
+                    dtype, Layout.row_major(FPS), MutAnyOrigin
+                ](params_ptr + param_off)
+                var c_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, FCS), MutAnyOrigin
+                ](cache_ptr + BATCH * cache_off)
+                var g_v = LayoutTensor[
+                    dtype, Layout.row_major(FPS), MutAnyOrigin
+                ](grads_ptr + param_off)
+                FusedMatMulBias[G_IN, G_OUT].vjp_gpu_on_stream[BATCH](
+                    ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                )
+        else:
+            # Non-fused ops: fall back to ctx dispatch (no on_stream variant)
+            comptime G_IN = ops[0].IN_DIM
+            comptime G_OUT = ops[0].OUT_DIM
+            comptime OPS_ = ops[0].PARAM_SIZE
+            comptime OCS = ops[0].CACHE_SIZE
+            comptime if N == 1:
+                var go_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
+                ](grad_chain_out_ptr)
+                var gi_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_IN), MutAnyOrigin
+                ](grad_in_ptr)
+                var p_v = LayoutTensor[
+                    dtype, Layout.row_major(OPS_), MutAnyOrigin
+                ](params_ptr + param_off)
+                var c_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, OCS), MutAnyOrigin
+                ](cache_ptr + BATCH * cache_off)
+                var g_v = LayoutTensor[
+                    dtype, Layout.row_major(OPS_), MutAnyOrigin
+                ](grads_ptr + param_off)
+                ops[0].vjp_gpu[BATCH](
+                    ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                )
+            else:
+                var out_inter = gi_ptr + BATCH * inter_off
+                comptime assert Variadic.size(ops) >= 1
+                comptime rest = Variadic.slice_types[
+                    element_types=ops, start=1, end=Variadic.size(ops)
+                ]
+                _auto_fused_backward_gpu_on_stream[BATCH, *rest](
+                    ctx,
+                    stream,
+                    out_inter,
+                    grad_chain_out_ptr,
+                    params_ptr,
+                    cache_ptr,
+                    grads_ptr,
+                    gi_ptr,
+                    op_ws_ptr,
+                    param_off + OPS_,
+                    cache_off + OCS,
+                    inter_off + G_OUT,
+                )
+                var go_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
+                ](out_inter)
+                var gi_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, G_IN), MutAnyOrigin
+                ](grad_in_ptr)
+                var p_v = LayoutTensor[
+                    dtype, Layout.row_major(OPS_), MutAnyOrigin
+                ](params_ptr + param_off)
+                var c_v = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, OCS), MutAnyOrigin
+                ](cache_ptr + BATCH * cache_off)
+                var g_v = LayoutTensor[
+                    dtype, Layout.row_major(OPS_), MutAnyOrigin
+                ](grads_ptr + param_off)
+                ops[0].vjp_gpu[BATCH](
+                    ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+                )
+    elif N == 2:
+        comptime assert Variadic.size(ops) >= 2
+        comptime if (
+            ops[0].OP_ID == OpID.MATMUL._value
+            and ops[1].OP_ID == OpID.BIAS_ADD._value
+        ):
+            comptime G_IN = ops[0].IN_DIM
+            comptime G_OUT = ops[0].OUT_DIM
+            comptime FPS = G_IN * G_OUT + G_OUT
+            comptime FCS = G_IN
+            var go_v = LayoutTensor[
+                dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
+            ](grad_chain_out_ptr)
+            var gi_v = LayoutTensor[
+                dtype, Layout.row_major(BATCH, G_IN), MutAnyOrigin
+            ](grad_in_ptr)
+            var p_v = LayoutTensor[dtype, Layout.row_major(FPS), MutAnyOrigin](
+                params_ptr + param_off
+            )
+            var c_v = LayoutTensor[
+                dtype, Layout.row_major(BATCH, FCS), MutAnyOrigin
+            ](cache_ptr + BATCH * cache_off)
+            var g_v = LayoutTensor[dtype, Layout.row_major(FPS), MutAnyOrigin](
+                grads_ptr + param_off
+            )
+            FusedMatMulBias[G_IN, G_OUT].vjp_gpu_on_stream[BATCH](
+                ctx, stream, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
+            )
+        else:
+            comptime G0_IN = ops[0].IN_DIM
+            comptime G0_OUT = ops[0].OUT_DIM
+            comptime G1_IN = ops[1].IN_DIM
+            comptime G1_OUT = ops[1].OUT_DIM
+            var go1 = LayoutTensor[
+                dtype, Layout.row_major(BATCH, G1_OUT), MutAnyOrigin
+            ](grad_chain_out_ptr)
+            var gi1 = LayoutTensor[
+                dtype, Layout.row_major(BATCH, G1_IN), MutAnyOrigin
+            ](gi_ptr + BATCH * inter_off)
+            var p1 = LayoutTensor[
+                dtype, Layout.row_major(ops[1].PARAM_SIZE), MutAnyOrigin
+            ](params_ptr + param_off + ops[0].PARAM_SIZE)
+            var c1 = LayoutTensor[
+                dtype, Layout.row_major(BATCH, ops[1].CACHE_SIZE), MutAnyOrigin
+            ](cache_ptr + BATCH * (cache_off + ops[0].CACHE_SIZE))
+            var g1 = LayoutTensor[
+                dtype, Layout.row_major(ops[1].PARAM_SIZE), MutAnyOrigin
+            ](grads_ptr + param_off + ops[0].PARAM_SIZE)
+            ops[1].vjp_gpu[BATCH](ctx, go1, gi1, p1, c1, g1, op_ws_ptr)
+            var go0 = LayoutTensor[
+                dtype, Layout.row_major(BATCH, G0_OUT), MutAnyOrigin
+            ](gi_ptr + BATCH * inter_off)
+            var gi0 = LayoutTensor[
+                dtype, Layout.row_major(BATCH, G0_IN), MutAnyOrigin
+            ](grad_in_ptr)
+            var p0 = LayoutTensor[
+                dtype, Layout.row_major(ops[0].PARAM_SIZE), MutAnyOrigin
+            ](params_ptr + param_off)
+            var c0 = LayoutTensor[
+                dtype, Layout.row_major(BATCH, ops[0].CACHE_SIZE), MutAnyOrigin
+            ](cache_ptr + BATCH * cache_off)
+            var g0 = LayoutTensor[
+                dtype, Layout.row_major(ops[0].PARAM_SIZE), MutAnyOrigin
+            ](grads_ptr + param_off)
+            ops[0].vjp_gpu[BATCH](ctx, go0, gi0, p0, c0, g0, op_ws_ptr)
+    else:
+        comptime G_IN = ops[0].IN_DIM
+        comptime G_OUT = ops[0].OUT_DIM
+        var go_v = LayoutTensor[
+            dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
+        ](grad_chain_out_ptr)
+        var gi_v = LayoutTensor[
+            dtype, Layout.row_major(BATCH, G_IN), MutAnyOrigin
+        ](grad_in_ptr)
+        var p_v = LayoutTensor[
+            dtype, Layout.row_major(ops[0].PARAM_SIZE), MutAnyOrigin
+        ](params_ptr + param_off)
+        var c_v = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ops[0].CACHE_SIZE), MutAnyOrigin
+        ](cache_ptr + BATCH * cache_off)
+        var g_v = LayoutTensor[
+            dtype, Layout.row_major(ops[0].PARAM_SIZE), MutAnyOrigin
+        ](grads_ptr + param_off)
+        ops[0].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
+
+
+# =============================================================================
 # AutoFused struct — Model conformance
 # =============================================================================
 
@@ -2071,6 +2423,48 @@ struct AutoFused[*OPS: DiffOp](Model):
         )
         _auto_fused_backward_gpu[BATCH, *Self.OPS](
             ctx,
+            grad_input.ptr,
+            grad_output.ptr,
+            params.ptr,
+            cache.ptr,
+            grads.ptr,
+            workspace.unsafe_ptr(),
+            op_ws_ptr,
+            0,
+            0,
+            0,
+        )
+
+    @staticmethod
+    def backward_gpu_on_stream[
+        BATCH: Int,
+    ](
+        ctx: DeviceContext,
+        stream: DeviceStream,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+    ) raises:
+        """Backward pass using compile_function + stream dispatch."""
+        var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
+            Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
+        )
+        _auto_fused_backward_gpu_on_stream[BATCH, *Self.OPS](
+            ctx,
+            stream,
             grad_input.ptr,
             grad_output.ptr,
             params.ptr,
