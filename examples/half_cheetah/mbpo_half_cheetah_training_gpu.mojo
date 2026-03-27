@@ -44,14 +44,15 @@ comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 comptime HIDDEN_DIM = 256
 
 # Buffer sizes
-comptime BUFFER_CAPACITY = 100_000    # Real buffer
-comptime SYNTH_CAPACITY = 400_000     # Synthetic buffer
-comptime BATCH_SIZE = 256
+# NOTE: reduced for debugging — increase once crash is fixed
+comptime BUFFER_CAPACITY = 10_000     # Real buffer
+comptime SYNTH_CAPACITY = 40_000      # Synthetic buffer
+comptime BATCH_SIZE = 64
 
 # Dynamics ensemble
-comptime NUM_ENSEMBLE = 7
-comptime NUM_ELITES = 5
-comptime DYN_HIDDEN = 200
+comptime NUM_ENSEMBLE = 3
+comptime NUM_ELITES = 2
+comptime DYN_HIDDEN = 64
 
 # Training duration
 comptime NUM_STEPS = 300_000  # MBPO needs ~10x fewer steps than SAC
