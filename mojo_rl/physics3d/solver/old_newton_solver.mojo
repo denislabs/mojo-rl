@@ -887,8 +887,8 @@ struct OldNewtonSolver(ConstraintSolver):
                 si_width = Scalar[DTYPE](1e-6)
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
-            K_spring = Scalar[DTYPE](1.0) / (sr_tc * sr_tc * si_dmax * si_dmax)
-            B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+            K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+            B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
             impratio = rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_IMPRATIO]
             )

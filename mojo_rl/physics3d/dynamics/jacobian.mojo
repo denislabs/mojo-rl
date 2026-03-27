@@ -405,23 +405,54 @@ def compute_cdof[
                 cdof[(dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)  # z
 
                 # Rotation DOFs (dof_adr + 3,4,5): angular + linear
-                # Linear part = axis x (ref_point - xanchor)
-                # MuJoCo: xanchor[free_joint] = xpos[body], NOT pre-correction cx
+                # MuJoCo (mj_comPos): axes = columns of xmat[body] (body frame
+                # in world coordinates), NOT fixed global axes.
+                # xmat columns from xquat[body]:
+                var bqx = data.xquat[body * 4 + 0]
+                var bqy = data.xquat[body * 4 + 1]
+                var bqz = data.xquat[body * 4 + 2]
+                var bqw = data.xquat[body * 4 + 3]
+                # Column 0 of rotation matrix (body x-axis in world)
+                var ax0_x = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (bqy * bqy + bqz * bqz)
+                var ax0_y = Scalar[DTYPE](2) * (bqx * bqy + bqw * bqz)
+                var ax0_z = Scalar[DTYPE](2) * (bqx * bqz - bqw * bqy)
+                # Column 1 (body y-axis in world)
+                var ax1_x = Scalar[DTYPE](2) * (bqx * bqy - bqw * bqz)
+                var ax1_y = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (bqx * bqx + bqz * bqz)
+                var ax1_z = Scalar[DTYPE](2) * (bqy * bqz + bqw * bqx)
+                # Column 2 (body z-axis in world)
+                var ax2_x = Scalar[DTYPE](2) * (bqx * bqz + bqw * bqy)
+                var ax2_y = Scalar[DTYPE](2) * (bqy * bqz - bqw * bqx)
+                var ax2_z = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (bqx * bqx + bqy * bqy)
+
+                # offset = subtree_com[rootid] - xpos[body]
                 var off_x = ref_x - data.xpos[body * 3 + 0]
                 var off_y = ref_y - data.xpos[body * 3 + 1]
                 var off_z = ref_z - data.xpos[body * 3 + 2]
-                # x-rot axis=(1,0,0): cross = (0, -off_z, off_y)
-                cdof[(dof_adr + 3) * 6 + 0] = Scalar[DTYPE](1)
-                cdof[(dof_adr + 3) * 6 + 4] = -off_z
-                cdof[(dof_adr + 3) * 6 + 5] = off_y
-                # y-rot axis=(0,1,0): cross = (off_z, 0, -off_x)
-                cdof[(dof_adr + 4) * 6 + 1] = Scalar[DTYPE](1)
-                cdof[(dof_adr + 4) * 6 + 3] = off_z
-                cdof[(dof_adr + 4) * 6 + 5] = -off_x
-                # z-rot axis=(0,0,1): cross = (-off_y, off_x, 0)
-                cdof[(dof_adr + 5) * 6 + 2] = Scalar[DTYPE](1)
-                cdof[(dof_adr + 5) * 6 + 3] = -off_y
-                cdof[(dof_adr + 5) * 6 + 4] = off_x
+
+                # DOF 3: body x-axis rotation
+                cdof[(dof_adr + 3) * 6 + 0] = ax0_x
+                cdof[(dof_adr + 3) * 6 + 1] = ax0_y
+                cdof[(dof_adr + 3) * 6 + 2] = ax0_z
+                cdof[(dof_adr + 3) * 6 + 3] = ax0_y * off_z - ax0_z * off_y
+                cdof[(dof_adr + 3) * 6 + 4] = ax0_z * off_x - ax0_x * off_z
+                cdof[(dof_adr + 3) * 6 + 5] = ax0_x * off_y - ax0_y * off_x
+
+                # DOF 4: body y-axis rotation
+                cdof[(dof_adr + 4) * 6 + 0] = ax1_x
+                cdof[(dof_adr + 4) * 6 + 1] = ax1_y
+                cdof[(dof_adr + 4) * 6 + 2] = ax1_z
+                cdof[(dof_adr + 4) * 6 + 3] = ax1_y * off_z - ax1_z * off_y
+                cdof[(dof_adr + 4) * 6 + 4] = ax1_z * off_x - ax1_x * off_z
+                cdof[(dof_adr + 4) * 6 + 5] = ax1_x * off_y - ax1_y * off_x
+
+                # DOF 5: body z-axis rotation
+                cdof[(dof_adr + 5) * 6 + 0] = ax2_x
+                cdof[(dof_adr + 5) * 6 + 1] = ax2_y
+                cdof[(dof_adr + 5) * 6 + 2] = ax2_z
+                cdof[(dof_adr + 5) * 6 + 3] = ax2_y * off_z - ax2_z * off_y
+                cdof[(dof_adr + 5) * 6 + 4] = ax2_z * off_x - ax2_x * off_z
+                cdof[(dof_adr + 5) * 6 + 5] = ax2_x * off_y - ax2_y * off_x
 
                 # FREE joint sets orientation from qpos directly
                 var free_qx = data.qpos[joint.qpos_adr + 3]

@@ -499,8 +499,13 @@ struct NewtonSolver(ConstraintSolver):
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, MAX_ROWS, V_SIZE, M_SIZE
         ](constraints, D_vals, jar, cstate, H)
 
-        # Cholesky factorize H
-        chol_factor[DTYPE, NV, M_SIZE](H, L)
+        # Cholesky factorize H (with rank-deficiency detection + regularization)
+        var chol_ok = chol_factor[DTYPE, NV, M_SIZE](H, L)
+        if not chol_ok:
+            # Hessian is ill-conditioned — add Tikhonov regularization and retry
+            for i in range(NV):
+                H[i * NV + i] = H[i * NV + i] + Scalar[DTYPE](1e-6)
+            _ = chol_factor[DTYPE, NV, M_SIZE](H, L)
 
         # Compute scale for convergence check (MuJoCo: 1/sum(M diagonal))
         var scale: Scalar[DTYPE] = 0
@@ -554,8 +559,14 @@ struct NewtonSolver(ConstraintSolver):
 
             # Newton direction: search = -H^{-1} * grad via Cholesky solve
             chol_solve[DTYPE, NV, M_SIZE, V_SIZE](L, grad, search)
+            var search_ok = True
             for i in range(NV):
                 search[i] = -search[i]
+                # NaN/Inf guard: if search direction is invalid, abort iteration
+                if search[i] != search[i] or search[i] * Scalar[DTYPE](0) != Scalar[DTYPE](0):
+                    search_ok = False
+            if not search_ok:
+                break
 
             # Compute Mv = M * search (needed for line search)
             for i in range(NV):
@@ -679,7 +690,11 @@ struct NewtonSolver(ConstraintSolver):
                     V_SIZE,
                     M_SIZE,
                 ](constraints, D_vals, jar, cstate, H)
-                chol_factor[DTYPE, NV, M_SIZE](H, L)
+                var chol_ok2 = chol_factor[DTYPE, NV, M_SIZE](H, L)
+                if not chol_ok2:
+                    for i in range(NV):
+                        H[i * NV + i] = H[i * NV + i] + Scalar[DTYPE](1e-6)
+                    _ = chol_factor[DTYPE, NV, M_SIZE](H, L)
 
         comptime if NEWTON_CPU_DEBUG:
             print("  [PRIMAL] Final states:")
@@ -887,8 +902,8 @@ struct NewtonSolver(ConstraintSolver):
                 si_width = Scalar[DTYPE](1e-6)
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
-            K_spring = Scalar[DTYPE](1.0) / (sr_tc * sr_tc * si_dmax * si_dmax)
-            B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+            K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+            B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
             impratio = rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_IMPRATIO]
             )
@@ -1327,8 +1342,12 @@ struct NewtonSolver(ConstraintSolver):
                             )
                         )
 
-        # Cholesky factorize H
-        chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+        # Cholesky factorize H (with regularization on rank deficiency)
+        var chol_ok_gpu = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+        if not chol_ok_gpu:
+            for i in range(NV):
+                H[i * NV + i] = H[i * NV + i] + Scalar[DTYPE](1e-6)
+            _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
 
         # === Precompute qfrc_c = J^T * force (replaces per-iteration gradient workspace reads) ===
         # Updated after each force update instead of recomputing from workspace each gradient step.
@@ -1359,8 +1378,13 @@ struct NewtonSolver(ConstraintSolver):
 
             # Newton direction: search = -H^{-1} * grad
             chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](L_chol, grad, search)
+            var search_ok_gpu = True
             for i in range(NV):
                 search[i] = -search[i]
+                if search[i] != search[i]:
+                    search_ok_gpu = False
+            if not search_ok_gpu:
+                break
 
             # Mv = M_local * search (InlineArray reads only — no workspace access)
             for i in range(NV):
@@ -1624,7 +1648,11 @@ struct NewtonSolver(ConstraintSolver):
                                         + Jt2_c[c * NV + i] * Jt1_c[c * NV + j]
                                     )
                                 )
-                chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+                var chol_ok_gpu2 = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+                if not chol_ok_gpu2:
+                    for i in range(NV):
+                        H[i * NV + i] = H[i * NV + i] + Scalar[DTYPE](1e-6)
+                    _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
 
         # Write solved qacc back to workspace
         for i in range(NV):

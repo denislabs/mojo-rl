@@ -616,9 +616,9 @@ def detect_and_solve_limits_gpu[
     if li_dmax < Scalar[DTYPE](1e-4):
         li_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level coefficients for limits
-    # MuJoCo formula: K = 1/(tc² * dr²), B = 2*dr/tc
-    var l_K_spring = Scalar[DTYPE](1.0) / (lr_tc * lr_tc * li_dmax * li_dmax)
-    var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / (lr_tc * li_dmax)
+    # MuJoCo: K = 1/(dmax² * tc² * dr²), B = 2/(dmax * tc)
+    var l_K_spring = Scalar[DTYPE](1.0) / (li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr)
+    var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
 
     # Precompute impedance and MinvJ for limits
     var lim_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
@@ -825,9 +825,9 @@ def build_and_solve_equality_gpu[
         if si_dmax < Scalar[DTYPE](1e-4):
             si_dmax = Scalar[DTYPE](1e-4)
         var eq_K_spring = Scalar[DTYPE](1.0) / (
-            sr_tc * sr_tc * si_dmax * si_dmax
+            si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
         )
-        var eq_B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+        var eq_B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
 
         # Compute world anchor A: xpos[body_a] + quat_rotate(xquat[body_a], anchor_a)
         var xpos_a_x = rebind[Scalar[DTYPE]](

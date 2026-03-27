@@ -285,10 +285,9 @@ def build_constraints[
     if si_dmax < Scalar[DTYPE](1e-4):
         si_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level spring/damper coefficients (dt-independent)
-    # MuJoCo formula: K = 1/(tc² * dmax²), B = 2*dr/(tc * dmax)
-    # dmax from solimp scales both K and B (critical damping reference)
-    var K_spring = Scalar[DTYPE](1.0) / (sr_tc * sr_tc * si_dmax * si_dmax)
-    var B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+    # MuJoCo: K = 1/(dmax² * tc² * dr²), B = 2/(dmax * tc)
+    var K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+    var B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
     var default_friction = Scalar[DTYPE](
         0.5
     )  # Fallback (contacts always have friction from geom specs)
@@ -1260,11 +1259,11 @@ def build_constraints[
             li_dmax = Scalar[DTYPE](1e-4)
 
         # Acceleration-level spring/damper for limits
-        # MuJoCo formula: K = 1/(tc² * dmax²), B = 2*dr/(tc * dmax)
+        # MuJoCo: K = 1/(dmax² * tc² * dr²), B = 2/(dmax * tc)
         var l_K_spring = Scalar[DTYPE](1.0) / (
-            lr_tc * lr_tc * li_dmax * li_dmax
+            li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
         )
-        var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / (lr_tc * li_dmax)
+        var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
 
         # Compute diagApprox for limit: MuJoCo uses dof_invweight0[dof_adr]
         var diag_lim: Scalar[DTYPE] = 0
