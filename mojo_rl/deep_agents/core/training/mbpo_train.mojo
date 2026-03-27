@@ -281,7 +281,7 @@ def run_mbpo_train_gpu[
     Returns:
         TrainingMetrics with episode-level statistics.
     """
-    comptime n_envs = 1  # MBPO uses single env for sample efficiency
+    comptime n_envs = MBPOAgent[Config, L].GPU_N_ENVS
 
     var metrics = TrainingMetrics(
         algorithm_name="MBPO-GPU",

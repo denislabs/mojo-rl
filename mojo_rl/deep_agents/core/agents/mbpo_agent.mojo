@@ -1056,6 +1056,7 @@ struct MBPOAgent[
     comptime GPU_BUF_CAP: Int = Self.Config.buffer_capacity + Self.Config.SYNTH_CAPACITY
 
     # GPU state type — reuses GenericGPUState with combined buffer capacity
+    comptime GPU_N_ENVS: Int = 32
     comptime GPUStateType = GenericGPUState[
         Self.Config.ActorModel,
         Self.Config.ActorOpt,
@@ -1065,7 +1066,7 @@ struct MBPOAgent[
         Self.Config.obs_dim,
         Self.Config.action_dim,
         Self.Config.batch_size,
-        1,  # max_n_envs: CPU env stepping, no GPU batched envs
+        Self.GPU_N_ENVS,
         Self.Config.NUM_CRITICS,
         Self._AL_WS,
         Self._TA_WS,
