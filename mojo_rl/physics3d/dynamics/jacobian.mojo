@@ -93,6 +93,60 @@ from ..joint_types import (
 # =============================================================================
 
 
+def compute_subtree_com[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
+](
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+        NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+    ],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+    mut subtree_com: List[Scalar[DTYPE]],
+):
+    """Compute subtree center of mass for each body (MuJoCo mj_comPos).
+
+    subtree_com[3*b : 3*b+3] = mass-weighted average of xipos for body b
+    and all its descendants. Used as the spatial reference point for cdof
+    and composite inertia (CRBA).
+    """
+    # Initialize with mass * xipos for each body
+    var stmass = List[Scalar[DTYPE]](capacity=NBODY)
+    for b in range(NBODY):
+        stmass.append(model.body_mass[b])
+        subtree_com[b * 3 + 0] = model.body_mass[b] * data.xipos[b * 3 + 0]
+        subtree_com[b * 3 + 1] = model.body_mass[b] * data.xipos[b * 3 + 1]
+        subtree_com[b * 3 + 2] = model.body_mass[b] * data.xipos[b * 3 + 2]
+
+    # Bottom-up accumulation
+    for b in range(NBODY - 1, 0, -1):
+        var p = model.body_parent[b]
+        stmass[p] = stmass[p] + stmass[b]
+        subtree_com[p * 3 + 0] = subtree_com[p * 3 + 0] + subtree_com[b * 3 + 0]
+        subtree_com[p * 3 + 1] = subtree_com[p * 3 + 1] + subtree_com[b * 3 + 1]
+        subtree_com[p * 3 + 2] = subtree_com[p * 3 + 2] + subtree_com[b * 3 + 2]
+
+    # Normalize by subtree mass
+    for b in range(NBODY):
+        if stmass[b] > Scalar[DTYPE](1e-10):
+            subtree_com[b * 3 + 0] = subtree_com[b * 3 + 0] / stmass[b]
+            subtree_com[b * 3 + 1] = subtree_com[b * 3 + 1] / stmass[b]
+            subtree_com[b * 3 + 2] = subtree_com[b * 3 + 2] / stmass[b]
+        else:
+            subtree_com[b * 3 + 0] = data.xipos[b * 3 + 0]
+            subtree_com[b * 3 + 1] = data.xipos[b * 3 + 1]
+            subtree_com[b * 3 + 2] = data.xipos[b * 3 + 2]
+
+
 def compute_cdof[
     DTYPE: DType,
     NQ: Int,
@@ -121,13 +175,14 @@ def compute_cdof[
     ],
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     mut cdof: List[Scalar[DTYPE]],
+    subtree_com: List[Scalar[DTYPE]] = List[Scalar[DTYPE]](),
 ):
     """Compute spatial motion axis (cdof) for each DOF.
 
     cdof[6*i : 6*i+6] = [ang_x, ang_y, ang_z, lin_x, lin_y, lin_z]
 
     For HINGE: angular part = axis_world, linear part = axis_world x offset
-        where offset = xipos[body] - joint_anchor_world
+        where offset = subtree_com[rootid[body]] - joint_anchor_world
     For SLIDE: angular part = (0,0,0), linear part = axis_world
     For FREE translation DOFs: angular = (0,0,0), linear = unit axis
     For FREE rotation DOFs: angular = unit axis,
@@ -180,10 +235,22 @@ def compute_cdof[
         acc_qz = pre_q[2]
         acc_qw = pre_q[3]
 
-        # Body CoM world position (for offset computation)
-        var com_x = data.xipos[body * 3 + 0]
-        var com_y = data.xipos[body * 3 + 1]
-        var com_z = data.xipos[body * 3 + 2]
+        # Reference point for cdof offset computation.
+        # When subtree_com is available, use subtree_com[rootid[body]]
+        # (MuJoCo mj_comPos convention). Otherwise fall back to xipos[body].
+        var has_stcom = len(subtree_com) >= NBODY * 3
+        var ref_x: Scalar[DTYPE]
+        var ref_y: Scalar[DTYPE]
+        var ref_z: Scalar[DTYPE]
+        if has_stcom:
+            var root = model.body_rootid[body]
+            ref_x = subtree_com[root * 3 + 0]
+            ref_y = subtree_com[root * 3 + 1]
+            ref_z = subtree_com[root * 3 + 2]
+        else:
+            ref_x = data.xipos[body * 3 + 0]
+            ref_y = data.xipos[body * 3 + 1]
+            ref_z = data.xipos[body * 3 + 2]
 
         # Compute xpos_initial for this body (matching MuJoCo FK):
         # xpos_initial = xpos[parent]_final + R(xquat[parent]_final) * body_pos
@@ -251,10 +318,11 @@ def compute_cdof[
                 var anc_y = cy + jp[1]
                 var anc_z = cz + jp[2]
 
-                # offset = body_com - joint_anchor
-                var ox = com_x - anc_x
-                var oy = com_y - anc_y
-                var oz = com_z - anc_z
+                # offset = reference_point - joint_anchor
+                # MuJoCo: subtree_com[rootid] - xanchor
+                var ox = ref_x - anc_x
+                var oy = ref_y - anc_y
+                var oz = ref_z - anc_z
 
                 # angular part = axis
                 cdof[dof_adr * 6 + 0] = ax
@@ -336,12 +404,24 @@ def compute_cdof[
                 cdof[(dof_adr + 1) * 6 + 4] = Scalar[DTYPE](1)  # y
                 cdof[(dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)  # z
 
-                # Rotation DOFs (dof_adr + 3,4,5): pure angular
-                # Translation-rotation coupling comes through the composite
-                # rigid body inertia mass moments (crb cx,cy,cz terms).
-                cdof[(dof_adr + 3) * 6 + 0] = Scalar[DTYPE](1)  # x rot
-                cdof[(dof_adr + 4) * 6 + 1] = Scalar[DTYPE](1)  # y rot
-                cdof[(dof_adr + 5) * 6 + 2] = Scalar[DTYPE](1)  # z rot
+                # Rotation DOFs (dof_adr + 3,4,5): angular + linear
+                # Linear part = axis x (ref_point - xanchor)
+                # MuJoCo: offset = subtree_com[rootid] - xpos[body]
+                var off_x = ref_x - cx
+                var off_y = ref_y - cy
+                var off_z = ref_z - cz
+                # x-rot axis=(1,0,0): cross = (0, -off_z, off_y)
+                cdof[(dof_adr + 3) * 6 + 0] = Scalar[DTYPE](1)
+                cdof[(dof_adr + 3) * 6 + 4] = -off_z
+                cdof[(dof_adr + 3) * 6 + 5] = off_y
+                # y-rot axis=(0,1,0): cross = (off_z, 0, -off_x)
+                cdof[(dof_adr + 4) * 6 + 1] = Scalar[DTYPE](1)
+                cdof[(dof_adr + 4) * 6 + 3] = off_z
+                cdof[(dof_adr + 4) * 6 + 5] = -off_x
+                # z-rot axis=(0,0,1): cross = (-off_y, off_x, 0)
+                cdof[(dof_adr + 5) * 6 + 2] = Scalar[DTYPE](1)
+                cdof[(dof_adr + 5) * 6 + 3] = -off_y
+                cdof[(dof_adr + 5) * 6 + 4] = off_x
 
                 # FREE joint sets orientation from qpos directly
                 var free_qx = data.qpos[joint.qpos_adr + 3]
@@ -443,11 +523,20 @@ def compute_contact_jacobian_row[
         elif joint.jnt_type == JNT_BALL:
             num_dof = 3
 
-        # Reference body = joint's body CoM (must match cdof computation)
+        # Reference point must match cdof computation
         var ref_body = joint.body_id
-        var ref_x = data.xipos[ref_body * 3 + 0]
-        var ref_y = data.xipos[ref_body * 3 + 1]
-        var ref_z = data.xipos[ref_body * 3 + 2]
+        var ref_x: Scalar[DTYPE]
+        var ref_y: Scalar[DTYPE]
+        var ref_z: Scalar[DTYPE]
+        if len(data.subtree_com) >= NBODY * 3:
+            var root = model.body_rootid[ref_body]
+            ref_x = data.subtree_com[root * 3 + 0]
+            ref_y = data.subtree_com[root * 3 + 1]
+            ref_z = data.subtree_com[root * 3 + 2]
+        else:
+            ref_x = data.xipos[ref_body * 3 + 0]
+            ref_y = data.xipos[ref_body * 3 + 1]
+            ref_z = data.xipos[ref_body * 3 + 2]
 
         var rx = contact_pos_x - ref_x
         var ry = contact_pos_y - ref_y
@@ -564,18 +653,17 @@ def compute_composite_inertia[
 ):
     """Compute composite rigid body inertia for each body.
 
-    Each body's composite inertia is initialized from its own spatial inertia,
-    then accumulated bottom-up: crb[parent] += transform(crb[child]).
+    Each body's composite inertia is initialized from its own spatial inertia
+    at the subtree_com[rootid] reference point, then accumulated bottom-up.
 
     Storage: 10 floats per body:
         [mass, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Ixz, Iyz]
-    where (cx, cy, cz) is the CoM offset from the body frame origin,
-    and Ixx..Iyz is the rotational inertia about the CoM.
+    where (cx, cy, cz) is the CoM offset from the reference point,
+    and Ixx..Iyz is the rotational inertia about the reference point.
 
-    For the CRBA, the spatial inertia encodes:
-    - mass: total mass of the composite body
-    - CoM offset: mass-weighted center relative to body frame origin
-    - Inertia: rotational inertia about CoM
+    When subtree_com is provided, all bodies in the same kinematic tree
+    share the same reference point (subtree_com[rootid]), matching MuJoCo.
+    Without subtree_com, falls back to xipos[body] (legacy).
 
     Args:
         model: Static model configuration.
@@ -587,11 +675,12 @@ def compute_composite_inertia[
     # since cdof vectors are in world frame.
     for b in range(NBODY):
         var mass = model.body_mass[b]
-        # CoM offset is 0 since xpos is already the body CoM
+        # crb stays at xipos (not shifted to subtree_com) since the
+        # direct summation mass matrix doesn't consume crb.
         crb[b * 10 + 0] = mass
-        crb[b * 10 + 1] = Scalar[DTYPE](0)  # cx
-        crb[b * 10 + 2] = Scalar[DTYPE](0)  # cy
-        crb[b * 10 + 3] = Scalar[DTYPE](0)  # cz
+        crb[b * 10 + 1] = Scalar[DTYPE](0)
+        crb[b * 10 + 2] = Scalar[DTYPE](0)
+        crb[b * 10 + 3] = Scalar[DTYPE](0)
 
         # Rotate inertia tensor from inertia frame to world frame:
         # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
@@ -661,6 +750,7 @@ def compute_composite_inertia[
             + Izz_local * r12 * r22
         )  # Iyz_world
 
+
     # Bottom-up accumulation: for each body (from leaves to root),
     # add its composite inertia to its parent.
     # We need to transform the child's spatial inertia to the parent frame.
@@ -674,19 +764,11 @@ def compute_composite_inertia[
         var child_cx = crb[b * 10 + 1]
         var child_cy = crb[b * 10 + 2]
         var child_cz = crb[b * 10 + 3]
-        var child_Ixx = crb[b * 10 + 4]
-        var child_Iyy = crb[b * 10 + 5]
-        var child_Izz = crb[b * 10 + 6]
-        var child_Ixy = crb[b * 10 + 7]
-        var child_Ixz = crb[b * 10 + 8]
-        var child_Iyz = crb[b * 10 + 9]
 
-        # The offset from parent's CoM to child's CoM (in world frame)
         var dx = data.xipos[b * 3 + 0] - data.xipos[parent * 3 + 0]
         var dy = data.xipos[b * 3 + 1] - data.xipos[parent * 3 + 1]
         var dz = data.xipos[b * 3 + 2] - data.xipos[parent * 3 + 2]
 
-        # Total offset from parent origin to child's composite CoM
         var total_cx = dx + child_cx
         var total_cy = dy + child_cy
         var total_cz = dz + child_cz
@@ -696,30 +778,16 @@ def compute_composite_inertia[
         var parent_cy = crb[parent * 10 + 2]
         var parent_cz = crb[parent * 10 + 3]
 
-        # New combined mass
         var new_mass = parent_mass + child_mass
 
-        # New combined CoM (mass-weighted average)
-        var new_cx = Scalar[DTYPE](0)
-        var new_cy = Scalar[DTYPE](0)
-        var new_cz = Scalar[DTYPE](0)
+        var new_cx: Scalar[DTYPE] = 0
+        var new_cy: Scalar[DTYPE] = 0
+        var new_cz: Scalar[DTYPE] = 0
         if new_mass > Scalar[DTYPE](1e-20):
-            new_cx = (
-                parent_mass * parent_cx + child_mass * total_cx
-            ) / new_mass
-            new_cy = (
-                parent_mass * parent_cy + child_mass * total_cy
-            ) / new_mass
-            new_cz = (
-                parent_mass * parent_cz + child_mass * total_cz
-            ) / new_mass
+            new_cx = (parent_mass * parent_cx + child_mass * total_cx) / new_mass
+            new_cy = (parent_mass * parent_cy + child_mass * total_cy) / new_mass
+            new_cz = (parent_mass * parent_cz + child_mass * total_cz) / new_mass
 
-        # Parallel axis theorem for combining inertias
-        # I_combined = I_parent_about_new_com + I_child_about_new_com
-        # For each sub-body: I_about_new_com = I_about_own_com + m * ||d||^2 * I3 - m * d⊗d
-        # where d is the vector from new CoM to sub-body CoM.
-
-        # Parent contribution: offset from new CoM to parent CoM
         var dp_x = parent_cx - new_cx
         var dp_y = parent_cy - new_cy
         var dp_z = parent_cz - new_cz
@@ -732,20 +800,18 @@ def compute_composite_inertia[
         var new_Ixz = crb[parent * 10 + 8] - parent_mass * dp_x * dp_z
         var new_Iyz = crb[parent * 10 + 9] - parent_mass * dp_y * dp_z
 
-        # Child contribution: offset from new CoM to child composite CoM
         var dc_x = total_cx - new_cx
         var dc_y = total_cy - new_cy
         var dc_z = total_cz - new_cz
         var dc_sq = dc_x * dc_x + dc_y * dc_y + dc_z * dc_z
 
-        new_Ixx = new_Ixx + child_Ixx + child_mass * (dc_sq - dc_x * dc_x)
-        new_Iyy = new_Iyy + child_Iyy + child_mass * (dc_sq - dc_y * dc_y)
-        new_Izz = new_Izz + child_Izz + child_mass * (dc_sq - dc_z * dc_z)
-        new_Ixy = new_Ixy + child_Ixy - child_mass * dc_x * dc_y
-        new_Ixz = new_Ixz + child_Ixz - child_mass * dc_x * dc_z
-        new_Iyz = new_Iyz + child_Iyz - child_mass * dc_y * dc_z
+        new_Ixx = new_Ixx + crb[b * 10 + 4] + child_mass * (dc_sq - dc_x * dc_x)
+        new_Iyy = new_Iyy + crb[b * 10 + 5] + child_mass * (dc_sq - dc_y * dc_y)
+        new_Izz = new_Izz + crb[b * 10 + 6] + child_mass * (dc_sq - dc_z * dc_z)
+        new_Ixy = new_Ixy + crb[b * 10 + 7] - child_mass * dc_x * dc_y
+        new_Ixz = new_Ixz + crb[b * 10 + 8] - child_mass * dc_x * dc_z
+        new_Iyz = new_Iyz + crb[b * 10 + 9] - child_mass * dc_y * dc_z
 
-        # Store combined
         crb[parent * 10 + 0] = new_mass
         crb[parent * 10 + 1] = new_cx
         crb[parent * 10 + 2] = new_cy
@@ -1181,7 +1247,8 @@ def compute_cdof_gpu[
                 var anc_y = cy + jp[1]
                 var anc_z = cz + jp[2]
 
-                # offset = body_com - joint_anchor
+                # offset = body_com - joint_anchor (GPU: legacy path)
+                # TODO: update to subtree_com when GPU workspace supports it
                 var ox = com_x - anc_x
                 var oy = com_y - anc_y
                 var oz = com_z - anc_z

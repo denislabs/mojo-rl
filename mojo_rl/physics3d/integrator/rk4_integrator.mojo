@@ -64,6 +64,7 @@ from ..dynamics.bias_forces import (
     compute_bias_forces_rne_gpu,
 )
 from ..dynamics.jacobian import (
+    compute_subtree_com,
     compute_cdof,
     compute_cdof_gpu,
     compute_composite_inertia,
@@ -271,12 +272,22 @@ def _forward_dynamics[
         model, data
     )
 
-    # 3. Compute cdof
+    # 3. Compute subtree CoM and store in data (MuJoCo mj_comPos)
+    var stcom_tmp = List[Scalar[DTYPE]](capacity=NBODY * 3)
+    for _ in range(NBODY * 3):
+        stcom_tmp.append(Scalar[DTYPE](0))
+    compute_subtree_com[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
+        model, data, stcom_tmp
+    )
+    for sc_i in range(NBODY * 3):
+        data.subtree_com[sc_i] = stcom_tmp[sc_i]
+
+    # 4. Compute cdof (with subtree_com reference)
     compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
-        model, data, cdof_out
+        model, data, cdof_out, data.subtree_com
     )
 
-    # 4. Composite rigid body inertia
+    # 5. Composite rigid body inertia
     var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
     for _ in range(CRB_SIZE):
         crb.append(Scalar[DTYPE](0))

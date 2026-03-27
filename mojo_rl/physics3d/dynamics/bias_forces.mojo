@@ -746,6 +746,8 @@ def compute_bias_forces_rne[
     3. Compute spatial forces: cfrc = I*cacc + cvel x* (I*cvel)
     4. Backward pass: accumulate forces to parents (with moment transfer)
     5. Project to joint space: bias[d] = cdof[d] . cfrc[body_of_dof[d]]
+       When subtree_com is provided, cfrc is shifted from xipos to
+       subtree_com[rootid] before projection (matching cdof reference).
 
     Reference: Featherstone "Rigid Body Dynamics Algorithms", Chapter 5
     Reference: MuJoCo engine_core_smooth.c mj_rne()
@@ -1171,6 +1173,7 @@ def compute_bias_forces_rne[
     #   bias[d] = cdof[d] . cfrc[body_of_dof[d]]
     #   6D dot product: angular . torque + linear . force
     # =========================================================================
+    var has_stcom = len(data.subtree_com) >= NBODY * 3
     for j in range(model.num_joints):
         var joint = model.joints[j]
         var body = joint.body_id
@@ -1181,11 +1184,33 @@ def compute_bias_forces_rne[
         elif joint.jnt_type == JNT_BALL:
             num_dof = 3
 
+        # Shift cfrc from xipos to subtree_com[rootid] if needed.
+        # torque_new = torque + (xipos - subtree_com) × force
+        var tau_x = cfrc[body * 6 + 0]
+        var tau_y = cfrc[body * 6 + 1]
+        var tau_z = cfrc[body * 6 + 2]
+        var f_x = cfrc[body * 6 + 3]
+        var f_y = cfrc[body * 6 + 4]
+        var f_z = cfrc[body * 6 + 5]
+        if has_stcom:
+            var root = model.body_rootid[body]
+            var rx = data.xipos[body * 3 + 0] - data.subtree_com[root * 3 + 0]
+            var ry = data.xipos[body * 3 + 1] - data.subtree_com[root * 3 + 1]
+            var rz = data.xipos[body * 3 + 2] - data.subtree_com[root * 3 + 2]
+            tau_x = tau_x + ry * f_z - rz * f_y
+            tau_y = tau_y + rz * f_x - rx * f_z
+            tau_z = tau_z + rx * f_y - ry * f_x
+
         for d in range(num_dof):
             var dof = dof_adr + d
-            bias[dof] = Scalar[DTYPE](0)
-            for k in range(6):
-                bias[dof] = bias[dof] + cdof[dof * 6 + k] * cfrc[body * 6 + k]
+            bias[dof] = (
+                cdof[dof * 6 + 0] * tau_x
+                + cdof[dof * 6 + 1] * tau_y
+                + cdof[dof * 6 + 2] * tau_z
+                + cdof[dof * 6 + 3] * f_x
+                + cdof[dof * 6 + 4] * f_y
+                + cdof[dof * 6 + 5] * f_z
+            )
 
 
 # =============================================================================

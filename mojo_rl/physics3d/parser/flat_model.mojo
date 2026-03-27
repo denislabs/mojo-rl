@@ -1070,6 +1070,15 @@ struct FlatModelDef[
             if b.has_explicit_inertia:
                 model.body_has_explicit_inertia[body_idx] = True
 
+        # Compute body_rootid from body_parent (root = child of worldbody)
+        model.body_rootid[0] = 0
+        for bi in range(1, Self.NBODY):
+            var p = model.body_parent[bi]
+            if p == 0:
+                model.body_rootid[bi] = bi
+            else:
+                model.body_rootid[bi] = model.body_rootid[p]
+
         # Joints — use Model.add_hinge_joint / add_slide_joint API
         for j in range(Self.NJOINT):
             var jd = self.joints[j]

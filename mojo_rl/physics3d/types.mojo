@@ -392,6 +392,7 @@ struct Model[
 
     # Kinematic tree structure
     var body_parent: List[Int]  # NBODY — 0 for worldbody
+    var body_rootid: List[Int]  # NBODY — root body (child of worldbody) for each body
 
     # Body inverse weights for primal solver (MuJoCo-style diagApprox)
     # [2*i] = translation, [2*i+1] = rotation  (NBODY * 2 elements)
@@ -512,6 +513,7 @@ struct Model[
         self.body_ipos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.body_iquat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
         self.body_parent = List[Int](capacity=Self.NBODY)
+        self.body_rootid = List[Int](capacity=Self.NBODY)
         self.body_invweight0 = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 2)
         self.dof_invweight0 = List[Scalar[Self.DTYPE]](capacity=Self.NV)
         self.qpos0 = List[Scalar[Self.DTYPE]](capacity=Self.NQ)
@@ -520,6 +522,7 @@ struct Model[
             self.body_name.append("")
             self.body_inv_mass.append(Scalar[Self.DTYPE](0))
             self.body_parent.append(0)
+            self.body_rootid.append(0)
             self.body_invweight0.append(Scalar[Self.DTYPE](0))
             self.body_invweight0.append(Scalar[Self.DTYPE](0))
         for _ in range(Self.NBODY * 3):
@@ -1212,6 +1215,7 @@ struct Data[
     var xpos: List[Scalar[Self.DTYPE]]  # NBODY * 3
     var xquat: List[Scalar[Self.DTYPE]]  # NBODY * 4
     var xipos: List[Scalar[Self.DTYPE]]  # NBODY * 3 — CoM world position
+    var subtree_com: List[Scalar[Self.DTYPE]]  # NBODY * 3 — subtree CoM (MuJoCo mj_comPos)
 
     # Computed world-space velocities (for collision response)
     var xvel: List[Scalar[Self.DTYPE]]  # NBODY * 3 — linear
@@ -1256,12 +1260,14 @@ struct Data[
         self.xpos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.xquat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
         self.xipos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.subtree_com = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.xvel = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.xangvel = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.cfrc_ext = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 6)
         for _ in range(Self.NBODY * 3):
             self.xpos.append(Scalar[Self.DTYPE](0))
             self.xipos.append(Scalar[Self.DTYPE](0))
+            self.subtree_com.append(Scalar[Self.DTYPE](0))
             self.xvel.append(Scalar[Self.DTYPE](0))
             self.xangvel.append(Scalar[Self.DTYPE](0))
         for _ in range(Self.NBODY):
