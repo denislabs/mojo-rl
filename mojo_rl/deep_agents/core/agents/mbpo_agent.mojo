@@ -2290,7 +2290,26 @@ struct MBPOAgent[
                         mean_lp += Float64(lp_host[b])
                     mean_lp /= Float64(BS)
 
+                    # Debug: print first few alpha updates
+                    if self.alpha_adam_t < 3:
+                        print(
+                            "[MBPO alpha] step="
+                            + String(self.alpha_adam_t)
+                            + " mean_lp="
+                            + String(mean_lp)
+                            + " alpha="
+                            + String(self.alpha)
+                            + " target_ent="
+                            + String(self.target_entropy)
+                        )
+
+                    # Guard against NaN in mean_lp
+                    if mean_lp != mean_lp:
+                        mean_lp = 0.0
+
                     var grad = -self.alpha * (mean_lp + self.target_entropy)
+                    if grad != grad:
+                        grad = 0.0
                     self.alpha_adam_t += 1
                     var beta1: Float64 = 0.9
                     var beta2: Float64 = 0.999
@@ -2307,9 +2326,10 @@ struct MBPOAgent[
                     var v_hat = self.alpha_adam_v / (
                         1.0 - beta2 ** Float64(self.alpha_adam_t)
                     )
-                    self.log_alpha -= (
-                        self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
-                    )
+                    var alpha_step = self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
+                    if alpha_step != alpha_step:
+                        alpha_step = 0.0
+                    self.log_alpha -= alpha_step
                     # Clamp log_alpha to prevent divergence
                     if self.log_alpha > 2.0:
                         self.log_alpha = 2.0

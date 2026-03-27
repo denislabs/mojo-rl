@@ -442,16 +442,33 @@ def run_mbpo_train_gpu[
 
         # GPU SAC gradient steps
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
+            if total_train_steps == 0:
+                print("[MBPO-GPU] First training step at env_step=" + String(total_steps))
+                print("[MBPO-GPU]   buffer.size=" + String(gpu_state.buffer.size))
+                print("[MBPO-GPU]   alpha=" + String(agent.alpha))
+
             for _ in range(agent.sac_updates_per_step):
                 agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += agent.sac_updates_per_step
+
+            if total_train_steps <= 60:
+                ctx.synchronize()
+                print(
+                    "[MBPO-GPU] train_steps="
+                    + String(total_train_steps)
+                    + " alpha="
+                    + String(agent.alpha)[byte=:10]
+                    + " log_alpha="
+                    + String(agent.log_alpha)[byte=:10]
+                )
 
         # Periodic dynamics training
         total_steps += n_envs
         step_seed += 1
 
         if total_steps >= next_model_train and total_steps >= warmup_steps:
+            print("[MBPO-GPU] Dynamics training at step=" + String(total_steps))
             # GPU dynamics training: data stays on GPU
             gpu_dynamics.train_on_buffer[MBPOAgent[Config, L].GPU_BUF_CAP](
                 ctx, gpu_state.buffer,
@@ -460,7 +477,9 @@ def run_mbpo_train_gpu[
             epoch += 1
 
             # GPU model rollouts
+            print("[MBPO-GPU] Model rollouts (length=" + String(agent.rollout_length) + ")...")
             agent.do_model_rollouts_gpu(ctx, gpu_dynamics, gpu_state)
+            print("[MBPO-GPU] Rollouts done, buffer.size=" + String(gpu_state.buffer.size))
             next_model_train += agent.model_train_freq
 
         # Progress bar (no GPU sync, pure CPU counters)

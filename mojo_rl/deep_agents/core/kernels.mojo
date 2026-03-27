@@ -1783,7 +1783,7 @@ def min_q_dq_kernel[
     if b >= BATCH:
         return
 
-    var neg_inv_batch = Scalar[dtype](-1.0 / Float64(BATCH))
+    var neg_inv_batch = Scalar[dtype](-1.0 / Scalar[dtype](BATCH))
     var zero = Scalar[dtype](0.0)
 
     if q1[b, 0] <= q2[b, 0]:
@@ -2856,6 +2856,7 @@ def ppo_gather_minibatch_obs_parallel_kernel[
     var src_idx = Int(indices[i])
     mb_obs[i, d] = rollout_obs[src_idx, d]
 
+
 # =============================================================================
 # MBPO Dynamics Ensemble Kernels
 # =============================================================================
@@ -2871,9 +2872,7 @@ def build_dynamics_target_kernel[
     target: LayoutTensor[
         dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
     ],
-    obs: LayoutTensor[
-        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
-    ],
+    obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
     next_obs: LayoutTensor[
         dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
     ],
@@ -2913,9 +2912,7 @@ def gaussian_nll_grad_kernel[
     target: LayoutTensor[
         dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
     ],
-    loss_per_sample: LayoutTensor[
-        dtype, Layout.row_major(BATCH), MutAnyOrigin
-    ],
+    loss_per_sample: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     min_logvar: Scalar[dtype],
     max_logvar: Scalar[dtype],
 ):
@@ -2956,16 +2953,18 @@ def gaussian_nll_grad_kernel[
 
     # Gradients
     grad_output[b, d] = (mean_val - tgt) / var_val * inv_batch
-    grad_output[b, PRED_DIM + d] = Scalar[dtype](0.5) * (
-        Scalar[dtype](1.0) - diff_sq / var_val
-    ) * inv_batch
+    grad_output[b, PRED_DIM + d] = (
+        Scalar[dtype](0.5)
+        * (Scalar[dtype](1.0) - diff_sq / var_val)
+        * inv_batch
+    )
 
     # Accumulate loss (atomic-free: each thread writes one dimension,
     # we sum across dims on CPU after download)
     # Store per-dim contribution; caller sums across PRED_DIM
-    var sample_loss = Scalar[dtype](0.5) * diff_sq / var_val + Scalar[dtype](
-        0.5
-    ) * lv
+    var sample_loss = (
+        Scalar[dtype](0.5) * diff_sq / var_val + Scalar[dtype](0.5) * lv
+    )
     # Use atomic add simulation: just store dim contribution
     # The loss_per_sample is accumulated via a separate reduce if needed
     if d == 0:
@@ -2985,15 +2984,11 @@ def dynamics_sample_kernel[
     next_obs: LayoutTensor[
         dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
     ],
-    sampled_rewards: LayoutTensor[
-        dtype, Layout.row_major(BATCH), MutAnyOrigin
-    ],
+    sampled_rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     model_output: LayoutTensor[
         dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
     ],
-    obs: LayoutTensor[
-        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
-    ],
+    obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
     min_logvar: Scalar[dtype],
     max_logvar: Scalar[dtype],
     rng_seed: Scalar[DType.uint32],
