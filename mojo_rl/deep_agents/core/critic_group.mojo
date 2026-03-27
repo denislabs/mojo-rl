@@ -62,7 +62,7 @@ struct CriticGroup[
     def __init__(out self):
         """Allocate N network pairs (uninitialized weights)."""
         self.pairs = List[NetworkPair[Self.Net, Self.Opt]](capacity=Self.N)
-        for i in range(Self.N):
+        for _ in range(Self.N):
             self.pairs.append(NetworkPair[Self.Net, Self.Opt]())
 
     def __init__(out self, *, deinit take: Self):
@@ -168,10 +168,8 @@ struct GPUCriticGroup[
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate N GPU network pairs."""
-        self.pairs = List[GPUNetworkPair[Self.Net, Self.Opt]](
-            capacity=Self.N
-        )
-        for i in range(Self.N):
+        self.pairs = List[GPUNetworkPair[Self.Net, Self.Opt]](capacity=Self.N)
+        for _ in range(Self.N):
             self.pairs.append(GPUNetworkPair[Self.Net, Self.Opt](ctx))
 
     def __init__(out self, *, deinit take: Self):

@@ -377,6 +377,7 @@ def run_mbpo_train_gpu[
 
     while total_steps < num_steps:
         if total_steps % (n_envs * 100) == 0 and total_steps < warmup_steps:
+            ctx.synchronize()  # DEBUG: flush async errors
             print("[MBPO-GPU] Warmup step " + String(total_steps) + "/" + String(warmup_steps))
         elif total_steps == warmup_steps:
             print("[MBPO-GPU] Warmup complete, starting training...")
@@ -408,9 +409,13 @@ def run_mbpo_train_gpu[
         )
 
         # Store transitions in GPU buffer
-        gpu_state.gpu_store[n_envs](
-            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
-        )
+        try:
+            gpu_state.gpu_store[n_envs](
+                ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
+            )
+        except e:
+            print("[MBPO-GPU] CRASH at gpu_store, step=" + String(total_steps))
+            raise e
 
         # Episode tracking (GPU-side)
         var ep_rew_t = LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin](
@@ -444,13 +449,17 @@ def run_mbpo_train_gpu[
         )
 
         # Selective reset done environments
-        E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
-            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
-            workspace_ptr=workspace_buf.unsafe_ptr(),
-        )
-        E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
-            ctx, states_buf, obs_buf
-        )
+        try:
+            E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+                ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
+                workspace_ptr=workspace_buf.unsafe_ptr(),
+            )
+            E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+                ctx, states_buf, obs_buf
+            )
+        except e:
+            print("[MBPO-GPU] CRASH at selective_reset/extract_obs, step=" + String(total_steps))
+            raise e
 
         # GPU SAC gradient steps
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():

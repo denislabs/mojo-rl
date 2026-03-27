@@ -598,13 +598,14 @@ struct GPUDynamicsEnsemble[
         self.r_dyn_output = ctx.enqueue_create_buffer[dtype](RB * Self.DYN_OUT)
         self.r_ws = ctx.enqueue_create_buffer[dtype](RWS_SIZE)
 
-        # Sampling scratch buffers (used for training data)
-        self.s_obs = ctx.enqueue_create_buffer[dtype](TB * Self.obs_dim)
-        self.s_act = ctx.enqueue_create_buffer[dtype](TB * Self.action_dim)
-        self.s_rew = ctx.enqueue_create_buffer[dtype](TB)
-        self.s_nobs = ctx.enqueue_create_buffer[dtype](TB * Self.obs_dim)
-        self.s_done = ctx.enqueue_create_buffer[dtype](TB)
-        self.s_idx = ctx.enqueue_create_buffer[DType.int32](TB)
+        # Sampling scratch buffers (sized for max of train_batch and rollout_batch)
+        comptime SB = TB if TB > RB else RB
+        self.s_obs = ctx.enqueue_create_buffer[dtype](SB * Self.obs_dim)
+        self.s_act = ctx.enqueue_create_buffer[dtype](SB * Self.action_dim)
+        self.s_rew = ctx.enqueue_create_buffer[dtype](SB)
+        self.s_nobs = ctx.enqueue_create_buffer[dtype](SB * Self.obs_dim)
+        self.s_done = ctx.enqueue_create_buffer[dtype](SB)
+        self.s_idx = ctx.enqueue_create_buffer[DType.int32](SB)
 
     def __init__(out self, *, deinit take: Self):
         self.members = take.members^
