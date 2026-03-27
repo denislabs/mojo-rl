@@ -170,11 +170,15 @@ struct GPUCriticGroup[
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate N GPU network pairs."""
+        print("[GPUCriticGroup] Allocating " + String(Self.N) + " GPU critic pairs...")
         self.pairs = InlineArray[
             GPUNetworkPair[Self.Net, Self.Opt], Self.N
         ](uninitialized=True)
         for i in range(Self.N):
+            print("[GPUCriticGroup] Creating pair " + String(i) + "...")
             self.pairs[i] = GPUNetworkPair[Self.Net, Self.Opt](ctx)
+            print("[GPUCriticGroup] Pair " + String(i) + " created")
+        print("[GPUCriticGroup] All pairs created")
 
     def __init__(out self, *, deinit take: Self):
         self.pairs = take.pairs^
