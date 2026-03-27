@@ -323,22 +323,28 @@ struct GenericGPUState[
     var diag_lp_host: HostBuffer[dtype]  # [batch_size]
 
     def __init__(out self, ctx: DeviceContext) raises:
+        print("[GenericGPUState] Creating actor GPUNetworkPair...")
         self.actor = GPUNetworkPair[Self.ActorModel, Self.ActorOpt](ctx)
+        print("[GenericGPUState] Creating critics GPUCriticGroup...")
         self.critics = GPUCriticGroup[
             Self.CriticModel, Self.CriticOpt, Self.num_critics
         ](ctx)
+        print("[GenericGPUState] Creating GPUReplayBuffer (cap=" + String(Self.buffer_capacity) + ", obs=" + String(Self.obs_dim) + ", act=" + String(Self.action_dim) + ")...")
         self.buffer = GPUReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim
         ](ctx)
+        print("[GenericGPUState] GPUReplayBuffer created")
 
         comptime BS = Self.batch_size
         comptime MNE = Self.max_n_envs
 
         # Exploration workspace
+        print("[GenericGPUState] Allocating explore_buf (size=" + String(Self.EWS.TOTAL_SIZE) + ")...")
         self.explore_buf = ctx.enqueue_create_buffer[dtype](Self.EWS.TOTAL_SIZE)
         self.explore = Self.EWS(self.explore_buf.unsafe_ptr())
 
         # Sample output
+        print("[GenericGPUState] Allocating sample buffers...")
         self.s_obs = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
         self.s_act = ctx.enqueue_create_buffer[dtype](BS * Self.ACTIONS)
         self.s_rew = ctx.enqueue_create_buffer[dtype](BS)
@@ -347,6 +353,7 @@ struct GenericGPUState[
         self.s_idx = ctx.enqueue_create_buffer[DType.int32](BS)
 
         # TD targets
+        print("[GenericGPUState] Allocating TD target buffers...")
         self.next_act = ctx.enqueue_create_buffer[dtype](BS * Self.ACTIONS)
         self.next_lp = ctx.enqueue_create_buffer[dtype](BS)
         self.next_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
@@ -354,6 +361,7 @@ struct GenericGPUState[
         self.targets = ctx.enqueue_create_buffer[dtype](BS)
 
         # Critic
+        print("[GenericGPUState] Allocating critic buffers...")
         self.ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
         self.q_out = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.q_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
@@ -364,6 +372,7 @@ struct GenericGPUState[
         self.d_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
 
         # Network workspaces
+        print("[GenericGPUState] Allocating network workspaces...")
         self.actor_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.ACTOR_WS)
         )
@@ -380,6 +389,7 @@ struct GenericGPUState[
         self.curr_lp = ctx.enqueue_create_buffer[dtype](BS)
 
         # Twin critic extra
+        print("[GenericGPUState] Allocating twin critic buffers...")
         self.nq2 = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.q2_out = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.q2_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
@@ -388,6 +398,7 @@ struct GenericGPUState[
         )
 
         # Pre-fill dq with -1/BATCH (constant policy-gradient seed)
+        print("[GenericGPUState] Pre-filling dq buffer...")
         self.dq = ctx.enqueue_create_buffer[dtype](BS)
         var dq_host = ctx.enqueue_create_host_buffer[dtype](BS)
         for i in range(BS):
@@ -402,6 +413,7 @@ struct GenericGPUState[
         self.grad_clip_ps = ctx.enqueue_create_buffer[dtype](MAX_BLOCKS)
 
         # Diagnostic host buffers
+        print("[GenericGPUState] Allocating diagnostic host buffers...")
         self.diag_q_host = ctx.enqueue_create_host_buffer[dtype](BS)
         self.diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](BS)
         self.diag_rew_host = ctx.enqueue_create_host_buffer[dtype](BS)
@@ -414,6 +426,7 @@ struct GenericGPUState[
             Self.ActorModel.PARAM_SIZE
         )
         self.diag_lp_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        print("[GenericGPUState] Init complete")
 
     # =========================================================================
     # LayoutTensor views via workspace (backward-compatible API)
