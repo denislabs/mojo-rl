@@ -5,6 +5,7 @@ from .activation import (
     TanhActivation,
     SigmoidActivation,
     MishActivation,
+    SwishActivation,
 )
 from .matmul_bias_act import FusedMatMulBiasActivation
 from .conv2d_act import FusedConv2DActivation

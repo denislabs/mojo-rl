@@ -2855,3 +2855,195 @@ def ppo_gather_minibatch_obs_parallel_kernel[
         return
     var src_idx = Int(indices[i])
     mb_obs[i, d] = rollout_obs[src_idx, d]
+
+# =============================================================================
+# MBPO Dynamics Ensemble Kernels
+# =============================================================================
+
+
+@always_inline
+def build_dynamics_target_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    OBS_DIM: Int,
+    PRED_DIM: Int = 1 + OBS_DIM,
+](
+    target: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ],
+    next_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ],
+    rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """Build dynamics training target: [reward, delta_obs].
+
+    target[b, 0] = reward[b]
+    target[b, 1+i] = next_obs[b, i] - obs[b, i]
+
+    Grid: ceil(BATCH * PRED_DIM / TPB), block: TPB.
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * PRED_DIM:
+        return
+    var b = idx // PRED_DIM
+    var d = idx % PRED_DIM
+    if d == 0:
+        target[b, 0] = rewards[b]
+    else:
+        target[b, d] = next_obs[b, d - 1] - obs[b, d - 1]
+
+
+@always_inline
+def gaussian_nll_grad_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    PRED_DIM: Int,
+    OUT_DIM: Int = 2 * PRED_DIM,
+](
+    grad_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    model_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    target: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    loss_per_sample: LayoutTensor[
+        dtype, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    min_logvar: Scalar[dtype],
+    max_logvar: Scalar[dtype],
+):
+    """Gaussian NLL gradient w.r.t. model output [mean, logvar].
+
+    For each (b, d):
+      mean = model_output[b, d]
+      logvar = clamp(model_output[b, PRED_DIM + d], min_logvar, max_logvar)
+      var = exp(logvar)
+      diff = target[b, d] - mean
+
+      grad_mean = (mean - target) / var / BATCH
+      grad_logvar = 0.5 * (1 - diff^2 / var) / BATCH
+
+      loss = 0.5 * diff^2 / var + 0.5 * logvar  (accumulated into loss_per_sample)
+
+    Grid: ceil(BATCH * PRED_DIM / TPB), block: TPB.
+    One thread per (batch, pred_dim) element.
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * PRED_DIM:
+        return
+    var b = idx // PRED_DIM
+    var d = idx % PRED_DIM
+
+    var mean_val = model_output[b, d]
+    var raw_lv = model_output[b, PRED_DIM + d]
+    var lv = raw_lv
+    if lv < min_logvar:
+        lv = min_logvar
+    if lv > max_logvar:
+        lv = max_logvar
+    var var_val = exp(lv)
+    var tgt = target[b, d]
+    var diff = tgt - mean_val
+    var diff_sq = diff * diff
+    var inv_batch = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
+
+    # Gradients
+    grad_output[b, d] = (mean_val - tgt) / var_val * inv_batch
+    grad_output[b, PRED_DIM + d] = Scalar[dtype](0.5) * (
+        Scalar[dtype](1.0) - diff_sq / var_val
+    ) * inv_batch
+
+    # Accumulate loss (atomic-free: each thread writes one dimension,
+    # we sum across dims on CPU after download)
+    # Store per-dim contribution; caller sums across PRED_DIM
+    var sample_loss = Scalar[dtype](0.5) * diff_sq / var_val + Scalar[dtype](
+        0.5
+    ) * lv
+    # Use atomic add simulation: just store dim contribution
+    # The loss_per_sample is accumulated via a separate reduce if needed
+    if d == 0:
+        loss_per_sample[b] = sample_loss
+    else:
+        loss_per_sample[b] = loss_per_sample[b] + sample_loss
+
+
+@always_inline
+def dynamics_sample_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    OBS_DIM: Int,
+    PRED_DIM: Int = 1 + OBS_DIM,
+    OUT_DIM: Int = 2 * PRED_DIM,
+](
+    next_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ],
+    sampled_rewards: LayoutTensor[
+        dtype, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    model_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ],
+    min_logvar: Scalar[dtype],
+    max_logvar: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Sample next_obs and reward from dynamics model output.
+
+    For each batch element:
+      noise ~ N(0,1)  via PhiloxRandom
+      For reward (d=0):
+        std = sqrt(exp(clamp(logvar[0])))
+        reward = mean[0] + std * noise
+      For obs dims (d=1..OBS_DIM):
+        std = sqrt(exp(clamp(logvar[d])))
+        delta = mean[d] + std * noise
+        next_obs[i] = obs[i] + delta   (residual prediction)
+
+    One thread per batch sample.
+    Grid: ceil(BATCH / TPB), block: TPB.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    # Generate noise for all dimensions
+    for d in range(PRED_DIM):
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(b * PRED_DIM + d),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        # Box-Muller transform
+        var u1 = rand_vals[0].cast[dtype]()
+        var u2 = rand_vals[1].cast[dtype]()
+        var eps = Scalar[dtype](1e-7)
+        var z = sqrt(Scalar[dtype](-2.0) * log(u1 + eps)) * cos(
+            Scalar[dtype](6.283185307) * u2
+        )
+
+        var mean_val = model_output[b, d]
+        var raw_lv = model_output[b, PRED_DIM + d]
+        var lv = raw_lv
+        if lv < min_logvar:
+            lv = min_logvar
+        if lv > max_logvar:
+            lv = max_logvar
+        var std = sqrt(exp(lv))
+        var sample = mean_val + std * z
+
+        if d == 0:
+            sampled_rewards[b] = sample
+        else:
+            # Residual prediction: next_obs = obs + delta
+            next_obs[b, d - 1] = obs[b, d - 1] + sample

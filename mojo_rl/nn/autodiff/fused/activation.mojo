@@ -177,3 +177,50 @@ struct MishActivation(Activation):
         # d/dx[x * tanh(sp(x))] = tanh(sp) + x * sig * (1 - tanh²(sp))
         var dmish = tsp + x * sig * (1.0 - tsp * tsp)
         return grad_out * dmish
+
+
+struct SwishActivation(Activation):
+    """Swish/SiLU: x * sigmoid(x). Caches input for backward."""
+
+    comptime OP_ID: Int = 15  # OpID.SWISH
+    comptime FUSED_OP_ID: Int = 105  # OpID.FUSED_MATMUL_BIAS_SWISH
+    comptime FUSED_CONV_OP_ID: Int = 114  # OpID.FUSED_CONV2D_SWISH
+
+    def __init__(out self):
+        pass
+
+    def __init__(out self, *, deinit take: Self):
+        pass
+
+    def __init__(out self, *, copy: Self):
+        pass
+
+    @staticmethod
+    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        var one = Scalar[dtype](1.0)
+        var sig: Scalar[dtype]
+        if pre_act >= Scalar[dtype](0.0):
+            sig = one / (one + exp(-pre_act))
+        else:
+            var ex = exp(pre_act)
+            sig = ex / (one + ex)
+        return pre_act * sig
+
+    @staticmethod
+    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+        return pre_act  # Need input x for backward
+
+    @staticmethod
+    def backward(
+        cache_val: Scalar[dtype], grad_out: Scalar[dtype]
+    ) -> Scalar[dtype]:
+        var x = cache_val
+        var one = Scalar[dtype](1.0)
+        var sig: Scalar[dtype]
+        if x >= Scalar[dtype](0.0):
+            sig = one / (one + exp(-x))
+        else:
+            var ex = exp(x)
+            sig = ex / (one + ex)
+        var d_swish = sig * (one + x * (one - sig))
+        return grad_out * d_swish

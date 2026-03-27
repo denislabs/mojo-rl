@@ -28,7 +28,8 @@ struct OpID:
     comptime SIGMOID = OpID(12)
     comptime MISH = OpID(13)
     comptime SOFTMAX = OpID(14)
-    comptime SYMLOG = OpID(15)
+    comptime SWISH = OpID(15)
+    comptime SYMLOG = OpID(16)
 
     # Normalization (20-29)
     comptime LAYER_NORM = OpID(20)
@@ -60,10 +61,12 @@ struct OpID:
     comptime FUSED_MATMUL_BIAS_TANH = OpID(102)
     comptime FUSED_MATMUL_BIAS_SIGMOID = OpID(103)
     comptime FUSED_MATMUL_BIAS_MISH = OpID(104)
+    comptime FUSED_MATMUL_BIAS_SWISH = OpID(105)
     comptime FUSED_CONV2D_RELU = OpID(110)
     comptime FUSED_CONV2D_TANH = OpID(111)
     comptime FUSED_CONV2D_SIGMOID = OpID(112)
     comptime FUSED_CONV2D_MISH = OpID(113)
+    comptime FUSED_CONV2D_SWISH = OpID(114)
 
     # Combinators (200+)
     comptime RESIDUAL = OpID(200)

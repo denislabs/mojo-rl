@@ -26,6 +26,7 @@ from .fused.activation import (
     TanhActivation,
     SigmoidActivation,
     MishActivation,
+    SwishActivation,
 )
 from layout import LayoutTensor, Layout
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
@@ -314,6 +315,10 @@ def _auto_fused_forward[
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
                     ].eval[BATCH](in_v, out_v, p_v, c_v)
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SwishActivation
+                    ].eval[BATCH](in_v, out_v, p_v, c_v)
                 else:
                     FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation].eval[
                         BATCH
@@ -333,6 +338,10 @@ def _auto_fused_forward[
                 elif ops[2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
+                    ].eval[BATCH](in_v, out_v, p_v, c_v)
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SwishActivation
                     ].eval[BATCH](in_v, out_v, p_v, c_v)
                 else:
                     FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation].eval[
@@ -592,6 +601,10 @@ def _auto_fused_backward[
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
                     ].vjp[BATCH](go_v, gi_v, p_v, c_v, g_v)
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[G_IN, G_OUT, SwishActivation].vjp[
+                        BATCH
+                    ](go_v, gi_v, p_v, c_v, g_v)
                 else:
                     FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation].vjp[
                         BATCH
@@ -643,6 +656,10 @@ def _auto_fused_backward[
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
                     ].vjp[BATCH](go_v, gi_v, p_v, c_v, g_v)
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[G_IN, G_OUT, SwishActivation].vjp[
+                        BATCH
+                    ](go_v, gi_v, p_v, c_v, g_v)
                 else:
                     FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation].vjp[
                         BATCH
@@ -921,6 +938,10 @@ def _auto_fused_forward_gpu[
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SwishActivation
+                    ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 else:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, MishActivation
@@ -940,6 +961,10 @@ def _auto_fused_forward_gpu[
                 elif ops[2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
+                    ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SwishActivation
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 else:
                     FusedMatMulBiasActivation[
@@ -1191,6 +1216,12 @@ def _auto_fused_forward_gpu_on_stream[
                     ].eval_gpu_on_stream[BATCH](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SwishActivation
+                    ].eval_gpu_on_stream[BATCH](
+                        ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
+                    )
                 else:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, MishActivation
@@ -1216,6 +1247,12 @@ def _auto_fused_forward_gpu_on_stream[
                 elif ops[2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
+                    ].eval_gpu_on_stream[BATCH](
+                        ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
+                    )
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SwishActivation
                     ].eval_gpu_on_stream[BATCH](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
@@ -1473,6 +1510,10 @@ def _auto_fused_backward_gpu[
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SwishActivation
+                    ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 else:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, MishActivation
@@ -1521,6 +1562,10 @@ def _auto_fused_backward_gpu[
                 elif ops[2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
+                    ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
+                elif ops[2].OP_ID == OpID.SWISH._value:
+                    FusedMatMulBiasActivation[
+                        G_IN, G_OUT, SwishActivation
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 else:
                     FusedMatMulBiasActivation[

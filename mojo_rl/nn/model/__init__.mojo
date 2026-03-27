@@ -1,6 +1,6 @@
 from .model import Model
 from .sequential import Sequential
-from .linear_act import Linear, LinearReLU, LinearTanh, LinearSigmoid, LinearMish, NoisyLinearReLU, NoisyLinearTanh
+from .linear_act import Linear, LinearReLU, LinearTanh, LinearSigmoid, LinearMish, LinearSwish, NoisyLinearReLU, NoisyLinearTanh
 from .relu import ReLU
 from .tanh import Tanh
 from .sigmoid import Sigmoid
@@ -18,6 +18,7 @@ from .stochastic_actor import (
     get_deterministic_action,
 )
 from .mish import Mish
+from .swish import Swish
 from .simnorm import SimNorm
 from .normed_linear import NormedLinear
 from .noisy_linear import NoisyLinear

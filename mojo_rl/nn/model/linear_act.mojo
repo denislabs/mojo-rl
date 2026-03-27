@@ -15,6 +15,7 @@ from ..autodiff import (
     TanhOp,
     SigmoidOp,
     MishOp,
+    SwishOp,
 )
 
 comptime Linear[in_dim: Int, out_dim: Int] = AutoFused[
@@ -35,6 +36,10 @@ comptime LinearSigmoid[in_dim: Int, out_dim: Int] = AutoFused[
 
 comptime LinearMish[in_dim: Int, out_dim: Int] = AutoFused[
     MatMul[in_dim, out_dim], BiasAdd[out_dim], MishOp[out_dim]
+]
+
+comptime LinearSwish[in_dim: Int, out_dim: Int] = AutoFused[
+    MatMul[in_dim, out_dim], BiasAdd[out_dim], SwishOp[out_dim]
 ]
 
 # NoisyLinear compositions (using Sequential since NoisyLinear is a Model, not DiffOp)

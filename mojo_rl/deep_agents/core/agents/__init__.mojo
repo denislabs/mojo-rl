@@ -40,6 +40,8 @@ from ..strategies import (
 from ..configs import (
     OffPolicyConfig, DDPGConfig, TD3Config, SACConfig, AutodiffSACConfig, AutodiffDDPGConfig, AutodiffTD3Config,
     OnPolicyConfig, PPOConfig, A2CConfig, PPOCNNConfig, ContinuousOnPolicyConfig, ContinuousPPOConfig, AutodiffPPOConfig, AutodiffA2CConfig, AutodiffContinuousPPOConfig,
+    MBPOConfig,
+    DefaultMBPOConfig,
 )
 
 # Agents
@@ -49,6 +51,7 @@ from .onpolicy_continuous_agent import GenericOnPolicyContinuousAgent
 from .dqn_agent import DiscreteOffPolicyConfig, DQNConfig, DoubleDQNConfig, DuelingDQNConfig, DQNCNNConfig, DQNPERConfig, AutodiffDQNConfig, HuberDQNConfig, NoisyDQNConfig, GenericDQNAgent, GenericDQNPERAgent, DQNGPUStateGeneric
 from .c51_agent import CategoricalDQNConfig, C51Config, GenericC51Agent
 from .rainbow_agent import RainbowConfig, RainbowCNNConfig, GenericRainbowAgent
+from .mbpo_agent import MBPOAgent, MBPOCPUState, DynamicsEnsemble
 
 # Convenience aliases matching old agent names
 from .aliases import (
@@ -67,4 +70,5 @@ from .aliases import (
     DeepPPOAgent,
     DeepPPOContinuousAgent,
     DeepPPOCNNAgent,
+    MBPOSACAgent,
 )

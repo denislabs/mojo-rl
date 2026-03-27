@@ -305,3 +305,33 @@ comptime DeepPPOCNNAgent[
     n_envs,
     gpu_minibatch_size,
 ]
+
+
+# =============================================================================
+# MBPO alias
+# =============================================================================
+
+from .mbpo_agent import MBPOAgent
+from ..configs.mbpo_config import DefaultMBPOConfig
+from ..strategies.termination import NeverTerminate
+
+comptime MBPOSACAgent[
+    obs_dim: Int,
+    action_dim: Int,
+    hidden_dim: Int = 256,
+    buffer_capacity: Int = 100000,
+    synth_capacity: Int = 400000,
+    batch_size: Int = 256,
+    num_ensemble: Int = 7,
+    num_elites: Int = 5,
+    dyn_hidden: Int = 200,
+    actor_lr: Float64 = 0.0003,
+    critic_lr: Float64 = 0.0003,
+    model_lr: Float64 = 0.001,
+] = MBPOAgent[
+    DefaultMBPOConfig[
+        obs_dim, action_dim, hidden_dim, buffer_capacity, synth_capacity,
+        batch_size, num_ensemble, num_elites, dyn_hidden,
+        actor_lr, critic_lr, model_lr,
+    ],
+]

@@ -7,6 +7,7 @@ from .primitives import (
     TanhOp,
     SigmoidOp,
     MishOp,
+    SwishOp,
     Scale,
     ElemMul,
     ReduceSum,
@@ -31,6 +32,7 @@ from .fused import (
     TanhActivation,
     SigmoidActivation,
     MishActivation,
+    SwishActivation,
 )
 from .auto_fused import AutoFused
 from .combinators import Residual, Parallel, Repeat
@@ -53,4 +55,7 @@ comptime DenseSigmoid[in_d: Int, out_d: Int] = AutoFused[
 ]
 comptime DenseMish[in_d: Int, out_d: Int] = AutoFused[
     MatMul[in_d, out_d], BiasAdd[out_d], MishOp[out_d]
+]
+comptime DenseSwish[in_d: Int, out_d: Int] = AutoFused[
+    MatMul[in_d, out_d], BiasAdd[out_d], SwishOp[out_d]
 ]

@@ -10,3 +10,4 @@ from .epoch_schedule import EpochSchedule, SinglePass, MultiEpochMinibatch
 from .q_target import QTarget, StandardQTarget, DoubleQTarget
 from .q_output import QOutput, DirectQ, DuelingQ
 from .q_gradient import QGradient, ManualQGradient, AutodiffQGradient
+from .termination import TerminationFn, NeverTerminate, HopperTerminate, AntTerminate, InvertedPendulumTerminate

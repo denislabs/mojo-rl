@@ -14,6 +14,7 @@ Available agents:
 - DeepA2CAgent: Advantage Actor-Critic
 - DeepPPOAgent: Proximal Policy Optimization (discrete actions)
 - DeepPPOContinuousAgent: PPO for continuous action spaces
+- MBPOSACAgent: Model-Based Policy Optimization (SAC + dynamics ensemble)
 - TDMPC2Agent: TD-MPC2 model-based agent
 - DreamerV3Agent: DreamerV3 world model-based agent
 - GenericMuZeroAgent: MuZero model-based agent with MCTS planning (config-driven)
@@ -31,6 +32,10 @@ from .core.agents import (
     DeepPPOAgent,
     DeepPPOContinuousAgent,
     DeepPPOCNNAgent,
+    MBPOSACAgent,
 )
+from .core.agents.mbpo_agent import MBPOAgent
+from .core.configs.mbpo_config import MBPOConfig, DefaultMBPOConfig
+from .core.training.mbpo_train import run_mbpo_train
 from .dreamer_v3 import DreamerV3Agent
 from .muzero import GenericMuZeroAgent, MuZeroMLPConfig
