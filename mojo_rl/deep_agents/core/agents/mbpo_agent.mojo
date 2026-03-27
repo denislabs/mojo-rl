@@ -1523,6 +1523,11 @@ struct MBPOAgent[
                     self.log_alpha -= (
                         self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
                     )
+                    # Clamp log_alpha to prevent divergence
+                    if self.log_alpha > 2.0:
+                        self.log_alpha = 2.0
+                    elif self.log_alpha < -10.0:
+                        self.log_alpha = -10.0
                     self.alpha = exp(self.log_alpha)
 
         # Phase 5: Soft update targets
@@ -2305,6 +2310,11 @@ struct MBPOAgent[
                     self.log_alpha -= (
                         self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
                     )
+                    # Clamp log_alpha to prevent divergence
+                    if self.log_alpha > 2.0:
+                        self.log_alpha = 2.0
+                    elif self.log_alpha < -10.0:
+                        self.log_alpha = -10.0
                     self.alpha = exp(self.log_alpha)
 
     def soft_update_targets_gpu(

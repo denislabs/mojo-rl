@@ -483,8 +483,10 @@ def run_mbpo_train_gpu[
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
             ctx.synchronize()
 
-            var recent_count = Int(host_episode_count[0])
-            var recent_sum = Float64(host_reward_sum[0])
+            var raw_count = Float64(host_episode_count[0])
+            var recent_count = Int(raw_count) if raw_count > 0.0 and raw_count == raw_count else 0
+            var raw_sum = Float64(host_reward_sum[0])
+            var recent_sum = raw_sum if raw_sum == raw_sum else 0.0
             completed_episodes += recent_count
 
             if recent_count > 0:
@@ -560,7 +562,8 @@ def run_mbpo_train_gpu[
     ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
     ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
     ctx.synchronize()
-    var final_count = Int(host_episode_count[0])
+    var final_raw = Float64(host_episode_count[0])
+    var final_count = Int(final_raw) if final_raw > 0.0 and final_raw == final_raw else 0
     if final_count > 0:
         var final_avg = Float64(host_reward_sum[0]) / Float64(final_count)
         completed_episodes += final_count
