@@ -51,7 +51,7 @@ comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
 # Training duration (off-policy uses steps, not episodes)
-comptime NUM_STEPS = 2_000_000
+comptime NUM_STEPS = 600_000
 comptime WARMUP_STEPS = 10_000
 
 comptime dtype = DType.float32
@@ -187,7 +187,9 @@ def main() raises:
                 "Final average reward (last 100 episodes): "
                 + String(metrics.mean_reward_last_n(100))[byte=:8]
             )
-            print("Best episode reward: " + String(metrics.max_reward())[byte=:8])
+            print(
+                "Best episode reward: " + String(metrics.max_reward())[byte=:8]
+            )
             print()
 
             # Check for successful training

@@ -288,12 +288,9 @@ def run_mbpo_train_gpu[
         environment_name=environment_name,
     )
 
-    print("[MBPO-GPU] Creating GPU SAC state...")
     comptime GPUState = MBPOAgent[Config, L].GPUStateType
     var gpu_state = GPUState(ctx)
-    print("[MBPO-GPU] GPU SAC state created")
 
-    print("[MBPO-GPU] Creating GPU dynamics ensemble...")
     var gpu_dynamics = GPUDynamicsEnsemble[
         Config.DynamicsModel,
         Config.DynOpt,
@@ -302,18 +299,12 @@ def run_mbpo_train_gpu[
         Config.obs_dim,
         Config.action_dim,
     ](ctx)
-    print("[MBPO-GPU] GPU dynamics ensemble created")
-
-    print("[MBPO-GPU] Uploading CPU ensemble weights...")
     gpu_dynamics.upload_from(cpu_state.dynamics, ctx)
-    print("[MBPO-GPU] Ensemble weights uploaded")
 
-    print("[MBPO-GPU] Uploading CPU SAC weights...")
     gpu_state.actor.upload_from(cpu_state.actor, ctx)
     gpu_state.critics.upload_from(cpu_state.critics, ctx)
-    print("[MBPO-GPU] SAC weights uploaded")
 
-    print("[MBPO-GPU] Allocating environment buffers (n_envs=" + String(n_envs) + ")...")
+    # Allocate environment buffers
     var states_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.STATE_SIZE)
     var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
     var prev_obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
@@ -321,41 +312,35 @@ def run_mbpo_train_gpu[
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    print("[MBPO-GPU] Environment buffers allocated")
 
-    print("[MBPO-GPU] Allocating episode tracking buffers...")
+    # Episode tracking buffers
     var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
     var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
     var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
-    print("[MBPO-GPU] Episode tracking buffers allocated")
 
-    print("[MBPO-GPU] Allocating env workspace...")
+    # Env workspace
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:
         ws_size = 1
     var workspace_buf = ctx.enqueue_create_buffer[dtype](ws_size)
     if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
-    print("[MBPO-GPU] Env workspace allocated (size=" + String(ws_size) + ")")
 
-    print("[MBPO-GPU] Initial reset...")
+    # Initial reset
     E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf, rng_seed=0)
-    print("[MBPO-GPU] Initial step...")
     E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
         ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf,
         obs_buf, rng_seed=0, workspace_ptr=workspace_buf.unsafe_ptr(),
     )
-    print("[MBPO-GPU] Initial reset/step done")
 
+    # Initialize tracking
     ctx.enqueue_memset(episode_rewards_buf, 0)
     ctx.enqueue_memset(episode_steps_buf, 0)
     ctx.enqueue_memset(gpu_reward_sum_buf, 0)
     ctx.enqueue_memset(gpu_episode_count_buf, 0)
-    ctx.synchronize()
-    print("[MBPO-GPU] Initialization complete, entering training loop...")
 
     # Kernel aliases
     comptime tpb = 256
@@ -368,6 +353,7 @@ def run_mbpo_train_gpu[
     var action_scale_val = Scalar[dtype](agent.action_scale)
 
     var total_steps = 0
+    var total_train_steps = 0
     var step_seed: UInt32 = 42
     var completed_episodes = 0
     var last_avg_reward: Float64 = 0.0
@@ -375,12 +361,13 @@ def run_mbpo_train_gpu[
     var next_model_train = agent.model_train_freq
     var epoch = 0
 
+    # Progress bar: ~20 updates per print interval
+    var progress_interval = print_every // 20
+    if progress_interval < n_envs:
+        progress_interval = n_envs
+    var next_progress = progress_interval
+
     while total_steps < num_steps:
-        if total_steps % (n_envs * 100) == 0 and total_steps < warmup_steps:
-            ctx.synchronize()  # DEBUG: flush async errors
-            print("[MBPO-GPU] Warmup step " + String(total_steps) + "/" + String(warmup_steps))
-        elif total_steps == warmup_steps:
-            print("[MBPO-GPU] Warmup complete, starting training...")
 
         # Save prev_obs
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
@@ -409,13 +396,9 @@ def run_mbpo_train_gpu[
         )
 
         # Store transitions in GPU buffer
-        try:
-            gpu_state.gpu_store[n_envs](
-                ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
-            )
-        except e:
-            print("[MBPO-GPU] CRASH at gpu_store, step=" + String(total_steps))
-            raise e^
+        gpu_state.gpu_store[n_envs](
+            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
+        )
 
         # Episode tracking (GPU-side)
         var ep_rew_t = LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin](
@@ -449,25 +432,22 @@ def run_mbpo_train_gpu[
         )
 
         # Selective reset done environments
-        try:
-            E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
-                ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
-                workspace_ptr=workspace_buf.unsafe_ptr(),
-            )
-            E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
-                ctx, states_buf, obs_buf
-            )
-        except e:
-            print("[MBPO-GPU] CRASH at selective_reset/extract_obs, step=" + String(total_steps))
-            raise e^
+        E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+            ctx, states_buf, dones_buf, rng_seed=UInt64(step_seed + 1),
+            workspace_ptr=workspace_buf.unsafe_ptr(),
+        )
+        E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+            ctx, states_buf, obs_buf
+        )
 
         # GPU SAC gradient steps
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
             for _ in range(agent.sac_updates_per_step):
                 agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
+            total_train_steps += agent.sac_updates_per_step
 
-        # Periodic dynamics training on CPU
+        # Periodic dynamics training
         total_steps += n_envs
         step_seed += 1
 
@@ -479,24 +459,26 @@ def run_mbpo_train_gpu[
             agent.update_rollout_length(epoch)
             epoch += 1
 
-            # GPU model rollouts: actor + dynamics forward on GPU,
-            # synthetic transitions stored directly in GPU buffer
+            # GPU model rollouts
             agent.do_model_rollouts_gpu(ctx, gpu_dynamics, gpu_state)
-
-            if verbose:
-                print(
-                    "  Model trained (GPU) | Step "
-                    + String(total_steps)
-                    + " | Buffer: "
-                    + String(gpu_state.buffer.size)
-                    + " | Rollout: "
-                    + String(agent.rollout_length)
-                )
-
             next_model_train += agent.model_train_freq
 
-        # Print / log
-        if (verbose or (logger and logger[].is_active())) and total_steps >= next_print:
+        # Progress bar (no GPU sync, pure CPU counters)
+        if verbose and total_steps >= next_progress:
+            var interval_start = next_print - print_every
+            print_progress_bar(
+                total_steps - interval_start,
+                print_every,
+                total_train_steps,
+                "MBPO-GPU",
+            )
+            next_progress += progress_interval
+
+        # Print / log at print boundaries
+        if (
+            verbose or (logger and logger[].is_active())
+        ) and total_steps >= next_print:
+            # Download GPU-side episode stats
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
             ctx.synchronize()
@@ -512,29 +494,37 @@ def run_mbpo_train_gpu[
                         completed_episodes, last_avg_reward, 0, 0.0
                     )
 
+            # Reset GPU-side accumulators for next interval
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
+            # Logger: record all MBPO-relevant metrics
             if logger:
                 logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
                 logger[].log_scalar(
                     "episodes", Float64(completed_episodes), total_steps
                 )
                 logger[].log_scalar(
-                    "alpha", agent.alpha, total_steps
+                    "train_steps", Float64(total_train_steps), total_steps
                 )
+                logger[].log_scalar("alpha", agent.alpha, total_steps)
                 logger[].log_scalar(
                     "rollout_length",
                     Float64(agent.rollout_length),
                     total_steps,
                 )
                 logger[].log_scalar(
-                    "gpu_buffer_size",
+                    "buffer_size",
                     Float64(gpu_state.buffer.size),
                     total_steps,
                 )
+                logger[].log_scalar(
+                    "model_epoch", Float64(epoch), total_steps
+                )
 
+            # Clear progress bar, then full stats line
             if verbose:
+                clear_progress_bar()
                 print(
                     "MBPO-GPU | Step "
                     + String(total_steps)
@@ -546,10 +536,14 @@ def run_mbpo_train_gpu[
                     + String(last_avg_reward)[byte=:7]
                     + " | Alpha: "
                     + String(agent.alpha)[byte=:6]
+                    + " | Train: "
+                    + String(total_train_steps)
+                    + " | Buf: "
+                    + String(gpu_state.buffer.size)
                 )
 
             # Autosave checkpoint
-            if agent.checkpoint_every > 0 and total_steps % agent.checkpoint_every < print_every:
+            if agent.checkpoint_every > 0 and total_steps >= agent.checkpoint_every and total_steps % agent.checkpoint_every < print_every:
                 gpu_state.actor.download_to(cpu_state.actor, ctx)
                 gpu_state.critics.download_to(cpu_state.critics, ctx)
                 ctx.synchronize()

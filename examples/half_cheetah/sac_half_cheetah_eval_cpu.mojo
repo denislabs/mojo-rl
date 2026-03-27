@@ -111,11 +111,13 @@ def main() raises:
 
     var start_time = perf_counter_ns()
 
-    var avg_reward = agent.evaluate[typeof(env)](
+    var avg_reward = agent.evaluate(
         env,
         num_episodes=NUM_EPISODES,
-        max_steps=MAX_STEPS,
+        max_steps_per_episode=MAX_STEPS,
         verbose=True,
+        render=True,
+        frame_delay_ms=100,
     )
 
     var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000
