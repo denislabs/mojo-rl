@@ -281,6 +281,7 @@ def _forward_dynamics[
     )
     for sc_i in range(NBODY * 3):
         data.subtree_com[sc_i] = stcom_tmp[sc_i]
+    data.has_subtree_com = True
 
     # 4. Compute cdof (with subtree_com reference)
     compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](

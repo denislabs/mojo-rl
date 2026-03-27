@@ -849,7 +849,7 @@ def compute_mass_matrix_full[
                 var dj0: Scalar[DTYPE]
                 var dj1: Scalar[DTYPE]
                 var dj2: Scalar[DTYPE]
-                if len(data.subtree_com) >= NBODY * 3:
+                if data.has_subtree_com:
                     var root_i = model.body_rootid[body_i]
                     di0 = pk0 - data.subtree_com[root_i * 3 + 0]
                     di1 = pk1 - data.subtree_com[root_i * 3 + 1]
@@ -1271,16 +1271,34 @@ def compute_mass_matrix_sparse[
                 var pk1 = data.xipos[k * 3 + 1]
                 var pk2 = data.xipos[k * 3 + 2]
 
-                var di0 = pk0 - data.xipos[body_i * 3 + 0]
-                var di1 = pk1 - data.xipos[body_i * 3 + 1]
-                var di2 = pk2 - data.xipos[body_i * 3 + 2]
+                # Transport cdof velocity to body k's xipos.
+                # Reference = subtree_com[rootid] or xipos[body] (legacy).
+                var di0: Scalar[DTYPE]
+                var di1: Scalar[DTYPE]
+                var di2: Scalar[DTYPE]
+                var dj0: Scalar[DTYPE]
+                var dj1: Scalar[DTYPE]
+                var dj2: Scalar[DTYPE]
+                if data.has_subtree_com:
+                    var root_i = model.body_rootid[body_i]
+                    di0 = pk0 - data.subtree_com[root_i * 3 + 0]
+                    di1 = pk1 - data.subtree_com[root_i * 3 + 1]
+                    di2 = pk2 - data.subtree_com[root_i * 3 + 2]
+                    var root_j = model.body_rootid[body_j]
+                    dj0 = pk0 - data.subtree_com[root_j * 3 + 0]
+                    dj1 = pk1 - data.subtree_com[root_j * 3 + 1]
+                    dj2 = pk2 - data.subtree_com[root_j * 3 + 2]
+                else:
+                    di0 = pk0 - data.xipos[body_i * 3 + 0]
+                    di1 = pk1 - data.xipos[body_i * 3 + 1]
+                    di2 = pk2 - data.xipos[body_i * 3 + 2]
+                    dj0 = pk0 - data.xipos[body_j * 3 + 0]
+                    dj1 = pk1 - data.xipos[body_j * 3 + 1]
+                    dj2 = pk2 - data.xipos[body_j * 3 + 2]
+
                 var vki0 = li0 + ai1 * di2 - ai2 * di1
                 var vki1 = li1 + ai2 * di0 - ai0 * di2
                 var vki2 = li2 + ai0 * di1 - ai1 * di0
-
-                var dj0 = pk0 - data.xipos[body_j * 3 + 0]
-                var dj1 = pk1 - data.xipos[body_j * 3 + 1]
-                var dj2 = pk2 - data.xipos[body_j * 3 + 2]
                 var vkj0 = lj0 + aj1 * dj2 - aj2 * dj1
                 var vkj1 = lj1 + aj2 * dj0 - aj0 * dj2
                 var vkj2 = lj2 + aj0 * dj1 - aj1 * dj0

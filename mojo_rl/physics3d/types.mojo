@@ -1216,6 +1216,7 @@ struct Data[
     var xquat: List[Scalar[Self.DTYPE]]  # NBODY * 4
     var xipos: List[Scalar[Self.DTYPE]]  # NBODY * 3 — CoM world position
     var subtree_com: List[Scalar[Self.DTYPE]]  # NBODY * 3 — subtree CoM (MuJoCo mj_comPos)
+    var has_subtree_com: Bool  # True after compute_subtree_com has been called
 
     # Computed world-space velocities (for collision response)
     var xvel: List[Scalar[Self.DTYPE]]  # NBODY * 3 — linear
@@ -1261,6 +1262,7 @@ struct Data[
         self.xquat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
         self.xipos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.subtree_com = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.has_subtree_com = False
         self.xvel = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.xangvel = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.cfrc_ext = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 6)

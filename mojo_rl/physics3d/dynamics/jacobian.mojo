@@ -406,10 +406,10 @@ def compute_cdof[
 
                 # Rotation DOFs (dof_adr + 3,4,5): angular + linear
                 # Linear part = axis x (ref_point - xanchor)
-                # MuJoCo: offset = subtree_com[rootid] - xpos[body]
-                var off_x = ref_x - cx
-                var off_y = ref_y - cy
-                var off_z = ref_z - cz
+                # MuJoCo: xanchor[free_joint] = xpos[body], NOT pre-correction cx
+                var off_x = ref_x - data.xpos[body * 3 + 0]
+                var off_y = ref_y - data.xpos[body * 3 + 1]
+                var off_z = ref_z - data.xpos[body * 3 + 2]
                 # x-rot axis=(1,0,0): cross = (0, -off_z, off_y)
                 cdof[(dof_adr + 3) * 6 + 0] = Scalar[DTYPE](1)
                 cdof[(dof_adr + 3) * 6 + 4] = -off_z
@@ -528,7 +528,7 @@ def compute_contact_jacobian_row[
         var ref_x: Scalar[DTYPE]
         var ref_y: Scalar[DTYPE]
         var ref_z: Scalar[DTYPE]
-        if len(data.subtree_com) >= NBODY * 3:
+        if data.has_subtree_com:
             var root = model.body_rootid[ref_body]
             ref_x = data.subtree_com[root * 3 + 0]
             ref_y = data.subtree_com[root * 3 + 1]

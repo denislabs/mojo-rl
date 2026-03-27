@@ -63,6 +63,7 @@ from ..dynamics.bias_forces import (
     compute_bias_forces_rne_gpu,
 )
 from ..dynamics.jacobian import (
+    compute_subtree_com,
     compute_cdof,
     compute_cdof_gpu,
     compute_composite_inertia,
@@ -263,12 +264,21 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                     -Float64(ct.dist),
                 )
 
-        # 3. Compute cdof (spatial motion axes per DOF) - needed for full M
+        # 3a. Compute subtree CoM (MuJoCo mj_comPos)
+        var stcom_tmp = List[Scalar[DTYPE]](capacity=NBODY * 3)
+        for _ in range(NBODY * 3):
+            stcom_tmp.append(Scalar[DTYPE](0))
+        compute_subtree_com(model, data, stcom_tmp)
+        for sc_i in range(NBODY * 3):
+            data.subtree_com[sc_i] = stcom_tmp[sc_i]
+        data.has_subtree_com = True
+
+        # 3b. Compute cdof (spatial motion axes per DOF)
         var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
         for _ in range(CDOF_SIZE):
             cdof.append(Scalar[DTYPE](0))
         compute_cdof[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS](
-            model, data, cdof
+            model, data, cdof, stcom_tmp
         )
 
         # 4. Compute composite rigid body inertia

@@ -1173,7 +1173,7 @@ def compute_bias_forces_rne[
     #   bias[d] = cdof[d] . cfrc[body_of_dof[d]]
     #   6D dot product: angular . torque + linear . force
     # =========================================================================
-    var has_stcom = len(data.subtree_com) >= NBODY * 3
+    var has_stcom = data.has_subtree_com
     for j in range(model.num_joints):
         var joint = model.joints[j]
         var body = joint.body_id
