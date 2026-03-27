@@ -733,7 +733,66 @@ def capsule_capsule[
     var c2_y = closest[4]
     var c2_z = closest[5]
 
-    # Treat as sphere-sphere between the closest points
+    # Check if centerlines cross (closest points coincident).
+    # When this happens, sphere_sphere picks an arbitrary normal which
+    # makes the constraint solver push in the wrong direction.
+    # Instead, use cross(axis_a, axis_b) as the separation normal
+    # (perpendicular to both capsule axes) — matches MuJoCo mjc_CapsuleCapsule.
+    var dx = c2_x - c1_x
+    var dy = c2_y - c1_y
+    var dz = c2_z - c1_z
+    var center_dist_sq = dx * dx + dy * dy + dz * dz
+
+    if center_dist_sq < Scalar[DTYPE](1e-16):
+        # Degenerate: capsule centerlines cross or coincide.
+        # Strategy: use direction from capsule A center to capsule B center.
+        # This keeps the normal in the motion plane (critical for 2D chains
+        # where cross(axis_a, axis_b) is perpendicular to the plane and no
+        # DOF can resolve it).  Fall back to cross(axes) only if centers
+        # are also coincident.
+        var nx = b_x - a_x
+        var ny = b_y - a_y
+        var nz = b_z - a_z
+        var nlen_sq = nx * nx + ny * ny + nz * nz
+
+        if nlen_sq < Scalar[DTYPE](1e-16):
+            # Centers also coincident — use cross(axis_a, axis_b).
+            nx = a_ay * b_az - a_az * b_ay
+            ny = a_az * b_ax - a_ax * b_az
+            nz = a_ax * b_ay - a_ay * b_ax
+            nlen_sq = nx * nx + ny * ny + nz * nz
+
+        if nlen_sq < Scalar[DTYPE](1e-16):
+            # Parallel at same location — pick perpendicular to axis_a.
+            var abs_ax = abs(a_ax)
+            var abs_ay = abs(a_ay)
+            var abs_az = abs(a_az)
+            if abs_ax <= abs_ay and abs_ax <= abs_az:
+                nx = Scalar[DTYPE](0)
+                ny = -a_az
+                nz = a_ay
+            elif abs_ay <= abs_az:
+                nx = a_az
+                ny = Scalar[DTYPE](0)
+                nz = -a_ax
+            else:
+                nx = -a_ay
+                ny = a_ax
+                nz = Scalar[DTYPE](0)
+            nlen_sq = nx * nx + ny * ny + nz * nz
+
+        var inv_nlen = Scalar[DTYPE](1.0) / sqrt(nlen_sq)
+        nx *= inv_nlen
+        ny *= inv_nlen
+        nz *= inv_nlen
+
+        var dist = -(a_radius + b_radius)
+        var mid_x = (c1_x + c2_x) * Scalar[DTYPE](0.5)
+        var mid_y = (c1_y + c2_y) * Scalar[DTYPE](0.5)
+        var mid_z = (c1_z + c2_z) * Scalar[DTYPE](0.5)
+        return (dist, mid_x, mid_y, mid_z, nx, ny, nz)
+
+    # Normal case: treat as sphere-sphere between the closest points
     return sphere_sphere(c1_x, c1_y, c1_z, a_radius, c2_x, c2_y, c2_z, b_radius)
 
 

@@ -82,7 +82,7 @@ def compare_fk(
     # === MuJoCo reference via Python ===
     var mujoco = Python.import_module("mujoco")
 
-    var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/ant.xml"
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/ant.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     var mj_data = mujoco.MjData(mj_model)
 

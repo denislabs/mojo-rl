@@ -112,9 +112,7 @@ def compare_qderiv(
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
 
-    var xml_path = (
-        "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
-    )
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HalfCheetahModel)
     mj_model.opt.solver = 2  # mjSOL_NEWTON

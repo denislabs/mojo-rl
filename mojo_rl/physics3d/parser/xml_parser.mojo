@@ -1115,11 +1115,46 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                     data.joint_range_max[jnt_count] = (
                         _parse_float(parts[1]) * deg_factor
                     )
+            # Extract ref value (MuJoCo joint reference → qpos0 for slide/hinge)
+            var ref_str = _extract_attr(tag, "ref")
+            if len(ref_str) > 0:
+                data.qpos0[qpos_adr] = _parse_float(ref_str)
             # Advance qpos_adr, track free joint
             var jtype = _extract_attr(tag, "type")
             if jtype == "free":
                 if data.free_joint_qpos_adr == -1:
                     data.free_joint_qpos_adr = qpos_adr
+                # Extract enclosing body's pos for free joint initial translation.
+                # Find the last <body before position t by scanning forward.
+                var last_body_start = -1
+                var bscan = 0
+                while True:
+                    var bp = wb.find("<body", bscan)
+                    if bp == -1 or bp >= t:
+                        break
+                    last_body_start = bp
+                    bscan = bp + 5
+                if last_body_start >= 0:
+                    var be = wb.find(">", last_body_start)
+                    if be != -1:
+                        var btag = String(
+                            wb[byte = last_body_start : be + 1]
+                        )
+                        var bpos = _extract_attr(btag, "pos")
+                        if len(bpos) > 0:
+                            var bparts = List[String]()
+                            _split_spaces(bpos, bparts)
+                            if len(bparts) >= 3:
+                                data.qpos0[qpos_adr + 0] = _parse_float(
+                                    bparts[0]
+                                )
+                                data.qpos0[qpos_adr + 1] = _parse_float(
+                                    bparts[1]
+                                )
+                                data.qpos0[qpos_adr + 2] = _parse_float(
+                                    bparts[2]
+                                )
+                # qw=1 (identity quaternion) set later in fallback block
                 qpos_adr += 7
             elif jtype == "ball":
                 qpos_adr += 4
@@ -1153,6 +1188,14 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                 data.nq = count
                 break
             num_pos = t + 7
+
+    # If no explicit init_qpos was found, use qpos0 values from joint ref
+    # attributes (already stored above).  Set nq so reset_data applies them.
+    if data.nq == 0 and qpos_adr > 0:
+        data.nq = qpos_adr
+        # For free joints, ensure qw=1 (identity quaternion)
+        if data.free_joint_qpos_adr >= 0:
+            data.qpos0[data.free_joint_qpos_adr + 3] = 1.0
 
     return data^
 

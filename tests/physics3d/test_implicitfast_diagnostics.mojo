@@ -84,9 +84,7 @@ def main() raises:
 
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
-    var xml_path = (
-        "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
-    )
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
 
     # --- MuJoCo Euler ---
     var mj_model_e = mujoco.MjModel.from_xml_path(xml_path)

@@ -107,7 +107,7 @@ def compare_step(
     # === MuJoCo reference (RK4, no fluid) ===
     var mujoco = Python.import_module("mujoco")
 
-    var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/swimmer.xml"
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/swimmer.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.integrator = 1  # mjINT_RK4
     mj_model.opt.solver = 2  # mjSOL_NEWTON (irrelevant — no contacts)

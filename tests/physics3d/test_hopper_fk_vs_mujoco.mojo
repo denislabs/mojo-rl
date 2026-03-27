@@ -79,7 +79,7 @@ def compare_fk(
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
 
-    var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     var mj_data = mujoco.MjData(mj_model)
 

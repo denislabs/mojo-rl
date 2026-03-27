@@ -281,6 +281,8 @@ struct ModelDefFromXML[
                                 Scalar[DTYPE](1.0)
                                 / model.body_inertia[i * 3 + k]
                             )
+        # Initialize data.qpos from qpos0 (joint ref values) before FK
+        Self.reset_data(data)
         forward_kinematics(model, data)
         compute_body_invweight0(model, data)
 

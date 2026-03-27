@@ -286,15 +286,9 @@ struct HumanoidConfig(Phyics3dEnvConfig):
         env: Int,
         qpos_off: Int,
     ):
-        # Free joint: torso starts at z=1.4 (from MJCF torso pos="0 0 1.4")
-        # qpos[0:3] = translation (x, y, z), qpos[3:7] = quaternion (w, x, y, z)
-        # We add the default offsets on top of reset noise
-        states[env, qpos_off + 2] = rebind[Scalar[DTYPE]](
-            states[env, qpos_off + 2]
-        ) + Scalar[DTYPE](1.4)
-        states[env, qpos_off + 3] = rebind[Scalar[DTYPE]](
-            states[env, qpos_off + 3]
-        ) + Scalar[DTYPE](1.0)
+        # No-op: free joint initial position (z=1.4, qw=1.0) is now handled
+        # by reset_env_gpu via _acd.qpos0 (parsed from body pos in XML).
+        pass
 
     # === GPU inline: Custom obs extraction (none — use model default 45D obs) ===
     @always_inline

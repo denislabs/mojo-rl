@@ -102,7 +102,7 @@ def run_test(
     var mujoco = Python.import_module("mujoco")
 
     var xml_path = String(
-        "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
+        "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     )
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.cone = 1  # mjCONE_ELLIPTIC

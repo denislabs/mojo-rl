@@ -113,9 +113,7 @@ def compare_step(
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
 
-    var xml_path = (
-        "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
-    )
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     # Match our engine settings: Euler integrator, Newton solver, elliptic cone
     mj_model.opt.integrator = 0  # mjINT_EULER

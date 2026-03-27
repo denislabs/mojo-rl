@@ -83,9 +83,7 @@ def test_half_cheetah() raises:
 
     # Get MuJoCo reference
     var mujoco = Python.import_module("mujoco")
-    var xml_path = (
-        "../Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
-    )
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/half_cheetah.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
 
     # Compare body mass, inertia, ipos
@@ -212,7 +210,7 @@ def test_hopper() raises:
 
     # Get MuJoCo reference
     var mujoco = Python.import_module("mujoco")
-    var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
 
     # Compare body mass, inertia, ipos

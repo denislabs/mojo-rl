@@ -98,7 +98,7 @@ def compare_step(
     var mujoco = Python.import_module("mujoco")
     var np = Python.import_module("numpy")
 
-    var xml_path = "../Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.integrator = 0  # mjINT_EULER
     mj_model.opt.solver = 2  # mjSOL_NEWTON
