@@ -223,17 +223,23 @@ struct Phyics3dEnv[
         """Reset to initial position."""
         Self.MODEL_DEF.reset_data(self.data)
 
+        # Custom reset (e.g., set mocap positions)
+        Self.CONFIG.custom_reset_cpu(self.data)
+
         # Run forward kinematics to compute xpos/xquat
         forward_kinematics(self.model, self.data)
 
         # Reset step counter and prev_x
         self.current_step = 0
+        self.prev_x = Scalar[Self.dtype](0)
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
 
     def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
         """Extract observation from current physics data."""
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.MODEL_DEF.OBS_DIM)
-        Self.MODEL_DEF.extract_obs(self.data, obs_list)
+        var custom = Self.CONFIG.custom_extract_obs_cpu(self.data, obs_list)
+        if not custom:
+            Self.MODEL_DEF.extract_obs(self.data, obs_list)
         var obs = ObsState[Self.MODEL_DEF.OBS_DIM]()
         for i in range(Self.MODEL_DEF.OBS_DIM):
             obs.data[i] = Float64(obs_list[i])
@@ -245,7 +251,9 @@ struct Phyics3dEnv[
 
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         var obs = List[Scalar[Self.dtype]](capacity=Self.MODEL_DEF.OBS_DIM)
-        Self.MODEL_DEF.extract_obs(self.data, obs)
+        var custom = Self.CONFIG.custom_extract_obs_cpu(self.data, obs)
+        if not custom:
+            Self.MODEL_DEF.extract_obs(self.data, obs)
         return obs^
 
     def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
@@ -311,9 +319,14 @@ struct Phyics3dEnv[
         # Pre-step: let config save whatever it needs
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
 
-        # Apply actions via actuators
+        # Apply actions via actuators (config can override for mocap control etc.)
         var clamped_action = action.clamp()
-        Self.MODEL_DEF.apply_actions(self.data, clamped_action.to_list())
+        var action_list = clamped_action.to_list()
+        var custom_applied = Self.CONFIG.custom_apply_actions_cpu(
+            self.data, action_list
+        )
+        if not custom_applied:
+            Self.MODEL_DEF.apply_actions(self.data, action_list)
 
         # Physics step (with frame skip)
         # Note: joint limits are handled by the soft constraint solver (same as

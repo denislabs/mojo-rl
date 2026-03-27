@@ -116,6 +116,66 @@ trait Phyics3dEnvConfig:
         """
         ...
 
+    # === CPU: Custom reset hook (called after _reset_state) ===
+    @staticmethod
+    def custom_reset_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NSITE: Int = 0,
+    ](
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+    ):
+        """Custom reset logic (e.g., set initial mocap position). Default: no-op."""
+        pass
+
+    # === CPU: Custom observation extraction (default: use MODEL_DEF.extract_obs) ===
+    @staticmethod
+    def custom_extract_obs_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NSITE: Int = 0,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        mut obs: List[Scalar[DTYPE]],
+    ) -> Bool:
+        """Extract observations from data. Return True if handled, False for default.
+
+        Override for envs that need non-standard observations
+        (e.g., hand position + object position instead of qpos/qvel).
+        """
+        return False
+
+    # === CPU: Custom action application (default: use MODEL_DEF.apply_actions) ===
+    @staticmethod
+    def custom_apply_actions_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NSITE: Int = 0,
+    ](
+        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        actions: List[Float64],
+    ) -> Bool:
+        """Apply actions to data. Return True if handled, False for default.
+
+        Override for envs that need non-standard action application
+        (e.g., mocap position control instead of torque motors).
+        Default returns False, which causes Phyics3dEnv.step() to call
+        MODEL_DEF.apply_actions() as usual.
+        """
+        return False
+
     # === CPU: Float getters (can't use Float64 as comptime in traits) ===
     @staticmethod
     def get_timestep() -> Float64:

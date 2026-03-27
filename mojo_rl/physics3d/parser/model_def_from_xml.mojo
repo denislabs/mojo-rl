@@ -128,6 +128,7 @@ struct ModelDefFromXML[
     neq: Int = 0,
     obs_qpos_skip: Int = 1,
     obs_dim_override: Int = -1,
+    action_dim_override: Int = -1,
     timestep: Float64 = 0.01,
 ](ModelDefLike):
     """ModelDefLike implementation driven entirely from an embedded MJCF XML string.
@@ -180,7 +181,7 @@ struct ModelDefFromXML[
     comptime OBS_DIM: Int = Self.obs_dim_override if Self.obs_dim_override > 0 else (
         Self.nq - Self.obs_qpos_skip + Self.nv
     )
-    comptime ACTION_DIM: Int = Self.nact
+    comptime ACTION_DIM: Int = Self.action_dim_override if Self.action_dim_override > 0 else Self.nact
     comptime TIMESTEP: Float64 = Self.timestep
 
     # Precomputed XML actuator/joint data — evaluated at struct level by the

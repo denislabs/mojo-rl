@@ -42,6 +42,18 @@ comptime sawyer_reach_xml = """
   </asset>
 
   <worldbody>
+    <!-- Cameras -->
+    <camera name="corner" mode="fixed" pos="-1.1 -0.4 0.6" xyaxes="-1 1 0 -0.2 -0.2 -1"/>
+    <camera name="topview" mode="fixed" pos="0 0.5 1.5" xyaxes="1 0 0 0 0 1"/>
+
+    <!-- Lighting -->
+    <light castshadow="false" directional="true" diffuse="0.3 0.3 0.3"
+           specular="0.3 0.3 0.3" pos="-1 -1 1" dir="1 1 -1"/>
+    <light directional="true" diffuse="0.3 0.3 0.3" specular="0.3 0.3 0.3"
+           pos="1 -1 1" dir="-1 1 -1"/>
+    <light castshadow="false" directional="true" diffuse="0.3 0.3 0.3"
+           specular="0.3 0.3 0.3" pos="0 1 1" dir="0 -1 -1"/>
+
     <!-- Table -->
     <body name="tablelink" pos="0 0.6 0">
       <geom type="box" size="0.7 0.4 0.027" pos="0 0 -0.027"
@@ -286,6 +298,8 @@ comptime SawyerReachModel = ModelDefFromXML[
     max_contacts=30,
     max_equality=6,  # 1 weld = 6 rows
     obs_qpos_skip=0,
+    obs_dim_override=10,  # hand_xyz(3) + gripper(1) + obj_xyz(3) + goal(3)
+    action_dim_override=4,  # delta_xyz(3) + gripper(1)
     timestep=pm.TIMESTEP,
     cone_type=ConeType.ELLIPTIC,
 ]

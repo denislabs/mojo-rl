@@ -114,6 +114,9 @@ def main() raises:
         for i in range(pm.NBODY * 4):
             xquat[i] = data.xquat[i]
         renderer.render_from_body_state(xpos, xquat, pm.NBODY, vel_x=0.0)
+        renderer.delay(16)  # ~60 FPS
+        if renderer.check_quit():
+            break
 
         if step % 200 == 0:
             var hand_x = Float64(data.xpos[HAND_BODY_IDX * 3])

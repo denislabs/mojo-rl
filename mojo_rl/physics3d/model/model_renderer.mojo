@@ -9,6 +9,7 @@ Supports all geom types: capsule, sphere, box, and plane (ground).
 from std.collections import InlineArray
 from mojo_rl.math3d import Vec3 as Vec3Generic, Quat as QuatGeneric
 from mojo_rl.render import Renderer3D, Camera3D, Color
+from mojo_rl.render.light import Light
 from mojo_rl.core import EnvRenderer3D
 from ..model.geom_spec import GeomSpec, GeomsLike
 from ..model.camera_spec import CamerasLike, _EmptyCameras
@@ -68,21 +69,47 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         show_sites: Bool = False,
         title: String = String("Model Environment"),
     ) raises:
-        # Setup all cameras from spec
+        # Setup all cameras from spec (fallback to default if none defined)
         var cam_list = Self.MODEL_DEF.setup_cameras(width, height)
         var mode_list = Self.MODEL_DEF.setup_camera_modes()
         self.cameras = List[Camera3D]()
         self.camera_modes = List[Int]()
-        for i in range(len(cam_list)):
-            self.cameras.append(cam_list[i].copy())
-            if i < len(mode_list):
-                self.camera_modes.append(mode_list[i])
-            else:
-                self.camera_modes.append(0)  # CAM_TRACKCOM fallback
+        if len(cam_list) == 0:
+            # No cameras in XML — add a default orbit camera
+            self.cameras.append(Camera3D(
+                eye=Vec3(0.0, -2.5, 1.5),
+                target=Vec3(0.0, 0.5, 0.3),
+                up=Vec3(0.0, 0.0, 1.0),
+                fov=45.0,
+                aspect=Float64(width) / Float64(height),
+                near=0.01,
+                far=100.0,
+                screen_width=width,
+                screen_height=height,
+            ))
+            self.camera_modes.append(1)  # CAM_FIXED
+        else:
+            for i in range(len(cam_list)):
+                self.cameras.append(cam_list[i].copy())
+                if i < len(mode_list):
+                    self.camera_modes.append(mode_list[i])
+                else:
+                    self.camera_modes.append(0)  # CAM_TRACKCOM fallback
         self.active_camera = 0
 
-        # Setup all lights from spec
+        # Setup all lights from spec (fallback to default if none defined)
         var lights = Self.MODEL_DEF.setup_lights()
+        if len(lights) == 0:
+            # No lights in XML — add default directional light
+            lights.append(Light(
+                mode=0,  # directional
+                dir_x=0.5, dir_y=0.5, dir_z=-1.0,
+                color_r=0.7, color_g=0.7, color_b=0.7,
+                ambient=0.3,
+                specular_intensity=0.3,
+                specular_exponent=10.0,
+                cast_shadow=True,
+            ))
 
         self.visual_radius_scale = visual_radius_scale
         self.axes_offset = axes_offset
