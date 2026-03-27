@@ -57,15 +57,13 @@ struct CriticGroup[
 
     comptime PARAM_SIZE: Int = Self.Net.PARAM_SIZE
 
-    var pairs: InlineArray[NetworkPair[Self.Net, Self.Opt], Self.N]
+    var pairs: List[NetworkPair[Self.Net, Self.Opt]]
 
     def __init__(out self):
         """Allocate N network pairs (uninitialized weights)."""
-        self.pairs = InlineArray[
-            NetworkPair[Self.Net, Self.Opt], Self.N
-        ](uninitialized=True)
+        self.pairs = List[NetworkPair[Self.Net, Self.Opt]](capacity=Self.N)
         for i in range(Self.N):
-            self.pairs[i] = NetworkPair[Self.Net, Self.Opt]()
+            self.pairs.append(NetworkPair[Self.Net, Self.Opt]())
 
     def __init__(out self, *, deinit take: Self):
         self.pairs = take.pairs^
@@ -166,19 +164,15 @@ struct GPUCriticGroup[
 
     comptime PARAM_SIZE: Int = Self.Net.PARAM_SIZE
 
-    var pairs: InlineArray[GPUNetworkPair[Self.Net, Self.Opt], Self.N]
+    var pairs: List[GPUNetworkPair[Self.Net, Self.Opt]]
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate N GPU network pairs."""
-        print("[GPUCriticGroup] Allocating " + String(Self.N) + " GPU critic pairs...")
-        self.pairs = InlineArray[
-            GPUNetworkPair[Self.Net, Self.Opt], Self.N
-        ](uninitialized=True)
+        self.pairs = List[GPUNetworkPair[Self.Net, Self.Opt]](
+            capacity=Self.N
+        )
         for i in range(Self.N):
-            print("[GPUCriticGroup] Creating pair " + String(i) + "...")
-            self.pairs[i] = GPUNetworkPair[Self.Net, Self.Opt](ctx)
-            print("[GPUCriticGroup] Pair " + String(i) + " created")
-        print("[GPUCriticGroup] All pairs created")
+            self.pairs.append(GPUNetworkPair[Self.Net, Self.Opt](ctx))
 
     def __init__(out self, *, deinit take: Self):
         self.pairs = take.pairs^
