@@ -585,6 +585,9 @@ def compute_inertia_from_geoms[
     CONE_TYPE: Int,
     MAX_TENDON: Int = 0,
     NSITE: Int = 0,
+    INERTIA_GROUP_MIN: Int = 0,
+    INERTIA_GROUP_MAX: Int = 5,
+    AUTO_MODE: Bool = False,
 ](
     mut model: Model[
         DTYPE,
@@ -604,15 +607,21 @@ def compute_inertia_from_geoms[
 
     For each body (1..NBODY-1):
       1. Collect geoms attached to it (geom_body[g] == body_id)
-      2. Compute per-geom mass from geom_mass array
-      3. Single geom with mass: copy pos/quat/mass/diagonal inertia
-      4. Multiple geoms: accumulate full tensor via parallel axis theorem,
+      2. Filter by group range [INERTIA_GROUP_MIN, INERTIA_GROUP_MAX]
+      3. Compute per-geom mass from geom_mass array
+      4. Single geom with mass: copy pos/quat/mass/diagonal inertia
+      5. Multiple geoms: accumulate full tensor via parallel axis theorem,
          then eigendecompose to get principal axes
 
     Must be called AFTER Geoms.setup_model (which populates geom arrays and geom_mass).
     """
     # For each body (skip worldbody at index 0)
     for body_id in range(1, NBODY):
+        # Auto mode: skip bodies with explicit mass/inertia in XML
+        comptime if AUTO_MODE:
+            if model.body_has_explicit_inertia[body_id]:
+                continue
+
         # Collect geoms for this body and count those with non-trivial mass.
         # geom_mass may be -1.0 (no explicit mass) — use density*volume in that case.
         var total_mass = Scalar[DTYPE](0)
@@ -620,6 +629,10 @@ def compute_inertia_from_geoms[
 
         # First pass: count contributing geoms and total mass
         for g in range(NGEOM):
+            # Filter by inertiagrouprange
+            var ggrp = model.geom_group[g]
+            if ggrp < INERTIA_GROUP_MIN or ggrp > INERTIA_GROUP_MAX:
+                continue
             if model.geom_body[g] == body_id:
                 var gm = geom_effective_mass[DTYPE](
                     model.geom_type[g],
@@ -640,6 +653,9 @@ def compute_inertia_from_geoms[
         if num_contributing == 1:
             # Single geom: find it and copy directly
             for g in range(NGEOM):
+                var ggrp1 = model.geom_group[g]
+                if ggrp1 < INERTIA_GROUP_MIN or ggrp1 > INERTIA_GROUP_MAX:
+                    continue
                 if model.geom_body[g] == body_id:
                     var gm = geom_effective_mass[DTYPE](
                         model.geom_type[g],
@@ -707,6 +723,9 @@ def compute_inertia_from_geoms[
             var com_y = Scalar[DTYPE](0)
             var com_z = Scalar[DTYPE](0)
             for g in range(NGEOM):
+                var ggrp2 = model.geom_group[g]
+                if ggrp2 < INERTIA_GROUP_MIN or ggrp2 > INERTIA_GROUP_MAX:
+                    continue
                 if model.geom_body[g] == body_id:
                     var gm = geom_effective_mass[DTYPE](
                         model.geom_type[g],
@@ -738,6 +757,9 @@ def compute_inertia_from_geoms[
             var toti = InlineArray[Scalar[DTYPE], 6](fill=Scalar[DTYPE](0))
 
             for g in range(NGEOM):
+                var ggrp3 = model.geom_group[g]
+                if ggrp3 < INERTIA_GROUP_MIN or ggrp3 > INERTIA_GROUP_MAX:
+                    continue
                 if model.geom_body[g] == body_id:
                     var gm = geom_effective_mass[DTYPE](
                         model.geom_type[g],

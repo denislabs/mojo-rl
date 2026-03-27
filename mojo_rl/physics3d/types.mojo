@@ -428,6 +428,11 @@ struct Model[
     # Per-geom contact margin and mass
     var geom_margin: List[Scalar[Self.DTYPE]]
     var geom_mass: List[Scalar[Self.DTYPE]]
+    var geom_group: List[Int]  # geom visual/collision group (0-5)
+
+    # Mocap body support
+    var body_mocap: List[Bool]  # True for mocap bodies (position externally controlled)
+    var body_has_explicit_inertia: List[Bool]  # True when body has explicit mass/inertia in XML
 
     # Site arrays (body-attached reference points, zero mass)
     var site_body: List[Int]
@@ -546,6 +551,15 @@ struct Model[
         self.geom_rbound = List[Scalar[Self.DTYPE]](capacity=ngeom)
         self.geom_margin = List[Scalar[Self.DTYPE]](capacity=ngeom)
         self.geom_mass = List[Scalar[Self.DTYPE]](capacity=ngeom)
+        self.geom_group = List[Int](capacity=ngeom)
+
+        # Mocap body arrays
+        self.body_mocap = List[Bool](capacity=Self.NBODY)
+        self.body_has_explicit_inertia = List[Bool](capacity=Self.NBODY)
+        for _ in range(Self.NBODY):
+            self.body_mocap.append(False)
+            self.body_has_explicit_inertia.append(False)
+
         self.geom_pos = List[Scalar[Self.DTYPE]](
             capacity=_max_one[Self.NGEOM * 3]()
         )
@@ -575,6 +589,7 @@ struct Model[
             self.geom_rbound.append(Scalar[Self.DTYPE](0))
             self.geom_margin.append(Scalar[Self.DTYPE](0))
             self.geom_mass.append(Scalar[Self.DTYPE](0))
+            self.geom_group.append(0)
         for _ in range(_max_one[Self.NGEOM * 3]()):
             self.geom_pos.append(Scalar[Self.DTYPE](0))
         for _ in range(_max_one[Self.NGEOM * 4]()):
@@ -1211,6 +1226,11 @@ struct Data[
     # Site world positions — NSITE * 3 elements
     var site_xpos: List[Scalar[Self.DTYPE]]
 
+    # Mocap body target positions/orientations — NBODY * 3 / NBODY * 4
+    # Only entries for mocap bodies are used (indexed by body_id)
+    var mocap_pos: List[Scalar[Self.DTYPE]]
+    var mocap_quat: List[Scalar[Self.DTYPE]]
+
     def __init__(out self):
         """Initialize with zero state."""
         var nq = _max_one[Self.NQ]()
@@ -1264,6 +1284,43 @@ struct Data[
         )
         for _ in range(_max_one[Self.NSITE * 3]()):
             self.site_xpos.append(Scalar[Self.DTYPE](0))
+
+        # Mocap body target positions/orientations
+        self.mocap_pos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.mocap_quat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
+        for _ in range(Self.NBODY * 3):
+            self.mocap_pos.append(Scalar[Self.DTYPE](0))
+        for _ in range(Self.NBODY):
+            self.mocap_quat.append(Scalar[Self.DTYPE](0))
+            self.mocap_quat.append(Scalar[Self.DTYPE](0))
+            self.mocap_quat.append(Scalar[Self.DTYPE](0))
+            self.mocap_quat.append(Scalar[Self.DTYPE](1))  # identity
+
+    def set_mocap_pos(
+        mut self,
+        body_id: Int,
+        x: Scalar[Self.DTYPE],
+        y: Scalar[Self.DTYPE],
+        z: Scalar[Self.DTYPE],
+    ):
+        """Set mocap body target position (world frame)."""
+        self.mocap_pos[body_id * 3 + 0] = x
+        self.mocap_pos[body_id * 3 + 1] = y
+        self.mocap_pos[body_id * 3 + 2] = z
+
+    def set_mocap_quat(
+        mut self,
+        body_id: Int,
+        qx: Scalar[Self.DTYPE],
+        qy: Scalar[Self.DTYPE],
+        qz: Scalar[Self.DTYPE],
+        qw: Scalar[Self.DTYPE],
+    ):
+        """Set mocap body target orientation (world frame, [x,y,z,w])."""
+        self.mocap_quat[body_id * 4 + 0] = qx
+        self.mocap_quat[body_id * 4 + 1] = qy
+        self.mocap_quat[body_id * 4 + 2] = qz
+        self.mocap_quat[body_id * 4 + 3] = qw
 
     def get_body_position(
         self, body_id: Int

@@ -51,6 +51,7 @@ struct ParsedModel:
     var NLIGHT: Int  # number of <light> entries in <worldbody>
     var NCAM: Int  # number of <camera> entries in <worldbody>
     var NSITE: Int  # number of <site> entries in <worldbody>
+    var NEQ: Int  # number of equality constraints (<weld> + <connect> in <equality>)
     var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
     var TIMESTEP: Float64  # <option timestep="..."/>
 
@@ -67,6 +68,7 @@ struct ParsedModel:
         nlight: Int = 0,
         ncam: Int = 0,
         nsite: Int = 0,
+        neq: Int = 0,
         angle_deg: Bool = False,
         timestep: Float64 = 0.01,
     ):
@@ -81,6 +83,7 @@ struct ParsedModel:
         self.NLIGHT = nlight
         self.NCAM = ncam
         self.NSITE = nsite
+        self.NEQ = neq
         self.ANGLE_DEG = angle_deg
         self.TIMESTEP = timestep
 
@@ -609,6 +612,26 @@ def _fromto_to_pos_quat(
     return (mx, my, mz, qx, qy, qz, qw, half_length, Float64(0))
 
 
+def _find_body_index_by_name(worldbody: String, body_name: String) -> Int:
+    """Return 1-based model body index for <body name="body_name">, or 0 (worldbody)."""
+    var search_name = 'name="' + body_name + '"'
+    var count = 0
+    var scan_pos = 0
+    while True:
+        var body_pos = worldbody.find("<body", scan_pos)
+        if body_pos == -1:
+            return 0
+        var tag_end = worldbody.find(">", body_pos)
+        if tag_end == -1:
+            return 0
+        var tag = String(worldbody[byte=body_pos : tag_end + 1])
+        count += 1
+        if tag.find(search_name) != -1:
+            return count
+        scan_pos = tag_end + 1
+    return 0  # pragma: no cover
+
+
 def _find_joint_index_by_name(worldbody: String, joint_name: String) -> Int:
     """Return 0-based index of first <joint name="joint_name"> in DFS order, or -1.
     """
@@ -673,18 +696,21 @@ def _xml_compiler_angle_is_deg[xml: String]() -> Bool:
     return _trim(angle_val) == "degree"
 
 
-def _xml_compiler_inertiafromgeom[xml: String]() -> Bool:
-    """Return True when <compiler inertiafromgeom="true"/> is present. Comptime-safe.
-    """
+def _xml_compiler_inertiafromgeom[xml: String]() -> Int:
+    """Return inertiafromgeom mode. 0=false, 1=true, 2=auto. Comptime-safe."""
     var t = xml.find("<compiler")
     if t == -1:
-        return False
+        return 0
     var tag_end = xml.find(">", t)
     if tag_end == -1:
-        return False
+        return 0
     var tag = String(xml[byte=t : tag_end + 1])
-    var val = _extract_attr(tag, "inertiafromgeom")
-    return _trim(val) == "true"
+    var val = _trim(_extract_attr(tag, "inertiafromgeom"))
+    if val == "true":
+        return 1
+    elif val == "auto":
+        return 2
+    return 0
 
 
 def _xml_compiler_settotalmass[xml: String]() -> Float64:
@@ -702,6 +728,28 @@ def _xml_compiler_settotalmass[xml: String]() -> Float64:
     if len(trimmed) == 0:
         return Float64(-1.0)
     return _parse_float(trimmed)
+
+
+def _xml_compiler_inertiagrouprange[xml: String]() -> Tuple[Int, Int]:
+    """Return (group_min, group_max) from <compiler inertiagrouprange="min max"/>.
+    Defaults to (0, 5) if absent. Comptime-safe.
+    """
+    var t = xml.find("<compiler")
+    if t == -1:
+        return (0, 5)
+    var tag_end = xml.find(">", t)
+    if tag_end == -1:
+        return (0, 5)
+    var tag = String(xml[byte=t : tag_end + 1])
+    var val = _extract_attr(tag, "inertiagrouprange")
+    var trimmed = _trim(val)
+    if len(trimmed) == 0:
+        return (0, 5)
+    var parts = List[String]()
+    _split_spaces(trimmed, parts)
+    if len(parts) >= 2:
+        return (_parse_int_str(parts[0]), _parse_int_str(parts[1]))
+    return (0, 5)
 
 
 def parse_xml(xml: String) -> ParsedModel:
@@ -769,6 +817,10 @@ def parse_xml(xml: String) -> ParsedModel:
     var ncam = _count_tag(worldbody, "camera")
     var nsite = _count_tag(worldbody, "site")
 
+    # ---- Equality constraints (<equality> section) --------------------------
+    var eq_sec = _extract_section(xml_clean, "equality")
+    var neq = _count_tag(eq_sec, "weld") + _count_tag(eq_sec, "connect")
+
     # ---- Compiler angle units -----------------------------------------------
     var angle_deg = False
     var compiler_t = xml_clean.find("<compiler")
@@ -803,6 +855,7 @@ def parse_xml(xml: String) -> ParsedModel:
         nlight,
         ncam,
         nsite,
+        neq,
         angle_deg,
         timestep,
     )
@@ -1100,6 +1153,966 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                 data.nq = count
                 break
             num_pos = t + 7
+
+    return data^
+
+
+# =============================================================================
+# ComptimeRenderData — pre-computed rendering data from XML
+# =============================================================================
+
+
+struct ComptimeRenderData(Copyable, Movable):
+    """Precomputed rendering data for ModelRenderer use.
+
+    Stores results of lightweight XML parsing in InlineArrays so that
+    rendering functions can access them without re-parsing the full XML.
+    Avoids the comptime interpreter crash caused by calling parse_xml_full
+    multiple times for large models (25+ bodies).
+
+    Usage:
+        comptime _rcd = parse_xml_render_data(Self.xml)
+        # In rendering functions:  Self._rcd.geom_type[i]  (no re-parse)
+    """
+
+    # Counts
+    var ngeom: Int
+    var nlight: Int
+    var ncam: Int
+    var ntex: Int
+    var nmat: Int
+    var nsite: Int
+
+    # Geoms (max 64)
+    var geom_body_id: InlineArray[Int, 64]
+    var geom_type: InlineArray[Int, 64]
+    var geom_pos_x: InlineArray[Float64, 64]
+    var geom_pos_y: InlineArray[Float64, 64]
+    var geom_pos_z: InlineArray[Float64, 64]
+    var geom_quat_x: InlineArray[Float64, 64]
+    var geom_quat_y: InlineArray[Float64, 64]
+    var geom_quat_z: InlineArray[Float64, 64]
+    var geom_quat_w: InlineArray[Float64, 64]
+    var geom_radius: InlineArray[Float64, 64]
+    var geom_half_length: InlineArray[Float64, 64]
+    var geom_half_x: InlineArray[Float64, 64]
+    var geom_half_y: InlineArray[Float64, 64]
+    var geom_half_z: InlineArray[Float64, 64]
+    var geom_rgba_r: InlineArray[Float64, 64]
+    var geom_rgba_g: InlineArray[Float64, 64]
+    var geom_rgba_b: InlineArray[Float64, 64]
+    var geom_rgba_a: InlineArray[Float64, 64]
+    var geom_material_id: InlineArray[Int, 64]
+
+    # Lights (max 8)
+    var light_dir_x: InlineArray[Float64, 8]
+    var light_dir_y: InlineArray[Float64, 8]
+    var light_dir_z: InlineArray[Float64, 8]
+    var light_diffuse_r: InlineArray[Float64, 8]
+    var light_diffuse_g: InlineArray[Float64, 8]
+    var light_diffuse_b: InlineArray[Float64, 8]
+    var light_specular_r: InlineArray[Float64, 8]
+    var light_specular_g: InlineArray[Float64, 8]
+    var light_specular_b: InlineArray[Float64, 8]
+    var light_ambient_r: InlineArray[Float64, 8]
+    var light_ambient_g: InlineArray[Float64, 8]
+    var light_ambient_b: InlineArray[Float64, 8]
+    var light_directional: InlineArray[Bool, 8]
+    var light_castshadow: InlineArray[Bool, 8]
+    var light_exponent: InlineArray[Float64, 8]
+
+    # Cameras (max 8)
+    var cam_pos_x: InlineArray[Float64, 8]
+    var cam_pos_y: InlineArray[Float64, 8]
+    var cam_pos_z: InlineArray[Float64, 8]
+    var cam_quat_x: InlineArray[Float64, 8]
+    var cam_quat_y: InlineArray[Float64, 8]
+    var cam_quat_z: InlineArray[Float64, 8]
+    var cam_quat_w: InlineArray[Float64, 8]
+    var cam_fovy: InlineArray[Float64, 8]
+    var cam_mode: InlineArray[Int, 8]
+    var cam_body_id: InlineArray[Int, 8]
+
+    # Textures (max 8)
+    var tex_type: InlineArray[Int, 8]
+    var tex_builtin: InlineArray[Int, 8]
+    var tex_rgb1_r: InlineArray[Float64, 8]
+    var tex_rgb1_g: InlineArray[Float64, 8]
+    var tex_rgb1_b: InlineArray[Float64, 8]
+    var tex_rgb2_r: InlineArray[Float64, 8]
+    var tex_rgb2_g: InlineArray[Float64, 8]
+    var tex_rgb2_b: InlineArray[Float64, 8]
+
+    # Materials (max 8)
+    var mat_rgba_r: InlineArray[Float64, 8]
+    var mat_rgba_g: InlineArray[Float64, 8]
+    var mat_rgba_b: InlineArray[Float64, 8]
+    var mat_rgba_a: InlineArray[Float64, 8]
+    var mat_shininess: InlineArray[Float64, 8]
+    var mat_specular: InlineArray[Float64, 8]
+    var mat_reflectance: InlineArray[Float64, 8]
+
+    # Sites (max 16)
+    var site_body_id: InlineArray[Int, 16]
+    var site_pos_x: InlineArray[Float64, 16]
+    var site_pos_y: InlineArray[Float64, 16]
+    var site_pos_z: InlineArray[Float64, 16]
+    var site_size_0: InlineArray[Float64, 16]
+
+    def __init__(out self):
+        """Initialize with safe defaults."""
+        self.ngeom = 0
+        self.nlight = 0
+        self.ncam = 0
+        self.ntex = 0
+        self.nmat = 0
+        self.nsite = 0
+
+        self.geom_body_id = InlineArray[Int, 64](fill=0)
+        self.geom_type = InlineArray[Int, 64](fill=1)  # SPHERE default
+        self.geom_pos_x = InlineArray[Float64, 64](fill=0.0)
+        self.geom_pos_y = InlineArray[Float64, 64](fill=0.0)
+        self.geom_pos_z = InlineArray[Float64, 64](fill=0.0)
+        self.geom_quat_x = InlineArray[Float64, 64](fill=0.0)
+        self.geom_quat_y = InlineArray[Float64, 64](fill=0.0)
+        self.geom_quat_z = InlineArray[Float64, 64](fill=0.0)
+        self.geom_quat_w = InlineArray[Float64, 64](fill=1.0)
+        self.geom_radius = InlineArray[Float64, 64](fill=0.0)
+        self.geom_half_length = InlineArray[Float64, 64](fill=0.0)
+        self.geom_half_x = InlineArray[Float64, 64](fill=0.0)
+        self.geom_half_y = InlineArray[Float64, 64](fill=0.0)
+        self.geom_half_z = InlineArray[Float64, 64](fill=0.0)
+        self.geom_rgba_r = InlineArray[Float64, 64](fill=0.7)
+        self.geom_rgba_g = InlineArray[Float64, 64](fill=0.7)
+        self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
+        self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
+        self.geom_material_id = InlineArray[Int, 64](fill=-1)
+
+        self.light_dir_x = InlineArray[Float64, 8](fill=0.0)
+        self.light_dir_y = InlineArray[Float64, 8](fill=0.0)
+        self.light_dir_z = InlineArray[Float64, 8](fill=-1.0)
+        self.light_diffuse_r = InlineArray[Float64, 8](fill=0.7)
+        self.light_diffuse_g = InlineArray[Float64, 8](fill=0.7)
+        self.light_diffuse_b = InlineArray[Float64, 8](fill=0.7)
+        self.light_specular_r = InlineArray[Float64, 8](fill=0.3)
+        self.light_specular_g = InlineArray[Float64, 8](fill=0.3)
+        self.light_specular_b = InlineArray[Float64, 8](fill=0.3)
+        self.light_ambient_r = InlineArray[Float64, 8](fill=0.0)
+        self.light_ambient_g = InlineArray[Float64, 8](fill=0.0)
+        self.light_ambient_b = InlineArray[Float64, 8](fill=0.0)
+        self.light_directional = InlineArray[Bool, 8](fill=False)
+        self.light_castshadow = InlineArray[Bool, 8](fill=True)
+        self.light_exponent = InlineArray[Float64, 8](fill=10.0)
+
+        self.cam_pos_x = InlineArray[Float64, 8](fill=0.0)
+        self.cam_pos_y = InlineArray[Float64, 8](fill=0.0)
+        self.cam_pos_z = InlineArray[Float64, 8](fill=0.0)
+        self.cam_quat_x = InlineArray[Float64, 8](fill=0.0)
+        self.cam_quat_y = InlineArray[Float64, 8](fill=0.0)
+        self.cam_quat_z = InlineArray[Float64, 8](fill=0.0)
+        self.cam_quat_w = InlineArray[Float64, 8](fill=1.0)
+        self.cam_fovy = InlineArray[Float64, 8](fill=45.0)
+        self.cam_mode = InlineArray[Int, 8](fill=0)
+        self.cam_body_id = InlineArray[Int, 8](fill=0)
+
+        self.tex_type = InlineArray[Int, 8](fill=0)
+        self.tex_builtin = InlineArray[Int, 8](fill=0)
+        self.tex_rgb1_r = InlineArray[Float64, 8](fill=0.8)
+        self.tex_rgb1_g = InlineArray[Float64, 8](fill=0.8)
+        self.tex_rgb1_b = InlineArray[Float64, 8](fill=0.8)
+        self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
+        self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
+        self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
+
+        self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
+        self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
+        self.mat_rgba_b = InlineArray[Float64, 8](fill=1.0)
+        self.mat_rgba_a = InlineArray[Float64, 8](fill=1.0)
+        self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
+        self.mat_specular = InlineArray[Float64, 8](fill=0.5)
+        self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
+
+        self.site_body_id = InlineArray[Int, 16](fill=0)
+        self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
+        self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
+        self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
+        self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
+
+    def __init__(out self, *, copy: Self):
+        """Copy constructor — element-by-element InlineArray copy."""
+        self.ngeom = copy.ngeom
+        self.nlight = copy.nlight
+        self.ncam = copy.ncam
+        self.ntex = copy.ntex
+        self.nmat = copy.nmat
+        self.nsite = copy.nsite
+
+        self.geom_body_id = InlineArray[Int, 64](fill=0)
+        self.geom_type = InlineArray[Int, 64](fill=1)
+        self.geom_pos_x = InlineArray[Float64, 64](fill=0.0)
+        self.geom_pos_y = InlineArray[Float64, 64](fill=0.0)
+        self.geom_pos_z = InlineArray[Float64, 64](fill=0.0)
+        self.geom_quat_x = InlineArray[Float64, 64](fill=0.0)
+        self.geom_quat_y = InlineArray[Float64, 64](fill=0.0)
+        self.geom_quat_z = InlineArray[Float64, 64](fill=0.0)
+        self.geom_quat_w = InlineArray[Float64, 64](fill=1.0)
+        self.geom_radius = InlineArray[Float64, 64](fill=0.0)
+        self.geom_half_length = InlineArray[Float64, 64](fill=0.0)
+        self.geom_half_x = InlineArray[Float64, 64](fill=0.0)
+        self.geom_half_y = InlineArray[Float64, 64](fill=0.0)
+        self.geom_half_z = InlineArray[Float64, 64](fill=0.0)
+        self.geom_rgba_r = InlineArray[Float64, 64](fill=0.7)
+        self.geom_rgba_g = InlineArray[Float64, 64](fill=0.7)
+        self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
+        self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
+        self.geom_material_id = InlineArray[Int, 64](fill=-1)
+        for i in range(64):
+            self.geom_body_id[i] = copy.geom_body_id[i]
+            self.geom_type[i] = copy.geom_type[i]
+            self.geom_pos_x[i] = copy.geom_pos_x[i]
+            self.geom_pos_y[i] = copy.geom_pos_y[i]
+            self.geom_pos_z[i] = copy.geom_pos_z[i]
+            self.geom_quat_x[i] = copy.geom_quat_x[i]
+            self.geom_quat_y[i] = copy.geom_quat_y[i]
+            self.geom_quat_z[i] = copy.geom_quat_z[i]
+            self.geom_quat_w[i] = copy.geom_quat_w[i]
+            self.geom_radius[i] = copy.geom_radius[i]
+            self.geom_half_length[i] = copy.geom_half_length[i]
+            self.geom_half_x[i] = copy.geom_half_x[i]
+            self.geom_half_y[i] = copy.geom_half_y[i]
+            self.geom_half_z[i] = copy.geom_half_z[i]
+            self.geom_rgba_r[i] = copy.geom_rgba_r[i]
+            self.geom_rgba_g[i] = copy.geom_rgba_g[i]
+            self.geom_rgba_b[i] = copy.geom_rgba_b[i]
+            self.geom_rgba_a[i] = copy.geom_rgba_a[i]
+            self.geom_material_id[i] = copy.geom_material_id[i]
+
+        self.light_dir_x = InlineArray[Float64, 8](fill=0.0)
+        self.light_dir_y = InlineArray[Float64, 8](fill=0.0)
+        self.light_dir_z = InlineArray[Float64, 8](fill=-1.0)
+        self.light_diffuse_r = InlineArray[Float64, 8](fill=0.7)
+        self.light_diffuse_g = InlineArray[Float64, 8](fill=0.7)
+        self.light_diffuse_b = InlineArray[Float64, 8](fill=0.7)
+        self.light_specular_r = InlineArray[Float64, 8](fill=0.3)
+        self.light_specular_g = InlineArray[Float64, 8](fill=0.3)
+        self.light_specular_b = InlineArray[Float64, 8](fill=0.3)
+        self.light_ambient_r = InlineArray[Float64, 8](fill=0.0)
+        self.light_ambient_g = InlineArray[Float64, 8](fill=0.0)
+        self.light_ambient_b = InlineArray[Float64, 8](fill=0.0)
+        self.light_directional = InlineArray[Bool, 8](fill=False)
+        self.light_castshadow = InlineArray[Bool, 8](fill=True)
+        self.light_exponent = InlineArray[Float64, 8](fill=10.0)
+        for i in range(8):
+            self.light_dir_x[i] = copy.light_dir_x[i]
+            self.light_dir_y[i] = copy.light_dir_y[i]
+            self.light_dir_z[i] = copy.light_dir_z[i]
+            self.light_diffuse_r[i] = copy.light_diffuse_r[i]
+            self.light_diffuse_g[i] = copy.light_diffuse_g[i]
+            self.light_diffuse_b[i] = copy.light_diffuse_b[i]
+            self.light_specular_r[i] = copy.light_specular_r[i]
+            self.light_specular_g[i] = copy.light_specular_g[i]
+            self.light_specular_b[i] = copy.light_specular_b[i]
+            self.light_ambient_r[i] = copy.light_ambient_r[i]
+            self.light_ambient_g[i] = copy.light_ambient_g[i]
+            self.light_ambient_b[i] = copy.light_ambient_b[i]
+            self.light_directional[i] = copy.light_directional[i]
+            self.light_castshadow[i] = copy.light_castshadow[i]
+            self.light_exponent[i] = copy.light_exponent[i]
+
+        self.cam_pos_x = InlineArray[Float64, 8](fill=0.0)
+        self.cam_pos_y = InlineArray[Float64, 8](fill=0.0)
+        self.cam_pos_z = InlineArray[Float64, 8](fill=0.0)
+        self.cam_quat_x = InlineArray[Float64, 8](fill=0.0)
+        self.cam_quat_y = InlineArray[Float64, 8](fill=0.0)
+        self.cam_quat_z = InlineArray[Float64, 8](fill=0.0)
+        self.cam_quat_w = InlineArray[Float64, 8](fill=1.0)
+        self.cam_fovy = InlineArray[Float64, 8](fill=45.0)
+        self.cam_mode = InlineArray[Int, 8](fill=0)
+        self.cam_body_id = InlineArray[Int, 8](fill=0)
+        for i in range(8):
+            self.cam_pos_x[i] = copy.cam_pos_x[i]
+            self.cam_pos_y[i] = copy.cam_pos_y[i]
+            self.cam_pos_z[i] = copy.cam_pos_z[i]
+            self.cam_quat_x[i] = copy.cam_quat_x[i]
+            self.cam_quat_y[i] = copy.cam_quat_y[i]
+            self.cam_quat_z[i] = copy.cam_quat_z[i]
+            self.cam_quat_w[i] = copy.cam_quat_w[i]
+            self.cam_fovy[i] = copy.cam_fovy[i]
+            self.cam_mode[i] = copy.cam_mode[i]
+            self.cam_body_id[i] = copy.cam_body_id[i]
+
+        self.tex_type = InlineArray[Int, 8](fill=0)
+        self.tex_builtin = InlineArray[Int, 8](fill=0)
+        self.tex_rgb1_r = InlineArray[Float64, 8](fill=0.8)
+        self.tex_rgb1_g = InlineArray[Float64, 8](fill=0.8)
+        self.tex_rgb1_b = InlineArray[Float64, 8](fill=0.8)
+        self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
+        self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
+        self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
+        for i in range(8):
+            self.tex_type[i] = copy.tex_type[i]
+            self.tex_builtin[i] = copy.tex_builtin[i]
+            self.tex_rgb1_r[i] = copy.tex_rgb1_r[i]
+            self.tex_rgb1_g[i] = copy.tex_rgb1_g[i]
+            self.tex_rgb1_b[i] = copy.tex_rgb1_b[i]
+            self.tex_rgb2_r[i] = copy.tex_rgb2_r[i]
+            self.tex_rgb2_g[i] = copy.tex_rgb2_g[i]
+            self.tex_rgb2_b[i] = copy.tex_rgb2_b[i]
+
+        self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
+        self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
+        self.mat_rgba_b = InlineArray[Float64, 8](fill=1.0)
+        self.mat_rgba_a = InlineArray[Float64, 8](fill=1.0)
+        self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
+        self.mat_specular = InlineArray[Float64, 8](fill=0.5)
+        self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
+        for i in range(8):
+            self.mat_rgba_r[i] = copy.mat_rgba_r[i]
+            self.mat_rgba_g[i] = copy.mat_rgba_g[i]
+            self.mat_rgba_b[i] = copy.mat_rgba_b[i]
+            self.mat_rgba_a[i] = copy.mat_rgba_a[i]
+            self.mat_shininess[i] = copy.mat_shininess[i]
+            self.mat_specular[i] = copy.mat_specular[i]
+            self.mat_reflectance[i] = copy.mat_reflectance[i]
+
+        self.site_body_id = InlineArray[Int, 16](fill=0)
+        self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
+        self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
+        self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
+        self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
+        for i in range(16):
+            self.site_body_id[i] = copy.site_body_id[i]
+            self.site_pos_x[i] = copy.site_pos_x[i]
+            self.site_pos_y[i] = copy.site_pos_y[i]
+            self.site_pos_z[i] = copy.site_pos_z[i]
+            self.site_size_0[i] = copy.site_size_0[i]
+
+    def __init__(out self, *, deinit take: Self):
+        self.ngeom = take.ngeom
+        self.nlight = take.nlight
+        self.ncam = take.ncam
+        self.ntex = take.ntex
+        self.nmat = take.nmat
+        self.nsite = take.nsite
+        self.geom_body_id = take.geom_body_id^
+        self.geom_type = take.geom_type^
+        self.geom_pos_x = take.geom_pos_x^
+        self.geom_pos_y = take.geom_pos_y^
+        self.geom_pos_z = take.geom_pos_z^
+        self.geom_quat_x = take.geom_quat_x^
+        self.geom_quat_y = take.geom_quat_y^
+        self.geom_quat_z = take.geom_quat_z^
+        self.geom_quat_w = take.geom_quat_w^
+        self.geom_radius = take.geom_radius^
+        self.geom_half_length = take.geom_half_length^
+        self.geom_half_x = take.geom_half_x^
+        self.geom_half_y = take.geom_half_y^
+        self.geom_half_z = take.geom_half_z^
+        self.geom_rgba_r = take.geom_rgba_r^
+        self.geom_rgba_g = take.geom_rgba_g^
+        self.geom_rgba_b = take.geom_rgba_b^
+        self.geom_rgba_a = take.geom_rgba_a^
+        self.geom_material_id = take.geom_material_id^
+        self.light_dir_x = take.light_dir_x^
+        self.light_dir_y = take.light_dir_y^
+        self.light_dir_z = take.light_dir_z^
+        self.light_diffuse_r = take.light_diffuse_r^
+        self.light_diffuse_g = take.light_diffuse_g^
+        self.light_diffuse_b = take.light_diffuse_b^
+        self.light_specular_r = take.light_specular_r^
+        self.light_specular_g = take.light_specular_g^
+        self.light_specular_b = take.light_specular_b^
+        self.light_ambient_r = take.light_ambient_r^
+        self.light_ambient_g = take.light_ambient_g^
+        self.light_ambient_b = take.light_ambient_b^
+        self.light_directional = take.light_directional^
+        self.light_castshadow = take.light_castshadow^
+        self.light_exponent = take.light_exponent^
+        self.cam_pos_x = take.cam_pos_x^
+        self.cam_pos_y = take.cam_pos_y^
+        self.cam_pos_z = take.cam_pos_z^
+        self.cam_quat_x = take.cam_quat_x^
+        self.cam_quat_y = take.cam_quat_y^
+        self.cam_quat_z = take.cam_quat_z^
+        self.cam_quat_w = take.cam_quat_w^
+        self.cam_fovy = take.cam_fovy^
+        self.cam_mode = take.cam_mode^
+        self.cam_body_id = take.cam_body_id^
+        self.tex_type = take.tex_type^
+        self.tex_builtin = take.tex_builtin^
+        self.tex_rgb1_r = take.tex_rgb1_r^
+        self.tex_rgb1_g = take.tex_rgb1_g^
+        self.tex_rgb1_b = take.tex_rgb1_b^
+        self.tex_rgb2_r = take.tex_rgb2_r^
+        self.tex_rgb2_g = take.tex_rgb2_g^
+        self.tex_rgb2_b = take.tex_rgb2_b^
+        self.mat_rgba_r = take.mat_rgba_r^
+        self.mat_rgba_g = take.mat_rgba_g^
+        self.mat_rgba_b = take.mat_rgba_b^
+        self.mat_rgba_a = take.mat_rgba_a^
+        self.mat_shininess = take.mat_shininess^
+        self.mat_specular = take.mat_specular^
+        self.mat_reflectance = take.mat_reflectance^
+        self.site_body_id = take.site_body_id^
+        self.site_pos_x = take.site_pos_x^
+        self.site_pos_y = take.site_pos_y^
+        self.site_pos_z = take.site_pos_z^
+        self.site_size_0 = take.site_size_0^
+
+
+# =============================================================================
+# Render data helper functions (copied from full_parser.mojo for independence)
+# =============================================================================
+
+
+def _rcd_geom_type_from_str(s: String) -> Int:
+    """Convert geom type string to integer constant.
+    PLANE=0, SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4."""
+    var t = _trim(s)
+    if t == "plane":
+        return 0
+    elif t == "sphere":
+        return 1
+    elif t == "capsule":
+        return 2
+    elif t == "box":
+        return 3
+    elif t == "cylinder":
+        return 4
+    return 1  # default = sphere
+
+
+def _rcd_parse_rgba4(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Parse "r g b a" string into four Float64 values."""
+    var parts = List[String]()
+    _split_spaces(s, parts)
+    var r = Float64(1)
+    var g = Float64(1)
+    var b = Float64(1)
+    var a = Float64(1)
+    if len(parts) >= 1:
+        r = _parse_float(parts[0])
+    if len(parts) >= 2:
+        g = _parse_float(parts[1])
+    if len(parts) >= 3:
+        b = _parse_float(parts[2])
+    if len(parts) >= 4:
+        a = _parse_float(parts[3])
+    return (r, g, b, a)
+
+
+def _rcd_parse_rgb3(s: String) -> Tuple[Float64, Float64, Float64]:
+    """Parse "r g b" string into three Float64 values."""
+    var parts = List[String]()
+    _split_spaces(s, parts)
+    var r = Float64(0)
+    var g = Float64(0)
+    var b = Float64(0)
+    if len(parts) >= 1:
+        r = _parse_float(parts[0])
+    if len(parts) >= 2:
+        g = _parse_float(parts[1])
+    if len(parts) >= 3:
+        b = _parse_float(parts[2])
+    return (r, g, b)
+
+
+def _rcd_xyaxes_to_quat(s: String) -> Tuple[Float64, Float64, Float64, Float64]:
+    """Convert xyaxes="x1 x2 x3 y1 y2 y3" to quaternion (qx, qy, qz, qw)."""
+    var parts = List[String]()
+    _split_spaces(s, parts)
+    if len(parts) < 6:
+        return (Float64(0), Float64(0), Float64(0), Float64(1))
+    var xx = _parse_float(parts[0])
+    var xy = _parse_float(parts[1])
+    var xz = _parse_float(parts[2])
+    var yx = _parse_float(parts[3])
+    var yy = _parse_float(parts[4])
+    var yz = _parse_float(parts[5])
+    var xn = _sqrt_f64(xx * xx + xy * xy + xz * xz)
+    if xn > 0.0:
+        xx /= xn
+        xy /= xn
+        xz /= xn
+    var zx = xy * yz - xz * yy
+    var zy = xz * yx - xx * yz
+    var zz = xx * yy - xy * yx
+    var zn = _sqrt_f64(zx * zx + zy * zy + zz * zz)
+    if zn > 0.0:
+        zx /= zn
+        zy /= zn
+        zz /= zn
+    yx = zy * xz - zz * xy
+    yy = zz * xx - zx * xz
+    yz = zx * xy - zy * xx
+    var trace = xx + yy + zz
+    var qx: Float64
+    var qy: Float64
+    var qz: Float64
+    var qw: Float64
+    if trace > 0.0:
+        var s2 = _sqrt_f64(trace + 1.0) * 2.0
+        qw = 0.25 * s2
+        qx = (zy - yz) / s2
+        qy = (xz - zx) / s2
+        qz = (yx - xy) / s2
+    elif xx > yy and xx > zz:
+        var s2 = _sqrt_f64(1.0 + xx - yy - zz) * 2.0
+        qw = (zy - yz) / s2
+        qx = 0.25 * s2
+        qy = (xy + yx) / s2
+        qz = (xz + zx) / s2
+    elif yy > zz:
+        var s2 = _sqrt_f64(1.0 + yy - xx - zz) * 2.0
+        qw = (xz - zx) / s2
+        qx = (xy + yx) / s2
+        qy = 0.25 * s2
+        qz = (yz + zy) / s2
+    else:
+        var s2 = _sqrt_f64(1.0 + zz - xx - yy) * 2.0
+        qw = (yx - xy) / s2
+        qx = (xz + zx) / s2
+        qy = (yz + zy) / s2
+        qz = 0.25 * s2
+    return (qx, qy, qz, qw)
+
+
+def _rcd_find_material_index_by_name(asset_sec: String, name: String) -> Int:
+    """Return 0-based index of <material name="name"> in asset_sec, or -1."""
+    var search = 'name="' + name + '"'
+    var scan_pos = 0
+    var count = 0
+    while True:
+        var t = asset_sec.find("<material", scan_pos)
+        if t == -1:
+            break
+        var tag_end = asset_sec.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(asset_sec[byte=t : tag_end + 1])
+        if tag.find(search) != -1:
+            return count
+        count += 1
+        scan_pos = tag_end + 1
+    return -1
+
+
+def _rcd_tex_type_from_str(s: String) -> Int:
+    var t = _trim(s)
+    if t == "skybox":
+        return 1  # TEX_SKYBOX
+    elif t == "cube":
+        return 3  # TEX_CUBE
+    return 0  # TEX_2D
+
+
+def _rcd_tex_builtin_from_str(s: String) -> Int:
+    var t = _trim(s)
+    if t == "gradient":
+        return 1  # TEX_BUILTIN_GRADIENT
+    elif t == "checker":
+        return 2  # TEX_BUILTIN_CHECKER
+    elif t == "flat":
+        return 3  # TEX_BUILTIN_FLAT
+    return 0  # TEX_BUILTIN_NONE
+
+
+def _rcd_cam_mode_from_str(s: String) -> Int:
+    var t = _trim(s)
+    if t == "track":
+        return 1
+    elif t == "trackcom":
+        return 2
+    elif t == "targetbody":
+        return 3
+    elif t == "targetbodycom":
+        return 4
+    return 0
+
+
+def _rcd_min_valid(a: Int, b: Int) -> Int:
+    """Return the smaller of a and b, treating -1 as +infinity."""
+    if a == -1:
+        return b
+    if b == -1:
+        return a
+    if a < b:
+        return a
+    return b
+
+
+# =============================================================================
+# parse_xml_render_data — lightweight rendering-only XML parser
+# =============================================================================
+
+
+def parse_xml_render_data(xml: String) -> ComptimeRenderData:
+    """Parse XML and return rendering data as InlineArrays.
+
+    Designed to be called at struct-level comptime:
+
+        comptime _rcd = parse_xml_render_data(Self.xml)
+
+    Extracts ONLY rendering-relevant data (geoms, lights, cameras, textures,
+    materials, sites) in a single pass, avoiding the comptime interpreter crash
+    caused by multiple parse_xml_full calls for large models.
+    """
+    var data = ComptimeRenderData()
+    var xml_clean = _strip_xml_comments(xml)
+
+    # ---- Compiler angle units ------------------------------------------------
+    var deg_factor = Float64(1.0)
+    var compiler_t = xml_clean.find("<compiler")
+    if compiler_t != -1:
+        var compiler_end = xml_clean.find(">", compiler_t)
+        if compiler_end != -1:
+            var ctag = String(xml_clean[byte=compiler_t : compiler_end + 1])
+            var angle_val = _extract_attr(ctag, "angle")
+            if _trim(angle_val) == "degree":
+                deg_factor = Float64(3.141592653589793) / Float64(180.0)
+
+    # ---- Default geom rgba from <default> section ----------------------------
+    var def_rgba_r = Float64(-1.0)
+    var def_rgba_g = Float64(-1.0)
+    var def_rgba_b = Float64(-1.0)
+    var def_rgba_a = Float64(-1.0)
+    var def_sec = _extract_section(xml_clean, "default")
+    if len(def_sec) > 0:
+        var gpos = def_sec.find("<geom")
+        if gpos != -1:
+            var tag_end = def_sec.find(">", gpos)
+            if tag_end != -1:
+                var gtag = String(def_sec[byte=gpos : tag_end + 1])
+                var rgba_s = _extract_attr(gtag, "rgba")
+                if len(rgba_s) > 0:
+                    var cv = _rcd_parse_rgba4(rgba_s)
+                    def_rgba_r = cv[0]
+                    def_rgba_g = cv[1]
+                    def_rgba_b = cv[2]
+                    def_rgba_a = cv[3]
+
+    # ---- Parse <asset> section: textures and materials -----------------------
+    var asset_sec = _extract_section(xml_clean, "asset")
+
+    # Textures
+    var tex_pos = 0
+    var tex_count = 0
+    while tex_count < 8:
+        var t = asset_sec.find("<texture", tex_pos)
+        if t == -1:
+            break
+        var tag_end = asset_sec.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(asset_sec[byte=t : tag_end + 1])
+        data.tex_type[tex_count] = _rcd_tex_type_from_str(_extract_attr(tag, "type"))
+        data.tex_builtin[tex_count] = _rcd_tex_builtin_from_str(_extract_attr(tag, "builtin"))
+        var rgb1_s = _extract_attr(tag, "rgb1")
+        if len(rgb1_s) > 0:
+            var c = _rcd_parse_rgb3(rgb1_s)
+            data.tex_rgb1_r[tex_count] = c[0]
+            data.tex_rgb1_g[tex_count] = c[1]
+            data.tex_rgb1_b[tex_count] = c[2]
+        var rgb2_s = _extract_attr(tag, "rgb2")
+        if len(rgb2_s) > 0:
+            var c = _rcd_parse_rgb3(rgb2_s)
+            data.tex_rgb2_r[tex_count] = c[0]
+            data.tex_rgb2_g[tex_count] = c[1]
+            data.tex_rgb2_b[tex_count] = c[2]
+        tex_count += 1
+        tex_pos = tag_end + 1
+    data.ntex = tex_count
+
+    # Materials
+    var mat_pos = 0
+    var mat_count = 0
+    while mat_count < 8:
+        var t = asset_sec.find("<material", mat_pos)
+        if t == -1:
+            break
+        var tag_end = asset_sec.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(asset_sec[byte=t : tag_end + 1])
+        var rgba_s = _extract_attr(tag, "rgba")
+        if len(rgba_s) > 0:
+            var c = _rcd_parse_rgba4(rgba_s)
+            data.mat_rgba_r[mat_count] = c[0]
+            data.mat_rgba_g[mat_count] = c[1]
+            data.mat_rgba_b[mat_count] = c[2]
+            data.mat_rgba_a[mat_count] = c[3]
+        var shin_s = _extract_attr(tag, "shininess")
+        if len(shin_s) > 0:
+            data.mat_shininess[mat_count] = _parse_float(shin_s)
+        var spec_s = _extract_attr(tag, "specular")
+        if len(spec_s) > 0:
+            data.mat_specular[mat_count] = _parse_float(spec_s)
+        var refl_s = _extract_attr(tag, "reflectance")
+        if len(refl_s) > 0:
+            data.mat_reflectance[mat_count] = _parse_float(refl_s)
+        mat_count += 1
+        mat_pos = tag_end + 1
+    data.nmat = mat_count
+
+    # ---- DFS scan <worldbody>: geoms, lights, cameras, sites -----------------
+    var worldbody = _extract_section(xml_clean, "worldbody")
+    var body_id_stack = InlineArray[Int, 65](fill=0)
+    var depth = 0
+    var body_count = 0
+    var geom_count = 0
+    var light_count = 0
+    var cam_count = 0
+    var site_count = 0
+    var scan_pos = 0
+    var wlen = len(worldbody)
+
+    while scan_pos < wlen:
+        var next_body_open = worldbody.find("<body", scan_pos)
+        var next_body_close = worldbody.find("</body>", scan_pos)
+        var next_geom = worldbody.find("<geom", scan_pos)
+        var next_light = worldbody.find("<light", scan_pos)
+        var next_cam = worldbody.find("<camera", scan_pos)
+        var next_site = worldbody.find("<site", scan_pos)
+        if (next_body_open == -1 and next_body_close == -1 and next_geom == -1
+            and next_light == -1 and next_cam == -1 and next_site == -1):
+            break
+        var earliest = _rcd_min_valid(
+            _rcd_min_valid(
+                _rcd_min_valid(next_body_open, next_body_close),
+                _rcd_min_valid(next_geom, next_light),
+            ),
+            _rcd_min_valid(next_cam, next_site),
+        )
+        if earliest == next_body_open:
+            depth += 1
+            body_count += 1
+            body_id_stack[depth] = body_count
+            var tag_end = worldbody.find(">", next_body_open)
+            scan_pos = tag_end + 1 if tag_end != -1 else wlen
+        elif earliest == next_body_close:
+            if depth > 0:
+                depth -= 1
+            scan_pos = next_body_close + 7
+        elif earliest == next_geom:
+            var current_body = body_id_stack[depth]
+            var tag = _extract_opening_tag(worldbody, next_geom)
+            if geom_count < 64:
+                data.geom_body_id[geom_count] = current_body
+                data.geom_type[geom_count] = _rcd_geom_type_from_str(_extract_attr(tag, "type"))
+                var fromto_s = _extract_attr(tag, "fromto")
+                if len(fromto_s) > 0:
+                    var ft = _fromto_to_pos_quat(fromto_s)
+                    data.geom_pos_x[geom_count] = ft[0]
+                    data.geom_pos_y[geom_count] = ft[1]
+                    data.geom_pos_z[geom_count] = ft[2]
+                    data.geom_quat_x[geom_count] = ft[3]
+                    data.geom_quat_y[geom_count] = ft[4]
+                    data.geom_quat_z[geom_count] = ft[5]
+                    data.geom_quat_w[geom_count] = ft[6]
+                    data.geom_half_length[geom_count] = ft[7]
+                else:
+                    var pos_s = _extract_attr(tag, "pos")
+                    if len(pos_s) > 0:
+                        var pv = _parse_vec3(pos_s)
+                        data.geom_pos_x[geom_count] = pv[0]
+                        data.geom_pos_y[geom_count] = pv[1]
+                        data.geom_pos_z[geom_count] = pv[2]
+                    var quat_s = _extract_attr(tag, "quat")
+                    if len(quat_s) > 0:
+                        var qv = _parse_quat(quat_s)
+                        data.geom_quat_x[geom_count] = qv[0]
+                        data.geom_quat_y[geom_count] = qv[1]
+                        data.geom_quat_z[geom_count] = qv[2]
+                        data.geom_quat_w[geom_count] = qv[3]
+                    else:
+                        var aa_s = _extract_attr(tag, "axisangle")
+                        if len(aa_s) > 0:
+                            var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
+                            data.geom_quat_x[geom_count] = aq[0]
+                            data.geom_quat_y[geom_count] = aq[1]
+                            data.geom_quat_z[geom_count] = aq[2]
+                            data.geom_quat_w[geom_count] = aq[3]
+                var size_s = _extract_attr(tag, "size")
+                if len(size_s) > 0:
+                    var size_parts = List[String]()
+                    _split_spaces(size_s, size_parts)
+                    var s0 = Float64(0)
+                    var s1 = Float64(0)
+                    var s2 = Float64(0)
+                    if len(size_parts) >= 1:
+                        s0 = _parse_float(size_parts[0])
+                    if len(size_parts) >= 2:
+                        s1 = _parse_float(size_parts[1])
+                    if len(size_parts) >= 3:
+                        s2 = _parse_float(size_parts[2])
+                    var gt = data.geom_type[geom_count]
+                    if gt == 1:  # SPHERE
+                        data.geom_radius[geom_count] = s0
+                        data.geom_half_x[geom_count] = s0
+                        data.geom_half_y[geom_count] = s0
+                        data.geom_half_z[geom_count] = s0
+                    elif gt == 2:  # CAPSULE
+                        data.geom_radius[geom_count] = s0
+                        if len(size_parts) >= 2:
+                            data.geom_half_length[geom_count] = s1
+                    elif gt == 3:  # BOX
+                        data.geom_half_x[geom_count] = s0
+                        data.geom_half_y[geom_count] = s1
+                        data.geom_half_z[geom_count] = s2
+                        data.geom_radius[geom_count] = _sqrt_f64(s0 * s0 + s1 * s1 + s2 * s2)
+                    elif gt == 4:  # CYLINDER
+                        data.geom_radius[geom_count] = s0
+                        data.geom_half_length[geom_count] = s1
+                    elif gt == 0:  # PLANE
+                        data.geom_half_x[geom_count] = s0
+                        data.geom_half_y[geom_count] = s1
+                    else:
+                        data.geom_radius[geom_count] = s0
+                var rgba_s = _extract_attr(tag, "rgba")
+                if len(rgba_s) > 0:
+                    var cv = _rcd_parse_rgba4(rgba_s)
+                    data.geom_rgba_r[geom_count] = cv[0]
+                    data.geom_rgba_g[geom_count] = cv[1]
+                    data.geom_rgba_b[geom_count] = cv[2]
+                    data.geom_rgba_a[geom_count] = cv[3]
+                elif def_rgba_r >= Float64(0):
+                    data.geom_rgba_r[geom_count] = def_rgba_r
+                    data.geom_rgba_g[geom_count] = def_rgba_g
+                    data.geom_rgba_b[geom_count] = def_rgba_b
+                    data.geom_rgba_a[geom_count] = def_rgba_a
+            geom_count += 1
+            var tag_end = worldbody.find(">", next_geom)
+            scan_pos = tag_end + 1 if tag_end != -1 else wlen
+        elif earliest == next_light:
+            var tag = _extract_opening_tag(worldbody, next_light)
+            if light_count < 8:
+                var dir_s = _extract_attr(tag, "dir")
+                if len(dir_s) > 0:
+                    var dv = _parse_vec3(dir_s)
+                    data.light_dir_x[light_count] = dv[0]
+                    data.light_dir_y[light_count] = dv[1]
+                    data.light_dir_z[light_count] = dv[2]
+                var diff_s = _extract_attr(tag, "diffuse")
+                if len(diff_s) > 0:
+                    var c = _rcd_parse_rgb3(diff_s)
+                    data.light_diffuse_r[light_count] = c[0]
+                    data.light_diffuse_g[light_count] = c[1]
+                    data.light_diffuse_b[light_count] = c[2]
+                var spec_s = _extract_attr(tag, "specular")
+                if len(spec_s) > 0:
+                    var c = _rcd_parse_rgb3(spec_s)
+                    data.light_specular_r[light_count] = c[0]
+                    data.light_specular_g[light_count] = c[1]
+                    data.light_specular_b[light_count] = c[2]
+                var amb_s = _extract_attr(tag, "ambient")
+                if len(amb_s) > 0:
+                    var c = _rcd_parse_rgb3(amb_s)
+                    data.light_ambient_r[light_count] = c[0]
+                    data.light_ambient_g[light_count] = c[1]
+                    data.light_ambient_b[light_count] = c[2]
+                data.light_directional[light_count] = _extract_attr(tag, "directional") == "true"
+                if _extract_attr(tag, "castshadow") == "false":
+                    data.light_castshadow[light_count] = False
+                var exp_s = _extract_attr(tag, "exponent")
+                if len(exp_s) > 0:
+                    data.light_exponent[light_count] = _parse_float(exp_s)
+            light_count += 1
+            var tag_end = worldbody.find(">", next_light)
+            scan_pos = tag_end + 1 if tag_end != -1 else wlen
+        elif earliest == next_cam:
+            var current_body = body_id_stack[depth]
+            var tag = _extract_opening_tag(worldbody, next_cam)
+            if cam_count < 8:
+                data.cam_body_id[cam_count] = current_body
+                var pos_s = _extract_attr(tag, "pos")
+                if len(pos_s) > 0:
+                    var pv = _parse_vec3(pos_s)
+                    data.cam_pos_x[cam_count] = pv[0]
+                    data.cam_pos_y[cam_count] = pv[1]
+                    data.cam_pos_z[cam_count] = pv[2]
+                var quat_s = _extract_attr(tag, "quat")
+                if len(quat_s) > 0:
+                    var qv = _parse_quat(quat_s)
+                    data.cam_quat_x[cam_count] = qv[0]
+                    data.cam_quat_y[cam_count] = qv[1]
+                    data.cam_quat_z[cam_count] = qv[2]
+                    data.cam_quat_w[cam_count] = qv[3]
+                else:
+                    var aa_s = _extract_attr(tag, "axisangle")
+                    if len(aa_s) > 0:
+                        var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
+                        data.cam_quat_x[cam_count] = aq[0]
+                        data.cam_quat_y[cam_count] = aq[1]
+                        data.cam_quat_z[cam_count] = aq[2]
+                        data.cam_quat_w[cam_count] = aq[3]
+                    else:
+                        var xy_s = _extract_attr(tag, "xyaxes")
+                        if len(xy_s) > 0:
+                            var xq = _rcd_xyaxes_to_quat(xy_s)
+                            data.cam_quat_x[cam_count] = xq[0]
+                            data.cam_quat_y[cam_count] = xq[1]
+                            data.cam_quat_z[cam_count] = xq[2]
+                            data.cam_quat_w[cam_count] = xq[3]
+                var fovy_s = _extract_attr(tag, "fovy")
+                if len(fovy_s) > 0:
+                    data.cam_fovy[cam_count] = _parse_float(fovy_s)
+                var mode_s = _extract_attr(tag, "mode")
+                if len(mode_s) > 0:
+                    data.cam_mode[cam_count] = _rcd_cam_mode_from_str(mode_s)
+            cam_count += 1
+            var tag_end = worldbody.find(">", next_cam)
+            scan_pos = tag_end + 1 if tag_end != -1 else wlen
+        elif earliest == next_site:
+            var current_body = body_id_stack[depth]
+            var tag = _extract_opening_tag(worldbody, next_site)
+            if site_count < 16:
+                data.site_body_id[site_count] = current_body
+                var pos_s = _extract_attr(tag, "pos")
+                if len(pos_s) > 0:
+                    var pv = _parse_vec3(pos_s)
+                    data.site_pos_x[site_count] = pv[0]
+                    data.site_pos_y[site_count] = pv[1]
+                    data.site_pos_z[site_count] = pv[2]
+                var size_s = _extract_attr(tag, "size")
+                if len(size_s) > 0:
+                    var sparts = List[String]()
+                    _split_spaces(size_s, sparts)
+                    if len(sparts) >= 1:
+                        data.site_size_0[site_count] = _parse_float(sparts[0])
+            site_count += 1
+            var tag_end = worldbody.find(">", next_site)
+            scan_pos = tag_end + 1 if tag_end != -1 else wlen
+        else:
+            scan_pos = earliest + 1
+
+    data.ngeom = geom_count
+    data.nlight = light_count
+    data.ncam = cam_count
+    data.nsite = site_count
+
+    # ---- Post-pass: resolve geom material="name" references ------------------
+    var geom_scan = 0
+    var geom_idx = 0
+    while geom_scan < wlen and geom_idx < geom_count and geom_idx < 64:
+        var t = worldbody.find("<geom", geom_scan)
+        if t == -1:
+            break
+        var tag_end = worldbody.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(worldbody[byte=t : tag_end + 1])
+        var mat_name = _extract_attr(tag, "material")
+        if len(mat_name) > 0:
+            var mid = _rcd_find_material_index_by_name(asset_sec, mat_name)
+            data.geom_material_id[geom_idx] = mid
+            var has_explicit_rgba = len(_extract_attr(tag, "rgba")) > 0
+            if not has_explicit_rgba and mid >= 0 and mid < mat_count:
+                data.geom_rgba_r[geom_idx] = data.mat_rgba_r[mid]
+                data.geom_rgba_g[geom_idx] = data.mat_rgba_g[mid]
+                data.geom_rgba_b[geom_idx] = data.mat_rgba_b[mid]
+                data.geom_rgba_a[geom_idx] = data.mat_rgba_a[mid]
+        geom_idx += 1
+        geom_scan = tag_end + 1
 
     return data^
 

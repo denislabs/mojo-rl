@@ -94,8 +94,11 @@ from .xml_parser import (
     _xml_nth_joint_range_max,
     _xml_compiler_inertiafromgeom,
     _xml_compiler_settotalmass,
+    _xml_compiler_inertiagrouprange,
     ComptimeActData,
     parse_xml_model_data,
+    ComptimeRenderData,
+    parse_xml_render_data,
 )
 from mojo_rl.physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
@@ -122,6 +125,7 @@ struct ModelDefFromXML[
     cone_type: Int = ConeType.ELLIPTIC,
     max_tendon: Int = 0,
     nsite: Int = 0,
+    neq: Int = 0,
     obs_qpos_skip: Int = 1,
     obs_dim_override: Int = -1,
     timestep: Float64 = 0.01,
@@ -184,6 +188,11 @@ struct ModelDefFromXML[
     # GPU kernels access Self._acd.motor_gears[i] etc. with no String operations.
     comptime _acd: ComptimeActData = parse_xml_model_data(Self.xml)
 
+    # Precomputed rendering data — evaluated once at struct level.
+    # Replaces 11 separate parse_xml_full calls that crashed the comptime
+    # interpreter for large (25+ body) models.
+    comptime _rcd: ComptimeRenderData = parse_xml_render_data(Self.xml)
+
     # =========================================================================
     # CPU: Model setup
     # =========================================================================
@@ -231,6 +240,7 @@ struct ModelDefFromXML[
             Self.nlight,
             Self.ncam,
             Self.NSITE,
+            Self.neq,
         ](Self.xml)
         fmd.setup_model[
             DTYPE,
@@ -240,8 +250,18 @@ struct ModelDefFromXML[
             Self.MAX_TENDON,
             Self.NSITE,  # MODEL_NSITE in setup_model's renamed param
         ](model)
-        comptime if _xml_compiler_inertiafromgeom[Self.xml]():
-            compute_inertia_from_geoms(model)
+        comptime ifg_mode = _xml_compiler_inertiafromgeom[Self.xml]()
+        comptime igr = _xml_compiler_inertiagrouprange[Self.xml]()
+        comptime if ifg_mode == 1:
+            compute_inertia_from_geoms[
+                INERTIA_GROUP_MIN=igr[0], INERTIA_GROUP_MAX=igr[1],
+            ](model)
+        comptime if ifg_mode == 2:
+            compute_inertia_from_geoms[
+                INERTIA_GROUP_MIN=igr[0], INERTIA_GROUP_MAX=igr[1],
+                AUTO_MODE=True,
+            ](model)
+        comptime if ifg_mode > 0:
             comptime settotalmass = _xml_compiler_settotalmass[Self.xml]()
             comptime if settotalmass > 0.0:
                 var total_mass = Scalar[DTYPE](0)
@@ -345,29 +365,14 @@ struct ModelDefFromXML[
         ],
     ):
         """Clamp qpos to joint range limits (limited joints only)."""
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
-        var qpos_adr = 0
         for j in range(Self.NJOINT):
-            var jd = fmd.joints[j]
-            if jd.is_limited:
-                var v = data.qpos[qpos_adr]
-                if v < Scalar[DTYPE](jd.range_min):
-                    data.qpos[qpos_adr] = Scalar[DTYPE](jd.range_min)
-                elif v > Scalar[DTYPE](jd.range_max):
-                    data.qpos[qpos_adr] = Scalar[DTYPE](jd.range_max)
-            qpos_adr += jd.nq
+            if Self._acd.joint_is_limited[j]:
+                var qp_adr = Self._acd.joint_qpos_adr[j]
+                var v = data.qpos[qp_adr]
+                if v < Scalar[DTYPE](Self._acd.joint_range_min[j]):
+                    data.qpos[qp_adr] = Scalar[DTYPE](Self._acd.joint_range_min[j])
+                elif v > Scalar[DTYPE](Self._acd.joint_range_max[j]):
+                    data.qpos[qp_adr] = Scalar[DTYPE](Self._acd.joint_range_max[j])
 
     @staticmethod
     def apply_actions[
@@ -385,31 +390,15 @@ struct ModelDefFromXML[
         actions: List[Float64],
     ):
         """Apply actuator forces to qfrc (gear * action for each motor)."""
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
         for i in range(Self.nact):
             if i >= len(actions):
                 break
-            var ad = fmd.actuators[i]
-            if ad.joint_id < 0:
+            var dof_adr = Self._acd.motor_dof_adr[i]
+            if dof_adr < 0 or dof_adr >= Self.NV:
                 continue
-            # Compute DOF address for this actuator's joint
-            var dof_adr = 0
-            for k in range(ad.joint_id):
-                dof_adr += fmd.joints[k].nv
-            if dof_adr < Self.NV:
-                data.qfrc[dof_adr] = Scalar[DTYPE](ad.gear * actions[i])
+            data.qfrc[dof_adr] = Scalar[DTYPE](
+                Self._acd.motor_gears[i] * actions[i]
+            )
 
     # =========================================================================
     # GPU: Model init
@@ -1114,79 +1103,43 @@ struct ModelDefFromXML[
     @staticmethod
     def setup_lights() raises -> List[Light]:
         """Return Light objects parsed from <light> elements in <worldbody>."""
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
         var lights = List[Light]()
         for i in range(Self.nlight):
-            var ld = fmd.lights[i]
-            # mode: 1 = directional, 0 = point/spot (render convention)
-            var mode = Int(1) if ld.directional else Int(0)
-            # ambient: scalar average of ambient RGB channels
-            var amb = (ld.ambient_r + ld.ambient_g + ld.ambient_b) / 3.0
-            # specular_intensity: average of specular RGB channels
-            var spec_int = (ld.specular_r + ld.specular_g + ld.specular_b) / 3.0
+            var mode = Int(1) if Self._rcd.light_directional[i] else Int(0)
+            var amb = (Self._rcd.light_ambient_r[i] + Self._rcd.light_ambient_g[i] + Self._rcd.light_ambient_b[i]) / 3.0
+            var spec_int = (Self._rcd.light_specular_r[i] + Self._rcd.light_specular_g[i] + Self._rcd.light_specular_b[i]) / 3.0
             lights.append(
                 Light(
                     mode=mode,
-                    dir_x=ld.dir_x,
-                    dir_y=ld.dir_y,
-                    dir_z=ld.dir_z,
-                    color_r=ld.diffuse_r,
-                    color_g=ld.diffuse_g,
-                    color_b=ld.diffuse_b,
+                    dir_x=Self._rcd.light_dir_x[i],
+                    dir_y=Self._rcd.light_dir_y[i],
+                    dir_z=Self._rcd.light_dir_z[i],
+                    color_r=Self._rcd.light_diffuse_r[i],
+                    color_g=Self._rcd.light_diffuse_g[i],
+                    color_b=Self._rcd.light_diffuse_b[i],
                     ambient=amb,
                     specular_intensity=spec_int,
-                    specular_exponent=ld.exponent,
-                    cast_shadow=ld.castshadow,
+                    specular_exponent=Self._rcd.light_exponent[i],
+                    cast_shadow=Self._rcd.light_castshadow[i],
                 )
             )
         return lights^
 
     @staticmethod
     def setup_cameras(width: Int, height: Int) raises -> List[Camera3D]:
-        """Return Camera3D objects parsed from <camera> elements in <worldbody>.
-        """
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
+        """Return Camera3D objects parsed from <camera> elements in <worldbody>."""
         var cameras = List[Camera3D]()
         for i in range(Self.ncam):
-            var cd = fmd.cameras[i]
-            var eye = _RVec3(cd.pos_x, cd.pos_y, cd.pos_z)
+            var eye = _RVec3(Self._rcd.cam_pos_x[i], Self._rcd.cam_pos_y[i], Self._rcd.cam_pos_z[i])
             var target: _RVec3
-            if cd.mode == 0 or cd.mode == 1 or cd.mode == 2:
-                # CAM_MODE_FIXED=0, CAM_MODE_TRACK=1, CAM_MODE_TRACKCOM=2:
-                # Set target at world origin (x=pos_x, y=0, z=0) so that the
-                # tracking offset preserved by the renderer is (0, pos_y, pos_z),
-                # matching the TrackCamera convention.
-                target = _RVec3(cd.pos_x, Float64(0), Float64(0))
+            var cam_mode = Self._rcd.cam_mode[i]
+            if cam_mode == 0 or cam_mode == 1 or cam_mode == 2:
+                target = _RVec3(Self._rcd.cam_pos_x[i], Float64(0), Float64(0))
             else:
-                # For other modes derive look direction from quaternion
-                var qx = cd.quat_x
-                var qy = cd.quat_y
-                var qz = cd.quat_z
-                var qw = cd.quat_w
+                var qx = Self._rcd.cam_quat_x[i]
+                var qy = Self._rcd.cam_quat_y[i]
+                var qz = Self._rcd.cam_quat_z[i]
+                var qw = Self._rcd.cam_quat_w[i]
                 var vx = Float64(0)
                 var vy = Float64(0)
                 var vz = Float64(-1)
@@ -1197,16 +1150,16 @@ struct ModelDefFromXML[
                 var look_y = vy + qw * ty + qz * tx - qx * tz
                 var look_z = vz + qw * tz + qx * ty - qy * tx
                 target = _RVec3(
-                    cd.pos_x + look_x,
-                    cd.pos_y + look_y,
-                    cd.pos_z + look_z,
+                    Self._rcd.cam_pos_x[i] + look_x,
+                    Self._rcd.cam_pos_y[i] + look_y,
+                    Self._rcd.cam_pos_z[i] + look_z,
                 )
             cameras.append(
                 Camera3D(
                     eye=eye,
                     target=target,
                     up=_RVec3(0.0, 0.0, 1.0),
-                    fov=cd.fovy,
+                    fov=Self._rcd.cam_fovy[i],
                     aspect=Float64(width) / Float64(height),
                     near=Float64(0.1),
                     far=Float64(100.0),
@@ -1219,63 +1172,29 @@ struct ModelDefFromXML[
     @staticmethod
     def setup_camera_modes() raises -> List[Int]:
         """Return camera modes (CAM_MODE_* constants) for each parsed camera."""
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
-        # Translate XML CAM_MODE_* (flat_model.mojo) to renderer CAM_* constants
-        # (camera_spec.mojo): CAM_TRACKCOM=0 for tracking modes, CAM_FIXED=1 for fixed.
-        # XML: CAM_MODE_FIXED=0, CAM_MODE_TRACK=1, CAM_MODE_TRACKCOM=2
-        # Renderer: CAM_TRACKCOM=0, CAM_FIXED=1
         var modes = List[Int]()
         for i in range(Self.ncam):
-            var xml_mode = fmd.cameras[i].mode
+            var xml_mode = Self._rcd.cam_mode[i]
             if xml_mode == 0:
-                modes.append(1)  # CAM_MODE_FIXED → renderer CAM_FIXED=1
+                modes.append(1)  # CAM_MODE_FIXED -> renderer CAM_FIXED=1
             else:
-                modes.append(
-                    0
-                )  # TRACK / TRACKCOM / TARGET* → renderer CAM_TRACKCOM=0
+                modes.append(0)  # TRACK / TRACKCOM / TARGET* -> renderer CAM_TRACKCOM=0
         return modes^
 
     @staticmethod
     def get_skybox_colors() -> List[Float64]:
         """Return [top_r, top_g, top_b, bottom_r, bottom_g, bottom_b] from the
         first skybox/gradient texture, or an empty list if none exists."""
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
-        from .flat_model import TEX_SKYBOX, TEX_BUILTIN_GRADIENT, TEX_2D
-
+        # TEX_SKYBOX=1, TEX_BUILTIN_GRADIENT=1
         for i in range(Self.ntex):
-            var td = fmd.textures[i]
-            if td.tex_type == TEX_SKYBOX or td.builtin == TEX_BUILTIN_GRADIENT:
+            if Self._rcd.tex_type[i] == 1 or Self._rcd.tex_builtin[i] == 1:
                 var result = List[Float64]()
-                result.append(td.rgb1_r)
-                result.append(td.rgb1_g)
-                result.append(td.rgb1_b)
-                result.append(td.rgb2_r)
-                result.append(td.rgb2_g)
-                result.append(td.rgb2_b)
+                result.append(Self._rcd.tex_rgb1_r[i])
+                result.append(Self._rcd.tex_rgb1_g[i])
+                result.append(Self._rcd.tex_rgb1_b[i])
+                result.append(Self._rcd.tex_rgb2_r[i])
+                result.append(Self._rcd.tex_rgb2_g[i])
+                result.append(Self._rcd.tex_rgb2_b[i])
                 return result^
         return List[Float64]()
 
@@ -1283,28 +1202,13 @@ struct ModelDefFromXML[
     def get_checker_colors() -> List[Float64]:
         """Return [r, g, b] of the checker texture's secondary (light square) colour,
         or an empty list if no checker texture is found."""
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
-        from .flat_model import TEX_BUILTIN_CHECKER
-
+        # TEX_BUILTIN_CHECKER=2
         for i in range(Self.ntex):
-            var td = fmd.textures[i]
-            if td.builtin == TEX_BUILTIN_CHECKER:
+            if Self._rcd.tex_builtin[i] == 2:
                 var result = List[Float64]()
-                result.append(td.rgb2_r)
-                result.append(td.rgb2_g)
-                result.append(td.rgb2_b)
+                result.append(Self._rcd.tex_rgb2_r[i])
+                result.append(Self._rcd.tex_rgb2_g[i])
+                result.append(Self._rcd.tex_rgb2_b[i])
                 return result^
         return List[Float64]()
 
@@ -1316,34 +1220,16 @@ struct ModelDefFromXML[
         visual_radius_scale: Float64,
     ) raises:
         """Draw plane geoms (body_id=0) as ground grids; fallback if none."""
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
-        from .flat_model import _GEOM_PLANE
-
+        # GEOM_PLANE=0
         var has_plane = False
         var max_body_radius = Float64(0.0)
         for j in range(Self.NGEOM):
-            var gd = fmd.geoms[j]
-            if gd.body_id > 0 and gd.radius > max_body_radius:
-                max_body_radius = gd.radius
+            if Self._rcd.geom_body_id[j] > 0 and Self._rcd.geom_radius[j] > max_body_radius:
+                max_body_radius = Self._rcd.geom_radius[j]
         for i in range(Self.NGEOM):
-            var gd = fmd.geoms[i]
-            if gd.geom_type == _GEOM_PLANE:
+            if Self._rcd.geom_type[i] == 0:  # PLANE
                 has_plane = True
-                var ground_offset = gd.pos_z - max_body_radius * (
-                    visual_radius_scale - 1.0
-                )
+                var ground_offset = Self._rcd.geom_pos_z[i] - max_body_radius * (visual_radius_scale - 1.0)
                 var grid_cx = torso_x if follow else Float64(0.0)
                 renderer.draw_ground_grid(grid_cx, height=ground_offset)
         if not has_plane:
@@ -1358,127 +1244,70 @@ struct ModelDefFromXML[
         quaternions: List[_RQuat],
         visual_radius_scale: Float64,
     ) raises:
-        """Draw body-attached geoms (body_id > 0) using parsed geometry + colour.
-        """
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
-        from .flat_model import (
-            _GEOM_CAPSULE,
-            _GEOM_SPHERE,
-            _GEOM_BOX,
-            _GEOM_CYLINDER,
-        )
-
+        """Draw body-attached geoms (body_id > 0) using parsed geometry + colour."""
+        # SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4
         for i in range(Self.NGEOM):
-            var gd = fmd.geoms[i]
-            if gd.body_id <= 0:
-                continue  # skip worldbody / static geoms
-            if gd.body_id >= len(positions):
+            var bid = Self._rcd.geom_body_id[i]
+            if bid <= 0:
                 continue
-            var body_pos = positions[gd.body_id]
-            var body_quat = quaternions[gd.body_id]
-
-            # World-space geom position: body_pos + body_quat.rotate(local_pos)
+            if bid >= len(positions):
+                continue
+            var body_pos = positions[bid]
+            var body_quat = quaternions[bid]
+            var gx = Self._rcd.geom_pos_x[i]
+            var gy = Self._rcd.geom_pos_y[i]
+            var gz = Self._rcd.geom_pos_z[i]
             var geom_pos: _RVec3
-            if gd.pos_x == 0.0 and gd.pos_y == 0.0 and gd.pos_z == 0.0:
+            if gx == 0.0 and gy == 0.0 and gz == 0.0:
                 geom_pos = body_pos
             else:
-                var local = _RVec3(gd.pos_x, gd.pos_y, gd.pos_z)
-                geom_pos = body_pos + body_quat.rotate_vec(local)
-
-            # World-space geom orientation: body_quat * local_quat
+                geom_pos = body_pos + body_quat.rotate_vec(_RVec3(gx, gy, gz))
+            var gqx = Self._rcd.geom_quat_x[i]
+            var gqy = Self._rcd.geom_quat_y[i]
+            var gqz = Self._rcd.geom_quat_z[i]
+            var gqw = Self._rcd.geom_quat_w[i]
             var geom_quat: _RQuat
-            if (
-                gd.quat_x == 0.0
-                and gd.quat_y == 0.0
-                and gd.quat_z == 0.0
-                and gd.quat_w == 1.0
-            ):
+            if gqx == 0.0 and gqy == 0.0 and gqz == 0.0 and gqw == 1.0:
                 geom_quat = body_quat
             else:
-                var local_q = _RQuat(gd.quat_w, gd.quat_x, gd.quat_y, gd.quat_z)
-                geom_quat = body_quat * local_q
-
-            # Resolve colour: material rgba > geom rgba > grey default
-            var r = Float32(gd.rgba_r)
-            var g = Float32(gd.rgba_g)
-            var b = Float32(gd.rgba_b)
-            var a = Float32(gd.rgba_a)
-            var mid = gd.material_id
+                geom_quat = body_quat * _RQuat(gqw, gqx, gqy, gqz)
+            var r = Float32(Self._rcd.geom_rgba_r[i])
+            var g = Float32(Self._rcd.geom_rgba_g[i])
+            var b = Float32(Self._rcd.geom_rgba_b[i])
+            var a = Float32(Self._rcd.geom_rgba_a[i])
+            var mid = Self._rcd.geom_material_id[i]
             if mid >= 0 and mid < Self.nmat:
-                var md = fmd.materials[mid]
-                r = Float32(md.rgba_r)
-                g = Float32(md.rgba_g)
-                b = Float32(md.rgba_b)
-                a = Float32(md.rgba_a)
-            var geom_color = Color(
-                UInt8(r * 255), UInt8(g * 255), UInt8(b * 255), UInt8(a * 255)
-            )
-
-            # Material shading properties (from material if referenced, else defaults)
+                r = Float32(Self._rcd.mat_rgba_r[mid])
+                g = Float32(Self._rcd.mat_rgba_g[mid])
+                b = Float32(Self._rcd.mat_rgba_b[mid])
+                a = Float32(Self._rcd.mat_rgba_a[mid])
+            var geom_color = Color(UInt8(r * 255), UInt8(g * 255), UInt8(b * 255), UInt8(a * 255))
             var shininess = Float32(0.5)
             var specular = Float32(0.5)
             var reflectance = Float32(0.0)
             if mid >= 0 and mid < Self.nmat:
-                var md = fmd.materials[mid]
-                shininess = Float32(md.shininess)
-                specular = Float32(md.specular)
-                reflectance = Float32(md.reflectance)
-
-            if gd.geom_type == _GEOM_CAPSULE:
-                renderer.draw_capsule(
-                    center=geom_pos,
-                    orientation=geom_quat,
-                    radius=gd.radius * visual_radius_scale,
-                    half_height=gd.half_length,
-                    axis=2,
-                    color=geom_color,
-                    shininess=shininess,
-                    specular=specular,
-                    reflectance=reflectance,
-                )
-            elif gd.geom_type == _GEOM_SPHERE:
-                renderer.draw_sphere(
-                    center=geom_pos,
-                    radius=gd.radius * visual_radius_scale,
-                    color=geom_color,
-                    shininess=shininess,
-                    specular=specular,
-                    reflectance=reflectance,
-                )
-            elif gd.geom_type == _GEOM_BOX:
-                renderer.draw_box(
-                    center=geom_pos,
-                    orientation=geom_quat,
-                    half_extents=_RVec3(gd.half_x, gd.half_y, gd.half_z),
-                    color=geom_color,
-                    shininess=shininess,
-                    specular=specular,
-                    reflectance=reflectance,
-                )
-            elif gd.geom_type == _GEOM_CYLINDER:
-                renderer.draw_capsule(
-                    center=geom_pos,
-                    orientation=geom_quat,
-                    radius=gd.radius * visual_radius_scale,
-                    half_height=gd.half_length,
-                    axis=2,
-                    color=geom_color,
-                    shininess=shininess,
-                    specular=specular,
-                    reflectance=reflectance,
-                )
+                shininess = Float32(Self._rcd.mat_shininess[mid])
+                specular = Float32(Self._rcd.mat_specular[mid])
+                reflectance = Float32(Self._rcd.mat_reflectance[mid])
+            var gt = Self._rcd.geom_type[i]
+            if gt == 2:  # CAPSULE
+                renderer.draw_capsule(center=geom_pos, orientation=geom_quat,
+                    radius=Self._rcd.geom_radius[i] * visual_radius_scale,
+                    half_height=Self._rcd.geom_half_length[i], axis=2,
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+            elif gt == 1:  # SPHERE
+                renderer.draw_sphere(center=geom_pos,
+                    radius=Self._rcd.geom_radius[i] * visual_radius_scale,
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+            elif gt == 3:  # BOX
+                renderer.draw_box(center=geom_pos, orientation=geom_quat,
+                    half_extents=_RVec3(Self._rcd.geom_half_x[i], Self._rcd.geom_half_y[i], Self._rcd.geom_half_z[i]),
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+            elif gt == 4:  # CYLINDER
+                renderer.draw_capsule(center=geom_pos, orientation=geom_quat,
+                    radius=Self._rcd.geom_radius[i] * visual_radius_scale,
+                    half_height=Self._rcd.geom_half_length[i], axis=2,
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
 
     @staticmethod
     def render_sites(
@@ -1486,43 +1315,22 @@ struct ModelDefFromXML[
         positions: List[_RVec3],
         quaternions: List[_RQuat],
     ) raises:
-        """Draw all sites as small bright-green spheres (visual markers).
-
-        Parses site positions from the embedded XML and computes world-space
-        position as body_pos + body_quat.rotate(local_pos).
-        Uses radius=0.01m and bright green color to distinguish from geoms.
-        """
-        var fmd = parse_xml_full[
-            Self.NBODY,
-            Self.NJOINT,
-            Self.NQ,
-            Self.NV,
-            Self.NGEOM,
-            Self.nact,
-            Self.ntex,
-            Self.nmat,
-            Self.nlight,
-            Self.ncam,
-            Self.NSITE,
-        ](Self.xml)
-
+        """Draw all sites as small bright-green spheres (visual markers)."""
         for i in range(Self.NSITE):
-            var sd = fmd.sites[i]
-            if sd.body_id <= 0 or sd.body_id >= len(positions):
+            var sbid = Self._rcd.site_body_id[i]
+            if sbid <= 0 or sbid >= len(positions):
                 continue
-
-            var body_pos = positions[sd.body_id]
-            var body_quat = quaternions[sd.body_id]
+            var body_pos = positions[sbid]
+            var body_quat = quaternions[sbid]
+            var sx = Self._rcd.site_pos_x[i]
+            var sy = Self._rcd.site_pos_y[i]
+            var sz = Self._rcd.site_pos_z[i]
             var site_world_pos: _RVec3
-
-            if sd.pos_x == 0.0 and sd.pos_y == 0.0 and sd.pos_z == 0.0:
+            if sx == 0.0 and sy == 0.0 and sz == 0.0:
                 site_world_pos = body_pos
             else:
-                var local_pos = _RVec3(sd.pos_x, sd.pos_y, sd.pos_z)
-                site_world_pos = body_pos + body_quat.rotate_vec(local_pos)
-
-            # Use the site's size_0 as radius (XML default: 0.005), minimum 0.01
-            var radius = sd.size_0 if sd.size_0 > 0.0 else 0.005
+                site_world_pos = body_pos + body_quat.rotate_vec(_RVec3(sx, sy, sz))
+            var radius = Self._rcd.site_size_0[i] if Self._rcd.site_size_0[i] > 0.0 else 0.005
             renderer.draw_sphere(
                 center=site_world_pos,
                 radius=radius,

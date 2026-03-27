@@ -29,6 +29,7 @@ from .xml_parser import (
     _parse_axisangle_to_quat,
     _fromto_to_pos_quat,
     _find_joint_index_by_name,
+    _find_body_index_by_name,
     _sqrt_f64,
 )
 from .flat_model import (
@@ -42,7 +43,11 @@ from .flat_model import (
     CameraData,
     SiteData,
     DefaultsData,
+    EqualityData,
+    NamedDefaultsList,
     FlatModelDef,
+    _EQ_CONNECT,
+    _EQ_WELD,
     _GEOM_PLANE,
     _GEOM_SPHERE,
     _GEOM_CAPSULE,
@@ -134,12 +139,9 @@ def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64]:
 # =============================================================================
 
 
-def _parse_defaults(xml: String) -> DefaultsData:
-    """Extract default joint/geom/motor attrs from the <default> section."""
-    var d = DefaultsData()
-    var defaults_sec = _extract_section(xml, "default")
-    if len(defaults_sec) == 0:
-        return d
+def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> DefaultsData:
+    """Parse joint/geom/motor attrs from a default section, inheriting from parent."""
+    var d = parent  # start with parent defaults
 
     # Find default <joint
     var jpos = defaults_sec.find("<joint")
@@ -272,6 +274,54 @@ def _parse_defaults(xml: String) -> DefaultsData:
             d.motor_ctrl_max = cvec[1]
 
     return d
+
+
+def _parse_defaults(
+    xml: String,
+) -> Tuple[DefaultsData, NamedDefaultsList]:
+    """Extract default joint/geom/motor attrs from the <default> section.
+
+    Returns (top_level_defaults, named_defaults_list).
+    Named defaults inherit from the top-level defaults and override specific attrs.
+    """
+    var defaults_sec = _extract_section(xml, "default")
+    if len(defaults_sec) == 0:
+        return (DefaultsData(), NamedDefaultsList())
+
+    # Parse top-level (unnamed) defaults from the section
+    var top = _parse_one_default_block(defaults_sec, DefaultsData())
+
+    # Parse named <default class="..."> sub-blocks
+    var named = NamedDefaultsList()
+    var scan_pos = 0
+    var dlen = len(defaults_sec)
+    while scan_pos < dlen:
+        var dt = defaults_sec.find("<default", scan_pos)
+        if dt == -1:
+            break
+        var tag = _extract_opening_tag(defaults_sec, dt)
+        var class_name = _extract_attr(tag, "class")
+        if len(class_name) > 0:
+            # Extract the inner content of this named default block
+            var tag_end = defaults_sec.find(">", dt)
+            if tag_end == -1:
+                break
+            # Find matching </default> for this nested block
+            var inner_start = tag_end + 1
+            var close = defaults_sec.find("</default>", inner_start)
+            if close == -1:
+                break
+            var inner = String(defaults_sec[byte=inner_start:close])
+            # Parse this block inheriting from top-level
+            var cls_defaults = _parse_one_default_block(inner, top)
+            named.add(class_name, cls_defaults)
+            scan_pos = close + 10  # len("</default>")
+        else:
+            # Skip unnamed <default (the outer one)
+            var tag_end = defaults_sec.find(">", dt)
+            scan_pos = tag_end + 1 if tag_end != -1 else dlen
+
+    return (top, named)
 
 
 # =============================================================================
@@ -506,10 +556,12 @@ def _fill_assets[
     NLIGHT: Int,
     NCAM: Int,
     NSITE: Int,
+    NEQ: Int = 0,
 ](
     asset_sec: String,
     mut result: FlatModelDef[
-        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
     ],
 ):
     """Parse <asset> section: fill result.textures[] and result.materials[]."""
@@ -645,11 +697,14 @@ def _fill_model[
     NLIGHT: Int,
     NCAM: Int,
     NSITE: Int,
+    NEQ: Int = 0,
 ](
     worldbody: String,
     defaults: DefaultsData,
+    named_defaults: NamedDefaultsList,
     mut result: FlatModelDef[
-        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
     ],
     deg_factor: Float64 = 1.0,
 ):
@@ -768,6 +823,7 @@ def _fill_model[
                 var mass_s = _extract_attr(tag, "mass")
                 if len(mass_s) > 0:
                     b.mass = _parse_float(mass_s)
+                    b.has_explicit_inertia = True
 
                 # diaginertia
                 var di_s = _extract_attr(tag, "diaginertia")
@@ -776,6 +832,12 @@ def _fill_model[
                     b.ixx = dv[0]
                     b.iyy = dv[1]
                     b.izz = dv[2]
+                    b.has_explicit_inertia = True
+
+                # mocap body flag
+                var mocap_s = _extract_attr(tag, "mocap")
+                if mocap_s == "true":
+                    b.is_mocap = True
 
                 result.bodies[body_count] = b
             body_count += 1
@@ -1118,6 +1180,12 @@ def _fill_model[
                 var gd = GeomData()
                 gd.body_id = current_body
 
+                # Resolve effective defaults: class="..." overrides top-level
+                var geom_class = _extract_attr(tag, "class")
+                var eff_defaults = defaults
+                if len(geom_class) > 0:
+                    eff_defaults = named_defaults.find(geom_class)
+
                 # type
                 var type_s = _extract_attr(tag, "type")
                 gd.geom_type = _geom_type_from_str(type_s)
@@ -1212,27 +1280,27 @@ def _fill_model[
                     gd.friction_spin = fvec[1]
                     gd.friction_roll = fvec[2]
                 else:
-                    gd.friction = defaults.geom_friction
-                    gd.friction_spin = defaults.geom_friction_spin
-                    gd.friction_roll = defaults.geom_friction_roll
+                    gd.friction = eff_defaults.geom_friction
+                    gd.friction_spin = eff_defaults.geom_friction_spin
+                    gd.friction_roll = eff_defaults.geom_friction_roll
 
                 # contype / conaffinity / condim
                 var ct_s = _extract_attr(tag, "contype")
                 gd.contype = (
                     _parse_int_str(ct_s) if len(ct_s)
-                    > 0 else defaults.geom_contype
+                    > 0 else eff_defaults.geom_contype
                 )
 
                 var ca_s = _extract_attr(tag, "conaffinity")
                 gd.conaffinity = (
                     _parse_int_str(ca_s) if len(ca_s)
-                    > 0 else defaults.geom_conaffinity
+                    > 0 else eff_defaults.geom_conaffinity
                 )
 
                 var cd_s = _extract_attr(tag, "condim")
                 gd.condim = (
                     _parse_int_str(cd_s) if len(cd_s)
-                    > 0 else defaults.geom_condim
+                    > 0 else eff_defaults.geom_condim
                 )
 
                 # solref / solimp
@@ -1242,8 +1310,8 @@ def _fill_model[
                     gd.solref_0 = sv[0]
                     gd.solref_1 = sv[1]
                 else:
-                    gd.solref_0 = defaults.geom_solref_0
-                    gd.solref_1 = defaults.geom_solref_1
+                    gd.solref_0 = eff_defaults.geom_solref_0
+                    gd.solref_1 = eff_defaults.geom_solref_1
 
                 var si_s = _extract_attr(tag, "solimp")
                 if len(si_s) > 0:
@@ -1261,24 +1329,24 @@ def _fill_model[
                     if len(sip) >= 5:
                         gd.solimp_4 = _parse_float(sip[4])
                 else:
-                    gd.solimp_0 = defaults.geom_solimp_0
-                    gd.solimp_1 = defaults.geom_solimp_1
-                    gd.solimp_2 = defaults.geom_solimp_2
-                    gd.solimp_3 = defaults.geom_solimp_3
-                    gd.solimp_4 = defaults.geom_solimp_4
+                    gd.solimp_0 = eff_defaults.geom_solimp_0
+                    gd.solimp_1 = eff_defaults.geom_solimp_1
+                    gd.solimp_2 = eff_defaults.geom_solimp_2
+                    gd.solimp_3 = eff_defaults.geom_solimp_3
+                    gd.solimp_4 = eff_defaults.geom_solimp_4
 
                 # margin
                 var mg_s = _extract_attr(tag, "margin")
                 gd.margin = (
                     _parse_float(mg_s) if len(mg_s)
-                    > 0 else defaults.geom_margin
+                    > 0 else eff_defaults.geom_margin
                 )
 
                 # density (per-geom overrides default; used when mass is absent)
                 var dens_s = _extract_attr(tag, "density")
                 gd.density = (
                     _parse_float(dens_s) if len(dens_s)
-                    > 0 else defaults.geom_density
+                    > 0 else eff_defaults.geom_density
                 )
 
                 # mass: explicit if provided, else compute from density * volume
@@ -1327,6 +1395,11 @@ def _fill_model[
                     else:
                         gd.mass = Float64(-1)
 
+                # group (visual/collision grouping, 0-5)
+                var grp_s = _extract_attr(tag, "group")
+                if len(grp_s) > 0:
+                    gd.group = _parse_int_str(grp_s)
+
                 # rgba colour: per-geom > default > GeomData fallback (0.7 grey)
                 var rgba_s = _extract_attr(tag, "rgba")
                 if len(rgba_s) > 0:
@@ -1335,11 +1408,11 @@ def _fill_model[
                     gd.rgba_g = cv[1]
                     gd.rgba_b = cv[2]
                     gd.rgba_a = cv[3]
-                elif defaults.geom_rgba_r >= Float64(0):
-                    gd.rgba_r = defaults.geom_rgba_r
-                    gd.rgba_g = defaults.geom_rgba_g
-                    gd.rgba_b = defaults.geom_rgba_b
-                    gd.rgba_a = defaults.geom_rgba_a
+                elif eff_defaults.geom_rgba_r >= Float64(0):
+                    gd.rgba_r = eff_defaults.geom_rgba_r
+                    gd.rgba_g = eff_defaults.geom_rgba_g
+                    gd.rgba_b = eff_defaults.geom_rgba_b
+                    gd.rgba_a = eff_defaults.geom_rgba_a
 
                 # material reference — stored as index into materials[]
                 # (index resolved by caller if needed; stored as -1 when absent)
@@ -1370,12 +1443,14 @@ def _fill_actuators[
     NLIGHT: Int,
     NCAM: Int,
     NSITE: Int,
+    NEQ: Int = 0,
 ](
     actuator_sec: String,
     worldbody: String,
     defaults: DefaultsData,
     mut result: FlatModelDef[
-        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
     ],
 ):
     """Parse <actuator> section and populate result.actuators[]."""
@@ -1434,6 +1509,118 @@ def _fill_actuators[
 
 
 # =============================================================================
+# Phase 5b: Parse <equality> section — weld and connect constraints
+# =============================================================================
+
+
+def _fill_equality[
+    NBODY: Int,
+    NJOINT: Int,
+    NQ: Int,
+    NV: Int,
+    NGEOM: Int,
+    NACT: Int,
+    NTEX: Int,
+    NMAT: Int,
+    NLIGHT: Int,
+    NCAM: Int,
+    NSITE: Int,
+    NEQ: Int,
+](
+    equality_sec: String,
+    worldbody: String,
+    mut result: FlatModelDef[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
+    ],
+):
+    """Parse <equality> section: fill result.equalities[] with weld/connect data."""
+    var eq_count = 0
+    var scan_pos = 0
+    var elen = len(equality_sec)
+
+    while scan_pos < elen and eq_count < NEQ:
+        # Find next <weld or <connect tag
+        var nw = equality_sec.find("<weld", scan_pos)
+        var nc = equality_sec.find("<connect", scan_pos)
+
+        var earliest = _min_valid(nw, nc)
+        if earliest == -1:
+            break
+
+        var tag = _extract_opening_tag(equality_sec, earliest)
+        var ed = EqualityData()
+
+        # Determine type
+        if earliest == nw:
+            ed.eq_type = _EQ_WELD
+        else:
+            ed.eq_type = _EQ_CONNECT
+
+        # body1 / body2 — resolve names to indices
+        var b1_name = _extract_attr(tag, "body1")
+        if len(b1_name) > 0:
+            ed.body_a = _find_body_index_by_name(worldbody, b1_name)
+
+        var b2_name = _extract_attr(tag, "body2")
+        if len(b2_name) > 0:
+            ed.body_b = _find_body_index_by_name(worldbody, b2_name)
+
+        # anchor (connect) — point in body1 frame
+        var anchor_s = _extract_attr(tag, "anchor")
+        if len(anchor_s) > 0:
+            var av = _parse_vec3(anchor_s)
+            ed.anchor_a_x = av[0]
+            ed.anchor_a_y = av[1]
+            ed.anchor_a_z = av[2]
+
+        # relpose (weld) — relative position + quaternion (7 values: x y z qw qx qy qz)
+        var relpose_s = _extract_attr(tag, "relpose")
+        if len(relpose_s) > 0:
+            var parts = List[String]()
+            _split_spaces(relpose_s, parts)
+            if len(parts) >= 3:
+                ed.anchor_a_x = _parse_float(parts[0])
+                ed.anchor_a_y = _parse_float(parts[1])
+                ed.anchor_a_z = _parse_float(parts[2])
+            if len(parts) >= 7:
+                # MuJoCo relpose quat is (w,x,y,z), convert to (x,y,z,w)
+                ed.relpose_x = _parse_float(parts[4])
+                ed.relpose_y = _parse_float(parts[5])
+                ed.relpose_z = _parse_float(parts[6])
+                ed.relpose_w = _parse_float(parts[3])
+
+        # solref
+        var sr_s = _extract_attr(tag, "solref")
+        if len(sr_s) > 0:
+            var sv = _parse_vec3(sr_s)
+            ed.solref_0 = sv[0]
+            ed.solref_1 = sv[1]
+
+        # solimp
+        var si_s = _extract_attr(tag, "solimp")
+        if len(si_s) > 0:
+            var parts = List[String]()
+            _split_spaces(si_s, parts)
+            if len(parts) >= 1:
+                ed.solimp_0 = _parse_float(parts[0])
+            if len(parts) >= 2:
+                ed.solimp_1 = _parse_float(parts[1])
+            if len(parts) >= 3:
+                ed.solimp_2 = _parse_float(parts[2])
+            if len(parts) >= 4:
+                ed.solimp_3 = _parse_float(parts[3])
+            if len(parts) >= 5:
+                ed.solimp_4 = _parse_float(parts[4])
+
+        result.equalities[eq_count] = ed
+        eq_count += 1
+
+        var tag_end = equality_sec.find(">", earliest)
+        scan_pos = tag_end + 1 if tag_end != -1 else elen
+
+
+# =============================================================================
 # Phase 6: Resolve geom material references (post-pass)
 # =============================================================================
 
@@ -1470,11 +1657,13 @@ def _resolve_geom_materials[
     NLIGHT: Int,
     NCAM: Int,
     NSITE: Int,
+    NEQ: Int = 0,
 ](
     worldbody: String,
     asset_sec: String,
     mut result: FlatModelDef[
-        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
     ],
 ):
     """Resolve material="name" on geoms → material index; copy material rgba."""
@@ -1523,8 +1712,9 @@ def parse_xml_full[
     NLIGHT: Int = 0,
     NCAM: Int = 0,
     NSITE: Int = 0,
+    NEQ: Int = 0,
 ](xml: String) -> FlatModelDef[
-    NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+    NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE, NEQ
 ]:
     """Full MJCF parse: returns a populated FlatModelDef.
 
@@ -1541,13 +1731,15 @@ def parse_xml_full[
     All operations are comptime-safe (String.find + slice arithmetic only).
     """
     var result = FlatModelDef[
-        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
     ]()
 
     # Extract top-level sections
     var worldbody = _extract_section(xml, "worldbody")
     var actuator_sec = _extract_section(xml, "actuator")
     var asset_sec = _extract_section(xml, "asset")
+    var equality_sec = _extract_section(xml, "equality")
 
     # Global physics options
     var opt = _parse_option(xml)
@@ -1557,7 +1749,9 @@ def parse_xml_full[
     result.timestep = opt[3]
 
     # Defaults (applied when specific attrs are absent)
-    var defaults = _parse_defaults(xml)
+    var defaults_tuple = _parse_defaults(xml)
+    var defaults = defaults_tuple[0]
+    var named_defaults = defaults_tuple[1]
 
     # Compiler angle units: detect degree mode and compute conversion factor
     var deg_factor = Float64(1.0)
@@ -1572,22 +1766,33 @@ def parse_xml_full[
 
     # Assets: textures and materials
     _fill_assets[
-        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
     ](asset_sec, result)
 
     # Single DFS pass: bodies + joints + geoms + lights + cameras + sites
     _fill_model[
-        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
-    ](worldbody, defaults, result, deg_factor)
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
+    ](worldbody, defaults, named_defaults, result, deg_factor)
 
     # Actuators
     _fill_actuators[
-        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
     ](actuator_sec, worldbody, defaults, result)
+
+    # Equality constraints
+    comptime if NEQ > 0:
+        _fill_equality[
+            NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM,
+            NSITE, NEQ,
+        ](equality_sec, worldbody, result)
 
     # Post-pass: resolve geom material="name" references
     _resolve_geom_materials[
-        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ,
     ](worldbody, asset_sec, result)
 
     return result^

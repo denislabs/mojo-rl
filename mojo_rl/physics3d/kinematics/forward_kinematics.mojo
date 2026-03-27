@@ -145,6 +145,20 @@ def forward_kinematics[
 
     # Process each body in order (skip worldbody at 0)
     for body in range(1, NBODY):
+        # Mocap bodies: use externally-set position directly (not from kinematic tree)
+        if model.body_mocap[body]:
+            data.xpos[body * 3 + 0] = data.mocap_pos[body * 3 + 0]
+            data.xpos[body * 3 + 1] = data.mocap_pos[body * 3 + 1]
+            data.xpos[body * 3 + 2] = data.mocap_pos[body * 3 + 2]
+            data.xquat[body * 4 + 0] = data.mocap_quat[body * 4 + 0]
+            data.xquat[body * 4 + 1] = data.mocap_quat[body * 4 + 1]
+            data.xquat[body * 4 + 2] = data.mocap_quat[body * 4 + 2]
+            data.xquat[body * 4 + 3] = data.mocap_quat[body * 4 + 3]
+            data.xipos[body * 3 + 0] = data.mocap_pos[body * 3 + 0]
+            data.xipos[body * 3 + 1] = data.mocap_pos[body * 3 + 1]
+            data.xipos[body * 3 + 2] = data.mocap_pos[body * 3 + 2]
+            continue
+
         var parent = model.body_parent[body]
 
         # Get parent's world pose (parent is always valid, worldbody=0 has identity)

@@ -1,6 +1,6 @@
 """MJCF XML parser for compile-time model dimension extraction and full parsing."""
 
-from .xml_parser import ParsedModel, parse_xml
+from .xml_parser import ParsedModel, parse_xml, ComptimeRenderData, parse_xml_render_data
 from .flat_model import (
     BodyData,
     JointData,
@@ -12,6 +12,8 @@ from .flat_model import (
     CameraData,
     SiteData,
     DefaultsData,
+    EqualityData,
+    NamedDefaultsList,
     FlatModelDef,
     TEX_SKYBOX,
     TEX_2D,

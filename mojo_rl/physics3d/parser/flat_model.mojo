@@ -44,6 +44,8 @@ struct BodyData(Copyable, ImplicitlyCopyable, Movable):
     var ixx: Float64
     var iyy: Float64
     var izz: Float64
+    var is_mocap: Bool  # True when <body mocap="true">
+    var has_explicit_inertia: Bool  # True when body has mass/diaginertia/inertial
 
     def __init__(
         out self,
@@ -66,6 +68,8 @@ struct BodyData(Copyable, ImplicitlyCopyable, Movable):
         ixx: Float64 = 0.01,
         iyy: Float64 = 0.01,
         izz: Float64 = 0.01,
+        is_mocap: Bool = False,
+        has_explicit_inertia: Bool = False,
     ):
         self.parent = parent
         self.mass = mass
@@ -86,6 +90,8 @@ struct BodyData(Copyable, ImplicitlyCopyable, Movable):
         self.ixx = ixx
         self.iyy = iyy
         self.izz = izz
+        self.is_mocap = is_mocap
+        self.has_explicit_inertia = has_explicit_inertia
 
 
 # =============================================================================
@@ -230,6 +236,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var rgba_b: Float64
     var rgba_a: Float64
     var material_id: Int  # index into FlatModelDef.materials[], -1 if none
+    var group: Int  # geom group (0-5), used for inertiagrouprange filtering
 
     def __init__(
         out self,
@@ -268,6 +275,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         rgba_b: Float64 = 0.7,
         rgba_a: Float64 = 1.0,
         material_id: Int = -1,
+        group: Int = 0,
     ):
         self.body_id = body_id
         self.geom_type = geom_type
@@ -304,6 +312,7 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.rgba_b = rgba_b
         self.rgba_a = rgba_a
         self.material_id = material_id
+        self.group = group
 
 
 # =============================================================================
@@ -647,6 +656,85 @@ struct SiteData(Copyable, ImplicitlyCopyable, Movable):
 
 
 # =============================================================================
+# EqualityData
+# =============================================================================
+
+
+# Equality constraint type constants (matches physics3d/types.mojo)
+comptime _EQ_CONNECT: Int = 0
+comptime _EQ_WELD: Int = 1
+
+
+struct EqualityData(Copyable, ImplicitlyCopyable, Movable):
+    """Flat runtime equality constraint data parsed from <equality> section."""
+
+    var eq_type: Int  # _EQ_CONNECT or _EQ_WELD
+    var body_a: Int  # first body index
+    var body_b: Int  # second body index (0 = worldbody)
+    var anchor_a_x: Float64
+    var anchor_a_y: Float64
+    var anchor_a_z: Float64
+    var anchor_b_x: Float64
+    var anchor_b_y: Float64
+    var anchor_b_z: Float64
+    var relpose_x: Float64  # weld only: relative orientation quaternion
+    var relpose_y: Float64
+    var relpose_z: Float64
+    var relpose_w: Float64
+    var solref_0: Float64
+    var solref_1: Float64
+    var solimp_0: Float64
+    var solimp_1: Float64
+    var solimp_2: Float64
+    var solimp_3: Float64
+    var solimp_4: Float64
+
+    def __init__(
+        out self,
+        eq_type: Int = _EQ_WELD,
+        body_a: Int = 0,
+        body_b: Int = 0,
+        anchor_a_x: Float64 = 0.0,
+        anchor_a_y: Float64 = 0.0,
+        anchor_a_z: Float64 = 0.0,
+        anchor_b_x: Float64 = 0.0,
+        anchor_b_y: Float64 = 0.0,
+        anchor_b_z: Float64 = 0.0,
+        relpose_x: Float64 = 0.0,
+        relpose_y: Float64 = 0.0,
+        relpose_z: Float64 = 0.0,
+        relpose_w: Float64 = 1.0,
+        solref_0: Float64 = 0.02,
+        solref_1: Float64 = 1.0,
+        solimp_0: Float64 = 0.9,
+        solimp_1: Float64 = 0.95,
+        solimp_2: Float64 = 0.001,
+        solimp_3: Float64 = 0.5,
+        solimp_4: Float64 = 2.0,
+    ):
+        self.eq_type = eq_type
+        self.body_a = body_a
+        self.body_b = body_b
+        self.anchor_a_x = anchor_a_x
+        self.anchor_a_y = anchor_a_y
+        self.anchor_a_z = anchor_a_z
+        self.anchor_b_x = anchor_b_x
+        self.anchor_b_y = anchor_b_y
+        self.anchor_b_z = anchor_b_z
+        self.relpose_x = relpose_x
+        self.relpose_y = relpose_y
+        self.relpose_z = relpose_z
+        self.relpose_w = relpose_w
+        self.solref_0 = solref_0
+        self.solref_1 = solref_1
+        self.solimp_0 = solimp_0
+        self.solimp_1 = solimp_1
+        self.solimp_2 = solimp_2
+        self.solimp_3 = solimp_3
+        self.solimp_4 = solimp_4
+
+
+# =============================================================================
 # DefaultsData
 # =============================================================================
 
@@ -766,6 +854,55 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
 
 
 # =============================================================================
+# NamedDefaultsList — named <default class="..."> blocks
+# =============================================================================
+
+# Maximum number of named default classes supported
+comptime MAX_NAMED_DEFAULTS: Int = 16
+
+
+struct NamedDefault(Copyable, ImplicitlyCopyable, Movable):
+    """A named default class: pairs a class name with its DefaultsData."""
+
+    var class_name: String
+    var defaults: DefaultsData
+
+    def __init__(out self):
+        self.class_name = ""
+        self.defaults = DefaultsData()
+
+    def __init__(out self, class_name: String, defaults: DefaultsData):
+        self.class_name = class_name
+        self.defaults = defaults
+
+
+struct NamedDefaultsList(Copyable, ImplicitlyCopyable, Movable):
+    """List of named default classes for <default class="..."> resolution."""
+
+    var items: InlineArray[NamedDefault, MAX_NAMED_DEFAULTS]
+    var count: Int
+
+    def __init__(out self):
+        self.items = InlineArray[NamedDefault, MAX_NAMED_DEFAULTS](
+            fill=NamedDefault()
+        )
+        self.count = 0
+
+    def add(mut self, class_name: String, defaults: DefaultsData):
+        """Add a named default class."""
+        if self.count < MAX_NAMED_DEFAULTS:
+            self.items[self.count] = NamedDefault(class_name, defaults)
+            self.count += 1
+
+    def find(self, class_name: String) -> DefaultsData:
+        """Find defaults for a class name. Returns top-level defaults if not found."""
+        for i in range(self.count):
+            if self.items[i].class_name == class_name:
+                return self.items[i].defaults
+        return DefaultsData()
+
+
+# =============================================================================
 # FlatModelDef
 # =============================================================================
 
@@ -782,6 +919,7 @@ struct FlatModelDef[
     NLIGHT: Int = 0,
     NCAM: Int = 0,
     NSITE: Int = 0,
+    NEQ: Int = 0,
 ](Movable):
     """Model definition using flat InlineArrays — driven entirely from XML.
 
@@ -803,6 +941,7 @@ struct FlatModelDef[
     var lights: InlineArray[LightData, Self.NLIGHT + 1]
     var cameras: InlineArray[CameraData, Self.NCAM + 1]
     var sites: InlineArray[SiteData, Self.NSITE + 1]
+    var equalities: InlineArray[EqualityData, Self.NEQ + 1]
     var gravity_x: Float64
     var gravity_y: Float64
     var gravity_z: Float64
@@ -824,6 +963,9 @@ struct FlatModelDef[
         self.lights = InlineArray[LightData, Self.NLIGHT + 1](fill=LightData())
         self.cameras = InlineArray[CameraData, Self.NCAM + 1](fill=CameraData())
         self.sites = InlineArray[SiteData, Self.NSITE + 1](fill=SiteData())
+        self.equalities = InlineArray[EqualityData, Self.NEQ + 1](
+            fill=EqualityData()
+        )
         self.gravity_x = Float64(0)
         self.gravity_y = Float64(0)
         self.gravity_z = Float64(-9.81)
@@ -909,6 +1051,12 @@ struct FlatModelDef[
                     Scalar[DTYPE](b.iquat_w),
                 ),
             )
+            # Mocap body flag
+            if b.is_mocap:
+                model.body_mocap[body_idx] = True
+            # Explicit inertia flag (for inertiafromgeom="auto")
+            if b.has_explicit_inertia:
+                model.body_has_explicit_inertia[body_idx] = True
 
         # Joints — use Model.add_hinge_joint / add_slide_joint API
         for j in range(Self.NJOINT):
@@ -1047,6 +1195,7 @@ struct FlatModelDef[
             model.geom_solimp[i * 5 + 4] = Scalar[DTYPE](gd.solimp_4)
             model.geom_margin[i] = Scalar[DTYPE](gd.margin)
             model.geom_mass[i] = Scalar[DTYPE](gd.mass)
+            model.geom_group[i] = gd.group
             # Bounding sphere radius for broad-phase collision detection
             if gd.geom_type == _GEOM_PLANE:
                 model.geom_rbound[i] = Scalar[DTYPE](
@@ -1083,3 +1232,61 @@ struct FlatModelDef[
 
         # Actuators: Model has no actuators[] array — stored only in FlatModelDef.
         # Use fmd.actuators[i] directly when constructing Actuators[...] at call site.
+
+        # Equality constraints — populate model.equality_constraints[] via add API
+        for i in range(Self.NEQ):
+            var ed = self.equalities[i]
+            if ed.eq_type == _EQ_CONNECT:
+                _ = model.add_connect_constraint(
+                    ed.body_a,
+                    ed.body_b,
+                    anchor_a=(
+                        Scalar[DTYPE](ed.anchor_a_x),
+                        Scalar[DTYPE](ed.anchor_a_y),
+                        Scalar[DTYPE](ed.anchor_a_z),
+                    ),
+                    anchor_b=(
+                        Scalar[DTYPE](ed.anchor_b_x),
+                        Scalar[DTYPE](ed.anchor_b_y),
+                        Scalar[DTYPE](ed.anchor_b_z),
+                    ),
+                    solref=(
+                        Scalar[DTYPE](ed.solref_0),
+                        Scalar[DTYPE](ed.solref_1),
+                    ),
+                    solimp=(
+                        Scalar[DTYPE](ed.solimp_0),
+                        Scalar[DTYPE](ed.solimp_1),
+                        Scalar[DTYPE](ed.solimp_2),
+                    ),
+                )
+            elif ed.eq_type == _EQ_WELD:
+                _ = model.add_weld_constraint(
+                    ed.body_a,
+                    ed.body_b,
+                    anchor_a=(
+                        Scalar[DTYPE](ed.anchor_a_x),
+                        Scalar[DTYPE](ed.anchor_a_y),
+                        Scalar[DTYPE](ed.anchor_a_z),
+                    ),
+                    anchor_b=(
+                        Scalar[DTYPE](ed.anchor_b_x),
+                        Scalar[DTYPE](ed.anchor_b_y),
+                        Scalar[DTYPE](ed.anchor_b_z),
+                    ),
+                    relpose=(
+                        Scalar[DTYPE](ed.relpose_x),
+                        Scalar[DTYPE](ed.relpose_y),
+                        Scalar[DTYPE](ed.relpose_z),
+                        Scalar[DTYPE](ed.relpose_w),
+                    ),
+                    solref=(
+                        Scalar[DTYPE](ed.solref_0),
+                        Scalar[DTYPE](ed.solref_1),
+                    ),
+                    solimp=(
+                        Scalar[DTYPE](ed.solimp_0),
+                        Scalar[DTYPE](ed.solimp_1),
+                        Scalar[DTYPE](ed.solimp_2),
+                    ),
+                )
