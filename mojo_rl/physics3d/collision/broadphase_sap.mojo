@@ -303,9 +303,8 @@ def detect_contacts_sap[
             var cdim = model.geom_condim[gi]
             if model.geom_condim[gj] > cdim:
                 cdim = model.geom_condim[gj]
-            var cm = model.geom_margin[gi]
-            if model.geom_margin[gj] > cm:
-                cm = model.geom_margin[gj]
+            # MuJoCo 3.5+: margin = sum of both geom margins
+            var cm = model.geom_margin[gi] + model.geom_margin[gj]
 
             var pj_x = wpx[gj]
             var pj_y = wpy[gj]
@@ -331,7 +330,7 @@ def detect_contacts_sap[
                     data.contacts[idx].normal_x = Scalar[DTYPE](0)
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                    data.contacts[idx].dist = dist
+                    data.contacts[idx].dist = dist - cm
                     data.contacts[idx].friction = cf
                     data.contacts[idx].friction_spin = cfs
                     data.contacts[idx].friction_roll = cfr
@@ -365,7 +364,7 @@ def detect_contacts_sap[
                     data.contacts[idx].normal_x = Scalar[DTYPE](0)
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                    data.contacts[idx].dist = dist1
+                    data.contacts[idx].dist = dist1 - cm
                     data.contacts[idx].friction = cf
                     data.contacts[idx].friction_spin = cfs
                     data.contacts[idx].friction_roll = cfr
@@ -390,7 +389,7 @@ def detect_contacts_sap[
                     data.contacts[idx].normal_x = Scalar[DTYPE](0)
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                    data.contacts[idx].dist = dist2
+                    data.contacts[idx].dist = dist2 - cm
                     data.contacts[idx].friction = cf
                     data.contacts[idx].friction_spin = cfs
                     data.contacts[idx].friction_roll = cfr
@@ -424,7 +423,7 @@ def detect_contacts_sap[
                     data.contacts[idx].normal_x = Scalar[DTYPE](0)
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                    data.contacts[idx].dist = dist
+                    data.contacts[idx].dist = dist - cm
                     data.contacts[idx].friction = cf
                     data.contacts[idx].friction_spin = cfs
                     data.contacts[idx].friction_roll = cfr
@@ -527,9 +526,8 @@ def detect_contacts_sap[
             var cdim = model.geom_condim[gi]
             if model.geom_condim[gj] > cdim:
                 cdim = model.geom_condim[gj]
-            var cm = model.geom_margin[gi]
-            if model.geom_margin[gj] > cm:
-                cm = model.geom_margin[gj]
+            # MuJoCo 3.5+: margin = sum of both geom margins
+            var cm = model.geom_margin[gi] + model.geom_margin[gj]
 
             # World positions for gj
             var pj_x = wpx[gj]
@@ -842,7 +840,7 @@ def detect_contacts_sap[
                 data.contacts[idx].normal_x = nx
                 data.contacts[idx].normal_y = ny
                 data.contacts[idx].normal_z = nz
-                data.contacts[idx].dist = dist
+                data.contacts[idx].dist = dist - cm
                 data.contacts[idx].friction = cf
                 data.contacts[idx].friction_spin = cfs
                 data.contacts[idx].friction_roll = cfr
@@ -1019,7 +1017,7 @@ def detect_contacts_sap_gpu[
             var cdim = ci if cj <= ci else cj
             var mgi = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_MARGIN])
-            var cm = mgi if mgj <= mgi else mgj
+            var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
 
             var pj_x = wpx[gj]
             var pj_y = wpy[gj]
@@ -1287,7 +1285,7 @@ def detect_contacts_sap_gpu[
             var cdim = ci if cj_dim <= ci else cj_dim
             var mgi = rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_MARGIN])
             var mgj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_MARGIN])
-            var cm = mgi if mgj <= mgi else mgj
+            var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
 
             var pj_x = wpx[gj]
             var pj_y = wpy[gj]
