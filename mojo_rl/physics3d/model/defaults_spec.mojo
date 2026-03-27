@@ -105,9 +105,9 @@ struct ModelDefaults[
     joint_frictionloss: Float64 = 0.0,
     joint_solref_limit_0: Float64 = 0.02,
     joint_solref_limit_1: Float64 = 1.0,
-    joint_solimp_limit_0: Float64 = 0.0,
-    joint_solimp_limit_1: Float64 = 0.8,
-    joint_solimp_limit_2: Float64 = 0.03,
+    joint_solimp_limit_0: Float64 = 0.9,
+    joint_solimp_limit_1: Float64 = 0.95,
+    joint_solimp_limit_2: Float64 = 0.001,
     joint_solimp_limit_3: Float64 = 0.5,
     joint_solimp_limit_4: Float64 = 2.0,
     # Motor defaults (MuJoCo <default><motor .../>)

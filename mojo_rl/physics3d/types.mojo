@@ -478,9 +478,10 @@ struct Model[
         self.solimp_contact = InlineArray[Scalar[Self.DTYPE], 5](
             uninitialized=True
         )
-        self.solimp_contact[0] = Scalar[Self.DTYPE](0.0)
-        self.solimp_contact[1] = Scalar[Self.DTYPE](0.8)
-        self.solimp_contact[2] = Scalar[Self.DTYPE](0.01)
+        # MuJoCo defaults: [dmin=0.9, dmax=0.95, width=0.001, midpoint=0.5, power=2]
+        self.solimp_contact[0] = Scalar[Self.DTYPE](0.9)
+        self.solimp_contact[1] = Scalar[Self.DTYPE](0.95)
+        self.solimp_contact[2] = Scalar[Self.DTYPE](0.001)
         self.solimp_contact[3] = Scalar[Self.DTYPE](0.5)
         self.solimp_contact[4] = Scalar[Self.DTYPE](2.0)
         self.solref_limit = InlineArray[Scalar[Self.DTYPE], 2](
@@ -491,9 +492,10 @@ struct Model[
         self.solimp_limit = InlineArray[Scalar[Self.DTYPE], 5](
             uninitialized=True
         )
-        self.solimp_limit[0] = Scalar[Self.DTYPE](0.0)
-        self.solimp_limit[1] = Scalar[Self.DTYPE](0.8)
-        self.solimp_limit[2] = Scalar[Self.DTYPE](0.03)
+        # MuJoCo defaults: [dmin=0.9, dmax=0.95, width=0.001, midpoint=0.5, power=2]
+        self.solimp_limit[0] = Scalar[Self.DTYPE](0.9)
+        self.solimp_limit[1] = Scalar[Self.DTYPE](0.95)
+        self.solimp_limit[2] = Scalar[Self.DTYPE](0.001)
         self.solimp_limit[3] = Scalar[Self.DTYPE](0.5)
         self.solimp_limit[4] = Scalar[Self.DTYPE](2.0)
 

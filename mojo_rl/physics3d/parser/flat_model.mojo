@@ -802,9 +802,9 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         geom_condim: Int = 3,
         geom_solref_0: Float64 = 0.02,
         geom_solref_1: Float64 = 1.0,
-        geom_solimp_0: Float64 = 0.0,
-        geom_solimp_1: Float64 = 0.8,
-        geom_solimp_2: Float64 = 0.01,
+        geom_solimp_0: Float64 = 0.9,
+        geom_solimp_1: Float64 = 0.95,
+        geom_solimp_2: Float64 = 0.001,
         geom_solimp_3: Float64 = 0.5,
         geom_solimp_4: Float64 = 2.0,
         geom_margin: Float64 = 0.0,
@@ -1007,6 +1007,18 @@ struct FlatModelDef[
             Scalar[DTYPE](0),
         )
         model.timestep = Scalar[DTYPE](self.timestep)
+
+        # Contact solimp/solref from first geom's parsed values (geom[0] =
+        # floor / first worldbody geom, which inherits the <default><geom> solimp).
+        if Self.NGEOM > 0:
+            var g0 = self.geoms[0]
+            model.solref_contact[0] = Scalar[DTYPE](g0.solref_0)
+            model.solref_contact[1] = Scalar[DTYPE](g0.solref_1)
+            model.solimp_contact[0] = Scalar[DTYPE](g0.solimp_0)
+            model.solimp_contact[1] = Scalar[DTYPE](g0.solimp_1)
+            model.solimp_contact[2] = Scalar[DTYPE](g0.solimp_2)
+            model.solimp_contact[3] = Scalar[DTYPE](g0.solimp_3)
+            model.solimp_contact[4] = Scalar[DTYPE](g0.solimp_4)
 
         # Bodies (index 1..NBODY-1; worldbody=0 is pre-initialised by Model)
         for i in range(Self.NBODY - 1):

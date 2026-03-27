@@ -331,7 +331,7 @@ def detect_contacts_sap[
                     data.contacts[idx].normal_x = Scalar[DTYPE](0)
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                    data.contacts[idx].dist = dist - cm
+                    data.contacts[idx].dist = dist
                     data.contacts[idx].friction = cf
                     data.contacts[idx].friction_spin = cfs
                     data.contacts[idx].friction_roll = cfr
@@ -365,7 +365,7 @@ def detect_contacts_sap[
                     data.contacts[idx].normal_x = Scalar[DTYPE](0)
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                    data.contacts[idx].dist = dist1 - cm
+                    data.contacts[idx].dist = dist1
                     data.contacts[idx].friction = cf
                     data.contacts[idx].friction_spin = cfs
                     data.contacts[idx].friction_roll = cfr
@@ -390,7 +390,7 @@ def detect_contacts_sap[
                     data.contacts[idx].normal_x = Scalar[DTYPE](0)
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                    data.contacts[idx].dist = dist2 - cm
+                    data.contacts[idx].dist = dist2
                     data.contacts[idx].friction = cf
                     data.contacts[idx].friction_spin = cfs
                     data.contacts[idx].friction_roll = cfr
@@ -424,7 +424,7 @@ def detect_contacts_sap[
                     data.contacts[idx].normal_x = Scalar[DTYPE](0)
                     data.contacts[idx].normal_y = Scalar[DTYPE](0)
                     data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                    data.contacts[idx].dist = dist - cm
+                    data.contacts[idx].dist = dist
                     data.contacts[idx].friction = cf
                     data.contacts[idx].friction_spin = cfs
                     data.contacts[idx].friction_roll = cfr
@@ -842,7 +842,7 @@ def detect_contacts_sap[
                 data.contacts[idx].normal_x = nx
                 data.contacts[idx].normal_y = ny
                 data.contacts[idx].normal_z = nz
-                data.contacts[idx].dist = dist - cm
+                data.contacts[idx].dist = dist
                 data.contacts[idx].friction = cf
                 data.contacts[idx].friction_spin = cfs
                 data.contacts[idx].friction_roll = cfr
@@ -1049,7 +1049,7 @@ def detect_contacts_sap_gpu[
                     state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                     state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                     state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                    state[env, c_off + CONTACT_IDX_DIST] = dist - cm
+                    state[env, c_off + CONTACT_IDX_DIST] = dist
                     state[env, c_off + CONTACT_IDX_FRICTION] = cf
                     state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -1084,7 +1084,7 @@ def detect_contacts_sap_gpu[
                     state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                     state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                     state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                    state[env, c_off + CONTACT_IDX_DIST] = dist1 - cm
+                    state[env, c_off + CONTACT_IDX_DIST] = dist1
                     state[env, c_off + CONTACT_IDX_FRICTION] = cf
                     state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -1111,7 +1111,7 @@ def detect_contacts_sap_gpu[
                     state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                     state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                     state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                    state[env, c_off + CONTACT_IDX_DIST] = dist2 - cm
+                    state[env, c_off + CONTACT_IDX_DIST] = dist2
                     state[env, c_off + CONTACT_IDX_FRICTION] = cf
                     state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -1147,7 +1147,7 @@ def detect_contacts_sap_gpu[
                     state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                     state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                     state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                    state[env, c_off + CONTACT_IDX_DIST] = dist - cm
+                    state[env, c_off + CONTACT_IDX_DIST] = dist
                     state[env, c_off + CONTACT_IDX_FRICTION] = cf
                     state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                     state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
@@ -1600,7 +1600,7 @@ def detect_contacts_sap_gpu[
                 state[env, c_off + CONTACT_IDX_NX] = nx
                 state[env, c_off + CONTACT_IDX_NY] = ny
                 state[env, c_off + CONTACT_IDX_NZ] = nz
-                state[env, c_off + CONTACT_IDX_DIST] = dist - cm
+                state[env, c_off + CONTACT_IDX_DIST] = dist
                 state[env, c_off + CONTACT_IDX_FRICTION] = cf
                 state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
                 state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
