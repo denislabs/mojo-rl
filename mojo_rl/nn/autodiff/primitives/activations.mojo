@@ -289,7 +289,7 @@ struct TanhOp[dim: Int](DiffOp):
                 var val_scalar: Scalar[dtype] = rebind[Scalar[dtype]](
                     input[b, i]
                 )
-                var val = Float64(val_scalar)
+                var val = Scalar[dtype](val_scalar)
                 var exp_val = exp(val)
                 var exp_neg_val = exp(-val)
                 var tanh_val = (exp_val - exp_neg_val) / (exp_val + exp_neg_val)
@@ -346,7 +346,7 @@ struct TanhOp[dim: Int](DiffOp):
             return
         var row = idx // Self.dim
         var col = idx % Self.dim
-        var val = rebind[Scalar[DType.float32]](input[row, col])
+        var val = rebind[Scalar[dtype]](input[row, col])
         var exp_val = exp(val)
         var exp_neg_val = exp(-val)
         var tanh_val = (exp_val - exp_neg_val) / (exp_val + exp_neg_val)
@@ -531,11 +531,9 @@ struct SigmoidOp[dim: Int](DiffOp):
         for b in range(BATCH):
             for i in range(Self.dim):
                 var val = rebind[Scalar[dtype]](input[b, i])
-                var val_f64 = Float64(val)
-                var sigmoid_f64 = 1.0 / (1.0 + exp(-val_f64))
-                var s = Scalar[dtype](sigmoid_f64)
-                cache[b, i] = s
-                output[b, i] = s
+                var sigmoid: Scalar[dtype] = 1.0 / (1.0 + exp(-val))
+                cache[b, i] = sigmoid
+                output[b, i] = sigmoid
 
     @staticmethod
     def vjp[
@@ -779,7 +777,7 @@ struct MishOp[dim: Int](DiffOp):
             for i in range(Self.dim):
                 var val = rebind[Scalar[dtype]](input[b, i])
                 cache[b, i] = val
-                var x = Float64(val)
+                var x = Scalar[dtype](val)
                 # Clamp for numerical stability
                 if x > 20.0:
                     output[b, i] = val  # mish(x) ≈ x
@@ -812,8 +810,8 @@ struct MishOp[dim: Int](DiffOp):
     ):
         for b in range(BATCH):
             for i in range(Self.dim):
-                var x = Float64(rebind[Scalar[dtype]](cache[b, i]))
-                var dy = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
+                var x = rebind[Scalar[dtype]](cache[b, i])
+                var dy = rebind[Scalar[dtype]](grad_output[b, i])
                 # Clamp for numerical stability
                 if x > 20.0:
                     grad_input[b, i] = Scalar[dtype](dy)  # dmish ≈ 1
@@ -1004,6 +1002,7 @@ struct MishOp[dim: Int](DiffOp):
             block_dim=(TPB,),
         )
 
+
 struct SwishOp[dim: Int](DiffOp):
     """SwishOp: y = x * sigmoid(x) (a.k.a. SiLU).
 
@@ -1054,7 +1053,7 @@ struct SwishOp[dim: Int](DiffOp):
             for i in range(Self.dim):
                 var val = rebind[Scalar[dtype]](input[b, i])
                 cache[b, i] = val
-                var x = Float64(val)
+                var x = Scalar[dtype](val)
                 var sig = 1.0 / (1.0 + exp(-x))
                 output[b, i] = Scalar[dtype](x * sig)
 
@@ -1080,8 +1079,8 @@ struct SwishOp[dim: Int](DiffOp):
     ):
         for b in range(BATCH):
             for i in range(Self.dim):
-                var x = Float64(rebind[Scalar[dtype]](cache[b, i]))
-                var dy = Float64(rebind[Scalar[dtype]](grad_output[b, i]))
+                var x = rebind[Scalar[dtype]](cache[b, i])
+                var dy = rebind[Scalar[dtype]](grad_output[b, i])
                 var sig = 1.0 / (1.0 + exp(-x))
                 var d_swish = sig * (1.0 + x * (1.0 - sig))
                 grad_input[b, i] = Scalar[dtype](dy * d_swish)
