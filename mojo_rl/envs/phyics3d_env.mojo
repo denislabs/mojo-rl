@@ -267,10 +267,10 @@ struct Phyics3dEnv[
         return Self.MODEL_DEF.ACTION_DIM
 
     def action_low(self) -> Scalar[Self.dtype]:
-        return Scalar[Self.dtype](-1.0)
+        return Scalar[Self.dtype](Self.MODEL_DEF.CTRL_MIN)
 
     def action_high(self) -> Scalar[Self.dtype]:
-        return Scalar[Self.dtype](1.0)
+        return Scalar[Self.dtype](Self.MODEL_DEF.CTRL_MAX)
 
     def step_continuous[
         DTYPE2: DType
@@ -320,7 +320,16 @@ struct Phyics3dEnv[
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
 
         # Apply actions via actuators (config can override for mocap control etc.)
-        var clamped_action = action.clamp()
+        # Clamp to ctrlrange from XML (MuJoCo convention: ctrl is clamped before
+        # multiplying by gear).
+        var clamped_action = action.copy()
+        comptime ctrl_lo = Float64(Self.MODEL_DEF.CTRL_MIN)
+        comptime ctrl_hi = Float64(Self.MODEL_DEF.CTRL_MAX)
+        for i in range(Self.MODEL_DEF.ACTION_DIM):
+            if clamped_action.data[i] > ctrl_hi:
+                clamped_action.data[i] = ctrl_hi
+            elif clamped_action.data[i] < ctrl_lo:
+                clamped_action.data[i] = ctrl_lo
         var action_list = clamped_action.to_list()
         var custom_applied = Self.CONFIG.custom_apply_actions_cpu(
             self.data, action_list

@@ -99,6 +99,7 @@ from .xml_parser import (
     parse_xml_model_data,
     ComptimeRenderData,
     parse_xml_render_data,
+    _xml_default_motor_ctrlrange,
 )
 from mojo_rl.physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
@@ -183,6 +184,9 @@ struct ModelDefFromXML[
     )
     comptime ACTION_DIM: Int = Self.action_dim_override if Self.action_dim_override > 0 else Self.nact
     comptime TIMESTEP: Float64 = Self.timestep
+    comptime _ctrlrange: Tuple[Float64, Float64] = _xml_default_motor_ctrlrange[Self.xml]()
+    comptime CTRL_MIN: Float64 = Self._ctrlrange[0]
+    comptime CTRL_MAX: Float64 = Self._ctrlrange[1]
 
     # Precomputed XML actuator/joint data — evaluated at struct level by the
     # regular Mojo interpreter (not the GPU kernel compiler), so String ops work.
@@ -905,10 +909,10 @@ struct ModelDefFromXML[
 
                 comptime if dof >= 0 and dof < Self.NV:
                     var ctrl = rebind[Scalar[DTYPE]](actions[env, act_i])
-                    if ctrl > Scalar[DTYPE](1.0):
-                        ctrl = Scalar[DTYPE](1.0)
-                    elif ctrl < Scalar[DTYPE](-1.0):
-                        ctrl = Scalar[DTYPE](-1.0)
+                    if ctrl > Scalar[DTYPE](Self.CTRL_MAX):
+                        ctrl = Scalar[DTYPE](Self.CTRL_MAX)
+                    elif ctrl < Scalar[DTYPE](Self.CTRL_MIN):
+                        ctrl = Scalar[DTYPE](Self.CTRL_MIN)
                     states[env, qfrc_base + dof] = Scalar[DTYPE](gear) * ctrl
 
         ctx.enqueue_function[apply_kernel, apply_kernel](

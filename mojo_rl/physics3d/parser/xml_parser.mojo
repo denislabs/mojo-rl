@@ -752,6 +752,30 @@ def _xml_compiler_inertiagrouprange[xml: String]() -> Tuple[Int, Int]:
     return (0, 5)
 
 
+def _xml_default_motor_ctrlrange[xml: String]() -> Tuple[Float64, Float64]:
+    """Return (ctrl_min, ctrl_max) from <default><motor ctrlrange="lo hi"/>.
+    Defaults to (-1.0, 1.0) if absent. Comptime-safe.
+    """
+    var def_sec = _extract_section(xml, "default")
+    if len(def_sec) == 0:
+        return (-1.0, 1.0)
+    var t = def_sec.find("<motor")
+    if t == -1:
+        return (-1.0, 1.0)
+    var tag_end = def_sec.find(">", t)
+    if tag_end == -1:
+        return (-1.0, 1.0)
+    var tag = String(def_sec[byte = t : tag_end + 1])
+    var cr = _extract_attr(tag, "ctrlrange")
+    if len(cr) == 0:
+        return (-1.0, 1.0)
+    var parts = List[String]()
+    _split_spaces(cr, parts)
+    if len(parts) >= 2:
+        return (_parse_float(parts[0]), _parse_float(parts[1]))
+    return (-1.0, 1.0)
+
+
 def parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 

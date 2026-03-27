@@ -201,6 +201,8 @@ trait ModelDefLike:
     comptime OBS_DIM: Int
     comptime ACTION_DIM: Int
     comptime TIMESTEP: Float64
+    comptime CTRL_MIN: Float64
+    comptime CTRL_MAX: Float64
 
     # === Components ===
     # comptime BODIES: BodiesLike
@@ -481,6 +483,8 @@ struct ModelDef[
     # Derived from components (only meaningful when J is not _EmptyJoints)
     comptime OBS_DIM: Int = Self.Joints.OBS_DIM
     comptime ACTION_DIM: Int = Self.Joints.ACTION_DIM
+    comptime CTRL_MIN: Float64 = Self.Defaults.MOTOR_CTRL_MIN
+    comptime CTRL_MAX: Float64 = Self.Defaults.MOTOR_CTRL_MAX
 
     # comptime BODIES: BodiesLike = Self.Bodies
     # comptime JOINTS: JointsLike = Self.Joints

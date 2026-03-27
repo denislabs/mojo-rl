@@ -163,6 +163,8 @@ struct ModelDefaults[
     comptime JOINT_SOLIMP_LIMIT_2: Float64 = Self.joint_solimp_limit_2
     comptime JOINT_SOLIMP_LIMIT_3: Float64 = Self.joint_solimp_limit_3
     comptime JOINT_SOLIMP_LIMIT_4: Float64 = Self.joint_solimp_limit_4
+    comptime MOTOR_CTRL_MIN: Float64 = Self.motor_ctrl_min
+    comptime MOTOR_CTRL_MAX: Float64 = Self.motor_ctrl_max
     comptime IMPRATIO: Float64 = Self.impratio
     comptime GEOM_DENSITY: Float64 = Self.geom_density
     comptime INERTIAFROMGEOM: Bool = Self.inertiafromgeom
