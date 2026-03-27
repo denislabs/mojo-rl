@@ -2,6 +2,10 @@
 
 from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.constants import dtype
+from mojo_rl.deep_agents.core.replay import GPUReplayBuffer
+from mojo_rl.nn.training import GPUNetworkPair
+from mojo_rl.nn.model import Linear
+from mojo_rl.nn.optimizer import Adam
 
 
 def main() raises:
@@ -21,7 +25,7 @@ def main() raises:
         print("Sync done")
 
         print("Creating GPUReplayBuffer...")
-        from mojo_rl.deep_agents.core.replay import GPUReplayBuffer
+
         var replay = GPUReplayBuffer[1000, 17, 6](ctx)
         print("GPUReplayBuffer created")
 
@@ -29,9 +33,7 @@ def main() raises:
         print("Sync done after replay buffer")
 
         print("Creating GPUNetworkPair...")
-        from mojo_rl.nn.training import GPUNetworkPair
-        from mojo_rl.nn.model import Linear
-        from mojo_rl.nn.optimizer import Adam
+
         var pair = GPUNetworkPair[Linear[4, 2], Adam[0.001]](ctx)
         print("GPUNetworkPair created")
 
