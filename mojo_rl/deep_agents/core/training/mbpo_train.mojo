@@ -415,7 +415,7 @@ def run_mbpo_train_gpu[
             )
         except e:
             print("[MBPO-GPU] CRASH at gpu_store, step=" + String(total_steps))
-            raise e
+            raise e^
 
         # Episode tracking (GPU-side)
         var ep_rew_t = LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin](
@@ -459,7 +459,7 @@ def run_mbpo_train_gpu[
             )
         except e:
             print("[MBPO-GPU] CRASH at selective_reset/extract_obs, step=" + String(total_steps))
-            raise e
+            raise e^
 
         # GPU SAC gradient steps
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
