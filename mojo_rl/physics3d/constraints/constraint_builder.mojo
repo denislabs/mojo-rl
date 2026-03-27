@@ -1735,11 +1735,13 @@ def build_constraints[
                 ten_si_width = Scalar[DTYPE](1e-6)
             if ten_si_dmax < Scalar[DTYPE](1e-4):
                 ten_si_dmax = Scalar[DTYPE](1e-4)
+            # MuJoCo: K = 1/(dmax² * timeconst² * dampratio²)
             var ten_K_spring = Scalar[DTYPE](1.0) / (
-                ten_sr_tc * ten_sr_tc * ten_si_dmax * ten_si_dmax
+                ten_si_dmax * ten_si_dmax * ten_sr_tc * ten_sr_tc * ten_sr_dr * ten_sr_dr
             )
+            # MuJoCo: B = 2/(dmax * timeconst)
             var ten_B_damp = (
-                Scalar[DTYPE](2.0) * ten_sr_dr / (ten_sr_tc * ten_si_dmax)
+                Scalar[DTYPE](2.0) / (ten_si_dmax * ten_sr_tc)
             )
 
             # Compute tendon length: Σ coef_i * qpos[joint.qpos_adr]
@@ -1776,9 +1778,8 @@ def build_constraints[
                 ten_vel += ten.coef_3 * data.qvel[j.dof_adr]
                 J_row[j.dof_adr] = ten.coef_3
 
-            # Tendon error: ten_length - length_ref
+            # Tendon error: ten_length - length_ref (signed)
             var ten_err = ten_length - ten.length_ref
-            var ten_pen = abs(ten_err)
 
             # Compute K = J @ M_inv @ J^T
             var k_ten: Scalar[DTYPE] = 0
@@ -1813,8 +1814,9 @@ def build_constraints[
             if diag_ten < Scalar[DTYPE](1e-10):
                 diag_ten = k_ten
 
+            # Compute impedance from |error| (symmetric schedule)
             var imp_ten = _compute_aref[DTYPE](
-                ten_pen,
+                abs(ten_err),
                 ten_si_dmin,
                 ten_si_dmax,
                 ten_si_width,
@@ -1827,10 +1829,11 @@ def build_constraints[
                 diag_ten,
             )
 
-            # Bilateral: sign depends on error direction
-            var bias_ten = imp_ten[0]
-            if ten_err < Scalar[DTYPE](0):
-                bias_ten = -bias_ten
+            # Bilateral equality constraint bias (MuJoCo formula):
+            #   aref = -B*vel - K*imp*pos  (pos = ten_err, signed)
+            #   bias = -aref = B*vel + K*imp*pos
+            var imp_val = imp_ten[2]
+            var bias_ten = ten_B_damp * ten_vel + ten_K_spring * imp_val * ten_err
 
             constraints.rows[row_idx].K = k_ten
             constraints.rows[row_idx].bias = bias_ten

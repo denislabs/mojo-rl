@@ -888,13 +888,22 @@ def _fill_model[
                     jd.pos_y = pv[1]
                     jd.pos_z = pv[2]
 
-                # axis
+                # axis (MuJoCo normalizes joint axes during compilation)
                 var axis_s = _extract_attr(tag, "axis")
                 if len(axis_s) > 0:
                     var av = _parse_vec3(axis_s)
-                    jd.axis_x = av[0]
-                    jd.axis_y = av[1]
-                    jd.axis_z = av[2]
+                    var ax = av[0]
+                    var ay = av[1]
+                    var az = av[2]
+                    var ax_sq = ax*ax + ay*ay + az*az
+                    # Normalize if not already unit length
+                    var inv_len = Float64(1.0) / _sqrt_f64(ax_sq)
+                    ax = ax * inv_len
+                    ay = ay * inv_len
+                    az = az * inv_len
+                    jd.axis_x = ax
+                    jd.axis_y = ay
+                    jd.axis_z = az
 
                 # range (convert deg→rad when deg_factor != 1.0)
                 var range_s = _extract_attr(tag, "range")
@@ -1254,9 +1263,10 @@ def _fill_model[
                         gd.half_z = s0
                     elif gd.geom_type == _GEOM_CAPSULE:
                         gd.radius = s0
-                        if len(size_parts) >= 2:
+                        # Only use size[1] as half-length if no fromto
+                        # (fromto already computed the correct value).
+                        if len(size_parts) >= 2 and len(fromto_s) == 0:
                             gd.half_length = s1
-                        # else half_length already set from fromto
                     elif gd.geom_type == _GEOM_BOX:
                         gd.half_x = s0
                         gd.half_y = s1
@@ -1264,7 +1274,8 @@ def _fill_model[
                         gd.radius = _sqrt_f64(s0 * s0 + s1 * s1 + s2 * s2)
                     elif gd.geom_type == _GEOM_CYLINDER:
                         gd.radius = s0
-                        gd.half_length = s1
+                        if len(fromto_s) == 0:
+                            gd.half_length = s1
                     elif gd.geom_type == _GEOM_PLANE:
                         gd.half_x = s0
                         gd.half_y = s1

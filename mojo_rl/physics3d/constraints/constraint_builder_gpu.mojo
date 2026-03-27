@@ -1432,10 +1432,12 @@ def build_and_solve_tendon_gpu[
             si_width = Scalar[DTYPE](1e-6)
         if si_dmax < Scalar[DTYPE](1e-4):
             si_dmax = Scalar[DTYPE](1e-4)
+        # MuJoCo: K = 1/(dmax² * timeconst² * dampratio²)
         var t_K_spring = Scalar[DTYPE](1.0) / (
-            sr_tc * sr_tc * si_dmax * si_dmax
+            si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
         )
-        var t_B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+        # MuJoCo: B = 2/(dmax * timeconst)
+        var t_B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
 
         # Impedance: MuJoCo piecewise power formula on |pos_err|
         var penetration = abs(pos_err)
@@ -1465,10 +1467,10 @@ def build_and_solve_tendon_gpu[
         if imp < Scalar[DTYPE](1e-6):
             imp = Scalar[DTYPE](1e-6)
 
-        # bias = -aref (bilateral: sign depends on error direction)
-        var bias = -t_K_spring * imp * penetration + t_B_damp * ten_vel
-        if pos_err < Scalar[DTYPE](0):
-            bias = -bias
+        # Bilateral equality constraint bias (MuJoCo formula):
+        #   aref = -B*vel - K*imp*pos  (pos = pos_err, signed)
+        #   bias = -aref = B*vel + K*imp*pos
+        var bias = t_B_damp * ten_vel + t_K_spring * imp * pos_err
         ten_bias[r] = bias
 
         # R = (1-imp)/imp * diagApprox (sum of dof_invweight0 for tendon joints)

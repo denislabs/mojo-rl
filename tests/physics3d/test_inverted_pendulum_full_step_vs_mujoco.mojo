@@ -1,26 +1,16 @@
-"""Test Full Physics Step (no contacts): Mojo Engine vs MuJoCo for Swimmer.
+"""Test Full Physics Step: Mojo Engine vs MuJoCo for InvertedPendulum.
 
 Compares qpos/qvel after running physics steps in both engines from
 identical initial states with identical actions applied.
 
-Swimmer is a planar chain with slide+hinge root (no free joint).
-All geoms have contype=0 so there are NO ground contacts — the swimmer
-"floats" at z=0 in a 2D plane.
+InvertedPendulum is the simplest MuJoCo model: a cart on a rail with a pole.
+NQ=2 (slider + hinge), NV=2, ACTION_DIM=1 (motor on slider).
+Uses RK4 integrator to match the MuJoCo XML default.
 
-Key notes:
-  - NQ=5, NV=5, NBODY=4, NJOINT=5, NGEOM=3
-  - ACTION_DIM=2 (motor1_rot, motor2_rot)
-  - Integrator: RK4 (opt.integrator=1 = mjINT_RK4)
-  - Solver: Newton (opt.solver=2 = mjSOL_NEWTON, irrelevant — no contacts)
-  - Cone: Elliptic (opt.cone=1, irrelevant — no contacts)
-  - Fluid dynamics: The original XML has viscosity=0.1, density=4000.
-    We disable these in the MuJoCo comparison (opt.viscosity=0, opt.density=0)
-    since our engine does not implement fluid drag/buoyancy. This makes the
-    comparison test pure rigid-body dynamics, which our engine does support.
-  - Tolerances are relaxed since viscosity mismatch may cause some divergence.
+No ground contacts expected (cart slides on rail).
 
 Run with:
-    cd mojo-rl && pixi run mojo run -I . tests/physics3d/test_swimmer_full_step_vs_mujoco.mojo
+    cd mojo-rl && pixi run mojo run -I . tests/physics3d/test_inverted_pendulum_full_step_vs_mujoco.mojo
 """
 
 from std.testing import assert_true, TestSuite
@@ -31,7 +21,7 @@ from std.collections import InlineArray
 from mojo_rl.physics3d.types import Model, Data, ConeType
 from mojo_rl.physics3d.integrator.rk4_integrator import RK4Integrator
 from mojo_rl.physics3d.solver import NewtonSolver
-from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
+from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import InvertedPendulumModel
 
 
 # =============================================================================
@@ -39,19 +29,19 @@ from mojo_rl.envs.swimmer.swimmer_xml import SwimmerModel
 # =============================================================================
 
 comptime DTYPE = DType.float64
-comptime NQ = SwimmerModel.NQ  # 5
-comptime NV = SwimmerModel.NV  # 5
-comptime NBODY = SwimmerModel.NBODY  # 4
-comptime NJOINT = SwimmerModel.NJOINT  # 5
-comptime NGEOM = SwimmerModel.NGEOM  # 3
-comptime MAX_CONTACTS = SwimmerModel.MAX_CONTACTS  # 5
-comptime ACTION_DIM = SwimmerModel.ACTION_DIM  # 2
+comptime NQ = InvertedPendulumModel.NQ  # 2
+comptime NV = InvertedPendulumModel.NV  # 2
+comptime NBODY = InvertedPendulumModel.NBODY  # 2
+comptime NJOINT = InvertedPendulumModel.NJOINT  # 2
+comptime NGEOM = InvertedPendulumModel.NGEOM  # 3
+comptime MAX_CONTACTS = InvertedPendulumModel.MAX_CONTACTS  # 5
+comptime ACTION_DIM = 1
 
-# Tolerances — relaxed since viscosity mismatch may cause some divergence
-comptime QPOS_ABS_TOL: Float64 = 1e-2
-comptime QPOS_REL_TOL: Float64 = 1e-1
-comptime QVEL_ABS_TOL: Float64 = 1e-1
-comptime QVEL_REL_TOL: Float64 = 1e-1
+# Tight tolerances — simple 2-DOF dynamics
+comptime QPOS_ABS_TOL: Float64 = 1e-4
+comptime QPOS_REL_TOL: Float64 = 1e-3
+comptime QVEL_ABS_TOL: Float64 = 1e-3
+comptime QVEL_REL_TOL: Float64 = 1e-3
 
 
 # =============================================================================
@@ -67,9 +57,10 @@ def compare_step(
     num_steps: Int = 1,
 ) raises:
     """Run num_steps physics steps in both engines, compare final qpos/qvel."""
-    print("--- Test:", test_name, "(", num_steps, "steps) ---")
+    print("--- Test:", test_name, "---")
+    print("  Steps:", num_steps)
 
-    # === Our engine (RK4 + Newton) ===
+    # === Our engine ===
     var model = Model[
         DTYPE,
         NQ,
@@ -78,15 +69,15 @@ def compare_step(
         NJOINT,
         MAX_CONTACTS,
         NGEOM,
-        SwimmerModel.MAX_EQUALITY,
-        SwimmerModel.CONE_TYPE,
-        SwimmerModel.MAX_TENDON,
-        SwimmerModel.NSITE,
+        InvertedPendulumModel.MAX_EQUALITY,
+        InvertedPendulumModel.CONE_TYPE,
+        InvertedPendulumModel.MAX_TENDON,
+        InvertedPendulumModel.NSITE,
     ]()
     var data = Data[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, SwimmerModel.NSITE
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, InvertedPendulumModel.NSITE
     ]()
-    SwimmerModel.setup_model_and_data(model, data)
+    InvertedPendulumModel.setup_model_and_data(model, data)
 
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_init[i])
@@ -100,37 +91,32 @@ def compare_step(
     for _ in range(num_steps):
         for i in range(NV):
             data.qfrc[i] = Scalar[DTYPE](0)
-        SwimmerModel.apply_actions(data, action_list)
+        InvertedPendulumModel.apply_actions(data, action_list)
         RK4Integrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](model, data)
 
-    print("  Our contacts:", Int(data.num_contacts))
+    print("data.num_contacts:", data.num_contacts)
 
-    # === MuJoCo reference (RK4, no fluid) ===
+    # === MuJoCo reference ===
     var mujoco = Python.import_module("mujoco")
+    var np = Python.import_module("numpy")
 
-    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/swimmer.xml"
+    var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/inverted_pendulum.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.integrator = 1  # mjINT_RK4
     mj_model.opt.solver = 2  # mjSOL_NEWTON
     mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
-    # Disable fluid dynamics: our engine has no viscosity or buoyancy.
-    # Without this, MuJoCo applies viscous drag and buoyancy that we can't match.
-    mj_model.opt.viscosity = 0.0
-    mj_model.opt.density = 0.0
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):
         mj_data.qpos[i] = qpos_init[i]
     for i in range(NV):
         mj_data.qvel[i] = qvel_init[i]
+
     for i in range(ACTION_DIM):
         mj_data.ctrl[i] = actions[i]
 
     for _ in range(num_steps):
         mujoco.mj_step(mj_model, mj_data)
-
-    var mj_ncon = Int(py=mj_data.ncon)
-    print("  MJ  contacts:", mj_ncon)
 
     # === Compare qpos ===
     var mj_qpos = mj_data.qpos.flatten().tolist()
@@ -244,6 +230,7 @@ def compare_step(
             ")",
         )
 
+    # Print values
     print("  Our qpos:", end="")
     for i in range(NQ):
         print(" ", Float64(data.qpos[i]), end="")
@@ -261,60 +248,62 @@ def compare_step(
         print(" ", Float64(py=mj_qvel[i]), end="")
     print()
 
+    print("  Our contacts:", Int(data.num_contacts))
+    var mj_ncon = Int(py=mj_data.ncon)
+    print("  MJ  contacts:", mj_ncon)
     assert_true(all_pass, "compare_step failed for: " + test_name)
 
 
 # =============================================================================
-# Test cases — no contacts since all geoms have contype=0
+# Test cases
 # =============================================================================
 
 
-def test_no_action() raises:
-    """Default pose, no actions, 1 step — pure gravity effect.
-    Should be small since swimmer is planar at z=0."""
+def test_upright_no_action() raises:
+    """Pole upright, no action — gravity pulls the pole down."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("No action (default pose)", qpos, qvel, actions)
+    compare_step("Upright, no action", qpos, qvel, actions)
 
 
-def test_with_actions() raises:
-    """Default pose with actions[0]=0.3, actions[1]=-0.2, 1 step.
-    Tests actuator gear (150) application through RK4 stages."""
+def test_upright_with_push() raises:
+    """Pole upright, push cart right with action=0.5."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    actions[0] = 0.3  # motor1_rot
-    actions[1] = -0.2  # motor2_rot
-    compare_step("With actions (0.3, -0.2)", qpos, qvel, actions)
+    actions[0] = 0.5
+    compare_step("Upright, push right", qpos, qvel, actions)
 
 
-def test_moving() raises:
-    """Slider1 velocity=1.0, actions[0]=0.1, 1 step.
-    Tests dynamics with initial velocity — drag mismatch is minimal for 1 step."""
+def test_tilted() raises:
+    """Pole tilted 0.1 rad, no action — gravity torque on pole."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 0.1  # hinge angle = 0.1 rad
     var qvel = InlineArray[Float64, NV](fill=0.0)
-    qvel[0] = 1.0  # slider1 velocity (x direction)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    actions[0] = 0.1  # motor1_rot
-    compare_step("Moving (slider1 vel=1.0, action=0.1)", qpos, qvel, actions)
+    compare_step("Tilted pole, no action", qpos, qvel, actions)
+
+
+def test_tilted_with_action() raises:
+    """Cart offset + tilted pole + action to push cart left."""
+    var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[0] = 0.2  # cart at x=0.2
+    qpos[1] = 0.1  # pole tilted 0.1 rad
+    var qvel = InlineArray[Float64, NV](fill=0.0)
+    var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
+    actions[0] = -0.3
+    compare_step("Tilted with action", qpos, qvel, actions)
 
 
 def test_multi_step() raises:
-    """Default pose, actions[0]=0.2, actions[1]=-0.1, 5 steps.
-    Tests multi-step drift accumulation in the planar body chain."""
+    """10 steps with slight tilt and small action — accumulates drift."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[1] = 0.05  # slight tilt
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    actions[0] = 0.2  # motor1_rot
-    actions[1] = -0.1  # motor2_rot
-    compare_step(
-        "Multi-step (5 steps, actions 0.2/-0.1)",
-        qpos,
-        qvel,
-        actions,
-        num_steps=5,
-    )
+    actions[0] = 0.1
+    compare_step("Multi-step (10)", qpos, qvel, actions, num_steps=10)
 
 
 def main() raises:

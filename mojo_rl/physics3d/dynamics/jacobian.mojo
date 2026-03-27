@@ -130,7 +130,8 @@ def compute_cdof[
         where offset = xipos[body] - joint_anchor_world
     For SLIDE: angular part = (0,0,0), linear part = axis_world
     For FREE translation DOFs: angular = (0,0,0), linear = unit axis
-    For FREE rotation DOFs: angular = unit axis, linear = (0,0,0)
+    For FREE rotation DOFs: angular = unit axis,
+        linear = axis x (subtree_com - body_xpos)  (MuJoCo mj_comPos)
 
     IMPORTANT: Joint axes are rotated using the body's accumulated orientation
     BEFORE that joint's own rotation is applied (matching MuJoCo's xaxis
@@ -335,7 +336,9 @@ def compute_cdof[
                 cdof[(dof_adr + 1) * 6 + 4] = Scalar[DTYPE](1)  # y
                 cdof[(dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)  # z
 
-                # Rotation DOFs (dof_adr + 3,4,5): angular + linear
+                # Rotation DOFs (dof_adr + 3,4,5): pure angular
+                # Translation-rotation coupling comes through the composite
+                # rigid body inertia mass moments (crb cx,cy,cz terms).
                 cdof[(dof_adr + 3) * 6 + 0] = Scalar[DTYPE](1)  # x rot
                 cdof[(dof_adr + 4) * 6 + 1] = Scalar[DTYPE](1)  # y rot
                 cdof[(dof_adr + 5) * 6 + 2] = Scalar[DTYPE](1)  # z rot

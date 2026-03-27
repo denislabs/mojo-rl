@@ -776,6 +776,87 @@ def _xml_default_motor_ctrlrange[xml: String]() -> Tuple[Float64, Float64]:
     return (-1.0, 1.0)
 
 
+def _xml_nth_fixed_tag[xml: String, n: Int]() -> String:
+    """Return the XML tag string for the Nth <fixed> tendon, or empty if absent."""
+    var sec = _extract_section(xml, "tendon")
+    if len(sec) == 0:
+        return ""
+    var pos = 0
+    for i in range(n + 1):
+        var t = sec.find("<fixed", pos)
+        if t == -1:
+            return ""
+        if i == n:
+            var end = sec.find("</fixed>", t)
+            if end == -1:
+                end = sec.find("/>", t)
+                if end == -1:
+                    return ""
+                return String(sec[byte = t : end + 2])
+            return String(sec[byte = t : end + 8])
+        pos = t + 6
+    return ""
+
+
+def _xml_fixed_tendon_njoints[xml: String, n: Int]() -> Int:
+    """Return number of joints in the Nth fixed tendon (0 if absent)."""
+    var tag = _xml_nth_fixed_tag[xml, n]()
+    if len(tag) == 0:
+        return 0
+    var count = 0
+    var pos = 0
+    while True:
+        var t = tag.find("<joint", pos)
+        if t == -1:
+            break
+        count += 1
+        pos = t + 6
+    return count
+
+
+def _xml_fixed_tendon_joint_name[xml: String, n: Int, j: Int]() -> String:
+    """Return the joint name of the Jth joint in the Nth fixed tendon."""
+    var tag = _xml_nth_fixed_tag[xml, n]()
+    if len(tag) == 0:
+        return ""
+    var pos = 0
+    for i in range(j + 1):
+        var t = tag.find("<joint", pos)
+        if t == -1:
+            return ""
+        if i == j:
+            var end = tag.find(">", t)
+            if end == -1:
+                return ""
+            var jtag = String(tag[byte = t : end + 1])
+            return _extract_attr(jtag, "joint")
+        pos = t + 6
+    return ""
+
+
+def _xml_fixed_tendon_coef[xml: String, n: Int, j: Int]() -> Float64:
+    """Return the coefficient of the Jth joint in the Nth fixed tendon."""
+    var tag = _xml_nth_fixed_tag[xml, n]()
+    if len(tag) == 0:
+        return 0.0
+    var pos = 0
+    for i in range(j + 1):
+        var t = tag.find("<joint", pos)
+        if t == -1:
+            return 0.0
+        if i == j:
+            var end = tag.find(">", t)
+            if end == -1:
+                return 0.0
+            var jtag = String(tag[byte = t : end + 1])
+            var cs = _extract_attr(jtag, "coef")
+            if len(cs) > 0:
+                return _parse_float(cs)
+            return 0.0
+        pos = t + 6
+    return 0.0
+
+
 def parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 
@@ -1006,6 +1087,43 @@ def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
             dof_adr += 6
         else:  # hinge, slide, or default (hinge)
             dof_adr += 1
+        scan_pos = tag_end + 1
+    return -1
+
+
+def _xml_find_joint_index(xml: String, jname: String) -> Int:
+    """Return joint INDEX (0-based) of joint with the given name.
+
+    Unlike _xml_find_joint_dof_adr which returns the DOF address,
+    this returns the joint's position in the joints array.
+    Returns -1 if not found.
+    """
+    var wb = _extract_section(xml, "worldbody")
+    var scan_pos = 0
+    var joint_idx = 0
+    var search_name = 'name="' + jname + '"'
+    while True:
+        var t = wb.find("<joint", scan_pos)
+        if t == -1:
+            break
+        if len(wb) > t + 6:
+            var after = String(wb[byte = t + 6 : t + 7])
+            if (
+                after != " "
+                and after != ">"
+                and after != "/"
+                and after != "\n"
+                and after != "\t"
+            ):
+                scan_pos = t + 6
+                continue
+        var tag_end = wb.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(wb[byte = t : tag_end + 1])
+        if tag.find(search_name) != -1:
+            return joint_idx
+        joint_idx += 1
         scan_pos = tag_end + 1
     return -1
 
@@ -2032,7 +2150,9 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                         data.geom_half_z[geom_count] = s0
                     elif gt == 2:  # CAPSULE
                         data.geom_radius[geom_count] = s0
-                        if len(size_parts) >= 2:
+                        # Only use size[1] as half-length if no fromto was
+                        # specified (fromto already set the correct value).
+                        if len(size_parts) >= 2 and len(fromto_s) == 0:
                             data.geom_half_length[geom_count] = s1
                     elif gt == 3:  # BOX
                         data.geom_half_x[geom_count] = s0
@@ -2043,7 +2163,8 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                         )
                     elif gt == 4:  # CYLINDER
                         data.geom_radius[geom_count] = s0
-                        data.geom_half_length[geom_count] = s1
+                        if len(fromto_s) == 0:
+                            data.geom_half_length[geom_count] = s1
                     elif gt == 0:  # PLANE
                         data.geom_half_x[geom_count] = s0
                         data.geom_half_y[geom_count] = s1
