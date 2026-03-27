@@ -288,11 +288,12 @@ def run_mbpo_train_gpu[
         environment_name=environment_name,
     )
 
-    # Create GPU state for SAC
+    print("[MBPO-GPU] Creating GPU SAC state...")
     comptime GPUState = MBPOAgent[Config, L].GPUStateType
     var gpu_state = GPUState(ctx)
+    print("[MBPO-GPU] GPU SAC state created")
 
-    # Create GPU dynamics ensemble
+    print("[MBPO-GPU] Creating GPU dynamics ensemble...")
     var gpu_dynamics = GPUDynamicsEnsemble[
         Config.DynamicsModel,
         Config.DynOpt,
@@ -301,14 +302,18 @@ def run_mbpo_train_gpu[
         Config.obs_dim,
         Config.action_dim,
     ](ctx)
-    # Upload CPU ensemble weights if any
-    gpu_dynamics.upload_from(cpu_state.dynamics, ctx)
+    print("[MBPO-GPU] GPU dynamics ensemble created")
 
-    # Upload CPU SAC weights to GPU
+    print("[MBPO-GPU] Uploading CPU ensemble weights...")
+    gpu_dynamics.upload_from(cpu_state.dynamics, ctx)
+    print("[MBPO-GPU] Ensemble weights uploaded")
+
+    print("[MBPO-GPU] Uploading CPU SAC weights...")
     gpu_state.actor.upload_from(cpu_state.actor, ctx)
     gpu_state.critics.upload_from(cpu_state.critics, ctx)
+    print("[MBPO-GPU] SAC weights uploaded")
 
-    # Allocate environment buffers
+    print("[MBPO-GPU] Allocating environment buffers (n_envs=" + String(n_envs) + ")...")
     var states_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.STATE_SIZE)
     var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
     var prev_obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
@@ -316,35 +321,41 @@ def run_mbpo_train_gpu[
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    print("[MBPO-GPU] Environment buffers allocated")
 
-    # Episode tracking buffers
+    print("[MBPO-GPU] Allocating episode tracking buffers...")
     var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
     var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
     var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
+    print("[MBPO-GPU] Episode tracking buffers allocated")
 
-    # Env workspace
+    print("[MBPO-GPU] Allocating env workspace...")
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:
         ws_size = 1
     var workspace_buf = ctx.enqueue_create_buffer[dtype](ws_size)
     if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
+    print("[MBPO-GPU] Env workspace allocated (size=" + String(ws_size) + ")")
 
-    # Initial reset
+    print("[MBPO-GPU] Initial reset...")
     E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf, rng_seed=0)
+    print("[MBPO-GPU] Initial step...")
     E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
         ctx, states_buf, actions_buf, rewards_buf, dones_buf, terminated_buf,
         obs_buf, rng_seed=0, workspace_ptr=workspace_buf.unsafe_ptr(),
     )
+    print("[MBPO-GPU] Initial reset/step done")
 
-    # Initialize tracking
     ctx.enqueue_memset(episode_rewards_buf, 0)
     ctx.enqueue_memset(episode_steps_buf, 0)
     ctx.enqueue_memset(gpu_reward_sum_buf, 0)
     ctx.enqueue_memset(gpu_episode_count_buf, 0)
+    ctx.synchronize()
+    print("[MBPO-GPU] Initialization complete, entering training loop...")
 
     # Kernel aliases
     comptime tpb = 256
@@ -365,6 +376,11 @@ def run_mbpo_train_gpu[
     var epoch = 0
 
     while total_steps < num_steps:
+        if total_steps % (n_envs * 100) == 0 and total_steps < warmup_steps:
+            print("[MBPO-GPU] Warmup step " + String(total_steps) + "/" + String(warmup_steps))
+        elif total_steps == warmup_steps:
+            print("[MBPO-GPU] Warmup complete, starting training...")
+
         # Save prev_obs
         ctx.enqueue_copy(prev_obs_buf, obs_buf)
 
