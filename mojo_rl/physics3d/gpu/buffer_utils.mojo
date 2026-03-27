@@ -52,7 +52,9 @@ from .constants import (
     BODY_IDX_IQUAT_Y,
     BODY_IDX_IQUAT_Z,
     BODY_IDX_IQUAT_W,
+    BODY_IDX_ROOTID,
     xipos_offset,
+    subtree_com_offset,
     cfrc_ext_offset,
     cvel_offset,
     cinert_offset,
@@ -318,6 +320,9 @@ def copy_model_to_buffer[
         buffer[offset + BODY_IDX_IQUAT_Y] = model.body_iquat[body * 4 + 1]
         buffer[offset + BODY_IDX_IQUAT_Z] = model.body_iquat[body * 4 + 2]
         buffer[offset + BODY_IDX_IQUAT_W] = model.body_iquat[body * 4 + 3]
+        buffer[offset + BODY_IDX_ROOTID] = Scalar[DTYPE](
+            model.body_rootid[body]
+        )
 
     # Copy joint data
     for j in range(model.num_joints):

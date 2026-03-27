@@ -783,15 +783,21 @@ def compute_bias_forces_rne[
     for i in range(BODY6_SIZE):
         cfrc[i] = Scalar[DTYPE](0)
 
-    # Per-body world-frame inertia tensor (symmetric: Ixx, Iyy, Izz, Ixy, Ixz, Iyz)
-    var I_world = InlineArray[Scalar[DTYPE], BODY6_SIZE](uninitialized=True)
-    for i in range(BODY6_SIZE):
-        I_world[i] = Scalar[DTYPE](0)
+    # Per-body cinert (MuJoCo format: Ixx,Iyy,Izz,Ixy,Ixz,Iyz,mcx,mcy,mcz,mass)
+    # Inertia at subtree_com[rootid] reference, including parallel axis shift.
+    comptime CINERT_SIZE = _max_one[NBODY * 10]()
+    var cinert = InlineArray[Scalar[DTYPE], CINERT_SIZE](uninitialized=True)
+    for i in range(CINERT_SIZE):
+        cinert[i] = Scalar[DTYPE](0)
 
     # =========================================================================
-    # Step 0: Compute world-frame inertia tensors for each body
+    # Step 0: Compute cinert — spatial inertia at subtree_com (MuJoCo mj_inertCom)
+    # cinert[b*10+0..5] = rotated inertia + parallel axis shift
+    # cinert[b*10+6..8] = mass * (xipos - subtree_com)
+    # cinert[b*10+9] = mass
     # =========================================================================
     for b in range(NBODY):
+        var mass = model.body_mass[b]
         var Ixx_local = model.body_inertia[b * 3 + 0]
         var Iyy_local = model.body_inertia[b * 3 + 1]
         var Izz_local = model.body_inertia[b * 3 + 2]
@@ -811,7 +817,7 @@ def compute_bias_forces_rne[
         var qz = iq[2]
         var qw = iq[3]
 
-        # Rotation matrix from quaternion
+        # Rotation matrix from quaternion (ximat)
         var r00 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qy * qy + qz * qz)
         var r10 = Scalar[DTYPE](2) * (qx * qy + qw * qz)
         var r20 = Scalar[DTYPE](2) * (qx * qz - qw * qy)
@@ -823,36 +829,43 @@ def compute_bias_forces_rne[
         var r22 = Scalar[DTYPE](1) - Scalar[DTYPE](2) * (qx * qx + qy * qy)
 
         # I_world = R @ diag(Ixx, Iyy, Izz) @ R^T
-        I_world[b * 6 + 0] = (
-            Ixx_local * r00 * r00
-            + Iyy_local * r01 * r01
-            + Izz_local * r02 * r02
+        cinert[b * 10 + 0] = (
+            Ixx_local * r00 * r00 + Iyy_local * r01 * r01 + Izz_local * r02 * r02
         )  # Ixx
-        I_world[b * 6 + 1] = (
-            Ixx_local * r10 * r10
-            + Iyy_local * r11 * r11
-            + Izz_local * r12 * r12
+        cinert[b * 10 + 1] = (
+            Ixx_local * r10 * r10 + Iyy_local * r11 * r11 + Izz_local * r12 * r12
         )  # Iyy
-        I_world[b * 6 + 2] = (
-            Ixx_local * r20 * r20
-            + Iyy_local * r21 * r21
-            + Izz_local * r22 * r22
+        cinert[b * 10 + 2] = (
+            Ixx_local * r20 * r20 + Iyy_local * r21 * r21 + Izz_local * r22 * r22
         )  # Izz
-        I_world[b * 6 + 3] = (
-            Ixx_local * r00 * r10
-            + Iyy_local * r01 * r11
-            + Izz_local * r02 * r12
+        cinert[b * 10 + 3] = (
+            Ixx_local * r00 * r10 + Iyy_local * r01 * r11 + Izz_local * r02 * r12
         )  # Ixy
-        I_world[b * 6 + 4] = (
-            Ixx_local * r00 * r20
-            + Iyy_local * r01 * r21
-            + Izz_local * r02 * r22
+        cinert[b * 10 + 4] = (
+            Ixx_local * r00 * r20 + Iyy_local * r01 * r21 + Izz_local * r02 * r22
         )  # Ixz
-        I_world[b * 6 + 5] = (
-            Ixx_local * r10 * r20
-            + Iyy_local * r11 * r21
-            + Izz_local * r12 * r22
+        cinert[b * 10 + 5] = (
+            Ixx_local * r10 * r20 + Iyy_local * r11 * r21 + Izz_local * r12 * r22
         )  # Iyz
+
+        # Parallel axis theorem: shift from xipos to subtree_com[rootid]
+        # dif = xipos - subtree_com[rootid]
+        # I += mass * (dif^2*I_3 - dif⊗dif)
+        if data.has_subtree_com:
+            var root = model.body_rootid[b]
+            var dx = data.xipos[b * 3 + 0] - data.subtree_com[root * 3 + 0]
+            var dy = data.xipos[b * 3 + 1] - data.subtree_com[root * 3 + 1]
+            var dz = data.xipos[b * 3 + 2] - data.subtree_com[root * 3 + 2]
+            cinert[b * 10 + 0] = cinert[b * 10 + 0] + mass * (dy * dy + dz * dz)
+            cinert[b * 10 + 1] = cinert[b * 10 + 1] + mass * (dx * dx + dz * dz)
+            cinert[b * 10 + 2] = cinert[b * 10 + 2] + mass * (dx * dx + dy * dy)
+            cinert[b * 10 + 3] = cinert[b * 10 + 3] - mass * dx * dy
+            cinert[b * 10 + 4] = cinert[b * 10 + 4] - mass * dx * dz
+            cinert[b * 10 + 5] = cinert[b * 10 + 5] - mass * dy * dz
+            cinert[b * 10 + 6] = mass * dx
+            cinert[b * 10 + 7] = mass * dy
+            cinert[b * 10 + 8] = mass * dz
+        cinert[b * 10 + 9] = mass
 
     # =========================================================================
     # Step 1: Forward pass - compute cvel and cacc (root to leaves)
@@ -870,29 +883,15 @@ def compute_bias_forces_rne[
     for b in range(1, NBODY):
         var parent = model.body_parent[b]
 
-        # Initialize cvel from parent, transferred to this body's CoM
+        # Initialize cvel from parent — simple copy (MuJoCo mj_comVel).
+        # No moment arm transfer because all bodies share the same
+        # subtree_com reference point.
         var cv_wx = cvel[parent * 6 + 0]
         var cv_wy = cvel[parent * 6 + 1]
         var cv_wz = cvel[parent * 6 + 2]
         var cv_vx = cvel[parent * 6 + 3]
         var cv_vy = cvel[parent * 6 + 4]
         var cv_vz = cvel[parent * 6 + 5]
-        if parent > 0:
-            cv_wx = cvel[parent * 6 + 0]
-            cv_wy = cvel[parent * 6 + 1]
-            cv_wz = cvel[parent * 6 + 2]
-            cv_vx = cvel[parent * 6 + 3]
-            cv_vy = cvel[parent * 6 + 4]
-            cv_vz = cvel[parent * 6 + 5]
-
-            # Transfer linear velocity from parent CoM to this body's CoM
-            # v_child_com = v_parent_com + w_parent × (child_com - parent_com)
-            var rx = data.xipos[b * 3 + 0] - data.xipos[parent * 3 + 0]
-            var ry = data.xipos[b * 3 + 1] - data.xipos[parent * 3 + 1]
-            var rz = data.xipos[b * 3 + 2] - data.xipos[parent * 3 + 2]
-            cv_vx = cv_vx + (cv_wy * rz - cv_wz * ry)
-            cv_vy = cv_vy + (cv_wz * rx - cv_wx * rz)
-            cv_vz = cv_vz + (cv_wx * ry - cv_wy * rx)
 
         if parent == 0:
             # Root body (parent is worldbody): gravity as fictitious acceleration
@@ -1061,119 +1060,94 @@ def compute_bias_forces_rne[
         cvel[b * 6 + 5] = cv_vz
 
     # =========================================================================
-    # Step 2: Compute spatial forces per body
-    #   cfrc = I * cacc + cvel x* (I * cvel)
-    #   Using accumulated cvel (not data.xvel/xangvel)
+    # Step 2: Compute spatial forces per body using cinert (MuJoCo mj_rne)
+    #   cfrc = cinert * cacc + cvel x* (cinert * cvel)
+    #   cinert is 10-element spatial inertia at subtree_com[rootid]
+    #   mju_mulInertVec: [I -mc×; mc× m*I] * [ω; v]
     # =========================================================================
     for b in range(NBODY):
-        var mass = model.body_mass[b]
+        # Read cinert
+        var ci0 = cinert[b * 10 + 0]  # Ixx
+        var ci1 = cinert[b * 10 + 1]  # Iyy
+        var ci2 = cinert[b * 10 + 2]  # Izz
+        var ci3 = cinert[b * 10 + 3]  # Ixy
+        var ci4 = cinert[b * 10 + 4]  # Ixz
+        var ci5 = cinert[b * 10 + 5]  # Iyz
+        var ci6 = cinert[b * 10 + 6]  # mcx = m*dx
+        var ci7 = cinert[b * 10 + 7]  # mcy = m*dy
+        var ci8 = cinert[b * 10 + 8]  # mcz = m*dz
+        var ci9 = cinert[b * 10 + 9]  # mass
 
-        # Body velocities from accumulated cvel
+        # cvel and cacc
         var wx = cvel[b * 6 + 0]
         var wy = cvel[b * 6 + 1]
         var wz = cvel[b * 6 + 2]
         var vx = cvel[b * 6 + 3]
         var vy = cvel[b * 6 + 4]
         var vz = cvel[b * 6 + 5]
+        var ax = cacc[b * 6 + 0]
+        var ay = cacc[b * 6 + 1]
+        var az = cacc[b * 6 + 2]
+        var alx = cacc[b * 6 + 3]
+        var aly = cacc[b * 6 + 4]
+        var alz = cacc[b * 6 + 5]
 
-        # Spatial acceleration
-        var a_ang_x = cacc[b * 6 + 0]
-        var a_ang_y = cacc[b * 6 + 1]
-        var a_ang_z = cacc[b * 6 + 2]
-        var a_lin_x = cacc[b * 6 + 3]
-        var a_lin_y = cacc[b * 6 + 4]
-        var a_lin_z = cacc[b * 6 + 5]
+        # cinert * cacc (MuJoCo mju_mulInertVec)
+        var Ia0 = ci0*ax + ci3*ay + ci4*az - ci8*aly + ci7*alz
+        var Ia1 = ci3*ax + ci1*ay + ci5*az + ci8*alx - ci6*alz
+        var Ia2 = ci4*ax + ci5*ay + ci2*az - ci7*alx + ci6*aly
+        var Ia3 = ci8*ay - ci7*az + ci9*alx
+        var Ia4 = ci6*az - ci8*ax + ci9*aly
+        var Ia5 = ci7*ax - ci6*ay + ci9*alz
 
-        # World-frame inertia tensor (symmetric)
-        var Ixx = I_world[b * 6 + 0]
-        var Iyy = I_world[b * 6 + 1]
-        var Izz = I_world[b * 6 + 2]
-        var Ixy = I_world[b * 6 + 3]
-        var Ixz = I_world[b * 6 + 4]
-        var Iyz = I_world[b * 6 + 5]
+        # cinert * cvel
+        var Iv0 = ci0*wx + ci3*wy + ci4*wz - ci8*vy + ci7*vz
+        var Iv1 = ci3*wx + ci1*wy + ci5*wz + ci8*vx - ci6*vz
+        var Iv2 = ci4*wx + ci5*wy + ci2*wz - ci7*vx + ci6*vy
+        var Iv3 = ci8*wy - ci7*wz + ci9*vx
+        var Iv4 = ci6*wz - ci8*wx + ci9*vy
+        var Iv5 = ci7*wx - ci6*wy + ci9*vz
 
-        # I * cacc (at CoM, offset=0)
-        var Ia_ang_x = Ixx * a_ang_x + Ixy * a_ang_y + Ixz * a_ang_z
-        var Ia_ang_y = Ixy * a_ang_x + Iyy * a_ang_y + Iyz * a_ang_z
-        var Ia_ang_z = Ixz * a_ang_x + Iyz * a_ang_y + Izz * a_ang_z
-        var Ia_lin_x = mass * a_lin_x
-        var Ia_lin_y = mass * a_lin_y
-        var Ia_lin_z = mass * a_lin_z
+        # cvel x* (cinert * cvel) — spatial force cross product
+        # MuJoCo mju_crossForce: [ω×τ + v×f; ω×f]
+        var xf0 = wy*Iv2 - wz*Iv1 + vy*Iv5 - vz*Iv4
+        var xf1 = wz*Iv0 - wx*Iv2 + vz*Iv3 - vx*Iv5
+        var xf2 = wx*Iv1 - wy*Iv0 + vx*Iv4 - vy*Iv3
+        var xf3 = wy*Iv5 - wz*Iv4
+        var xf4 = wz*Iv3 - wx*Iv5
+        var xf5 = wx*Iv4 - wy*Iv3
 
-        # I * cvel
-        var Iw_x = Ixx * wx + Ixy * wy + Ixz * wz
-        var Iw_y = Ixy * wx + Iyy * wy + Iyz * wz
-        var Iw_z = Ixz * wx + Iyz * wy + Izz * wz
-
-        # cvel x* (I * cvel) — spatial force cross product
-        # angular: w x (I*w) + v x (m*v) = w x (I*w) (since v x v = 0)
-        var xf_ang_x = wy * Iw_z - wz * Iw_y
-        var xf_ang_y = wz * Iw_x - wx * Iw_z
-        var xf_ang_z = wx * Iw_y - wy * Iw_x
-
-        # linear: w x (m*v)
-        var xf_lin_x = wy * (mass * vz) - wz * (mass * vy)
-        var xf_lin_y = wz * (mass * vx) - wx * (mass * vz)
-        var xf_lin_z = wx * (mass * vy) - wy * (mass * vx)
-
-        # cfrc = I*cacc + cvel x* (I*cvel)
-        cfrc[b * 6 + 0] = Ia_ang_x + xf_ang_x
-        cfrc[b * 6 + 1] = Ia_ang_y + xf_ang_y
-        cfrc[b * 6 + 2] = Ia_ang_z + xf_ang_z
-        cfrc[b * 6 + 3] = Ia_lin_x + xf_lin_x
-        cfrc[b * 6 + 4] = Ia_lin_y + xf_lin_y
-        cfrc[b * 6 + 5] = Ia_lin_z + xf_lin_z
+        # cfrc = cinert*cacc + cvel x* (cinert*cvel)
+        cfrc[b * 6 + 0] = Ia0 + xf0
+        cfrc[b * 6 + 1] = Ia1 + xf1
+        cfrc[b * 6 + 2] = Ia2 + xf2
+        cfrc[b * 6 + 3] = Ia3 + xf3
+        cfrc[b * 6 + 4] = Ia4 + xf4
+        cfrc[b * 6 + 5] = Ia5 + xf5
 
     # =========================================================================
     # Step 3: Backward pass - accumulate forces to parents
-    #   When transferring force wrench from child CoM to parent CoM:
-    #   tau_parent += tau_child + r x f_child
-    #   f_parent += f_child
-    #   where r = xipos[child] - xipos[parent]
+    #   Simple addition — no moment arm transfer needed because all cfrc
+    #   are at the same reference point (subtree_com[rootid]).
+    #   MuJoCo mj_rne: mju_addTo(cfrc_body[parent], cfrc_body[child], 6)
     # =========================================================================
     for b in range(NBODY - 1, 0, -1):
         var parent = model.body_parent[b]
-
-        # Offset from parent CoM to child CoM
-        var rx = data.xipos[b * 3 + 0] - data.xipos[parent * 3 + 0]
-        var ry = data.xipos[b * 3 + 1] - data.xipos[parent * 3 + 1]
-        var rz = data.xipos[b * 3 + 2] - data.xipos[parent * 3 + 2]
-
-        # Child force wrench
-        var child_tau_x = cfrc[b * 6 + 0]
-        var child_tau_y = cfrc[b * 6 + 1]
-        var child_tau_z = cfrc[b * 6 + 2]
-        var child_f_x = cfrc[b * 6 + 3]
-        var child_f_y = cfrc[b * 6 + 4]
-        var child_f_z = cfrc[b * 6 + 5]
-
-        # Transfer: tau_parent += tau_child + r x f_child
-        cfrc[parent * 6 + 0] = (
-            cfrc[parent * 6 + 0]
-            + child_tau_x
-            + (ry * child_f_z - rz * child_f_y)
-        )
-        cfrc[parent * 6 + 1] = (
-            cfrc[parent * 6 + 1]
-            + child_tau_y
-            + (rz * child_f_x - rx * child_f_z)
-        )
-        cfrc[parent * 6 + 2] = (
-            cfrc[parent * 6 + 2]
-            + child_tau_z
-            + (rx * child_f_y - ry * child_f_x)
-        )
-        # Transfer: f_parent += f_child
-        cfrc[parent * 6 + 3] = cfrc[parent * 6 + 3] + child_f_x
-        cfrc[parent * 6 + 4] = cfrc[parent * 6 + 4] + child_f_y
-        cfrc[parent * 6 + 5] = cfrc[parent * 6 + 5] + child_f_z
+        if parent > 0:
+            cfrc[parent * 6 + 0] = cfrc[parent * 6 + 0] + cfrc[b * 6 + 0]
+            cfrc[parent * 6 + 1] = cfrc[parent * 6 + 1] + cfrc[b * 6 + 1]
+            cfrc[parent * 6 + 2] = cfrc[parent * 6 + 2] + cfrc[b * 6 + 2]
+            cfrc[parent * 6 + 3] = cfrc[parent * 6 + 3] + cfrc[b * 6 + 3]
+            cfrc[parent * 6 + 4] = cfrc[parent * 6 + 4] + cfrc[b * 6 + 4]
+            cfrc[parent * 6 + 5] = cfrc[parent * 6 + 5] + cfrc[b * 6 + 5]
 
     # =========================================================================
     # Step 4: Project to joint space
     #   bias[d] = cdof[d] . cfrc[body_of_dof[d]]
     #   6D dot product: angular . torque + linear . force
     # =========================================================================
-    var has_stcom = data.has_subtree_com
+    # Step 4: Project to joint space — direct cdof . cfrc (MuJoCo mj_rne)
+    # Both cdof and cfrc are now at subtree_com[rootid], so no shift needed.
     for j in range(model.num_joints):
         var joint = model.joints[j]
         var body = joint.body_id
@@ -1184,33 +1158,11 @@ def compute_bias_forces_rne[
         elif joint.jnt_type == JNT_BALL:
             num_dof = 3
 
-        # Shift cfrc from xipos to subtree_com[rootid] if needed.
-        # torque_new = torque + (xipos - subtree_com) × force
-        var tau_x = cfrc[body * 6 + 0]
-        var tau_y = cfrc[body * 6 + 1]
-        var tau_z = cfrc[body * 6 + 2]
-        var f_x = cfrc[body * 6 + 3]
-        var f_y = cfrc[body * 6 + 4]
-        var f_z = cfrc[body * 6 + 5]
-        if has_stcom:
-            var root = model.body_rootid[body]
-            var rx = data.xipos[body * 3 + 0] - data.subtree_com[root * 3 + 0]
-            var ry = data.xipos[body * 3 + 1] - data.subtree_com[root * 3 + 1]
-            var rz = data.xipos[body * 3 + 2] - data.subtree_com[root * 3 + 2]
-            tau_x = tau_x + ry * f_z - rz * f_y
-            tau_y = tau_y + rz * f_x - rx * f_z
-            tau_z = tau_z + rx * f_y - ry * f_x
-
         for d in range(num_dof):
             var dof = dof_adr + d
-            bias[dof] = (
-                cdof[dof * 6 + 0] * tau_x
-                + cdof[dof * 6 + 1] * tau_y
-                + cdof[dof * 6 + 2] * tau_z
-                + cdof[dof * 6 + 3] * f_x
-                + cdof[dof * 6 + 4] * f_y
-                + cdof[dof * 6 + 5] * f_z
-            )
+            bias[dof] = Scalar[DTYPE](0)
+            for k in range(6):
+                bias[dof] = bias[dof] + cdof[dof * 6 + k] * cfrc[body * 6 + k]
 
 
 # =============================================================================

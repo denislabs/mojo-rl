@@ -212,15 +212,25 @@ def cinert_offset[
     return cvel_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 6
 
 
+def subtree_com_offset[
+    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
+]() -> Int:
+    """Offset to subtree_com array (subtree center of mass).
+
+    Layout: [x, y, z] per body. Placed after cinert.
+    """
+    return cinert_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 10
+
+
 def qfrc_actuator_offset[
     NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
 ]() -> Int:
     """Offset to qfrc_actuator array (actuator force per DOF).
 
     Captures gear * clamped_force before constraint solving.
-    Placed after cinert.
+    Placed after subtree_com.
     """
-    return cinert_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 10
+    return subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 3
 
 
 def state_size[
@@ -245,6 +255,7 @@ def state_size[
         + NBODY * 6  # cfrc_ext
         + NBODY * 6  # cvel
         + NBODY * 10  # cinert
+        + NBODY * 3  # subtree_com
         + NV  # qfrc_actuator
     )
 
@@ -253,7 +264,7 @@ def state_size[
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime MODEL_BODY_SIZE: Int = 23
+comptime MODEL_BODY_SIZE: Int = 24
 
 comptime BODY_IDX_MASS: Int = 0
 comptime BODY_IDX_INV_MASS: Int = 1
@@ -278,6 +289,7 @@ comptime BODY_IDX_IQUAT_X: Int = 19  # Inertia frame quaternion (body frame)
 comptime BODY_IDX_IQUAT_Y: Int = 20
 comptime BODY_IDX_IQUAT_Z: Int = 21
 comptime BODY_IDX_IQUAT_W: Int = 22
+comptime BODY_IDX_ROOTID: Int = 23  # Root body index (child of worldbody)
 
 
 def model_body_offset(body_idx: Int) -> Int:
