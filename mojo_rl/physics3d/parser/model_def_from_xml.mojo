@@ -1270,6 +1270,20 @@ struct ModelDefFromXML[
         return List[Float64]()
 
     @staticmethod
+    def get_visual_settings() -> List[Float64]:
+        """Return [znear, fogstart, fogend, shadowsize, hl_r, hl_g, hl_b, has_headlight]."""
+        var result = List[Float64]()
+        result.append(Self._rcd.vis_znear)
+        result.append(Self._rcd.vis_fogstart)
+        result.append(Self._rcd.vis_fogend)
+        result.append(Float64(Self._rcd.vis_shadowsize))
+        result.append(Self._rcd.vis_headlight_ambient_r)
+        result.append(Self._rcd.vis_headlight_ambient_g)
+        result.append(Self._rcd.vis_headlight_ambient_b)
+        result.append(Float64(1.0) if Self._rcd.vis_has_headlight else Float64(0.0))
+        return result^
+
+    @staticmethod
     def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,

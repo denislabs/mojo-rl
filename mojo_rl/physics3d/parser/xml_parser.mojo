@@ -1756,6 +1756,16 @@ struct ComptimeRenderData(Copyable, Movable):
     var site_pos_z: InlineArray[Float64, 16]
     var site_size_0: InlineArray[Float64, 16]
 
+    # Visual settings from <visual> section
+    var vis_znear: Float64  # <map znear="..."/>  (camera near plane)
+    var vis_fogstart: Float64  # <map fogstart="..."/>
+    var vis_fogend: Float64  # <map fogend="..."/>
+    var vis_shadowsize: Int  # <quality shadowsize="..."/>
+    var vis_headlight_ambient_r: Float64  # <headlight ambient="r g b"/>
+    var vis_headlight_ambient_g: Float64
+    var vis_headlight_ambient_b: Float64
+    var vis_has_headlight: Bool  # True if <headlight> was found
+
     def __init__(out self):
         """Initialize with safe defaults."""
         self.ngeom = 0
@@ -1841,6 +1851,16 @@ struct ComptimeRenderData(Copyable, Movable):
         self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
         self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
         self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
+
+        # Visual defaults (MuJoCo defaults)
+        self.vis_znear = 0.01  # MuJoCo default
+        self.vis_fogstart = 3.0
+        self.vis_fogend = 10.0
+        self.vis_shadowsize = 4096  # MuJoCo default
+        self.vis_headlight_ambient_r = 0.1
+        self.vis_headlight_ambient_g = 0.1
+        self.vis_headlight_ambient_b = 0.1
+        self.vis_has_headlight = False
 
     def __init__(out self, *, copy: Self):
         """Copy constructor — element-by-element InlineArray copy."""
@@ -2005,6 +2025,16 @@ struct ComptimeRenderData(Copyable, Movable):
             self.site_pos_z[i] = copy.site_pos_z[i]
             self.site_size_0[i] = copy.site_size_0[i]
 
+        # Visual settings
+        self.vis_znear = copy.vis_znear
+        self.vis_fogstart = copy.vis_fogstart
+        self.vis_fogend = copy.vis_fogend
+        self.vis_shadowsize = copy.vis_shadowsize
+        self.vis_headlight_ambient_r = copy.vis_headlight_ambient_r
+        self.vis_headlight_ambient_g = copy.vis_headlight_ambient_g
+        self.vis_headlight_ambient_b = copy.vis_headlight_ambient_b
+        self.vis_has_headlight = copy.vis_has_headlight
+
     def __init__(out self, *, deinit take: Self):
         self.ngeom = take.ngeom
         self.nlight = take.nlight
@@ -2083,6 +2113,16 @@ struct ComptimeRenderData(Copyable, Movable):
         self.site_pos_y = take.site_pos_y^
         self.site_pos_z = take.site_pos_z^
         self.site_size_0 = take.site_size_0^
+
+        # Visual settings
+        self.vis_znear = take.vis_znear
+        self.vis_fogstart = take.vis_fogstart
+        self.vis_fogend = take.vis_fogend
+        self.vis_shadowsize = take.vis_shadowsize
+        self.vis_headlight_ambient_r = take.vis_headlight_ambient_r
+        self.vis_headlight_ambient_g = take.vis_headlight_ambient_g
+        self.vis_headlight_ambient_b = take.vis_headlight_ambient_b
+        self.vis_has_headlight = take.vis_has_headlight
 
 
 # =============================================================================
@@ -2674,6 +2714,47 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     data.nlight = light_count
     data.ncam = cam_count
     data.nsite = site_count
+
+    # ---- Parse <visual> section: map, quality, headlight ----------------------
+    var visual_sec = _extract_section(xml_clean, "visual")
+    if len(visual_sec) > 0:
+        # <map znear="..." fogstart="..." fogend="..."/>
+        var map_pos = visual_sec.find("<map")
+        if map_pos != -1:
+            var map_end = visual_sec.find(">", map_pos)
+            if map_end != -1:
+                var map_tag = String(visual_sec[byte = map_pos : map_end + 1])
+                var znear_s = _extract_attr(map_tag, "znear")
+                if len(znear_s) > 0:
+                    data.vis_znear = _parse_float(znear_s)
+                var fogstart_s = _extract_attr(map_tag, "fogstart")
+                if len(fogstart_s) > 0:
+                    data.vis_fogstart = _parse_float(fogstart_s)
+                var fogend_s = _extract_attr(map_tag, "fogend")
+                if len(fogend_s) > 0:
+                    data.vis_fogend = _parse_float(fogend_s)
+        # <quality shadowsize="..."/>
+        var qual_pos = visual_sec.find("<quality")
+        if qual_pos != -1:
+            var qual_end = visual_sec.find(">", qual_pos)
+            if qual_end != -1:
+                var qual_tag = String(visual_sec[byte = qual_pos : qual_end + 1])
+                var ss_s = _extract_attr(qual_tag, "shadowsize")
+                if len(ss_s) > 0:
+                    data.vis_shadowsize = Int(_parse_float(ss_s))
+        # <headlight ambient="r g b"/>
+        var hl_pos = visual_sec.find("<headlight")
+        if hl_pos != -1:
+            var hl_end = visual_sec.find(">", hl_pos)
+            if hl_end != -1:
+                var hl_tag = String(visual_sec[byte = hl_pos : hl_end + 1])
+                var amb_s = _extract_attr(hl_tag, "ambient")
+                if len(amb_s) > 0:
+                    var c = _rcd_parse_rgb3(amb_s)
+                    data.vis_headlight_ambient_r = c[0]
+                    data.vis_headlight_ambient_g = c[1]
+                    data.vis_headlight_ambient_b = c[2]
+                    data.vis_has_headlight = True
 
     # ---- Post-pass: resolve geom material="name" references ------------------
     var geom_scan = 0

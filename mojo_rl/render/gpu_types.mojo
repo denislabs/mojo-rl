@@ -58,7 +58,7 @@ struct GPUVertex(TrivialRegisterPassable):
 
 
 struct SceneUniforms(ImplicitlyCopyable, Movable):
-    """Scene-wide uniforms: 224 bytes.
+    """Scene-wide uniforms: 240 bytes.
 
     Layout (std140):
       view_proj:      mat4  (64 bytes)
@@ -72,6 +72,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
       light3_dir:     vec4  (16 bytes) - w = ambient3
       light3_color:   vec4  (16 bytes) - w = cast_shadow3
       ground_params:  vec4  (16 bytes) - xyz = checker_color2, w = ground_z
+      fog_params:     vec4  (16 bytes) - x = fogstart, y = fogend, z = unused, w = unused
     """
 
     var view_proj: InlineArray[Float32, 16]
@@ -85,6 +86,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
     var light3_dir: InlineArray[Float32, 4]
     var light3_color: InlineArray[Float32, 4]
     var ground_params: InlineArray[Float32, 4]
+    var fog_params: InlineArray[Float32, 4]
 
     def __init__(out self):
         self.view_proj = InlineArray[Float32, 16](fill=Float32(0))
@@ -98,6 +100,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.light3_dir = InlineArray[Float32, 4](fill=Float32(0))
         self.light3_color = InlineArray[Float32, 4](fill=Float32(0))
         self.ground_params = InlineArray[Float32, 4](fill=Float32(0))
+        self.fog_params = InlineArray[Float32, 4](fill=Float32(0))
 
     def __init__(out self, *, copy: Self):
         self.view_proj = copy.view_proj.copy()
@@ -111,6 +114,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.light3_dir = copy.light3_dir.copy()
         self.light3_color = copy.light3_color.copy()
         self.ground_params = copy.ground_params.copy()
+        self.fog_params = copy.fog_params.copy()
 
     def __init__(out self, *, deinit take: Self):
         self.view_proj = take.view_proj^
@@ -124,6 +128,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.light3_dir = take.light3_dir^
         self.light3_color = take.light3_color^
         self.ground_params = take.ground_params^
+        self.fog_params = take.fog_params^
 
 
 struct ObjectUniforms(ImplicitlyCopyable, Movable):

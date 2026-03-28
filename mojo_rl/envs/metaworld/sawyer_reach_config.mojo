@@ -21,9 +21,9 @@ from ..phyics3d_env_config import Phyics3dEnvConfig
 
 
 # Body indices in the parsed model (from test output)
-comptime MOCAP_BODY_IDX: Int = 23
-comptime HAND_BODY_IDX: Int = 19  # "hand" body
-comptime OBJ_BODY_IDX: Int = 24  # "obj" body
+comptime MOCAP_BODY_IDX: Int = 32
+comptime HAND_BODY_IDX: Int = 24  # "hand" body
+comptime OBJ_BODY_IDX: Int = 33  # "obj" body
 
 # Action scaling (MetaWorld default: 1cm per unit)
 comptime ACTION_SCALE: Float64 = 0.01

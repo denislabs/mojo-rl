@@ -111,6 +111,30 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 cast_shadow=True,
             ))
 
+        # Read visual settings from model (znear, fog, shadow, headlight)
+        var vis = Self.MODEL_DEF.get_visual_settings()
+        var shadow_size = Int(4096)
+        var fog_start = Float32(0.0)
+        var fog_end = Float32(0.0)
+        if len(vis) >= 8:
+            # Apply znear to all cameras
+            var znear = vis[0]
+            for ci in range(len(self.cameras)):
+                # Camera stores fov in radians already, near is Float64
+                self.cameras[ci].near = znear
+            fog_start = Float32(vis[1])
+            fog_end = Float32(vis[2])
+            shadow_size = Int(vis[3])
+            # Headlight ambient: add to all lights
+            var has_hl = vis[7] > 0.5
+            if has_hl:
+                var hl_r = vis[4]
+                var hl_g = vis[5]
+                var hl_b = vis[6]
+                var hl_avg = (hl_r + hl_g + hl_b) / 3.0
+                for li in range(len(lights)):
+                    lights[li].ambient = lights[li].ambient + hl_avg
+
         self.visual_radius_scale = visual_radius_scale
         self.axes_offset = axes_offset
         self.vel_arrow_height = vel_arrow_height
@@ -128,6 +152,9 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             draw_grid=True,
             draw_axes=False,
             lights=lights,
+            shadow_size=shadow_size,
+            fog_start=fog_start,
+            fog_end=fog_end,
         )
 
         # Configure skybox from GradientTexture (if model defines one)

@@ -434,6 +434,13 @@ trait ModelDefLike:
         ...
 
     @staticmethod
+    def get_visual_settings() -> List[Float64]:
+        """Return visual settings: [znear, fogstart, fogend, shadowsize,
+        headlight_r, headlight_g, headlight_b, has_headlight].
+        Empty list = use defaults."""
+        ...
+
+    @staticmethod
     def render_sites(
         mut renderer: Renderer3D,
         positions: List[_RVec3],
@@ -1498,6 +1505,11 @@ struct ModelDef[
                     result.append(Float64(GG.COLOR.g) / 255.0)
                     result.append(Float64(GG.COLOR.b) / 255.0)
         return result^
+
+    @staticmethod
+    def get_visual_settings() -> List[Float64]:
+        """ModelDef (non-XML) has no visual settings — return empty list."""
+        return List[Float64]()
 
     @staticmethod
     def render_sites(

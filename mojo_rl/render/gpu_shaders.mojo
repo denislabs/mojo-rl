@@ -18,7 +18,7 @@ SDL_GPU MSL binding convention:
 
 
 # --- Shared SceneUniforms MSL struct definition (used in multiple shaders) ---
-# 224 bytes: view_proj(64) + camera_pos(16) + 4 lights * 2 vec4(128) + ground_params(16)
+# 240B: view_proj(64) + camera_pos(16) + 4 lights*2 vec4(128) + ground_params(16) + fog_params(16)
 
 comptime _SCENE_UNIFORMS_MSL = """
 struct SceneUniforms {
@@ -33,6 +33,7 @@ struct SceneUniforms {
     float4 light3_dir;
     float4 light3_color;
     float4 ground_params;   // xyz = checker_color2, w = ground_z
+    float4 fog_params;      // x = fogstart, y = fogend, z = 0, w = 0
 };
 """
 
@@ -142,7 +143,7 @@ float compute_shadow(float3 world_pos,
 
     // 3x3 PCF for soft shadows
     float shadow_val = 0.0;
-    float texel_size = 1.0 / 1024.0;
+    float texel_size = 1.0 / 4096.0;
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(float(x), float(y)) * texel_size;
@@ -219,6 +220,16 @@ fragment float4 solid_fragment(
 
     float3 color = base_color.rgb * total_ambient + total_color
                  + base_color.rgb * mat_emission;
+
+    // Linear fog: blend towards fog color (use skybox-like grey) based on distance
+    float fog_start = scene.fog_params.x;
+    float fog_end = scene.fog_params.y;
+    if (fog_end > fog_start) {
+        float dist = length(in.world_pos - scene.camera_pos.xyz);
+        float fog_factor = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
+        float3 fog_color = float3(0.5, 0.495, 0.48);  // match typical skybox
+        color = mix(color, fog_color, fog_factor);
+    }
 
     return float4(color, base_color.a);
 }
@@ -301,7 +312,7 @@ float compute_shadow_ground(float3 world_pos,
 
     // 3x3 PCF
     float shadow_val = 0.0;
-    float texel_size = 1.0 / 1024.0;
+    float texel_size = 1.0 / 4096.0;
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(float(x), float(y)) * texel_size;
@@ -371,6 +382,16 @@ fragment float4 ground_fragment(
     // Distance fade for smooth ground edge
     float dist = length(in.world_pos.xy - scene.camera_pos.xy);
     float edge_fade = 1.0 - smoothstep(8.0, 12.0, dist);
+
+    // Linear fog for ground
+    float fog_start = scene.fog_params.x;
+    float fog_end = scene.fog_params.y;
+    if (fog_end > fog_start) {
+        float fog_dist = length(in.world_pos - scene.camera_pos.xyz);
+        float fog_factor = clamp((fog_dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
+        float3 fog_color = float3(0.5, 0.495, 0.48);
+        base_color = mix(base_color, fog_color, fog_factor);
+    }
 
     // Semi-transparent ground to let reflections show through (rendered underneath)
     float alpha = 0.55 * edge_fade;

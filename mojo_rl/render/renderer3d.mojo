@@ -329,6 +329,11 @@ struct Renderer3D(Movable):
     var draw_grid: Bool
     var draw_axes: Bool
 
+    # Visual settings from MuJoCo <visual> section
+    var shadow_size: Int  # shadow map resolution (default 4096)
+    var fog_start: Float32  # fog start distance
+    var fog_end: Float32  # fog end distance
+
     # Camera switching (set by check_quit, read by ModelRenderer)
     var camera_switch_request: Int  # -1 = none, 0-8 = switch to camera N
 
@@ -369,6 +374,9 @@ struct Renderer3D(Movable):
         light_color_g: Float32 = 0.98,
         light_color_b: Float32 = 0.95,
         light_ambient: Float32 = 0.25,
+        shadow_size: Int = 4096,
+        fog_start: Float32 = 0.0,
+        fog_end: Float32 = 0.0,
     ) raises:
         self.width = width
         self.height = height
@@ -444,6 +452,11 @@ struct Renderer3D(Movable):
         self.scene_uniforms = SceneUniforms()
         self.skybox_uniforms = SkyboxUniforms()
         self.draw_skybox = False
+
+        # Visual settings
+        self.shadow_size = shadow_size
+        self.fog_start = fog_start
+        self.fog_end = fog_end
 
         # Store configurable light parameters (up to 4 lights)
         self.camera_switch_request = -1
@@ -526,6 +539,9 @@ struct Renderer3D(Movable):
         self.draw_skybox = take.draw_skybox
         self.swapchain_format = take.swapchain_format
         self.lights = take.lights^
+        self.shadow_size = take.shadow_size
+        self.fog_start = take.fog_start
+        self.fog_end = take.fog_end
         self.camera_switch_request = take.camera_switch_request
         self.mouse_left_down = take.mouse_left_down
         self.mouse_right_down = take.mouse_right_down
@@ -1342,8 +1358,8 @@ struct Renderer3D(Movable):
             format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
             usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET
             | GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER,
-            width=1024,
-            height=1024,
+            width=UInt32(self.shadow_size),
+            height=UInt32(self.shadow_size),
             layer_count_or_depth=1,
             num_levels=1,
             sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
@@ -2681,7 +2697,7 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=light_scene).bitcast[NoneType](),
-                224,
+                240,
             )
 
             for i in range(len(self.solid_draws)):
@@ -2802,13 +2818,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
 
             for i in range(len(self.solid_draws)):
@@ -2845,13 +2861,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
@@ -2905,13 +2921,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
@@ -3255,6 +3271,10 @@ struct Renderer3D(Movable):
                 self.scene_uniforms.light3_color[3] = Float32(
                     1.0 if light.cast_shadow else 0.0
                 )
+
+        # Fog params
+        self.scene_uniforms.fog_params[0] = self.fog_start
+        self.scene_uniforms.fog_params[1] = self.fog_end
 
     def _build_light_view_proj(mut self):
         """Build light's orthographic view-projection matrix for shadow mapping.

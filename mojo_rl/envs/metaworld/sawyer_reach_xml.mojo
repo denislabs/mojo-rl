@@ -1,8 +1,9 @@
 """Sawyer Reach-v3 model definition via merge_mjcf.
 
 Merges modular XML fragments following MuJoCo's <include> semantics:
-  - sawyer_scene_xml (table, walls, floor, lights, solver options)
-  - sawyer_deps_xml (compiler flags, named default classes)
+  - sawyer_scene_xml (table, walls, floor, lights, visual settings, solver options)
+  - sawyer_block_deps_xml (block textures, materials, mesh)
+  - sawyer_deps_xml (compiler flags, named default classes, robot meshes)
   - sawyer_robot_xml (Sawyer 7-DOF arm + gripper + mocap body)
   - reach task XML (object, goal, actuators, weld constraint)
 
@@ -16,6 +17,35 @@ from .sawyer_scene_xml import sawyer_scene_xml
 from .sawyer_deps_xml import sawyer_deps_xml
 from .sawyer_robot_xml import sawyer_robot_xml
 
+# Block dependencies (textures, materials, mesh)
+# From: references/Metaworld-master/metaworld/assets/objects/assets/block_dependencies.xml
+comptime sawyer_block_deps_xml = """
+<mujocoinclude>
+    <asset>
+        <texture name="T_block_wood" type="cube"
+                 file="mojo_rl/envs/metaworld/assets/textures/wood4.png"/>
+        <material name="block_col" rgba="0.3 0.3 1.0 0.5" shininess="0" specular="0"/>
+        <material name="block_wood" texture="T_block_wood" shininess="1"
+                  reflectance="0.7" specular="0.5"/>
+        <material name="block_red" rgba="0.8 0 0 1" shininess="0.2"
+                  reflectance="0.2" specular="0.5"/>
+        <mesh file="mojo_rl/envs/metaworld/assets/meshes/block/block.stl" name="block"/>
+    </asset>
+
+    <default>
+        <default class="block_base">
+            <joint armature="0.001" damping="2" limited="true"/>
+            <geom conaffinity="0" contype="0" group="1" type="mesh"/>
+            <position ctrllimited="true" ctrlrange="0 1.57"/>
+            <default class="block_col">
+                <geom conaffinity="1" condim="4" contype="1" group="4"
+                      material="block_col" solimp="0.99 0.99 0.01" solref="0.01 1"/>
+            </default>
+        </default>
+    </default>
+</mujocoinclude>
+"""
+
 # Task-specific XML (object + goal + actuators + equality)
 comptime sawyer_reach_task_xml = """
 <mujoco>
@@ -27,15 +57,15 @@ comptime sawyer_reach_task_xml = """
             <geom name="objGeom" type="cylinder" pos="0 0 0"
                   solimp="0.99 0.99 0.01" size="0.02 0.02" rgba="1 0 0 1"
                   solref="0.01 1" contype="1" conaffinity="1"
-                  friction="1 0.1 0.002" condim="4"/>
+                  friction="1 0.1 0.002" condim="4" material="block_wood"/>
         </body>
 
         <site name="goal" pos="-0.1 0.8 0.2" size="0.02" rgba="0.8 0 0 1"/>
     </worldbody>
 
     <actuator>
-        <position ctrllimited="true" ctrlrange="-1 1" joint="r_close" kp="400"/>
-        <position ctrllimited="true" ctrlrange="-1 1" joint="l_close" kp="400"/>
+        <position ctrllimited="true" ctrlrange="-1 1" joint="r_close" kp="400" user="1"/>
+        <position ctrllimited="true" ctrlrange="-1 1" joint="l_close" kp="400" user="1"/>
     </actuator>
 
     <equality>
@@ -47,6 +77,7 @@ comptime sawyer_reach_task_xml = """
 # Merge all fragments (same order as MetaWorld's includes)
 comptime sawyer_reach_xml = merge_mjcf(
     sawyer_scene_xml,
+    sawyer_block_deps_xml,
     sawyer_deps_xml,
     sawyer_robot_xml,
     sawyer_reach_task_xml,
