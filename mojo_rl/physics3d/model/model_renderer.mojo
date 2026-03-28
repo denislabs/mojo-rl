@@ -302,14 +302,6 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
         except:
             pass
 
-        # Coordinate axes
-        if self.follow:
-            self.renderer.draw_coordinate_axes(
-                Vec3(torso_pos.x - self.axes_offset, 0.0, 0.0), 0.2
-            )
-        else:
-            self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.0), 0.2)
-
         # Render body-attached geoms
         try:
             Self.MODEL_DEF.render_body_geoms(

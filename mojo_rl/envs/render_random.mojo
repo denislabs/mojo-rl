@@ -101,10 +101,14 @@ def render_random[
             if elapsed_ms > 0:
                 fps = Float64(step + 1) / (Float64(elapsed_ms) / 1000.0)
             print(
-                "Step", step,
-                " | reward:", String(reward)[byte=:8],
-                " | total:", String(total_reward)[byte=:10],
-                " | FPS:", Int(fps),
+                "Step",
+                step,
+                " | reward:",
+                String(reward)[byte=:8],
+                " | total:",
+                String(total_reward)[byte=:10],
+                " | FPS:",
+                Int(fps),
             )
 
         step += 1
