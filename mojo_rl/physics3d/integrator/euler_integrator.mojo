@@ -75,6 +75,7 @@ from ..dynamics.bias_forces import (
 from ..dynamics.jacobian import (
     compute_subtree_com,
     compute_cdof,
+    compute_subtree_com_gpu,
     compute_cdof_gpu,
     compute_composite_inertia,
     compute_composite_inertia_gpu,
@@ -807,6 +808,12 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime meta_off_c = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
         state[env, meta_off_c + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
 
+        # 3a. Compute subtree_com (writes to state buffer)
+        compute_subtree_com_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH,
+        ](env, state, model)
+
         # 4. Compute cdof (writes to workspace at ws_cdof_offset)
         compute_cdof_gpu[
             DTYPE,
@@ -1408,6 +1415,12 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
             # 3. Zero contact count
             comptime meta_off_c = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
             state[env, meta_off_c + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
+
+            # 3a. Compute subtree_com
+            compute_subtree_com_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH,
+            ](env, state, model)
 
             # 4. Compute cdof
             compute_cdof_gpu[

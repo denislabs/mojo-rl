@@ -58,6 +58,8 @@ from ..gpu.constants import (
     BODY_IDX_IQUAT_Y,
     BODY_IDX_IQUAT_Z,
     BODY_IDX_IQUAT_W,
+    BODY_IDX_ROOTID,
+    subtree_com_offset,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
@@ -1083,6 +1085,65 @@ def compute_composite_inertia_gpu[
 
 
 @always_inline
+def compute_subtree_com_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    NSITE: Int = 0,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+):
+    """Compute subtree CoM on GPU and write to state buffer.
+
+    Bottom-up accumulation: sum mass*xipos for each body and descendants,
+    then normalize. Writes result to subtree_com slot in state buffer.
+    """
+    var xi_off = xipos_offset[NQ, NV, NBODY]()
+    var stcom_off = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+
+    # Initialize with mass * xipos
+    comptime MASS_SIZE = _max_one[NBODY]()
+    var stmass = InlineArray[Scalar[DTYPE], MASS_SIZE](uninitialized=True)
+    for b in range(NBODY):
+        var body_off = model_body_offset(b)
+        var mass = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_MASS])
+        stmass[b] = mass
+        state[env, stcom_off + b*3 + 0] = mass * rebind[Scalar[DTYPE]](state[env, xi_off + b*3 + 0])
+        state[env, stcom_off + b*3 + 1] = mass * rebind[Scalar[DTYPE]](state[env, xi_off + b*3 + 1])
+        state[env, stcom_off + b*3 + 2] = mass * rebind[Scalar[DTYPE]](state[env, xi_off + b*3 + 2])
+
+    # Bottom-up accumulation
+    for b in range(NBODY - 1, 0, -1):
+        var body_off = model_body_offset(b)
+        var p = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT]))
+        stmass[p] = stmass[p] + stmass[b]
+        state[env, stcom_off + p*3 + 0] = rebind[Scalar[DTYPE]](state[env, stcom_off + p*3 + 0]) + rebind[Scalar[DTYPE]](state[env, stcom_off + b*3 + 0])
+        state[env, stcom_off + p*3 + 1] = rebind[Scalar[DTYPE]](state[env, stcom_off + p*3 + 1]) + rebind[Scalar[DTYPE]](state[env, stcom_off + b*3 + 1])
+        state[env, stcom_off + p*3 + 2] = rebind[Scalar[DTYPE]](state[env, stcom_off + p*3 + 2]) + rebind[Scalar[DTYPE]](state[env, stcom_off + b*3 + 2])
+
+    # Normalize
+    for b in range(NBODY):
+        if stmass[b] > Scalar[DTYPE](1e-10):
+            state[env, stcom_off + b*3 + 0] = rebind[Scalar[DTYPE]](state[env, stcom_off + b*3 + 0]) / stmass[b]
+            state[env, stcom_off + b*3 + 1] = rebind[Scalar[DTYPE]](state[env, stcom_off + b*3 + 1]) / stmass[b]
+            state[env, stcom_off + b*3 + 2] = rebind[Scalar[DTYPE]](state[env, stcom_off + b*3 + 2]) / stmass[b]
+        else:
+            state[env, stcom_off + b*3 + 0] = rebind[Scalar[DTYPE]](state[env, xi_off + b*3 + 0])
+            state[env, stcom_off + b*3 + 1] = rebind[Scalar[DTYPE]](state[env, xi_off + b*3 + 1])
+            state[env, stcom_off + b*3 + 2] = rebind[Scalar[DTYPE]](state[env, xi_off + b*3 + 2])
+
+
+@always_inline
 def compute_cdof_gpu[
     DTYPE: DType,
     NQ: Int,
@@ -1123,6 +1184,7 @@ def compute_cdof_gpu[
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
     var xi_off = xipos_offset[NQ, NV, NBODY]()
+    var stcom_off = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
     var num_joints = Int(model[0, model_meta_off + MODEL_META_IDX_NJOINT])
 
@@ -1168,10 +1230,11 @@ def compute_cdof_gpu[
         acc_qz = pre_q[2]
         acc_qw = pre_q[3]
 
-        # Body CoM world position
-        var com_x = rebind[Scalar[DTYPE]](state[env, xi_off + body * 3 + 0])
-        var com_y = rebind[Scalar[DTYPE]](state[env, xi_off + body * 3 + 1])
-        var com_z = rebind[Scalar[DTYPE]](state[env, xi_off + body * 3 + 2])
+        # Reference point: subtree_com[rootid[body]] (MuJoCo convention)
+        var rootid = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_ROOTID]))
+        var ref_x = rebind[Scalar[DTYPE]](state[env, stcom_off + rootid * 3 + 0])
+        var ref_y = rebind[Scalar[DTYPE]](state[env, stcom_off + rootid * 3 + 1])
+        var ref_z = rebind[Scalar[DTYPE]](state[env, stcom_off + rootid * 3 + 2])
 
         # Compute xpos_initial: xpos[parent] + R(xquat[parent]) * body_pos
         # Use parent's FINAL orientation (data.xquat[parent]) to rotate body_pos.
@@ -1278,11 +1341,10 @@ def compute_cdof_gpu[
                 var anc_y = cy + jp[1]
                 var anc_z = cz + jp[2]
 
-                # offset = body_com - joint_anchor (GPU: legacy path)
-                # TODO: update to subtree_com when GPU workspace supports it
-                var ox = com_x - anc_x
-                var oy = com_y - anc_y
-                var oz = com_z - anc_z
+                # offset = subtree_com[rootid] - joint_anchor (MuJoCo convention)
+                var ox = ref_x - anc_x
+                var oy = ref_y - anc_y
+                var oz = ref_z - anc_z
 
                 workspace[env, cdof_idx + dof_adr * 6 + 0] = ax
                 workspace[env, cdof_idx + dof_adr * 6 + 1] = ay
@@ -1372,24 +1434,55 @@ def compute_cdof_gpu[
                 cz += disp * a_w[2]
 
             elif jnt_type == JNT_FREE:
-                workspace[env, cdof_idx + (dof_adr + 0) * 6 + 3] = Scalar[
-                    DTYPE
-                ](1)
-                workspace[env, cdof_idx + (dof_adr + 1) * 6 + 4] = Scalar[
-                    DTYPE
-                ](1)
-                workspace[env, cdof_idx + (dof_adr + 2) * 6 + 5] = Scalar[
-                    DTYPE
-                ](1)
-                workspace[env, cdof_idx + (dof_adr + 3) * 6 + 0] = Scalar[
-                    DTYPE
-                ](1)
-                workspace[env, cdof_idx + (dof_adr + 4) * 6 + 1] = Scalar[
-                    DTYPE
-                ](1)
-                workspace[env, cdof_idx + (dof_adr + 5) * 6 + 2] = Scalar[
-                    DTYPE
-                ](1)
+                # Translation DOFs: pure linear
+                workspace[env, cdof_idx + (dof_adr + 0) * 6 + 3] = Scalar[DTYPE](1)
+                workspace[env, cdof_idx + (dof_adr + 1) * 6 + 4] = Scalar[DTYPE](1)
+                workspace[env, cdof_idx + (dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)
+
+                # Rotation DOFs: body xmat columns + subtree_com offset
+                # (MuJoCo mj_comPos: axes = columns of xmat[body])
+                var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 0])
+                var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 1])
+                var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 2])
+                var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 3])
+                # xmat columns from quaternion
+                var ax0_x = Scalar[DTYPE](1) - Scalar[DTYPE](2)*(bqy*bqy + bqz*bqz)
+                var ax0_y = Scalar[DTYPE](2)*(bqx*bqy + bqw*bqz)
+                var ax0_z = Scalar[DTYPE](2)*(bqx*bqz - bqw*bqy)
+                var ax1_x = Scalar[DTYPE](2)*(bqx*bqy - bqw*bqz)
+                var ax1_y = Scalar[DTYPE](1) - Scalar[DTYPE](2)*(bqx*bqx + bqz*bqz)
+                var ax1_z = Scalar[DTYPE](2)*(bqy*bqz + bqw*bqx)
+                var ax2_x = Scalar[DTYPE](2)*(bqx*bqz + bqw*bqy)
+                var ax2_y = Scalar[DTYPE](2)*(bqy*bqz - bqw*bqx)
+                var ax2_z = Scalar[DTYPE](1) - Scalar[DTYPE](2)*(bqx*bqx + bqy*bqy)
+                # Offset: subtree_com[rootid] - xpos[body]
+                var f_xpos_x = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
+                var f_xpos_y = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
+                var f_xpos_z = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
+                var f_off_x = ref_x - f_xpos_x
+                var f_off_y = ref_y - f_xpos_y
+                var f_off_z = ref_z - f_xpos_z
+                # DOF 3: body x-axis
+                workspace[env, cdof_idx + (dof_adr+3)*6 + 0] = ax0_x
+                workspace[env, cdof_idx + (dof_adr+3)*6 + 1] = ax0_y
+                workspace[env, cdof_idx + (dof_adr+3)*6 + 2] = ax0_z
+                workspace[env, cdof_idx + (dof_adr+3)*6 + 3] = ax0_y*f_off_z - ax0_z*f_off_y
+                workspace[env, cdof_idx + (dof_adr+3)*6 + 4] = ax0_z*f_off_x - ax0_x*f_off_z
+                workspace[env, cdof_idx + (dof_adr+3)*6 + 5] = ax0_x*f_off_y - ax0_y*f_off_x
+                # DOF 4: body y-axis
+                workspace[env, cdof_idx + (dof_adr+4)*6 + 0] = ax1_x
+                workspace[env, cdof_idx + (dof_adr+4)*6 + 1] = ax1_y
+                workspace[env, cdof_idx + (dof_adr+4)*6 + 2] = ax1_z
+                workspace[env, cdof_idx + (dof_adr+4)*6 + 3] = ax1_y*f_off_z - ax1_z*f_off_y
+                workspace[env, cdof_idx + (dof_adr+4)*6 + 4] = ax1_z*f_off_x - ax1_x*f_off_z
+                workspace[env, cdof_idx + (dof_adr+4)*6 + 5] = ax1_x*f_off_y - ax1_y*f_off_x
+                # DOF 5: body z-axis
+                workspace[env, cdof_idx + (dof_adr+5)*6 + 0] = ax2_x
+                workspace[env, cdof_idx + (dof_adr+5)*6 + 1] = ax2_y
+                workspace[env, cdof_idx + (dof_adr+5)*6 + 2] = ax2_z
+                workspace[env, cdof_idx + (dof_adr+5)*6 + 3] = ax2_y*f_off_z - ax2_z*f_off_y
+                workspace[env, cdof_idx + (dof_adr+5)*6 + 4] = ax2_z*f_off_x - ax2_x*f_off_z
+                workspace[env, cdof_idx + (dof_adr+5)*6 + 5] = ax2_x*f_off_y - ax2_y*f_off_x
 
                 # FREE joint sets orientation from qpos
                 var qpos_adr_val = Int(
@@ -1520,17 +1613,13 @@ def compute_contact_jacobian_row_gpu[
         elif jnt_type == JNT_BALL:
             num_dof = 3
 
-        # Reference body = joint's body CoM (must match cdof computation)
-        var xipos_off = xipos_offset[NQ, NV, NBODY]()
-        var b_x = rebind[Scalar[DTYPE]](
-            state[env, xipos_off + joint_body * 3 + 0]
-        )
-        var b_y = rebind[Scalar[DTYPE]](
-            state[env, xipos_off + joint_body * 3 + 1]
-        )
-        var b_z = rebind[Scalar[DTYPE]](
-            state[env, xipos_off + joint_body * 3 + 2]
-        )
+        # Reference = subtree_com[rootid] (must match cdof computation)
+        var stcom_off_jac = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+        var jb_off = model_body_offset(joint_body)
+        var jb_rootid = Int(rebind[Scalar[DTYPE]](model[0, jb_off + BODY_IDX_ROOTID]))
+        var b_x = rebind[Scalar[DTYPE]](state[env, stcom_off_jac + jb_rootid * 3 + 0])
+        var b_y = rebind[Scalar[DTYPE]](state[env, stcom_off_jac + jb_rootid * 3 + 1])
+        var b_z = rebind[Scalar[DTYPE]](state[env, stcom_off_jac + jb_rootid * 3 + 2])
 
         var rx = contact_pos_x - b_x
         var ry = contact_pos_y - b_y

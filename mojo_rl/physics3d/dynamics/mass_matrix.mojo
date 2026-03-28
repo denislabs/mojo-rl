@@ -46,6 +46,8 @@ from ..gpu.constants import (
     BODY_IDX_IQUAT_Y,
     BODY_IDX_IQUAT_Z,
     BODY_IDX_IQUAT_W,
+    BODY_IDX_ROOTID,
+    subtree_com_offset,
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_DOF_ADR,
@@ -1606,6 +1608,7 @@ def compute_mass_matrix_full_gpu[
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
     var xipos_off = xipos_offset[NQ, NV, NBODY]()
+    var stcom_off_mm = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
 
     # Pre-compute per-body world-frame inertia tensor
     comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
@@ -1719,15 +1722,12 @@ def compute_mass_matrix_full_gpu[
                     state[env, xipos_off + k * 3 + 2]
                 )
 
-                var pi0 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_i * 3 + 0]
-                )
-                var pi1 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_i * 3 + 1]
-                )
-                var pi2 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_i * 3 + 2]
-                )
+                # Velocity transport: use subtree_com[rootid] as reference
+                var ri_off = model_body_offset(body_i)
+                var ri_root = Int(rebind[Scalar[DTYPE]](model[0, ri_off + BODY_IDX_ROOTID]))
+                var pi0 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + ri_root * 3 + 0])
+                var pi1 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + ri_root * 3 + 1])
+                var pi2 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + ri_root * 3 + 2])
                 var di0 = pk0 - pi0
                 var di1 = pk1 - pi1
                 var di2 = pk2 - pi2
@@ -1735,15 +1735,11 @@ def compute_mass_matrix_full_gpu[
                 var vki1 = li1 + ai2 * di0 - ai0 * di2
                 var vki2 = li2 + ai0 * di1 - ai1 * di0
 
-                var pj0 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_j * 3 + 0]
-                )
-                var pj1 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_j * 3 + 1]
-                )
-                var pj2 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_j * 3 + 2]
-                )
+                var rj_off = model_body_offset(body_j)
+                var rj_root = Int(rebind[Scalar[DTYPE]](model[0, rj_off + BODY_IDX_ROOTID]))
+                var pj0 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + rj_root * 3 + 0])
+                var pj1 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + rj_root * 3 + 1])
+                var pj2 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + rj_root * 3 + 2])
                 var dj0 = pk0 - pj0
                 var dj1 = pk1 - pj1
                 var dj2 = pk2 - pj2
@@ -1844,6 +1840,7 @@ def compute_mass_matrix_full_gpu_mt[
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
     var xipos_off = xipos_offset[NQ, NV, NBODY]()
+    var stcom_off_mm = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
 
     # Pre-compute per-body world-frame inertia tensor (all threads redundantly)
     comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
@@ -1953,15 +1950,12 @@ def compute_mass_matrix_full_gpu_mt[
                     state[env, xipos_off + k * 3 + 2]
                 )
 
-                var pi0 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_i * 3 + 0]
-                )
-                var pi1 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_i * 3 + 1]
-                )
-                var pi2 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_i * 3 + 2]
-                )
+                # Velocity transport: use subtree_com[rootid] as reference
+                var ri_off = model_body_offset(body_i)
+                var ri_root = Int(rebind[Scalar[DTYPE]](model[0, ri_off + BODY_IDX_ROOTID]))
+                var pi0 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + ri_root * 3 + 0])
+                var pi1 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + ri_root * 3 + 1])
+                var pi2 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + ri_root * 3 + 2])
                 var di0 = pk0 - pi0
                 var di1 = pk1 - pi1
                 var di2 = pk2 - pi2
@@ -1969,15 +1963,11 @@ def compute_mass_matrix_full_gpu_mt[
                 var vki1 = li1 + ai2 * di0 - ai0 * di2
                 var vki2 = li2 + ai0 * di1 - ai1 * di0
 
-                var pj0 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_j * 3 + 0]
-                )
-                var pj1 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_j * 3 + 1]
-                )
-                var pj2 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_j * 3 + 2]
-                )
+                var rj_off = model_body_offset(body_j)
+                var rj_root = Int(rebind[Scalar[DTYPE]](model[0, rj_off + BODY_IDX_ROOTID]))
+                var pj0 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + rj_root * 3 + 0])
+                var pj1 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + rj_root * 3 + 1])
+                var pj2 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + rj_root * 3 + 2])
                 var dj0 = pk0 - pj0
                 var dj1 = pk1 - pj1
                 var dj2 = pk2 - pj2
@@ -2289,6 +2279,7 @@ def compute_mass_matrix_sparse_gpu[
 
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
     var xipos_off = xipos_offset[NQ, NV, NBODY]()
+    var stcom_off_mm = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
 
     # Pre-compute per-body world-frame inertia tensors [xx, yy, zz, xy, xz, yz]
     comptime I_WORLD_SIZE = _ensure_positive[NBODY * 6]()
@@ -2393,15 +2384,12 @@ def compute_mass_matrix_sparse_gpu[
                     state[env, xipos_off + k * 3 + 2]
                 )
 
-                var pi0 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_i * 3 + 0]
-                )
-                var pi1 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_i * 3 + 1]
-                )
-                var pi2 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_i * 3 + 2]
-                )
+                # Velocity transport: use subtree_com[rootid] as reference
+                var ri_off = model_body_offset(body_i)
+                var ri_root = Int(rebind[Scalar[DTYPE]](model[0, ri_off + BODY_IDX_ROOTID]))
+                var pi0 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + ri_root * 3 + 0])
+                var pi1 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + ri_root * 3 + 1])
+                var pi2 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + ri_root * 3 + 2])
                 var di0 = pk0 - pi0
                 var di1 = pk1 - pi1
                 var di2 = pk2 - pi2
@@ -2409,15 +2397,11 @@ def compute_mass_matrix_sparse_gpu[
                 var vki1 = li1 + ai2 * di0 - ai0 * di2
                 var vki2 = li2 + ai0 * di1 - ai1 * di0
 
-                var pj0 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_j * 3 + 0]
-                )
-                var pj1 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_j * 3 + 1]
-                )
-                var pj2 = rebind[Scalar[DTYPE]](
-                    state[env, xipos_off + body_j * 3 + 2]
-                )
+                var rj_off = model_body_offset(body_j)
+                var rj_root = Int(rebind[Scalar[DTYPE]](model[0, rj_off + BODY_IDX_ROOTID]))
+                var pj0 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + rj_root * 3 + 0])
+                var pj1 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + rj_root * 3 + 1])
+                var pj2 = rebind[Scalar[DTYPE]](state[env, stcom_off_mm + rj_root * 3 + 2])
                 var dj0 = pk0 - pj0
                 var dj1 = pk1 - pj1
                 var dj2 = pk2 - pj2
@@ -2749,6 +2733,7 @@ def compute_mass_matrix_diagonal_gpu[
     var xpos_off = xpos_offset[NQ, NV, NBODY]()
     var xquat_off = xquat_offset[NQ, NV, NBODY]()
     var xipos_off = xipos_offset[NQ, NV, NBODY]()
+    var stcom_off_mm = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
 
     var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
     var num_joints = Int(

@@ -66,6 +66,7 @@ from ..dynamics.bias_forces import (
 from ..dynamics.jacobian import (
     compute_subtree_com,
     compute_cdof,
+    compute_subtree_com_gpu,
     compute_cdof_gpu,
     compute_composite_inertia,
     compute_composite_inertia_gpu,
@@ -1324,6 +1325,12 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             MODEL_SIZE,
             BATCH,
             NGEOM,
+        ](env, state, model)
+
+        # 3a. Compute subtree_com
+        compute_subtree_com_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH,
         ](env, state, model)
 
         # 4. Compute cdof
