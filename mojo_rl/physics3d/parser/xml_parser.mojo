@@ -231,24 +231,38 @@ def _extract_attr(tag: String, attr: String) -> String:
     """Extract value from attr="value" or attr='value' in a tag string.
 
     Returns "" if not found.
+    Matches standalone attribute names only (preceded by space/tab/newline),
+    avoiding substring matches like "contype" when searching for "type".
     """
     # Try double-quoted form: attr="..."
     var search_dq = attr + '="'
+    var search_len = len(search_dq)
     var pos = tag.find(search_dq)
-    if pos != -1:
-        var val_start = pos + len(search_dq)
-        var val_end = tag.find('"', val_start)
-        if val_end != -1:
-            return String(tag[byte=val_start:val_end])
+    while pos != -1:
+        # Ensure standalone match: char before must be space/tab/newline
+        if pos == 0 or _is_attr_separator(String(tag[byte = pos - 1 : pos])):
+            var val_start = pos + search_len
+            var val_end = tag.find('"', val_start)
+            if val_end != -1:
+                return String(tag[byte=val_start:val_end])
+        pos = tag.find(search_dq, pos + 1)
     # Try single-quoted form: attr='...'
     var search_sq = attr + "='"
+    var search_sq_len = len(search_sq)
     pos = tag.find(search_sq)
-    if pos != -1:
-        var val_start = pos + len(search_sq)
-        var val_end = tag.find("'", val_start)
-        if val_end != -1:
-            return String(tag[byte=val_start:val_end])
+    while pos != -1:
+        if pos == 0 or _is_attr_separator(String(tag[byte = pos - 1 : pos])):
+            var val_start = pos + search_sq_len
+            var val_end = tag.find("'", val_start)
+            if val_end != -1:
+                return String(tag[byte=val_start:val_end])
+        pos = tag.find(search_sq, pos + 1)
     return String("")
+
+
+def _is_attr_separator(c: String) -> Bool:
+    """Check if character is a valid separator before an attribute name."""
+    return c == " " or c == "\t" or c == "\n" or c == "\r"
 
 
 def _digit_value(c: String) -> Int:

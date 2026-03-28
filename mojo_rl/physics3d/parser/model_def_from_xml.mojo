@@ -1277,9 +1277,9 @@ struct ModelDefFromXML[
                 var grid_cx = torso_x if follow else Float64(0.0)
                 renderer.draw_ground_grid(grid_cx, height=ground_offset)
         if not has_plane:
-            var ground_offset = -max_body_radius * (visual_radius_scale - 1.0)
-            var grid_cx = torso_x if follow else Float64(0.0)
-            renderer.draw_ground_grid(grid_cx, height=ground_offset)
+            # No ground plane defined in XML — skip ground rendering.
+            # Models like InvertedPendulum intentionally omit the ground.
+            pass
 
     @staticmethod
     def render_body_geoms(
@@ -1288,11 +1288,14 @@ struct ModelDefFromXML[
         quaternions: List[_RQuat],
         visual_radius_scale: Float64,
     ) raises:
-        """Draw body-attached geoms (body_id > 0) using parsed geometry + colour."""
+        """Draw body-attached geoms using parsed geometry + colour."""
         # SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4
         for i in range(Self.NGEOM):
             var bid = Self._rcd.geom_body_id[i]
-            if bid <= 0:
+            if bid < 0:
+                continue
+            # Skip plane geoms (handled by render_ground_geoms)
+            if Self._rcd.geom_type[i] == 0:
                 continue
             if bid >= len(positions):
                 continue
@@ -1348,7 +1351,7 @@ struct ModelDefFromXML[
                     half_extents=_RVec3(Self._rcd.geom_half_x[i], Self._rcd.geom_half_y[i], Self._rcd.geom_half_z[i]),
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
             elif gt == 4:  # CYLINDER
-                renderer.draw_capsule(center=geom_pos, orientation=geom_quat,
+                renderer.draw_cylinder(center=geom_pos, orientation=geom_quat,
                     radius=Self._rcd.geom_radius[i] * visual_radius_scale,
                     half_height=Self._rcd.geom_half_length[i], axis=2,
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)

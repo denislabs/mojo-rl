@@ -168,6 +168,7 @@ from .gpu_mesh import (
     generate_sphere,
     generate_box,
     generate_capsule,
+    generate_cylinder,
     generate_ground,
 )
 from .gpu_shaders import (
@@ -270,6 +271,7 @@ struct Renderer3D(Movable):
     var box_mesh: MeshHandle
     var ground_mesh: MeshHandle
     var capsule_cache: List[CapsuleCacheEntry]
+    var cylinder_cache: List[CapsuleCacheEntry]  # Same cache type (radius, half_height)
 
     # Dynamic line buffer
     var line_vertex_data: List[Float32]  # x,y,z per vertex
@@ -412,6 +414,7 @@ struct Renderer3D(Movable):
         self.box_mesh = MeshHandle()
         self.ground_mesh = MeshHandle()
         self.capsule_cache = List[CapsuleCacheEntry]()
+        self.cylinder_cache = List[CapsuleCacheEntry]()
 
         # Line data
         self.line_vertex_data = List[Float32]()
@@ -478,6 +481,7 @@ struct Renderer3D(Movable):
         self.box_mesh = take.box_mesh^
         self.ground_mesh = take.ground_mesh^
         self.capsule_cache = take.capsule_cache^
+        self.cylinder_cache = take.cylinder_cache^
         self.line_vertex_data = take.line_vertex_data^
         self.line_colors = take.line_colors^
         self.line_vertex_buffer = take.line_vertex_buffer
@@ -1928,6 +1932,77 @@ struct Renderer3D(Movable):
             )
         )
 
+    def draw_cylinder(
+        mut self,
+        center: Vec3,
+        orientation: Quat,
+        radius: Float64,
+        half_height: Float64,
+        axis: Int = 2,
+        color: Color = Color(255, 255, 255, 255),
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
+    ) raises:
+        """Draw a solid cylinder with flat disc caps.
+
+        Args:
+            center: Cylinder center in world space.
+            orientation: Cylinder orientation.
+            radius: Cylinder radius.
+            half_height: Half-height of the cylinder.
+            axis: Local axis (0=X, 1=Y, 2=Z).
+            color: Surface color.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
+        """
+        var f_radius = Float32(radius)
+        var f_half = Float32(half_height)
+
+        # Look up or create cylinder mesh
+        var cache_idx = -1
+        for i in range(len(self.cylinder_cache)):
+            if self.cylinder_cache[i].matches(f_radius, f_half):
+                cache_idx = i
+                break
+
+        if cache_idx < 0:
+            var mesh_data = generate_cylinder(f_radius, f_half)
+            var handle = self._upload_mesh(mesh_data)
+            self.cylinder_cache.append(
+                CapsuleCacheEntry(f_radius, f_half, handle^)
+            )
+            cache_idx = len(self.cylinder_cache) - 1
+
+        # Build model matrix (same axis pre-rotation as capsule)
+        var pre_rot = Quat.identity()
+        if axis == 0:
+            pre_rot = Quat.from_axis_angle(Vec3.unit_y(), 1.5707963267949)
+        elif axis == 1:
+            pre_rot = Quat.from_axis_angle(Vec3.unit_x(), -1.5707963267949)
+
+        var final_quat = orientation
+        var model = Mat4.from_quat(final_quat, center) @ Mat4.from_quat(
+            pre_rot, Vec3.zero()
+        )
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(model)
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = reflectance
+        uniforms.material[3] = emission
+
+        self.solid_draws.append(
+            SolidDrawCommand(
+                0, uniforms, is_cylinder=True, cylinder_cache_idx=cache_idx
+            )
+        )
+
     def draw_box(
         mut self,
         center: Vec3,
@@ -2129,6 +2204,11 @@ struct Renderer3D(Movable):
             vb = self.capsule_cache[ci].mesh.vertex_buffer
             ib = self.capsule_cache[ci].mesh.index_buffer
             n_idx = self.capsule_cache[ci].mesh.num_indices
+        elif draw.is_cylinder:
+            var ci = draw.cylinder_cache_idx
+            vb = self.cylinder_cache[ci].mesh.vertex_buffer
+            ib = self.cylinder_cache[ci].mesh.index_buffer
+            n_idx = self.cylinder_cache[ci].mesh.num_indices
         elif draw.mesh_idx == 0:
             vb = self.sphere_mesh.vertex_buffer
             ib = self.sphere_mesh.index_buffer

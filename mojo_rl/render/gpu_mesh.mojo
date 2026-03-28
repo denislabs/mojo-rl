@@ -372,6 +372,113 @@ def generate_capsule(
     return mesh^
 
 
+def generate_cylinder(
+    radius: Float32,
+    half_height: Float32,
+    segments: Int = 16,
+) -> MeshData:
+    """Generate a cylinder mesh along the Z-axis with flat disc caps.
+
+    Cylinder from z=-half_height to z=+half_height with flat circular end caps.
+    Unlike capsule, this has no hemispherical caps.
+
+    Args:
+        radius: Cylinder radius.
+        half_height: Half-height of the cylinder.
+        segments: Number of circular segments.
+
+    Returns:
+        MeshData with vertices and indices.
+    """
+    var mesh = MeshData()
+    var pi = Float32(3.14159265358979)
+
+    # --- Top disc cap ---
+    # Center vertex (normal pointing up)
+    var top_center = len(mesh.vertices)
+    mesh.vertices.append(GPUVertex(0, 0, half_height, 0, 0, 1, 0.5, 0))
+
+    # Ring vertices for top cap (normal pointing up)
+    for i in range(segments + 1):
+        var theta = Float32(i) * 2.0 * pi / Float32(segments)
+        var ct = cos(theta)
+        var st = sin(theta)
+        var u = Float32(i) / Float32(segments)
+        mesh.vertices.append(
+            GPUVertex(radius * ct, radius * st, half_height, 0, 0, 1, u, 0.25)
+        )
+
+    # Top cap indices (fan from center)
+    for i in range(segments):
+        mesh.indices.append(UInt16(top_center))
+        mesh.indices.append(UInt16(top_center + 1 + i))
+        mesh.indices.append(UInt16(top_center + 1 + i + 1))
+
+    # --- Cylinder side ---
+    var cyl_base_top = len(mesh.vertices)
+
+    # Top ring (normals point radially outward)
+    for i in range(segments + 1):
+        var theta = Float32(i) * 2.0 * pi / Float32(segments)
+        var ct = cos(theta)
+        var st = sin(theta)
+        var u = Float32(i) / Float32(segments)
+        mesh.vertices.append(
+            GPUVertex(radius * ct, radius * st, half_height, ct, st, 0, u, 0.25)
+        )
+
+    var cyl_base_bot = len(mesh.vertices)
+
+    # Bottom ring (normals point radially outward)
+    for i in range(segments + 1):
+        var theta = Float32(i) * 2.0 * pi / Float32(segments)
+        var ct = cos(theta)
+        var st = sin(theta)
+        var u = Float32(i) / Float32(segments)
+        mesh.vertices.append(
+            GPUVertex(
+                radius * ct, radius * st, -half_height, ct, st, 0, u, 0.75
+            )
+        )
+
+    # Side indices
+    for i in range(segments):
+        var t = cyl_base_top + i
+        var b = cyl_base_bot + i
+
+        mesh.indices.append(UInt16(t))
+        mesh.indices.append(UInt16(b))
+        mesh.indices.append(UInt16(t + 1))
+
+        mesh.indices.append(UInt16(t + 1))
+        mesh.indices.append(UInt16(b))
+        mesh.indices.append(UInt16(b + 1))
+
+    # --- Bottom disc cap ---
+    var bot_center = len(mesh.vertices)
+    mesh.vertices.append(GPUVertex(0, 0, -half_height, 0, 0, -1, 0.5, 1))
+
+    # Ring vertices for bottom cap (normal pointing down)
+    for i in range(segments + 1):
+        var theta = Float32(i) * 2.0 * pi / Float32(segments)
+        var ct = cos(theta)
+        var st = sin(theta)
+        var u = Float32(i) / Float32(segments)
+        mesh.vertices.append(
+            GPUVertex(
+                radius * ct, radius * st, -half_height, 0, 0, -1, u, 0.75
+            )
+        )
+
+    # Bottom cap indices (fan from center, reversed winding)
+    for i in range(segments):
+        mesh.indices.append(UInt16(bot_center))
+        mesh.indices.append(UInt16(bot_center + 1 + i + 1))
+        mesh.indices.append(UInt16(bot_center + 1 + i))
+
+    return mesh^
+
+
 def generate_ground(size: Float32 = 10.0) -> MeshData:
     """Generate a large ground quad at Z=0.
 

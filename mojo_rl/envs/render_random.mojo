@@ -27,6 +27,7 @@ def render_random[
     frame_delay_ms: Int = 16,
     verbose: Bool = True,
     print_every: Int = 200,
+    show_velocity: Bool = True,
 ) raises:
     """Render an environment with uniform random actions.
 
@@ -58,7 +59,7 @@ def render_random[
         print()
 
     # Init renderer
-    _ = env.init_renderer()
+    _ = env.init_renderer(show_velocity=show_velocity)
 
     # Reset environment
     _ = env.reset_obs_list()

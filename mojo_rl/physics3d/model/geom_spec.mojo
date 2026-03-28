@@ -1518,7 +1518,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                         reflectance=Float32(_refl),
                     )
                 elif GG.GEOM_TYPE == GEOM_CYLINDER:
-                    renderer.draw_capsule(
+                    renderer.draw_cylinder(
                         center=geom_pos,
                         orientation=geom_quat,
                         radius=GG.RADIUS * visual_radius_scale,

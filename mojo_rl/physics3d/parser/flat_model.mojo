@@ -1138,6 +1138,8 @@ struct FlatModelDef[
                         Scalar[DTYPE](jd.axis_y),
                         Scalar[DTYPE](jd.axis_z),
                     ),
+                    range_min=Scalar[DTYPE](jd.range_min),
+                    range_max=Scalar[DTYPE](jd.range_max),
                     armature=Scalar[DTYPE](jd.armature),
                     damping=Scalar[DTYPE](jd.damping),
                     stiffness=Scalar[DTYPE](jd.stiffness),

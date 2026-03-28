@@ -126,7 +126,7 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             height=height,
             camera=camera,
             draw_grid=True,
-            draw_axes=True,
+            draw_axes=False,
             lights=lights,
         )
 

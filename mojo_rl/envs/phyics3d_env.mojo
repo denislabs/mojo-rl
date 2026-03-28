@@ -1086,6 +1086,12 @@ struct Phyics3dEnv[
     # =========================================================================
 
     def init_renderer(mut self) raises -> Bool:
+        return self._init_renderer(show_velocity=True)
+
+    def init_renderer(mut self, show_velocity: Bool) raises -> Bool:
+        return self._init_renderer(show_velocity=show_velocity)
+
+    def _init_renderer(mut self, show_velocity: Bool) raises -> Bool:
         if self._renderer_initialized:
             return True
 
@@ -1098,6 +1104,7 @@ struct Phyics3dEnv[
             axes_offset=1.5,
             vel_arrow_height=0.15,
             vel_arrow_scale=0.1,
+            show_velocity=show_velocity,
         )
         renderer.init()
 

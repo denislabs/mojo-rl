@@ -359,6 +359,8 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
     var uniforms: ObjectUniforms
     var is_capsule: Bool
     var capsule_cache_idx: Int
+    var is_cylinder: Bool
+    var cylinder_cache_idx: Int
 
     def __init__(
         out self,
@@ -366,23 +368,31 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         uniforms: ObjectUniforms,
         is_capsule: Bool = False,
         capsule_cache_idx: Int = 0,
+        is_cylinder: Bool = False,
+        cylinder_cache_idx: Int = 0,
     ):
         self.mesh_idx = mesh_idx
         self.uniforms = uniforms
         self.is_capsule = is_capsule
         self.capsule_cache_idx = capsule_cache_idx
+        self.is_cylinder = is_cylinder
+        self.cylinder_cache_idx = cylinder_cache_idx
 
     def __init__(out self, *, copy: Self):
         self.mesh_idx = copy.mesh_idx
         self.uniforms = copy.uniforms
         self.is_capsule = copy.is_capsule
         self.capsule_cache_idx = copy.capsule_cache_idx
+        self.is_cylinder = copy.is_cylinder
+        self.cylinder_cache_idx = copy.cylinder_cache_idx
 
     def __init__(out self, *, deinit take: Self):
         self.mesh_idx = take.mesh_idx
         self.uniforms = take.uniforms
         self.is_capsule = take.is_capsule
         self.capsule_cache_idx = take.capsule_cache_idx
+        self.is_cylinder = take.is_cylinder
+        self.cylinder_cache_idx = take.cylinder_cache_idx
 
 
 # --- Helper functions ---

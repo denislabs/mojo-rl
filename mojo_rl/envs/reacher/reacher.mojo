@@ -1,0 +1,16 @@
+"""Reacher Environment - thin wrapper around Phyics3dEnv[ReacherModel, ReacherConfig]."""
+
+from .reacher_xml import ReacherModel
+from .reacher_config import ReacherConfig
+from ..phyics3d_env import Phyics3dEnv
+
+
+comptime Reacher[
+    DTYPE: DType where DTYPE.is_floating_point() = DType.float64,
+    TERMINATE_ON_UNHEALTHY: Bool = True,
+] = Phyics3dEnv[
+    ReacherModel,
+    ReacherConfig,
+    DTYPE,
+    TERMINATE_ON_UNHEALTHY,
+]
