@@ -158,6 +158,7 @@ from .gpu_types import (
     MeshHandle,
     CapsuleCacheEntry,
     MeshCacheEntry,
+    TextureCacheEntry,
     SolidDrawCommand,
     mat4_to_gpu_f32,
     perspective_metal,
@@ -189,6 +190,7 @@ from .gpu_shaders import (
     TEXT_FRAGMENT_MSL,
 )
 from .font_atlas import build_font_atlas_r8, glyph_uv
+from .png_loader import load_png, TextureData
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -275,6 +277,11 @@ struct Renderer3D(Movable):
     var capsule_cache: List[CapsuleCacheEntry]
     var cylinder_cache: List[CapsuleCacheEntry]  # Same cache type (radius, half_height)
     var mesh_cache: List[MeshCacheEntry]
+
+    # Texture cache for PNG textures
+    var texture_cache: List[TextureCacheEntry]
+    var default_texture: Ptr[GPUTexture, MutAnyOrigin]  # 1x1 white
+    var default_tex_sampler: Ptr[GPUSampler, MutAnyOrigin]
 
     # Dynamic line buffer
     var line_vertex_data: List[Float32]  # x,y,z per vertex
@@ -420,6 +427,11 @@ struct Renderer3D(Movable):
         self.cylinder_cache = List[CapsuleCacheEntry]()
         self.mesh_cache = List[MeshCacheEntry]()
 
+        # Texture cache
+        self.texture_cache = List[TextureCacheEntry]()
+        self.default_texture = Ptr[GPUTexture, MutAnyOrigin]()
+        self.default_tex_sampler = Ptr[GPUSampler, MutAnyOrigin]()
+
         # Line data
         self.line_vertex_data = List[Float32]()
         self.line_colors = List[LineColorEntry]()
@@ -487,6 +499,9 @@ struct Renderer3D(Movable):
         self.capsule_cache = take.capsule_cache^
         self.cylinder_cache = take.cylinder_cache^
         self.mesh_cache = take.mesh_cache^
+        self.texture_cache = take.texture_cache^
+        self.default_texture = take.default_texture
+        self.default_tex_sampler = take.default_tex_sampler
         self.line_vertex_data = take.line_vertex_data^
         self.line_colors = take.line_colors^
         self.line_vertex_buffer = take.line_vertex_buffer
@@ -578,6 +593,9 @@ struct Renderer3D(Movable):
         # 11. Create text rendering resources (font atlas, pipeline, buffers)
         self._create_text_resources()
 
+        # 12. Create default 1x1 white texture for untextured objects
+        self._create_default_texture()
+
         self.initialized = True
 
     def _create_shader(
@@ -630,7 +648,7 @@ struct Renderer3D(Movable):
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=2,
             entrypoint=String("solid_fragment"),
-            num_samplers=1,
+            num_samplers=2,  # slot 0 = shadow map, slot 1 = object texture
         )
 
         # Vertex input - allocate attributes contiguously on heap
@@ -1742,6 +1760,190 @@ struct Renderer3D(Movable):
         submit_gpu_command_buffer(idx_cmd)
         release_gpu_transfer_buffer(self.device, idx_tb)
 
+    def _create_default_texture(mut self) raises:
+        """Create a 1x1 white RGBA8 texture as default for untextured objects."""
+        # Create 1x1 RGBA8 texture
+        var tex_info = GPUTextureCreateInfo(
+            type=GPUTextureType.GPU_TEXTURETYPE_2D,
+            format=GPUTextureFormat.GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER,
+            width=1,
+            height=1,
+            layer_count_or_depth=1,
+            num_levels=1,
+            sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+            props=PropertiesID(0),
+        )
+        self.default_texture = create_gpu_texture(
+            self.device, Ptr(to=tex_info)
+        )
+
+        # Upload 1x1 white pixel via transfer buffer
+        var tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=4,  # 4 bytes: RGBA
+            props=PropertiesID(0),
+        )
+        var tb = create_gpu_transfer_buffer(self.device, Ptr(to=tb_info))
+        var mapped = map_gpu_transfer_buffer(self.device, tb, False)
+        var mapped_u8 = mapped.bitcast[UInt8]()
+        (mapped_u8 + 0)[] = UInt8(255)  # R
+        (mapped_u8 + 1)[] = UInt8(255)  # G
+        (mapped_u8 + 2)[] = UInt8(255)  # B
+        (mapped_u8 + 3)[] = UInt8(255)  # A
+        unmap_gpu_transfer_buffer(self.device, tb)
+
+        var cmd = acquire_gpu_command_buffer(self.device)
+        var cp = begin_gpu_copy_pass(cmd)
+        var src = GPUTextureTransferInfo(
+            transfer_buffer=tb,
+            offset=0,
+            pixels_per_row=1,
+            rows_per_layer=1,
+        )
+        var dst = GPUTextureRegion(
+            texture=self.default_texture,
+            mip_level=0,
+            layer=0,
+            x=0,
+            y=0,
+            z=0,
+            w=1,
+            h=1,
+            d=1,
+        )
+        upload_to_gpu_texture(cp, Ptr(to=src), Ptr(to=dst), False)
+        end_gpu_copy_pass(cp)
+        submit_gpu_command_buffer(cmd)
+        release_gpu_transfer_buffer(self.device, tb)
+
+        # Create LINEAR sampler with REPEAT address mode
+        var samp_info = GPUSamplerCreateInfo(
+            min_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mag_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mipmap_mode=GPUSamplerMipmapMode.GPU_SAMPLERMIPMAPMODE_NEAREST,
+            address_mode_u=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            address_mode_v=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            address_mode_w=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            mip_lod_bias=0.0,
+            max_anisotropy=1.0,
+            compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
+            min_lod=0.0,
+            max_lod=0.0,
+            enable_anisotropy=False,
+            enable_compare=False,
+            padding1=0,
+            padding2=0,
+            props=PropertiesID(0),
+        )
+        self.default_tex_sampler = create_gpu_sampler(
+            self.device, Ptr(to=samp_info)
+        )
+
+    def upload_texture(
+        mut self, name: String, texture_data: TextureData
+    ) raises -> Int:
+        """Upload a texture to GPU and cache it. Returns the cache index.
+
+        If a texture with the same name already exists, returns its index
+        without re-uploading.
+
+        Args:
+            name: Cache key for the texture.
+            texture_data: CPU-side RGBA8 pixel data.
+
+        Returns:
+            Index into self.texture_cache.
+        """
+        # Check cache
+        for i in range(len(self.texture_cache)):
+            if self.texture_cache[i].matches(name):
+                return i
+
+        var w = UInt32(texture_data.width)
+        var h = UInt32(texture_data.height)
+        var byte_size = UInt32(texture_data.byte_size())
+
+        # Create GPU texture
+        var tex_info = GPUTextureCreateInfo(
+            type=GPUTextureType.GPU_TEXTURETYPE_2D,
+            format=GPUTextureFormat.GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER,
+            width=w,
+            height=h,
+            layer_count_or_depth=1,
+            num_levels=1,
+            sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+            props=PropertiesID(0),
+        )
+        var gpu_tex = create_gpu_texture(self.device, Ptr(to=tex_info))
+
+        # Upload via transfer buffer
+        var tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=byte_size,
+            props=PropertiesID(0),
+        )
+        var tb = create_gpu_transfer_buffer(self.device, Ptr(to=tb_info))
+        var mapped = map_gpu_transfer_buffer(self.device, tb, False)
+        var mapped_u8 = mapped.bitcast[UInt8]()
+        for i in range(Int(byte_size)):
+            (mapped_u8 + i)[] = texture_data.pixels[i]
+        unmap_gpu_transfer_buffer(self.device, tb)
+
+        var cmd = acquire_gpu_command_buffer(self.device)
+        var cp = begin_gpu_copy_pass(cmd)
+        var src = GPUTextureTransferInfo(
+            transfer_buffer=tb,
+            offset=0,
+            pixels_per_row=w,
+            rows_per_layer=h,
+        )
+        var dst = GPUTextureRegion(
+            texture=gpu_tex,
+            mip_level=0,
+            layer=0,
+            x=0,
+            y=0,
+            z=0,
+            w=w,
+            h=h,
+            d=1,
+        )
+        upload_to_gpu_texture(cp, Ptr(to=src), Ptr(to=dst), False)
+        end_gpu_copy_pass(cp)
+        submit_gpu_command_buffer(cmd)
+        release_gpu_transfer_buffer(self.device, tb)
+
+        # Create LINEAR sampler with REPEAT address mode
+        var samp_info = GPUSamplerCreateInfo(
+            min_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mag_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mipmap_mode=GPUSamplerMipmapMode.GPU_SAMPLERMIPMAPMODE_NEAREST,
+            address_mode_u=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            address_mode_v=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            address_mode_w=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            mip_lod_bias=0.0,
+            max_anisotropy=1.0,
+            compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
+            min_lod=0.0,
+            max_lod=0.0,
+            enable_anisotropy=False,
+            enable_compare=False,
+            padding1=0,
+            padding2=0,
+            props=PropertiesID(0),
+        )
+        var tex_sampler = create_gpu_sampler(
+            self.device, Ptr(to=samp_info)
+        )
+
+        # Add to cache
+        self.texture_cache.append(
+            TextureCacheEntry(name, gpu_tex, tex_sampler, w, h)
+        )
+        return len(self.texture_cache) - 1
+
     # --- Public Drawing API ---
 
     def begin_frame(mut self):
@@ -2020,11 +2222,13 @@ struct Renderer3D(Movable):
         specular: Float32 = 0.5,
         reflectance: Float32 = 0.0,
         emission: Float32 = 0.0,
+        texture_name: String = String(""),
+        texture_path: String = String(""),
     ) raises:
-        """Draw a solid mesh loaded from an STL file.
+        """Draw a solid mesh loaded from an STL file, optionally textured.
 
         Meshes are cached by name — the STL file is only loaded and uploaded
-        on the first call for each unique name.
+        on the first call for each unique name. Textures are also cached by name.
 
         Args:
             name: Cache key for the mesh (e.g. "gripper_link").
@@ -2032,11 +2236,13 @@ struct Renderer3D(Movable):
             center: Mesh center in world space.
             orientation: Mesh orientation quaternion.
             scale: Per-axis scale factors.
-            color: Surface color.
+            color: Surface color (modulates texture if present).
             shininess: Specular exponent scaling (0-1).
             specular: Specular intensity (0-1).
             reflectance: Reflectance coefficient (0-1).
             emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
         """
         # Look up or create mesh in cache
         var cache_idx = -1
@@ -2056,6 +2262,26 @@ struct Renderer3D(Movable):
                 # File not found or parse error — skip this mesh silently
                 return
 
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            # Check cache first (avoid reloading PNG every frame)
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(
+                        texture_name, tex_data
+                    )
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
         # Build model matrix: rotation + translation, then apply scale
         var rot_mat = Mat4.from_quat(orientation, center)
         # Scale columns of the 3x3 rotation submatrix
@@ -2074,12 +2300,17 @@ struct Renderer3D(Movable):
         uniforms.color = color_to_vec4(color)
         uniforms.material[0] = shininess
         uniforms.material[1] = specular
-        uniforms.material[2] = reflectance
+        # material.z > 0 tells the shader to sample the texture
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
         self.solid_draws.append(
             SolidDrawCommand(
-                0, uniforms, is_mesh=True, mesh_cache_idx=cache_idx
+                0,
+                uniforms,
+                is_mesh=True,
+                mesh_cache_idx=cache_idx,
+                texture_cache_idx=tex_idx,
             )
         )
 
@@ -2702,6 +2933,24 @@ struct Renderer3D(Movable):
                     Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
                     96,
                 )
+                # Bind texture at fragment sampler slot 1
+                var ti = self.solid_draws[i].texture_cache_idx
+                if ti >= 0:
+                    var tex_binding = GPUTextureSamplerBinding(
+                        texture=self.texture_cache[ti].texture,
+                        sampler=self.texture_cache[ti].sampler,
+                    )
+                    bind_gpu_fragment_samplers(
+                        render_pass, 1, Ptr(to=tex_binding), 1
+                    )
+                else:
+                    var def_binding = GPUTextureSamplerBinding(
+                        texture=self.default_texture,
+                        sampler=self.default_tex_sampler,
+                    )
+                    bind_gpu_fragment_samplers(
+                        render_pass, 1, Ptr(to=def_binding), 1
+                    )
                 self._select_and_draw(render_pass, self.solid_draws[i])
 
         # ------------------------------------------------------------------
@@ -3254,6 +3503,16 @@ struct Renderer3D(Movable):
             release_gpu_buffer(
                 self.device, self.mesh_cache[i].mesh.index_buffer
             )
+
+        # Release texture cache
+        for i in range(len(self.texture_cache)):
+            release_gpu_texture(self.device, self.texture_cache[i].texture)
+            release_gpu_sampler(self.device, self.texture_cache[i].sampler)
+
+        # Release default texture resources
+        if self.default_texture:
+            release_gpu_texture(self.device, self.default_texture)
+            release_gpu_sampler(self.device, self.default_tex_sampler)
 
         # Release static mesh buffers
         release_gpu_buffer(self.device, self.sphere_mesh.vertex_buffer)

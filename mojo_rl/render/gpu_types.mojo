@@ -11,7 +11,7 @@ from mojo_rl.math3d import (
     Mat4 as Mat4Generic,
     Quat as QuatGeneric,
 )
-from .sdl import Ptr, AnyOrigin, GPUBuffer
+from .sdl import Ptr, AnyOrigin, GPUBuffer, GPUTexture, GPUSampler
 from .types import Color
 
 comptime Vec3 = Vec3Generic[DType.float64]
@@ -385,6 +385,48 @@ struct MeshCacheEntry(Copyable, Movable):
         return self.name == name
 
 
+struct TextureCacheEntry(Copyable, Movable):
+    """Cached GPU texture keyed by name string."""
+
+    var name: String
+    var texture: Ptr[GPUTexture, MutAnyOrigin]
+    var sampler: Ptr[GPUSampler, MutAnyOrigin]
+    var width: UInt32
+    var height: UInt32
+
+    def __init__(
+        out self,
+        name: String,
+        texture: Ptr[GPUTexture, MutAnyOrigin],
+        sampler: Ptr[GPUSampler, MutAnyOrigin],
+        width: UInt32,
+        height: UInt32,
+    ):
+        self.name = name
+        self.texture = texture
+        self.sampler = sampler
+        self.width = width
+        self.height = height
+
+    def __init__(out self, *, copy: Self):
+        self.name = copy.name
+        self.texture = copy.texture
+        self.sampler = copy.sampler
+        self.width = copy.width
+        self.height = copy.height
+
+    def __init__(out self, *, deinit take: Self):
+        self.name = take.name^
+        self.texture = take.texture
+        self.sampler = take.sampler
+        self.width = take.width
+        self.height = take.height
+
+    def matches(self, name: String) -> Bool:
+        """Check if this entry matches the given name."""
+        return self.name == name
+
+
 struct SolidDrawCommand(ImplicitlyCopyable, Movable):
     """Deferred draw command for solid objects."""
 
@@ -396,6 +438,7 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
     var cylinder_cache_idx: Int
     var is_mesh: Bool
     var mesh_cache_idx: Int
+    var texture_cache_idx: Int  # -1 = no texture (use default white)
 
     def __init__(
         out self,
@@ -407,6 +450,7 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         cylinder_cache_idx: Int = 0,
         is_mesh: Bool = False,
         mesh_cache_idx: Int = 0,
+        texture_cache_idx: Int = -1,
     ):
         self.mesh_idx = mesh_idx
         self.uniforms = uniforms
@@ -416,6 +460,7 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         self.cylinder_cache_idx = cylinder_cache_idx
         self.is_mesh = is_mesh
         self.mesh_cache_idx = mesh_cache_idx
+        self.texture_cache_idx = texture_cache_idx
 
     def __init__(out self, *, copy: Self):
         self.mesh_idx = copy.mesh_idx
@@ -426,6 +471,7 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         self.cylinder_cache_idx = copy.cylinder_cache_idx
         self.is_mesh = copy.is_mesh
         self.mesh_cache_idx = copy.mesh_cache_idx
+        self.texture_cache_idx = copy.texture_cache_idx
 
     def __init__(out self, *, deinit take: Self):
         self.mesh_idx = take.mesh_idx
@@ -436,6 +482,7 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         self.cylinder_cache_idx = take.cylinder_cache_idx
         self.is_mesh = take.is_mesh
         self.mesh_cache_idx = take.mesh_cache_idx
+        self.texture_cache_idx = take.texture_cache_idx
 
 
 # --- Helper functions ---

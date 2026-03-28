@@ -70,6 +70,7 @@ struct VertexOut {
     float4 position  [[position]];
     float3 world_pos;
     float3 world_normal;
+    float2 uv;
     float4 obj_color;
     float4 obj_material;
 };
@@ -79,7 +80,7 @@ struct VertexOut {
 struct ObjectUniforms {
     float4x4 model;
     float4 color;
-    float4 material;  // x=shininess, y=specular, z=reflectance, w=emission
+    float4 material;  // x=shininess, y=specular, z=reflectance (>0 = has texture), w=emission
 };
 
 vertex VertexOut solid_vertex(
@@ -93,6 +94,7 @@ vertex VertexOut solid_vertex(
     out.world_pos = world.xyz;
     // Transform normal by upper 3x3 of model matrix
     out.world_normal = (obj.model * float4(in.normal, 0.0)).xyz;
+    out.uv = in.uv;
     out.obj_color = obj.color;
     out.obj_material = obj.material;
     return out;
@@ -107,6 +109,7 @@ struct VertexOut {
     float4 position  [[position]];
     float3 world_pos;
     float3 world_normal;
+    float2 uv;
     float4 obj_color;
     float4 obj_material;
 };
@@ -158,7 +161,9 @@ fragment float4 solid_fragment(
     constant SceneUniforms &scene [[buffer(0)]],
     constant ShadowUniforms &shadow [[buffer(1)]],
     depth2d<float> shadow_map [[texture(0)]],
-    sampler shadow_sampler [[sampler(0)]]
+    sampler shadow_sampler [[sampler(0)]],
+    texture2d<float> obj_texture [[texture(1)]],
+    sampler obj_sampler [[sampler(1)]]
 ) {
     float3 N = normalize(in.world_normal);
     float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
@@ -166,10 +171,18 @@ fragment float4 solid_fragment(
     // Per-object material properties
     float mat_shininess = in.obj_material.x;  // 0-1, maps to specular exponent
     float mat_specular = in.obj_material.y;    // 0-1, specular intensity
+    float has_texture = in.obj_material.z;     // >0 = sample obj_texture
     float mat_emission = in.obj_material.w;    // 0-1, emissive intensity
 
     // Map shininess [0,1] to specular exponent: 0.0->4, 0.5->32, 1.0->128
     float spec_exp = mix(4.0, 128.0, mat_shininess);
+
+    // Sample texture if enabled (material.z > 0)
+    float4 base_color = in.obj_color;
+    if (has_texture > 0.5) {
+        float4 tex_color = obj_texture.sample(obj_sampler, in.uv);
+        base_color = float4(base_color.rgb * tex_color.rgb, base_color.a * tex_color.a);
+    }
 
     int num_lights = int(scene.camera_pos.w);
     if (num_lights < 1) num_lights = 1;
@@ -196,7 +209,7 @@ fragment float4 solid_fragment(
         }
 
         float3 light_col = l_color.xyz;
-        total_color += in.obj_color.rgb * shadow_factor * diffuse * light_col
+        total_color += base_color.rgb * shadow_factor * diffuse * light_col
                      + shadow_factor * specular * light_col;
         total_ambient += ambient;
     }
@@ -204,10 +217,10 @@ fragment float4 solid_fragment(
     // Clamp ambient to avoid over-brightening with multiple lights
     total_ambient = min(total_ambient, 1.0);
 
-    float3 color = in.obj_color.rgb * total_ambient + total_color
-                 + in.obj_color.rgb * mat_emission;
+    float3 color = base_color.rgb * total_ambient + total_color
+                 + base_color.rgb * mat_emission;
 
-    return float4(color, in.obj_color.a);
+    return float4(color, base_color.a);
 }
 """
 
