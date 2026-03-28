@@ -1257,6 +1257,19 @@ struct ModelDefFromXML[
         return List[Float64]()
 
     @staticmethod
+    def get_ground_rgba() -> List[Float64]:
+        """Return [r, g, b] of the first plane geom's rgba color,
+        or empty list if no plane geom exists."""
+        for i in range(Self.NGEOM):
+            if Self._rcd.geom_type[i] == 0:  # GEOM_PLANE
+                var result = List[Float64]()
+                result.append(Self._rcd.geom_rgba_r[i])
+                result.append(Self._rcd.geom_rgba_g[i])
+                result.append(Self._rcd.geom_rgba_b[i])
+                return result^
+        return List[Float64]()
+
+    @staticmethod
     def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,

@@ -31,10 +31,10 @@ def main() raises:
     # var env = Hopper[TERMINATE_ON_UNHEALTHY=False]()
     # var env = Walker2d()
     # var env = Swimmer()
-    # var env = Humanoid()
+    var env = Humanoid()
     # var env = InvertedPendulum()
     # var env = InvertedDoublePendulum()
-    var env = Reacher()
+    # var env = Reacher()
     # var env = Pusher()
 
     # Use show_velocity=False for non-locomotion envs (Reacher, Pusher)

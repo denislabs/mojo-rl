@@ -142,14 +142,24 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 bottom_b=Float32(skybox[5]),
             )
 
-        # Configure ground checker from CheckerTexture (if model defines one)
+        # Configure ground appearance from model textures/geom colors
         var checker = Self.MODEL_DEF.get_checker_colors()
         if len(checker) == 3:
+            # Model has a checker texture — use it
             self.renderer.set_ground_checker_colors(
                 r=Float32(checker[0]),
                 g=Float32(checker[1]),
                 b=Float32(checker[2]),
             )
+        else:
+            # No checker texture — use plane geom's rgba as solid color
+            var ground_rgba = Self.MODEL_DEF.get_ground_rgba()
+            if len(ground_rgba) == 3:
+                self.renderer.set_ground_solid_color(
+                    r=Float32(ground_rgba[0]),
+                    g=Float32(ground_rgba[1]),
+                    b=Float32(ground_rgba[2]),
+                )
 
         self.step_count = 0
         self.initialized = False
@@ -288,6 +298,10 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             var offset = self.renderer.camera.eye - self.renderer.camera.target
             self.renderer.camera.target = Vec3(torso_pos.x, 0.0, torso_pos.z)
             self.renderer.camera.eye = self.renderer.camera.target + offset
+
+        # Prevent camera from going below ground
+        if self.renderer.has_ground:
+            self.renderer.camera.clamp_above_ground(self.renderer.ground_z)
 
         self.renderer.begin_frame()
 

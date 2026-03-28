@@ -874,6 +874,287 @@ def _xml_fixed_tendon_coef[xml: String, n: Int, j: Int]() -> Float64:
     return 0.0
 
 
+# =============================================================================
+# merge_mjcf — comptime XML merge following MuJoCo <include> semantics
+# =============================================================================
+
+
+def _extract_section_inner(xml: String, tag: String) -> String:
+    """Return the inner content of <tag ...>...</tag>, excluding the outermost tags.
+
+    Handles nested same-name tags (e.g., <default><default class="x">...</default></default>)
+    by depth-counting. Handles multiple top-level occurrences by concatenating.
+    """
+    var result = String("")
+    var open_marker = "<" + tag
+    var close_marker = "</" + tag + ">"
+    var scan = 0
+    while True:
+        var start = xml.find(open_marker, scan)
+        if start == -1:
+            break
+        # Verify it's a real tag (not a substring match)
+        var after_pos = start + len(open_marker)
+        if after_pos < len(xml):
+            var after_ch = String(xml[byte=after_pos : after_pos + 1])
+            if after_ch != " " and after_ch != ">" and after_ch != "/" and after_ch != "\n" and after_ch != "\t":
+                scan = after_pos
+                continue
+        # Find end of opening tag
+        var tag_end = xml.find(">", start)
+        if tag_end == -1:
+            break
+        var inner_start = tag_end + 1
+        # Find matching closing tag (depth-counted)
+        var depth = 1
+        var search_pos = inner_start
+        while depth > 0:
+            var next_open = xml.find(open_marker, search_pos)
+            var next_close = xml.find(close_marker, search_pos)
+            if next_close == -1:
+                break
+            # Check if next_open is a real tag
+            if next_open != -1 and next_open < next_close:
+                var np = next_open + len(open_marker)
+                if np < len(xml):
+                    var nc = String(xml[byte=np : np + 1])
+                    if nc == " " or nc == ">" or nc == "/" or nc == "\n" or nc == "\t":
+                        depth += 1
+                search_pos = next_open + len(open_marker)
+            else:
+                depth -= 1
+                if depth == 0:
+                    result = result + String(xml[byte=inner_start:next_close]) + "\n"
+                    scan = next_close + len(close_marker)
+                else:
+                    search_pos = next_close + len(close_marker)
+        if depth > 0:
+            break  # Unmatched tags
+    return result
+
+
+def _extract_singleton_tag(xml: String, tag: String) -> String:
+    """Extract a self-closing singleton tag like <option .../> or <compiler .../>.
+
+    Returns the full tag string (including < and >) or empty if not found.
+    """
+    var marker = "<" + tag
+    var pos = xml.find(marker)
+    if pos == -1:
+        return String("")
+    var end = xml.find(">", pos)
+    if end == -1:
+        return String("")
+    return String(xml[byte=pos : end + 1])
+
+
+def _merge_singleton_attrs(tags: List[String], tag_name: String) -> String:
+    """Merge attributes from multiple singleton tags. Last value wins per attr.
+
+    Input: list of tag strings like ['<option a="1" b="2"/>', '<option b="3"/>']
+    Output: '<option a="1" b="3"/>'
+    """
+    # Collect all unique attribute names and their last values
+    var attr_names = List[String]()
+    var attr_values = List[String]()
+
+    for t_idx in range(len(tags)):
+        var tag = tags[t_idx]
+        if len(tag) == 0:
+            continue
+        # Find the attributes region (after tag name, before > or />)
+        var space = tag.find(" ")
+        if space == -1:
+            continue
+        var end = tag.find("/>")
+        if end == -1:
+            end = tag.find(">")
+        if end == -1:
+            continue
+        var attrs_str = String(tag[byte=space:end])
+
+        # Parse attr="value" pairs
+        var scan = 0
+        var alen = len(attrs_str)
+        while scan < alen:
+            var eq = attrs_str.find("=", scan)
+            if eq == -1:
+                break
+            # Find attr name (walk back from = to find start)
+            var name_end = eq
+            var name_start = name_end - 1
+            while name_start >= 0:
+                var ch = String(attrs_str[byte=name_start:name_start + 1])
+                if ch == " " or ch == "\n" or ch == "\t":
+                    break
+                name_start -= 1
+            name_start += 1
+            var attr_name = _trim(String(attrs_str[byte=name_start:name_end]))
+
+            # Find value (between quotes)
+            var q1 = attrs_str.find('"', eq + 1)
+            if q1 == -1:
+                q1 = attrs_str.find("'", eq + 1)
+            if q1 == -1:
+                break
+            var quote_char = String(attrs_str[byte=q1:q1 + 1])
+            var q2 = attrs_str.find(quote_char, q1 + 1)
+            if q2 == -1:
+                break
+            var attr_val = String(attrs_str[byte=q1 + 1 : q2])
+
+            # Update or add
+            var found = False
+            for i in range(len(attr_names)):
+                if attr_names[i] == attr_name:
+                    attr_values[i] = attr_val
+                    found = True
+                    break
+            if not found:
+                attr_names.append(attr_name)
+                attr_values.append(attr_val)
+
+            scan = eq + (q2 - eq) + 1
+
+    if len(attr_names) == 0:
+        return String("")
+
+    var result = "<" + tag_name
+    for i in range(len(attr_names)):
+        result = result + ' ' + attr_names[i] + '="' + attr_values[i] + '"'
+    result = result + "/>"
+    return result
+
+
+def _strip_wrapper(xml: String) -> String:
+    """Strip <mujoco> or <mujocoinclude> wrapper, returning inner content."""
+    var result = xml
+
+    # Strip <mujocoinclude>...</mujocoinclude>
+    var mci_open = result.find("<mujocoinclude")
+    if mci_open != -1:
+        var mci_open_end = result.find(">", mci_open)
+        if mci_open_end != -1:
+            var mci_close = result.find("</mujocoinclude>")
+            if mci_close != -1:
+                result = String(result[byte=mci_open_end + 1 : mci_close])
+
+    # Strip <mujoco>...</mujoco>
+    var mj_open = result.find("<mujoco")
+    if mj_open != -1:
+        var mj_open_end = result.find(">", mj_open)
+        if mj_open_end != -1:
+            var mj_close = result.find("</mujoco>")
+            if mj_close != -1:
+                result = String(result[byte=mj_open_end + 1 : mj_close])
+
+    return result
+
+
+def _strip_include_tags(xml: String) -> String:
+    """Remove all <include file="..."/> tags from XML."""
+    var result = String("")
+    var scan = 0
+    var xlen = len(xml)
+    while scan < xlen:
+        var inc = xml.find("<include", scan)
+        if inc == -1:
+            result = result + String(xml[byte=scan:xlen])
+            break
+        result = result + String(xml[byte=scan:inc])
+        var inc_end = xml.find(">", inc)
+        if inc_end == -1:
+            break
+        # Check for /> vs >
+        scan = inc_end + 1
+    return result
+
+
+def merge_mjcf(*xmls: String) -> String:
+    """Merge multiple MJCF XML strings following MuJoCo <include> semantics.
+
+    Singleton tags (<option>, <compiler>): attributes merged, last wins per attr.
+    Accumulator tags (<asset>, <default>, <worldbody>, <actuator>, <equality>,
+    <sensor>): inner content concatenated from all inputs.
+
+    Each input can be a full <mujoco>...</mujoco> or a <mujocoinclude> fragment.
+    <include file="..."/> tags are stripped (already resolved by caller).
+
+    Usage:
+        comptime xml = merge_mjcf(basic_scene, xyz_deps, xyz_base, task_xml)
+        comptime pm = parse_xml(xml)
+
+    Returns a complete <mujoco>...</mujoco> string ready for parse_xml.
+    """
+    # Collect singleton tags and accumulator content from all inputs
+    var option_tags = List[String]()
+    var compiler_tags = List[String]()
+    var all_assets = String("")
+    var all_defaults = String("")
+    var all_worldbody = String("")
+    var all_actuator = String("")
+    var all_equality = String("")
+    var all_visual = String("")
+
+    for i in range(len(xmls)):
+        var stripped = _strip_include_tags(_strip_wrapper(xmls[i]))
+
+        # Singleton tags
+        var opt = _extract_singleton_tag(stripped, "option")
+        if len(opt) > 0:
+            option_tags.append(opt)
+        var comp = _extract_singleton_tag(stripped, "compiler")
+        if len(comp) > 0:
+            compiler_tags.append(comp)
+
+        # Accumulator sections (extract inner content, handle multiple occurrences)
+        all_assets = all_assets + _extract_section_inner(stripped, "asset")
+        all_defaults = all_defaults + _extract_section_inner(stripped, "default")
+        all_worldbody = all_worldbody + _extract_section_inner(stripped, "worldbody")
+        all_actuator = all_actuator + _extract_section_inner(stripped, "actuator")
+        all_equality = all_equality + _extract_section_inner(stripped, "equality")
+        all_visual = all_visual + _extract_section_inner(stripped, "visual")
+
+    # Build merged XML
+    var result = String('<mujoco model="merged">\n')
+
+    # Merged singletons
+    var merged_compiler = _merge_singleton_attrs(compiler_tags, "compiler")
+    if len(merged_compiler) > 0:
+        result = result + "  " + merged_compiler + "\n"
+
+    var merged_option = _merge_singleton_attrs(option_tags, "option")
+    if len(merged_option) > 0:
+        result = result + "  " + merged_option + "\n"
+
+    # Visual
+    if len(_trim(all_visual)) > 0:
+        result = result + "  <visual>\n" + all_visual + "  </visual>\n"
+
+    # Defaults
+    if len(_trim(all_defaults)) > 0:
+        result = result + "  <default>\n" + all_defaults + "  </default>\n"
+
+    # Assets
+    if len(_trim(all_assets)) > 0:
+        result = result + "  <asset>\n" + all_assets + "  </asset>\n"
+
+    # Worldbody
+    if len(_trim(all_worldbody)) > 0:
+        result = result + "  <worldbody>\n" + all_worldbody + "  </worldbody>\n"
+
+    # Actuator
+    if len(_trim(all_actuator)) > 0:
+        result = result + "  <actuator>\n" + all_actuator + "  </actuator>\n"
+
+    # Equality
+    if len(_trim(all_equality)) > 0:
+        result = result + "  <equality>\n" + all_equality + "  </equality>\n"
+
+    result = result + "</mujoco>"
+    return result
+
+
 def parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 

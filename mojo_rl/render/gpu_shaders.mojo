@@ -308,23 +308,33 @@ fragment float4 ground_fragment(
     depth2d<float> shadow_map [[texture(0)]],
     sampler shadow_sampler [[sampler(0)]]
 ) {
-    // Checkerboard pattern — colors from scene.ground_params.xyz (light tile = rgb2)
-    float3 checker_color1 = float3(0.35, 0.35, 0.38);  // Light tile (default)
-    float3 checker_color2 = float3(0.22, 0.22, 0.25);  // Dark tile (default)
+    // Ground color — solid or checkerboard based on ground_params encoding:
+    //   ground_params.x < 0: solid color mode, color = abs(ground_params.xyz)
+    //   ground_params.x >= 0: checker mode, light tile = ground_params.xyz
+    float3 base_color;
 
-    // Use ground_params.xyz as light tile color (rgb2), dark tile = black (rgb1)
-    // Matches MuJoCo checker: rgb1=(0,0,0) black, rgb2=(0.8,0.8,0.8) grey
-    if (scene.ground_params.x > 0.001 || scene.ground_params.y > 0.001 || scene.ground_params.z > 0.001) {
-        checker_color1 = scene.ground_params.xyz;  // Light tile = rgb2
-        checker_color2 = float3(0.0, 0.0, 0.0);   // Dark tile = black (rgb1)
+    if (scene.ground_params.x < -0.001) {
+        // Solid color mode (no texture defined in XML, use geom rgba)
+        base_color = -scene.ground_params.xyz;
+    } else {
+        // Checkerboard pattern
+        float3 checker_color1 = float3(0.35, 0.35, 0.38);  // Light tile (default)
+        float3 checker_color2 = float3(0.22, 0.22, 0.25);  // Dark tile (default)
+
+        // Use ground_params.xyz as light tile color (rgb2), dark tile = black (rgb1)
+        // Matches MuJoCo checker: rgb1=(0,0,0) black, rgb2=(0.8,0.8,0.8) grey
+        if (scene.ground_params.x > 0.001 || scene.ground_params.y > 0.001 || scene.ground_params.z > 0.001) {
+            checker_color1 = scene.ground_params.xyz;  // Light tile = rgb2
+            checker_color2 = float3(0.0, 0.0, 0.0);   // Dark tile = black (rgb1)
+        }
+
+        float tile_size = 1.0;
+        float2 tile = floor(in.world_pos.xy / tile_size);
+        float checker = fmod(tile.x + tile.y, 2.0);
+        checker = abs(checker);
+
+        base_color = mix(checker_color1, checker_color2, checker);
     }
-
-    float tile_size = 1.0;
-    float2 tile = floor(in.world_pos.xy / tile_size);
-    float checker = fmod(tile.x + tile.y, 2.0);
-    checker = abs(checker);
-
-    float3 base_color = mix(checker_color1, checker_color2, checker);
 
     // Multi-light ground shading
     int num_lights = int(scene.camera_pos.w);

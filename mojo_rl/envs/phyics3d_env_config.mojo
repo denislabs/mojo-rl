@@ -125,11 +125,20 @@ trait Phyics3dEnvConfig:
         NBODY: Int,
         NJOINT: Int,
         MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
+        MAX_TENDON: Int = 0,
         NSITE: Int = 0,
     ](
+        mut model: Model[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+        ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     ):
-        """Custom reset logic (e.g., set initial mocap position). Default: no-op."""
+        """Custom reset logic (e.g., set initial mocap position, warmup steps).
+        Default: no-op."""
         pass
 
     # === CPU: Custom observation extraction (default: use MODEL_DEF.extract_obs) ===

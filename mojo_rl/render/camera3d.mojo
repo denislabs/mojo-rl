@@ -235,6 +235,21 @@ struct Camera3D(Copyable, Movable):
         self.eye += offset
         self.target += offset
 
+    def clamp_above_ground(mut self, ground_z: Float64, margin: Float64 = 0.05):
+        """Clamp camera eye to stay above the ground plane.
+
+        If the eye goes below ground_z + margin, the eye is pushed up while
+        preserving horizontal position. This prevents the camera from going
+        underground during orbit, pan, zoom, or tracking.
+
+        Args:
+            ground_z: Z coordinate of the ground plane.
+            margin: Minimum height above ground (default 0.05m).
+        """
+        var min_z = ground_z + margin
+        if self.eye.z < min_z:
+            self.eye = Vec3(self.eye.x, self.eye.y, min_z)
+
     def set_screen_size(mut self, width: Int, height: Int):
         """Update screen dimensions.
 

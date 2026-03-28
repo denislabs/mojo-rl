@@ -157,6 +157,7 @@ from .gpu_types import (
     MeshData,
     MeshHandle,
     CapsuleCacheEntry,
+    MeshCacheEntry,
     SolidDrawCommand,
     mat4_to_gpu_f32,
     perspective_metal,
@@ -164,6 +165,7 @@ from .gpu_types import (
     color_to_vec4,
     make_identity_f32,
 )
+from .stl_loader import load_stl
 from .gpu_mesh import (
     generate_sphere,
     generate_box,
@@ -272,6 +274,7 @@ struct Renderer3D(Movable):
     var ground_mesh: MeshHandle
     var capsule_cache: List[CapsuleCacheEntry]
     var cylinder_cache: List[CapsuleCacheEntry]  # Same cache type (radius, half_height)
+    var mesh_cache: List[MeshCacheEntry]
 
     # Dynamic line buffer
     var line_vertex_data: List[Float32]  # x,y,z per vertex
@@ -415,6 +418,7 @@ struct Renderer3D(Movable):
         self.ground_mesh = MeshHandle()
         self.capsule_cache = List[CapsuleCacheEntry]()
         self.cylinder_cache = List[CapsuleCacheEntry]()
+        self.mesh_cache = List[MeshCacheEntry]()
 
         # Line data
         self.line_vertex_data = List[Float32]()
@@ -482,6 +486,7 @@ struct Renderer3D(Movable):
         self.ground_mesh = take.ground_mesh^
         self.capsule_cache = take.capsule_cache^
         self.cylinder_cache = take.cylinder_cache^
+        self.mesh_cache = take.mesh_cache^
         self.line_vertex_data = take.line_vertex_data^
         self.line_colors = take.line_colors^
         self.line_vertex_buffer = take.line_vertex_buffer
@@ -2003,6 +2008,77 @@ struct Renderer3D(Movable):
             )
         )
 
+    def draw_mesh(
+        mut self,
+        name: String,
+        file_path: String,
+        center: Vec3,
+        orientation: Quat,
+        scale: Vec3 = Vec3(1.0, 1.0, 1.0),
+        color: Color = Color(200, 200, 200, 255),
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
+    ) raises:
+        """Draw a solid mesh loaded from an STL file.
+
+        Meshes are cached by name — the STL file is only loaded and uploaded
+        on the first call for each unique name.
+
+        Args:
+            name: Cache key for the mesh (e.g. "gripper_link").
+            file_path: Path to the binary STL file.
+            center: Mesh center in world space.
+            orientation: Mesh orientation quaternion.
+            scale: Per-axis scale factors.
+            color: Surface color.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
+        """
+        # Look up or create mesh in cache
+        var cache_idx = -1
+        for i in range(len(self.mesh_cache)):
+            if self.mesh_cache[i].matches(name):
+                cache_idx = i
+                break
+
+        if cache_idx < 0:
+            # Load STL and upload to GPU
+            var mesh_data = load_stl(file_path)
+            var handle = self._upload_mesh(mesh_data)
+            self.mesh_cache.append(MeshCacheEntry(name, handle^))
+            cache_idx = len(self.mesh_cache) - 1
+
+        # Build model matrix: rotation + translation, then apply scale
+        var rot_mat = Mat4.from_quat(orientation, center)
+        # Scale columns of the 3x3 rotation submatrix
+        rot_mat.m00 *= scale.x
+        rot_mat.m01 *= scale.x
+        rot_mat.m02 *= scale.x
+        rot_mat.m10 *= scale.y
+        rot_mat.m11 *= scale.y
+        rot_mat.m12 *= scale.y
+        rot_mat.m20 *= scale.z
+        rot_mat.m21 *= scale.z
+        rot_mat.m22 *= scale.z
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(rot_mat)
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        uniforms.material[2] = reflectance
+        uniforms.material[3] = emission
+
+        self.solid_draws.append(
+            SolidDrawCommand(
+                0, uniforms, is_mesh=True, mesh_cache_idx=cache_idx
+            )
+        )
+
     def draw_box(
         mut self,
         center: Vec3,
@@ -2091,6 +2167,26 @@ struct Renderer3D(Movable):
         self.scene_uniforms.ground_params[0] = r
         self.scene_uniforms.ground_params[1] = g
         self.scene_uniforms.ground_params[2] = b
+
+    def set_ground_solid_color(
+        mut self,
+        r: Float32 = 0.5,
+        g: Float32 = 0.5,
+        b: Float32 = 0.5,
+    ):
+        """Set ground to solid (non-checker) color.
+
+        Used when the plane geom has no associated checker texture.
+        Encoded as negative values in ground_params.xyz (shader checks sign).
+
+        Args:
+            r: Solid color red (0-1).
+            g: Solid color green (0-1).
+            b: Solid color blue (0-1).
+        """
+        self.scene_uniforms.ground_params[0] = -r
+        self.scene_uniforms.ground_params[1] = -g
+        self.scene_uniforms.ground_params[2] = -b
 
     def draw_ground_grid(
         mut self,
@@ -2209,6 +2305,11 @@ struct Renderer3D(Movable):
             vb = self.cylinder_cache[ci].mesh.vertex_buffer
             ib = self.cylinder_cache[ci].mesh.index_buffer
             n_idx = self.cylinder_cache[ci].mesh.num_indices
+        elif draw.is_mesh:
+            var mi = draw.mesh_cache_idx
+            vb = self.mesh_cache[mi].mesh.vertex_buffer
+            ib = self.mesh_cache[mi].mesh.index_buffer
+            n_idx = self.mesh_cache[mi].mesh.num_indices
         elif draw.mesh_idx == 0:
             vb = self.sphere_mesh.vertex_buffer
             ib = self.sphere_mesh.index_buffer
@@ -3043,6 +3144,8 @@ struct Renderer3D(Movable):
                     if self.mouse_left_down:
                         # Orbit: ~0.005 rad/px gives smooth rotation
                         self.camera.orbit(dx * 0.005, dy * 0.005)
+                        if self.has_ground:
+                            self.camera.clamp_above_ground(self.ground_z)
                     elif self.mouse_right_down:
                         # Pan: scale by distance so speed feels constant
                         var dist = (
@@ -3050,11 +3153,15 @@ struct Renderer3D(Movable):
                         ).length()
                         var scale = dist * 0.002
                         self.camera.pan(-dx * scale, -dy * scale)
+                        if self.has_ground:
+                            self.camera.clamp_above_ground(self.ground_z)
 
                 elif EventType(event_type) == EventType.EVENT_MOUSE_WHEEL:
                     var wheel = event[MouseWheelEvent]
                     # Scroll up (positive y) = zoom in (move eye closer)
                     self.camera.zoom(-Float64(wheel.y) * 0.5)
+                    if self.has_ground:
+                        self.camera.clamp_above_ground(self.ground_z)
         except:
             pass
 
@@ -3133,6 +3240,15 @@ struct Renderer3D(Movable):
             )
             release_gpu_buffer(
                 self.device, self.capsule_cache[i].mesh.index_buffer
+            )
+
+        # Release STL mesh cache
+        for i in range(len(self.mesh_cache)):
+            release_gpu_buffer(
+                self.device, self.mesh_cache[i].mesh.vertex_buffer
+            )
+            release_gpu_buffer(
+                self.device, self.mesh_cache[i].mesh.index_buffer
             )
 
         # Release static mesh buffers

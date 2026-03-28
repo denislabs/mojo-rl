@@ -223,8 +223,8 @@ struct Phyics3dEnv[
         """Reset to initial position."""
         Self.MODEL_DEF.reset_data(self.data)
 
-        # Custom reset (e.g., set mocap positions)
-        Self.CONFIG.custom_reset_cpu(self.data)
+        # Custom reset (e.g., set mocap positions, warmup steps)
+        Self.CONFIG.custom_reset_cpu(self.model, self.data)
 
         # Run forward kinematics to compute xpos/xquat
         forward_kinematics(self.model, self.data)
