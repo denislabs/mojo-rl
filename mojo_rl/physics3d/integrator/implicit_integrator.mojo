@@ -708,6 +708,9 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             MODEL_SIZE,
             BATCH,
             NGEOM,
+            MAX_EQUALITY,
+            MAX_TENDON,
+            NSITE,
         ](env, state, model)
 
         # 3a. Compute subtree_com

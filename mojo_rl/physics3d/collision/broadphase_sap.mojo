@@ -42,6 +42,10 @@ from ..kinematics.quat_math import (
 )
 from ..gpu.constants import (
     BODY_IDX_PARENT,
+    BODY_IDX_WELDID,
+    MODEL_META_IDX_NEXCLUDE,
+    model_exclude_offset,
+    model_metadata_offset,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
@@ -498,13 +502,32 @@ def detect_contacts_sap[
             # AABB overlap confirmed — apply body filter
             var gj_type = model.geom_type[gj]
             var gj_body = model.geom_body[gj]
-            if gi_body > 0 and gi_body == gj_body:
+            # MuJoCo-style weld body filtering
+            var weld_i = model.body_weldid[gi_body]
+            var weld_j = model.body_weldid[gj_body]
+            if weld_i == weld_j:
                 continue
-            if gi_body > 0 and gj_body > 0:
-                if (
-                    model.body_parent[gj_body] == gi_body
-                    or model.body_parent[gi_body] == gj_body
-                ):
+            if weld_i != 0 and weld_j != 0:
+                var weld_parent_i = model.body_weldid[
+                    model.body_parent[weld_i]
+                ]
+                var weld_parent_j = model.body_weldid[
+                    model.body_parent[weld_j]
+                ]
+                if weld_i == weld_parent_j or weld_j == weld_parent_i:
+                    continue
+                # Check contact exclusion pairs
+                var excluded = False
+                var ba = gi_body if gi_body <= gj_body else gj_body
+                var bb = gj_body if gi_body <= gj_body else gi_body
+                for ex in range(model.num_excludes):
+                    if (
+                        model.exclude_body1[ex] == ba
+                        and model.exclude_body2[ex] == bb
+                    ):
+                        excluded = True
+                        break
+                if excluded:
                     continue
             var gj_contype = model.geom_contype[gj]
             var gj_conaffinity = model.geom_conaffinity[gj]
@@ -865,6 +888,9 @@ def detect_contacts_sap_gpu[
     MODEL_SIZE: Int,
     BATCH: Int,
     NGEOM: Int,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     env: Int,
     state: LayoutTensor[
@@ -1235,19 +1261,68 @@ def detect_contacts_sap_gpu[
             var gj_body = Int(
                 rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_BODY])
             )
-            if gi_body > 0 and gi_body == gj_body:
+            # MuJoCo-style weld body filtering (GPU SAP)
+            var bi_off = model_body_offset(gi_body)
+            var bj_off = model_body_offset(gj_body)
+            var weld_i = Int(
+                rebind[Scalar[DTYPE]](model[0, bi_off + BODY_IDX_WELDID])
+            )
+            var weld_j = Int(
+                rebind[Scalar[DTYPE]](model[0, bj_off + BODY_IDX_WELDID])
+            )
+            if weld_i == weld_j:
                 continue
-            if gi_body > 0 and gj_body > 0:
-                var bi_off = model_body_offset(gi_body)
-                var bj_off = model_body_offset(gj_body)
-                var pi = Int(
-                    rebind[Scalar[DTYPE]](model[0, bi_off + BODY_IDX_PARENT])
+            if weld_i != 0 and weld_j != 0:
+                var wi_off = model_body_offset(weld_i)
+                var wj_off = model_body_offset(weld_j)
+                var wp_i = Int(
+                    rebind[Scalar[DTYPE]](model[0, wi_off + BODY_IDX_PARENT])
                 )
-                var pj = Int(
-                    rebind[Scalar[DTYPE]](model[0, bj_off + BODY_IDX_PARENT])
+                var wp_j = Int(
+                    rebind[Scalar[DTYPE]](model[0, wj_off + BODY_IDX_PARENT])
                 )
-                if pj == gi_body or pi == gj_body:
+                var weld_parent_i = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, model_body_offset(wp_i) + BODY_IDX_WELDID]
+                    )
+                )
+                var weld_parent_j = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, model_body_offset(wp_j) + BODY_IDX_WELDID]
+                    )
+                )
+                if weld_i == weld_parent_j or weld_j == weld_parent_i:
                     continue
+                # Check contact exclusion pairs
+                var sap_meta_off = model_metadata_offset[NBODY, NJOINT]()
+                var sap_n_ex = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, sap_meta_off + MODEL_META_IDX_NEXCLUDE]
+                    )
+                )
+                if sap_n_ex > 0:
+                    var ba = gi_body if gi_body <= gj_body else gj_body
+                    var bb = gj_body if gi_body <= gj_body else gi_body
+                    var sap_ex_off = model_exclude_offset[
+                        NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE
+                    ]()
+                    var excluded = False
+                    for ex in range(sap_n_ex):
+                        var eb1 = Int(
+                            rebind[Scalar[DTYPE]](
+                                model[0, sap_ex_off + ex * 2]
+                            )
+                        )
+                        var eb2 = Int(
+                            rebind[Scalar[DTYPE]](
+                                model[0, sap_ex_off + ex * 2 + 1]
+                            )
+                        )
+                        if eb1 == ba and eb2 == bb:
+                            excluded = True
+                            break
+                    if excluded:
+                        continue
             var gj_contype = Int(
                 rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_CONTYPE])
             )
@@ -1696,6 +1771,9 @@ def detect_contacts_auto_gpu[
     MODEL_SIZE: Int,
     BATCH: Int,
     NGEOM: Int,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     env: Int,
     state: LayoutTensor[
@@ -1722,6 +1800,9 @@ def detect_contacts_auto_gpu[
             MODEL_SIZE,
             BATCH,
             NGEOM,
+            NEQUALITY,
+            NTENDON,
+            NSITE,
         ](env, state, model)
     else:
         detect_contacts_gpu[
@@ -1735,4 +1816,7 @@ def detect_contacts_auto_gpu[
             MODEL_SIZE,
             BATCH,
             NGEOM,
+            NEQUALITY,
+            NTENDON,
+            NSITE,
         ](env, state, model)

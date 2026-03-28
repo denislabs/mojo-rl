@@ -128,10 +128,11 @@ struct ModelDefFromXML[
     ncam: Int = 0,
     max_contacts: Int = 50,
     max_equality: Int = 0,
-    cone_type: Int = ConeType.ELLIPTIC,
+    cone_type: Int = ConeType.PYRAMIDAL,
     max_tendon: Int = 0,
     nsite: Int = 0,
     neq: Int = 0,
+    nexclude: Int = 0,
     obs_qpos_skip: Int = 1,
     obs_dim_override: Int = -1,
     action_dim_override: Int = -1,
@@ -251,6 +252,7 @@ struct ModelDefFromXML[
             Self.ncam,
             Self.NSITE,
             Self.neq,
+            Self.nexclude,
         ](Self.xml)
         fmd.setup_model[
             DTYPE,
@@ -462,6 +464,7 @@ struct ModelDefFromXML[
             Self.MAX_EQUALITY,
             Self.MAX_TENDON,
             Self.NSITE,
+            Self.nexclude,
         ]()
         var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
         for i in range(BUF_SIZE):
@@ -526,6 +529,7 @@ struct ModelDefFromXML[
             Self.MAX_EQUALITY,
             Self.MAX_TENDON,
             Self.NSITE,
+            Self.nexclude,
         ]()
         comptime WS_SIZE = integrator_workspace_size[Self.NV, Self.NBODY]()
 

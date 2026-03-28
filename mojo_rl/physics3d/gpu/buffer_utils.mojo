@@ -53,6 +53,7 @@ from .constants import (
     BODY_IDX_IQUAT_Z,
     BODY_IDX_IQUAT_W,
     BODY_IDX_ROOTID,
+    BODY_IDX_WELDID,
     xipos_offset,
     subtree_com_offset,
     cfrc_ext_offset,
@@ -138,6 +139,7 @@ from .constants import (
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
+    MODEL_META_IDX_NEXCLUDE,
     MODEL_META_IDX_DENSITY,
     MODEL_META_IDX_VISCOSITY,
     model_geom_offset,
@@ -184,6 +186,7 @@ from .constants import (
     TENDON_IDX_SOLIMP_3,
     TENDON_IDX_SOLIMP_4,
     model_tendon_offset,
+    model_exclude_offset,
 )
 from ..types import Model, Data, ConeType
 
@@ -323,6 +326,9 @@ def copy_model_to_buffer[
         buffer[offset + BODY_IDX_ROOTID] = Scalar[DTYPE](
             model.body_rootid[body]
         )
+        buffer[offset + BODY_IDX_WELDID] = Scalar[DTYPE](
+            model.body_weldid[body]
+        )
 
     # Copy joint data
     for j in range(model.num_joints):
@@ -422,6 +428,10 @@ def copy_model_to_buffer[
     buffer[meta_offset + MODEL_META_IDX_NTENDON] = Scalar[DTYPE](
         model.num_tendons
     )
+    # Contact exclusions
+    buffer[meta_offset + MODEL_META_IDX_NEXCLUDE] = Scalar[DTYPE](
+        model.num_excludes
+    )
 
 
 def copy_invweight0_to_buffer[
@@ -474,6 +484,14 @@ def copy_invweight0_to_buffer[
     ]()
     for i in range(NV):
         buffer[dw_offset + i] = model.dof_invweight0[i]
+
+    # Copy contact exclusion pairs
+    var ex_offset = model_exclude_offset[
+        NBODY, NJOINT, NV, NGEOM, MAX_EQUALITY, MAX_TENDON
+    ]()
+    for i in range(model.num_excludes):
+        buffer[ex_offset + i * 2 + 0] = Scalar[DTYPE](model.exclude_body1[i])
+        buffer[ex_offset + i * 2 + 1] = Scalar[DTYPE](model.exclude_body2[i])
 
 
 def copy_geoms_to_buffer[

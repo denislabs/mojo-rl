@@ -52,6 +52,7 @@ struct ParsedModel:
     var NCAM: Int  # number of <camera> entries in <worldbody>
     var NSITE: Int  # number of <site> entries in <worldbody>
     var NEQ: Int  # number of equality constraints (<weld> + <connect> in <equality>)
+    var NEXCLUDE: Int  # number of <exclude> entries in <contact>
     var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
     var TIMESTEP: Float64  # <option timestep="..."/>
 
@@ -69,6 +70,7 @@ struct ParsedModel:
         ncam: Int = 0,
         nsite: Int = 0,
         neq: Int = 0,
+        nexclude: Int = 0,
         angle_deg: Bool = False,
         timestep: Float64 = 0.01,
     ):
@@ -84,6 +86,7 @@ struct ParsedModel:
         self.NCAM = ncam
         self.NSITE = nsite
         self.NEQ = neq
+        self.NEXCLUDE = nexclude
         self.ANGLE_DEG = angle_deg
         self.TIMESTEP = timestep
 
@@ -926,6 +929,10 @@ def parse_xml(xml: String) -> ParsedModel:
     var eq_sec = _extract_section(xml_clean, "equality")
     var neq = _count_tag(eq_sec, "weld") + _count_tag(eq_sec, "connect")
 
+    # ---- Contact exclusions (<contact> section) -----------------------------
+    var contact_sec = _extract_section(xml_clean, "contact")
+    var nexclude = _count_tag(contact_sec, "exclude")
+
     # ---- Compiler angle units -----------------------------------------------
     var angle_deg = False
     var compiler_t = xml_clean.find("<compiler")
@@ -961,6 +968,7 @@ def parse_xml(xml: String) -> ParsedModel:
         ncam,
         nsite,
         neq,
+        nexclude,
         angle_deg,
         timestep,
     )

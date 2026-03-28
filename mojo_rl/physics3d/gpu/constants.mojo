@@ -12,12 +12,12 @@ State buffer layout per environment:
    cfrc_ext: NBODY*6 | cvel: NBODY*6 | cinert: NBODY*10 | qfrc_actuator: NV]
 
 Model buffer (static, same for all environments):
-  Per body (MODEL_BODY_SIZE=23): [mass, inv_mass, inertia(3), inv_inertia(3),
-    pos(3), quat(4), parent, ipos(3), iquat(4)]
+  Per body (MODEL_BODY_SIZE=25): [mass, inv_mass, inertia(3), inv_inertia(3),
+    pos(3), quat(4), parent, ipos(3), iquat(4), rootid, weldid]
   Per joint (MODEL_JOINT_SIZE=26): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss,
     solref_limit(2), solimp_limit(5), qpos0]
-  Metadata (MODEL_META_SIZE=25): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
+  Metadata (MODEL_META_SIZE=26): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
     solref_contact(2), solimp_contact(5), solref_limit(2), solimp_limit(5), impratio, nequality, ntendon]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=29): [type, body, pos(3), quat(4), radius, half_length,
@@ -264,7 +264,7 @@ def state_size[
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime MODEL_BODY_SIZE: Int = 24
+comptime MODEL_BODY_SIZE: Int = 25
 
 comptime BODY_IDX_MASS: Int = 0
 comptime BODY_IDX_INV_MASS: Int = 1
@@ -290,6 +290,7 @@ comptime BODY_IDX_IQUAT_Y: Int = 20
 comptime BODY_IDX_IQUAT_Z: Int = 21
 comptime BODY_IDX_IQUAT_W: Int = 22
 comptime BODY_IDX_ROOTID: Int = 23  # Root body index (child of worldbody)
+comptime BODY_IDX_WELDID: Int = 24  # Weld body index (MuJoCo body_weldid)
 
 
 def model_body_offset(body_idx: Int) -> Int:
@@ -340,7 +341,7 @@ def model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 25
+comptime MODEL_META_SIZE: Int = 26
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -374,6 +375,7 @@ comptime MODEL_META_IDX_IMPRATIO: Int = 22  # MuJoCo impratio
 comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 # Fixed tendons
 comptime MODEL_META_IDX_NTENDON: Int = 24  # Number of fixed tendons
+comptime MODEL_META_IDX_NEXCLUDE: Int = 25  # Number of contact exclude pairs
 
 
 def model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
@@ -650,12 +652,37 @@ def model_size_with_invweight[
     NEQUALITY: Int = 0,
     NTENDON: Int = 0,
     NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
 ]() -> Int:
-    """Total model buffer size including invweight0 arrays.
+    """Total model buffer size including invweight0 arrays and exclude pairs.
 
     Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites |
-             body_invweight0(NBODY*2) | dof_invweight0(NV)]
+             body_invweight0(NBODY*2) | dof_invweight0(NV) | excludes(NEXCLUDE*2)]
     """
+    return (
+        model_dof_invweight0_offset[
+            NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
+        ]()
+        + NV
+        + NEXCLUDE * 2  # body1, body2 per exclude pair
+    )
+
+
+# Exclude pair section: stored as [body1_0, body2_0, body1_1, body2_1, ...]
+# after dof_invweight0
+comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2
+
+
+def model_exclude_offset[
+    NBODY: Int,
+    NJOINT: Int,
+    NV: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+]() -> Int:
+    """Offset to exclude pairs section in model buffer."""
     return (
         model_dof_invweight0_offset[
             NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE

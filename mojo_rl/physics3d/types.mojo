@@ -393,6 +393,7 @@ struct Model[
     # Kinematic tree structure
     var body_parent: List[Int]  # NBODY — 0 for worldbody
     var body_rootid: List[Int]  # NBODY — root body (child of worldbody) for each body
+    var body_weldid: List[Int]  # NBODY — weld body ID (bodies without joints inherit parent's)
 
     # Body inverse weights for primal solver (MuJoCo-style diagApprox)
     # [2*i] = translation, [2*i+1] = rotation  (NBODY * 2 elements)
@@ -458,6 +459,11 @@ struct Model[
     var tendons: List[TendonDef[Self.DTYPE]]
     var num_tendons: Int
 
+    # Contact exclusion pairs (body indices to skip in collision detection)
+    var exclude_body1: List[Int]
+    var exclude_body2: List[Int]
+    var num_excludes: Int
+
     def __init__(out self):
         """Initialize model with default values."""
         self.gravity = SIMD[Self.DTYPE, 4](0, 0, -9.81, 0)
@@ -514,6 +520,7 @@ struct Model[
         self.body_iquat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
         self.body_parent = List[Int](capacity=Self.NBODY)
         self.body_rootid = List[Int](capacity=Self.NBODY)
+        self.body_weldid = List[Int](capacity=Self.NBODY)
         self.body_invweight0 = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 2)
         self.dof_invweight0 = List[Scalar[Self.DTYPE]](capacity=Self.NV)
         self.qpos0 = List[Scalar[Self.DTYPE]](capacity=Self.NQ)
@@ -523,6 +530,7 @@ struct Model[
             self.body_inv_mass.append(Scalar[Self.DTYPE](0))
             self.body_parent.append(0)
             self.body_rootid.append(0)
+            self.body_weldid.append(0)
             self.body_invweight0.append(Scalar[Self.DTYPE](0))
             self.body_invweight0.append(Scalar[Self.DTYPE](0))
         for _ in range(Self.NBODY * 3):
@@ -695,6 +703,11 @@ struct Model[
         for _ in range(ntendon_max):
             self.tendons.append(TendonDef[Self.DTYPE].empty())
         self.num_tendons = 0
+
+        # Initialize contact exclusions
+        self.exclude_body1 = List[Int]()
+        self.exclude_body2 = List[Int]()
+        self.num_excludes = 0
 
     def set_body(
         mut self,
