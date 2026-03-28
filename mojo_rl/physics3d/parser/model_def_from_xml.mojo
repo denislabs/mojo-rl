@@ -1302,7 +1302,7 @@ struct ModelDefFromXML[
         visual_radius_scale: Float64,
     ) raises:
         """Draw body-attached geoms using parsed geometry + colour."""
-        # SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4
+        # SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5
         for i in range(Self.NGEOM):
             var bid = Self._rcd.geom_body_id[i]
             if bid < 0:
@@ -1311,6 +1311,9 @@ struct ModelDefFromXML[
             if Self._rcd.geom_type[i] == 0:
                 continue
             if bid >= len(positions):
+                continue
+            # Skip geoms with alpha < 1 (collision-only / semi-transparent)
+            if Self._rcd.geom_rgba_a[i] < 0.99:
                 continue
             var body_pos = positions[bid]
             var body_quat = quaternions[bid]
@@ -1368,6 +1371,20 @@ struct ModelDefFromXML[
                     radius=Self._rcd.geom_radius[i] * visual_radius_scale,
                     half_height=Self._rcd.geom_half_length[i], axis=2,
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+            elif gt == 5:  # MESH
+                var mid2 = Self._rcd.geom_mesh_id[i]
+                # Comptime-unroll: each iteration extracts a comptime String
+                # that auto-materializes to runtime String
+                comptime for mi in range(Self._rcd.nmesh):
+                    if mid2 == mi:
+                        comptime _mn: String = Self._rcd.mesh_names[mi]
+                        comptime _mf: String = Self._rcd.mesh_files[mi]
+                        renderer.draw_mesh(
+                            name=_mn, file_path=_mf,
+                            center=geom_pos, orientation=geom_quat,
+                            color=geom_color, shininess=shininess,
+                            specular=specular, reflectance=reflectance,
+                        )
 
     @staticmethod
     def render_sites(

@@ -2047,10 +2047,14 @@ struct Renderer3D(Movable):
 
         if cache_idx < 0:
             # Load STL and upload to GPU
-            var mesh_data = load_stl(file_path)
-            var handle = self._upload_mesh(mesh_data)
-            self.mesh_cache.append(MeshCacheEntry(name, handle^))
-            cache_idx = len(self.mesh_cache) - 1
+            try:
+                var mesh_data = load_stl(file_path)
+                var handle = self._upload_mesh(mesh_data)
+                self.mesh_cache.append(MeshCacheEntry(name, handle^))
+                cache_idx = len(self.mesh_cache) - 1
+            except e:
+                # File not found or parse error — skip this mesh silently
+                return
 
         # Build model matrix: rotation + translation, then apply scale
         var rot_mat = Mat4.from_quat(orientation, center)

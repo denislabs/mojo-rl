@@ -1691,6 +1691,12 @@ struct ComptimeRenderData(Copyable, Movable):
     var geom_rgba_b: InlineArray[Float64, 64]
     var geom_rgba_a: InlineArray[Float64, 64]
     var geom_material_id: InlineArray[Int, 64]
+    var geom_mesh_id: InlineArray[Int, 64]  # index into mesh_names[], -1 if not mesh
+
+    # Mesh assets (max 16) — name and file path for STL loading
+    var nmesh: Int
+    var mesh_names: InlineArray[String, 16]
+    var mesh_files: InlineArray[String, 16]
 
     # Lights (max 8)
     var light_dir_x: InlineArray[Float64, 8]
@@ -1775,6 +1781,10 @@ struct ComptimeRenderData(Copyable, Movable):
         self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
         self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
         self.geom_material_id = InlineArray[Int, 64](fill=-1)
+        self.geom_mesh_id = InlineArray[Int, 64](fill=-1)
+        self.nmesh = 0
+        self.mesh_names = InlineArray[String, 16](fill=String(""))
+        self.mesh_files = InlineArray[String, 16](fill=String(""))
 
         self.light_dir_x = InlineArray[Float64, 8](fill=0.0)
         self.light_dir_y = InlineArray[Float64, 8](fill=0.0)
@@ -1854,6 +1864,7 @@ struct ComptimeRenderData(Copyable, Movable):
         self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
         self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
         self.geom_material_id = InlineArray[Int, 64](fill=-1)
+        self.geom_mesh_id = InlineArray[Int, 64](fill=-1)
         for i in range(64):
             self.geom_body_id[i] = copy.geom_body_id[i]
             self.geom_type[i] = copy.geom_type[i]
@@ -1874,6 +1885,13 @@ struct ComptimeRenderData(Copyable, Movable):
             self.geom_rgba_b[i] = copy.geom_rgba_b[i]
             self.geom_rgba_a[i] = copy.geom_rgba_a[i]
             self.geom_material_id[i] = copy.geom_material_id[i]
+            self.geom_mesh_id[i] = copy.geom_mesh_id[i]
+        self.nmesh = copy.nmesh
+        self.mesh_names = InlineArray[String, 16](fill=String(""))
+        self.mesh_files = InlineArray[String, 16](fill=String(""))
+        for i in range(16):
+            self.mesh_names[i] = copy.mesh_names[i]
+            self.mesh_files[i] = copy.mesh_files[i]
 
         self.light_dir_x = InlineArray[Float64, 8](fill=0.0)
         self.light_dir_y = InlineArray[Float64, 8](fill=0.0)
@@ -2001,6 +2019,10 @@ struct ComptimeRenderData(Copyable, Movable):
         self.geom_rgba_b = take.geom_rgba_b^
         self.geom_rgba_a = take.geom_rgba_a^
         self.geom_material_id = take.geom_material_id^
+        self.geom_mesh_id = take.geom_mesh_id^
+        self.nmesh = take.nmesh
+        self.mesh_names = take.mesh_names^
+        self.mesh_files = take.mesh_files^
         self.light_dir_x = take.light_dir_x^
         self.light_dir_y = take.light_dir_y^
         self.light_dir_z = take.light_dir_z^
@@ -2055,7 +2077,7 @@ struct ComptimeRenderData(Copyable, Movable):
 
 def _rcd_geom_type_from_str(s: String) -> Int:
     """Convert geom type string to integer constant.
-    PLANE=0, SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4."""
+    PLANE=0, SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5."""
     var t = _trim(s)
     if t == "plane":
         return 0
@@ -2067,6 +2089,8 @@ def _rcd_geom_type_from_str(s: String) -> Int:
         return 3
     elif t == "cylinder":
         return 4
+    elif t == "mesh":
+        return 5
     return 1  # default = sphere
 
 
@@ -2346,6 +2370,24 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
         mat_pos = tag_end + 1
     data.nmat = mat_count
 
+    # Meshes (name → file path)
+    var mesh_pos = 0
+    while True:
+        var t = asset_sec.find("<mesh", mesh_pos)
+        if t == -1:
+            break
+        var tag_end = asset_sec.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(asset_sec[byte=t : tag_end + 1])
+        var mesh_name = _extract_attr(tag, "name")
+        var mesh_file = _extract_attr(tag, "file")
+        if len(mesh_name) > 0 and data.nmesh < 16:
+            data.mesh_names[data.nmesh] = mesh_name
+            data.mesh_files[data.nmesh] = mesh_file
+            data.nmesh += 1
+        mesh_pos = tag_end + 1
+
     # ---- DFS scan <worldbody>: geoms, lights, cameras, sites -----------------
     var worldbody = _extract_section(xml_clean, "worldbody")
     var body_id_stack = InlineArray[Int, 65](fill=0)
@@ -2399,6 +2441,14 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                 data.geom_type[geom_count] = _rcd_geom_type_from_str(
                     _extract_attr(tag, "type")
                 )
+                # Mesh reference: mesh="name" → lookup in mesh assets
+                if data.geom_type[geom_count] == 5:  # GEOM_MESH
+                    var mesh_ref = _extract_attr(tag, "mesh")
+                    if len(mesh_ref) > 0:
+                        for mi in range(data.nmesh):
+                            if data.mesh_names[mi] == mesh_ref:
+                                data.geom_mesh_id[geom_count] = mi
+                                break
                 var fromto_s = _extract_attr(tag, "fromto")
                 if len(fromto_s) > 0:
                     var ft = _fromto_to_pos_quat(fromto_s)

@@ -20,6 +20,8 @@ comptime sawyer_scene_xml = """
                   specular="0.5"/>
         <material name="table_col" rgba="0.3 0.3 1.0 0.5" shininess="0"
                   specular="0"/>
+        <mesh file="mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl" name="tablebody"/>
+        <mesh file="mojo_rl/envs/metaworld/assets/meshes/table/tabletop.stl" name="tabletop"/>
         <material name="wall_metal" rgba="0.5 0.5 0.5 1" shininess="1"
                   reflectance="1" specular="0.5"/>
     </asset>
@@ -35,6 +37,8 @@ comptime sawyer_scene_xml = """
         <body name="tablelink" pos="0 0.6 0">
             <geom material="table_wood" type="box" size="0.7 0.4 0.027"
                   pos="0 0 -0.027" conaffinity="0" contype="0"/>
+            <geom material="table_wood" type="mesh" mesh="tablebody"
+                  pos="0 0 -0.65" conaffinity="0" contype="0"/>
             <geom material="table_col" group="4" pos="0 0 -0.46"
                   size="0.7 0.4 0.46" type="box" conaffinity="1" contype="0"/>
         </body>
