@@ -988,6 +988,14 @@ def detect_contacts[
                 data.contacts[idx].pos_x = cx
                 data.contacts[idx].pos_y = cy
                 data.contacts[idx].pos_z = cz
+                # Negate normal for body-body contacts so normal always
+                # points from B toward A (matching ground contact convention
+                # where normal=(0,0,1) points from ground=B toward body=A).
+                # This ensures v_n = J*qvel > 0 = separating for all contacts.
+                if body_b > 0:
+                    nx = -nx
+                    ny = -ny
+                    nz = -nz
                 data.contacts[idx].normal_x = nx
                 data.contacts[idx].normal_y = ny
                 data.contacts[idx].normal_z = nz

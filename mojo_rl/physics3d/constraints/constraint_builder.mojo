@@ -90,7 +90,10 @@ def _compute_aref[
     # MuJoCo uses mjMINIMP ~1e-6 (only prevents division by zero)
     if imp < Scalar[DTYPE](1e-6):
         imp = Scalar[DTYPE](1e-6)
-    # bias = -aref = -(K*imp*pen - B*v_n) = -K*imp*pen + B*v_n
+    # MuJoCo: aref = -B*vel - K*I*pos, where vel>0=separating, pos<0=penetrating
+    # Our convention: v_n = J*qvel where positive = separating for ground contacts
+    # (normal points from ground toward body, J = J_body, vel > 0 = moving up = separating)
+    # bias = -aref = B*v_n + K*I*pen → bias = -K*imp*pen + B*v_n
     var bias = -K_spring * imp * penetration + B_damp * v_n
     # MuJoCo: R = (1-imp)/imp * diagApprox, inv_K_imp = 1/(K + R)
     var R = (Scalar[DTYPE](1.0) - imp) / imp * diagApprox

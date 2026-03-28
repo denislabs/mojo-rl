@@ -29,9 +29,7 @@ struct HopperConfig(Phyics3dEnvConfig):
     comptime MIN_HEIGHT: Scalar[DType.float64] = 0.7
     comptime MAX_PITCH: Scalar[DType.float64] = 0.2  # ~11 deg
 
-    comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-        HopperModel.NQ, HopperModel.NV
-    ]()  # RK4 needs NQ + 7*NV extra workspace
+    comptime INTEGRATOR_WS_EXTRA: Int = 0
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -72,7 +70,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         ],
         verbose: Bool,
     ):
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
+        EulerIntegrator[SOLVER=NewtonSolver].step(model, data)
 
     # === CPU: Pre-step hook ===
     @staticmethod
@@ -171,7 +169,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE,
             NQ,
             NV,

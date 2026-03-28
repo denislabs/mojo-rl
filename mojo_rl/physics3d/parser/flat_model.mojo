@@ -895,7 +895,8 @@ struct NamedDefaultsList(Copyable, ImplicitlyCopyable, Movable):
             self.count += 1
 
     def find(self, class_name: String) -> DefaultsData:
-        """Find defaults for a class name. Returns top-level defaults if not found."""
+        """Find defaults for a class name. Returns top-level defaults if not found.
+        """
         for i in range(self.count):
             if self.items[i].class_name == class_name:
                 return self.items[i].defaults
@@ -1208,7 +1209,7 @@ struct FlatModelDef[
         # Compute body_weldid — bodies with joints get their own ID,
         # bodies without joints inherit parent's weldid (MuJoCo convention)
         var body_has_joint = List[Bool](capacity=Self.NBODY)
-        for bi in range(Self.NBODY):
+        for _ in range(Self.NBODY):
             body_has_joint.append(False)
         for j in range(Self.NJOINT):
             body_has_joint[model.joints[j].body_id] = True

@@ -22,15 +22,15 @@ from mojo_rl.envs.inverted_double_pendulum import InvertedDoublePendulum
 
 
 def main() raises:
-    seed(42)
+    seed(1)  # seed 1 produces self-collision contacts
 
     # ---- Uncomment matching env ----
     # var env = HalfCheetah()
     # var env = Ant()
-    var env = Hopper()
+    # var env = Hopper[TERMINATE_ON_UNHEALTHY=False]()
     # var env = Walker2d()
     # var env = Swimmer()
-    # var env = Humanoid()
+    var env = Humanoid()
     # var env = InvertedPendulum()
     # var env = InvertedDoublePendulum()
 
