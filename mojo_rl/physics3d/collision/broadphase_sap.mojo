@@ -860,6 +860,11 @@ def detect_contacts_sap[
                 data.contacts[idx].pos_x = cx
                 data.contacts[idx].pos_y = cy
                 data.contacts[idx].pos_z = cz
+                # Negate normal for body-body contacts (same fix as detect_contacts)
+                if body_b > 0:
+                    nx = -nx
+                    ny = -ny
+                    nz = -nz
                 data.contacts[idx].normal_x = nx
                 data.contacts[idx].normal_y = ny
                 data.contacts[idx].normal_z = nz
@@ -1670,6 +1675,11 @@ def detect_contacts_sap_gpu[
                 state[env, c_off + CONTACT_IDX_POS_X] = cx
                 state[env, c_off + CONTACT_IDX_POS_Y] = cy
                 state[env, c_off + CONTACT_IDX_POS_Z] = cz
+                # Negate normal for body-body contacts (same fix as CPU path)
+                if body_b > 0:
+                    nx = -nx
+                    ny = -ny
+                    nz = -nz
                 state[env, c_off + CONTACT_IDX_NX] = nx
                 state[env, c_off + CONTACT_IDX_NY] = ny
                 state[env, c_off + CONTACT_IDX_NZ] = nz

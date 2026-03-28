@@ -1979,6 +1979,11 @@ def detect_contacts_gpu[
                 state[env, c_off + CONTACT_IDX_POS_X] = cx
                 state[env, c_off + CONTACT_IDX_POS_Y] = cy
                 state[env, c_off + CONTACT_IDX_POS_Z] = cz
+                # Negate normal for body-body contacts (same fix as CPU path)
+                if body_b > 0:
+                    nx = -nx
+                    ny = -ny
+                    nz = -nz
                 state[env, c_off + CONTACT_IDX_NX] = nx
                 state[env, c_off + CONTACT_IDX_NY] = ny
                 state[env, c_off + CONTACT_IDX_NZ] = nz

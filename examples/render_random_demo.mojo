@@ -28,9 +28,9 @@ def main() raises:
     # var env = HalfCheetah()
     # var env = Ant()
     # var env = Hopper[TERMINATE_ON_UNHEALTHY=False]()
-    # var env = Walker2d()
+    var env = Walker2d()
     # var env = Swimmer()
-    var env = Humanoid()
+    # var env = Humanoid()
     # var env = InvertedPendulum()
     # var env = InvertedDoublePendulum()
 
