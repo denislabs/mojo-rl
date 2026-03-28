@@ -1736,6 +1736,8 @@ struct ComptimeRenderData(Copyable, Movable):
     var tex_rgb2_r: InlineArray[Float64, 8]
     var tex_rgb2_g: InlineArray[Float64, 8]
     var tex_rgb2_b: InlineArray[Float64, 8]
+    var tex_names: InlineArray[String, 8]  # texture name (for material lookup)
+    var tex_files: InlineArray[String, 8]  # texture file path (PNG)
 
     # Materials (max 8)
     var mat_rgba_r: InlineArray[Float64, 8]
@@ -1745,6 +1747,7 @@ struct ComptimeRenderData(Copyable, Movable):
     var mat_shininess: InlineArray[Float64, 8]
     var mat_specular: InlineArray[Float64, 8]
     var mat_reflectance: InlineArray[Float64, 8]
+    var mat_tex_id: InlineArray[Int, 8]  # index into tex_names[], -1 if no texture
 
     # Sites (max 16)
     var site_body_id: InlineArray[Int, 16]
@@ -1821,6 +1824,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
         self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
         self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
+        self.tex_names = InlineArray[String, 8](fill=String(""))
+        self.tex_files = InlineArray[String, 8](fill=String(""))
 
         self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
         self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
@@ -1829,6 +1834,7 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
         self.mat_specular = InlineArray[Float64, 8](fill=0.5)
         self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
+        self.mat_tex_id = InlineArray[Int, 8](fill=-1)
 
         self.site_body_id = InlineArray[Int, 16](fill=0)
         self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
@@ -1955,6 +1961,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
         self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
         self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
+        self.tex_names = InlineArray[String, 8](fill=String(""))
+        self.tex_files = InlineArray[String, 8](fill=String(""))
         for i in range(8):
             self.tex_type[i] = copy.tex_type[i]
             self.tex_builtin[i] = copy.tex_builtin[i]
@@ -1964,6 +1972,8 @@ struct ComptimeRenderData(Copyable, Movable):
             self.tex_rgb2_r[i] = copy.tex_rgb2_r[i]
             self.tex_rgb2_g[i] = copy.tex_rgb2_g[i]
             self.tex_rgb2_b[i] = copy.tex_rgb2_b[i]
+            self.tex_names[i] = copy.tex_names[i]
+            self.tex_files[i] = copy.tex_files[i]
 
         self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
         self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
@@ -1972,6 +1982,7 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
         self.mat_specular = InlineArray[Float64, 8](fill=0.5)
         self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
+        self.mat_tex_id = InlineArray[Int, 8](fill=-1)
         for i in range(8):
             self.mat_rgba_r[i] = copy.mat_rgba_r[i]
             self.mat_rgba_g[i] = copy.mat_rgba_g[i]
@@ -1980,6 +1991,7 @@ struct ComptimeRenderData(Copyable, Movable):
             self.mat_shininess[i] = copy.mat_shininess[i]
             self.mat_specular[i] = copy.mat_specular[i]
             self.mat_reflectance[i] = copy.mat_reflectance[i]
+            self.mat_tex_id[i] = copy.mat_tex_id[i]
 
         self.site_body_id = InlineArray[Int, 16](fill=0)
         self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
@@ -2056,6 +2068,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_rgb2_r = take.tex_rgb2_r^
         self.tex_rgb2_g = take.tex_rgb2_g^
         self.tex_rgb2_b = take.tex_rgb2_b^
+        self.tex_names = take.tex_names^
+        self.tex_files = take.tex_files^
         self.mat_rgba_r = take.mat_rgba_r^
         self.mat_rgba_g = take.mat_rgba_g^
         self.mat_rgba_b = take.mat_rgba_b^
@@ -2063,6 +2077,7 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_shininess = take.mat_shininess^
         self.mat_specular = take.mat_specular^
         self.mat_reflectance = take.mat_reflectance^
+        self.mat_tex_id = take.mat_tex_id^
         self.site_body_id = take.site_body_id^
         self.site_pos_x = take.site_pos_x^
         self.site_pos_y = take.site_pos_y^
@@ -2335,6 +2350,12 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
             data.tex_rgb2_r[tex_count] = c[0]
             data.tex_rgb2_g[tex_count] = c[1]
             data.tex_rgb2_b[tex_count] = c[2]
+        var tex_name_s = _extract_attr(tag, "name")
+        if len(tex_name_s) > 0:
+            data.tex_names[tex_count] = tex_name_s
+        var tex_file_s = _extract_attr(tag, "file")
+        if len(tex_file_s) > 0:
+            data.tex_files[tex_count] = tex_file_s
         tex_count += 1
         tex_pos = tag_end + 1
     data.ntex = tex_count
@@ -2366,6 +2387,13 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
         var refl_s = _extract_attr(tag, "reflectance")
         if len(refl_s) > 0:
             data.mat_reflectance[mat_count] = _parse_float(refl_s)
+        # Resolve material → texture reference
+        var mat_tex_name = _extract_attr(tag, "texture")
+        if len(mat_tex_name) > 0:
+            for ti in range(data.ntex):
+                if data.tex_names[ti] == mat_tex_name:
+                    data.mat_tex_id[mat_count] = ti
+                    break
         mat_count += 1
         mat_pos = tag_end + 1
     data.nmat = mat_count

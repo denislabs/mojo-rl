@@ -1373,8 +1373,19 @@ struct ModelDefFromXML[
                     color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
             elif gt == 5:  # MESH
                 var mid2 = Self._rcd.geom_mesh_id[i]
-                # Comptime-unroll: each iteration extracts a comptime String
-                # that auto-materializes to runtime String
+                # Resolve material → texture chain for this geom
+                var tex_name_str = String("")
+                var tex_file_str = String("")
+                if mid >= 0 and mid < Self.nmat:
+                    var tex_id = Self._rcd.mat_tex_id[mid]
+                    if tex_id >= 0 and tex_id < Self._rcd.ntex:
+                        comptime for ti in range(Self._rcd.ntex):
+                            if tex_id == ti:
+                                comptime _tn: String = Self._rcd.tex_names[ti]
+                                comptime _tf: String = Self._rcd.tex_files[ti]
+                                tex_name_str = _tn
+                                tex_file_str = _tf
+                # Draw mesh with optional texture
                 comptime for mi in range(Self._rcd.nmesh):
                     if mid2 == mi:
                         comptime _mn: String = Self._rcd.mesh_names[mi]
@@ -1384,6 +1395,8 @@ struct ModelDefFromXML[
                             center=geom_pos, orientation=geom_quat,
                             color=geom_color, shininess=shininess,
                             specular=specular, reflectance=reflectance,
+                            texture_name=tex_name_str,
+                            texture_path=tex_file_str,
                         )
 
     @staticmethod

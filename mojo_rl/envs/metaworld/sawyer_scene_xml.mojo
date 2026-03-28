@@ -14,15 +14,19 @@ comptime sawyer_scene_xml = """
                  rgb2="0.50 0.495 0.48" width="32" height="32"/>
         <texture name="texplane" type="2d" builtin="checker" rgb1="0 0 0"
                  rgb2="0.8 0.8 0.8" width="100" height="100"/>
+        <texture name="T_table" type="cube"
+                 file="mojo_rl/envs/metaworld/assets/textures/wood2.png"/>
+        <texture name="T_wallmetal" type="cube"
+                 file="mojo_rl/envs/metaworld/assets/textures/metal.png"/>
         <material name="basic_floor" reflectance="0.2" shininess="0.3"
                   specular="0.5" texrepeat="12 12" texture="texplane"/>
-        <material name="table_wood" rgba="0.6 0.4 0.2 1" shininess="0.3"
+        <material name="table_wood" texture="T_table" shininess="0.3"
                   specular="0.5"/>
         <material name="table_col" rgba="0.3 0.3 1.0 0.5" shininess="0"
                   specular="0"/>
         <mesh file="mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl" name="tablebody"/>
         <mesh file="mojo_rl/envs/metaworld/assets/meshes/table/tabletop.stl" name="tabletop"/>
-        <material name="wall_metal" rgba="0.5 0.5 0.5 1" shininess="1"
+        <material name="wall_metal" texture="T_wallmetal" shininess="1"
                   reflectance="1" specular="0.5"/>
     </asset>
 
