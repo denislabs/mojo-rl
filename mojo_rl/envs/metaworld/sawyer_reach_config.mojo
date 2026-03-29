@@ -193,11 +193,11 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         data.qpos[7] = Scalar[DTYPE](0.0)  # r_close
         data.qpos[8] = Scalar[DTYPE](0.0)  # l_close
 
-        # Object free joint (qpos 9-15): place on floor (z=-0.893)
-        # Floor at z=-0.913, object cylinder half-height=0.02
+        # Object free joint (qpos 9-15): on table at z=0.02
+        # (MuJoCo reference position from sawyer_reach_task_xml)
         data.qpos[9] = Scalar[DTYPE](0.0)  # obj x
         data.qpos[10] = Scalar[DTYPE](0.6)  # obj y
-        data.qpos[11] = Scalar[DTYPE](-0.893)  # obj z (on floor)
+        data.qpos[11] = Scalar[DTYPE](0.02)  # obj z (on table)
         data.qpos[12] = Scalar[DTYPE](1.0)  # obj quat w
         data.qpos[13] = Scalar[DTYPE](0.0)  # obj quat x
         data.qpos[14] = Scalar[DTYPE](0.0)  # obj quat y
