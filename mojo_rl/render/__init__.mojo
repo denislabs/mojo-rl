@@ -6,8 +6,8 @@ This package provides:
 - Transform utilities: Vec2, Transform2D, Camera (transform.mojo)
 - Color utilities and palettes (colors.mojo)
 - Common shape vertex definitions (shapes.mojo)
-- GPU-accelerated 3D renderer using SDL3's GPU API with Metal (MSL) shaders
-  for Blinn-Phong lit environment visualization.
+- GPU-accelerated 3D renderer using SDL3's GPU API with cross-platform shaders
+  (MSL on Metal, SPIR-V on Vulkan) for Blinn-Phong lit environment visualization.
 """
 
 # Common data types

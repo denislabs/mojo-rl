@@ -530,12 +530,12 @@ def mat4_to_gpu_f32(m: Mat4) -> InlineArray[Float32, 16]:
     return out^
 
 
-def perspective_metal(
+def perspective_projection(
     fov_y: Float64, aspect: Float64, near: Float64, far: Float64
 ) -> Mat4:
-    """Metal-compatible perspective projection with Z in [0, 1].
+    """Perspective projection with Z in [0, 1].
 
-    Unlike OpenGL's [-1, 1], Metal clip space uses Z in [0, 1].
+    Compatible with Metal, Vulkan, and D3D12 clip space (all use Z in [0, 1]).
 
     Args:
         fov_y: Vertical field of view in radians.
@@ -549,7 +549,7 @@ def perspective_metal(
     var f = 1.0 / tan(fov_y * 0.5)
     var nf = 1.0 / (near - far)
 
-    # Row-major perspective matrix with Metal Z range [0, 1]
+    # Row-major perspective matrix with Z range [0, 1]
     var m = Mat4.identity()
     m.m00 = f / aspect
     m.m01 = 0.0
@@ -620,7 +620,7 @@ def make_identity_f32() -> InlineArray[Float32, 16]:
     return out^
 
 
-def ortho_metal(
+def ortho_projection(
     left: Float64,
     right: Float64,
     bottom: Float64,
@@ -628,7 +628,9 @@ def ortho_metal(
     near: Float64,
     far: Float64,
 ) -> Mat4:
-    """Metal-compatible orthographic projection with Z in [0, 1].
+    """Orthographic projection with Z in [0, 1].
+
+    Compatible with Metal, Vulkan, and D3D12 clip space.
 
     Args:
         left: Left clipping plane.
@@ -654,7 +656,7 @@ def ortho_metal(
 
     m.m20 = 0.0
     m.m21 = 0.0
-    m.m22 = -1.0 / (far - near)  # Metal Z range [0, 1]
+    m.m22 = -1.0 / (far - near)  # Z range [0, 1]
     m.m23 = -near / (far - near)
 
     m.m30 = 0.0

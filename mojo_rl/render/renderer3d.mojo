@@ -1,7 +1,8 @@
 """GPU-Accelerated 3D Renderer.
 
-Uses SDL3's GPU API with Metal (MSL shaders) for true 3D rendering
-with Blinn-Phong lighting, depth buffering, and procedural checkerboard ground.
+Uses SDL3's GPU API with cross-platform shaders (MSL on Metal, SPIR-V on Vulkan)
+for true 3D rendering with Blinn-Phong lighting, depth buffering, and procedural
+checkerboard ground.
 """
 
 from std.memory import UnsafePointer, memcpy, alloc
@@ -12,6 +13,7 @@ from mojo_rl.math3d import (
     Mat4 as Mat4Generic,
 )
 from std.ffi import _get_dylib_function
+from std.sys import CompilationTarget
 from .sdl import (
     Ptr,
     lib,
@@ -161,8 +163,8 @@ from .gpu_types import (
     TextureCacheEntry,
     SolidDrawCommand,
     mat4_to_gpu_f32,
-    perspective_metal,
-    ortho_metal,
+    perspective_projection,
+    ortho_projection,
     color_to_vec4,
     make_identity_f32,
 )
@@ -191,6 +193,7 @@ from .gpu_shaders import (
 )
 from .font_atlas import build_font_atlas_r8, glyph_uv
 from .png_loader import load_png, TextureData
+from .gpu_shaders_spirv import load_spirv_shaders, SPIRVShaders
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -245,8 +248,8 @@ struct LineColorEntry(Copyable, Movable):
 struct Renderer3D(Movable):
     """GPU-accelerated 3D renderer using SDL3 GPU API.
 
-    Uses Metal (MSL) shaders for Blinn-Phong lit solid rendering with
-    procedural checkerboard ground and flat-color line drawing.
+    Uses Metal (MSL) or Vulkan (SPIR-V) shaders for Blinn-Phong lit solid
+    rendering with procedural checkerboard ground and flat-color line drawing.
     """
 
     # SDL3 handles
@@ -559,6 +562,16 @@ struct Renderer3D(Movable):
         self.draw_grid = take.draw_grid
         self.draw_axes = take.draw_axes
 
+    @staticmethod
+    def _shader_format() -> GPUShaderFormat:
+        """Return the shader format for the current platform."""
+        comptime if CompilationTarget.is_macos():
+            return GPUShaderFormat.GPU_SHADERFORMAT_MSL
+        elif CompilationTarget.is_linux():
+            return GPUShaderFormat.GPU_SHADERFORMAT_SPIRV
+        else:
+            comptime assert False, "Unsupported platform for Renderer3D"
+
     def init(mut self, mut title: String) raises:
         """Initialize SDL3, GPU device, pipelines, and static meshes."""
         # 1. Init SDL3
@@ -569,8 +582,7 @@ struct Renderer3D(Movable):
             title, c_int(self.width), c_int(self.height), WindowFlags(0)
         )
 
-        # 3. Create GPU device (MSL shaders, debug mode)
-        # Must pass NULL (not empty string) for driver name to auto-select
+        # 3. Create GPU device (MSL on macOS, SPIR-V on Linux)
         self.device = _get_dylib_function[
             lib,
             "SDL_CreateGPUDevice",
@@ -578,7 +590,7 @@ struct Renderer3D(Movable):
                 GPUShaderFormat, Bool, Ptr[c_char, ImmutAnyOrigin]
             ) -> Ptr[GPUDevice, MutAnyOrigin],
         ]()(
-            GPUShaderFormat.GPU_SHADERFORMAT_MSL,
+            Self._shader_format(),
             True,
             Ptr[c_char, ImmutAnyOrigin](),  # NULL = auto-select driver
         )
@@ -614,7 +626,7 @@ struct Renderer3D(Movable):
 
         self.initialized = True
 
-    def _create_shader(
+    def _create_shader_msl(
         self,
         source: String,
         stage: GPUShaderStage,
@@ -641,6 +653,53 @@ struct Renderer3D(Movable):
 
         return create_gpu_shader(self.device, Ptr(to=info))
 
+    def _create_shader_spirv(
+        self,
+        spirv_data: List[UInt8],
+        stage: GPUShaderStage,
+        num_uniform_buffers: UInt32,
+        num_samplers: UInt32 = 0,
+    ) raises -> Ptr[GPUShader, MutAnyOrigin]:
+        """Create a shader from pre-compiled SPIR-V bytecode."""
+        var ep = String("main")
+
+        var info = GPUShaderCreateInfo(
+            code_size=UInt(len(spirv_data)),
+            code=spirv_data.unsafe_ptr(),
+            entrypoint=ep.as_c_string_slice().unsafe_ptr(),
+            format=GPUShaderFormat.GPU_SHADERFORMAT_SPIRV,
+            stage=stage,
+            num_samplers=num_samplers,
+            num_storage_textures=0,
+            num_storage_buffers=0,
+            num_uniform_buffers=num_uniform_buffers,
+            props=PropertiesID(0),
+        )
+
+        return create_gpu_shader(self.device, Ptr(to=info))
+
+    def _create_shader(
+        self,
+        msl_source: String,
+        msl_entrypoint: String,
+        spirv_data: List[UInt8],
+        stage: GPUShaderStage,
+        num_uniform_buffers: UInt32,
+        num_samplers: UInt32 = 0,
+    ) raises -> Ptr[GPUShader, MutAnyOrigin]:
+        """Create shader using MSL on macOS or SPIR-V on Linux."""
+        comptime if CompilationTarget.is_macos():
+            return self._create_shader_msl(
+                msl_source, stage, num_uniform_buffers,
+                msl_entrypoint, num_samplers,
+            )
+        elif CompilationTarget.is_linux():
+            return self._create_shader_spirv(
+                spirv_data, stage, num_uniform_buffers, num_samplers,
+            )
+        else:
+            comptime assert False, "Unsupported platform for Renderer3D"
+
     def _no_stencil_op(self) -> GPUStencilOpState:
         """Return a zeroed-out stencil op state."""
         return GPUStencilOpState(
@@ -650,21 +709,33 @@ struct Renderer3D(Movable):
             compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
         )
 
+    @staticmethod
+    def _load_spirv() raises -> SPIRVShaders:
+        """Load SPIR-V shaders on Linux, return empty on macOS."""
+        comptime if CompilationTarget.is_linux():
+            return load_spirv_shaders()
+        else:
+            return SPIRVShaders(
+                List[UInt8](), List[UInt8](), List[UInt8](), List[UInt8](),
+                List[UInt8](), List[UInt8](), List[UInt8](), List[UInt8](),
+                List[UInt8](), List[UInt8](), List[UInt8](), List[UInt8](),
+                List[UInt8](),
+            )
+
     def _create_pipelines(mut self) raises:
         """Create solid, ground, line, shadow, and reflection GPU pipelines."""
+        var spv = Self._load_spirv()
+
         # --- Solid pipeline ---
         var solid_vs = self._create_shader(
-            SOLID_VERTEX_MSL,
+            SOLID_VERTEX_MSL, String("solid_vertex"), spv.solid_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
-            entrypoint=String("solid_vertex"),
         )
         var solid_fs = self._create_shader(
-            SOLID_FRAGMENT_MSL,
+            SOLID_FRAGMENT_MSL, String("solid_fragment"), spv.solid_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=2,
-            entrypoint=String("solid_fragment"),
-            num_samplers=2,  # slot 0 = shadow map, slot 1 = object texture
+            num_uniform_buffers=2, num_samplers=2,
         )
 
         # Vertex input - allocate attributes contiguously on heap
@@ -774,17 +845,14 @@ struct Renderer3D(Movable):
 
         # --- Ground pipeline (alpha blend for distance fade) ---
         var ground_vs = self._create_shader(
-            GROUND_VERTEX_MSL,
+            GROUND_VERTEX_MSL, String("ground_vertex"), spv.ground_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
-            entrypoint=String("ground_vertex"),
         )
         var ground_fs = self._create_shader(
-            GROUND_FRAGMENT_MSL,
+            GROUND_FRAGMENT_MSL, String("ground_fragment"), spv.ground_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=2,
-            entrypoint=String("ground_fragment"),
-            num_samplers=1,
+            num_uniform_buffers=2, num_samplers=1,
         )
 
         var ground_ct = GPUColorTargetDescription(
@@ -893,16 +961,14 @@ struct Renderer3D(Movable):
 
         # --- Line pipeline ---
         var line_vs = self._create_shader(
-            LINE_VERTEX_MSL,
+            LINE_VERTEX_MSL, String("line_vertex"), spv.line_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=1,
-            entrypoint=String("line_vertex"),
         )
         var line_fs = self._create_shader(
-            LINE_FRAGMENT_MSL,
+            LINE_FRAGMENT_MSL, String("line_fragment"), spv.line_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=1,
-            entrypoint=String("line_fragment"),
         )
 
         var line_ct = GPUColorTargetDescription(
@@ -998,16 +1064,14 @@ struct Renderer3D(Movable):
 
         # --- Shadow pipeline (depth-only, from light POV) ---
         var shadow_vs = self._create_shader(
-            SHADOW_VERTEX_MSL,
+            SHADOW_VERTEX_MSL, String("shadow_vertex"), spv.shadow_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
-            entrypoint=String("shadow_vertex"),
         )
         var shadow_fs = self._create_shader(
-            SHADOW_FRAGMENT_MSL,
+            SHADOW_FRAGMENT_MSL, String("shadow_fragment"), spv.shadow_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=0,
-            entrypoint=String("shadow_fragment"),
         )
 
         # Shadow uses same vertex layout as solid
@@ -1101,19 +1165,16 @@ struct Renderer3D(Movable):
 
         # --- Reflection pipeline (alpha-blended, front-cull, no depth write) ---
         var refl_fs = self._create_shader(
-            REFLECTION_FRAGMENT_MSL,
+            REFLECTION_FRAGMENT_MSL, String("reflection_fragment"),
+            spv.reflection_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=1,
-            entrypoint=String("reflection_fragment"),
         )
-
-        # Reuse solid_vs for reflection (same vertex output struct)
-        # Need a second reference - create another shader
+        # Reuse solid vertex shader for reflection (same vertex output struct)
         var refl_vs = self._create_shader(
-            SOLID_VERTEX_MSL,
+            SOLID_VERTEX_MSL, String("solid_vertex"), spv.solid_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
-            entrypoint=String("solid_vertex"),
         )
 
         var refl_ct = GPUColorTargetDescription(
@@ -1222,16 +1283,14 @@ struct Renderer3D(Movable):
 
         # --- Skybox pipeline (fullscreen gradient, no depth write, no vertex input) ---
         var skybox_vs = self._create_shader(
-            SKYBOX_VERTEX_MSL,
+            SKYBOX_VERTEX_MSL, String("skybox_vertex"), spv.skybox_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=0,
-            entrypoint=String("skybox_vertex"),
         )
         var skybox_fs = self._create_shader(
-            SKYBOX_FRAGMENT_MSL,
+            SKYBOX_FRAGMENT_MSL, String("skybox_fragment"), spv.skybox_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=1,
-            entrypoint=String("skybox_fragment"),
         )
 
         var skybox_ct = GPUColorTargetDescription(
@@ -1592,18 +1651,16 @@ struct Renderer3D(Movable):
         self.font_sampler = create_gpu_sampler(self.device, Ptr(to=samp_info))
 
         # --- 3. Create text pipeline ---
+        var spv = Self._load_spirv()
         var text_vs = self._create_shader(
-            TEXT_VERTEX_MSL,
+            TEXT_VERTEX_MSL, String("text_vertex"), spv.text_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=1,
-            entrypoint=String("text_vertex"),
         )
         var text_fs = self._create_shader(
-            TEXT_FRAGMENT_MSL,
+            TEXT_FRAGMENT_MSL, String("text_fragment"), spv.text_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=0,
-            entrypoint=String("text_fragment"),
-            num_samplers=1,
+            num_uniform_buffers=0, num_samplers=1,
         )
 
         var text_buf_desc = GPUVertexBufferDescription(
@@ -2584,7 +2641,7 @@ struct Renderer3D(Movable):
         """End frame: shadow pass, then main pass with reflections, ground, solids, lines, text.
         """
         # Update ortho projection for current window size
-        var ortho = ortho_metal(
+        var ortho = ortho_projection(
             0.0,
             Float64(self.width),
             Float64(self.height),
@@ -3196,7 +3253,7 @@ struct Renderer3D(Movable):
     def _build_scene_uniforms(mut self):
         """Build scene uniforms from current camera state."""
         var view = self.camera.get_view_matrix()
-        var proj = perspective_metal(
+        var proj = perspective_projection(
             self.camera.fov,
             self.camera.aspect,
             self.camera.near,
@@ -3317,7 +3374,7 @@ struct Renderer3D(Movable):
 
         # Orthographic projection covering the scene
         var ortho_size = 8.0
-        var light_proj = ortho_metal(
+        var light_proj = ortho_projection(
             -ortho_size,
             ortho_size,
             -ortho_size,
@@ -3366,6 +3423,11 @@ struct Renderer3D(Movable):
                 break
 
             var event_type = event[UInt32]
+
+            # DEBUG: show button details
+            if event_type == 0x401 or event_type == 0x402:
+                var btn = event[MouseButtonEvent]
+                print("BTN:", hex(event_type), "button=", Int(btn.button), "clicks=", Int(btn.clicks))
 
             if EventType(event_type) == EventType.EVENT_QUIT:
                 self.should_quit = True
