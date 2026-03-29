@@ -1304,7 +1304,28 @@ struct ModelDefFromXML[
                 has_plane = True
                 var ground_offset = Self._rcd.geom_pos_z[i] - max_body_radius * (visual_radius_scale - 1.0)
                 var grid_cx = torso_x if follow else Float64(0.0)
-                renderer.draw_ground_grid(grid_cx, height=ground_offset)
+                # Resolve material → texture for this plane geom
+                var tex_name = String("")
+                var tex_file = String("")
+                var texrep_u = Float64(1.0)
+                var texrep_v = Float64(1.0)
+                var mid = Self._rcd.geom_material_id[i]
+                if mid >= 0 and mid < Self.nmat:
+                    var tex_id = Self._rcd.mat_tex_id[mid]
+                    if tex_id >= 0 and tex_id < Self._rcd.ntex:
+                        comptime for ti in range(Self._rcd.ntex):
+                            if tex_id == ti:
+                                comptime _tn: String = Self._rcd.tex_names[ti]
+                                comptime _tf: String = Self._rcd.tex_files[ti]
+                                tex_name = _tn
+                                tex_file = _tf
+                    texrep_u = Self._rcd.mat_texrepeat_u[mid]
+                    texrep_v = Self._rcd.mat_texrepeat_v[mid]
+                renderer.draw_ground_grid(
+                    grid_cx, height=ground_offset,
+                    texture_name=tex_name, texture_path=tex_file,
+                    texrepeat_u=texrep_u, texrepeat_v=texrep_v,
+                )
         if not has_plane:
             # No ground plane defined in XML — skip ground rendering.
             # Models like InvertedPendulum intentionally omit the ground.
@@ -1368,39 +1389,44 @@ struct ModelDefFromXML[
                 shininess = Float32(Self._rcd.mat_shininess[mid])
                 specular = Float32(Self._rcd.mat_specular[mid])
                 reflectance = Float32(Self._rcd.mat_reflectance[mid])
+            # Resolve material → texture chain for this geom
+            var tex_name_str = String("")
+            var tex_file_str = String("")
+            if mid >= 0 and mid < Self.nmat:
+                var tex_id = Self._rcd.mat_tex_id[mid]
+                if tex_id >= 0 and tex_id < Self._rcd.ntex:
+                    comptime for ti in range(Self._rcd.ntex):
+                        if tex_id == ti:
+                            comptime _tn: String = Self._rcd.tex_names[ti]
+                            comptime _tf: String = Self._rcd.tex_files[ti]
+                            tex_name_str = _tn
+                            tex_file_str = _tf
+
             var gt = Self._rcd.geom_type[i]
             if gt == 2:  # CAPSULE
                 renderer.draw_capsule(center=geom_pos, orientation=geom_quat,
                     radius=Self._rcd.geom_radius[i] * visual_radius_scale,
                     half_height=Self._rcd.geom_half_length[i], axis=2,
-                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
+                    texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 1:  # SPHERE
                 renderer.draw_sphere(center=geom_pos,
                     radius=Self._rcd.geom_radius[i] * visual_radius_scale,
-                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
+                    texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 3:  # BOX
                 renderer.draw_box(center=geom_pos, orientation=geom_quat,
                     half_extents=_RVec3(Self._rcd.geom_half_x[i], Self._rcd.geom_half_y[i], Self._rcd.geom_half_z[i]),
-                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
+                    texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 4:  # CYLINDER
                 renderer.draw_cylinder(center=geom_pos, orientation=geom_quat,
                     radius=Self._rcd.geom_radius[i] * visual_radius_scale,
                     half_height=Self._rcd.geom_half_length[i], axis=2,
-                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
+                    texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 5:  # MESH
                 var mid2 = Self._rcd.geom_mesh_id[i]
-                # Resolve material → texture chain for this geom
-                var tex_name_str = String("")
-                var tex_file_str = String("")
-                if mid >= 0 and mid < Self.nmat:
-                    var tex_id = Self._rcd.mat_tex_id[mid]
-                    if tex_id >= 0 and tex_id < Self._rcd.ntex:
-                        comptime for ti in range(Self._rcd.ntex):
-                            if tex_id == ti:
-                                comptime _tn: String = Self._rcd.tex_names[ti]
-                                comptime _tf: String = Self._rcd.tex_files[ti]
-                                tex_name_str = _tn
-                                tex_file_str = _tf
                 # Draw mesh with optional texture
                 comptime for mi in range(Self._rcd.nmesh):
                     if mid2 == mi:

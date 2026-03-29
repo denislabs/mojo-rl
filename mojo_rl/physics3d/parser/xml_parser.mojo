@@ -1748,6 +1748,8 @@ struct ComptimeRenderData(Copyable, Movable):
     var mat_specular: InlineArray[Float64, 8]
     var mat_reflectance: InlineArray[Float64, 8]
     var mat_tex_id: InlineArray[Int, 8]  # index into tex_names[], -1 if no texture
+    var mat_texrepeat_u: InlineArray[Float64, 8]  # texture repeat U (default 1.0)
+    var mat_texrepeat_v: InlineArray[Float64, 8]  # texture repeat V (default 1.0)
 
     # Sites (max 16)
     var site_body_id: InlineArray[Int, 16]
@@ -1845,6 +1847,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_specular = InlineArray[Float64, 8](fill=0.5)
         self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
         self.mat_tex_id = InlineArray[Int, 8](fill=-1)
+        self.mat_texrepeat_u = InlineArray[Float64, 8](fill=1.0)
+        self.mat_texrepeat_v = InlineArray[Float64, 8](fill=1.0)
 
         self.site_body_id = InlineArray[Int, 16](fill=0)
         self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
@@ -2003,6 +2007,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_specular = InlineArray[Float64, 8](fill=0.5)
         self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
         self.mat_tex_id = InlineArray[Int, 8](fill=-1)
+        self.mat_texrepeat_u = InlineArray[Float64, 8](fill=1.0)
+        self.mat_texrepeat_v = InlineArray[Float64, 8](fill=1.0)
         for i in range(8):
             self.mat_rgba_r[i] = copy.mat_rgba_r[i]
             self.mat_rgba_g[i] = copy.mat_rgba_g[i]
@@ -2012,6 +2018,8 @@ struct ComptimeRenderData(Copyable, Movable):
             self.mat_specular[i] = copy.mat_specular[i]
             self.mat_reflectance[i] = copy.mat_reflectance[i]
             self.mat_tex_id[i] = copy.mat_tex_id[i]
+            self.mat_texrepeat_u[i] = copy.mat_texrepeat_u[i]
+            self.mat_texrepeat_v[i] = copy.mat_texrepeat_v[i]
 
         self.site_body_id = InlineArray[Int, 16](fill=0)
         self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
@@ -2108,6 +2116,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_specular = take.mat_specular^
         self.mat_reflectance = take.mat_reflectance^
         self.mat_tex_id = take.mat_tex_id^
+        self.mat_texrepeat_u = take.mat_texrepeat_u^
+        self.mat_texrepeat_v = take.mat_texrepeat_v^
         self.site_body_id = take.site_body_id^
         self.site_pos_x = take.site_pos_x^
         self.site_pos_y = take.site_pos_y^
@@ -2434,6 +2444,12 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                 if data.tex_names[ti] == mat_tex_name:
                     data.mat_tex_id[mat_count] = ti
                     break
+        # Parse texrepeat (default 1 1)
+        var tr_s = _extract_attr(tag, "texrepeat")
+        if len(tr_s) > 0:
+            var tv = _parse_vec3(tr_s)  # reuse vec3 parser, only need first 2
+            data.mat_texrepeat_u[mat_count] = tv[0]
+            data.mat_texrepeat_v[mat_count] = tv[1]
         mat_count += 1
         mat_pos = tag_end + 1
     data.nmat = mat_count

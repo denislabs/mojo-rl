@@ -168,6 +168,8 @@ from .gpu_types import (
     color_to_vec4,
     make_identity_f32,
 )
+from .sdl.sdl_keyboard import get_mod_state
+from .sdl.sdl_keycode import Keymod
 from .stl_loader import load_stl
 from .gpu_mesh import (
     generate_sphere,
@@ -308,6 +310,7 @@ struct Renderer3D(Movable):
     var solid_draws: List[SolidDrawCommand]
     var ground_uniforms: ObjectUniforms
     var has_ground: Bool
+    var ground_texture_idx: Int  # -1 = no texture (use checker/solid)
 
     # Camera and scene
     var camera: Camera3D
@@ -451,6 +454,7 @@ struct Renderer3D(Movable):
         self.solid_draws = List[SolidDrawCommand]()
         self.ground_uniforms = ObjectUniforms()
         self.has_ground = False
+        self.ground_texture_idx = -1
 
         self.scene_uniforms = SceneUniforms()
         self.skybox_uniforms = SkyboxUniforms()
@@ -533,6 +537,7 @@ struct Renderer3D(Movable):
         self.solid_draws = take.solid_draws^
         self.ground_uniforms = take.ground_uniforms
         self.has_ground = take.has_ground
+        self.ground_texture_idx = take.ground_texture_idx
         self.camera = take.camera^
         self.width = take.width
         self.height = take.height
@@ -852,7 +857,7 @@ struct Renderer3D(Movable):
         var ground_fs = self._create_shader(
             GROUND_FRAGMENT_MSL, String("ground_fragment"), spv.ground_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=2, num_samplers=1,
+            num_uniform_buffers=2, num_samplers=2,
         )
 
         var ground_ct = GPUColorTargetDescription(
@@ -2026,6 +2031,7 @@ struct Renderer3D(Movable):
         self.line_colors.clear()
         self.text_vertex_data.clear()
         self.has_ground = False
+        self.ground_texture_idx = -1
 
     def draw_text(
         mut self,
@@ -2111,8 +2117,10 @@ struct Renderer3D(Movable):
         specular: Float32 = 0.5,
         reflectance: Float32 = 0.0,
         emission: Float32 = 0.0,
-    ):
-        """Draw a solid sphere.
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+    ) raises:
+        """Draw a solid sphere, optionally textured.
 
         Args:
             center: Sphere center in world space.
@@ -2122,7 +2130,26 @@ struct Renderer3D(Movable):
             specular: Specular intensity (0-1).
             reflectance: Reflectance coefficient (0-1).
             emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
         """
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
         var model = Mat4.compose(
             center, Quat.identity(), Vec3(radius, radius, radius)
         )
@@ -2131,10 +2158,10 @@ struct Renderer3D(Movable):
         uniforms.color = color_to_vec4(color)
         uniforms.material[0] = shininess
         uniforms.material[1] = specular
-        uniforms.material[2] = reflectance
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
-        self.solid_draws.append(SolidDrawCommand(0, uniforms))
+        self.solid_draws.append(SolidDrawCommand(0, uniforms, texture_cache_idx=tex_idx))
 
     def draw_capsule(
         mut self,
@@ -2148,8 +2175,10 @@ struct Renderer3D(Movable):
         specular: Float32 = 0.5,
         reflectance: Float32 = 0.0,
         emission: Float32 = 0.0,
+        texture_name: String = String(""),
+        texture_path: String = String(""),
     ) raises:
-        """Draw a solid capsule.
+        """Draw a solid capsule, optionally textured.
 
         Args:
             center: Capsule center in world space.
@@ -2162,7 +2191,26 @@ struct Renderer3D(Movable):
             specular: Specular intensity (0-1).
             reflectance: Reflectance coefficient (0-1).
             emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
         """
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
         var f_radius = Float32(radius)
         var f_half = Float32(half_height)
 
@@ -2203,12 +2251,13 @@ struct Renderer3D(Movable):
         uniforms.color = color_to_vec4(color)
         uniforms.material[0] = shininess
         uniforms.material[1] = specular
-        uniforms.material[2] = reflectance
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
         self.solid_draws.append(
             SolidDrawCommand(
-                0, uniforms, is_capsule=True, capsule_cache_idx=cache_idx
+                0, uniforms, is_capsule=True, capsule_cache_idx=cache_idx,
+                texture_cache_idx=tex_idx,
             )
         )
 
@@ -2224,8 +2273,10 @@ struct Renderer3D(Movable):
         specular: Float32 = 0.5,
         reflectance: Float32 = 0.0,
         emission: Float32 = 0.0,
+        texture_name: String = String(""),
+        texture_path: String = String(""),
     ) raises:
-        """Draw a solid cylinder with flat disc caps.
+        """Draw a solid cylinder with flat disc caps, optionally textured.
 
         Args:
             center: Cylinder center in world space.
@@ -2238,7 +2289,26 @@ struct Renderer3D(Movable):
             specular: Specular intensity (0-1).
             reflectance: Reflectance coefficient (0-1).
             emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
         """
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
         var f_radius = Float32(radius)
         var f_half = Float32(half_height)
 
@@ -2274,12 +2344,14 @@ struct Renderer3D(Movable):
         uniforms.color = color_to_vec4(color)
         uniforms.material[0] = shininess
         uniforms.material[1] = specular
-        uniforms.material[2] = reflectance
+        # material.z > 0 tells the shader to sample the texture
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
         self.solid_draws.append(
             SolidDrawCommand(
-                0, uniforms, is_cylinder=True, cylinder_cache_idx=cache_idx
+                0, uniforms, is_cylinder=True, cylinder_cache_idx=cache_idx,
+                texture_cache_idx=tex_idx,
             )
         )
 
@@ -2397,8 +2469,10 @@ struct Renderer3D(Movable):
         specular: Float32 = 0.5,
         reflectance: Float32 = 0.0,
         emission: Float32 = 0.0,
-    ):
-        """Draw a solid box.
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+    ) raises:
+        """Draw a solid box, optionally textured.
 
         Args:
             center: Box center in world space.
@@ -2409,7 +2483,26 @@ struct Renderer3D(Movable):
             specular: Specular intensity (0-1).
             reflectance: Reflectance coefficient (0-1).
             emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
         """
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
         # Unit box is [-0.5, 0.5], so scale by 2 * half_extents
         var scale = Vec3(
             half_extents.x * 2.0,
@@ -2423,10 +2516,11 @@ struct Renderer3D(Movable):
         uniforms.color = color_to_vec4(color)
         uniforms.material[0] = shininess
         uniforms.material[1] = specular
-        uniforms.material[2] = reflectance
+        # material.z > 0 tells the shader to sample the texture
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
-        self.solid_draws.append(SolidDrawCommand(1, uniforms))
+        self.solid_draws.append(SolidDrawCommand(1, uniforms, texture_cache_idx=tex_idx))
 
     def set_skybox(
         mut self,
@@ -2501,14 +2595,48 @@ struct Renderer3D(Movable):
         center_x: Float64 = 0.0,
         size: Float64 = 10.0,
         height: Float64 = 0.0,
-    ):
-        """Draw the ground plane with procedural checkerboard.
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+        texrepeat_u: Float64 = 1.0,
+        texrepeat_v: Float64 = 1.0,
+    ) raises:
+        """Draw the ground plane with procedural checkerboard or texture.
 
         Args:
             center_x: X-coordinate to center the ground on (for scrolling envs).
             size: Unused (ground mesh is pre-sized).
             height: Z-coordinate of the ground plane.
+            texture_name: Cache key for the ground texture (empty = checker/solid).
+            texture_path: Path to the PNG texture file (empty = checker/solid).
+            texrepeat_u: Texture repeat in U direction.
+            texrepeat_v: Texture repeat in V direction.
         """
+        # Load and cache ground texture if provided
+        self.ground_texture_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    self.ground_texture_idx = ti
+                    break
+            if self.ground_texture_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    self.ground_texture_idx = self.upload_texture(
+                        texture_name, tex_data
+                    )
+                    print("Loaded ground texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: ground texture load failed:", String(e))
+                    pass
+
+        if self.ground_texture_idx >= 0:
+            # Signal texture mode: ground_params.z > 1.5 (colors are always 0-1)
+            # xy = texrepeat. Note: ground_params.w is reserved for ground_z
+            self.scene_uniforms.ground_params[0] = Float32(texrepeat_u)
+            self.scene_uniforms.ground_params[1] = Float32(texrepeat_v)
+            self.scene_uniforms.ground_params[2] = Float32(2.0)
+
         var model = Mat4.from_translation(Vec3(center_x, 0.0, height))
         self.ground_uniforms = ObjectUniforms()
         self.ground_uniforms.model = mat4_to_gpu_f32(model)
@@ -2585,7 +2713,7 @@ struct Renderer3D(Movable):
 
         self.line_colors.append(LineColorEntry(color))
 
-    def render_scene(mut self):
+    def render_scene(mut self) raises:
         """Render default scene elements (grid and axes)."""
         if self.draw_grid:
             self.draw_ground_grid()
@@ -2944,6 +3072,25 @@ struct Renderer3D(Movable):
             bind_gpu_fragment_samplers(
                 render_pass, 0, Ptr(to=shadow_binding), 1
             )
+
+            # Bind ground texture at fragment sampler slot 1
+            if self.ground_texture_idx >= 0:
+                var gti = self.ground_texture_idx
+                var gt_binding = GPUTextureSamplerBinding(
+                    texture=self.texture_cache[gti].texture,
+                    sampler=self.texture_cache[gti].sampler,
+                )
+                bind_gpu_fragment_samplers(
+                    render_pass, 1, Ptr(to=gt_binding), 1
+                )
+            else:
+                var gt_def_binding = GPUTextureSamplerBinding(
+                    texture=self.default_texture,
+                    sampler=self.default_tex_sampler,
+                )
+                bind_gpu_fragment_samplers(
+                    render_pass, 1, Ptr(to=gt_def_binding), 1
+                )
 
             var gvb = GPUBufferBinding(
                 buffer=self.ground_mesh.vertex_buffer, offset=0
@@ -3400,9 +3547,9 @@ struct Renderer3D(Movable):
           S                      → save screenshot (screenshotNNNN.jpg)
           V                      → toggle video recording (recordingNNNN.mp4)
 
-        Mouse (left drag = orbit, right drag = pan, wheel = zoom):
-          Left-button drag       → orbit camera around target
-          Right-button drag      → pan camera (target + eye translate together)
+        Mouse (any button drag = orbit, Shift+drag = pan, wheel = zoom):
+          Button drag            → orbit camera around target
+          Shift + button drag    → pan camera (target + eye translate together)
           Scroll wheel           → zoom in/out
 
         Returns:
@@ -3423,11 +3570,6 @@ struct Renderer3D(Movable):
                 break
 
             var event_type = event[UInt32]
-
-            # DEBUG: show button details
-            if event_type == 0x401 or event_type == 0x402:
-                var btn = event[MouseButtonEvent]
-                print("BTN:", hex(event_type), "button=", Int(btn.button), "clicks=", Int(btn.clicks))
 
             if EventType(event_type) == EventType.EVENT_QUIT:
                 self.should_quit = True
@@ -3466,35 +3608,35 @@ struct Renderer3D(Movable):
                     except:
                         pass
             elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_DOWN:
-                var btn = event[MouseButtonEvent]
-                if Int(btn.button) == 1:
-                    self.mouse_left_down = True
-                elif Int(btn.button) == 3:
-                    self.mouse_right_down = True
+                # Track any button press (macOS trackpad intermittently
+                # misidentifies left as right, so treat all buttons same)
+                self.mouse_left_down = True
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
-                var btn = event[MouseButtonEvent]
-                if Int(btn.button) == 1:
-                    self.mouse_left_down = False
-                elif Int(btn.button) == 3:
-                    self.mouse_right_down = False
+                self.mouse_left_down = False
 
             elif EventType(event_type) == EventType.EVENT_MOUSE_MOTION:
                 var motion = event[MouseMotionEvent]
                 var dx = Float64(motion.xrel)
                 var dy = Float64(motion.yrel)
                 if self.mouse_left_down:
-                    # Orbit: ~0.005 rad/px gives smooth rotation
-                    self.camera.orbit(dx * 0.005, dy * 0.005)
-                    if self.has_ground:
-                        self.camera.clamp_above_ground(self.ground_z)
-                elif self.mouse_right_down:
-                    # Pan: scale by distance so speed feels constant
-                    var dist = (
-                        self.camera.eye - self.camera.target
-                    ).length()
-                    var scale = dist * 0.002
-                    self.camera.pan(-dx * scale, -dy * scale)
+                    # Shift+drag = pan, plain drag = orbit
+                    var is_shift = False
+                    try:
+                        var mod = get_mod_state()
+                        is_shift = Int(mod) & Int(Keymod.KMOD_SHIFT) != 0
+                    except:
+                        pass
+                    if is_shift:
+                        # Pan: scale by distance so speed feels constant
+                        var dist = (
+                            self.camera.eye - self.camera.target
+                        ).length()
+                        var scale = dist * 0.002
+                        self.camera.pan(-dx * scale, -dy * scale)
+                    else:
+                        # Orbit: ~0.005 rad/px gives smooth rotation
+                        self.camera.orbit(dx * 0.005, dy * 0.005)
                     if self.has_ground:
                         self.camera.clamp_above_ground(self.ground_z)
 

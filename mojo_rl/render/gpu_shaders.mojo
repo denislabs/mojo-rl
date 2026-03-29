@@ -251,6 +251,7 @@ struct VertexOut {
     float4 position  [[position]];
     float3 world_pos;
     float3 world_normal;
+    float2 uv;
 };
 
 """ + _SCENE_UNIFORMS_MSL + """
@@ -271,6 +272,7 @@ vertex VertexOut ground_vertex(
     out.position = scene.view_proj * world;
     out.world_pos = world.xyz;
     out.world_normal = float3(0.0, 0.0, 1.0);
+    out.uv = in.uv;
     return out;
 }
 """
@@ -283,6 +285,7 @@ struct VertexOut {
     float4 position  [[position]];
     float3 world_pos;
     float3 world_normal;
+    float2 uv;
 };
 
 """ + _SCENE_UNIFORMS_MSL + _LIGHT_ACCESS_MSL + """
@@ -330,14 +333,27 @@ fragment float4 ground_fragment(
     constant SceneUniforms &scene [[buffer(0)]],
     constant ShadowUniforms &shadow [[buffer(1)]],
     depth2d<float> shadow_map [[texture(0)]],
-    sampler shadow_sampler [[sampler(0)]]
+    sampler shadow_sampler [[sampler(0)]],
+    texture2d<float> ground_texture [[texture(1)]],
+    sampler ground_tex_sampler [[sampler(1)]]
 ) {
-    // Ground color — solid or checkerboard based on ground_params encoding:
+    // Ground color — three modes based on ground_params encoding:
+    //   ground_params.z > 1.5: texture mode (xy = texrepeat), sample ground_texture
     //   ground_params.x < 0: solid color mode, color = abs(ground_params.xyz)
-    //   ground_params.x >= 0: checker mode, light tile = ground_params.xyz
+    //   else: checker mode, light tile = ground_params.xyz
+    // Note: ground_params.w is reserved for ground_z (reflection clipping)
     float3 base_color;
 
-    if (scene.ground_params.x < -0.001) {
+    if (scene.ground_params.z > 1.5) {
+        // Texture mode: tile the texture using world-space XY coordinates
+        // ground_params.xy = texrepeat_u, texrepeat_v (tiles across ground extent)
+        float tex_repeat_u = scene.ground_params.x;
+        float tex_repeat_v = scene.ground_params.y;
+        // Map UVs: use mesh UVs scaled by texrepeat
+        float2 tex_uv = in.uv * float2(tex_repeat_u, tex_repeat_v);
+        float4 tex_color = ground_texture.sample(ground_tex_sampler, tex_uv);
+        base_color = tex_color.rgb;
+    } else if (scene.ground_params.x < -0.001) {
         // Solid color mode (no texture defined in XML, use geom rgba)
         base_color = -scene.ground_params.xyz;
     } else {
@@ -360,41 +376,50 @@ fragment float4 ground_fragment(
         base_color = mix(checker_color1, checker_color2, checker);
     }
 
-    // Multi-light ground shading
-    int num_lights = int(scene.camera_pos.w);
-    if (num_lights < 1) num_lights = 1;
-    if (num_lights > 4) num_lights = 4;
-
-    float3 N = float3(0.0, 0.0, 1.0);
-    float lighting = 0.0;
-    for (int li = 0; li < num_lights; li++) {
-        float4 l_dir = get_light_dir(scene, li);
-        float3 L = normalize(-l_dir.xyz);
-        float diffuse = max(dot(N, L), 0.0) * 0.3 + 0.7 / float(num_lights);
-        lighting += diffuse / float(num_lights);
-    }
-    base_color *= lighting;
+    bool is_textured = (scene.ground_params.z > 1.5);
 
     // Apply shadow (first shadow-casting light)
     float shadow_factor = compute_shadow_ground(in.world_pos, shadow, shadow_map, shadow_sampler);
-    base_color *= shadow_factor;
+
+    if (is_textured) {
+        // Textured ground: texture contains its own shading, only apply shadows
+        base_color *= shadow_factor;
+    } else {
+        // Procedural ground: apply multi-light shading + shadows + fog
+        int num_lights = int(scene.camera_pos.w);
+        if (num_lights < 1) num_lights = 1;
+        if (num_lights > 4) num_lights = 4;
+
+        float3 N = float3(0.0, 0.0, 1.0);
+        float lighting = 0.0;
+        for (int li = 0; li < num_lights; li++) {
+            float4 l_dir = get_light_dir(scene, li);
+            float3 L = normalize(-l_dir.xyz);
+            float diffuse = max(dot(N, L), 0.0) * 0.3 + 0.7 / float(num_lights);
+            lighting += diffuse / float(num_lights);
+        }
+        base_color *= lighting;
+        base_color *= shadow_factor;
+
+        // Linear fog for procedural ground only
+        float fog_start = scene.fog_params.x;
+        float fog_end = scene.fog_params.y;
+        if (fog_end > fog_start) {
+            float fog_dist = length(in.world_pos - scene.camera_pos.xyz);
+            float fog_factor = clamp((fog_dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
+            float3 fog_color = float3(0.5, 0.495, 0.48);
+            base_color = mix(base_color, fog_color, fog_factor);
+        }
+    }
 
     // Distance fade for smooth ground edge
     float dist = length(in.world_pos.xy - scene.camera_pos.xy);
     float edge_fade = 1.0 - smoothstep(8.0, 12.0, dist);
 
-    // Linear fog for ground
-    float fog_start = scene.fog_params.x;
-    float fog_end = scene.fog_params.y;
-    if (fog_end > fog_start) {
-        float fog_dist = length(in.world_pos - scene.camera_pos.xyz);
-        float fog_factor = clamp((fog_dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
-        float3 fog_color = float3(0.5, 0.495, 0.48);
-        base_color = mix(base_color, fog_color, fog_factor);
-    }
-
     // Semi-transparent ground to let reflections show through (rendered underneath)
-    float alpha = 0.55 * edge_fade;
+    // Textured ground should be more opaque to show the texture clearly
+    float base_alpha = is_textured ? 0.95 : 0.55;
+    float alpha = base_alpha * edge_fade;
 
     return float4(base_color, alpha);
 }
