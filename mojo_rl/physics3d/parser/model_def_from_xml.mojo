@@ -82,6 +82,7 @@ from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_geoms_to_buffer,
     copy_invweight0_to_buffer,
     copy_tendons_to_buffer,
+    copy_mesh_hull_to_buffer,
 )
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .full_parser import parse_xml_full
@@ -500,6 +501,7 @@ struct ModelDefFromXML[
         copy_geoms_to_buffer(model, host_buf)
         copy_tendons_to_buffer(model, host_buf)
         copy_invweight0_to_buffer(model, host_buf)
+        copy_mesh_hull_to_buffer(model, host_buf)
 
         # Copy to GPU
         ctx.enqueue_copy(model_buf, host_buf)

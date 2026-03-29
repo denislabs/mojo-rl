@@ -387,7 +387,7 @@ def model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 29  # Per unified geom (+7 for solref/solimp(5) +1 for margin)
+comptime MODEL_GEOM_SIZE: Int = 30  # Per unified geom (+7 for solref/solimp(5) +1 for margin +1 mesh_id)
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -418,6 +418,7 @@ comptime GEOM_IDX_SOLIMP_2: Int = 25  # Per-geom solimp width
 comptime GEOM_IDX_SOLIMP_3: Int = 26  # Per-geom solimp midpoint
 comptime GEOM_IDX_SOLIMP_4: Int = 27  # Per-geom solimp power
 comptime GEOM_IDX_MARGIN: Int = 28  # Per-geom contact margin
+comptime GEOM_IDX_MESH_ID: Int = 29  # Mesh hull index (-1 if not mesh)
 
 
 def model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
@@ -653,18 +654,22 @@ def model_size_with_invweight[
     NTENDON: Int = 0,
     NSITE: Int = 0,
     NEXCLUDE: Int = 0,
+    NMESH_VERTS: Int = 0,
 ]() -> Int:
-    """Total model buffer size including invweight0 arrays and exclude pairs.
+    """Total model buffer size including invweight0, exclude pairs, and mesh hulls.
 
     Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites |
-             body_invweight0(NBODY*2) | dof_invweight0(NV) | excludes(NEXCLUDE*2)]
+             body_invweight0(NBODY*2) | dof_invweight0(NV) | excludes(NEXCLUDE*2) |
+             mesh_meta(MAX_GPU_MESHES*2) | mesh_verts(NMESH_VERTS*3)]
     """
     return (
         model_dof_invweight0_offset[
             NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
         ]()
         + NV
-        + NEXCLUDE * 2  # body1, body2 per exclude pair
+        + NEXCLUDE * 2
+        + MAX_GPU_MESHES * MODEL_MESH_META_SIZE
+        + NMESH_VERTS * 3
     )
 
 
@@ -688,6 +693,57 @@ def model_exclude_offset[
             NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
         ]()
         + NV
+    )
+
+
+# =============================================================================
+# Model Buffer Layout - Mesh Collision Hull Data
+# =============================================================================
+
+# Mesh hull vertices stored AFTER exclude pairs in the model buffer.
+# Layout: [mesh_meta(NMESH*2)] [mesh_verts(total_verts*3)]
+# mesh_meta: [vertadr, vertnum] per mesh
+# mesh_verts: flattened [x0,y0,z0, x1,y1,z1, ...] in local frame
+comptime MAX_HULL_VERTS_PER_MESH: Int = 256
+comptime MAX_GPU_MESHES: Int = 16
+comptime MODEL_MESH_META_SIZE: Int = 2  # vertadr, vertnum per mesh
+
+
+def model_mesh_meta_offset[
+    NBODY: Int,
+    NJOINT: Int,
+    NV: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+]() -> Int:
+    """Offset to mesh metadata [vertadr, vertnum] * MAX_GPU_MESHES."""
+    return (
+        model_exclude_offset[
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE
+        ]()
+        + NEXCLUDE * 2
+    )
+
+
+def model_mesh_vert_offset[
+    NBODY: Int,
+    NJOINT: Int,
+    NV: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+]() -> Int:
+    """Offset to mesh hull vertex data."""
+    return (
+        model_mesh_meta_offset[
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE
+        ]()
+        + MAX_GPU_MESHES * MODEL_MESH_META_SIZE
     )
 
 

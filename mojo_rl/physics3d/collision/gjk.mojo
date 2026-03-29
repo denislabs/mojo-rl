@@ -35,47 +35,123 @@ comptime EPA_TOLERANCE: Float64 = 1e-8
 
 
 @always_inline
-def _dot3[DTYPE: DType](
-    ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
-    bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE],
+def _dot3[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE],
+    ay: Scalar[DTYPE],
+    az: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
 ) -> Scalar[DTYPE]:
     return ax * bx + ay * by + az * bz
 
 
 @always_inline
-def _cross3[DTYPE: DType](
-    ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
-    bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE],
+def _cross3[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE],
+    ay: Scalar[DTYPE],
+    az: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     return (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
 
 
-def _support[DTYPE: DType](
+def _support[
+    DTYPE: DType
+](
     geom_type: Int,
-    pos_x: Scalar[DTYPE], pos_y: Scalar[DTYPE], pos_z: Scalar[DTYPE],
-    qx: Scalar[DTYPE], qy: Scalar[DTYPE], qz: Scalar[DTYPE], qw: Scalar[DTYPE],
-    radius: Scalar[DTYPE], half_length: Scalar[DTYPE],
-    half_x: Scalar[DTYPE], half_y: Scalar[DTYPE], half_z: Scalar[DTYPE],
-    mesh_verts: List[Scalar[DTYPE]], mesh_vert_offset: Int, mesh_num_verts: Int,
-    dir_x: Scalar[DTYPE], dir_y: Scalar[DTYPE], dir_z: Scalar[DTYPE],
+    pos_x: Scalar[DTYPE],
+    pos_y: Scalar[DTYPE],
+    pos_z: Scalar[DTYPE],
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    radius: Scalar[DTYPE],
+    half_length: Scalar[DTYPE],
+    half_x: Scalar[DTYPE],
+    half_y: Scalar[DTYPE],
+    half_z: Scalar[DTYPE],
+    mesh_verts: List[Scalar[DTYPE]],
+    mesh_vert_offset: Int,
+    mesh_num_verts: Int,
+    dir_x: Scalar[DTYPE],
+    dir_y: Scalar[DTYPE],
+    dir_z: Scalar[DTYPE],
 ) -> InlineArray[Scalar[DTYPE], 3]:
     """Unified support function dispatcher for all geom types."""
     if geom_type == GEOM_SPHERE:
-        return support_sphere[DTYPE](dir_x, dir_y, dir_z,
-            pos_x, pos_y, pos_z, radius)
+        return support_sphere[DTYPE](
+            dir_x, dir_y, dir_z, pos_x, pos_y, pos_z, radius
+        )
     elif geom_type == GEOM_CAPSULE:
-        return support_capsule[DTYPE](dir_x, dir_y, dir_z,
-            pos_x, pos_y, pos_z, qx, qy, qz, qw, radius, half_length)
+        return support_capsule[DTYPE](
+            dir_x,
+            dir_y,
+            dir_z,
+            pos_x,
+            pos_y,
+            pos_z,
+            qx,
+            qy,
+            qz,
+            qw,
+            radius,
+            half_length,
+        )
     elif geom_type == GEOM_BOX:
-        return support_box[DTYPE](dir_x, dir_y, dir_z,
-            pos_x, pos_y, pos_z, qx, qy, qz, qw, half_x, half_y, half_z)
+        return support_box[DTYPE](
+            dir_x,
+            dir_y,
+            dir_z,
+            pos_x,
+            pos_y,
+            pos_z,
+            qx,
+            qy,
+            qz,
+            qw,
+            half_x,
+            half_y,
+            half_z,
+        )
     elif geom_type == GEOM_CYLINDER:
-        return support_cylinder[DTYPE](dir_x, dir_y, dir_z,
-            pos_x, pos_y, pos_z, qx, qy, qz, qw, radius, half_length)
+        return support_cylinder[DTYPE](
+            dir_x,
+            dir_y,
+            dir_z,
+            pos_x,
+            pos_y,
+            pos_z,
+            qx,
+            qy,
+            qz,
+            qw,
+            radius,
+            half_length,
+        )
     elif geom_type == GEOM_MESH:
-        return support_mesh[DTYPE](dir_x, dir_y, dir_z,
-            pos_x, pos_y, pos_z, qx, qy, qz, qw,
-            mesh_verts, mesh_vert_offset, mesh_num_verts)
+        return support_mesh[DTYPE](
+            dir_x,
+            dir_y,
+            dir_z,
+            pos_x,
+            pos_y,
+            pos_z,
+            qx,
+            qy,
+            qz,
+            qw,
+            mesh_verts,
+            mesh_vert_offset,
+            mesh_num_verts,
+        )
     # Fallback: point support (center only)
     var result = InlineArray[Scalar[DTYPE], 3](fill=Scalar[DTYPE](0))
     result[0] = pos_x
@@ -84,59 +160,159 @@ def _support[DTYPE: DType](
     return result
 
 
-def _minkowski_support[DTYPE: DType](
+def _minkowski_support[
+    DTYPE: DType
+](
     # Geom 1
     type1: Int,
-    p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
-    q1x: Scalar[DTYPE], q1y: Scalar[DTYPE], q1z: Scalar[DTYPE], q1w: Scalar[DTYPE],
-    r1: Scalar[DTYPE], hl1: Scalar[DTYPE],
-    hx1: Scalar[DTYPE], hy1: Scalar[DTYPE], hz1: Scalar[DTYPE],
-    mv1: List[Scalar[DTYPE]], mvo1: Int, mnv1: Int,
+    p1x: Scalar[DTYPE],
+    p1y: Scalar[DTYPE],
+    p1z: Scalar[DTYPE],
+    q1x: Scalar[DTYPE],
+    q1y: Scalar[DTYPE],
+    q1z: Scalar[DTYPE],
+    q1w: Scalar[DTYPE],
+    r1: Scalar[DTYPE],
+    hl1: Scalar[DTYPE],
+    hx1: Scalar[DTYPE],
+    hy1: Scalar[DTYPE],
+    hz1: Scalar[DTYPE],
+    mv1: List[Scalar[DTYPE]],
+    mvo1: Int,
+    mnv1: Int,
     # Geom 2
     type2: Int,
-    p2x: Scalar[DTYPE], p2y: Scalar[DTYPE], p2z: Scalar[DTYPE],
-    q2x: Scalar[DTYPE], q2y: Scalar[DTYPE], q2z: Scalar[DTYPE], q2w: Scalar[DTYPE],
-    r2: Scalar[DTYPE], hl2: Scalar[DTYPE],
-    hx2: Scalar[DTYPE], hy2: Scalar[DTYPE], hz2: Scalar[DTYPE],
-    mv2: List[Scalar[DTYPE]], mvo2: Int, mnv2: Int,
+    p2x: Scalar[DTYPE],
+    p2y: Scalar[DTYPE],
+    p2z: Scalar[DTYPE],
+    q2x: Scalar[DTYPE],
+    q2y: Scalar[DTYPE],
+    q2z: Scalar[DTYPE],
+    q2w: Scalar[DTYPE],
+    r2: Scalar[DTYPE],
+    hl2: Scalar[DTYPE],
+    hx2: Scalar[DTYPE],
+    hy2: Scalar[DTYPE],
+    hz2: Scalar[DTYPE],
+    mv2: List[Scalar[DTYPE]],
+    mvo2: Int,
+    mnv2: Int,
     # Direction
-    dir_x: Scalar[DTYPE], dir_y: Scalar[DTYPE], dir_z: Scalar[DTYPE],
+    dir_x: Scalar[DTYPE],
+    dir_y: Scalar[DTYPE],
+    dir_z: Scalar[DTYPE],
 ) -> Tuple[
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # Minkowski diff point
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # witness on obj1
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # witness on obj2
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],  # Minkowski diff point
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],  # witness on obj1
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],  # witness on obj2
 ]:
     """Compute support point on Minkowski difference: sup1(dir) - sup2(-dir)."""
-    var s1 = _support[DTYPE](type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w,
-        r1, hl1, hx1, hy1, hz1, mv1, mvo1, mnv1, dir_x, dir_y, dir_z)
-    var s2 = _support[DTYPE](type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w,
-        r2, hl2, hx2, hy2, hz2, mv2, mvo2, mnv2, -dir_x, -dir_y, -dir_z)
+    var s1 = _support[DTYPE](
+        type1,
+        p1x,
+        p1y,
+        p1z,
+        q1x,
+        q1y,
+        q1z,
+        q1w,
+        r1,
+        hl1,
+        hx1,
+        hy1,
+        hz1,
+        mv1,
+        mvo1,
+        mnv1,
+        dir_x,
+        dir_y,
+        dir_z,
+    )
+    var s2 = _support[DTYPE](
+        type2,
+        p2x,
+        p2y,
+        p2z,
+        q2x,
+        q2y,
+        q2z,
+        q2w,
+        r2,
+        hl2,
+        hx2,
+        hy2,
+        hz2,
+        mv2,
+        mvo2,
+        mnv2,
+        -dir_x,
+        -dir_y,
+        -dir_z,
+    )
     return (
-        s1[0] - s2[0], s1[1] - s2[1], s1[2] - s2[2],
-        s1[0], s1[1], s1[2],
-        s2[0], s2[1], s2[2],
+        s1[0] - s2[0],
+        s1[1] - s2[1],
+        s1[2] - s2[2],
+        s1[0],
+        s1[1],
+        s1[2],
+        s2[0],
+        s2[1],
+        s2[2],
     )
 
 
-def gjk_epa[DTYPE: DType](
+def gjk_epa[
+    DTYPE: DType
+](
     # Geom 1
     type1: Int,
-    p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
-    q1x: Scalar[DTYPE], q1y: Scalar[DTYPE], q1z: Scalar[DTYPE], q1w: Scalar[DTYPE],
-    r1: Scalar[DTYPE], hl1: Scalar[DTYPE],
-    hx1: Scalar[DTYPE], hy1: Scalar[DTYPE], hz1: Scalar[DTYPE],
-    mv1: List[Scalar[DTYPE]], mvo1: Int, mnv1: Int,
+    p1x: Scalar[DTYPE],
+    p1y: Scalar[DTYPE],
+    p1z: Scalar[DTYPE],
+    q1x: Scalar[DTYPE],
+    q1y: Scalar[DTYPE],
+    q1z: Scalar[DTYPE],
+    q1w: Scalar[DTYPE],
+    r1: Scalar[DTYPE],
+    hl1: Scalar[DTYPE],
+    hx1: Scalar[DTYPE],
+    hy1: Scalar[DTYPE],
+    hz1: Scalar[DTYPE],
+    mv1: List[Scalar[DTYPE]],
+    mvo1: Int,
+    mnv1: Int,
     # Geom 2
     type2: Int,
-    p2x: Scalar[DTYPE], p2y: Scalar[DTYPE], p2z: Scalar[DTYPE],
-    q2x: Scalar[DTYPE], q2y: Scalar[DTYPE], q2z: Scalar[DTYPE], q2w: Scalar[DTYPE],
-    r2: Scalar[DTYPE], hl2: Scalar[DTYPE],
-    hx2: Scalar[DTYPE], hy2: Scalar[DTYPE], hz2: Scalar[DTYPE],
-    mv2: List[Scalar[DTYPE]], mvo2: Int, mnv2: Int,
+    p2x: Scalar[DTYPE],
+    p2y: Scalar[DTYPE],
+    p2z: Scalar[DTYPE],
+    q2x: Scalar[DTYPE],
+    q2y: Scalar[DTYPE],
+    q2z: Scalar[DTYPE],
+    q2w: Scalar[DTYPE],
+    r2: Scalar[DTYPE],
+    hl2: Scalar[DTYPE],
+    hx2: Scalar[DTYPE],
+    hy2: Scalar[DTYPE],
+    hz2: Scalar[DTYPE],
+    mv2: List[Scalar[DTYPE]],
+    mvo2: Int,
+    mnv2: Int,
 ) -> Tuple[
     Scalar[DTYPE],  # distance (negative = penetration depth)
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # contact point
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # contact normal (from 2 toward 1)
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],  # contact point
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],  # contact normal (from 2 toward 1)
 ]:
     """GJK distance + EPA penetration depth between two convex shapes.
 
@@ -151,8 +327,10 @@ def gjk_epa[DTYPE: DType](
 
     # Simplex vertices: each stores Minkowski diff + witness points (9 floats)
     # simplex[i] = [vx, vy, vz, w1x, w1y, w1z, w2x, w2y, w2z]
-    var simplex = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))  # 4 vertices × 9
-    var nsimplex = 0
+    var simplex = InlineArray[Scalar[DTYPE], 36](
+        fill=Scalar[DTYPE](0)
+    )  # 4 vertices × 9
+    var nsimplex: Int
 
     # Initial direction: center1 - center2
     var dx = p1x - p2x
@@ -170,9 +348,42 @@ def gjk_epa[DTYPE: DType](
 
     # First support point
     var s = _minkowski_support[DTYPE](
-        type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w, r1, hl1, hx1, hy1, hz1, mv1, mvo1, mnv1,
-        type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w, r2, hl2, hx2, hy2, hz2, mv2, mvo2, mnv2,
-        dx, dy, dz)
+        type1,
+        p1x,
+        p1y,
+        p1z,
+        q1x,
+        q1y,
+        q1z,
+        q1w,
+        r1,
+        hl1,
+        hx1,
+        hy1,
+        hz1,
+        mv1,
+        mvo1,
+        mnv1,
+        type2,
+        p2x,
+        p2y,
+        p2z,
+        q2x,
+        q2y,
+        q2z,
+        q2w,
+        r2,
+        hl2,
+        hx2,
+        hy2,
+        hz2,
+        mv2,
+        mvo2,
+        mnv2,
+        dx,
+        dy,
+        dz,
+    )
     simplex[0] = s[0]
     simplex[1] = s[1]
     simplex[2] = s[2]
@@ -189,7 +400,7 @@ def gjk_epa[DTYPE: DType](
     var vy = s[1]
     var vz = s[2]
 
-    for iter in range(GJK_MAX_ITERATIONS):
+    for _ in range(GJK_MAX_ITERATIONS):
         var v_dot_v = vx * vx + vy * vy + vz * vz
         if v_dot_v < Scalar[DTYPE](GJK_TOLERANCE):
             # Origin is inside the Minkowski difference → overlap
@@ -203,9 +414,42 @@ def gjk_epa[DTYPE: DType](
 
         # Get new support point
         var sn = _minkowski_support[DTYPE](
-            type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w, r1, hl1, hx1, hy1, hz1, mv1, mvo1, mnv1,
-            type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w, r2, hl2, hx2, hy2, hz2, mv2, mvo2, mnv2,
-            ndx, ndy, ndz)
+            type1,
+            p1x,
+            p1y,
+            p1z,
+            q1x,
+            q1y,
+            q1z,
+            q1w,
+            r1,
+            hl1,
+            hx1,
+            hy1,
+            hz1,
+            mv1,
+            mvo1,
+            mnv1,
+            type2,
+            p2x,
+            p2y,
+            p2z,
+            q2x,
+            q2y,
+            q2z,
+            q2w,
+            r2,
+            hl2,
+            hx2,
+            hy2,
+            hz2,
+            mv2,
+            mvo2,
+            mnv2,
+            ndx,
+            ndy,
+            ndz,
+        )
 
         # Frank-Wolfe duality gap: if no progress, converged
         var w_dot = sn[0] * ndx + sn[1] * ndy + sn[2] * ndz
@@ -279,16 +523,52 @@ def gjk_epa[DTYPE: DType](
 
     # ===== EPA Phase: compute penetration depth =====
     var epa = _epa[DTYPE](
-        type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w, r1, hl1, hx1, hy1, hz1, mv1, mvo1, mnv1,
-        type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w, r2, hl2, hx2, hy2, hz2, mv2, mvo2, mnv2,
-        simplex, nsimplex)
+        type1,
+        p1x,
+        p1y,
+        p1z,
+        q1x,
+        q1y,
+        q1z,
+        q1w,
+        r1,
+        hl1,
+        hx1,
+        hy1,
+        hz1,
+        mv1,
+        mvo1,
+        mnv1,
+        type2,
+        p2x,
+        p2y,
+        p2z,
+        q2x,
+        q2y,
+        q2z,
+        q2w,
+        r2,
+        hl2,
+        hx2,
+        hy2,
+        hz2,
+        mv2,
+        mvo2,
+        mnv2,
+        simplex,
+        nsimplex,
+    )
     return epa
 
 
-def _closest_point_on_simplex[DTYPE: DType](
+def _closest_point_on_simplex[
+    DTYPE: DType
+](
     mut simplex: InlineArray[Scalar[DTYPE], 36],
     nsimplex: Int,
-) -> InlineArray[Scalar[DTYPE], 4]:
+) -> InlineArray[
+    Scalar[DTYPE], 4
+]:
     """Find closest point on simplex to origin and reduce simplex.
 
     Returns [vx, vy, vz, new_nsimplex].
@@ -315,7 +595,8 @@ def _closest_point_on_simplex[DTYPE: DType](
         var aby = by - ay
         var abz = bz - az
         var t = -(ax * abx + ay * aby + az * abz) / (
-            abx * abx + aby * aby + abz * abz + Scalar[DTYPE](1e-30))
+            abx * abx + aby * aby + abz * abz + Scalar[DTYPE](1e-30)
+        )
         if t <= Scalar[DTYPE](0):
             result[0] = ax
             result[1] = ay
@@ -387,28 +668,54 @@ def _closest_point_on_simplex[DTYPE: DType](
     return result
 
 
-def _epa[DTYPE: DType](
+def _epa[
+    DTYPE: DType
+](
     # Geom 1
     type1: Int,
-    p1x: Scalar[DTYPE], p1y: Scalar[DTYPE], p1z: Scalar[DTYPE],
-    q1x: Scalar[DTYPE], q1y: Scalar[DTYPE], q1z: Scalar[DTYPE], q1w: Scalar[DTYPE],
-    r1: Scalar[DTYPE], hl1: Scalar[DTYPE],
-    hx1: Scalar[DTYPE], hy1: Scalar[DTYPE], hz1: Scalar[DTYPE],
-    mv1: List[Scalar[DTYPE]], mvo1: Int, mnv1: Int,
+    p1x: Scalar[DTYPE],
+    p1y: Scalar[DTYPE],
+    p1z: Scalar[DTYPE],
+    q1x: Scalar[DTYPE],
+    q1y: Scalar[DTYPE],
+    q1z: Scalar[DTYPE],
+    q1w: Scalar[DTYPE],
+    r1: Scalar[DTYPE],
+    hl1: Scalar[DTYPE],
+    hx1: Scalar[DTYPE],
+    hy1: Scalar[DTYPE],
+    hz1: Scalar[DTYPE],
+    mv1: List[Scalar[DTYPE]],
+    mvo1: Int,
+    mnv1: Int,
     # Geom 2
     type2: Int,
-    p2x: Scalar[DTYPE], p2y: Scalar[DTYPE], p2z: Scalar[DTYPE],
-    q2x: Scalar[DTYPE], q2y: Scalar[DTYPE], q2z: Scalar[DTYPE], q2w: Scalar[DTYPE],
-    r2: Scalar[DTYPE], hl2: Scalar[DTYPE],
-    hx2: Scalar[DTYPE], hy2: Scalar[DTYPE], hz2: Scalar[DTYPE],
-    mv2: List[Scalar[DTYPE]], mvo2: Int, mnv2: Int,
+    p2x: Scalar[DTYPE],
+    p2y: Scalar[DTYPE],
+    p2z: Scalar[DTYPE],
+    q2x: Scalar[DTYPE],
+    q2y: Scalar[DTYPE],
+    q2z: Scalar[DTYPE],
+    q2w: Scalar[DTYPE],
+    r2: Scalar[DTYPE],
+    hl2: Scalar[DTYPE],
+    hx2: Scalar[DTYPE],
+    hy2: Scalar[DTYPE],
+    hz2: Scalar[DTYPE],
+    mv2: List[Scalar[DTYPE]],
+    mvo2: Int,
+    mnv2: Int,
     # GJK terminal simplex
     simplex: InlineArray[Scalar[DTYPE], 36],
     nsimplex: Int,
 ) -> Tuple[
     Scalar[DTYPE],  # penetration depth (negative)
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # contact point
-    Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE],  # contact normal
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],  # contact point
+    Scalar[DTYPE],
+    Scalar[DTYPE],
+    Scalar[DTYPE],  # contact normal
 ]:
     """EPA: Expanding Polytope Algorithm for penetration depth.
 
@@ -434,7 +741,11 @@ def _epa[DTYPE: DType](
         var fallback_nx = p1x - p2x
         var fallback_ny = p1y - p2y
         var fallback_nz = p1z - p2z
-        var fallback_len = sqrt(fallback_nx * fallback_nx + fallback_ny * fallback_ny + fallback_nz * fallback_nz)
+        var fallback_len = sqrt(
+            fallback_nx * fallback_nx
+            + fallback_ny * fallback_ny
+            + fallback_nz * fallback_nz
+        )
         if fallback_len < Scalar[DTYPE](1e-10):
             fallback_nx = Scalar[DTYPE](0)
             fallback_ny = Scalar[DTYPE](0)
@@ -446,7 +757,15 @@ def _epa[DTYPE: DType](
         var cx = (p1x + p2x) * Scalar[DTYPE](0.5)
         var cy = (p1y + p2y) * Scalar[DTYPE](0.5)
         var cz = (p1z + p2z) * Scalar[DTYPE](0.5)
-        return (Scalar[DTYPE](-0.001), cx, cy, cz, fallback_nx, fallback_ny, fallback_nz)
+        return (
+            Scalar[DTYPE](-0.001),
+            cx,
+            cy,
+            cz,
+            fallback_nx,
+            fallback_ny,
+            fallback_nz,
+        )
 
     # Faces: [v0, v1, v2] × EPA_MAX_FACES (indices into verts)
     var faces = List[Int](capacity=EPA_MAX_FACES * 3)
@@ -497,7 +816,17 @@ def _epa[DTYPE: DType](
         var to_center_x = cx - verts[i0 * 9]
         var to_center_y = cy - verts[i0 * 9 + 1]
         var to_center_z = cz - verts[i0 * 9 + 2]
-        if _dot3[DTYPE](face_n[0], face_n[1], face_n[2], to_center_x, to_center_y, to_center_z) > 0:
+        if (
+            _dot3[DTYPE](
+                face_n[0],
+                face_n[1],
+                face_n[2],
+                to_center_x,
+                to_center_y,
+                to_center_z,
+            )
+            > 0
+        ):
             # Normal points toward centroid, flip winding
             faces[nfaces * 3 + 0] = i0
             faces[nfaces * 3 + 1] = i2
@@ -515,7 +844,7 @@ def _epa[DTYPE: DType](
     var best_nz: Scalar[DTYPE] = 1
     var best_face = 0
 
-    for epa_iter in range(EPA_MAX_ITERATIONS):
+    for _ in range(EPA_MAX_ITERATIONS):
         if nfaces == 0:
             break
 
@@ -533,14 +862,26 @@ def _epa[DTYPE: DType](
             var e2y = verts[i2 * 9 + 1] - verts[i0 * 9 + 1]
             var e2z = verts[i2 * 9 + 2] - verts[i0 * 9 + 2]
             var face_n = _cross3[DTYPE](e1x, e1y, e1z, e2x, e2y, e2z)
-            var face_n_len = sqrt(face_n[0] * face_n[0] + face_n[1] * face_n[1] + face_n[2] * face_n[2])
+            var face_n_len = sqrt(
+                face_n[0] * face_n[0]
+                + face_n[1] * face_n[1]
+                + face_n[2] * face_n[2]
+            )
             if face_n_len < Scalar[DTYPE](1e-15):
                 continue
             var fnx = face_n[0] / face_n_len
             var fny = face_n[1] / face_n_len
             var fnz = face_n[2] / face_n_len
-            var d = abs(_dot3[DTYPE](verts[i0 * 9], verts[i0 * 9 + 1], verts[i0 * 9 + 2],
-                                     fnx, fny, fnz))
+            var d = abs(
+                _dot3[DTYPE](
+                    verts[i0 * 9],
+                    verts[i0 * 9 + 1],
+                    verts[i0 * 9 + 2],
+                    fnx,
+                    fny,
+                    fnz,
+                )
+            )
             if d < best_dist:
                 best_dist = d
                 best_nx = fnx
@@ -550,12 +891,47 @@ def _epa[DTYPE: DType](
 
         # Get new support point along best face normal
         var sn = _minkowski_support[DTYPE](
-            type1, p1x, p1y, p1z, q1x, q1y, q1z, q1w, r1, hl1, hx1, hy1, hz1, mv1, mvo1, mnv1,
-            type2, p2x, p2y, p2z, q2x, q2y, q2z, q2w, r2, hl2, hx2, hy2, hz2, mv2, mvo2, mnv2,
-            best_nx, best_ny, best_nz)
+            type1,
+            p1x,
+            p1y,
+            p1z,
+            q1x,
+            q1y,
+            q1z,
+            q1w,
+            r1,
+            hl1,
+            hx1,
+            hy1,
+            hz1,
+            mv1,
+            mvo1,
+            mnv1,
+            type2,
+            p2x,
+            p2y,
+            p2z,
+            q2x,
+            q2y,
+            q2z,
+            q2w,
+            r2,
+            hl2,
+            hx2,
+            hy2,
+            hz2,
+            mv2,
+            mvo2,
+            mnv2,
+            best_nx,
+            best_ny,
+            best_nz,
+        )
 
         # Check if new point expands the polytope significantly
-        var new_dist = _dot3[DTYPE](sn[0], sn[1], sn[2], best_nx, best_ny, best_nz)
+        var new_dist = _dot3[DTYPE](
+            sn[0], sn[1], sn[2], best_nx, best_ny, best_nz
+        )
         if new_dist - best_dist < Scalar[DTYPE](EPA_TOLERANCE):
             break  # Converged
 
@@ -578,7 +954,9 @@ def _epa[DTYPE: DType](
         # Remove faces visible from new point and add new faces
         # Simple approach: remove all faces whose normal has positive dot with (new_vert - face_vert)
         var kept_faces = List[Int](capacity=EPA_MAX_FACES * 3)
-        var horizon_edges = List[Int](capacity=EPA_MAX_FACES * 2)  # pairs of vertex indices
+        var horizon_edges = List[Int](
+            capacity=EPA_MAX_FACES * 2
+        )  # pairs of vertex indices
 
         for f in range(nfaces):
             var i0 = faces[f * 3 + 0]
@@ -595,7 +973,17 @@ def _epa[DTYPE: DType](
             var to_new_y = verts[new_vert * 9 + 1] - verts[i0 * 9 + 1]
             var to_new_z = verts[new_vert * 9 + 2] - verts[i0 * 9 + 2]
 
-            if _dot3[DTYPE](face_n[0], face_n[1], face_n[2], to_new_x, to_new_y, to_new_z) > 0:
+            if (
+                _dot3[DTYPE](
+                    face_n[0],
+                    face_n[1],
+                    face_n[2],
+                    to_new_x,
+                    to_new_y,
+                    to_new_z,
+                )
+                > 0
+            ):
                 # Face visible from new point — remove it, record horizon edges
                 # Each edge of this face could be a horizon edge
                 var edges = InlineArray[Int, 6](fill=0)
@@ -626,7 +1014,11 @@ def _epa[DTYPE: DType](
             # Check if reverse edge also exists (shared between two visible faces)
             var is_shared = False
             for e2 in range(num_horizon):
-                if e2 != e and horizon_edges[e2 * 2] == eb and horizon_edges[e2 * 2 + 1] == ea:
+                if (
+                    e2 != e
+                    and horizon_edges[e2 * 2] == eb
+                    and horizon_edges[e2 * 2 + 1] == ea
+                ):
                     is_shared = True
                     break
             if not is_shared and nfaces < EPA_MAX_FACES:
@@ -640,16 +1032,24 @@ def _epa[DTYPE: DType](
     if nfaces > 0 and best_face < nfaces:
         var i0 = faces[best_face * 3 + 0]
         # Use witness points from best face vertices (average)
-        var w1x = (verts[i0 * 9 + 3])
-        var w1y = (verts[i0 * 9 + 4])
-        var w1z = (verts[i0 * 9 + 5])
-        var w2x = (verts[i0 * 9 + 6])
-        var w2y = (verts[i0 * 9 + 7])
-        var w2z = (verts[i0 * 9 + 8])
+        var w1x = verts[i0 * 9 + 3]
+        var w1y = verts[i0 * 9 + 4]
+        var w1z = verts[i0 * 9 + 5]
+        var w2x = verts[i0 * 9 + 6]
+        var w2y = verts[i0 * 9 + 7]
+        var w2z = verts[i0 * 9 + 8]
         var contact_x = (w1x + w2x) * Scalar[DTYPE](0.5)
         var contact_y = (w1y + w2y) * Scalar[DTYPE](0.5)
         var contact_z = (w1z + w2z) * Scalar[DTYPE](0.5)
-        return (-best_dist, contact_x, contact_y, contact_z, best_nx, best_ny, best_nz)
+        return (
+            -best_dist,
+            contact_x,
+            contact_y,
+            contact_z,
+            best_nx,
+            best_ny,
+            best_nz,
+        )
 
     # Fallback
     var fx = (p1x + p2x) * Scalar[DTYPE](0.5)

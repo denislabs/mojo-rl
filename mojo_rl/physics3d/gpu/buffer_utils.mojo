@@ -136,6 +136,11 @@ from .constants import (
     GEOM_IDX_SOLIMP_3,
     GEOM_IDX_SOLIMP_4,
     GEOM_IDX_MARGIN,
+    GEOM_IDX_MESH_ID,
+    MAX_GPU_MESHES,
+    MODEL_MESH_META_SIZE,
+    model_mesh_meta_offset,
+    model_mesh_vert_offset,
     MODEL_META_IDX_IMPRATIO,
     MODEL_META_IDX_NEQUALITY,
     MODEL_META_IDX_NTENDON,
@@ -561,6 +566,49 @@ def copy_geoms_to_buffer[
         buffer[offset + GEOM_IDX_SOLIMP_3] = model.geom_solimp[g * 5 + 3]
         buffer[offset + GEOM_IDX_SOLIMP_4] = model.geom_solimp[g * 5 + 4]
         buffer[offset + GEOM_IDX_MARGIN] = model.geom_margin[g]
+        buffer[offset + GEOM_IDX_MESH_ID] = Scalar[DTYPE](
+            model.geom_mesh_id[g]
+        )
+
+
+def copy_mesh_hull_to_buffer[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+](
+    model: Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, MAX_EQUALITY,
+        CONE_TYPE, MAX_TENDON, NSITE,
+    ],
+    buffer: HostBuffer[DTYPE],
+):
+    """Copy mesh hull vertex data to GPU model buffer."""
+    var meta_off = model_mesh_meta_offset[
+        NBODY, NJOINT, NV, NGEOM, MAX_EQUALITY, MAX_TENDON, NSITE, NEXCLUDE
+    ]()
+    var vert_off = model_mesh_vert_offset[
+        NBODY, NJOINT, NV, NGEOM, MAX_EQUALITY, MAX_TENDON, NSITE, NEXCLUDE
+    ]()
+
+    # Copy mesh metadata
+    for m in range(model.num_meshes):
+        if m >= MAX_GPU_MESHES:
+            break
+        buffer[meta_off + m * 2 + 0] = Scalar[DTYPE](model.mesh_vertadr[m])
+        buffer[meta_off + m * 2 + 1] = Scalar[DTYPE](model.mesh_vertnum[m])
+
+    # Copy hull vertices
+    for i in range(len(model.mesh_vert)):
+        buffer[vert_off + i] = model.mesh_vert[i]
 
 
 def copy_equality_to_buffer[

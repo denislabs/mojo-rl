@@ -56,7 +56,9 @@ def compute_bounding_radius_at[
     verts: List[Scalar[DTYPE]],
     vert_offset: Int,
     num_verts: Int,
-) -> Scalar[DTYPE]:
+) -> Scalar[
+    DTYPE
+]:
     """Compute bounding sphere radius for vertices starting at vert_offset."""
     if num_verts == 0:
         return Scalar[DTYPE](0)
@@ -88,17 +90,29 @@ def compute_bounding_radius_at[
 
 
 @always_inline
-def _hull_cross[DTYPE: DType](
-    ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
-    bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE],
+def _hull_cross[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE],
+    ay: Scalar[DTYPE],
+    az: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
 ) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
     return (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
 
 
 @always_inline
-def _hull_dot[DTYPE: DType](
-    ax: Scalar[DTYPE], ay: Scalar[DTYPE], az: Scalar[DTYPE],
-    bx: Scalar[DTYPE], by: Scalar[DTYPE], bz: Scalar[DTYPE],
+def _hull_dot[
+    DTYPE: DType
+](
+    ax: Scalar[DTYPE],
+    ay: Scalar[DTYPE],
+    az: Scalar[DTYPE],
+    bx: Scalar[DTYPE],
+    by: Scalar[DTYPE],
+    bz: Scalar[DTYPE],
 ) -> Scalar[DTYPE]:
     return ax * bx + ay * by + az * bz
 
@@ -172,7 +186,11 @@ def compute_convex_hull[
         var best_dot: Scalar[DTYPE] = -1e30
         var best_idx = 0
         for i in range(num_verts):
-            var dot = dx * verts[i * 3] + dy * verts[i * 3 + 1] + dz * verts[i * 3 + 2]
+            var dot = (
+                dx * verts[i * 3]
+                + dy * verts[i * 3 + 1]
+                + dz * verts[i * 3 + 2]
+            )
             if dot > best_dot:
                 best_dot = dot
                 best_idx = i
@@ -181,7 +199,7 @@ def compute_convex_hull[
     # Second pass: for each hull vertex found so far, use (vertex - centroid)
     # as additional direction to find neighbors. Repeat a few times to
     # capture all hull vertices near edges/corners.
-    for pass_num in range(3):
+    for _ in range(3):
         var new_dirs = List[Scalar[DTYPE]]()
         for i in range(num_verts):
             if not on_hull[i]:
@@ -203,7 +221,11 @@ def compute_convex_hull[
             var best_dot: Scalar[DTYPE] = -1e30
             var best_idx = 0
             for i in range(num_verts):
-                var dot = dx * verts[i * 3] + dy * verts[i * 3 + 1] + dz * verts[i * 3 + 2]
+                var dot = (
+                    dx * verts[i * 3]
+                    + dy * verts[i * 3 + 1]
+                    + dz * verts[i * 3 + 2]
+                )
                 if dot > best_dot:
                     best_dot = dot
                     best_idx = i
@@ -265,6 +287,8 @@ def load_mesh_hull[
     num_meshes += 1
 
     # Compute bounding radius from hull vertices
-    var rbound = compute_bounding_radius_at[DTYPE](mesh_vert, vert_offset, num_hull)
+    var rbound = compute_bounding_radius_at[DTYPE](
+        mesh_vert, vert_offset, num_hull
+    )
 
     return (mesh_id, rbound)
