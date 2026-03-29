@@ -3354,89 +3354,94 @@ struct Renderer3D(Movable):
         self.camera_switch_request = -1
         self.step_once = False
         var event = Event()
+        var has_events = True
 
-        try:
-            while poll_event(Ptr(to=event)):
-                var event_type = event[UInt32]
+        while has_events:
+            try:
+                has_events = poll_event(Ptr(to=event))
+            except:
+                has_events = False
 
-                if EventType(event_type) == EventType.EVENT_QUIT:
+            if not has_events:
+                break
+
+            var event_type = event[UInt32]
+
+            if EventType(event_type) == EventType.EVENT_QUIT:
+                self.should_quit = True
+                return True
+
+            elif EventType(event_type) == EventType.EVENT_KEY_DOWN:
+                var key_event = event[KeyboardEvent]
+                var key_val = Int(key_event.key)
+                if key_val == Int(Keycode.SDLK_ESCAPE):
                     self.should_quit = True
                     return True
+                elif key_val >= 0x31 and key_val <= 0x39:
+                    # Number keys 1-9: SDLK_1=0x31 … SDLK_9=0x39
+                    self.camera_switch_request = key_val - 0x31
+                elif key_val == Int(Keycode.SDLK_SPACE):
+                    self.is_paused = not self.is_paused
+                elif key_val == Int(Keycode.SDLK_RIGHT):
+                    if self.is_paused:
+                        self.step_once = True
+                elif key_val == Int(Keycode.SDLK_R):
+                    self.camera.eye = self.default_eye
+                    self.camera.target = self.default_target
+                elif key_val == Int(Keycode.SDLK_S):
+                    self.screenshot_requested = True
+                elif key_val == Int(Keycode.SDLK_V):
+                    try:
+                        if self.recorder.is_recording:
+                            self.stop_recording()
+                        else:
+                            var fname = (
+                                "recording_"
+                                + String(self.screenshot_counter)
+                                + ".mp4"
+                            )
+                            self.start_recording(fname)
+                    except:
+                        pass
+            elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_DOWN:
+                var btn = event[MouseButtonEvent]
+                if Int(btn.button) == 1:
+                    self.mouse_left_down = True
+                elif Int(btn.button) == 3:
+                    self.mouse_right_down = True
 
-                elif EventType(event_type) == EventType.EVENT_KEY_DOWN:
-                    var key_event = event[KeyboardEvent]
-                    var key_val = Int(key_event.key)
-                    if key_val == Int(Keycode.SDLK_ESCAPE):
-                        self.should_quit = True
-                        return True
-                    elif key_val >= 0x31 and key_val <= 0x39:
-                        # Number keys 1-9: SDLK_1=0x31 … SDLK_9=0x39
-                        self.camera_switch_request = key_val - 0x31
-                    elif key_val == Int(Keycode.SDLK_SPACE):
-                        self.is_paused = not self.is_paused
-                    elif key_val == Int(Keycode.SDLK_RIGHT):
-                        if self.is_paused:
-                            self.step_once = True
-                    elif key_val == Int(Keycode.SDLK_R):
-                        self.camera.eye = self.default_eye
-                        self.camera.target = self.default_target
-                    elif key_val == Int(Keycode.SDLK_S):
-                        self.screenshot_requested = True
-                    elif key_val == Int(Keycode.SDLK_V):
-                        try:
-                            if self.recorder.is_recording:
-                                self.stop_recording()
-                            else:
-                                var fname = (
-                                    "recording_"
-                                    + String(self.screenshot_counter)
-                                    + ".mp4"
-                                )
-                                self.start_recording(fname)
-                        except:
-                            pass
+            elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
+                var btn = event[MouseButtonEvent]
+                if Int(btn.button) == 1:
+                    self.mouse_left_down = False
+                elif Int(btn.button) == 3:
+                    self.mouse_right_down = False
 
-                elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_DOWN:
-                    var btn = event[MouseButtonEvent]
-                    if Int(btn.button) == 1:
-                        self.mouse_left_down = True
-                    elif Int(btn.button) == 3:
-                        self.mouse_right_down = True
-
-                elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
-                    var btn = event[MouseButtonEvent]
-                    if Int(btn.button) == 1:
-                        self.mouse_left_down = False
-                    elif Int(btn.button) == 3:
-                        self.mouse_right_down = False
-
-                elif EventType(event_type) == EventType.EVENT_MOUSE_MOTION:
-                    var motion = event[MouseMotionEvent]
-                    var dx = Float64(motion.xrel)
-                    var dy = Float64(motion.yrel)
-                    if self.mouse_left_down:
-                        # Orbit: ~0.005 rad/px gives smooth rotation
-                        self.camera.orbit(dx * 0.005, dy * 0.005)
-                        if self.has_ground:
-                            self.camera.clamp_above_ground(self.ground_z)
-                    elif self.mouse_right_down:
-                        # Pan: scale by distance so speed feels constant
-                        var dist = (
-                            self.camera.eye - self.camera.target
-                        ).length()
-                        var scale = dist * 0.002
-                        self.camera.pan(-dx * scale, -dy * scale)
-                        if self.has_ground:
-                            self.camera.clamp_above_ground(self.ground_z)
-
-                elif EventType(event_type) == EventType.EVENT_MOUSE_WHEEL:
-                    var wheel = event[MouseWheelEvent]
-                    # Scroll up (positive y) = zoom in (move eye closer)
-                    self.camera.zoom(-Float64(wheel.y) * 0.5)
+            elif EventType(event_type) == EventType.EVENT_MOUSE_MOTION:
+                var motion = event[MouseMotionEvent]
+                var dx = Float64(motion.xrel)
+                var dy = Float64(motion.yrel)
+                if self.mouse_left_down:
+                    # Orbit: ~0.005 rad/px gives smooth rotation
+                    self.camera.orbit(dx * 0.005, dy * 0.005)
                     if self.has_ground:
                         self.camera.clamp_above_ground(self.ground_z)
-        except:
-            pass
+                elif self.mouse_right_down:
+                    # Pan: scale by distance so speed feels constant
+                    var dist = (
+                        self.camera.eye - self.camera.target
+                    ).length()
+                    var scale = dist * 0.002
+                    self.camera.pan(-dx * scale, -dy * scale)
+                    if self.has_ground:
+                        self.camera.clamp_above_ground(self.ground_z)
+
+            elif EventType(event_type) == EventType.EVENT_MOUSE_WHEEL:
+                var wheel = event[MouseWheelEvent]
+                # Scroll up (positive y) = zoom in (move eye closer)
+                self.camera.zoom(-Float64(wheel.y) * 0.5)
+                if self.has_ground:
+                    self.camera.clamp_above_ground(self.ground_z)
 
         return self.should_quit
 

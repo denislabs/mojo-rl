@@ -12,13 +12,15 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import RK4Integrator
+from mojo_rl.physics3d.integrator import EulerIntegrator
 from mojo_rl.physics3d.solver import NewtonSolver
 
 from .sawyer_reach_xml import SawyerReachModel
 
 from ..phyics3d_env_config import Phyics3dEnvConfig
-
+from mojo_rl.physics3d.gpu.constants import (
+    rk4_extra_workspace_size,
+)
 
 # Body indices in the parsed model (from test output)
 comptime MOCAP_BODY_IDX: Int = 32
@@ -61,11 +63,12 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 5  # MetaWorld frame_skip
     comptime MAX_STEPS: Int = 500  # MetaWorld max_path_length
-    comptime INTEGRATOR_WS_EXTRA: Int = 0
 
+    # Dimensions
     comptime OBS_DIM: Int = SAWYER_REACH_OBS_DIM
     comptime ACTION_DIM: Int = SAWYER_REACH_ACTION_DIM
-    comptime MAX_CONTACTS: Int = 30
+
+    comptime INTEGRATOR_WS_EXTRA: Int = 0  # Euler doesn't need extra workspace
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -98,7 +101,7 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool,
     ):
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data, verbose=verbose)
+        EulerIntegrator[SOLVER=NewtonSolver].step(model, data, verbose=verbose)
 
     # === CPU: Custom observation extraction ===
     @staticmethod
@@ -180,18 +183,29 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         # Set initial arm qpos from MuJoCo reference (after _reset_hand warmup).
         # These values place the hand at approximately (0, 0.6, 0.2).
         # Obtained by running MetaWorld SawyerReachEnvV3.reset() in MuJoCo.
-        data.qpos[0] = Scalar[DTYPE](1.889288)     # j0
-        data.qpos[1] = Scalar[DTYPE](-0.575769)    # j1
-        data.qpos[2] = Scalar[DTYPE](-0.976659)    # j2
-        data.qpos[3] = Scalar[DTYPE](1.641991)     # j3
-        data.qpos[4] = Scalar[DTYPE](0.942860)     # j4
-        data.qpos[5] = Scalar[DTYPE](1.043696)     # j5
-        data.qpos[6] = Scalar[DTYPE](2.292833)     # j6
-        data.qpos[7] = Scalar[DTYPE](0.0)          # r_close
-        data.qpos[8] = Scalar[DTYPE](0.0)          # l_close
+        data.qpos[0] = Scalar[DTYPE](1.889288)  # j0
+        data.qpos[1] = Scalar[DTYPE](-0.575769)  # j1
+        data.qpos[2] = Scalar[DTYPE](-0.976659)  # j2
+        data.qpos[3] = Scalar[DTYPE](1.641991)  # j3
+        data.qpos[4] = Scalar[DTYPE](0.942860)  # j4
+        data.qpos[5] = Scalar[DTYPE](1.043696)  # j5
+        data.qpos[6] = Scalar[DTYPE](2.292833)  # j6
+        data.qpos[7] = Scalar[DTYPE](0.0)  # r_close
+        data.qpos[8] = Scalar[DTYPE](0.0)  # l_close
+
+        # Object free joint (qpos 9-15): place on floor (z=-0.893)
+        # Floor at z=-0.913, object cylinder half-height=0.02
+        data.qpos[9] = Scalar[DTYPE](0.0)  # obj x
+        data.qpos[10] = Scalar[DTYPE](0.6)  # obj y
+        data.qpos[11] = Scalar[DTYPE](-0.893)  # obj z (on floor)
+        data.qpos[12] = Scalar[DTYPE](1.0)  # obj quat w
+        data.qpos[13] = Scalar[DTYPE](0.0)  # obj quat x
+        data.qpos[14] = Scalar[DTYPE](0.0)  # obj quat y
+        data.qpos[15] = Scalar[DTYPE](0.0)  # obj quat z
 
         # Run FK to compute xpos from the initial qpos
         from mojo_rl.physics3d.kinematics import forward_kinematics
+
         forward_kinematics(model, data)
 
     # === CPU: Pre-step hook ===
@@ -256,12 +270,10 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         )
 
         # Gripper: apply as qfrc to the gripper slide joints
-        # r_close and l_close are the last 2 joints (indices NV-2 and NV-1)
-        # Positive gripper value = close, negative = open
-        data.qfrc[NV - 2] = Scalar[DTYPE](gripper * 400.0)  # r_close
-        data.qfrc[NV - 1] = Scalar[DTYPE](
-            -gripper * 400.0
-        )  # l_close (mirrored)
+        # r_close is DOF 7, l_close is DOF 8 (NOT NV-2/NV-1 which would be
+        # the object free joint when an object is present in the model)
+        data.qfrc[7] = Scalar[DTYPE](gripper * 400.0)  # r_close
+        data.qfrc[8] = Scalar[DTYPE](-gripper * 400.0)  # l_close (mirrored)
 
         return True  # Handled — skip MODEL_DEF.apply_actions
 

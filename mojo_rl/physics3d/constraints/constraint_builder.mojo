@@ -222,6 +222,120 @@ def _joint_affects_body[
     return False
 
 
+def _compute_weld_jacobian_row[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    V_SIZE: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
+](
+    model: Model[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        MAX_EQUALITY,
+        CONE_TYPE,
+        MAX_TENDON,
+        NSITE,
+    ],
+    data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+    cdof: List[Scalar[DTYPE]],
+    body_a: Int,
+    body_b: Int,
+    pos_a_x: Scalar[DTYPE],
+    pos_a_y: Scalar[DTYPE],
+    pos_a_z: Scalar[DTYPE],
+    pos_b_x: Scalar[DTYPE],
+    pos_b_y: Scalar[DTYPE],
+    pos_b_z: Scalar[DTYPE],
+    dir_x: Scalar[DTYPE],
+    dir_y: Scalar[DTYPE],
+    dir_z: Scalar[DTYPE],
+    mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Compute weld/connect Jacobian: J = J_a(at pos_a) - J_b(at pos_b).
+
+    Unlike compute_contact_jacobian_row which uses a single contact point,
+    this computes each body's Jacobian at its OWN anchor position.
+    MuJoCo: mj_jacDifPair(body_b, body_a, pos_b, pos_a, jac_b, jac_a, jacdif)
+    """
+    for i in range(V_SIZE):
+        J_row[i] = Scalar[DTYPE](0)
+
+    for j in range(model.num_joints):
+        var joint = model.joints[j]
+        var dof_adr = joint.dof_adr
+
+        var affects_a = _joint_affects_body(model, j, body_a)
+        var affects_b = (body_b > 0) and _joint_affects_body(model, j, body_b)
+
+        if not affects_a and not affects_b:
+            continue
+
+        var num_dof = 1
+        if joint.jnt_type == JNT_FREE:
+            num_dof = 6
+        elif joint.jnt_type == JNT_BALL:
+            num_dof = 3
+
+        # Reference point for cdof cross product
+        var ref_body = joint.body_id
+        var ref_x: Scalar[DTYPE]
+        var ref_y: Scalar[DTYPE]
+        var ref_z: Scalar[DTYPE]
+        if data.has_subtree_com:
+            var root = model.body_rootid[ref_body]
+            ref_x = data.subtree_com[root * 3 + 0]
+            ref_y = data.subtree_com[root * 3 + 1]
+            ref_z = data.subtree_com[root * 3 + 2]
+        else:
+            ref_x = data.xipos[ref_body * 3 + 0]
+            ref_y = data.xipos[ref_body * 3 + 1]
+            ref_z = data.xipos[ref_body * 3 + 2]
+
+        for d in range(num_dof):
+            var dof_idx = dof_adr + d
+            var ang_x = cdof[dof_idx * 6 + 0]
+            var ang_y = cdof[dof_idx * 6 + 1]
+            var ang_z = cdof[dof_idx * 6 + 2]
+            var lin_x = cdof[dof_idx * 6 + 3]
+            var lin_y = cdof[dof_idx * 6 + 4]
+            var lin_z = cdof[dof_idx * 6 + 5]
+
+            if affects_a:
+                # Jacobian for body_a at pos_a
+                var ra_x = pos_a_x - ref_x
+                var ra_y = pos_a_y - ref_y
+                var ra_z = pos_a_z - ref_z
+                var cross_x = ang_y * ra_z - ang_z * ra_y
+                var cross_y = ang_z * ra_x - ang_x * ra_z
+                var cross_z = ang_x * ra_y - ang_y * ra_x
+                var val = (lin_x + cross_x) * dir_x + (lin_y + cross_y) * dir_y + (lin_z + cross_z) * dir_z
+                J_row[dof_idx] = J_row[dof_idx] + val
+
+            if affects_b:
+                # Jacobian for body_b at pos_b (separate point!)
+                var rb_x = pos_b_x - ref_x
+                var rb_y = pos_b_y - ref_y
+                var rb_z = pos_b_z - ref_z
+                var cross_x = ang_y * rb_z - ang_z * rb_y
+                var cross_y = ang_z * rb_x - ang_x * rb_z
+                var cross_z = ang_x * rb_y - ang_y * rb_x
+                var val = (lin_x + cross_x) * dir_x + (lin_y + cross_y) * dir_y + (lin_z + cross_z) * dir_z
+                J_row[dof_idx] = J_row[dof_idx] - val
+
+
 def build_constraints[
     DTYPE: DType,
     NQ: Int,
@@ -1488,8 +1602,9 @@ def build_constraints[
                 var dir_y = dirs[d * 3 + 1]
                 var dir_z = dirs[d * 3 + 2]
 
-                # Compute Jacobian row: J = contact_jacobian(body_a, body_b, world_a, dir)
-                compute_contact_jacobian_row(
+                # Compute Jacobian: J = J_a(at world_a) - J_b(at world_b)
+                # Each body's Jacobian uses its OWN anchor point (MuJoCo convention)
+                _compute_weld_jacobian_row(
                     model,
                     data,
                     cdof,
@@ -1498,6 +1613,9 @@ def build_constraints[
                     world_a_x,
                     world_a_y,
                     world_a_z,
+                    world_b_x,
+                    world_b_y,
+                    world_b_z,
                     dir_x,
                     dir_y,
                     dir_z,
@@ -1518,9 +1636,8 @@ def build_constraints[
                 if k_eq < Scalar[DTYPE](1e-10):
                     k_eq = Scalar[DTYPE](1e-10)
 
-                # Penetration = |pos_error[d]|, with sign handling for bilateral
+                # Equality: signed error, not penetration
                 var err_d = pos_errs[d]
-                var penetration = abs(err_d)
 
                 # Equality diagApprox: translation weights
                 var diag_eq: Scalar[DTYPE] = 0
@@ -1531,8 +1648,9 @@ def build_constraints[
                 if diag_eq < Scalar[DTYPE](1e-10):
                     diag_eq = k_eq
 
+                # Impedance computed from absolute distance (position-dependent)
                 var imp_result = _compute_aref[DTYPE](
-                    penetration,
+                    abs(err_d),
                     eq_si_dmin,
                     eq_si_dmax,
                     eq_si_width,
@@ -1545,12 +1663,12 @@ def build_constraints[
                     diag_eq,
                 )
 
-                # For bilateral equality: bias sign depends on error direction
-                # error > 0 → need negative force → bias stays as computed
-                # error < 0 → need positive force → flip bias sign
-                var bias_eq = imp_result[0]
-                if err_d < Scalar[DTYPE](0):
-                    bias_eq = -bias_eq
+                # MuJoCo equality bias: bias = -aref = B*vel + K*I*pos
+                # where pos is the SIGNED error (not abs). Contact formula
+                # uses -K*I*pen because contact pos = -penetration, but
+                # equality pos is signed directly.
+                var imp_val = imp_result[2]
+                var bias_eq = eq_K_spring * imp_val * err_d + eq_B_damp * v_eq
 
                 constraints.rows[row_idx].K = k_eq
                 constraints.rows[row_idx].bias = bias_eq
@@ -1666,7 +1784,6 @@ def build_constraints[
                         k_rot = Scalar[DTYPE](1e-10)
 
                     var err_rot = rot_errs[d]
-                    var pen_rot = abs(err_rot)
 
                     # Weld rotation: use rotation weights
                     var diag_rot: Scalar[DTYPE] = 0
@@ -1677,8 +1794,9 @@ def build_constraints[
                     if diag_rot < Scalar[DTYPE](1e-10):
                         diag_rot = k_rot
 
+                    # Impedance from absolute distance
                     var imp_rot = _compute_aref[DTYPE](
-                        pen_rot,
+                        abs(err_rot),
                         eq_si_dmin,
                         eq_si_dmax,
                         eq_si_width,
@@ -1691,9 +1809,9 @@ def build_constraints[
                         diag_rot,
                     )
 
-                    var bias_rot = imp_rot[0]
-                    if err_rot < Scalar[DTYPE](0):
-                        bias_rot = -bias_rot
+                    # MuJoCo equality bias: bias = K*I*pos + B*vel (signed pos)
+                    var imp_rot_val = imp_rot[2]
+                    var bias_rot = eq_K_spring * imp_rot_val * err_rot + eq_B_damp * v_rot
 
                     constraints.rows[row_idx].K = k_rot
                     constraints.rows[row_idx].bias = bias_rot

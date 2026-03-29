@@ -1009,10 +1009,11 @@ def build_and_solve_equality_gpu[
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
 
-            # bias = -aref (bilateral: sign depends on error direction)
-            var bias = -eq_K_spring * imp * penetration + eq_B_damp * v_n
-            if err_d < Scalar[DTYPE](0):
-                bias = -bias
+            # MuJoCo equality bias: bias = -aref = B*vel + K*I*pos
+            # where pos is the SIGNED error (not abs). Contact formula uses
+            # -K*I*pen because contact pos = -penetration, but equality pos
+            # is signed directly.
+            var bias = eq_K_spring * imp * err_d + eq_B_damp * v_n
             eq_bias[num_eq_rows] = bias
             # MuJoCo: R = (1-imp)/imp * diagApprox (translation weights)
             comptime eq_bw_off = model_body_invweight0_offset[
