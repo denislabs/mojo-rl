@@ -22,6 +22,17 @@ def test_sawyer_no_nan() raises:
     var nan_step = -1
     comptime ACTION_DIM = 4
 
+    # Print mesh collision info
+    print("num_meshes:", env.model.num_meshes)
+    for m in range(env.model.num_meshes):
+        print("  mesh", m, ": verts=", env.model.mesh_vertnum[m])
+    for g in range(len(env.model.geom_mesh_id)):
+        if env.model.geom_mesh_id[g] >= 0:
+            print("  geom", g, "body=", env.model.geom_body[g],
+                  "mesh_id=", env.model.geom_mesh_id[g],
+                  "contype=", env.model.geom_contype[g],
+                  "rbound=", Float64(env.model.geom_rbound[g]))
+
     for step in range(500):
         var action = ContAction[ACTION_DIM]()
         for i in range(ACTION_DIM):

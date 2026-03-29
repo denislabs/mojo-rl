@@ -54,6 +54,7 @@ from .flat_model import (
     _GEOM_CAPSULE,
     _GEOM_BOX,
     _GEOM_CYLINDER,
+    _GEOM_MESH,
     TEX_SKYBOX,
     TEX_2D,
     TEX_CUBE,
@@ -343,6 +344,8 @@ def _geom_type_from_str(s: String) -> Int:
         return _GEOM_BOX
     elif t == "cylinder":
         return _GEOM_CYLINDER
+    elif t == "mesh":
+        return _GEOM_MESH
     return _GEOM_SPHERE  # default
 
 
@@ -680,6 +683,27 @@ def _fill_assets[
         result.materials[mat_count] = md
         mat_count += 1
         mat_pos = tag_end + 1
+
+    # ---- Mesh assets ----------------------------------------------------------
+    var mesh_pos = 0
+    var mesh_count = 0
+    while mesh_count < 16:
+        var t = asset_sec.find("<mesh", mesh_pos)
+        if t == -1:
+            break
+        var tag_end = asset_sec.find(">", t)
+        if tag_end == -1:
+            break
+        # Skip if this is a self-closing tag for non-mesh elements
+        var tag = String(asset_sec[byte = t : tag_end + 1])
+        var mesh_name = _extract_attr(tag, "name")
+        var mesh_file = _extract_attr(tag, "file")
+        if len(mesh_name) > 0 and len(mesh_file) > 0:
+            result.mesh_asset_names[mesh_count] = mesh_name
+            result.mesh_asset_files[mesh_count] = mesh_file
+            mesh_count += 1
+        mesh_pos = tag_end + 1
+    result.num_mesh_assets = mesh_count
 
 
 # =============================================================================
@@ -1201,6 +1225,16 @@ def _fill_model[
                 # type
                 var type_s = _extract_attr(tag, "type")
                 gd.geom_type = _geom_type_from_str(type_s)
+
+                # mesh reference: mesh="name" → resolve to file path from asset section
+                if gd.geom_type == _GEOM_MESH:
+                    var mesh_attr = _extract_attr(tag, "mesh")
+                    if len(mesh_attr) > 0:
+                        for mi in range(result.num_mesh_assets):
+                            if result.mesh_asset_names[mi] == mesh_attr:
+                                gd.mesh_id = mi
+                                gd.mesh_filename = result.mesh_asset_files[mi]
+                                break
 
                 # fromto — overrides pos and quat for capsule
                 var fromto_s = _extract_attr(tag, "fromto")

@@ -1654,6 +1654,154 @@ def compute_contact_jacobian_row_gpu[
 
 
 @always_inline
+def compute_weld_jacobian_row_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    V_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+    body_a: Int,
+    body_b: Int,
+    pos_a_x: Scalar[DTYPE],
+    pos_a_y: Scalar[DTYPE],
+    pos_a_z: Scalar[DTYPE],
+    pos_b_x: Scalar[DTYPE],
+    pos_b_y: Scalar[DTYPE],
+    pos_b_z: Scalar[DTYPE],
+    dir_x: Scalar[DTYPE],
+    dir_y: Scalar[DTYPE],
+    dir_z: Scalar[DTYPE],
+    mut J_row: InlineArray[Scalar[DTYPE], V_SIZE],
+):
+    """Compute weld/connect Jacobian on GPU: J = J_a(at pos_a) - J_b(at pos_b).
+
+    Each body's Jacobian uses its OWN anchor position, unlike the contact
+    Jacobian which uses a single shared contact point.
+    """
+    comptime cdof_idx = ws_cdof_offset()
+
+    for i in range(V_SIZE):
+        J_row[i] = 0
+
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(
+        rebind[Scalar[DTYPE]](model[0, model_meta_off + MODEL_META_IDX_NJOINT])
+    )
+
+    for j_idx in range(num_joints):
+        var joint_off = model_joint_offset[NBODY](j_idx)
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var joint_body = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+
+        # Check if this joint affects body_a
+        var affects_a = False
+        if body_a == joint_body:
+            affects_a = True
+        else:
+            var current = body_a
+            while current > 0:
+                var current_body_off = model_body_offset(current)
+                var current_parent = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, current_body_off + BODY_IDX_PARENT]
+                    )
+                )
+                if current_parent == joint_body:
+                    affects_a = True
+                    break
+                current = current_parent
+
+        # Check if this joint affects body_b
+        var affects_b = False
+        if body_b > 0:
+            if body_b == joint_body:
+                affects_b = True
+            else:
+                var current_b = body_b
+                while current_b > 0:
+                    var current_body_off_b = model_body_offset(current_b)
+                    var current_parent_b = Int(
+                        rebind[Scalar[DTYPE]](
+                            model[0, current_body_off_b + BODY_IDX_PARENT]
+                        )
+                    )
+                    if current_parent_b == joint_body:
+                        affects_b = True
+                        break
+                    current_b = current_parent_b
+
+        if not affects_a and not affects_b:
+            continue
+
+        var num_dof = 1
+        if jnt_type == JNT_FREE:
+            num_dof = 6
+        elif jnt_type == JNT_BALL:
+            num_dof = 3
+
+        # Reference point for cdof cross product
+        var stcom_off_jac = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+        var jb_off = model_body_offset(joint_body)
+        var jb_rootid = Int(rebind[Scalar[DTYPE]](model[0, jb_off + BODY_IDX_ROOTID]))
+        var ref_x = rebind[Scalar[DTYPE]](state[env, stcom_off_jac + jb_rootid * 3 + 0])
+        var ref_y = rebind[Scalar[DTYPE]](state[env, stcom_off_jac + jb_rootid * 3 + 1])
+        var ref_z = rebind[Scalar[DTYPE]](state[env, stcom_off_jac + jb_rootid * 3 + 2])
+
+        for d in range(num_dof):
+            var dof_idx = dof_adr + d
+            var ang_x = workspace[env, cdof_idx + dof_idx * 6 + 0]
+            var ang_y = workspace[env, cdof_idx + dof_idx * 6 + 1]
+            var ang_z = workspace[env, cdof_idx + dof_idx * 6 + 2]
+            var lin_x = workspace[env, cdof_idx + dof_idx * 6 + 3]
+            var lin_y = workspace[env, cdof_idx + dof_idx * 6 + 4]
+            var lin_z = workspace[env, cdof_idx + dof_idx * 6 + 5]
+
+            if affects_a:
+                # Jacobian at body_a's anchor point
+                var ra_x = pos_a_x - ref_x
+                var ra_y = pos_a_y - ref_y
+                var ra_z = pos_a_z - ref_z
+                var cx = ang_y * ra_z - ang_z * ra_y
+                var cy = ang_z * ra_x - ang_x * ra_z
+                var cz = ang_x * ra_y - ang_y * ra_x
+                var val = (lin_x + cx) * dir_x + (lin_y + cy) * dir_y + (lin_z + cz) * dir_z
+                J_row[dof_idx] += rebind[Scalar[DTYPE]](val)
+
+            if affects_b:
+                # Jacobian at body_b's anchor point (separate!)
+                var rb_x = pos_b_x - ref_x
+                var rb_y = pos_b_y - ref_y
+                var rb_z = pos_b_z - ref_z
+                var cx = ang_y * rb_z - ang_z * rb_y
+                var cy = ang_z * rb_x - ang_x * rb_z
+                var cz = ang_x * rb_y - ang_y * rb_x
+                var val = (lin_x + cx) * dir_x + (lin_y + cy) * dir_y + (lin_z + cz) * dir_z
+                J_row[dof_idx] -= rebind[Scalar[DTYPE]](val)
+
+
+@always_inline
 def compute_angular_jacobian_row_gpu[
     DTYPE: DType,
     NQ: Int,

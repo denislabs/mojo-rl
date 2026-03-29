@@ -181,7 +181,7 @@ comptime sawyer_robot_xml = """
                                                           quat="0.820473 0.339851 -0.17592 0.424708"
                                                           mass="1e-08"
                                                           diaginertia="1e-08 1e-08 1e-08"/>
-                                                <geom type="mesh" contype="0" conaffinity="0" group="1"
+                                                <geom type="mesh" contype="1" conaffinity="1" group="1"
                                                       rgba="0.5 0.1 0.1 1" pos="0 0 0.03"
                                                       mesh="eGripperBase"/>
                                                 <geom size="0.035 0.014" pos="0 0 0.015"

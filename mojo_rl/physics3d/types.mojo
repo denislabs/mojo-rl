@@ -431,6 +431,13 @@ struct Model[
     var geom_margin: List[Scalar[Self.DTYPE]]
     var geom_mass: List[Scalar[Self.DTYPE]]
     var geom_group: List[Int]  # geom visual/collision group (0-5)
+    var geom_mesh_id: List[Int]  # index into mesh hull data (-1 if not mesh)
+
+    # Mesh convex hull data for collision
+    var mesh_vert: List[Scalar[Self.DTYPE]]  # flattened hull vertices [x0,y0,z0, x1,y1,z1, ...] in local frame
+    var mesh_vertadr: List[Int]  # start index into mesh_vert for each mesh
+    var mesh_vertnum: List[Int]  # number of hull vertices for each mesh
+    var num_meshes: Int  # total number of loaded collision meshes
 
     # Mocap body support
     var body_mocap: List[Bool]  # True for mocap bodies (position externally controlled)
@@ -565,6 +572,13 @@ struct Model[
         self.geom_margin = List[Scalar[Self.DTYPE]](capacity=ngeom)
         self.geom_mass = List[Scalar[Self.DTYPE]](capacity=ngeom)
         self.geom_group = List[Int](capacity=ngeom)
+        self.geom_mesh_id = List[Int](capacity=ngeom)
+
+        # Mesh convex hull data
+        self.mesh_vert = List[Scalar[Self.DTYPE]]()
+        self.mesh_vertadr = List[Int]()
+        self.mesh_vertnum = List[Int]()
+        self.num_meshes = 0
 
         # Mocap body arrays
         self.body_mocap = List[Bool](capacity=Self.NBODY)
@@ -603,6 +617,7 @@ struct Model[
             self.geom_margin.append(Scalar[Self.DTYPE](0))
             self.geom_mass.append(Scalar[Self.DTYPE](0))
             self.geom_group.append(0)
+            self.geom_mesh_id.append(-1)
         for _ in range(_max_one[Self.NGEOM * 3]()):
             self.geom_pos.append(Scalar[Self.DTYPE](0))
         for _ in range(_max_one[Self.NGEOM * 4]()):

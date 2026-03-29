@@ -28,6 +28,7 @@ from ..types import _max_one, EQ_CONNECT, EQ_WELD
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from ..dynamics.jacobian import (
     compute_contact_jacobian_row_gpu,
+    compute_weld_jacobian_row_gpu,
     compute_angular_jacobian_row_gpu,
 )
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat_rotate
@@ -923,10 +924,11 @@ def build_and_solve_equality_gpu[
             var dy = dirs[d * 3 + 1]
             var dz = dirs[d * 3 + 2]
 
-            # Compute Jacobian
+            # Compute Jacobian: J = J_a(at world_a) - J_b(at world_b)
+            # Each body's Jacobian uses its OWN anchor point (MuJoCo convention)
             for i in range(V_SIZE):
                 J_row[i] = 0
-            compute_contact_jacobian_row_gpu[
+            compute_weld_jacobian_row_gpu[
                 DTYPE,
                 NQ,
                 NV,
@@ -948,6 +950,9 @@ def build_and_solve_equality_gpu[
                 world_ax,
                 world_ay,
                 world_az,
+                world_bx,
+                world_by,
+                world_bz,
                 dx,
                 dy,
                 dz,
@@ -1187,9 +1192,8 @@ def build_and_solve_equality_gpu[
                 if imp < Scalar[DTYPE](1e-6):
                     imp = Scalar[DTYPE](1e-6)
 
-                var bias = -eq_K_spring * imp * penetration + eq_B_damp * v_n
-                if err_d < Scalar[DTYPE](0):
-                    bias = -bias
+                # MuJoCo equality bias: bias = K*I*pos + B*vel (signed pos)
+                var bias = eq_K_spring * imp * err_d + eq_B_damp * v_n
                 eq_bias[num_eq_rows] = bias
                 # MuJoCo: R = (1-imp)/imp * diagApprox (rotation weights)
                 comptime eq_rot_bw_off = model_body_invweight0_offset[

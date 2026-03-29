@@ -26,7 +26,9 @@ from ..constants import (
     GEOM_BOX,
     GEOM_PLANE,
     GEOM_CYLINDER,
+    GEOM_MESH,
 )
+from .gjk import gjk_epa
 from ..gpu.constants import (
     BODY_IDX_PARENT,
     BODY_IDX_WELDID,
@@ -562,6 +564,41 @@ def detect_contacts[
                         data.contacts[idx].friction_roll = contact_friction_roll
                         data.contacts[idx].condim = contact_condim
                         data.num_contacts += 1
+                elif gj_type == GEOM_MESH and model.geom_mesh_id[gj] >= 0:
+                    # Plane-mesh: scan hull vertices, generate contacts for those below plane
+                    var mesh_id = model.geom_mesh_id[gj]
+                    var vadr = model.mesh_vertadr[mesh_id]
+                    var vnum = model.mesh_vertnum[mesh_id]
+                    for vi in range(vnum):
+                        if data.num_contacts >= MAX_CONTACTS:
+                            break
+                        var off = vadr + vi * 3
+                        # Transform vertex to world frame
+                        var local_pt = quat_rotate(
+                            qj_x, qj_y, qj_z, qj_w,
+                            model.mesh_vert[off],
+                            model.mesh_vert[off + 1],
+                            model.mesh_vert[off + 2])
+                        var wx = pj_x + local_pt[0]
+                        var wy = pj_y + local_pt[1]
+                        var wz = pj_z + local_pt[2]
+                        var dist_v = wz - ground_z
+                        if dist_v < contact_margin:
+                            var idx = data.num_contacts
+                            data.contacts[idx].body_a = gj_body
+                            data.contacts[idx].body_b = 0
+                            data.contacts[idx].pos_x = wx
+                            data.contacts[idx].pos_y = wy
+                            data.contacts[idx].pos_z = ground_z + dist_v * Scalar[DTYPE](0.5)
+                            data.contacts[idx].normal_x = Scalar[DTYPE](0)
+                            data.contacts[idx].normal_y = Scalar[DTYPE](0)
+                            data.contacts[idx].normal_z = Scalar[DTYPE](1)
+                            data.contacts[idx].dist = dist_v - contact_margin
+                            data.contacts[idx].friction = contact_friction
+                            data.contacts[idx].friction_spin = contact_friction_spin
+                            data.contacts[idx].friction_roll = contact_friction_roll
+                            data.contacts[idx].condim = contact_condim
+                            data.num_contacts += 1
                 continue
 
             if gj_type == GEOM_PLANE:
@@ -692,6 +729,40 @@ def detect_contacts[
                         data.contacts[idx].friction_roll = contact_friction_roll
                         data.contacts[idx].condim = contact_condim
                         data.num_contacts += 1
+                elif gi_type == GEOM_MESH and model.geom_mesh_id[gi] >= 0:
+                    # Mesh-plane: scan hull vertices below plane
+                    var mesh_id = model.geom_mesh_id[gi]
+                    var vadr = model.mesh_vertadr[mesh_id]
+                    var vnum = model.mesh_vertnum[mesh_id]
+                    for vi in range(vnum):
+                        if data.num_contacts >= MAX_CONTACTS:
+                            break
+                        var off = vadr + vi * 3
+                        var local_pt = quat_rotate(
+                            qi_x, qi_y, qi_z, qi_w,
+                            model.mesh_vert[off],
+                            model.mesh_vert[off + 1],
+                            model.mesh_vert[off + 2])
+                        var wx = pi_x + local_pt[0]
+                        var wy = pi_y + local_pt[1]
+                        var wz = pi_z + local_pt[2]
+                        var dist_v = wz - ground_z
+                        if dist_v < contact_margin:
+                            var idx = data.num_contacts
+                            data.contacts[idx].body_a = gi_body
+                            data.contacts[idx].body_b = 0
+                            data.contacts[idx].pos_x = wx
+                            data.contacts[idx].pos_y = wy
+                            data.contacts[idx].pos_z = ground_z + dist_v * Scalar[DTYPE](0.5)
+                            data.contacts[idx].normal_x = Scalar[DTYPE](0)
+                            data.contacts[idx].normal_y = Scalar[DTYPE](0)
+                            data.contacts[idx].normal_z = Scalar[DTYPE](1)
+                            data.contacts[idx].dist = dist_v - contact_margin
+                            data.contacts[idx].friction = contact_friction
+                            data.contacts[idx].friction_spin = contact_friction_spin
+                            data.contacts[idx].friction_roll = contact_friction_roll
+                            data.contacts[idx].condim = contact_condim
+                            data.num_contacts += 1
                 continue
 
             # --- Non-plane geom pair ---
@@ -980,6 +1051,37 @@ def detect_contacts[
                 nz = -r[6]
                 body_a = gj_body
                 body_b = gi_body
+
+            # GJK/EPA fallback for any pair involving a mesh geom
+            elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
+                # Mesh geom parameters
+                var mvi = model.mesh_vert.copy() if model.num_meshes > 0 else List[Scalar[DTYPE]]()
+                var mvoi = model.mesh_vertadr[model.geom_mesh_id[gi]] if model.geom_mesh_id[gi] >= 0 else 0
+                var mnvi = model.mesh_vertnum[model.geom_mesh_id[gi]] if model.geom_mesh_id[gi] >= 0 else 0
+                var mvj = model.mesh_vert.copy() if model.num_meshes > 0 else List[Scalar[DTYPE]]()
+                var mvoj = model.mesh_vertadr[model.geom_mesh_id[gj]] if model.geom_mesh_id[gj] >= 0 else 0
+                var mnvj = model.mesh_vertnum[model.geom_mesh_id[gj]] if model.geom_mesh_id[gj] >= 0 else 0
+                var result = gjk_epa[DTYPE](
+                    gi_type,
+                    pi_x, pi_y, pi_z,
+                    qi_x, qi_y, qi_z, qi_w,
+                    ri, hli, hxi, hyi, hzi,
+                    mvi, mvoi, mnvi,
+                    gj_type,
+                    pj_x, pj_y, pj_z,
+                    qj_x, qj_y, qj_z, qj_w,
+                    rj, hlj, hxj, hyj, hzj,
+                    mvj, mvoj, mnvj,
+                )
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = result[4]
+                ny = result[5]
+                nz = result[6]
+                body_a = gi_body
+                body_b = gj_body
 
             if dist < contact_margin and data.num_contacts < MAX_CONTACTS:
                 var idx = data.num_contacts

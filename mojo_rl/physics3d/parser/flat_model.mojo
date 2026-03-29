@@ -196,6 +196,7 @@ comptime _GEOM_SPHERE: Int = 1
 comptime _GEOM_CAPSULE: Int = 2
 comptime _GEOM_BOX: Int = 3
 comptime _GEOM_CYLINDER: Int = 4
+comptime _GEOM_MESH: Int = 5
 
 
 struct GeomData(Copyable, ImplicitlyCopyable, Movable):
@@ -237,6 +238,8 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var rgba_a: Float64
     var material_id: Int  # index into FlatModelDef.materials[], -1 if none
     var group: Int  # geom group (0-5), used for inertiagrouprange filtering
+    var mesh_id: Int  # index into mesh hull data (-1 if not mesh geom)
+    var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
 
     def __init__(
         out self,
@@ -276,6 +279,8 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         rgba_a: Float64 = 1.0,
         material_id: Int = -1,
         group: Int = 0,
+        mesh_id: Int = -1,
+        mesh_filename: String = "",
     ):
         self.body_id = body_id
         self.geom_type = geom_type
@@ -313,6 +318,8 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.rgba_a = rgba_a
         self.material_id = material_id
         self.group = group
+        self.mesh_id = mesh_id
+        self.mesh_filename = mesh_filename
 
 
 # =============================================================================
@@ -966,6 +973,11 @@ struct FlatModelDef[
     var gravity_z: Float64
     var timestep: Float64
 
+    # Mesh assets: name → file path mapping (max 16 meshes)
+    var mesh_asset_names: InlineArray[String, 17]  # +1 sentinel
+    var mesh_asset_files: InlineArray[String, 17]
+    var num_mesh_assets: Int
+
     def __init__(out self):
         self.bodies = InlineArray[BodyData, Self.NBODY](fill=BodyData())
         self.joints = InlineArray[JointData, Self.NJOINT](fill=JointData())
@@ -992,6 +1004,9 @@ struct FlatModelDef[
         self.gravity_y = Float64(0)
         self.gravity_z = Float64(-9.81)
         self.timestep = Float64(0.01)
+        self.mesh_asset_names = InlineArray[String, 17](fill=String(""))
+        self.mesh_asset_files = InlineArray[String, 17](fill=String(""))
+        self.num_mesh_assets = 0
 
     def setup_model[
         DTYPE: DType,
@@ -1255,6 +1270,7 @@ struct FlatModelDef[
             model.geom_margin[i] = Scalar[DTYPE](gd.margin)
             model.geom_mass[i] = Scalar[DTYPE](gd.mass)
             model.geom_group[i] = gd.group
+            model.geom_mesh_id[i] = gd.mesh_id
             # Bounding sphere radius for broad-phase collision detection
             if gd.geom_type == _GEOM_PLANE:
                 model.geom_rbound[i] = Scalar[DTYPE](
@@ -1278,8 +1294,47 @@ struct FlatModelDef[
                         + gd.half_z * gd.half_z
                     )
                 )
+            elif gd.geom_type == _GEOM_MESH and gd.mesh_id >= 0:
+                # rbound computed from hull vertices below
+                model.geom_rbound[i] = Scalar[DTYPE](gd.radius)
             else:
                 model.geom_rbound[i] = Scalar[DTYPE](gd.radius)
+
+        # Load mesh convex hulls from STL files for collision
+        from ..collision.convex_hull import load_mesh_hull, compute_bounding_radius_at
+        var loaded_mesh_ids = List[Int]()  # mesh_asset_id → model mesh_id
+        for _ in range(self.num_mesh_assets):
+            loaded_mesh_ids.append(-1)
+        for i in range(Self.NGEOM):
+            var gd = self.geoms[i]
+            if gd.geom_type == _GEOM_MESH and gd.mesh_id >= 0 and len(gd.mesh_filename) > 0:
+                # Check if this mesh was already loaded (shared across geoms)
+                if loaded_mesh_ids[gd.mesh_id] >= 0:
+                    model.geom_mesh_id[i] = loaded_mesh_ids[gd.mesh_id]
+                    var mid = loaded_mesh_ids[gd.mesh_id]
+                    var vadr = model.mesh_vertadr[mid]
+                    var vnum = model.mesh_vertnum[mid]
+                    var rbound = compute_bounding_radius_at[DTYPE](
+                        model.mesh_vert, vadr, vnum
+                    )
+                    model.geom_rbound[i] = rbound
+                else:
+                    # Load STL and store hull (file I/O can fail)
+                    try:
+                        var result = load_mesh_hull[DTYPE](
+                            gd.mesh_filename,
+                            model.mesh_vert,
+                            model.mesh_vertadr,
+                            model.mesh_vertnum,
+                            model.num_meshes,
+                        )
+                        var mesh_id = result[0]
+                        var rbound = result[1]
+                        model.geom_mesh_id[i] = mesh_id
+                        model.geom_rbound[i] = rbound
+                        loaded_mesh_ids[gd.mesh_id] = mesh_id
+                    except:
+                        print("Warning: failed to load mesh:", gd.mesh_filename)
 
         # Sites — populate model.site_body and model.site_pos for FK
         for i in range(Self.NSITE):
