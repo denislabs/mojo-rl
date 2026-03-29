@@ -12,6 +12,7 @@ comptime inverted_pendulum_xml = """
 	<option gravity="0 0 -9.81" integrator="RK4" timestep="0.02"/>
 	<size nstack="3000"/>
 	<worldbody>
+		<camera name="track" mode="trackcom" pos="0 -2 0.5" xyaxes="1 0 0 0 0 1"/>
 		<geom name="rail" pos="0 0 0" quat="0.707 0 0.707 0" rgba="0.3 0.3 0.7 1" size="0.02 1" type="capsule"/>
 		<body name="cart" pos="0 0 0">
 			<joint axis="1 0 0" limited="true" name="slider" pos="0 0 0" range="-1 1" type="slide"/>

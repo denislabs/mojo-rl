@@ -196,6 +196,7 @@ comptime _GEOM_SPHERE: Int = 1
 comptime _GEOM_CAPSULE: Int = 2
 comptime _GEOM_BOX: Int = 3
 comptime _GEOM_CYLINDER: Int = 4
+comptime _GEOM_MESH: Int = 5
 
 
 struct GeomData(Copyable, ImplicitlyCopyable, Movable):
@@ -237,6 +238,8 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
     var rgba_a: Float64
     var material_id: Int  # index into FlatModelDef.materials[], -1 if none
     var group: Int  # geom group (0-5), used for inertiagrouprange filtering
+    var mesh_id: Int  # index into mesh hull data (-1 if not mesh geom)
+    var mesh_filename: String  # STL filename for mesh geoms ("" if not mesh)
 
     def __init__(
         out self,
@@ -276,6 +279,8 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         rgba_a: Float64 = 1.0,
         material_id: Int = -1,
         group: Int = 0,
+        mesh_id: Int = -1,
+        mesh_filename: String = "",
     ):
         self.body_id = body_id
         self.geom_type = geom_type
@@ -313,6 +318,8 @@ struct GeomData(Copyable, ImplicitlyCopyable, Movable):
         self.rgba_a = rgba_a
         self.material_id = material_id
         self.group = group
+        self.mesh_id = mesh_id
+        self.mesh_filename = mesh_filename
 
 
 # =============================================================================
@@ -895,11 +902,28 @@ struct NamedDefaultsList(Copyable, ImplicitlyCopyable, Movable):
             self.count += 1
 
     def find(self, class_name: String) -> DefaultsData:
-        """Find defaults for a class name. Returns top-level defaults if not found."""
+        """Find defaults for a class name. Returns top-level defaults if not found.
+        """
         for i in range(self.count):
             if self.items[i].class_name == class_name:
                 return self.items[i].defaults
         return DefaultsData()
+
+
+# =============================================================================
+# ExcludeData — contact exclusion pair parsed from <contact><exclude>
+# =============================================================================
+
+
+struct ExcludeData(Copyable, ImplicitlyCopyable, Movable):
+    """A body pair to exclude from contact detection."""
+
+    var body1: Int  # first body index
+    var body2: Int  # second body index
+
+    def __init__(out self, body1: Int = 0, body2: Int = 0):
+        self.body1 = body1
+        self.body2 = body2
 
 
 # =============================================================================
@@ -920,6 +944,7 @@ struct FlatModelDef[
     NCAM: Int = 0,
     NSITE: Int = 0,
     NEQ: Int = 0,
+    NEXCLUDE: Int = 0,
 ](Movable):
     """Model definition using flat InlineArrays — driven entirely from XML.
 
@@ -942,10 +967,16 @@ struct FlatModelDef[
     var cameras: InlineArray[CameraData, Self.NCAM + 1]
     var sites: InlineArray[SiteData, Self.NSITE + 1]
     var equalities: InlineArray[EqualityData, Self.NEQ + 1]
+    var excludes: InlineArray[ExcludeData, Self.NEXCLUDE + 1]
     var gravity_x: Float64
     var gravity_y: Float64
     var gravity_z: Float64
     var timestep: Float64
+
+    # Mesh assets: name → file path mapping (max 16 meshes)
+    var mesh_asset_names: InlineArray[String, 17]  # +1 sentinel
+    var mesh_asset_files: InlineArray[String, 17]
+    var num_mesh_assets: Int
 
     def __init__(out self):
         self.bodies = InlineArray[BodyData, Self.NBODY](fill=BodyData())
@@ -966,10 +997,16 @@ struct FlatModelDef[
         self.equalities = InlineArray[EqualityData, Self.NEQ + 1](
             fill=EqualityData()
         )
+        self.excludes = InlineArray[ExcludeData, Self.NEXCLUDE + 1](
+            fill=ExcludeData()
+        )
         self.gravity_x = Float64(0)
         self.gravity_y = Float64(0)
         self.gravity_z = Float64(-9.81)
         self.timestep = Float64(0.01)
+        self.mesh_asset_names = InlineArray[String, 17](fill=String(""))
+        self.mesh_asset_files = InlineArray[String, 17](fill=String(""))
+        self.num_mesh_assets = 0
 
     def setup_model[
         DTYPE: DType,
@@ -1070,6 +1107,15 @@ struct FlatModelDef[
             if b.has_explicit_inertia:
                 model.body_has_explicit_inertia[body_idx] = True
 
+        # Compute body_rootid from body_parent (root = child of worldbody)
+        model.body_rootid[0] = 0
+        for bi in range(1, Self.NBODY):
+            var p = model.body_parent[bi]
+            if p == 0:
+                model.body_rootid[bi] = bi
+            else:
+                model.body_rootid[bi] = model.body_rootid[p]
+
         # Joints — use Model.add_hinge_joint / add_slide_joint API
         for j in range(Self.NJOINT):
             var jd = self.joints[j]
@@ -1107,6 +1153,8 @@ struct FlatModelDef[
                         Scalar[DTYPE](jd.axis_y),
                         Scalar[DTYPE](jd.axis_z),
                     ),
+                    range_min=Scalar[DTYPE](jd.range_min),
+                    range_max=Scalar[DTYPE](jd.range_max),
                     armature=Scalar[DTYPE](jd.armature),
                     damping=Scalar[DTYPE](jd.damping),
                     stiffness=Scalar[DTYPE](jd.stiffness),
@@ -1175,6 +1223,20 @@ struct FlatModelDef[
             model.solref_limit[0] = model.joint_solref_limit[0]
             model.solref_limit[1] = model.joint_solref_limit[1]
 
+        # Compute body_weldid — bodies with joints get their own ID,
+        # bodies without joints inherit parent's weldid (MuJoCo convention)
+        var body_has_joint = List[Bool](capacity=Self.NBODY)
+        for _ in range(Self.NBODY):
+            body_has_joint.append(False)
+        for j in range(Self.NJOINT):
+            body_has_joint[model.joints[j].body_id] = True
+        model.body_weldid[0] = 0  # worldbody welds to itself
+        for bi in range(1, Self.NBODY):
+            if body_has_joint[bi]:
+                model.body_weldid[bi] = bi
+            else:
+                model.body_weldid[bi] = model.body_weldid[model.body_parent[bi]]
+
         # Geoms — populate model.geom_* arrays directly
         for i in range(Self.NGEOM):
             var gd = self.geoms[i]
@@ -1208,6 +1270,7 @@ struct FlatModelDef[
             model.geom_margin[i] = Scalar[DTYPE](gd.margin)
             model.geom_mass[i] = Scalar[DTYPE](gd.mass)
             model.geom_group[i] = gd.group
+            model.geom_mesh_id[i] = gd.mesh_id
             # Bounding sphere radius for broad-phase collision detection
             if gd.geom_type == _GEOM_PLANE:
                 model.geom_rbound[i] = Scalar[DTYPE](
@@ -1231,8 +1294,47 @@ struct FlatModelDef[
                         + gd.half_z * gd.half_z
                     )
                 )
+            elif gd.geom_type == _GEOM_MESH and gd.mesh_id >= 0:
+                # rbound computed from hull vertices below
+                model.geom_rbound[i] = Scalar[DTYPE](gd.radius)
             else:
                 model.geom_rbound[i] = Scalar[DTYPE](gd.radius)
+
+        # Load mesh convex hulls from STL files for collision
+        from ..collision.convex_hull import load_mesh_hull, compute_bounding_radius_at
+        var loaded_mesh_ids = List[Int]()  # mesh_asset_id → model mesh_id
+        for _ in range(self.num_mesh_assets):
+            loaded_mesh_ids.append(-1)
+        for i in range(Self.NGEOM):
+            var gd = self.geoms[i]
+            if gd.geom_type == _GEOM_MESH and gd.mesh_id >= 0 and len(gd.mesh_filename) > 0:
+                # Check if this mesh was already loaded (shared across geoms)
+                if loaded_mesh_ids[gd.mesh_id] >= 0:
+                    model.geom_mesh_id[i] = loaded_mesh_ids[gd.mesh_id]
+                    var mid = loaded_mesh_ids[gd.mesh_id]
+                    var vadr = model.mesh_vertadr[mid]
+                    var vnum = model.mesh_vertnum[mid]
+                    var rbound = compute_bounding_radius_at[DTYPE](
+                        model.mesh_vert, vadr, vnum
+                    )
+                    model.geom_rbound[i] = rbound
+                else:
+                    # Load STL and store hull (file I/O can fail)
+                    try:
+                        var result = load_mesh_hull[DTYPE](
+                            gd.mesh_filename,
+                            model.mesh_vert,
+                            model.mesh_vertadr,
+                            model.mesh_vertnum,
+                            model.num_meshes,
+                        )
+                        var mesh_id = result[0]
+                        var rbound = result[1]
+                        model.geom_mesh_id[i] = mesh_id
+                        model.geom_rbound[i] = rbound
+                        loaded_mesh_ids[gd.mesh_id] = mesh_id
+                    except:
+                        print("Warning: failed to load mesh:", gd.mesh_filename)
 
         # Sites — populate model.site_body and model.site_pos for FK
         for i in range(Self.NSITE):
@@ -1302,3 +1404,10 @@ struct FlatModelDef[
                         Scalar[DTYPE](ed.solimp_2),
                     ),
                 )
+
+        # Contact exclusion pairs
+        for i in range(Self.NEXCLUDE):
+            var ex = self.excludes[i]
+            model.exclude_body1.append(ex.body1)
+            model.exclude_body2.append(ex.body2)
+        model.num_excludes = Self.NEXCLUDE

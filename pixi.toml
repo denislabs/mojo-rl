@@ -46,6 +46,7 @@ box2d-py = ">=2.3.8,<3"  # for gymnasium Box2D envs (LunarLander, BipedalWalker,
 mujoco = ">=3.6.0,<4"    # for gymnasium MuJoCo envs (HalfCheetah, Ant, Humanoid, etc.)
 imageio = ">=2.37.0,<3"
 imageio-ffmpeg = ">=0.6.0,<0.7"
+shaderc = ">=2025.5,<2026"  # for GLSL->SPIR-V shader compilation (cross-platform rendering)
 
 [package]
 name = "mojo_rl"
@@ -86,6 +87,9 @@ gpu-info = { cmd = "nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_
 
 # GPU specs
 gpu-specs = { cmd = "python3 scripts/gpu_specs.py", description = "Get complete GPU architectural specifications (NVIDIA/AMD/Apple Silicon)" }
+
+# Shader compilation
+compile-shaders = { cmd = "bash mojo_rl/render/shaders/compile.sh", description = "Compile GLSL shaders to SPIR-V bytecode" }
 
 # macOS
 check-macos = { cmd = "sw_vers -productVersion | awk -F. '{if($1<15) {print \"Error: macOS 15+ required, found \" $0; exit 1}}'", description = "Ensure macOS 15+" }

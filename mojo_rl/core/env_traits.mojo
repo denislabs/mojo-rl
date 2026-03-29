@@ -95,6 +95,14 @@ trait RenderableEnv:
         """
         ...
 
+    def init_renderer(mut self, show_velocity: Bool) raises -> Bool:
+        """Initialize the renderer with the option to show velocity.
+
+        Returns:
+            True if initialization succeeded or was already initialized.
+        """
+        return self.init_renderer()
+
     def render_frame(mut self) raises -> None:
         """Render the current environment state.
 

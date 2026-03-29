@@ -21,12 +21,18 @@ def chol_factor[
     DTYPE: DType,
     NV: Int,
     M_SIZE: Int,
-](H: List[Scalar[DTYPE]], mut L: List[Scalar[DTYPE]],):
+](H: List[Scalar[DTYPE]], mut L: List[Scalar[DTYPE]],) -> Bool:
     """In-place Cholesky factorization: L*L^T = H (lower triangular).
 
     H must be symmetric positive definite. L is output lower triangular.
     Both are NV×NV row-major in M_SIZE arrays.
+
+    Returns True if successful, False if rank-deficient (diagonal < threshold).
+    When False, L still contains a usable factorization (with clamped diagonals),
+    but the caller should add regularization and retry.
     """
+    var rank_ok = True
+
     # Zero L
     for i in range(NV * NV):
         L[i] = Scalar[DTYPE](0)
@@ -38,11 +44,14 @@ def chol_factor[
                 s += L[i * NV + k] * L[j * NV + k]
             if i == j:
                 var diag = H[i * NV + i] - s
-                if diag < Scalar[DTYPE](1e-14):
-                    diag = Scalar[DTYPE](1e-14)
+                if diag < Scalar[DTYPE](1e-10):
+                    rank_ok = False
+                    diag = Scalar[DTYPE](1e-10)
                 L[i * NV + j] = sqrt(diag)
             else:
                 L[i * NV + j] = (H[i * NV + j] - s) / L[j * NV + j]
+
+    return rank_ok
 
 
 @always_inline
@@ -81,14 +90,13 @@ def chol_factor_inline[
 ](
     H: InlineArray[Scalar[DTYPE], M_SIZE],
     mut L: InlineArray[Scalar[DTYPE], M_SIZE],
-):
+) -> Bool:
     """In-place Cholesky factorization: L*L^T = H (lower triangular), GPU-compatible.
 
-    Same algorithm as chol_factor but operates on InlineArrays so it can be
-    used inside @always_inline GPU kernels without heap allocation.
-    H must be symmetric positive definite. L is output lower triangular.
-    Both are NV×NV row-major stored in M_SIZE (= max(1, NV*NV)) arrays.
+    Returns True if successful, False if rank-deficient.
     """
+    var rank_ok = True
+
     for i in range(NV * NV):
         L[i] = Scalar[DTYPE](0)
 
@@ -99,11 +107,14 @@ def chol_factor_inline[
                 s += L[i * NV + k] * L[j * NV + k]
             if i == j:
                 var diag = H[i * NV + i] - s
-                if diag < Scalar[DTYPE](1e-14):
-                    diag = Scalar[DTYPE](1e-14)
+                if diag < Scalar[DTYPE](1e-10):
+                    rank_ok = False
+                    diag = Scalar[DTYPE](1e-10)
                 L[i * NV + j] = sqrt(diag)
             else:
                 L[i * NV + j] = (H[i * NV + j] - s) / L[j * NV + j]
+
+    return rank_ok
 
 
 @always_inline

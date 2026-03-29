@@ -28,6 +28,7 @@ from ..types import _max_one, EQ_CONNECT, EQ_WELD
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from ..dynamics.jacobian import (
     compute_contact_jacobian_row_gpu,
+    compute_weld_jacobian_row_gpu,
     compute_angular_jacobian_row_gpu,
 )
 from ..kinematics.quat_math import quat_mul, quat_conjugate, quat_rotate
@@ -616,9 +617,9 @@ def detect_and_solve_limits_gpu[
     if li_dmax < Scalar[DTYPE](1e-4):
         li_dmax = Scalar[DTYPE](1e-4)
     # Acceleration-level coefficients for limits
-    # MuJoCo formula: K = 1/(tc² * dr²), B = 2*dr/tc
-    var l_K_spring = Scalar[DTYPE](1.0) / (lr_tc * lr_tc * li_dmax * li_dmax)
-    var l_B_damp = Scalar[DTYPE](2.0) * lr_dr / (lr_tc * li_dmax)
+    # MuJoCo: K = 1/(dmax² * tc² * dr²), B = 2/(dmax * tc)
+    var l_K_spring = Scalar[DTYPE](1.0) / (li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr)
+    var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
 
     # Precompute impedance and MinvJ for limits
     var lim_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
@@ -825,9 +826,9 @@ def build_and_solve_equality_gpu[
         if si_dmax < Scalar[DTYPE](1e-4):
             si_dmax = Scalar[DTYPE](1e-4)
         var eq_K_spring = Scalar[DTYPE](1.0) / (
-            sr_tc * sr_tc * si_dmax * si_dmax
+            si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
         )
-        var eq_B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+        var eq_B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
 
         # Compute world anchor A: xpos[body_a] + quat_rotate(xquat[body_a], anchor_a)
         var xpos_a_x = rebind[Scalar[DTYPE]](
@@ -923,10 +924,11 @@ def build_and_solve_equality_gpu[
             var dy = dirs[d * 3 + 1]
             var dz = dirs[d * 3 + 2]
 
-            # Compute Jacobian
+            # Compute Jacobian: J = J_a(at world_a) - J_b(at world_b)
+            # Each body's Jacobian uses its OWN anchor point (MuJoCo convention)
             for i in range(V_SIZE):
                 J_row[i] = 0
-            compute_contact_jacobian_row_gpu[
+            compute_weld_jacobian_row_gpu[
                 DTYPE,
                 NQ,
                 NV,
@@ -948,6 +950,9 @@ def build_and_solve_equality_gpu[
                 world_ax,
                 world_ay,
                 world_az,
+                world_bx,
+                world_by,
+                world_bz,
                 dx,
                 dy,
                 dz,
@@ -1009,10 +1014,11 @@ def build_and_solve_equality_gpu[
             if imp < Scalar[DTYPE](1e-6):
                 imp = Scalar[DTYPE](1e-6)
 
-            # bias = -aref (bilateral: sign depends on error direction)
-            var bias = -eq_K_spring * imp * penetration + eq_B_damp * v_n
-            if err_d < Scalar[DTYPE](0):
-                bias = -bias
+            # MuJoCo equality bias: bias = -aref = B*vel + K*I*pos
+            # where pos is the SIGNED error (not abs). Contact formula uses
+            # -K*I*pen because contact pos = -penetration, but equality pos
+            # is signed directly.
+            var bias = eq_K_spring * imp * err_d + eq_B_damp * v_n
             eq_bias[num_eq_rows] = bias
             # MuJoCo: R = (1-imp)/imp * diagApprox (translation weights)
             comptime eq_bw_off = model_body_invweight0_offset[
@@ -1186,9 +1192,8 @@ def build_and_solve_equality_gpu[
                 if imp < Scalar[DTYPE](1e-6):
                     imp = Scalar[DTYPE](1e-6)
 
-                var bias = -eq_K_spring * imp * penetration + eq_B_damp * v_n
-                if err_d < Scalar[DTYPE](0):
-                    bias = -bias
+                # MuJoCo equality bias: bias = K*I*pos + B*vel (signed pos)
+                var bias = eq_K_spring * imp * err_d + eq_B_damp * v_n
                 eq_bias[num_eq_rows] = bias
                 # MuJoCo: R = (1-imp)/imp * diagApprox (rotation weights)
                 comptime eq_rot_bw_off = model_body_invweight0_offset[
@@ -1432,10 +1437,12 @@ def build_and_solve_tendon_gpu[
             si_width = Scalar[DTYPE](1e-6)
         if si_dmax < Scalar[DTYPE](1e-4):
             si_dmax = Scalar[DTYPE](1e-4)
+        # MuJoCo: K = 1/(dmax² * timeconst² * dampratio²)
         var t_K_spring = Scalar[DTYPE](1.0) / (
-            sr_tc * sr_tc * si_dmax * si_dmax
+            si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
         )
-        var t_B_damp = Scalar[DTYPE](2.0) * sr_dr / (sr_tc * si_dmax)
+        # MuJoCo: B = 2/(dmax * timeconst)
+        var t_B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
 
         # Impedance: MuJoCo piecewise power formula on |pos_err|
         var penetration = abs(pos_err)
@@ -1465,10 +1472,10 @@ def build_and_solve_tendon_gpu[
         if imp < Scalar[DTYPE](1e-6):
             imp = Scalar[DTYPE](1e-6)
 
-        # bias = -aref (bilateral: sign depends on error direction)
-        var bias = -t_K_spring * imp * penetration + t_B_damp * ten_vel
-        if pos_err < Scalar[DTYPE](0):
-            bias = -bias
+        # Bilateral equality constraint bias (MuJoCo formula):
+        #   aref = -B*vel - K*imp*pos  (pos = pos_err, signed)
+        #   bias = -aref = B*vel + K*imp*pos
+        var bias = t_B_damp * ten_vel + t_K_spring * imp * pos_err
         ten_bias[r] = bias
 
         # R = (1-imp)/imp * diagApprox (sum of dof_invweight0 for tendon joints)

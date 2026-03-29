@@ -82,6 +82,7 @@ from mojo_rl.physics3d.gpu.buffer_utils import (
     copy_geoms_to_buffer,
     copy_invweight0_to_buffer,
     copy_tendons_to_buffer,
+    copy_mesh_hull_to_buffer,
 )
 from mojo_rl.physics3d.model.model_def import ModelDefLike
 from .full_parser import parse_xml_full
@@ -100,6 +101,11 @@ from .xml_parser import (
     ComptimeRenderData,
     parse_xml_render_data,
     _xml_default_motor_ctrlrange,
+    _xml_fixed_tendon_njoints,
+    _xml_fixed_tendon_joint_name,
+    _xml_fixed_tendon_coef,
+    _xml_find_joint_dof_adr,
+    _xml_find_joint_index,
 )
 from mojo_rl.physics3d.model.inertia_from_geom import compute_inertia_from_geoms
 
@@ -123,10 +129,11 @@ struct ModelDefFromXML[
     ncam: Int = 0,
     max_contacts: Int = 50,
     max_equality: Int = 0,
-    cone_type: Int = ConeType.ELLIPTIC,
+    cone_type: Int = ConeType.PYRAMIDAL,
     max_tendon: Int = 0,
     nsite: Int = 0,
     neq: Int = 0,
+    nexclude: Int = 0,
     obs_qpos_skip: Int = 1,
     obs_dim_override: Int = -1,
     action_dim_override: Int = -1,
@@ -246,6 +253,7 @@ struct ModelDefFromXML[
             Self.ncam,
             Self.NSITE,
             Self.neq,
+            Self.nexclude,
         ](Self.xml)
         fmd.setup_model[
             DTYPE,
@@ -285,6 +293,34 @@ struct ModelDefFromXML[
                                 Scalar[DTYPE](1.0)
                                 / model.body_inertia[i * 3 + k]
                             )
+        # Parse and add fixed tendons from XML <tendon><fixed> section.
+        # NOTE: fixed tendons only define a kinematic quantity (length = Σ coef*qpos).
+        # They produce NO forces unless referenced by <equality><tendon> or they have
+        # limited="true"/stiffness/damping attributes. Since we only support
+        # equality constraints on tendons, skip parsing when no equality block exists.
+        # TODO: parse <equality><tendon> and only constrain those tendons.
+        comptime if False and Self.MAX_TENDON > 0:
+            comptime for t_idx in range(Self.MAX_TENDON):
+                comptime nj = _xml_fixed_tendon_njoints[Self.xml, t_idx]()
+                comptime if nj > 0:
+                    var jidx = InlineArray[Int, 4](fill=-1)
+                    var jcoefs = InlineArray[Scalar[DTYPE], 4](
+                        fill=Scalar[DTYPE](0)
+                    )
+                    comptime for ji in range(nj):
+                        comptime jn = _xml_fixed_tendon_joint_name[
+                            Self.xml, t_idx, ji
+                        ]()
+                        comptime jnt_idx = _xml_find_joint_index(
+                            Self.xml, jn
+                        )
+                        comptime cf = _xml_fixed_tendon_coef[
+                            Self.xml, t_idx, ji
+                        ]()
+                        jidx[ji] = jnt_idx
+                        jcoefs[ji] = Scalar[DTYPE](cf)
+                    _ = model.add_tendon(nj, jidx, jcoefs)
+
         # Initialize data.qpos from qpos0 (joint ref values) before FK
         Self.reset_data(data)
         forward_kinematics(model, data)
@@ -429,6 +465,7 @@ struct ModelDefFromXML[
             Self.MAX_EQUALITY,
             Self.MAX_TENDON,
             Self.NSITE,
+            Self.nexclude,
         ]()
         var host_buf = ctx.enqueue_create_host_buffer[DTYPE](BUF_SIZE)
         for i in range(BUF_SIZE):
@@ -464,6 +501,7 @@ struct ModelDefFromXML[
         copy_geoms_to_buffer(model, host_buf)
         copy_tendons_to_buffer(model, host_buf)
         copy_invweight0_to_buffer(model, host_buf)
+        copy_mesh_hull_to_buffer(model, host_buf)
 
         # Copy to GPU
         ctx.enqueue_copy(model_buf, host_buf)
@@ -493,6 +531,7 @@ struct ModelDefFromXML[
             Self.MAX_EQUALITY,
             Self.MAX_TENDON,
             Self.NSITE,
+            Self.nexclude,
         ]()
         comptime WS_SIZE = integrator_workspace_size[Self.NV, Self.NBODY]()
 
@@ -1220,6 +1259,33 @@ struct ModelDefFromXML[
         return List[Float64]()
 
     @staticmethod
+    def get_ground_rgba() -> List[Float64]:
+        """Return [r, g, b] of the first plane geom's rgba color,
+        or empty list if no plane geom exists."""
+        for i in range(Self.NGEOM):
+            if Self._rcd.geom_type[i] == 0:  # GEOM_PLANE
+                var result = List[Float64]()
+                result.append(Self._rcd.geom_rgba_r[i])
+                result.append(Self._rcd.geom_rgba_g[i])
+                result.append(Self._rcd.geom_rgba_b[i])
+                return result^
+        return List[Float64]()
+
+    @staticmethod
+    def get_visual_settings() -> List[Float64]:
+        """Return [znear, fogstart, fogend, shadowsize, hl_r, hl_g, hl_b, has_headlight]."""
+        var result = List[Float64]()
+        result.append(Self._rcd.vis_znear)
+        result.append(Self._rcd.vis_fogstart)
+        result.append(Self._rcd.vis_fogend)
+        result.append(Float64(Self._rcd.vis_shadowsize))
+        result.append(Self._rcd.vis_headlight_ambient_r)
+        result.append(Self._rcd.vis_headlight_ambient_g)
+        result.append(Self._rcd.vis_headlight_ambient_b)
+        result.append(Float64(1.0) if Self._rcd.vis_has_headlight else Float64(0.0))
+        return result^
+
+    @staticmethod
     def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,
@@ -1238,11 +1304,32 @@ struct ModelDefFromXML[
                 has_plane = True
                 var ground_offset = Self._rcd.geom_pos_z[i] - max_body_radius * (visual_radius_scale - 1.0)
                 var grid_cx = torso_x if follow else Float64(0.0)
-                renderer.draw_ground_grid(grid_cx, height=ground_offset)
+                # Resolve material → texture for this plane geom
+                var tex_name = String("")
+                var tex_file = String("")
+                var texrep_u = Float64(1.0)
+                var texrep_v = Float64(1.0)
+                var mid = Self._rcd.geom_material_id[i]
+                if mid >= 0 and mid < Self.nmat:
+                    var tex_id = Self._rcd.mat_tex_id[mid]
+                    if tex_id >= 0 and tex_id < Self._rcd.ntex:
+                        comptime for ti in range(Self._rcd.ntex):
+                            if tex_id == ti:
+                                comptime _tn: String = Self._rcd.tex_names[ti]
+                                comptime _tf: String = Self._rcd.tex_files[ti]
+                                tex_name = _tn
+                                tex_file = _tf
+                    texrep_u = Self._rcd.mat_texrepeat_u[mid]
+                    texrep_v = Self._rcd.mat_texrepeat_v[mid]
+                renderer.draw_ground_grid(
+                    grid_cx, height=ground_offset,
+                    texture_name=tex_name, texture_path=tex_file,
+                    texrepeat_u=texrep_u, texrepeat_v=texrep_v,
+                )
         if not has_plane:
-            var ground_offset = -max_body_radius * (visual_radius_scale - 1.0)
-            var grid_cx = torso_x if follow else Float64(0.0)
-            renderer.draw_ground_grid(grid_cx, height=ground_offset)
+            # No ground plane defined in XML — skip ground rendering.
+            # Models like InvertedPendulum intentionally omit the ground.
+            pass
 
     @staticmethod
     def render_body_geoms(
@@ -1251,13 +1338,19 @@ struct ModelDefFromXML[
         quaternions: List[_RQuat],
         visual_radius_scale: Float64,
     ) raises:
-        """Draw body-attached geoms (body_id > 0) using parsed geometry + colour."""
-        # SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4
+        """Draw body-attached geoms using parsed geometry + colour."""
+        # SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5
         for i in range(Self.NGEOM):
             var bid = Self._rcd.geom_body_id[i]
-            if bid <= 0:
+            if bid < 0:
+                continue
+            # Skip plane geoms (handled by render_ground_geoms)
+            if Self._rcd.geom_type[i] == 0:
                 continue
             if bid >= len(positions):
+                continue
+            # Skip geoms with alpha < 1 (collision-only / semi-transparent)
+            if Self._rcd.geom_rgba_a[i] < 0.99:
                 continue
             var body_pos = positions[bid]
             var body_quat = quaternions[bid]
@@ -1296,25 +1389,57 @@ struct ModelDefFromXML[
                 shininess = Float32(Self._rcd.mat_shininess[mid])
                 specular = Float32(Self._rcd.mat_specular[mid])
                 reflectance = Float32(Self._rcd.mat_reflectance[mid])
+            # Resolve material → texture chain for this geom
+            var tex_name_str = String("")
+            var tex_file_str = String("")
+            if mid >= 0 and mid < Self.nmat:
+                var tex_id = Self._rcd.mat_tex_id[mid]
+                if tex_id >= 0 and tex_id < Self._rcd.ntex:
+                    comptime for ti in range(Self._rcd.ntex):
+                        if tex_id == ti:
+                            comptime _tn: String = Self._rcd.tex_names[ti]
+                            comptime _tf: String = Self._rcd.tex_files[ti]
+                            tex_name_str = _tn
+                            tex_file_str = _tf
+
             var gt = Self._rcd.geom_type[i]
             if gt == 2:  # CAPSULE
                 renderer.draw_capsule(center=geom_pos, orientation=geom_quat,
                     radius=Self._rcd.geom_radius[i] * visual_radius_scale,
                     half_height=Self._rcd.geom_half_length[i], axis=2,
-                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
+                    texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 1:  # SPHERE
                 renderer.draw_sphere(center=geom_pos,
                     radius=Self._rcd.geom_radius[i] * visual_radius_scale,
-                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
+                    texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 3:  # BOX
                 renderer.draw_box(center=geom_pos, orientation=geom_quat,
                     half_extents=_RVec3(Self._rcd.geom_half_x[i], Self._rcd.geom_half_y[i], Self._rcd.geom_half_z[i]),
-                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
+                    texture_name=tex_name_str, texture_path=tex_file_str)
             elif gt == 4:  # CYLINDER
-                renderer.draw_capsule(center=geom_pos, orientation=geom_quat,
+                renderer.draw_cylinder(center=geom_pos, orientation=geom_quat,
                     radius=Self._rcd.geom_radius[i] * visual_radius_scale,
                     half_height=Self._rcd.geom_half_length[i], axis=2,
-                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance)
+                    color=geom_color, shininess=shininess, specular=specular, reflectance=reflectance,
+                    texture_name=tex_name_str, texture_path=tex_file_str)
+            elif gt == 5:  # MESH
+                var mid2 = Self._rcd.geom_mesh_id[i]
+                # Draw mesh with optional texture
+                comptime for mi in range(Self._rcd.nmesh):
+                    if mid2 == mi:
+                        comptime _mn: String = Self._rcd.mesh_names[mi]
+                        comptime _mf: String = Self._rcd.mesh_files[mi]
+                        renderer.draw_mesh(
+                            name=_mn, file_path=_mf,
+                            center=geom_pos, orientation=geom_quat,
+                            color=geom_color, shininess=shininess,
+                            specular=specular, reflectance=reflectance,
+                            texture_name=tex_name_str,
+                            texture_path=tex_file_str,
+                        )
 
     @staticmethod
     def render_sites(

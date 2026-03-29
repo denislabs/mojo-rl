@@ -392,6 +392,8 @@ struct Model[
 
     # Kinematic tree structure
     var body_parent: List[Int]  # NBODY — 0 for worldbody
+    var body_rootid: List[Int]  # NBODY — root body (child of worldbody) for each body
+    var body_weldid: List[Int]  # NBODY — weld body ID (bodies without joints inherit parent's)
 
     # Body inverse weights for primal solver (MuJoCo-style diagApprox)
     # [2*i] = translation, [2*i+1] = rotation  (NBODY * 2 elements)
@@ -429,6 +431,13 @@ struct Model[
     var geom_margin: List[Scalar[Self.DTYPE]]
     var geom_mass: List[Scalar[Self.DTYPE]]
     var geom_group: List[Int]  # geom visual/collision group (0-5)
+    var geom_mesh_id: List[Int]  # index into mesh hull data (-1 if not mesh)
+
+    # Mesh convex hull data for collision
+    var mesh_vert: List[Scalar[Self.DTYPE]]  # flattened hull vertices [x0,y0,z0, x1,y1,z1, ...] in local frame
+    var mesh_vertadr: List[Int]  # start index into mesh_vert for each mesh
+    var mesh_vertnum: List[Int]  # number of hull vertices for each mesh
+    var num_meshes: Int  # total number of loaded collision meshes
 
     # Mocap body support
     var body_mocap: List[Bool]  # True for mocap bodies (position externally controlled)
@@ -456,6 +465,11 @@ struct Model[
     # Fixed tendons
     var tendons: List[TendonDef[Self.DTYPE]]
     var num_tendons: Int
+
+    # Contact exclusion pairs (body indices to skip in collision detection)
+    var exclude_body1: List[Int]
+    var exclude_body2: List[Int]
+    var num_excludes: Int
 
     def __init__(out self):
         """Initialize model with default values."""
@@ -512,6 +526,8 @@ struct Model[
         self.body_ipos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.body_iquat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
         self.body_parent = List[Int](capacity=Self.NBODY)
+        self.body_rootid = List[Int](capacity=Self.NBODY)
+        self.body_weldid = List[Int](capacity=Self.NBODY)
         self.body_invweight0 = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 2)
         self.dof_invweight0 = List[Scalar[Self.DTYPE]](capacity=Self.NV)
         self.qpos0 = List[Scalar[Self.DTYPE]](capacity=Self.NQ)
@@ -520,6 +536,8 @@ struct Model[
             self.body_name.append("")
             self.body_inv_mass.append(Scalar[Self.DTYPE](0))
             self.body_parent.append(0)
+            self.body_rootid.append(0)
+            self.body_weldid.append(0)
             self.body_invweight0.append(Scalar[Self.DTYPE](0))
             self.body_invweight0.append(Scalar[Self.DTYPE](0))
         for _ in range(Self.NBODY * 3):
@@ -554,6 +572,13 @@ struct Model[
         self.geom_margin = List[Scalar[Self.DTYPE]](capacity=ngeom)
         self.geom_mass = List[Scalar[Self.DTYPE]](capacity=ngeom)
         self.geom_group = List[Int](capacity=ngeom)
+        self.geom_mesh_id = List[Int](capacity=ngeom)
+
+        # Mesh convex hull data
+        self.mesh_vert = List[Scalar[Self.DTYPE]]()
+        self.mesh_vertadr = List[Int]()
+        self.mesh_vertnum = List[Int]()
+        self.num_meshes = 0
 
         # Mocap body arrays
         self.body_mocap = List[Bool](capacity=Self.NBODY)
@@ -592,6 +617,7 @@ struct Model[
             self.geom_margin.append(Scalar[Self.DTYPE](0))
             self.geom_mass.append(Scalar[Self.DTYPE](0))
             self.geom_group.append(0)
+            self.geom_mesh_id.append(-1)
         for _ in range(_max_one[Self.NGEOM * 3]()):
             self.geom_pos.append(Scalar[Self.DTYPE](0))
         for _ in range(_max_one[Self.NGEOM * 4]()):
@@ -692,6 +718,11 @@ struct Model[
         for _ in range(ntendon_max):
             self.tendons.append(TendonDef[Self.DTYPE].empty())
         self.num_tendons = 0
+
+        # Initialize contact exclusions
+        self.exclude_body1 = List[Int]()
+        self.exclude_body2 = List[Int]()
+        self.num_excludes = 0
 
     def set_body(
         mut self,
@@ -1212,6 +1243,8 @@ struct Data[
     var xpos: List[Scalar[Self.DTYPE]]  # NBODY * 3
     var xquat: List[Scalar[Self.DTYPE]]  # NBODY * 4
     var xipos: List[Scalar[Self.DTYPE]]  # NBODY * 3 — CoM world position
+    var subtree_com: List[Scalar[Self.DTYPE]]  # NBODY * 3 — subtree CoM (MuJoCo mj_comPos)
+    var has_subtree_com: Bool  # True after compute_subtree_com has been called
 
     # Computed world-space velocities (for collision response)
     var xvel: List[Scalar[Self.DTYPE]]  # NBODY * 3 — linear
@@ -1256,12 +1289,15 @@ struct Data[
         self.xpos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.xquat = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 4)
         self.xipos = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.subtree_com = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
+        self.has_subtree_com = False
         self.xvel = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.xangvel = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 3)
         self.cfrc_ext = List[Scalar[Self.DTYPE]](capacity=Self.NBODY * 6)
         for _ in range(Self.NBODY * 3):
             self.xpos.append(Scalar[Self.DTYPE](0))
             self.xipos.append(Scalar[Self.DTYPE](0))
+            self.subtree_com.append(Scalar[Self.DTYPE](0))
             self.xvel.append(Scalar[Self.DTYPE](0))
             self.xangvel.append(Scalar[Self.DTYPE](0))
         for _ in range(Self.NBODY):

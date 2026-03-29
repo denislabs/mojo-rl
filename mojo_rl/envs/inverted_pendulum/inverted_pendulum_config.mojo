@@ -104,15 +104,11 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         step_count: Int,
         frame_skip: Int,
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        var cart_pos = data.qpos[0]
         var pole_angle = data.qpos[1]
 
-        var max_cart = Scalar[DTYPE](Self.MAX_CART_POS)
         var max_angle = Scalar[DTYPE](Self.MAX_POLE_ANGLE)
-
-        var cart_ok = cart_pos > -max_cart and cart_pos < max_cart
         var pole_ok = pole_angle > -max_angle and pole_angle < max_angle
-        var terminated = not (cart_ok and pole_ok)
+        var terminated = not pole_ok
 
         # +1 reward for every surviving step
         var reward = Scalar[DTYPE](0.0)
@@ -213,15 +209,11 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
-        var cart_pos = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
         var pole_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])
 
-        var max_cart = Scalar[DTYPE](1.0)
         var max_angle = Scalar[DTYPE](0.2)
-
-        var cart_ok = cart_pos > -max_cart and cart_pos < max_cart
         var pole_ok = pole_angle > -max_angle and pole_angle < max_angle
-        var terminated = not (cart_ok and pole_ok)
+        var terminated = not pole_ok
 
         var reward = Scalar[DTYPE](0.0)
         if not terminated:

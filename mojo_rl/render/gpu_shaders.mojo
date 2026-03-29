@@ -18,7 +18,7 @@ SDL_GPU MSL binding convention:
 
 
 # --- Shared SceneUniforms MSL struct definition (used in multiple shaders) ---
-# 224 bytes: view_proj(64) + camera_pos(16) + 4 lights * 2 vec4(128) + ground_params(16)
+# 240B: view_proj(64) + camera_pos(16) + 4 lights*2 vec4(128) + ground_params(16) + fog_params(16)
 
 comptime _SCENE_UNIFORMS_MSL = """
 struct SceneUniforms {
@@ -33,6 +33,7 @@ struct SceneUniforms {
     float4 light3_dir;
     float4 light3_color;
     float4 ground_params;   // xyz = checker_color2, w = ground_z
+    float4 fog_params;      // x = fogstart, y = fogend, z = 0, w = 0
 };
 """
 
@@ -70,6 +71,7 @@ struct VertexOut {
     float4 position  [[position]];
     float3 world_pos;
     float3 world_normal;
+    float2 uv;
     float4 obj_color;
     float4 obj_material;
 };
@@ -79,7 +81,7 @@ struct VertexOut {
 struct ObjectUniforms {
     float4x4 model;
     float4 color;
-    float4 material;  // x=shininess, y=specular, z=reflectance, w=emission
+    float4 material;  // x=shininess, y=specular, z=reflectance (>0 = has texture), w=emission
 };
 
 vertex VertexOut solid_vertex(
@@ -93,6 +95,7 @@ vertex VertexOut solid_vertex(
     out.world_pos = world.xyz;
     // Transform normal by upper 3x3 of model matrix
     out.world_normal = (obj.model * float4(in.normal, 0.0)).xyz;
+    out.uv = in.uv;
     out.obj_color = obj.color;
     out.obj_material = obj.material;
     return out;
@@ -107,6 +110,7 @@ struct VertexOut {
     float4 position  [[position]];
     float3 world_pos;
     float3 world_normal;
+    float2 uv;
     float4 obj_color;
     float4 obj_material;
 };
@@ -139,7 +143,7 @@ float compute_shadow(float3 world_pos,
 
     // 3x3 PCF for soft shadows
     float shadow_val = 0.0;
-    float texel_size = 1.0 / 1024.0;
+    float texel_size = 1.0 / 4096.0;
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(float(x), float(y)) * texel_size;
@@ -158,7 +162,9 @@ fragment float4 solid_fragment(
     constant SceneUniforms &scene [[buffer(0)]],
     constant ShadowUniforms &shadow [[buffer(1)]],
     depth2d<float> shadow_map [[texture(0)]],
-    sampler shadow_sampler [[sampler(0)]]
+    sampler shadow_sampler [[sampler(0)]],
+    texture2d<float> obj_texture [[texture(1)]],
+    sampler obj_sampler [[sampler(1)]]
 ) {
     float3 N = normalize(in.world_normal);
     float3 V = normalize(scene.camera_pos.xyz - in.world_pos);
@@ -166,10 +172,18 @@ fragment float4 solid_fragment(
     // Per-object material properties
     float mat_shininess = in.obj_material.x;  // 0-1, maps to specular exponent
     float mat_specular = in.obj_material.y;    // 0-1, specular intensity
+    float has_texture = in.obj_material.z;     // >0 = sample obj_texture
     float mat_emission = in.obj_material.w;    // 0-1, emissive intensity
 
     // Map shininess [0,1] to specular exponent: 0.0->4, 0.5->32, 1.0->128
     float spec_exp = mix(4.0, 128.0, mat_shininess);
+
+    // Sample texture if enabled (material.z > 0)
+    float4 base_color = in.obj_color;
+    if (has_texture > 0.5) {
+        float4 tex_color = obj_texture.sample(obj_sampler, in.uv);
+        base_color = float4(base_color.rgb * tex_color.rgb, base_color.a * tex_color.a);
+    }
 
     int num_lights = int(scene.camera_pos.w);
     if (num_lights < 1) num_lights = 1;
@@ -196,7 +210,7 @@ fragment float4 solid_fragment(
         }
 
         float3 light_col = l_color.xyz;
-        total_color += in.obj_color.rgb * shadow_factor * diffuse * light_col
+        total_color += base_color.rgb * shadow_factor * diffuse * light_col
                      + shadow_factor * specular * light_col;
         total_ambient += ambient;
     }
@@ -204,10 +218,20 @@ fragment float4 solid_fragment(
     // Clamp ambient to avoid over-brightening with multiple lights
     total_ambient = min(total_ambient, 1.0);
 
-    float3 color = in.obj_color.rgb * total_ambient + total_color
-                 + in.obj_color.rgb * mat_emission;
+    float3 color = base_color.rgb * total_ambient + total_color
+                 + base_color.rgb * mat_emission;
 
-    return float4(color, in.obj_color.a);
+    // Linear fog: blend towards fog color (use skybox-like grey) based on distance
+    float fog_start = scene.fog_params.x;
+    float fog_end = scene.fog_params.y;
+    if (fog_end > fog_start) {
+        float dist = length(in.world_pos - scene.camera_pos.xyz);
+        float fog_factor = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
+        float3 fog_color = float3(0.5, 0.495, 0.48);  // match typical skybox
+        color = mix(color, fog_color, fog_factor);
+    }
+
+    return float4(color, base_color.a);
 }
 """
 
@@ -227,6 +251,7 @@ struct VertexOut {
     float4 position  [[position]];
     float3 world_pos;
     float3 world_normal;
+    float2 uv;
 };
 
 """ + _SCENE_UNIFORMS_MSL + """
@@ -247,6 +272,7 @@ vertex VertexOut ground_vertex(
     out.position = scene.view_proj * world;
     out.world_pos = world.xyz;
     out.world_normal = float3(0.0, 0.0, 1.0);
+    out.uv = in.uv;
     return out;
 }
 """
@@ -259,6 +285,7 @@ struct VertexOut {
     float4 position  [[position]];
     float3 world_pos;
     float3 world_normal;
+    float2 uv;
 };
 
 """ + _SCENE_UNIFORMS_MSL + _LIGHT_ACCESS_MSL + """
@@ -288,7 +315,7 @@ float compute_shadow_ground(float3 world_pos,
 
     // 3x3 PCF
     float shadow_val = 0.0;
-    float texel_size = 1.0 / 1024.0;
+    float texel_size = 1.0 / 4096.0;
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(float(x), float(y)) * texel_size;
@@ -306,51 +333,93 @@ fragment float4 ground_fragment(
     constant SceneUniforms &scene [[buffer(0)]],
     constant ShadowUniforms &shadow [[buffer(1)]],
     depth2d<float> shadow_map [[texture(0)]],
-    sampler shadow_sampler [[sampler(0)]]
+    sampler shadow_sampler [[sampler(0)]],
+    texture2d<float> ground_texture [[texture(1)]],
+    sampler ground_tex_sampler [[sampler(1)]]
 ) {
-    // Checkerboard pattern — colors from scene.ground_params.xyz (light tile = rgb2)
-    float3 checker_color1 = float3(0.35, 0.35, 0.38);  // Light tile (default)
-    float3 checker_color2 = float3(0.22, 0.22, 0.25);  // Dark tile (default)
+    // Ground color — three modes based on ground_params encoding:
+    //   ground_params.z > 1.5: texture mode (xy = texrepeat), sample ground_texture
+    //   ground_params.x < 0: solid color mode, color = abs(ground_params.xyz)
+    //   else: checker mode, light tile = ground_params.xyz
+    // Note: ground_params.w is reserved for ground_z (reflection clipping)
+    float3 base_color;
 
-    // Use ground_params.xyz as light tile color (rgb2), dark tile = black (rgb1)
-    // Matches MuJoCo checker: rgb1=(0,0,0) black, rgb2=(0.8,0.8,0.8) grey
-    if (scene.ground_params.x > 0.001 || scene.ground_params.y > 0.001 || scene.ground_params.z > 0.001) {
-        checker_color1 = scene.ground_params.xyz;  // Light tile = rgb2
-        checker_color2 = float3(0.0, 0.0, 0.0);   // Dark tile = black (rgb1)
+    if (scene.ground_params.z > 1.5) {
+        // Texture mode: tile the texture using world-space XY coordinates
+        // ground_params.xy = texrepeat_u, texrepeat_v (tiles across ground extent)
+        float tex_repeat_u = scene.ground_params.x;
+        float tex_repeat_v = scene.ground_params.y;
+        // Map UVs: use mesh UVs scaled by texrepeat
+        float2 tex_uv = in.uv * float2(tex_repeat_u, tex_repeat_v);
+        float4 tex_color = ground_texture.sample(ground_tex_sampler, tex_uv);
+        base_color = tex_color.rgb;
+    } else if (scene.ground_params.x < -0.001) {
+        // Solid color mode (no texture defined in XML, use geom rgba)
+        base_color = -scene.ground_params.xyz;
+    } else {
+        // Checkerboard pattern
+        float3 checker_color1 = float3(0.35, 0.35, 0.38);  // Light tile (default)
+        float3 checker_color2 = float3(0.22, 0.22, 0.25);  // Dark tile (default)
+
+        // Use ground_params.xyz as light tile color (rgb2), dark tile = black (rgb1)
+        // Matches MuJoCo checker: rgb1=(0,0,0) black, rgb2=(0.8,0.8,0.8) grey
+        if (scene.ground_params.x > 0.001 || scene.ground_params.y > 0.001 || scene.ground_params.z > 0.001) {
+            checker_color1 = scene.ground_params.xyz;  // Light tile = rgb2
+            checker_color2 = float3(0.0, 0.0, 0.0);   // Dark tile = black (rgb1)
+        }
+
+        float tile_size = 1.0;
+        float2 tile = floor(in.world_pos.xy / tile_size);
+        float checker = fmod(tile.x + tile.y, 2.0);
+        checker = abs(checker);
+
+        base_color = mix(checker_color1, checker_color2, checker);
     }
 
-    float tile_size = 1.0;
-    float2 tile = floor(in.world_pos.xy / tile_size);
-    float checker = fmod(tile.x + tile.y, 2.0);
-    checker = abs(checker);
-
-    float3 base_color = mix(checker_color1, checker_color2, checker);
-
-    // Multi-light ground shading
-    int num_lights = int(scene.camera_pos.w);
-    if (num_lights < 1) num_lights = 1;
-    if (num_lights > 4) num_lights = 4;
-
-    float3 N = float3(0.0, 0.0, 1.0);
-    float lighting = 0.0;
-    for (int li = 0; li < num_lights; li++) {
-        float4 l_dir = get_light_dir(scene, li);
-        float3 L = normalize(-l_dir.xyz);
-        float diffuse = max(dot(N, L), 0.0) * 0.3 + 0.7 / float(num_lights);
-        lighting += diffuse / float(num_lights);
-    }
-    base_color *= lighting;
+    bool is_textured = (scene.ground_params.z > 1.5);
 
     // Apply shadow (first shadow-casting light)
     float shadow_factor = compute_shadow_ground(in.world_pos, shadow, shadow_map, shadow_sampler);
-    base_color *= shadow_factor;
+
+    if (is_textured) {
+        // Textured ground: texture contains its own shading, only apply shadows
+        base_color *= shadow_factor;
+    } else {
+        // Procedural ground: apply multi-light shading + shadows + fog
+        int num_lights = int(scene.camera_pos.w);
+        if (num_lights < 1) num_lights = 1;
+        if (num_lights > 4) num_lights = 4;
+
+        float3 N = float3(0.0, 0.0, 1.0);
+        float lighting = 0.0;
+        for (int li = 0; li < num_lights; li++) {
+            float4 l_dir = get_light_dir(scene, li);
+            float3 L = normalize(-l_dir.xyz);
+            float diffuse = max(dot(N, L), 0.0) * 0.3 + 0.7 / float(num_lights);
+            lighting += diffuse / float(num_lights);
+        }
+        base_color *= lighting;
+        base_color *= shadow_factor;
+
+        // Linear fog for procedural ground only
+        float fog_start = scene.fog_params.x;
+        float fog_end = scene.fog_params.y;
+        if (fog_end > fog_start) {
+            float fog_dist = length(in.world_pos - scene.camera_pos.xyz);
+            float fog_factor = clamp((fog_dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
+            float3 fog_color = float3(0.5, 0.495, 0.48);
+            base_color = mix(base_color, fog_color, fog_factor);
+        }
+    }
 
     // Distance fade for smooth ground edge
     float dist = length(in.world_pos.xy - scene.camera_pos.xy);
     float edge_fade = 1.0 - smoothstep(8.0, 12.0, dist);
 
     // Semi-transparent ground to let reflections show through (rendered underneath)
-    float alpha = 0.55 * edge_fade;
+    // Textured ground should be more opaque to show the texture clearly
+    float base_alpha = is_textured ? 0.95 : 0.55;
+    float alpha = base_alpha * edge_fade;
 
     return float4(base_color, alpha);
 }

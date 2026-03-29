@@ -15,6 +15,7 @@ comptime inverted_double_pendulum_xml = """
   <option gravity="1e-5 0 -9.81" integrator="RK4" timestep="0.01"/>
   <size nstack="3000"/>
   <worldbody>
+    <camera name="track" mode="trackcom" pos="0 -2 0.8" xyaxes="1 0 0 0 0 1"/>
     <geom name="floor" pos="0 0 -3.0" rgba="0.8 0.9 0.8 1" size="40 40 40" type="plane"/>
     <geom name="rail" pos="0 0 0" quat="0.707 0 0.707 0" rgba="0.3 0.3 0.7 1" size="0.02 1" type="capsule"/>
     <body name="cart" pos="0 0 0">

@@ -11,7 +11,7 @@ from mojo_rl.math3d import (
     Mat4 as Mat4Generic,
     Quat as QuatGeneric,
 )
-from .sdl import Ptr, AnyOrigin, GPUBuffer
+from .sdl import Ptr, AnyOrigin, GPUBuffer, GPUTexture, GPUSampler
 from .types import Color
 
 comptime Vec3 = Vec3Generic[DType.float64]
@@ -58,7 +58,7 @@ struct GPUVertex(TrivialRegisterPassable):
 
 
 struct SceneUniforms(ImplicitlyCopyable, Movable):
-    """Scene-wide uniforms: 224 bytes.
+    """Scene-wide uniforms: 240 bytes.
 
     Layout (std140):
       view_proj:      mat4  (64 bytes)
@@ -72,6 +72,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
       light3_dir:     vec4  (16 bytes) - w = ambient3
       light3_color:   vec4  (16 bytes) - w = cast_shadow3
       ground_params:  vec4  (16 bytes) - xyz = checker_color2, w = ground_z
+      fog_params:     vec4  (16 bytes) - x = fogstart, y = fogend, z = unused, w = unused
     """
 
     var view_proj: InlineArray[Float32, 16]
@@ -85,6 +86,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
     var light3_dir: InlineArray[Float32, 4]
     var light3_color: InlineArray[Float32, 4]
     var ground_params: InlineArray[Float32, 4]
+    var fog_params: InlineArray[Float32, 4]
 
     def __init__(out self):
         self.view_proj = InlineArray[Float32, 16](fill=Float32(0))
@@ -98,6 +100,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.light3_dir = InlineArray[Float32, 4](fill=Float32(0))
         self.light3_color = InlineArray[Float32, 4](fill=Float32(0))
         self.ground_params = InlineArray[Float32, 4](fill=Float32(0))
+        self.fog_params = InlineArray[Float32, 4](fill=Float32(0))
 
     def __init__(out self, *, copy: Self):
         self.view_proj = copy.view_proj.copy()
@@ -111,6 +114,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.light3_dir = copy.light3_dir.copy()
         self.light3_color = copy.light3_color.copy()
         self.ground_params = copy.ground_params.copy()
+        self.fog_params = copy.fog_params.copy()
 
     def __init__(out self, *, deinit take: Self):
         self.view_proj = take.view_proj^
@@ -124,6 +128,7 @@ struct SceneUniforms(ImplicitlyCopyable, Movable):
         self.light3_dir = take.light3_dir^
         self.light3_color = take.light3_color^
         self.ground_params = take.ground_params^
+        self.fog_params = take.fog_params^
 
 
 struct ObjectUniforms(ImplicitlyCopyable, Movable):
@@ -352,6 +357,81 @@ struct CapsuleCacheEntry(Copyable, Movable):
         )
 
 
+struct MeshCacheEntry(Copyable, Movable):
+    """Cached STL mesh keyed by name string."""
+
+    var name: String
+    var mesh: MeshHandle
+
+    def __init__(out self, name: String, mesh: MeshHandle):
+        self.name = name
+        self.mesh = MeshHandle(
+            mesh.vertex_buffer,
+            mesh.index_buffer,
+            mesh.num_indices,
+            mesh.num_vertices,
+        )
+
+    def __init__(out self, *, copy: Self):
+        self.name = copy.name
+        self.mesh = MeshHandle(
+            copy.mesh.vertex_buffer,
+            copy.mesh.index_buffer,
+            copy.mesh.num_indices,
+            copy.mesh.num_vertices,
+        )
+
+    def __init__(out self, *, deinit take: Self):
+        self.name = take.name^
+        self.mesh = take.mesh^
+
+    def matches(self, name: String) -> Bool:
+        """Check if this entry matches the given name."""
+        return self.name == name
+
+
+struct TextureCacheEntry(Copyable, Movable):
+    """Cached GPU texture keyed by name string."""
+
+    var name: String
+    var texture: Ptr[GPUTexture, MutAnyOrigin]
+    var sampler: Ptr[GPUSampler, MutAnyOrigin]
+    var width: UInt32
+    var height: UInt32
+
+    def __init__(
+        out self,
+        name: String,
+        texture: Ptr[GPUTexture, MutAnyOrigin],
+        sampler: Ptr[GPUSampler, MutAnyOrigin],
+        width: UInt32,
+        height: UInt32,
+    ):
+        self.name = name
+        self.texture = texture
+        self.sampler = sampler
+        self.width = width
+        self.height = height
+
+    def __init__(out self, *, copy: Self):
+        self.name = copy.name
+        self.texture = copy.texture
+        self.sampler = copy.sampler
+        self.width = copy.width
+        self.height = copy.height
+
+    def __init__(out self, *, deinit take: Self):
+        self.name = take.name^
+        self.texture = take.texture
+        self.sampler = take.sampler
+        self.width = take.width
+        self.height = take.height
+
+    def matches(self, name: String) -> Bool:
+        """Check if this entry matches the given name."""
+        return self.name == name
+
+
 struct SolidDrawCommand(ImplicitlyCopyable, Movable):
     """Deferred draw command for solid objects."""
 
@@ -359,6 +439,11 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
     var uniforms: ObjectUniforms
     var is_capsule: Bool
     var capsule_cache_idx: Int
+    var is_cylinder: Bool
+    var cylinder_cache_idx: Int
+    var is_mesh: Bool
+    var mesh_cache_idx: Int
+    var texture_cache_idx: Int  # -1 = no texture (use default white)
 
     def __init__(
         out self,
@@ -366,23 +451,43 @@ struct SolidDrawCommand(ImplicitlyCopyable, Movable):
         uniforms: ObjectUniforms,
         is_capsule: Bool = False,
         capsule_cache_idx: Int = 0,
+        is_cylinder: Bool = False,
+        cylinder_cache_idx: Int = 0,
+        is_mesh: Bool = False,
+        mesh_cache_idx: Int = 0,
+        texture_cache_idx: Int = -1,
     ):
         self.mesh_idx = mesh_idx
         self.uniforms = uniforms
         self.is_capsule = is_capsule
         self.capsule_cache_idx = capsule_cache_idx
+        self.is_cylinder = is_cylinder
+        self.cylinder_cache_idx = cylinder_cache_idx
+        self.is_mesh = is_mesh
+        self.mesh_cache_idx = mesh_cache_idx
+        self.texture_cache_idx = texture_cache_idx
 
     def __init__(out self, *, copy: Self):
         self.mesh_idx = copy.mesh_idx
         self.uniforms = copy.uniforms
         self.is_capsule = copy.is_capsule
         self.capsule_cache_idx = copy.capsule_cache_idx
+        self.is_cylinder = copy.is_cylinder
+        self.cylinder_cache_idx = copy.cylinder_cache_idx
+        self.is_mesh = copy.is_mesh
+        self.mesh_cache_idx = copy.mesh_cache_idx
+        self.texture_cache_idx = copy.texture_cache_idx
 
     def __init__(out self, *, deinit take: Self):
         self.mesh_idx = take.mesh_idx
         self.uniforms = take.uniforms
         self.is_capsule = take.is_capsule
         self.capsule_cache_idx = take.capsule_cache_idx
+        self.is_cylinder = take.is_cylinder
+        self.cylinder_cache_idx = take.cylinder_cache_idx
+        self.is_mesh = take.is_mesh
+        self.mesh_cache_idx = take.mesh_cache_idx
+        self.texture_cache_idx = take.texture_cache_idx
 
 
 # --- Helper functions ---
@@ -425,12 +530,12 @@ def mat4_to_gpu_f32(m: Mat4) -> InlineArray[Float32, 16]:
     return out^
 
 
-def perspective_metal(
+def perspective_projection(
     fov_y: Float64, aspect: Float64, near: Float64, far: Float64
 ) -> Mat4:
-    """Metal-compatible perspective projection with Z in [0, 1].
+    """Perspective projection with Z in [0, 1].
 
-    Unlike OpenGL's [-1, 1], Metal clip space uses Z in [0, 1].
+    Compatible with Metal, Vulkan, and D3D12 clip space (all use Z in [0, 1]).
 
     Args:
         fov_y: Vertical field of view in radians.
@@ -444,7 +549,7 @@ def perspective_metal(
     var f = 1.0 / tan(fov_y * 0.5)
     var nf = 1.0 / (near - far)
 
-    # Row-major perspective matrix with Metal Z range [0, 1]
+    # Row-major perspective matrix with Z range [0, 1]
     var m = Mat4.identity()
     m.m00 = f / aspect
     m.m01 = 0.0
@@ -515,7 +620,7 @@ def make_identity_f32() -> InlineArray[Float32, 16]:
     return out^
 
 
-def ortho_metal(
+def ortho_projection(
     left: Float64,
     right: Float64,
     bottom: Float64,
@@ -523,7 +628,9 @@ def ortho_metal(
     near: Float64,
     far: Float64,
 ) -> Mat4:
-    """Metal-compatible orthographic projection with Z in [0, 1].
+    """Orthographic projection with Z in [0, 1].
+
+    Compatible with Metal, Vulkan, and D3D12 clip space.
 
     Args:
         left: Left clipping plane.
@@ -549,7 +656,7 @@ def ortho_metal(
 
     m.m20 = 0.0
     m.m21 = 0.0
-    m.m22 = -1.0 / (far - near)  # Metal Z range [0, 1]
+    m.m22 = -1.0 / (far - near)  # Z range [0, 1]
     m.m23 = -near / (far - near)
 
     m.m30 = 0.0

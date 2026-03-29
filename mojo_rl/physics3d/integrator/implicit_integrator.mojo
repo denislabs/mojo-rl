@@ -58,7 +58,9 @@ from ..dynamics.bias_forces import (
     compute_bias_forces_rne_gpu,
 )
 from ..dynamics.jacobian import (
+    compute_subtree_com,
     compute_cdof,
+    compute_subtree_com_gpu,
     compute_cdof_gpu,
     compute_composite_inertia,
     compute_composite_inertia_gpu,
@@ -230,11 +232,20 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 )
             print("  [FK] contacts:", data.num_contacts)
 
-        # 3. Compute cdof (spatial motion axes per DOF)
+        # 3a. Compute subtree CoM (MuJoCo mj_comPos)
+        var stcom_tmp = List[Scalar[DTYPE]](capacity=NBODY * 3)
+        for _ in range(NBODY * 3):
+            stcom_tmp.append(Scalar[DTYPE](0))
+        compute_subtree_com(model, data, stcom_tmp)
+        for sc_i in range(NBODY * 3):
+            data.subtree_com[sc_i] = stcom_tmp[sc_i]
+        data.has_subtree_com = True
+
+        # 3b. Compute cdof (spatial motion axes per DOF)
         var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
         for _ in range(CDOF_SIZE):
             cdof.append(Scalar[DTYPE](0))
-        compute_cdof(model, data, cdof)
+        compute_cdof(model, data, cdof, stcom_tmp)
 
         # 4. Compute composite rigid body inertia
         var crb = List[Scalar[DTYPE]](capacity=CRB_SIZE)
@@ -697,6 +708,15 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
             MODEL_SIZE,
             BATCH,
             NGEOM,
+            MAX_EQUALITY,
+            MAX_TENDON,
+            NSITE,
+        ](env, state, model)
+
+        # 3a. Compute subtree_com
+        compute_subtree_com_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+            STATE_SIZE, MODEL_SIZE, BATCH,
         ](env, state, model)
 
         # 4. Compute cdof

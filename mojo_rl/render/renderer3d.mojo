@@ -1,7 +1,8 @@
 """GPU-Accelerated 3D Renderer.
 
-Uses SDL3's GPU API with Metal (MSL shaders) for true 3D rendering
-with Blinn-Phong lighting, depth buffering, and procedural checkerboard ground.
+Uses SDL3's GPU API with cross-platform shaders (MSL on Metal, SPIR-V on Vulkan)
+for true 3D rendering with Blinn-Phong lighting, depth buffering, and procedural
+checkerboard ground.
 """
 
 from std.memory import UnsafePointer, memcpy, alloc
@@ -12,6 +13,7 @@ from mojo_rl.math3d import (
     Mat4 as Mat4Generic,
 )
 from std.ffi import _get_dylib_function
+from std.sys import CompilationTarget
 from .sdl import (
     Ptr,
     lib,
@@ -157,17 +159,23 @@ from .gpu_types import (
     MeshData,
     MeshHandle,
     CapsuleCacheEntry,
+    MeshCacheEntry,
+    TextureCacheEntry,
     SolidDrawCommand,
     mat4_to_gpu_f32,
-    perspective_metal,
-    ortho_metal,
+    perspective_projection,
+    ortho_projection,
     color_to_vec4,
     make_identity_f32,
 )
+from .sdl.sdl_keyboard import get_mod_state
+from .sdl.sdl_keycode import Keymod
+from .stl_loader import load_stl
 from .gpu_mesh import (
     generate_sphere,
     generate_box,
     generate_capsule,
+    generate_cylinder,
     generate_ground,
 )
 from .gpu_shaders import (
@@ -186,6 +194,8 @@ from .gpu_shaders import (
     TEXT_FRAGMENT_MSL,
 )
 from .font_atlas import build_font_atlas_r8, glyph_uv
+from .png_loader import load_png, TextureData
+from .gpu_shaders_spirv import load_spirv_shaders, SPIRVShaders
 
 comptime Vec3 = Vec3Generic[DType.float64]
 comptime Quat = QuatGeneric[DType.float64]
@@ -240,8 +250,8 @@ struct LineColorEntry(Copyable, Movable):
 struct Renderer3D(Movable):
     """GPU-accelerated 3D renderer using SDL3 GPU API.
 
-    Uses Metal (MSL) shaders for Blinn-Phong lit solid rendering with
-    procedural checkerboard ground and flat-color line drawing.
+    Uses Metal (MSL) or Vulkan (SPIR-V) shaders for Blinn-Phong lit solid
+    rendering with procedural checkerboard ground and flat-color line drawing.
     """
 
     # SDL3 handles
@@ -270,6 +280,13 @@ struct Renderer3D(Movable):
     var box_mesh: MeshHandle
     var ground_mesh: MeshHandle
     var capsule_cache: List[CapsuleCacheEntry]
+    var cylinder_cache: List[CapsuleCacheEntry]  # Same cache type (radius, half_height)
+    var mesh_cache: List[MeshCacheEntry]
+
+    # Texture cache for PNG textures
+    var texture_cache: List[TextureCacheEntry]
+    var default_texture: Ptr[GPUTexture, MutAnyOrigin]  # 1x1 white
+    var default_tex_sampler: Ptr[GPUSampler, MutAnyOrigin]
 
     # Dynamic line buffer
     var line_vertex_data: List[Float32]  # x,y,z per vertex
@@ -293,6 +310,7 @@ struct Renderer3D(Movable):
     var solid_draws: List[SolidDrawCommand]
     var ground_uniforms: ObjectUniforms
     var has_ground: Bool
+    var ground_texture_idx: Int  # -1 = no texture (use checker/solid)
 
     # Camera and scene
     var camera: Camera3D
@@ -316,6 +334,11 @@ struct Renderer3D(Movable):
     var should_quit: Bool
     var draw_grid: Bool
     var draw_axes: Bool
+
+    # Visual settings from MuJoCo <visual> section
+    var shadow_size: Int  # shadow map resolution (default 4096)
+    var fog_start: Float32  # fog start distance
+    var fog_end: Float32  # fog end distance
 
     # Camera switching (set by check_quit, read by ModelRenderer)
     var camera_switch_request: Int  # -1 = none, 0-8 = switch to camera N
@@ -357,6 +380,9 @@ struct Renderer3D(Movable):
         light_color_g: Float32 = 0.98,
         light_color_b: Float32 = 0.95,
         light_ambient: Float32 = 0.25,
+        shadow_size: Int = 4096,
+        fog_start: Float32 = 0.0,
+        fog_end: Float32 = 0.0,
     ) raises:
         self.width = width
         self.height = height
@@ -412,6 +438,13 @@ struct Renderer3D(Movable):
         self.box_mesh = MeshHandle()
         self.ground_mesh = MeshHandle()
         self.capsule_cache = List[CapsuleCacheEntry]()
+        self.cylinder_cache = List[CapsuleCacheEntry]()
+        self.mesh_cache = List[MeshCacheEntry]()
+
+        # Texture cache
+        self.texture_cache = List[TextureCacheEntry]()
+        self.default_texture = Ptr[GPUTexture, MutAnyOrigin]()
+        self.default_tex_sampler = Ptr[GPUSampler, MutAnyOrigin]()
 
         # Line data
         self.line_vertex_data = List[Float32]()
@@ -421,10 +454,16 @@ struct Renderer3D(Movable):
         self.solid_draws = List[SolidDrawCommand]()
         self.ground_uniforms = ObjectUniforms()
         self.has_ground = False
+        self.ground_texture_idx = -1
 
         self.scene_uniforms = SceneUniforms()
         self.skybox_uniforms = SkyboxUniforms()
         self.draw_skybox = False
+
+        # Visual settings
+        self.shadow_size = shadow_size
+        self.fog_start = fog_start
+        self.fog_end = fog_end
 
         # Store configurable light parameters (up to 4 lights)
         self.camera_switch_request = -1
@@ -478,6 +517,11 @@ struct Renderer3D(Movable):
         self.box_mesh = take.box_mesh^
         self.ground_mesh = take.ground_mesh^
         self.capsule_cache = take.capsule_cache^
+        self.cylinder_cache = take.cylinder_cache^
+        self.mesh_cache = take.mesh_cache^
+        self.texture_cache = take.texture_cache^
+        self.default_texture = take.default_texture
+        self.default_tex_sampler = take.default_tex_sampler
         self.line_vertex_data = take.line_vertex_data^
         self.line_colors = take.line_colors^
         self.line_vertex_buffer = take.line_vertex_buffer
@@ -493,6 +537,7 @@ struct Renderer3D(Movable):
         self.solid_draws = take.solid_draws^
         self.ground_uniforms = take.ground_uniforms
         self.has_ground = take.has_ground
+        self.ground_texture_idx = take.ground_texture_idx
         self.camera = take.camera^
         self.width = take.width
         self.height = take.height
@@ -502,6 +547,9 @@ struct Renderer3D(Movable):
         self.draw_skybox = take.draw_skybox
         self.swapchain_format = take.swapchain_format
         self.lights = take.lights^
+        self.shadow_size = take.shadow_size
+        self.fog_start = take.fog_start
+        self.fog_end = take.fog_end
         self.camera_switch_request = take.camera_switch_request
         self.mouse_left_down = take.mouse_left_down
         self.mouse_right_down = take.mouse_right_down
@@ -519,6 +567,16 @@ struct Renderer3D(Movable):
         self.draw_grid = take.draw_grid
         self.draw_axes = take.draw_axes
 
+    @staticmethod
+    def _shader_format() -> GPUShaderFormat:
+        """Return the shader format for the current platform."""
+        comptime if CompilationTarget.is_macos():
+            return GPUShaderFormat.GPU_SHADERFORMAT_MSL
+        elif CompilationTarget.is_linux():
+            return GPUShaderFormat.GPU_SHADERFORMAT_SPIRV
+        else:
+            comptime assert False, "Unsupported platform for Renderer3D"
+
     def init(mut self, mut title: String) raises:
         """Initialize SDL3, GPU device, pipelines, and static meshes."""
         # 1. Init SDL3
@@ -529,8 +587,7 @@ struct Renderer3D(Movable):
             title, c_int(self.width), c_int(self.height), WindowFlags(0)
         )
 
-        # 3. Create GPU device (MSL shaders, debug mode)
-        # Must pass NULL (not empty string) for driver name to auto-select
+        # 3. Create GPU device (MSL on macOS, SPIR-V on Linux)
         self.device = _get_dylib_function[
             lib,
             "SDL_CreateGPUDevice",
@@ -538,7 +595,7 @@ struct Renderer3D(Movable):
                 GPUShaderFormat, Bool, Ptr[c_char, ImmutAnyOrigin]
             ) -> Ptr[GPUDevice, MutAnyOrigin],
         ]()(
-            GPUShaderFormat.GPU_SHADERFORMAT_MSL,
+            Self._shader_format(),
             True,
             Ptr[c_char, ImmutAnyOrigin](),  # NULL = auto-select driver
         )
@@ -569,9 +626,12 @@ struct Renderer3D(Movable):
         # 11. Create text rendering resources (font atlas, pipeline, buffers)
         self._create_text_resources()
 
+        # 12. Create default 1x1 white texture for untextured objects
+        self._create_default_texture()
+
         self.initialized = True
 
-    def _create_shader(
+    def _create_shader_msl(
         self,
         source: String,
         stage: GPUShaderStage,
@@ -598,6 +658,53 @@ struct Renderer3D(Movable):
 
         return create_gpu_shader(self.device, Ptr(to=info))
 
+    def _create_shader_spirv(
+        self,
+        spirv_data: List[UInt8],
+        stage: GPUShaderStage,
+        num_uniform_buffers: UInt32,
+        num_samplers: UInt32 = 0,
+    ) raises -> Ptr[GPUShader, MutAnyOrigin]:
+        """Create a shader from pre-compiled SPIR-V bytecode."""
+        var ep = String("main")
+
+        var info = GPUShaderCreateInfo(
+            code_size=UInt(len(spirv_data)),
+            code=spirv_data.unsafe_ptr(),
+            entrypoint=ep.as_c_string_slice().unsafe_ptr(),
+            format=GPUShaderFormat.GPU_SHADERFORMAT_SPIRV,
+            stage=stage,
+            num_samplers=num_samplers,
+            num_storage_textures=0,
+            num_storage_buffers=0,
+            num_uniform_buffers=num_uniform_buffers,
+            props=PropertiesID(0),
+        )
+
+        return create_gpu_shader(self.device, Ptr(to=info))
+
+    def _create_shader(
+        self,
+        msl_source: String,
+        msl_entrypoint: String,
+        spirv_data: List[UInt8],
+        stage: GPUShaderStage,
+        num_uniform_buffers: UInt32,
+        num_samplers: UInt32 = 0,
+    ) raises -> Ptr[GPUShader, MutAnyOrigin]:
+        """Create shader using MSL on macOS or SPIR-V on Linux."""
+        comptime if CompilationTarget.is_macos():
+            return self._create_shader_msl(
+                msl_source, stage, num_uniform_buffers,
+                msl_entrypoint, num_samplers,
+            )
+        elif CompilationTarget.is_linux():
+            return self._create_shader_spirv(
+                spirv_data, stage, num_uniform_buffers, num_samplers,
+            )
+        else:
+            comptime assert False, "Unsupported platform for Renderer3D"
+
     def _no_stencil_op(self) -> GPUStencilOpState:
         """Return a zeroed-out stencil op state."""
         return GPUStencilOpState(
@@ -607,21 +714,33 @@ struct Renderer3D(Movable):
             compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
         )
 
+    @staticmethod
+    def _load_spirv() raises -> SPIRVShaders:
+        """Load SPIR-V shaders on Linux, return empty on macOS."""
+        comptime if CompilationTarget.is_linux():
+            return load_spirv_shaders()
+        else:
+            return SPIRVShaders(
+                List[UInt8](), List[UInt8](), List[UInt8](), List[UInt8](),
+                List[UInt8](), List[UInt8](), List[UInt8](), List[UInt8](),
+                List[UInt8](), List[UInt8](), List[UInt8](), List[UInt8](),
+                List[UInt8](),
+            )
+
     def _create_pipelines(mut self) raises:
         """Create solid, ground, line, shadow, and reflection GPU pipelines."""
+        var spv = Self._load_spirv()
+
         # --- Solid pipeline ---
         var solid_vs = self._create_shader(
-            SOLID_VERTEX_MSL,
+            SOLID_VERTEX_MSL, String("solid_vertex"), spv.solid_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
-            entrypoint=String("solid_vertex"),
         )
         var solid_fs = self._create_shader(
-            SOLID_FRAGMENT_MSL,
+            SOLID_FRAGMENT_MSL, String("solid_fragment"), spv.solid_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=2,
-            entrypoint=String("solid_fragment"),
-            num_samplers=1,
+            num_uniform_buffers=2, num_samplers=2,
         )
 
         # Vertex input - allocate attributes contiguously on heap
@@ -731,17 +850,14 @@ struct Renderer3D(Movable):
 
         # --- Ground pipeline (alpha blend for distance fade) ---
         var ground_vs = self._create_shader(
-            GROUND_VERTEX_MSL,
+            GROUND_VERTEX_MSL, String("ground_vertex"), spv.ground_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
-            entrypoint=String("ground_vertex"),
         )
         var ground_fs = self._create_shader(
-            GROUND_FRAGMENT_MSL,
+            GROUND_FRAGMENT_MSL, String("ground_fragment"), spv.ground_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=2,
-            entrypoint=String("ground_fragment"),
-            num_samplers=1,
+            num_uniform_buffers=2, num_samplers=2,
         )
 
         var ground_ct = GPUColorTargetDescription(
@@ -850,16 +966,14 @@ struct Renderer3D(Movable):
 
         # --- Line pipeline ---
         var line_vs = self._create_shader(
-            LINE_VERTEX_MSL,
+            LINE_VERTEX_MSL, String("line_vertex"), spv.line_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=1,
-            entrypoint=String("line_vertex"),
         )
         var line_fs = self._create_shader(
-            LINE_FRAGMENT_MSL,
+            LINE_FRAGMENT_MSL, String("line_fragment"), spv.line_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=1,
-            entrypoint=String("line_fragment"),
         )
 
         var line_ct = GPUColorTargetDescription(
@@ -955,16 +1069,14 @@ struct Renderer3D(Movable):
 
         # --- Shadow pipeline (depth-only, from light POV) ---
         var shadow_vs = self._create_shader(
-            SHADOW_VERTEX_MSL,
+            SHADOW_VERTEX_MSL, String("shadow_vertex"), spv.shadow_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
-            entrypoint=String("shadow_vertex"),
         )
         var shadow_fs = self._create_shader(
-            SHADOW_FRAGMENT_MSL,
+            SHADOW_FRAGMENT_MSL, String("shadow_fragment"), spv.shadow_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=0,
-            entrypoint=String("shadow_fragment"),
         )
 
         # Shadow uses same vertex layout as solid
@@ -1058,19 +1170,16 @@ struct Renderer3D(Movable):
 
         # --- Reflection pipeline (alpha-blended, front-cull, no depth write) ---
         var refl_fs = self._create_shader(
-            REFLECTION_FRAGMENT_MSL,
+            REFLECTION_FRAGMENT_MSL, String("reflection_fragment"),
+            spv.reflection_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=1,
-            entrypoint=String("reflection_fragment"),
         )
-
-        # Reuse solid_vs for reflection (same vertex output struct)
-        # Need a second reference - create another shader
+        # Reuse solid vertex shader for reflection (same vertex output struct)
         var refl_vs = self._create_shader(
-            SOLID_VERTEX_MSL,
+            SOLID_VERTEX_MSL, String("solid_vertex"), spv.solid_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
-            entrypoint=String("solid_vertex"),
         )
 
         var refl_ct = GPUColorTargetDescription(
@@ -1179,16 +1288,14 @@ struct Renderer3D(Movable):
 
         # --- Skybox pipeline (fullscreen gradient, no depth write, no vertex input) ---
         var skybox_vs = self._create_shader(
-            SKYBOX_VERTEX_MSL,
+            SKYBOX_VERTEX_MSL, String("skybox_vertex"), spv.skybox_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=0,
-            entrypoint=String("skybox_vertex"),
         )
         var skybox_fs = self._create_shader(
-            SKYBOX_FRAGMENT_MSL,
+            SKYBOX_FRAGMENT_MSL, String("skybox_fragment"), spv.skybox_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=1,
-            entrypoint=String("skybox_fragment"),
         )
 
         var skybox_ct = GPUColorTargetDescription(
@@ -1315,8 +1422,8 @@ struct Renderer3D(Movable):
             format=GPUTextureFormat.GPU_TEXTUREFORMAT_D32_FLOAT,
             usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET
             | GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER,
-            width=1024,
-            height=1024,
+            width=UInt32(self.shadow_size),
+            height=UInt32(self.shadow_size),
             layer_count_or_depth=1,
             num_levels=1,
             sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
@@ -1549,18 +1656,16 @@ struct Renderer3D(Movable):
         self.font_sampler = create_gpu_sampler(self.device, Ptr(to=samp_info))
 
         # --- 3. Create text pipeline ---
+        var spv = Self._load_spirv()
         var text_vs = self._create_shader(
-            TEXT_VERTEX_MSL,
+            TEXT_VERTEX_MSL, String("text_vertex"), spv.text_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=1,
-            entrypoint=String("text_vertex"),
         )
         var text_fs = self._create_shader(
-            TEXT_FRAGMENT_MSL,
+            TEXT_FRAGMENT_MSL, String("text_fragment"), spv.text_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=0,
-            entrypoint=String("text_fragment"),
-            num_samplers=1,
+            num_uniform_buffers=0, num_samplers=1,
         )
 
         var text_buf_desc = GPUVertexBufferDescription(
@@ -1733,6 +1838,190 @@ struct Renderer3D(Movable):
         submit_gpu_command_buffer(idx_cmd)
         release_gpu_transfer_buffer(self.device, idx_tb)
 
+    def _create_default_texture(mut self) raises:
+        """Create a 1x1 white RGBA8 texture as default for untextured objects."""
+        # Create 1x1 RGBA8 texture
+        var tex_info = GPUTextureCreateInfo(
+            type=GPUTextureType.GPU_TEXTURETYPE_2D,
+            format=GPUTextureFormat.GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER,
+            width=1,
+            height=1,
+            layer_count_or_depth=1,
+            num_levels=1,
+            sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+            props=PropertiesID(0),
+        )
+        self.default_texture = create_gpu_texture(
+            self.device, Ptr(to=tex_info)
+        )
+
+        # Upload 1x1 white pixel via transfer buffer
+        var tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=4,  # 4 bytes: RGBA
+            props=PropertiesID(0),
+        )
+        var tb = create_gpu_transfer_buffer(self.device, Ptr(to=tb_info))
+        var mapped = map_gpu_transfer_buffer(self.device, tb, False)
+        var mapped_u8 = mapped.bitcast[UInt8]()
+        (mapped_u8 + 0)[] = UInt8(255)  # R
+        (mapped_u8 + 1)[] = UInt8(255)  # G
+        (mapped_u8 + 2)[] = UInt8(255)  # B
+        (mapped_u8 + 3)[] = UInt8(255)  # A
+        unmap_gpu_transfer_buffer(self.device, tb)
+
+        var cmd = acquire_gpu_command_buffer(self.device)
+        var cp = begin_gpu_copy_pass(cmd)
+        var src = GPUTextureTransferInfo(
+            transfer_buffer=tb,
+            offset=0,
+            pixels_per_row=1,
+            rows_per_layer=1,
+        )
+        var dst = GPUTextureRegion(
+            texture=self.default_texture,
+            mip_level=0,
+            layer=0,
+            x=0,
+            y=0,
+            z=0,
+            w=1,
+            h=1,
+            d=1,
+        )
+        upload_to_gpu_texture(cp, Ptr(to=src), Ptr(to=dst), False)
+        end_gpu_copy_pass(cp)
+        submit_gpu_command_buffer(cmd)
+        release_gpu_transfer_buffer(self.device, tb)
+
+        # Create LINEAR sampler with REPEAT address mode
+        var samp_info = GPUSamplerCreateInfo(
+            min_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mag_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mipmap_mode=GPUSamplerMipmapMode.GPU_SAMPLERMIPMAPMODE_NEAREST,
+            address_mode_u=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            address_mode_v=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            address_mode_w=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            mip_lod_bias=0.0,
+            max_anisotropy=1.0,
+            compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
+            min_lod=0.0,
+            max_lod=0.0,
+            enable_anisotropy=False,
+            enable_compare=False,
+            padding1=0,
+            padding2=0,
+            props=PropertiesID(0),
+        )
+        self.default_tex_sampler = create_gpu_sampler(
+            self.device, Ptr(to=samp_info)
+        )
+
+    def upload_texture(
+        mut self, name: String, texture_data: TextureData
+    ) raises -> Int:
+        """Upload a texture to GPU and cache it. Returns the cache index.
+
+        If a texture with the same name already exists, returns its index
+        without re-uploading.
+
+        Args:
+            name: Cache key for the texture.
+            texture_data: CPU-side RGBA8 pixel data.
+
+        Returns:
+            Index into self.texture_cache.
+        """
+        # Check cache
+        for i in range(len(self.texture_cache)):
+            if self.texture_cache[i].matches(name):
+                return i
+
+        var w = UInt32(texture_data.width)
+        var h = UInt32(texture_data.height)
+        var byte_size = UInt32(texture_data.byte_size())
+
+        # Create GPU texture
+        var tex_info = GPUTextureCreateInfo(
+            type=GPUTextureType.GPU_TEXTURETYPE_2D,
+            format=GPUTextureFormat.GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            usage=GPUTextureUsageFlags.GPU_TEXTUREUSAGE_SAMPLER,
+            width=w,
+            height=h,
+            layer_count_or_depth=1,
+            num_levels=1,
+            sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
+            props=PropertiesID(0),
+        )
+        var gpu_tex = create_gpu_texture(self.device, Ptr(to=tex_info))
+
+        # Upload via transfer buffer
+        var tb_info = GPUTransferBufferCreateInfo(
+            usage=GPUTransferBufferUsage.GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            size=byte_size,
+            props=PropertiesID(0),
+        )
+        var tb = create_gpu_transfer_buffer(self.device, Ptr(to=tb_info))
+        var mapped = map_gpu_transfer_buffer(self.device, tb, False)
+        var mapped_u8 = mapped.bitcast[UInt8]()
+        for i in range(Int(byte_size)):
+            (mapped_u8 + i)[] = texture_data.pixels[i]
+        unmap_gpu_transfer_buffer(self.device, tb)
+
+        var cmd = acquire_gpu_command_buffer(self.device)
+        var cp = begin_gpu_copy_pass(cmd)
+        var src = GPUTextureTransferInfo(
+            transfer_buffer=tb,
+            offset=0,
+            pixels_per_row=w,
+            rows_per_layer=h,
+        )
+        var dst = GPUTextureRegion(
+            texture=gpu_tex,
+            mip_level=0,
+            layer=0,
+            x=0,
+            y=0,
+            z=0,
+            w=w,
+            h=h,
+            d=1,
+        )
+        upload_to_gpu_texture(cp, Ptr(to=src), Ptr(to=dst), False)
+        end_gpu_copy_pass(cp)
+        submit_gpu_command_buffer(cmd)
+        release_gpu_transfer_buffer(self.device, tb)
+
+        # Create LINEAR sampler with REPEAT address mode
+        var samp_info = GPUSamplerCreateInfo(
+            min_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mag_filter=GPUFilter.GPU_FILTER_LINEAR,
+            mipmap_mode=GPUSamplerMipmapMode.GPU_SAMPLERMIPMAPMODE_NEAREST,
+            address_mode_u=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            address_mode_v=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            address_mode_w=GPUSamplerAddressMode.GPU_SAMPLERADDRESSMODE_REPEAT,
+            mip_lod_bias=0.0,
+            max_anisotropy=1.0,
+            compare_op=GPUCompareOp.GPU_COMPAREOP_ALWAYS,
+            min_lod=0.0,
+            max_lod=0.0,
+            enable_anisotropy=False,
+            enable_compare=False,
+            padding1=0,
+            padding2=0,
+            props=PropertiesID(0),
+        )
+        var tex_sampler = create_gpu_sampler(
+            self.device, Ptr(to=samp_info)
+        )
+
+        # Add to cache
+        self.texture_cache.append(
+            TextureCacheEntry(name, gpu_tex, tex_sampler, w, h)
+        )
+        return len(self.texture_cache) - 1
+
     # --- Public Drawing API ---
 
     def begin_frame(mut self):
@@ -1742,6 +2031,7 @@ struct Renderer3D(Movable):
         self.line_colors.clear()
         self.text_vertex_data.clear()
         self.has_ground = False
+        self.ground_texture_idx = -1
 
     def draw_text(
         mut self,
@@ -1827,8 +2117,10 @@ struct Renderer3D(Movable):
         specular: Float32 = 0.5,
         reflectance: Float32 = 0.0,
         emission: Float32 = 0.0,
-    ):
-        """Draw a solid sphere.
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+    ) raises:
+        """Draw a solid sphere, optionally textured.
 
         Args:
             center: Sphere center in world space.
@@ -1838,7 +2130,26 @@ struct Renderer3D(Movable):
             specular: Specular intensity (0-1).
             reflectance: Reflectance coefficient (0-1).
             emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
         """
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
         var model = Mat4.compose(
             center, Quat.identity(), Vec3(radius, radius, radius)
         )
@@ -1847,10 +2158,10 @@ struct Renderer3D(Movable):
         uniforms.color = color_to_vec4(color)
         uniforms.material[0] = shininess
         uniforms.material[1] = specular
-        uniforms.material[2] = reflectance
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
-        self.solid_draws.append(SolidDrawCommand(0, uniforms))
+        self.solid_draws.append(SolidDrawCommand(0, uniforms, texture_cache_idx=tex_idx))
 
     def draw_capsule(
         mut self,
@@ -1864,8 +2175,10 @@ struct Renderer3D(Movable):
         specular: Float32 = 0.5,
         reflectance: Float32 = 0.0,
         emission: Float32 = 0.0,
+        texture_name: String = String(""),
+        texture_path: String = String(""),
     ) raises:
-        """Draw a solid capsule.
+        """Draw a solid capsule, optionally textured.
 
         Args:
             center: Capsule center in world space.
@@ -1878,7 +2191,26 @@ struct Renderer3D(Movable):
             specular: Specular intensity (0-1).
             reflectance: Reflectance coefficient (0-1).
             emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
         """
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
         var f_radius = Float32(radius)
         var f_half = Float32(half_height)
 
@@ -1919,12 +2251,211 @@ struct Renderer3D(Movable):
         uniforms.color = color_to_vec4(color)
         uniforms.material[0] = shininess
         uniforms.material[1] = specular
-        uniforms.material[2] = reflectance
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
         self.solid_draws.append(
             SolidDrawCommand(
-                0, uniforms, is_capsule=True, capsule_cache_idx=cache_idx
+                0, uniforms, is_capsule=True, capsule_cache_idx=cache_idx,
+                texture_cache_idx=tex_idx,
+            )
+        )
+
+    def draw_cylinder(
+        mut self,
+        center: Vec3,
+        orientation: Quat,
+        radius: Float64,
+        half_height: Float64,
+        axis: Int = 2,
+        color: Color = Color(255, 255, 255, 255),
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+    ) raises:
+        """Draw a solid cylinder with flat disc caps, optionally textured.
+
+        Args:
+            center: Cylinder center in world space.
+            orientation: Cylinder orientation.
+            radius: Cylinder radius.
+            half_height: Half-height of the cylinder.
+            axis: Local axis (0=X, 1=Y, 2=Z).
+            color: Surface color.
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
+        """
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
+        var f_radius = Float32(radius)
+        var f_half = Float32(half_height)
+
+        # Look up or create cylinder mesh
+        var cache_idx = -1
+        for i in range(len(self.cylinder_cache)):
+            if self.cylinder_cache[i].matches(f_radius, f_half):
+                cache_idx = i
+                break
+
+        if cache_idx < 0:
+            var mesh_data = generate_cylinder(f_radius, f_half)
+            var handle = self._upload_mesh(mesh_data)
+            self.cylinder_cache.append(
+                CapsuleCacheEntry(f_radius, f_half, handle^)
+            )
+            cache_idx = len(self.cylinder_cache) - 1
+
+        # Build model matrix (same axis pre-rotation as capsule)
+        var pre_rot = Quat.identity()
+        if axis == 0:
+            pre_rot = Quat.from_axis_angle(Vec3.unit_y(), 1.5707963267949)
+        elif axis == 1:
+            pre_rot = Quat.from_axis_angle(Vec3.unit_x(), -1.5707963267949)
+
+        var final_quat = orientation
+        var model = Mat4.from_quat(final_quat, center) @ Mat4.from_quat(
+            pre_rot, Vec3.zero()
+        )
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(model)
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        # material.z > 0 tells the shader to sample the texture
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
+        uniforms.material[3] = emission
+
+        self.solid_draws.append(
+            SolidDrawCommand(
+                0, uniforms, is_cylinder=True, cylinder_cache_idx=cache_idx,
+                texture_cache_idx=tex_idx,
+            )
+        )
+
+    def draw_mesh(
+        mut self,
+        name: String,
+        file_path: String,
+        center: Vec3,
+        orientation: Quat,
+        scale: Vec3 = Vec3(1.0, 1.0, 1.0),
+        color: Color = Color(200, 200, 200, 255),
+        shininess: Float32 = 0.5,
+        specular: Float32 = 0.5,
+        reflectance: Float32 = 0.0,
+        emission: Float32 = 0.0,
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+    ) raises:
+        """Draw a solid mesh loaded from an STL file, optionally textured.
+
+        Meshes are cached by name — the STL file is only loaded and uploaded
+        on the first call for each unique name. Textures are also cached by name.
+
+        Args:
+            name: Cache key for the mesh (e.g. "gripper_link").
+            file_path: Path to the binary STL file.
+            center: Mesh center in world space.
+            orientation: Mesh orientation quaternion.
+            scale: Per-axis scale factors.
+            color: Surface color (modulates texture if present).
+            shininess: Specular exponent scaling (0-1).
+            specular: Specular intensity (0-1).
+            reflectance: Reflectance coefficient (0-1).
+            emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
+        """
+        # Look up or create mesh in cache
+        var cache_idx = -1
+        for i in range(len(self.mesh_cache)):
+            if self.mesh_cache[i].matches(name):
+                cache_idx = i
+                break
+
+        if cache_idx < 0:
+            # Load STL and upload to GPU
+            try:
+                var mesh_data = load_stl(file_path)
+                var handle = self._upload_mesh(mesh_data)
+                self.mesh_cache.append(MeshCacheEntry(name, handle^))
+                cache_idx = len(self.mesh_cache) - 1
+            except e:
+                # File not found or parse error — skip this mesh silently
+                return
+
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            # Check cache first (avoid reloading PNG every frame)
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(
+                        texture_name, tex_data
+                    )
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
+        # Build model matrix: rotation + translation, then apply scale
+        var rot_mat = Mat4.from_quat(orientation, center)
+        # Scale columns of the 3x3 rotation submatrix
+        rot_mat.m00 *= scale.x
+        rot_mat.m01 *= scale.x
+        rot_mat.m02 *= scale.x
+        rot_mat.m10 *= scale.y
+        rot_mat.m11 *= scale.y
+        rot_mat.m12 *= scale.y
+        rot_mat.m20 *= scale.z
+        rot_mat.m21 *= scale.z
+        rot_mat.m22 *= scale.z
+
+        var uniforms = ObjectUniforms()
+        uniforms.model = mat4_to_gpu_f32(rot_mat)
+        uniforms.color = color_to_vec4(color)
+        uniforms.material[0] = shininess
+        uniforms.material[1] = specular
+        # material.z > 0 tells the shader to sample the texture
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
+        uniforms.material[3] = emission
+
+        self.solid_draws.append(
+            SolidDrawCommand(
+                0,
+                uniforms,
+                is_mesh=True,
+                mesh_cache_idx=cache_idx,
+                texture_cache_idx=tex_idx,
             )
         )
 
@@ -1938,8 +2469,10 @@ struct Renderer3D(Movable):
         specular: Float32 = 0.5,
         reflectance: Float32 = 0.0,
         emission: Float32 = 0.0,
-    ):
-        """Draw a solid box.
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+    ) raises:
+        """Draw a solid box, optionally textured.
 
         Args:
             center: Box center in world space.
@@ -1950,7 +2483,26 @@ struct Renderer3D(Movable):
             specular: Specular intensity (0-1).
             reflectance: Reflectance coefficient (0-1).
             emission: Emissive intensity (0-1).
+            texture_name: Cache key for the texture (empty = no texture).
+            texture_path: Path to the PNG texture file (empty = no texture).
         """
+        # Load and cache texture if provided
+        var tex_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    tex_idx = ti
+                    break
+            if tex_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print("Loaded texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: texture load failed:", String(e))
+                    pass
+
         # Unit box is [-0.5, 0.5], so scale by 2 * half_extents
         var scale = Vec3(
             half_extents.x * 2.0,
@@ -1964,10 +2516,11 @@ struct Renderer3D(Movable):
         uniforms.color = color_to_vec4(color)
         uniforms.material[0] = shininess
         uniforms.material[1] = specular
-        uniforms.material[2] = reflectance
+        # material.z > 0 tells the shader to sample the texture
+        uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
-        self.solid_draws.append(SolidDrawCommand(1, uniforms))
+        self.solid_draws.append(SolidDrawCommand(1, uniforms, texture_cache_idx=tex_idx))
 
     def set_skybox(
         mut self,
@@ -2017,19 +2570,73 @@ struct Renderer3D(Movable):
         self.scene_uniforms.ground_params[1] = g
         self.scene_uniforms.ground_params[2] = b
 
+    def set_ground_solid_color(
+        mut self,
+        r: Float32 = 0.5,
+        g: Float32 = 0.5,
+        b: Float32 = 0.5,
+    ):
+        """Set ground to solid (non-checker) color.
+
+        Used when the plane geom has no associated checker texture.
+        Encoded as negative values in ground_params.xyz (shader checks sign).
+
+        Args:
+            r: Solid color red (0-1).
+            g: Solid color green (0-1).
+            b: Solid color blue (0-1).
+        """
+        self.scene_uniforms.ground_params[0] = -r
+        self.scene_uniforms.ground_params[1] = -g
+        self.scene_uniforms.ground_params[2] = -b
+
     def draw_ground_grid(
         mut self,
         center_x: Float64 = 0.0,
         size: Float64 = 10.0,
         height: Float64 = 0.0,
-    ):
-        """Draw the ground plane with procedural checkerboard.
+        texture_name: String = String(""),
+        texture_path: String = String(""),
+        texrepeat_u: Float64 = 1.0,
+        texrepeat_v: Float64 = 1.0,
+    ) raises:
+        """Draw the ground plane with procedural checkerboard or texture.
 
         Args:
             center_x: X-coordinate to center the ground on (for scrolling envs).
             size: Unused (ground mesh is pre-sized).
             height: Z-coordinate of the ground plane.
+            texture_name: Cache key for the ground texture (empty = checker/solid).
+            texture_path: Path to the PNG texture file (empty = checker/solid).
+            texrepeat_u: Texture repeat in U direction.
+            texrepeat_v: Texture repeat in V direction.
         """
+        # Load and cache ground texture if provided
+        self.ground_texture_idx = -1
+        if len(texture_name) > 0 and len(texture_path) > 0:
+            for ti in range(len(self.texture_cache)):
+                if self.texture_cache[ti].matches(texture_name):
+                    self.ground_texture_idx = ti
+                    break
+            if self.ground_texture_idx < 0:
+                try:
+                    var tex_data = load_png(texture_path)
+                    self.ground_texture_idx = self.upload_texture(
+                        texture_name, tex_data
+                    )
+                    print("Loaded ground texture '", texture_name, "':",
+                          tex_data.width, "x", tex_data.height)
+                except e:
+                    print("Warning: ground texture load failed:", String(e))
+                    pass
+
+        if self.ground_texture_idx >= 0:
+            # Signal texture mode: ground_params.z > 1.5 (colors are always 0-1)
+            # xy = texrepeat. Note: ground_params.w is reserved for ground_z
+            self.scene_uniforms.ground_params[0] = Float32(texrepeat_u)
+            self.scene_uniforms.ground_params[1] = Float32(texrepeat_v)
+            self.scene_uniforms.ground_params[2] = Float32(2.0)
+
         var model = Mat4.from_translation(Vec3(center_x, 0.0, height))
         self.ground_uniforms = ObjectUniforms()
         self.ground_uniforms.model = mat4_to_gpu_f32(model)
@@ -2106,7 +2713,7 @@ struct Renderer3D(Movable):
 
         self.line_colors.append(LineColorEntry(color))
 
-    def render_scene(mut self):
+    def render_scene(mut self) raises:
         """Render default scene elements (grid and axes)."""
         if self.draw_grid:
             self.draw_ground_grid()
@@ -2129,6 +2736,16 @@ struct Renderer3D(Movable):
             vb = self.capsule_cache[ci].mesh.vertex_buffer
             ib = self.capsule_cache[ci].mesh.index_buffer
             n_idx = self.capsule_cache[ci].mesh.num_indices
+        elif draw.is_cylinder:
+            var ci = draw.cylinder_cache_idx
+            vb = self.cylinder_cache[ci].mesh.vertex_buffer
+            ib = self.cylinder_cache[ci].mesh.index_buffer
+            n_idx = self.cylinder_cache[ci].mesh.num_indices
+        elif draw.is_mesh:
+            var mi = draw.mesh_cache_idx
+            vb = self.mesh_cache[mi].mesh.vertex_buffer
+            ib = self.mesh_cache[mi].mesh.index_buffer
+            n_idx = self.mesh_cache[mi].mesh.num_indices
         elif draw.mesh_idx == 0:
             vb = self.sphere_mesh.vertex_buffer
             ib = self.sphere_mesh.index_buffer
@@ -2152,7 +2769,7 @@ struct Renderer3D(Movable):
         """End frame: shadow pass, then main pass with reflections, ground, solids, lines, text.
         """
         # Update ortho projection for current window size
-        var ortho = ortho_metal(
+        var ortho = ortho_projection(
             0.0,
             Float64(self.width),
             Float64(self.height),
@@ -2265,7 +2882,7 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=light_scene).bitcast[NoneType](),
-                224,
+                240,
             )
 
             for i in range(len(self.solid_draws)):
@@ -2386,13 +3003,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
 
             for i in range(len(self.solid_draws)):
@@ -2429,13 +3046,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
@@ -2455,6 +3072,25 @@ struct Renderer3D(Movable):
             bind_gpu_fragment_samplers(
                 render_pass, 0, Ptr(to=shadow_binding), 1
             )
+
+            # Bind ground texture at fragment sampler slot 1
+            if self.ground_texture_idx >= 0:
+                var gti = self.ground_texture_idx
+                var gt_binding = GPUTextureSamplerBinding(
+                    texture=self.texture_cache[gti].texture,
+                    sampler=self.texture_cache[gti].sampler,
+                )
+                bind_gpu_fragment_samplers(
+                    render_pass, 1, Ptr(to=gt_binding), 1
+                )
+            else:
+                var gt_def_binding = GPUTextureSamplerBinding(
+                    texture=self.default_texture,
+                    sampler=self.default_tex_sampler,
+                )
+                bind_gpu_fragment_samplers(
+                    render_pass, 1, Ptr(to=gt_def_binding), 1
+                )
 
             var gvb = GPUBufferBinding(
                 buffer=self.ground_mesh.vertex_buffer, offset=0
@@ -2489,13 +3125,13 @@ struct Renderer3D(Movable):
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             push_gpu_fragment_uniform_data(
                 cmd_buf,
                 0,
                 Ptr(to=self.scene_uniforms).bitcast[NoneType](),
-                224,
+                240,
             )
             # Push shadow uniforms to fragment slot 1
             push_gpu_fragment_uniform_data(
@@ -2517,6 +3153,24 @@ struct Renderer3D(Movable):
                     Ptr(to=self.solid_draws[i].uniforms).bitcast[NoneType](),
                     96,
                 )
+                # Bind texture at fragment sampler slot 1
+                var ti = self.solid_draws[i].texture_cache_idx
+                if ti >= 0:
+                    var tex_binding = GPUTextureSamplerBinding(
+                        texture=self.texture_cache[ti].texture,
+                        sampler=self.texture_cache[ti].sampler,
+                    )
+                    bind_gpu_fragment_samplers(
+                        render_pass, 1, Ptr(to=tex_binding), 1
+                    )
+                else:
+                    var def_binding = GPUTextureSamplerBinding(
+                        texture=self.default_texture,
+                        sampler=self.default_tex_sampler,
+                    )
+                    bind_gpu_fragment_samplers(
+                        render_pass, 1, Ptr(to=def_binding), 1
+                    )
                 self._select_and_draw(render_pass, self.solid_draws[i])
 
         # ------------------------------------------------------------------
@@ -2746,7 +3400,7 @@ struct Renderer3D(Movable):
     def _build_scene_uniforms(mut self):
         """Build scene uniforms from current camera state."""
         var view = self.camera.get_view_matrix()
-        var proj = perspective_metal(
+        var proj = perspective_projection(
             self.camera.fov,
             self.camera.aspect,
             self.camera.near,
@@ -2822,6 +3476,10 @@ struct Renderer3D(Movable):
                     1.0 if light.cast_shadow else 0.0
                 )
 
+        # Fog params
+        self.scene_uniforms.fog_params[0] = self.fog_start
+        self.scene_uniforms.fog_params[1] = self.fog_end
+
     def _build_light_view_proj(mut self):
         """Build light's orthographic view-projection matrix for shadow mapping.
 
@@ -2863,7 +3521,7 @@ struct Renderer3D(Movable):
 
         # Orthographic projection covering the scene
         var ortho_size = 8.0
-        var light_proj = ortho_metal(
+        var light_proj = ortho_projection(
             -ortho_size,
             ortho_size,
             -ortho_size,
@@ -2889,9 +3547,9 @@ struct Renderer3D(Movable):
           S                      → save screenshot (screenshotNNNN.jpg)
           V                      → toggle video recording (recordingNNNN.mp4)
 
-        Mouse (left drag = orbit, right drag = pan, wheel = zoom):
-          Left-button drag       → orbit camera around target
-          Right-button drag      → pan camera (target + eye translate together)
+        Mouse (any button drag = orbit, Shift+drag = pan, wheel = zoom):
+          Button drag            → orbit camera around target
+          Shift + button drag    → pan camera (target + eye translate together)
           Scroll wheel           → zoom in/out
 
         Returns:
@@ -2900,83 +3558,94 @@ struct Renderer3D(Movable):
         self.camera_switch_request = -1
         self.step_once = False
         var event = Event()
+        var has_events = True
 
-        try:
-            while poll_event(Ptr(to=event)):
-                var event_type = event[UInt32]
+        while has_events:
+            try:
+                has_events = poll_event(Ptr(to=event))
+            except:
+                has_events = False
 
-                if EventType(event_type) == EventType.EVENT_QUIT:
+            if not has_events:
+                break
+
+            var event_type = event[UInt32]
+
+            if EventType(event_type) == EventType.EVENT_QUIT:
+                self.should_quit = True
+                return True
+
+            elif EventType(event_type) == EventType.EVENT_KEY_DOWN:
+                var key_event = event[KeyboardEvent]
+                var key_val = Int(key_event.key)
+                if key_val == Int(Keycode.SDLK_ESCAPE):
                     self.should_quit = True
                     return True
+                elif key_val >= 0x31 and key_val <= 0x39:
+                    # Number keys 1-9: SDLK_1=0x31 … SDLK_9=0x39
+                    self.camera_switch_request = key_val - 0x31
+                elif key_val == Int(Keycode.SDLK_SPACE):
+                    self.is_paused = not self.is_paused
+                elif key_val == Int(Keycode.SDLK_RIGHT):
+                    if self.is_paused:
+                        self.step_once = True
+                elif key_val == Int(Keycode.SDLK_R):
+                    self.camera.eye = self.default_eye
+                    self.camera.target = self.default_target
+                elif key_val == Int(Keycode.SDLK_S):
+                    self.screenshot_requested = True
+                elif key_val == Int(Keycode.SDLK_V):
+                    try:
+                        if self.recorder.is_recording:
+                            self.stop_recording()
+                        else:
+                            var fname = (
+                                "recording_"
+                                + String(self.screenshot_counter)
+                                + ".mp4"
+                            )
+                            self.start_recording(fname)
+                    except:
+                        pass
+            elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_DOWN:
+                # Track any button press (macOS trackpad intermittently
+                # misidentifies left as right, so treat all buttons same)
+                self.mouse_left_down = True
 
-                elif EventType(event_type) == EventType.EVENT_KEY_DOWN:
-                    var key_event = event[KeyboardEvent]
-                    var key_val = Int(key_event.key)
-                    if key_val == Int(Keycode.SDLK_ESCAPE):
-                        self.should_quit = True
-                        return True
-                    elif key_val >= 0x31 and key_val <= 0x39:
-                        # Number keys 1-9: SDLK_1=0x31 … SDLK_9=0x39
-                        self.camera_switch_request = key_val - 0x31
-                    elif key_val == Int(Keycode.SDLK_SPACE):
-                        self.is_paused = not self.is_paused
-                    elif key_val == Int(Keycode.SDLK_RIGHT):
-                        if self.is_paused:
-                            self.step_once = True
-                    elif key_val == Int(Keycode.SDLK_R):
-                        self.camera.eye = self.default_eye
-                        self.camera.target = self.default_target
-                    elif key_val == Int(Keycode.SDLK_S):
-                        self.screenshot_requested = True
-                    elif key_val == Int(Keycode.SDLK_V):
-                        try:
-                            if self.recorder.is_recording:
-                                self.stop_recording()
-                            else:
-                                var fname = (
-                                    "recording_"
-                                    + String(self.screenshot_counter)
-                                    + ".mp4"
-                                )
-                                self.start_recording(fname)
-                        except:
-                            pass
+            elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
+                self.mouse_left_down = False
 
-                elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_DOWN:
-                    var btn = event[MouseButtonEvent]
-                    if Int(btn.button) == 1:
-                        self.mouse_left_down = True
-                    elif Int(btn.button) == 3:
-                        self.mouse_right_down = True
-
-                elif EventType(event_type) == EventType.EVENT_MOUSE_BUTTON_UP:
-                    var btn = event[MouseButtonEvent]
-                    if Int(btn.button) == 1:
-                        self.mouse_left_down = False
-                    elif Int(btn.button) == 3:
-                        self.mouse_right_down = False
-
-                elif EventType(event_type) == EventType.EVENT_MOUSE_MOTION:
-                    var motion = event[MouseMotionEvent]
-                    var dx = Float64(motion.xrel)
-                    var dy = Float64(motion.yrel)
-                    if self.mouse_left_down:
-                        # Orbit: ~0.005 rad/px gives smooth rotation
-                        self.camera.orbit(dx * 0.005, dy * 0.005)
-                    elif self.mouse_right_down:
+            elif EventType(event_type) == EventType.EVENT_MOUSE_MOTION:
+                var motion = event[MouseMotionEvent]
+                var dx = Float64(motion.xrel)
+                var dy = Float64(motion.yrel)
+                if self.mouse_left_down:
+                    # Shift+drag = pan, plain drag = orbit
+                    var is_shift = False
+                    try:
+                        var mod = get_mod_state()
+                        is_shift = Int(mod) & Int(Keymod.KMOD_SHIFT) != 0
+                    except:
+                        pass
+                    if is_shift:
                         # Pan: scale by distance so speed feels constant
                         var dist = (
                             self.camera.eye - self.camera.target
                         ).length()
                         var scale = dist * 0.002
                         self.camera.pan(-dx * scale, -dy * scale)
+                    else:
+                        # Orbit: ~0.005 rad/px gives smooth rotation
+                        self.camera.orbit(dx * 0.005, dy * 0.005)
+                    if self.has_ground:
+                        self.camera.clamp_above_ground(self.ground_z)
 
-                elif EventType(event_type) == EventType.EVENT_MOUSE_WHEEL:
-                    var wheel = event[MouseWheelEvent]
-                    # Scroll up (positive y) = zoom in (move eye closer)
-                    self.camera.zoom(-Float64(wheel.y) * 0.5)
-        except:
-            pass
+            elif EventType(event_type) == EventType.EVENT_MOUSE_WHEEL:
+                var wheel = event[MouseWheelEvent]
+                # Scroll up (positive y) = zoom in (move eye closer)
+                self.camera.zoom(-Float64(wheel.y) * 0.5)
+                if self.has_ground:
+                    self.camera.clamp_above_ground(self.ground_z)
 
         return self.should_quit
 
@@ -3054,6 +3723,25 @@ struct Renderer3D(Movable):
             release_gpu_buffer(
                 self.device, self.capsule_cache[i].mesh.index_buffer
             )
+
+        # Release STL mesh cache
+        for i in range(len(self.mesh_cache)):
+            release_gpu_buffer(
+                self.device, self.mesh_cache[i].mesh.vertex_buffer
+            )
+            release_gpu_buffer(
+                self.device, self.mesh_cache[i].mesh.index_buffer
+            )
+
+        # Release texture cache
+        for i in range(len(self.texture_cache)):
+            release_gpu_texture(self.device, self.texture_cache[i].texture)
+            release_gpu_sampler(self.device, self.texture_cache[i].sampler)
+
+        # Release default texture resources
+        if self.default_texture:
+            release_gpu_texture(self.device, self.default_texture)
+            release_gpu_sampler(self.device, self.default_tex_sampler)
 
         # Release static mesh buffers
         release_gpu_buffer(self.device, self.sphere_mesh.vertex_buffer)

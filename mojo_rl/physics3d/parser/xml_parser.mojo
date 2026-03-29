@@ -52,6 +52,7 @@ struct ParsedModel:
     var NCAM: Int  # number of <camera> entries in <worldbody>
     var NSITE: Int  # number of <site> entries in <worldbody>
     var NEQ: Int  # number of equality constraints (<weld> + <connect> in <equality>)
+    var NEXCLUDE: Int  # number of <exclude> entries in <contact>
     var ANGLE_DEG: Bool  # True when <compiler angle="degree"/>
     var TIMESTEP: Float64  # <option timestep="..."/>
 
@@ -69,6 +70,7 @@ struct ParsedModel:
         ncam: Int = 0,
         nsite: Int = 0,
         neq: Int = 0,
+        nexclude: Int = 0,
         angle_deg: Bool = False,
         timestep: Float64 = 0.01,
     ):
@@ -84,6 +86,7 @@ struct ParsedModel:
         self.NCAM = ncam
         self.NSITE = nsite
         self.NEQ = neq
+        self.NEXCLUDE = nexclude
         self.ANGLE_DEG = angle_deg
         self.TIMESTEP = timestep
 
@@ -228,24 +231,38 @@ def _extract_attr(tag: String, attr: String) -> String:
     """Extract value from attr="value" or attr='value' in a tag string.
 
     Returns "" if not found.
+    Matches standalone attribute names only (preceded by space/tab/newline),
+    avoiding substring matches like "contype" when searching for "type".
     """
     # Try double-quoted form: attr="..."
     var search_dq = attr + '="'
+    var search_len = len(search_dq)
     var pos = tag.find(search_dq)
-    if pos != -1:
-        var val_start = pos + len(search_dq)
-        var val_end = tag.find('"', val_start)
-        if val_end != -1:
-            return String(tag[byte=val_start:val_end])
+    while pos != -1:
+        # Ensure standalone match: char before must be space/tab/newline
+        if pos == 0 or _is_attr_separator(String(tag[byte = pos - 1 : pos])):
+            var val_start = pos + search_len
+            var val_end = tag.find('"', val_start)
+            if val_end != -1:
+                return String(tag[byte=val_start:val_end])
+        pos = tag.find(search_dq, pos + 1)
     # Try single-quoted form: attr='...'
     var search_sq = attr + "='"
+    var search_sq_len = len(search_sq)
     pos = tag.find(search_sq)
-    if pos != -1:
-        var val_start = pos + len(search_sq)
-        var val_end = tag.find("'", val_start)
-        if val_end != -1:
-            return String(tag[byte=val_start:val_end])
+    while pos != -1:
+        if pos == 0 or _is_attr_separator(String(tag[byte = pos - 1 : pos])):
+            var val_start = pos + search_sq_len
+            var val_end = tag.find("'", val_start)
+            if val_end != -1:
+                return String(tag[byte=val_start:val_end])
+        pos = tag.find(search_sq, pos + 1)
     return String("")
+
+
+def _is_attr_separator(c: String) -> Bool:
+    """Check if character is a valid separator before an attribute name."""
+    return c == " " or c == "\t" or c == "\n" or c == "\r"
 
 
 def _digit_value(c: String) -> Int:
@@ -776,6 +793,368 @@ def _xml_default_motor_ctrlrange[xml: String]() -> Tuple[Float64, Float64]:
     return (-1.0, 1.0)
 
 
+def _xml_nth_fixed_tag[xml: String, n: Int]() -> String:
+    """Return the XML tag string for the Nth <fixed> tendon, or empty if absent."""
+    var sec = _extract_section(xml, "tendon")
+    if len(sec) == 0:
+        return ""
+    var pos = 0
+    for i in range(n + 1):
+        var t = sec.find("<fixed", pos)
+        if t == -1:
+            return ""
+        if i == n:
+            var end = sec.find("</fixed>", t)
+            if end == -1:
+                end = sec.find("/>", t)
+                if end == -1:
+                    return ""
+                return String(sec[byte = t : end + 2])
+            return String(sec[byte = t : end + 8])
+        pos = t + 6
+    return ""
+
+
+def _xml_fixed_tendon_njoints[xml: String, n: Int]() -> Int:
+    """Return number of joints in the Nth fixed tendon (0 if absent)."""
+    var tag = _xml_nth_fixed_tag[xml, n]()
+    if len(tag) == 0:
+        return 0
+    var count = 0
+    var pos = 0
+    while True:
+        var t = tag.find("<joint", pos)
+        if t == -1:
+            break
+        count += 1
+        pos = t + 6
+    return count
+
+
+def _xml_fixed_tendon_joint_name[xml: String, n: Int, j: Int]() -> String:
+    """Return the joint name of the Jth joint in the Nth fixed tendon."""
+    var tag = _xml_nth_fixed_tag[xml, n]()
+    if len(tag) == 0:
+        return ""
+    var pos = 0
+    for i in range(j + 1):
+        var t = tag.find("<joint", pos)
+        if t == -1:
+            return ""
+        if i == j:
+            var end = tag.find(">", t)
+            if end == -1:
+                return ""
+            var jtag = String(tag[byte = t : end + 1])
+            return _extract_attr(jtag, "joint")
+        pos = t + 6
+    return ""
+
+
+def _xml_fixed_tendon_coef[xml: String, n: Int, j: Int]() -> Float64:
+    """Return the coefficient of the Jth joint in the Nth fixed tendon."""
+    var tag = _xml_nth_fixed_tag[xml, n]()
+    if len(tag) == 0:
+        return 0.0
+    var pos = 0
+    for i in range(j + 1):
+        var t = tag.find("<joint", pos)
+        if t == -1:
+            return 0.0
+        if i == j:
+            var end = tag.find(">", t)
+            if end == -1:
+                return 0.0
+            var jtag = String(tag[byte = t : end + 1])
+            var cs = _extract_attr(jtag, "coef")
+            if len(cs) > 0:
+                return _parse_float(cs)
+            return 0.0
+        pos = t + 6
+    return 0.0
+
+
+# =============================================================================
+# merge_mjcf — comptime XML merge following MuJoCo <include> semantics
+# =============================================================================
+
+
+def _extract_section_inner(xml: String, tag: String) -> String:
+    """Return the inner content of <tag ...>...</tag>, excluding the outermost tags.
+
+    Handles nested same-name tags (e.g., <default><default class="x">...</default></default>)
+    by depth-counting. Handles multiple top-level occurrences by concatenating.
+    """
+    var result = String("")
+    var open_marker = "<" + tag
+    var close_marker = "</" + tag + ">"
+    var scan = 0
+    while True:
+        var start = xml.find(open_marker, scan)
+        if start == -1:
+            break
+        # Verify it's a real tag (not a substring match)
+        var after_pos = start + len(open_marker)
+        if after_pos < len(xml):
+            var after_ch = String(xml[byte=after_pos : after_pos + 1])
+            if after_ch != " " and after_ch != ">" and after_ch != "/" and after_ch != "\n" and after_ch != "\t":
+                scan = after_pos
+                continue
+        # Find end of opening tag
+        var tag_end = xml.find(">", start)
+        if tag_end == -1:
+            break
+        var inner_start = tag_end + 1
+        # Find matching closing tag (depth-counted)
+        var depth = 1
+        var search_pos = inner_start
+        while depth > 0:
+            var next_open = xml.find(open_marker, search_pos)
+            var next_close = xml.find(close_marker, search_pos)
+            if next_close == -1:
+                break
+            # Check if next_open is a real tag
+            if next_open != -1 and next_open < next_close:
+                var np = next_open + len(open_marker)
+                if np < len(xml):
+                    var nc = String(xml[byte=np : np + 1])
+                    if nc == " " or nc == ">" or nc == "/" or nc == "\n" or nc == "\t":
+                        depth += 1
+                search_pos = next_open + len(open_marker)
+            else:
+                depth -= 1
+                if depth == 0:
+                    result = result + String(xml[byte=inner_start:next_close]) + "\n"
+                    scan = next_close + len(close_marker)
+                else:
+                    search_pos = next_close + len(close_marker)
+        if depth > 0:
+            break  # Unmatched tags
+    return result
+
+
+def _extract_singleton_tag(xml: String, tag: String) -> String:
+    """Extract a self-closing singleton tag like <option .../> or <compiler .../>.
+
+    Returns the full tag string (including < and >) or empty if not found.
+    """
+    var marker = "<" + tag
+    var pos = xml.find(marker)
+    if pos == -1:
+        return String("")
+    var end = xml.find(">", pos)
+    if end == -1:
+        return String("")
+    return String(xml[byte=pos : end + 1])
+
+
+def _merge_singleton_attrs(tags: List[String], tag_name: String) -> String:
+    """Merge attributes from multiple singleton tags. Last value wins per attr.
+
+    Input: list of tag strings like ['<option a="1" b="2"/>', '<option b="3"/>']
+    Output: '<option a="1" b="3"/>'
+    """
+    # Collect all unique attribute names and their last values
+    var attr_names = List[String]()
+    var attr_values = List[String]()
+
+    for t_idx in range(len(tags)):
+        var tag = tags[t_idx]
+        if len(tag) == 0:
+            continue
+        # Find the attributes region (after tag name, before > or />)
+        var space = tag.find(" ")
+        if space == -1:
+            continue
+        var end = tag.find("/>")
+        if end == -1:
+            end = tag.find(">")
+        if end == -1:
+            continue
+        var attrs_str = String(tag[byte=space:end])
+
+        # Parse attr="value" pairs
+        var scan = 0
+        var alen = len(attrs_str)
+        while scan < alen:
+            var eq = attrs_str.find("=", scan)
+            if eq == -1:
+                break
+            # Find attr name (walk back from = to find start)
+            var name_end = eq
+            var name_start = name_end - 1
+            while name_start >= 0:
+                var ch = String(attrs_str[byte=name_start:name_start + 1])
+                if ch == " " or ch == "\n" or ch == "\t":
+                    break
+                name_start -= 1
+            name_start += 1
+            var attr_name = _trim(String(attrs_str[byte=name_start:name_end]))
+
+            # Find value (between quotes)
+            var q1 = attrs_str.find('"', eq + 1)
+            if q1 == -1:
+                q1 = attrs_str.find("'", eq + 1)
+            if q1 == -1:
+                break
+            var quote_char = String(attrs_str[byte=q1:q1 + 1])
+            var q2 = attrs_str.find(quote_char, q1 + 1)
+            if q2 == -1:
+                break
+            var attr_val = String(attrs_str[byte=q1 + 1 : q2])
+
+            # Update or add
+            var found = False
+            for i in range(len(attr_names)):
+                if attr_names[i] == attr_name:
+                    attr_values[i] = attr_val
+                    found = True
+                    break
+            if not found:
+                attr_names.append(attr_name)
+                attr_values.append(attr_val)
+
+            scan = eq + (q2 - eq) + 1
+
+    if len(attr_names) == 0:
+        return String("")
+
+    var result = "<" + tag_name
+    for i in range(len(attr_names)):
+        result = result + ' ' + attr_names[i] + '="' + attr_values[i] + '"'
+    result = result + "/>"
+    return result
+
+
+def _strip_wrapper(xml: String) -> String:
+    """Strip <mujoco> or <mujocoinclude> wrapper, returning inner content."""
+    var result = xml
+
+    # Strip <mujocoinclude>...</mujocoinclude>
+    var mci_open = result.find("<mujocoinclude")
+    if mci_open != -1:
+        var mci_open_end = result.find(">", mci_open)
+        if mci_open_end != -1:
+            var mci_close = result.find("</mujocoinclude>")
+            if mci_close != -1:
+                result = String(result[byte=mci_open_end + 1 : mci_close])
+
+    # Strip <mujoco>...</mujoco>
+    var mj_open = result.find("<mujoco")
+    if mj_open != -1:
+        var mj_open_end = result.find(">", mj_open)
+        if mj_open_end != -1:
+            var mj_close = result.find("</mujoco>")
+            if mj_close != -1:
+                result = String(result[byte=mj_open_end + 1 : mj_close])
+
+    return result
+
+
+def _strip_include_tags(xml: String) -> String:
+    """Remove all <include file="..."/> tags from XML."""
+    var result = String("")
+    var scan = 0
+    var xlen = len(xml)
+    while scan < xlen:
+        var inc = xml.find("<include", scan)
+        if inc == -1:
+            result = result + String(xml[byte=scan:xlen])
+            break
+        result = result + String(xml[byte=scan:inc])
+        var inc_end = xml.find(">", inc)
+        if inc_end == -1:
+            break
+        # Check for /> vs >
+        scan = inc_end + 1
+    return result
+
+
+def merge_mjcf(*xmls: String) -> String:
+    """Merge multiple MJCF XML strings following MuJoCo <include> semantics.
+
+    Singleton tags (<option>, <compiler>): attributes merged, last wins per attr.
+    Accumulator tags (<asset>, <default>, <worldbody>, <actuator>, <equality>,
+    <sensor>): inner content concatenated from all inputs.
+
+    Each input can be a full <mujoco>...</mujoco> or a <mujocoinclude> fragment.
+    <include file="..."/> tags are stripped (already resolved by caller).
+
+    Usage:
+        comptime xml = merge_mjcf(basic_scene, xyz_deps, xyz_base, task_xml)
+        comptime pm = parse_xml(xml)
+
+    Returns a complete <mujoco>...</mujoco> string ready for parse_xml.
+    """
+    # Collect singleton tags and accumulator content from all inputs
+    var option_tags = List[String]()
+    var compiler_tags = List[String]()
+    var all_assets = String("")
+    var all_defaults = String("")
+    var all_worldbody = String("")
+    var all_actuator = String("")
+    var all_equality = String("")
+    var all_visual = String("")
+
+    for i in range(len(xmls)):
+        var stripped = _strip_include_tags(_strip_wrapper(xmls[i]))
+
+        # Singleton tags
+        var opt = _extract_singleton_tag(stripped, "option")
+        if len(opt) > 0:
+            option_tags.append(opt)
+        var comp = _extract_singleton_tag(stripped, "compiler")
+        if len(comp) > 0:
+            compiler_tags.append(comp)
+
+        # Accumulator sections (extract inner content, handle multiple occurrences)
+        all_assets = all_assets + _extract_section_inner(stripped, "asset")
+        all_defaults = all_defaults + _extract_section_inner(stripped, "default")
+        all_worldbody = all_worldbody + _extract_section_inner(stripped, "worldbody")
+        all_actuator = all_actuator + _extract_section_inner(stripped, "actuator")
+        all_equality = all_equality + _extract_section_inner(stripped, "equality")
+        all_visual = all_visual + _extract_section_inner(stripped, "visual")
+
+    # Build merged XML
+    var result = String('<mujoco model="merged">\n')
+
+    # Merged singletons
+    var merged_compiler = _merge_singleton_attrs(compiler_tags, "compiler")
+    if len(merged_compiler) > 0:
+        result = result + "  " + merged_compiler + "\n"
+
+    var merged_option = _merge_singleton_attrs(option_tags, "option")
+    if len(merged_option) > 0:
+        result = result + "  " + merged_option + "\n"
+
+    # Visual
+    if len(_trim(all_visual)) > 0:
+        result = result + "  <visual>\n" + all_visual + "  </visual>\n"
+
+    # Defaults
+    if len(_trim(all_defaults)) > 0:
+        result = result + "  <default>\n" + all_defaults + "  </default>\n"
+
+    # Assets
+    if len(_trim(all_assets)) > 0:
+        result = result + "  <asset>\n" + all_assets + "  </asset>\n"
+
+    # Worldbody
+    if len(_trim(all_worldbody)) > 0:
+        result = result + "  <worldbody>\n" + all_worldbody + "  </worldbody>\n"
+
+    # Actuator
+    if len(_trim(all_actuator)) > 0:
+        result = result + "  <actuator>\n" + all_actuator + "  </actuator>\n"
+
+    # Equality
+    if len(_trim(all_equality)) > 0:
+        result = result + "  <equality>\n" + all_equality + "  </equality>\n"
+
+    result = result + "</mujoco>"
+    return result
+
+
 def parse_xml(xml: String) -> ParsedModel:
     """Parse a MuJoCo XML string and return dimension counts.
 
@@ -845,6 +1224,10 @@ def parse_xml(xml: String) -> ParsedModel:
     var eq_sec = _extract_section(xml_clean, "equality")
     var neq = _count_tag(eq_sec, "weld") + _count_tag(eq_sec, "connect")
 
+    # ---- Contact exclusions (<contact> section) -----------------------------
+    var contact_sec = _extract_section(xml_clean, "contact")
+    var nexclude = _count_tag(contact_sec, "exclude")
+
     # ---- Compiler angle units -----------------------------------------------
     var angle_deg = False
     var compiler_t = xml_clean.find("<compiler")
@@ -880,6 +1263,7 @@ def parse_xml(xml: String) -> ParsedModel:
         ncam,
         nsite,
         neq,
+        nexclude,
         angle_deg,
         timestep,
     )
@@ -1006,6 +1390,43 @@ def _xml_find_joint_dof_adr(xml: String, jname: String) -> Int:
             dof_adr += 6
         else:  # hinge, slide, or default (hinge)
             dof_adr += 1
+        scan_pos = tag_end + 1
+    return -1
+
+
+def _xml_find_joint_index(xml: String, jname: String) -> Int:
+    """Return joint INDEX (0-based) of joint with the given name.
+
+    Unlike _xml_find_joint_dof_adr which returns the DOF address,
+    this returns the joint's position in the joints array.
+    Returns -1 if not found.
+    """
+    var wb = _extract_section(xml, "worldbody")
+    var scan_pos = 0
+    var joint_idx = 0
+    var search_name = 'name="' + jname + '"'
+    while True:
+        var t = wb.find("<joint", scan_pos)
+        if t == -1:
+            break
+        if len(wb) > t + 6:
+            var after = String(wb[byte = t + 6 : t + 7])
+            if (
+                after != " "
+                and after != ">"
+                and after != "/"
+                and after != "\n"
+                and after != "\t"
+            ):
+                scan_pos = t + 6
+                continue
+        var tag_end = wb.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(wb[byte = t : tag_end + 1])
+        if tag.find(search_name) != -1:
+            return joint_idx
+        joint_idx += 1
         scan_pos = tag_end + 1
     return -1
 
@@ -1270,6 +1691,12 @@ struct ComptimeRenderData(Copyable, Movable):
     var geom_rgba_b: InlineArray[Float64, 64]
     var geom_rgba_a: InlineArray[Float64, 64]
     var geom_material_id: InlineArray[Int, 64]
+    var geom_mesh_id: InlineArray[Int, 64]  # index into mesh_names[], -1 if not mesh
+
+    # Mesh assets (max 16) — name and file path for STL loading
+    var nmesh: Int
+    var mesh_names: InlineArray[String, 16]
+    var mesh_files: InlineArray[String, 16]
 
     # Lights (max 8)
     var light_dir_x: InlineArray[Float64, 8]
@@ -1309,6 +1736,8 @@ struct ComptimeRenderData(Copyable, Movable):
     var tex_rgb2_r: InlineArray[Float64, 8]
     var tex_rgb2_g: InlineArray[Float64, 8]
     var tex_rgb2_b: InlineArray[Float64, 8]
+    var tex_names: InlineArray[String, 8]  # texture name (for material lookup)
+    var tex_files: InlineArray[String, 8]  # texture file path (PNG)
 
     # Materials (max 8)
     var mat_rgba_r: InlineArray[Float64, 8]
@@ -1318,6 +1747,9 @@ struct ComptimeRenderData(Copyable, Movable):
     var mat_shininess: InlineArray[Float64, 8]
     var mat_specular: InlineArray[Float64, 8]
     var mat_reflectance: InlineArray[Float64, 8]
+    var mat_tex_id: InlineArray[Int, 8]  # index into tex_names[], -1 if no texture
+    var mat_texrepeat_u: InlineArray[Float64, 8]  # texture repeat U (default 1.0)
+    var mat_texrepeat_v: InlineArray[Float64, 8]  # texture repeat V (default 1.0)
 
     # Sites (max 16)
     var site_body_id: InlineArray[Int, 16]
@@ -1325,6 +1757,16 @@ struct ComptimeRenderData(Copyable, Movable):
     var site_pos_y: InlineArray[Float64, 16]
     var site_pos_z: InlineArray[Float64, 16]
     var site_size_0: InlineArray[Float64, 16]
+
+    # Visual settings from <visual> section
+    var vis_znear: Float64  # <map znear="..."/>  (camera near plane)
+    var vis_fogstart: Float64  # <map fogstart="..."/>
+    var vis_fogend: Float64  # <map fogend="..."/>
+    var vis_shadowsize: Int  # <quality shadowsize="..."/>
+    var vis_headlight_ambient_r: Float64  # <headlight ambient="r g b"/>
+    var vis_headlight_ambient_g: Float64
+    var vis_headlight_ambient_b: Float64
+    var vis_has_headlight: Bool  # True if <headlight> was found
 
     def __init__(out self):
         """Initialize with safe defaults."""
@@ -1354,6 +1796,10 @@ struct ComptimeRenderData(Copyable, Movable):
         self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
         self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
         self.geom_material_id = InlineArray[Int, 64](fill=-1)
+        self.geom_mesh_id = InlineArray[Int, 64](fill=-1)
+        self.nmesh = 0
+        self.mesh_names = InlineArray[String, 16](fill=String(""))
+        self.mesh_files = InlineArray[String, 16](fill=String(""))
 
         self.light_dir_x = InlineArray[Float64, 8](fill=0.0)
         self.light_dir_y = InlineArray[Float64, 8](fill=0.0)
@@ -1390,6 +1836,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
         self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
         self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
+        self.tex_names = InlineArray[String, 8](fill=String(""))
+        self.tex_files = InlineArray[String, 8](fill=String(""))
 
         self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
         self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
@@ -1398,12 +1846,25 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
         self.mat_specular = InlineArray[Float64, 8](fill=0.5)
         self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
+        self.mat_tex_id = InlineArray[Int, 8](fill=-1)
+        self.mat_texrepeat_u = InlineArray[Float64, 8](fill=1.0)
+        self.mat_texrepeat_v = InlineArray[Float64, 8](fill=1.0)
 
         self.site_body_id = InlineArray[Int, 16](fill=0)
         self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
         self.site_pos_y = InlineArray[Float64, 16](fill=0.0)
         self.site_pos_z = InlineArray[Float64, 16](fill=0.0)
         self.site_size_0 = InlineArray[Float64, 16](fill=0.005)
+
+        # Visual defaults (MuJoCo defaults)
+        self.vis_znear = 0.01  # MuJoCo default
+        self.vis_fogstart = 3.0
+        self.vis_fogend = 10.0
+        self.vis_shadowsize = 4096  # MuJoCo default
+        self.vis_headlight_ambient_r = 0.1
+        self.vis_headlight_ambient_g = 0.1
+        self.vis_headlight_ambient_b = 0.1
+        self.vis_has_headlight = False
 
     def __init__(out self, *, copy: Self):
         """Copy constructor — element-by-element InlineArray copy."""
@@ -1433,6 +1894,7 @@ struct ComptimeRenderData(Copyable, Movable):
         self.geom_rgba_b = InlineArray[Float64, 64](fill=0.7)
         self.geom_rgba_a = InlineArray[Float64, 64](fill=1.0)
         self.geom_material_id = InlineArray[Int, 64](fill=-1)
+        self.geom_mesh_id = InlineArray[Int, 64](fill=-1)
         for i in range(64):
             self.geom_body_id[i] = copy.geom_body_id[i]
             self.geom_type[i] = copy.geom_type[i]
@@ -1453,6 +1915,13 @@ struct ComptimeRenderData(Copyable, Movable):
             self.geom_rgba_b[i] = copy.geom_rgba_b[i]
             self.geom_rgba_a[i] = copy.geom_rgba_a[i]
             self.geom_material_id[i] = copy.geom_material_id[i]
+            self.geom_mesh_id[i] = copy.geom_mesh_id[i]
+        self.nmesh = copy.nmesh
+        self.mesh_names = InlineArray[String, 16](fill=String(""))
+        self.mesh_files = InlineArray[String, 16](fill=String(""))
+        for i in range(16):
+            self.mesh_names[i] = copy.mesh_names[i]
+            self.mesh_files[i] = copy.mesh_files[i]
 
         self.light_dir_x = InlineArray[Float64, 8](fill=0.0)
         self.light_dir_y = InlineArray[Float64, 8](fill=0.0)
@@ -1516,6 +1985,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_rgb2_r = InlineArray[Float64, 8](fill=0.5)
         self.tex_rgb2_g = InlineArray[Float64, 8](fill=0.5)
         self.tex_rgb2_b = InlineArray[Float64, 8](fill=0.5)
+        self.tex_names = InlineArray[String, 8](fill=String(""))
+        self.tex_files = InlineArray[String, 8](fill=String(""))
         for i in range(8):
             self.tex_type[i] = copy.tex_type[i]
             self.tex_builtin[i] = copy.tex_builtin[i]
@@ -1525,6 +1996,8 @@ struct ComptimeRenderData(Copyable, Movable):
             self.tex_rgb2_r[i] = copy.tex_rgb2_r[i]
             self.tex_rgb2_g[i] = copy.tex_rgb2_g[i]
             self.tex_rgb2_b[i] = copy.tex_rgb2_b[i]
+            self.tex_names[i] = copy.tex_names[i]
+            self.tex_files[i] = copy.tex_files[i]
 
         self.mat_rgba_r = InlineArray[Float64, 8](fill=1.0)
         self.mat_rgba_g = InlineArray[Float64, 8](fill=1.0)
@@ -1533,6 +2006,9 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_shininess = InlineArray[Float64, 8](fill=0.5)
         self.mat_specular = InlineArray[Float64, 8](fill=0.5)
         self.mat_reflectance = InlineArray[Float64, 8](fill=0.0)
+        self.mat_tex_id = InlineArray[Int, 8](fill=-1)
+        self.mat_texrepeat_u = InlineArray[Float64, 8](fill=1.0)
+        self.mat_texrepeat_v = InlineArray[Float64, 8](fill=1.0)
         for i in range(8):
             self.mat_rgba_r[i] = copy.mat_rgba_r[i]
             self.mat_rgba_g[i] = copy.mat_rgba_g[i]
@@ -1541,6 +2017,9 @@ struct ComptimeRenderData(Copyable, Movable):
             self.mat_shininess[i] = copy.mat_shininess[i]
             self.mat_specular[i] = copy.mat_specular[i]
             self.mat_reflectance[i] = copy.mat_reflectance[i]
+            self.mat_tex_id[i] = copy.mat_tex_id[i]
+            self.mat_texrepeat_u[i] = copy.mat_texrepeat_u[i]
+            self.mat_texrepeat_v[i] = copy.mat_texrepeat_v[i]
 
         self.site_body_id = InlineArray[Int, 16](fill=0)
         self.site_pos_x = InlineArray[Float64, 16](fill=0.0)
@@ -1553,6 +2032,16 @@ struct ComptimeRenderData(Copyable, Movable):
             self.site_pos_y[i] = copy.site_pos_y[i]
             self.site_pos_z[i] = copy.site_pos_z[i]
             self.site_size_0[i] = copy.site_size_0[i]
+
+        # Visual settings
+        self.vis_znear = copy.vis_znear
+        self.vis_fogstart = copy.vis_fogstart
+        self.vis_fogend = copy.vis_fogend
+        self.vis_shadowsize = copy.vis_shadowsize
+        self.vis_headlight_ambient_r = copy.vis_headlight_ambient_r
+        self.vis_headlight_ambient_g = copy.vis_headlight_ambient_g
+        self.vis_headlight_ambient_b = copy.vis_headlight_ambient_b
+        self.vis_has_headlight = copy.vis_has_headlight
 
     def __init__(out self, *, deinit take: Self):
         self.ngeom = take.ngeom
@@ -1580,6 +2069,10 @@ struct ComptimeRenderData(Copyable, Movable):
         self.geom_rgba_b = take.geom_rgba_b^
         self.geom_rgba_a = take.geom_rgba_a^
         self.geom_material_id = take.geom_material_id^
+        self.geom_mesh_id = take.geom_mesh_id^
+        self.nmesh = take.nmesh
+        self.mesh_names = take.mesh_names^
+        self.mesh_files = take.mesh_files^
         self.light_dir_x = take.light_dir_x^
         self.light_dir_y = take.light_dir_y^
         self.light_dir_z = take.light_dir_z^
@@ -1613,6 +2106,8 @@ struct ComptimeRenderData(Copyable, Movable):
         self.tex_rgb2_r = take.tex_rgb2_r^
         self.tex_rgb2_g = take.tex_rgb2_g^
         self.tex_rgb2_b = take.tex_rgb2_b^
+        self.tex_names = take.tex_names^
+        self.tex_files = take.tex_files^
         self.mat_rgba_r = take.mat_rgba_r^
         self.mat_rgba_g = take.mat_rgba_g^
         self.mat_rgba_b = take.mat_rgba_b^
@@ -1620,11 +2115,24 @@ struct ComptimeRenderData(Copyable, Movable):
         self.mat_shininess = take.mat_shininess^
         self.mat_specular = take.mat_specular^
         self.mat_reflectance = take.mat_reflectance^
+        self.mat_tex_id = take.mat_tex_id^
+        self.mat_texrepeat_u = take.mat_texrepeat_u^
+        self.mat_texrepeat_v = take.mat_texrepeat_v^
         self.site_body_id = take.site_body_id^
         self.site_pos_x = take.site_pos_x^
         self.site_pos_y = take.site_pos_y^
         self.site_pos_z = take.site_pos_z^
         self.site_size_0 = take.site_size_0^
+
+        # Visual settings
+        self.vis_znear = take.vis_znear
+        self.vis_fogstart = take.vis_fogstart
+        self.vis_fogend = take.vis_fogend
+        self.vis_shadowsize = take.vis_shadowsize
+        self.vis_headlight_ambient_r = take.vis_headlight_ambient_r
+        self.vis_headlight_ambient_g = take.vis_headlight_ambient_g
+        self.vis_headlight_ambient_b = take.vis_headlight_ambient_b
+        self.vis_has_headlight = take.vis_has_headlight
 
 
 # =============================================================================
@@ -1634,7 +2142,7 @@ struct ComptimeRenderData(Copyable, Movable):
 
 def _rcd_geom_type_from_str(s: String) -> Int:
     """Convert geom type string to integer constant.
-    PLANE=0, SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4."""
+    PLANE=0, SPHERE=1, CAPSULE=2, BOX=3, CYLINDER=4, MESH=5."""
     var t = _trim(s)
     if t == "plane":
         return 0
@@ -1646,6 +2154,8 @@ def _rcd_geom_type_from_str(s: String) -> Int:
         return 3
     elif t == "cylinder":
         return 4
+    elif t == "mesh":
+        return 5
     return 1  # default = sphere
 
 
@@ -1890,6 +2400,12 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
             data.tex_rgb2_r[tex_count] = c[0]
             data.tex_rgb2_g[tex_count] = c[1]
             data.tex_rgb2_b[tex_count] = c[2]
+        var tex_name_s = _extract_attr(tag, "name")
+        if len(tex_name_s) > 0:
+            data.tex_names[tex_count] = tex_name_s
+        var tex_file_s = _extract_attr(tag, "file")
+        if len(tex_file_s) > 0:
+            data.tex_files[tex_count] = tex_file_s
         tex_count += 1
         tex_pos = tag_end + 1
     data.ntex = tex_count
@@ -1921,9 +2437,40 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
         var refl_s = _extract_attr(tag, "reflectance")
         if len(refl_s) > 0:
             data.mat_reflectance[mat_count] = _parse_float(refl_s)
+        # Resolve material → texture reference
+        var mat_tex_name = _extract_attr(tag, "texture")
+        if len(mat_tex_name) > 0:
+            for ti in range(data.ntex):
+                if data.tex_names[ti] == mat_tex_name:
+                    data.mat_tex_id[mat_count] = ti
+                    break
+        # Parse texrepeat (default 1 1)
+        var tr_s = _extract_attr(tag, "texrepeat")
+        if len(tr_s) > 0:
+            var tv = _parse_vec3(tr_s)  # reuse vec3 parser, only need first 2
+            data.mat_texrepeat_u[mat_count] = tv[0]
+            data.mat_texrepeat_v[mat_count] = tv[1]
         mat_count += 1
         mat_pos = tag_end + 1
     data.nmat = mat_count
+
+    # Meshes (name → file path)
+    var mesh_pos = 0
+    while True:
+        var t = asset_sec.find("<mesh", mesh_pos)
+        if t == -1:
+            break
+        var tag_end = asset_sec.find(">", t)
+        if tag_end == -1:
+            break
+        var tag = String(asset_sec[byte=t : tag_end + 1])
+        var mesh_name = _extract_attr(tag, "name")
+        var mesh_file = _extract_attr(tag, "file")
+        if len(mesh_name) > 0 and data.nmesh < 16:
+            data.mesh_names[data.nmesh] = mesh_name
+            data.mesh_files[data.nmesh] = mesh_file
+            data.nmesh += 1
+        mesh_pos = tag_end + 1
 
     # ---- DFS scan <worldbody>: geoms, lights, cameras, sites -----------------
     var worldbody = _extract_section(xml_clean, "worldbody")
@@ -1978,6 +2525,14 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                 data.geom_type[geom_count] = _rcd_geom_type_from_str(
                     _extract_attr(tag, "type")
                 )
+                # Mesh reference: mesh="name" → lookup in mesh assets
+                if data.geom_type[geom_count] == 5:  # GEOM_MESH
+                    var mesh_ref = _extract_attr(tag, "mesh")
+                    if len(mesh_ref) > 0:
+                        for mi in range(data.nmesh):
+                            if data.mesh_names[mi] == mesh_ref:
+                                data.geom_mesh_id[geom_count] = mi
+                                break
                 var fromto_s = _extract_attr(tag, "fromto")
                 if len(fromto_s) > 0:
                     var ft = _fromto_to_pos_quat(fromto_s)
@@ -2032,7 +2587,9 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                         data.geom_half_z[geom_count] = s0
                     elif gt == 2:  # CAPSULE
                         data.geom_radius[geom_count] = s0
-                        if len(size_parts) >= 2:
+                        # Only use size[1] as half-length if no fromto was
+                        # specified (fromto already set the correct value).
+                        if len(size_parts) >= 2 and len(fromto_s) == 0:
                             data.geom_half_length[geom_count] = s1
                     elif gt == 3:  # BOX
                         data.geom_half_x[geom_count] = s0
@@ -2043,7 +2600,8 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
                         )
                     elif gt == 4:  # CYLINDER
                         data.geom_radius[geom_count] = s0
-                        data.geom_half_length[geom_count] = s1
+                        if len(fromto_s) == 0:
+                            data.geom_half_length[geom_count] = s1
                     elif gt == 0:  # PLANE
                         data.geom_half_x[geom_count] = s0
                         data.geom_half_y[geom_count] = s1
@@ -2172,6 +2730,47 @@ def parse_xml_render_data(xml: String) -> ComptimeRenderData:
     data.nlight = light_count
     data.ncam = cam_count
     data.nsite = site_count
+
+    # ---- Parse <visual> section: map, quality, headlight ----------------------
+    var visual_sec = _extract_section(xml_clean, "visual")
+    if len(visual_sec) > 0:
+        # <map znear="..." fogstart="..." fogend="..."/>
+        var map_pos = visual_sec.find("<map")
+        if map_pos != -1:
+            var map_end = visual_sec.find(">", map_pos)
+            if map_end != -1:
+                var map_tag = String(visual_sec[byte = map_pos : map_end + 1])
+                var znear_s = _extract_attr(map_tag, "znear")
+                if len(znear_s) > 0:
+                    data.vis_znear = _parse_float(znear_s)
+                var fogstart_s = _extract_attr(map_tag, "fogstart")
+                if len(fogstart_s) > 0:
+                    data.vis_fogstart = _parse_float(fogstart_s)
+                var fogend_s = _extract_attr(map_tag, "fogend")
+                if len(fogend_s) > 0:
+                    data.vis_fogend = _parse_float(fogend_s)
+        # <quality shadowsize="..."/>
+        var qual_pos = visual_sec.find("<quality")
+        if qual_pos != -1:
+            var qual_end = visual_sec.find(">", qual_pos)
+            if qual_end != -1:
+                var qual_tag = String(visual_sec[byte = qual_pos : qual_end + 1])
+                var ss_s = _extract_attr(qual_tag, "shadowsize")
+                if len(ss_s) > 0:
+                    data.vis_shadowsize = Int(_parse_float(ss_s))
+        # <headlight ambient="r g b"/>
+        var hl_pos = visual_sec.find("<headlight")
+        if hl_pos != -1:
+            var hl_end = visual_sec.find(">", hl_pos)
+            if hl_end != -1:
+                var hl_tag = String(visual_sec[byte = hl_pos : hl_end + 1])
+                var amb_s = _extract_attr(hl_tag, "ambient")
+                if len(amb_s) > 0:
+                    var c = _rcd_parse_rgb3(amb_s)
+                    data.vis_headlight_ambient_r = c[0]
+                    data.vis_headlight_ambient_g = c[1]
+                    data.vis_headlight_ambient_b = c[2]
+                    data.vis_has_headlight = True
 
     # ---- Post-pass: resolve geom material="name" references ------------------
     var geom_scan = 0

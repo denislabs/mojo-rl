@@ -1,6 +1,8 @@
 # mojo-rl
 
-A reinforcement learning framework written in Mojo, featuring trait-based design, 40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines, native arcade game engines, and SDL3 rendering.
+An educational reinforcement learning framework written in Mojo, featuring trait-based design, 40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines, native arcade game engines, and SDL3 rendering.
+
+> **Note:** This is a personal learning project, not a production-grade library. While the tabular agents and core deep RL algorithms (DQN, PPO, SAC, TD3) are well-tested, the 3D physics engine, complex deep agents (DreamerV3, TD-MPC2, MuZero), and some advanced features are still experimental and may contain bugs. Contributions and bug reports are welcome!
 
 ## Features
 
@@ -35,6 +37,23 @@ curl -fsSL https://pixi.sh/install.sh | bash
 brew install pixi
 ```
 
+### Installing SDL3 (optional, for rendering)
+
+SDL3 is required for environment visualization and video recording. It is **not** needed for training.
+
+```bash
+# macOS (Homebrew)
+brew install sdl3
+
+# Ubuntu/Debian
+sudo apt install libsdl3-dev
+
+# Fedora
+sudo dnf install SDL3-devel
+
+# From source (all platforms): https://github.com/libsdl-org/SDL/releases
+```
+
 ### Install dependencies and run
 
 ```bash
@@ -44,8 +63,8 @@ pixi install
 # Run an example (note: -I . is required for module resolution)
 pixi run mojo run -I . examples/solve_gridworld.mojo
 
-# Run benchmarks
-pixi run mojo run -I . benchmarks/benchmark_matmul_apple.mojo
+# Run a test
+pixi run mojo run -I . tests/physics3d/test_half_cheetah_match.mojo
 ```
 
 ### GPU Support
@@ -54,10 +73,10 @@ GPU-accelerated code requires specifying the target environment with the `-e` fl
 
 ```bash
 # Apple Silicon (Metal)
-pixi run -e apple mojo run -I . examples/lunar_lander_dqn.mojo
+pixi run -e apple mojo run -I . examples/half_cheetah/ppo_half_cheetah_training_gpu.mojo
 
 # NVIDIA GPUs (CUDA)
-pixi run -e nvidia mojo run -I . examples/lunar_lander_dqn.mojo
+pixi run -e nvidia mojo run -I . examples/half_cheetah/ppo_half_cheetah_training_gpu.mojo
 ```
 
 ## Project Structure
@@ -239,9 +258,9 @@ def main():
 ### Deep RL with GPU Training
 
 ```mojo
-from mojo_rl.deep_agents import DeepPPOContinuousAgent
+from std.gpu.host import DeviceContext
+from mojo_rl.deep_agents.core.agents import DeepPPOContinuousAgent
 from mojo_rl.envs.half_cheetah import HalfCheetahEnv
-from gpu.host import DeviceContext
 
 def main() raises:
     var agent = DeepPPOContinuousAgent[

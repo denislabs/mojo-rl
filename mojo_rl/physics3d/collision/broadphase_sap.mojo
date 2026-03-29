@@ -33,6 +33,7 @@ from ..constants import (
     GEOM_BOX,
     GEOM_PLANE,
     GEOM_CYLINDER,
+    GEOM_MESH,
 )
 from ..kinematics.quat_math import (
     quat_rotate,
@@ -42,6 +43,10 @@ from ..kinematics.quat_math import (
 )
 from ..gpu.constants import (
     BODY_IDX_PARENT,
+    BODY_IDX_WELDID,
+    MODEL_META_IDX_NEXCLUDE,
+    model_exclude_offset,
+    model_metadata_offset,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
     CONTACT_IDX_BODY_B,
@@ -95,8 +100,20 @@ from .collision_primitives import (
     box_sphere,
     box_capsule,
     box_box,
+    box_plane,
     cylinder_plane,
     cylinder_sphere,
+    cylinder_capsule,
+    cylinder_cylinder,
+    cylinder_box,
+)
+from .gjk import gjk_epa
+from .gjk_gpu import gjk_epa_gpu
+from ..gpu.constants import (
+    GEOM_IDX_MESH_ID,
+    model_mesh_meta_offset,
+    model_mesh_vert_offset,
+    MODEL_MESH_META_SIZE,
 )
 from .contact_detection import (
     _geom_world_pos,
@@ -430,6 +447,69 @@ def detect_contacts_sap[
                     data.contacts[idx].condim = cdim
                     data.num_contacts += 1
 
+            elif gj_type == GEOM_BOX:
+                var hxj = model.geom_half_x[gj]
+                var hyj = model.geom_half_y[gj]
+                var hzj = model.geom_half_z[gj]
+                var bp = box_plane[DTYPE](
+                    pj_x, pj_y, pj_z,
+                    qj_x, qj_y, qj_z, qj_w,
+                    hxj, hyj, hzj,
+                    ground_z)
+                var dist = bp[0]
+                if dist < cm and data.num_contacts < MAX_CONTACTS:
+                    var idx = data.num_contacts
+                    data.contacts[idx].body_a = gj_body
+                    data.contacts[idx].body_b = 0
+                    data.contacts[idx].pos_x = bp[1]
+                    data.contacts[idx].pos_y = bp[2]
+                    data.contacts[idx].pos_z = bp[3]
+                    data.contacts[idx].normal_x = Scalar[DTYPE](0)
+                    data.contacts[idx].normal_y = Scalar[DTYPE](0)
+                    data.contacts[idx].normal_z = Scalar[DTYPE](1)
+                    data.contacts[idx].dist = dist - cm
+                    data.contacts[idx].friction = cf
+                    data.contacts[idx].friction_spin = cfs
+                    data.contacts[idx].friction_roll = cfr
+                    data.contacts[idx].condim = cdim
+                    data.num_contacts += 1
+
+            elif gj_type == GEOM_MESH and model.geom_mesh_id[gj] >= 0:
+                # Plane-mesh: scan hull vertices, generate contacts for those below plane
+                var mesh_id = model.geom_mesh_id[gj]
+                var vadr = model.mesh_vertadr[mesh_id]
+                var vnum = model.mesh_vertnum[mesh_id]
+                for vi in range(vnum):
+                    if data.num_contacts >= MAX_CONTACTS:
+                        break
+                    var off = vadr + vi * 3
+                    # Transform vertex to world frame
+                    var local_pt = quat_rotate(
+                        qj_x, qj_y, qj_z, qj_w,
+                        model.mesh_vert[off],
+                        model.mesh_vert[off + 1],
+                        model.mesh_vert[off + 2])
+                    var wx = pj_x + local_pt[0]
+                    var wy = pj_y + local_pt[1]
+                    var wz = pj_z + local_pt[2]
+                    var dist_v = wz - ground_z
+                    if dist_v < cm:
+                        var idx = data.num_contacts
+                        data.contacts[idx].body_a = gj_body
+                        data.contacts[idx].body_b = 0
+                        data.contacts[idx].pos_x = wx
+                        data.contacts[idx].pos_y = wy
+                        data.contacts[idx].pos_z = ground_z + dist_v * Scalar[DTYPE](0.5)
+                        data.contacts[idx].normal_x = Scalar[DTYPE](0)
+                        data.contacts[idx].normal_y = Scalar[DTYPE](0)
+                        data.contacts[idx].normal_z = Scalar[DTYPE](1)
+                        data.contacts[idx].dist = dist_v - cm
+                        data.contacts[idx].friction = cf
+                        data.contacts[idx].friction_spin = cfs
+                        data.contacts[idx].friction_roll = cfr
+                        data.contacts[idx].condim = cdim
+                        data.num_contacts += 1
+
     # ------------------------------------------------------------------
     # 4. SAP sweep for non-plane pairs.
     # ------------------------------------------------------------------
@@ -498,13 +578,32 @@ def detect_contacts_sap[
             # AABB overlap confirmed — apply body filter
             var gj_type = model.geom_type[gj]
             var gj_body = model.geom_body[gj]
-            if gi_body > 0 and gi_body == gj_body:
+            # MuJoCo-style weld body filtering
+            var weld_i = model.body_weldid[gi_body]
+            var weld_j = model.body_weldid[gj_body]
+            if weld_i == weld_j:
                 continue
-            if gi_body > 0 and gj_body > 0:
-                if (
-                    model.body_parent[gj_body] == gi_body
-                    or model.body_parent[gi_body] == gj_body
-                ):
+            if weld_i != 0 and weld_j != 0:
+                var weld_parent_i = model.body_weldid[
+                    model.body_parent[weld_i]
+                ]
+                var weld_parent_j = model.body_weldid[
+                    model.body_parent[weld_j]
+                ]
+                if weld_i == weld_parent_j or weld_j == weld_parent_i:
+                    continue
+                # Check contact exclusion pairs
+                var excluded = False
+                var ba = gi_body if gi_body <= gj_body else gj_body
+                var bb = gj_body if gi_body <= gj_body else gi_body
+                for ex in range(model.num_excludes):
+                    if (
+                        model.exclude_body1[ex] == ba
+                        and model.exclude_body2[ex] == bb
+                    ):
+                        excluded = True
+                        break
+                if excluded:
                     continue
             var gj_contype = model.geom_contype[gj]
             var gj_conaffinity = model.geom_conaffinity[gj]
@@ -830,6 +929,98 @@ def detect_contacts_sap[
                 body_a = gj_body
                 body_b = gi_body
 
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
+                var r = cylinder_capsule[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:
+                var r = cylinder_capsule[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
+                var r = cylinder_cylinder[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX:
+                var r = cylinder_box[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER:
+                var r = cylinder_box[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+
+            # GJK/EPA fallback for any pair involving a mesh geom
+            elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
+                var mvi = model.mesh_vert.copy() if model.num_meshes > 0 else List[Scalar[DTYPE]]()
+                var mvoi = model.mesh_vertadr[model.geom_mesh_id[gi]] if model.geom_mesh_id[gi] >= 0 else 0
+                var mnvi = model.mesh_vertnum[model.geom_mesh_id[gi]] if model.geom_mesh_id[gi] >= 0 else 0
+                var mvj = model.mesh_vert.copy() if model.num_meshes > 0 else List[Scalar[DTYPE]]()
+                var mvoj = model.mesh_vertadr[model.geom_mesh_id[gj]] if model.geom_mesh_id[gj] >= 0 else 0
+                var mnvj = model.mesh_vertnum[model.geom_mesh_id[gj]] if model.geom_mesh_id[gj] >= 0 else 0
+                var result = gjk_epa[DTYPE](
+                    gi_type,
+                    pi_x, pi_y, pi_z,
+                    qi_x, qi_y, qi_z, qi_w,
+                    ri, hli, hxi, hyi, hzi,
+                    mvi, mvoi, mnvi,
+                    gj_type,
+                    pj_x, pj_y, pj_z,
+                    qj_x, qj_y, qj_z, qj_w,
+                    rj, hlj, hxj, hyj, hzj,
+                    mvj, mvoj, mnvj,
+                )
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = result[4]
+                ny = result[5]
+                nz = result[6]
+                body_a = gi_body
+                body_b = gj_body
+
             if dist < cm and data.num_contacts < MAX_CONTACTS:
                 var idx = data.num_contacts
                 data.contacts[idx].body_a = body_a
@@ -837,6 +1028,11 @@ def detect_contacts_sap[
                 data.contacts[idx].pos_x = cx
                 data.contacts[idx].pos_y = cy
                 data.contacts[idx].pos_z = cz
+                # Negate normal for body-body contacts (same fix as detect_contacts)
+                if body_b > 0:
+                    nx = -nx
+                    ny = -ny
+                    nz = -nz
                 data.contacts[idx].normal_x = nx
                 data.contacts[idx].normal_y = ny
                 data.contacts[idx].normal_z = nz
@@ -865,6 +1061,9 @@ def detect_contacts_sap_gpu[
     MODEL_SIZE: Int,
     BATCH: Int,
     NGEOM: Int,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     env: Int,
     state: LayoutTensor[
@@ -1152,6 +1351,75 @@ def detect_contacts_sap_gpu[
                     state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](cdim)
                     num_contacts += 1
 
+            elif gj_type == GEOM_BOX:
+                var hxj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_HALF_X])
+                var hyj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_HALF_Y])
+                var hzj = rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_HALF_Z])
+                var bp = box_plane[DTYPE](
+                    pj_x, pj_y, pj_z,
+                    qj_x, qj_y, qj_z, qj_w,
+                    hxj, hyj, hzj,
+                    ground_z,
+                )
+                var dist = bp[0]
+                if dist < cm and num_contacts < MAX_CONTACTS:
+                    var c_off = contacts_off + num_contacts * CONTACT_SIZE
+                    state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                        gj_body
+                    )
+                    state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](-1)
+                    state[env, c_off + CONTACT_IDX_POS_X] = bp[1]
+                    state[env, c_off + CONTACT_IDX_POS_Y] = bp[2]
+                    state[env, c_off + CONTACT_IDX_POS_Z] = bp[3]
+                    state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                    state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                    state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    state[env, c_off + CONTACT_IDX_DIST] = dist
+                    state[env, c_off + CONTACT_IDX_FRICTION] = cf
+                    state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+                    state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+                    state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](cdim)
+                    num_contacts += 1
+
+            elif gj_type == GEOM_MESH:
+                # Plane-mesh: scan hull vertices below plane
+                var mj_id = Int(rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_MESH_ID]))
+                if mj_id >= 0:
+                    comptime pm_meta = model_mesh_meta_offset[
+                        NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
+                    comptime pm_verts = model_mesh_vert_offset[
+                        NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
+                    var pm_vadr = Int(rebind[Scalar[DTYPE]](model[0, pm_meta + mj_id * 2]))
+                    var pm_vnum = Int(rebind[Scalar[DTYPE]](model[0, pm_meta + mj_id * 2 + 1]))
+                    var pm_voff = pm_verts + pm_vadr * 3
+                    for vi in range(pm_vnum):
+                        if num_contacts >= MAX_CONTACTS:
+                            break
+                        var vx = rebind[Scalar[DTYPE]](model[0, pm_voff + vi * 3 + 0])
+                        var vy = rebind[Scalar[DTYPE]](model[0, pm_voff + vi * 3 + 1])
+                        var vz = rebind[Scalar[DTYPE]](model[0, pm_voff + vi * 3 + 2])
+                        var local_pt = gpu_quat_rotate(qj_x, qj_y, qj_z, qj_w, vx, vy, vz)
+                        var wx = pj_x + local_pt[0]
+                        var wy = pj_y + local_pt[1]
+                        var wz = pj_z + local_pt[2]
+                        var dist_v = wz - ground_z
+                        if dist_v < cm:
+                            var c_off = contacts_off + num_contacts * CONTACT_SIZE
+                            state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](gj_body)
+                            state[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](-1)
+                            state[env, c_off + CONTACT_IDX_POS_X] = wx
+                            state[env, c_off + CONTACT_IDX_POS_Y] = wy
+                            state[env, c_off + CONTACT_IDX_POS_Z] = ground_z + dist_v * Scalar[DTYPE](0.5)
+                            state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                            state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                            state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                            state[env, c_off + CONTACT_IDX_DIST] = dist_v - cm
+                            state[env, c_off + CONTACT_IDX_FRICTION] = cf
+                            state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+                            state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+                            state[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](cdim)
+                            num_contacts += 1
+
     # ------------------------------------------------------------------
     # 4. SAP sweep for non-plane pairs.
     # ------------------------------------------------------------------
@@ -1235,19 +1503,68 @@ def detect_contacts_sap_gpu[
             var gj_body = Int(
                 rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_BODY])
             )
-            if gi_body > 0 and gi_body == gj_body:
+            # MuJoCo-style weld body filtering (GPU SAP)
+            var bi_off = model_body_offset(gi_body)
+            var bj_off = model_body_offset(gj_body)
+            var weld_i = Int(
+                rebind[Scalar[DTYPE]](model[0, bi_off + BODY_IDX_WELDID])
+            )
+            var weld_j = Int(
+                rebind[Scalar[DTYPE]](model[0, bj_off + BODY_IDX_WELDID])
+            )
+            if weld_i == weld_j:
                 continue
-            if gi_body > 0 and gj_body > 0:
-                var bi_off = model_body_offset(gi_body)
-                var bj_off = model_body_offset(gj_body)
-                var pi = Int(
-                    rebind[Scalar[DTYPE]](model[0, bi_off + BODY_IDX_PARENT])
+            if weld_i != 0 and weld_j != 0:
+                var wi_off = model_body_offset(weld_i)
+                var wj_off = model_body_offset(weld_j)
+                var wp_i = Int(
+                    rebind[Scalar[DTYPE]](model[0, wi_off + BODY_IDX_PARENT])
                 )
-                var pj = Int(
-                    rebind[Scalar[DTYPE]](model[0, bj_off + BODY_IDX_PARENT])
+                var wp_j = Int(
+                    rebind[Scalar[DTYPE]](model[0, wj_off + BODY_IDX_PARENT])
                 )
-                if pj == gi_body or pi == gj_body:
+                var weld_parent_i = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, model_body_offset(wp_i) + BODY_IDX_WELDID]
+                    )
+                )
+                var weld_parent_j = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, model_body_offset(wp_j) + BODY_IDX_WELDID]
+                    )
+                )
+                if weld_i == weld_parent_j or weld_j == weld_parent_i:
                     continue
+                # Check contact exclusion pairs
+                var sap_meta_off = model_metadata_offset[NBODY, NJOINT]()
+                var sap_n_ex = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, sap_meta_off + MODEL_META_IDX_NEXCLUDE]
+                    )
+                )
+                if sap_n_ex > 0:
+                    var ba = gi_body if gi_body <= gj_body else gj_body
+                    var bb = gj_body if gi_body <= gj_body else gi_body
+                    var sap_ex_off = model_exclude_offset[
+                        NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE
+                    ]()
+                    var excluded = False
+                    for ex in range(sap_n_ex):
+                        var eb1 = Int(
+                            rebind[Scalar[DTYPE]](
+                                model[0, sap_ex_off + ex * 2]
+                            )
+                        )
+                        var eb2 = Int(
+                            rebind[Scalar[DTYPE]](
+                                model[0, sap_ex_off + ex * 2 + 1]
+                            )
+                        )
+                        if eb1 == ba and eb2 == bb:
+                            excluded = True
+                            break
+                    if excluded:
+                        continue
             var gj_contype = Int(
                 rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_CONTYPE])
             )
@@ -1588,6 +1905,112 @@ def detect_contacts_sap_gpu[
                 body_a = gj_body
                 body_b = gi_body
 
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
+                var r = cylinder_capsule[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:
+                var r = cylinder_capsule[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
+                var r = cylinder_cylinder[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX:
+                var r = cylinder_box[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER:
+                var r = cylinder_box[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+
+            # GJK/EPA fallback for any pair involving a mesh geom
+            elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
+                # Read mesh IDs from geom data
+                var mi_id = Int(rebind[Scalar[DTYPE]](model[0, gi_off + GEOM_IDX_MESH_ID]))
+                var mj_id = Int(rebind[Scalar[DTYPE]](model[0, gj_off + GEOM_IDX_MESH_ID]))
+                # Compute mesh vertex buffer offsets
+                comptime mesh_meta = model_mesh_meta_offset[
+                    NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
+                comptime mesh_verts = model_mesh_vert_offset[
+                    NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE]()
+                var mvbo1 = 0
+                var mnv1 = 0
+                if mi_id >= 0:
+                    mvbo1 = mesh_verts + Int(rebind[Scalar[DTYPE]](
+                        model[0, mesh_meta + mi_id * 2])) * 3
+                    mnv1 = Int(rebind[Scalar[DTYPE]](
+                        model[0, mesh_meta + mi_id * 2 + 1]))
+                var mvbo2 = 0
+                var mnv2 = 0
+                if mj_id >= 0:
+                    mvbo2 = mesh_verts + Int(rebind[Scalar[DTYPE]](
+                        model[0, mesh_meta + mj_id * 2])) * 3
+                    mnv2 = Int(rebind[Scalar[DTYPE]](
+                        model[0, mesh_meta + mj_id * 2 + 1]))
+                var result = gjk_epa_gpu[DTYPE, MODEL_SIZE](
+                    gi_type,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                    ri, hli, hxi, hyi, hzi,
+                    model, mvbo1, mnv1,
+                    gj_type,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                    rj, hlj, hxj, hyj, hzj,
+                    mvbo2, mnv2,
+                )
+                dist = result[0]
+                cx = result[1]
+                cy = result[2]
+                cz = result[3]
+                nx = result[4]
+                ny = result[5]
+                nz = result[6]
+                body_a = gi_body
+                body_b = gj_body
+
             if dist < cm and num_contacts < MAX_CONTACTS:
                 var c_off = contacts_off + num_contacts * CONTACT_SIZE
                 state[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](body_a)
@@ -1595,6 +2018,11 @@ def detect_contacts_sap_gpu[
                 state[env, c_off + CONTACT_IDX_POS_X] = cx
                 state[env, c_off + CONTACT_IDX_POS_Y] = cy
                 state[env, c_off + CONTACT_IDX_POS_Z] = cz
+                # Negate normal for body-body contacts (same fix as CPU path)
+                if body_b > 0:
+                    nx = -nx
+                    ny = -ny
+                    nz = -nz
                 state[env, c_off + CONTACT_IDX_NX] = nx
                 state[env, c_off + CONTACT_IDX_NY] = ny
                 state[env, c_off + CONTACT_IDX_NZ] = nz
@@ -1696,6 +2124,9 @@ def detect_contacts_auto_gpu[
     MODEL_SIZE: Int,
     BATCH: Int,
     NGEOM: Int,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
 ](
     env: Int,
     state: LayoutTensor[
@@ -1722,6 +2153,9 @@ def detect_contacts_auto_gpu[
             MODEL_SIZE,
             BATCH,
             NGEOM,
+            NEQUALITY,
+            NTENDON,
+            NSITE,
         ](env, state, model)
     else:
         detect_contacts_gpu[
@@ -1735,4 +2169,7 @@ def detect_contacts_auto_gpu[
             MODEL_SIZE,
             BATCH,
             NGEOM,
+            NEQUALITY,
+            NTENDON,
+            NSITE,
         ](env, state, model)

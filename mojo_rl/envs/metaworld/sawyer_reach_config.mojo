@@ -12,18 +12,20 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import ImplicitFastIntegrator
+from mojo_rl.physics3d.integrator import EulerIntegrator
 from mojo_rl.physics3d.solver import NewtonSolver
 
 from .sawyer_reach_xml import SawyerReachModel
 
 from ..phyics3d_env_config import Phyics3dEnvConfig
-
+from mojo_rl.physics3d.gpu.constants import (
+    rk4_extra_workspace_size,
+)
 
 # Body indices in the parsed model (from test output)
-comptime MOCAP_BODY_IDX: Int = 23
-comptime HAND_BODY_IDX: Int = 19  # "hand" body
-comptime OBJ_BODY_IDX: Int = 24  # "obj" body
+comptime MOCAP_BODY_IDX: Int = 32
+comptime HAND_BODY_IDX: Int = 24  # "hand" body
+comptime OBJ_BODY_IDX: Int = 33  # "obj" body
 
 # Action scaling (MetaWorld default: 1cm per unit)
 comptime ACTION_SCALE: Float64 = 0.01
@@ -61,11 +63,12 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 5  # MetaWorld frame_skip
     comptime MAX_STEPS: Int = 500  # MetaWorld max_path_length
-    comptime INTEGRATOR_WS_EXTRA: Int = 0
 
+    # Dimensions
     comptime OBS_DIM: Int = SAWYER_REACH_OBS_DIM
     comptime ACTION_DIM: Int = SAWYER_REACH_ACTION_DIM
-    comptime MAX_CONTACTS: Int = 30
+
+    comptime INTEGRATOR_WS_EXTRA: Int = 0  # Euler doesn't need extra workspace
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -83,21 +86,32 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         NSITE: Int = 0,
     ](
         mut model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool,
     ):
-        ImplicitFastIntegrator[SOLVER=NewtonSolver].step(
-            model, data, verbose=verbose
-        )
+        EulerIntegrator[SOLVER=NewtonSolver].step(model, data, verbose=verbose)
 
     # === CPU: Custom observation extraction ===
     @staticmethod
     def custom_extract_obs_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
@@ -120,28 +134,89 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         obs.append(Scalar[DTYPE](GOAL_Z))
         return True
 
-    # === CPU: Custom reset — set initial mocap position ===
+    # === CPU: Custom reset — set mocap position + warmup arm ===
     @staticmethod
     def custom_reset_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
+        MAX_TENDON: Int = 0,
         NSITE: Int = 0,
     ](
+        mut model: Model[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
+        ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     ):
-        # Set initial mocap position (MetaWorld hand_init_pos)
-        data.set_mocap_pos(MOCAP_BODY_IDX,
-            Scalar[DTYPE](0.0), Scalar[DTYPE](0.6), Scalar[DTYPE](0.2))
+        # Set initial mocap position (MetaWorld hand_init_pos = [0, 0.6, 0.2])
+        data.set_mocap_pos(
+            MOCAP_BODY_IDX,
+            Scalar[DTYPE](0.0),
+            Scalar[DTYPE](0.6),
+            Scalar[DTYPE](0.2),
+        )
         # Fixed orientation (MetaWorld: quat=[1,0,1,0] wxyz → [0,1,0,1] xyzw)
-        data.set_mocap_quat(MOCAP_BODY_IDX,
-            Scalar[DTYPE](0), Scalar[DTYPE](1),
-            Scalar[DTYPE](0), Scalar[DTYPE](1))
+        data.set_mocap_quat(
+            MOCAP_BODY_IDX,
+            Scalar[DTYPE](0),
+            Scalar[DTYPE](1),
+            Scalar[DTYPE](0),
+            Scalar[DTYPE](1),
+        )
+
+        # Set initial arm qpos from MuJoCo reference (after _reset_hand warmup).
+        # These values place the hand at approximately (0, 0.6, 0.2).
+        # Obtained by running MetaWorld SawyerReachEnvV3.reset() in MuJoCo.
+        data.qpos[0] = Scalar[DTYPE](1.889288)  # j0
+        data.qpos[1] = Scalar[DTYPE](-0.575769)  # j1
+        data.qpos[2] = Scalar[DTYPE](-0.976659)  # j2
+        data.qpos[3] = Scalar[DTYPE](1.641991)  # j3
+        data.qpos[4] = Scalar[DTYPE](0.942860)  # j4
+        data.qpos[5] = Scalar[DTYPE](1.043696)  # j5
+        data.qpos[6] = Scalar[DTYPE](2.292833)  # j6
+        data.qpos[7] = Scalar[DTYPE](0.0)  # r_close
+        data.qpos[8] = Scalar[DTYPE](0.0)  # l_close
+
+        # Object free joint (qpos 9-15): on table at z=0.02
+        # (MuJoCo reference position from sawyer_reach_task_xml)
+        data.qpos[9] = Scalar[DTYPE](0.0)  # obj x
+        data.qpos[10] = Scalar[DTYPE](0.6)  # obj y
+        data.qpos[11] = Scalar[DTYPE](0.02)  # obj z (on table)
+        data.qpos[12] = Scalar[DTYPE](1.0)  # obj quat w
+        data.qpos[13] = Scalar[DTYPE](0.0)  # obj quat x
+        data.qpos[14] = Scalar[DTYPE](0.0)  # obj quat y
+        data.qpos[15] = Scalar[DTYPE](0.0)  # obj quat z
+
+        # Run FK to compute xpos from the initial qpos
+        from mojo_rl.physics3d.kinematics import forward_kinematics
+
+        forward_kinematics(model, data)
 
     # === CPU: Pre-step hook ===
     @staticmethod
     def pre_step_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
@@ -187,14 +262,18 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         var new_y = _clamp(cur_y + dy, MOCAP_LOW_Y, MOCAP_HIGH_Y)
         var new_z = _clamp(cur_z + dz, MOCAP_LOW_Z, MOCAP_HIGH_Z)
 
-        data.set_mocap_pos(MOCAP_BODY_IDX,
-            Scalar[DTYPE](new_x), Scalar[DTYPE](new_y), Scalar[DTYPE](new_z))
+        data.set_mocap_pos(
+            MOCAP_BODY_IDX,
+            Scalar[DTYPE](new_x),
+            Scalar[DTYPE](new_y),
+            Scalar[DTYPE](new_z),
+        )
 
         # Gripper: apply as qfrc to the gripper slide joints
-        # r_close and l_close are the last 2 joints (indices NV-2 and NV-1)
-        # Positive gripper value = close, negative = open
-        data.qfrc[NV - 2] = Scalar[DTYPE](gripper * 400.0)  # r_close
-        data.qfrc[NV - 1] = Scalar[DTYPE](-gripper * 400.0)  # l_close (mirrored)
+        # r_close is DOF 7, l_close is DOF 8 (NOT NV-2/NV-1 which would be
+        # the object free joint when an object is present in the model)
+        data.qfrc[7] = Scalar[DTYPE](gripper * 400.0)  # r_close
+        data.qfrc[8] = Scalar[DTYPE](-gripper * 400.0)  # l_close (mirrored)
 
         return True  # Handled — skip MODEL_DEF.apply_actions
 
@@ -257,8 +336,14 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     def physics_substep_gpu[
         DTYPE: DType where DTYPE.is_floating_point(),
         BATCH_SIZE: Int,
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int,
-        MAX_CONTACTS: Int, NGEOM: Int, MAX_EQUALITY: Int, CONE_TYPE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
         MAX_TENDON: Int = 0,
     ](
         ctx: DeviceContext,
@@ -271,7 +356,9 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def pre_step_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -284,8 +371,11 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def compute_reward_and_done_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int,
-        ACTION_DIM: Int, MODEL_SIZE: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+        MODEL_SIZE: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -296,29 +386,42 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         actions: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
         ],
-        env: Int, qpos_off: Int, xpos_off: Int, xipos_off: Int,
-        cfrc_ext_off: Int, cvel_off: Int,
-        meta_offset: Int, curriculum_offset: Int,
-        step_count: Int, frame_skip: Int, timestep: Scalar[DTYPE],
+        env: Int,
+        qpos_off: Int,
+        xpos_off: Int,
+        xipos_off: Int,
+        cfrc_ext_off: Int,
+        cvel_off: Int,
+        meta_offset: Int,
+        curriculum_offset: Int,
+        step_count: Int,
+        frame_skip: Int,
+        timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
         return (Scalar[DTYPE](0), False)
 
     @always_inline
     @staticmethod
     def init_qpos_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ],
-        env: Int, qpos_off: Int,
+        env: Int,
+        qpos_off: Int,
     ):
         pass
 
     @always_inline
     @staticmethod
     def custom_extract_obs_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int, OBS_DIM: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -326,6 +429,9 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
-        env: Int, qpos_off: Int, qvel_off: Int, xpos_off: Int,
+        env: Int,
+        qpos_off: Int,
+        qvel_off: Int,
+        xpos_off: Int,
     ) -> Bool:
         return False

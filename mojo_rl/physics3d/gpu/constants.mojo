@@ -12,12 +12,12 @@ State buffer layout per environment:
    cfrc_ext: NBODY*6 | cvel: NBODY*6 | cinert: NBODY*10 | qfrc_actuator: NV]
 
 Model buffer (static, same for all environments):
-  Per body (MODEL_BODY_SIZE=23): [mass, inv_mass, inertia(3), inv_inertia(3),
-    pos(3), quat(4), parent, ipos(3), iquat(4)]
+  Per body (MODEL_BODY_SIZE=25): [mass, inv_mass, inertia(3), inv_inertia(3),
+    pos(3), quat(4), parent, ipos(3), iquat(4), rootid, weldid]
   Per joint (MODEL_JOINT_SIZE=26): [type, body_id, qpos_adr, dof_adr,
     pos(3), axis(3), tau_limit, range_min/max, armature, damping, stiffness, springref, frictionloss,
     solref_limit(2), solimp_limit(5), qpos0]
-  Metadata (MODEL_META_SIZE=25): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
+  Metadata (MODEL_META_SIZE=26): [NBODY, NJOINT, gravity(3), timestep, _reserved(2),
     solref_contact(2), solimp_contact(5), solref_limit(2), solimp_limit(5), impratio, nequality, ntendon]
   Curriculum (MODEL_CURRICULUM_SIZE=8): [up to 8 curriculum parameters]
   Per geom (MODEL_GEOM_SIZE=29): [type, body, pos(3), quat(4), radius, half_length,
@@ -212,15 +212,25 @@ def cinert_offset[
     return cvel_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 6
 
 
+def subtree_com_offset[
+    NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
+]() -> Int:
+    """Offset to subtree_com array (subtree center of mass).
+
+    Layout: [x, y, z] per body. Placed after cinert.
+    """
+    return cinert_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 10
+
+
 def qfrc_actuator_offset[
     NQ: Int, NV: Int, NBODY: Int, MAX_CONTACTS: Int, NSITE: Int = 0
 ]() -> Int:
     """Offset to qfrc_actuator array (actuator force per DOF).
 
     Captures gear * clamped_force before constraint solving.
-    Placed after cinert.
+    Placed after subtree_com.
     """
-    return cinert_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 10
+    return subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]() + NBODY * 3
 
 
 def state_size[
@@ -245,6 +255,7 @@ def state_size[
         + NBODY * 6  # cfrc_ext
         + NBODY * 6  # cvel
         + NBODY * 10  # cinert
+        + NBODY * 3  # subtree_com
         + NV  # qfrc_actuator
     )
 
@@ -253,7 +264,7 @@ def state_size[
 # Model Buffer Layout - Per Body
 # =============================================================================
 
-comptime MODEL_BODY_SIZE: Int = 23
+comptime MODEL_BODY_SIZE: Int = 25
 
 comptime BODY_IDX_MASS: Int = 0
 comptime BODY_IDX_INV_MASS: Int = 1
@@ -278,6 +289,8 @@ comptime BODY_IDX_IQUAT_X: Int = 19  # Inertia frame quaternion (body frame)
 comptime BODY_IDX_IQUAT_Y: Int = 20
 comptime BODY_IDX_IQUAT_Z: Int = 21
 comptime BODY_IDX_IQUAT_W: Int = 22
+comptime BODY_IDX_ROOTID: Int = 23  # Root body index (child of worldbody)
+comptime BODY_IDX_WELDID: Int = 24  # Weld body index (MuJoCo body_weldid)
 
 
 def model_body_offset(body_idx: Int) -> Int:
@@ -328,7 +341,7 @@ def model_joint_offset[NBODY: Int](joint_idx: Int) -> Int:
 # Model Buffer Layout - Global Metadata
 # =============================================================================
 
-comptime MODEL_META_SIZE: Int = 25
+comptime MODEL_META_SIZE: Int = 26
 
 comptime MODEL_META_IDX_NBODY: Int = 0
 comptime MODEL_META_IDX_NJOINT: Int = 1
@@ -362,6 +375,7 @@ comptime MODEL_META_IDX_IMPRATIO: Int = 22  # MuJoCo impratio
 comptime MODEL_META_IDX_NEQUALITY: Int = 23  # Number of equality constraints
 # Fixed tendons
 comptime MODEL_META_IDX_NTENDON: Int = 24  # Number of fixed tendons
+comptime MODEL_META_IDX_NEXCLUDE: Int = 25  # Number of contact exclude pairs
 
 
 def model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
@@ -373,7 +387,7 @@ def model_metadata_offset[NBODY: Int, NJOINT: Int]() -> Int:
 # Model Buffer Layout - Unified Geoms (body-attached + static)
 # =============================================================================
 
-comptime MODEL_GEOM_SIZE: Int = 29  # Per unified geom (+7 for solref/solimp(5) +1 for margin)
+comptime MODEL_GEOM_SIZE: Int = 30  # Per unified geom (+7 for solref/solimp(5) +1 for margin +1 mesh_id)
 
 comptime GEOM_IDX_TYPE: Int = 0
 comptime GEOM_IDX_BODY: Int = 1  # Body index (-1 for static)
@@ -404,6 +418,7 @@ comptime GEOM_IDX_SOLIMP_2: Int = 25  # Per-geom solimp width
 comptime GEOM_IDX_SOLIMP_3: Int = 26  # Per-geom solimp midpoint
 comptime GEOM_IDX_SOLIMP_4: Int = 27  # Per-geom solimp power
 comptime GEOM_IDX_MARGIN: Int = 28  # Per-geom contact margin
+comptime GEOM_IDX_MESH_ID: Int = 29  # Mesh hull index (-1 if not mesh)
 
 
 def model_geom_offset[NBODY: Int, NJOINT: Int](geom_idx: Int) -> Int:
@@ -638,17 +653,97 @@ def model_size_with_invweight[
     NEQUALITY: Int = 0,
     NTENDON: Int = 0,
     NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+    NMESH_VERTS: Int = 0,
 ]() -> Int:
-    """Total model buffer size including invweight0 arrays.
+    """Total model buffer size including invweight0, exclude pairs, and mesh hulls.
 
     Layout: [bodies | joints | metadata | curriculum | geoms | equality | tendons | sites |
-             body_invweight0(NBODY*2) | dof_invweight0(NV)]
+             body_invweight0(NBODY*2) | dof_invweight0(NV) | excludes(NEXCLUDE*2) |
+             mesh_meta(MAX_GPU_MESHES*2) | mesh_verts(NMESH_VERTS*3)]
     """
     return (
         model_dof_invweight0_offset[
             NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
         ]()
         + NV
+        + NEXCLUDE * 2
+        + MAX_GPU_MESHES * MODEL_MESH_META_SIZE
+        + NMESH_VERTS * 3
+    )
+
+
+# Exclude pair section: stored as [body1_0, body2_0, body1_1, body2_1, ...]
+# after dof_invweight0
+comptime MODEL_EXCLUDE_PAIR_SIZE: Int = 2  # body1, body2
+
+
+def model_exclude_offset[
+    NBODY: Int,
+    NJOINT: Int,
+    NV: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+]() -> Int:
+    """Offset to exclude pairs section in model buffer."""
+    return (
+        model_dof_invweight0_offset[
+            NBODY, NJOINT, NGEOM, NEQUALITY, NTENDON, NSITE
+        ]()
+        + NV
+    )
+
+
+# =============================================================================
+# Model Buffer Layout - Mesh Collision Hull Data
+# =============================================================================
+
+# Mesh hull vertices stored AFTER exclude pairs in the model buffer.
+# Layout: [mesh_meta(NMESH*2)] [mesh_verts(total_verts*3)]
+# mesh_meta: [vertadr, vertnum] per mesh
+# mesh_verts: flattened [x0,y0,z0, x1,y1,z1, ...] in local frame
+comptime MAX_HULL_VERTS_PER_MESH: Int = 256
+comptime MAX_GPU_MESHES: Int = 16
+comptime MODEL_MESH_META_SIZE: Int = 2  # vertadr, vertnum per mesh
+
+
+def model_mesh_meta_offset[
+    NBODY: Int,
+    NJOINT: Int,
+    NV: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+]() -> Int:
+    """Offset to mesh metadata [vertadr, vertnum] * MAX_GPU_MESHES."""
+    return (
+        model_exclude_offset[
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE
+        ]()
+        + NEXCLUDE * 2
+    )
+
+
+def model_mesh_vert_offset[
+    NBODY: Int,
+    NJOINT: Int,
+    NV: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+]() -> Int:
+    """Offset to mesh hull vertex data."""
+    return (
+        model_mesh_meta_offset[
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY, NTENDON, NSITE, NEXCLUDE
+        ]()
+        + MAX_GPU_MESHES * MODEL_MESH_META_SIZE
     )
 
 

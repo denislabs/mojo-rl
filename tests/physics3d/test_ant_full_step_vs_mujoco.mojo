@@ -110,7 +110,7 @@ def compare_step(
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_model.opt.integrator = 1  # mjINT_RK4
     mj_model.opt.solver = 2  # mjSOL_NEWTON
-    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC
+    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (MuJoCo default)
     var mj_data = mujoco.MjData(mj_model)
 
     for i in range(NQ):

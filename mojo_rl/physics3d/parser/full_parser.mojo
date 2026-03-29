@@ -44,6 +44,7 @@ from .flat_model import (
     SiteData,
     DefaultsData,
     EqualityData,
+    ExcludeData,
     NamedDefaultsList,
     FlatModelDef,
     _EQ_CONNECT,
@@ -53,6 +54,7 @@ from .flat_model import (
     _GEOM_CAPSULE,
     _GEOM_BOX,
     _GEOM_CYLINDER,
+    _GEOM_MESH,
     TEX_SKYBOX,
     TEX_2D,
     TEX_CUBE,
@@ -342,6 +344,8 @@ def _geom_type_from_str(s: String) -> Int:
         return _GEOM_BOX
     elif t == "cylinder":
         return _GEOM_CYLINDER
+    elif t == "mesh":
+        return _GEOM_MESH
     return _GEOM_SPHERE  # default
 
 
@@ -557,11 +561,12 @@ def _fill_assets[
     NCAM: Int,
     NSITE: Int,
     NEQ: Int = 0,
+    NEXCLUDE: Int = 0,
 ](
     asset_sec: String,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ],
 ):
     """Parse <asset> section: fill result.textures[] and result.materials[]."""
@@ -679,6 +684,27 @@ def _fill_assets[
         mat_count += 1
         mat_pos = tag_end + 1
 
+    # ---- Mesh assets ----------------------------------------------------------
+    var mesh_pos = 0
+    var mesh_count = 0
+    while mesh_count < 16:
+        var t = asset_sec.find("<mesh", mesh_pos)
+        if t == -1:
+            break
+        var tag_end = asset_sec.find(">", t)
+        if tag_end == -1:
+            break
+        # Skip if this is a self-closing tag for non-mesh elements
+        var tag = String(asset_sec[byte = t : tag_end + 1])
+        var mesh_name = _extract_attr(tag, "name")
+        var mesh_file = _extract_attr(tag, "file")
+        if len(mesh_name) > 0 and len(mesh_file) > 0:
+            result.mesh_asset_names[mesh_count] = mesh_name
+            result.mesh_asset_files[mesh_count] = mesh_file
+            mesh_count += 1
+        mesh_pos = tag_end + 1
+    result.num_mesh_assets = mesh_count
+
 
 # =============================================================================
 # Phase 4b: Combined DFS scan — fills bodies, joints, geoms in one pass
@@ -698,13 +724,14 @@ def _fill_model[
     NCAM: Int,
     NSITE: Int,
     NEQ: Int = 0,
+    NEXCLUDE: Int = 0,
 ](
     worldbody: String,
     defaults: DefaultsData,
     named_defaults: NamedDefaultsList,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ],
     deg_factor: Float64 = 1.0,
 ):
@@ -888,13 +915,22 @@ def _fill_model[
                     jd.pos_y = pv[1]
                     jd.pos_z = pv[2]
 
-                # axis
+                # axis (MuJoCo normalizes joint axes during compilation)
                 var axis_s = _extract_attr(tag, "axis")
                 if len(axis_s) > 0:
                     var av = _parse_vec3(axis_s)
-                    jd.axis_x = av[0]
-                    jd.axis_y = av[1]
-                    jd.axis_z = av[2]
+                    var ax = av[0]
+                    var ay = av[1]
+                    var az = av[2]
+                    var ax_sq = ax*ax + ay*ay + az*az
+                    # Normalize if not already unit length
+                    var inv_len = Float64(1.0) / _sqrt_f64(ax_sq)
+                    ax = ax * inv_len
+                    ay = ay * inv_len
+                    az = az * inv_len
+                    jd.axis_x = ax
+                    jd.axis_y = ay
+                    jd.axis_z = az
 
                 # range (convert deg→rad when deg_factor != 1.0)
                 var range_s = _extract_attr(tag, "range")
@@ -1190,6 +1226,16 @@ def _fill_model[
                 var type_s = _extract_attr(tag, "type")
                 gd.geom_type = _geom_type_from_str(type_s)
 
+                # mesh reference: mesh="name" → resolve to file path from asset section
+                if gd.geom_type == _GEOM_MESH:
+                    var mesh_attr = _extract_attr(tag, "mesh")
+                    if len(mesh_attr) > 0:
+                        for mi in range(result.num_mesh_assets):
+                            if result.mesh_asset_names[mi] == mesh_attr:
+                                gd.mesh_id = mi
+                                gd.mesh_filename = result.mesh_asset_files[mi]
+                                break
+
                 # fromto — overrides pos and quat for capsule
                 var fromto_s = _extract_attr(tag, "fromto")
                 if len(fromto_s) > 0:
@@ -1254,9 +1300,10 @@ def _fill_model[
                         gd.half_z = s0
                     elif gd.geom_type == _GEOM_CAPSULE:
                         gd.radius = s0
-                        if len(size_parts) >= 2:
+                        # Only use size[1] as half-length if no fromto
+                        # (fromto already computed the correct value).
+                        if len(size_parts) >= 2 and len(fromto_s) == 0:
                             gd.half_length = s1
-                        # else half_length already set from fromto
                     elif gd.geom_type == _GEOM_BOX:
                         gd.half_x = s0
                         gd.half_y = s1
@@ -1264,7 +1311,8 @@ def _fill_model[
                         gd.radius = _sqrt_f64(s0 * s0 + s1 * s1 + s2 * s2)
                     elif gd.geom_type == _GEOM_CYLINDER:
                         gd.radius = s0
-                        gd.half_length = s1
+                        if len(fromto_s) == 0:
+                            gd.half_length = s1
                     elif gd.geom_type == _GEOM_PLANE:
                         gd.half_x = s0
                         gd.half_y = s1
@@ -1444,13 +1492,14 @@ def _fill_actuators[
     NCAM: Int,
     NSITE: Int,
     NEQ: Int = 0,
+    NEXCLUDE: Int = 0,
 ](
     actuator_sec: String,
     worldbody: String,
     defaults: DefaultsData,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ],
 ):
     """Parse <actuator> section and populate result.actuators[]."""
@@ -1526,12 +1575,13 @@ def _fill_equality[
     NCAM: Int,
     NSITE: Int,
     NEQ: Int,
+    NEXCLUDE: Int = 0,
 ](
     equality_sec: String,
     worldbody: String,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ],
 ):
     """Parse <equality> section: fill result.equalities[] with weld/connect data."""
@@ -1645,6 +1695,62 @@ def _find_material_index_by_name(asset_sec: String, name: String) -> Int:
     return -1
 
 
+# =============================================================================
+# Phase 5c: Parse <contact><exclude> section
+# =============================================================================
+
+
+def _fill_excludes[
+    NBODY: Int,
+    NJOINT: Int,
+    NQ: Int,
+    NV: Int,
+    NGEOM: Int,
+    NACT: Int,
+    NTEX: Int,
+    NMAT: Int,
+    NLIGHT: Int,
+    NCAM: Int,
+    NSITE: Int,
+    NEQ: Int,
+    NEXCLUDE: Int,
+](
+    contact_sec: String,
+    worldbody: String,
+    mut result: FlatModelDef[
+        NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
+        NEQ, NEXCLUDE,
+    ],
+):
+    """Parse <contact> section: fill result.excludes[] with body pair exclusions."""
+    var ex_count = 0
+    var scan_pos = 0
+    var clen = len(contact_sec)
+
+    while scan_pos < clen and ex_count < NEXCLUDE:
+        var ne = contact_sec.find("<exclude", scan_pos)
+        if ne == -1:
+            break
+        var tag = _extract_opening_tag(contact_sec, ne)
+        var body1_name = _trim(_extract_attr(tag, "body1"))
+        var body2_name = _trim(_extract_attr(tag, "body2"))
+
+        # Resolve body names to indices (1-based, 0=worldbody)
+        var b1 = _find_body_index_by_name(worldbody, body1_name)
+        var b2 = _find_body_index_by_name(worldbody, body2_name)
+
+        if b1 >= 0 and b2 >= 0:
+            # Store with canonical ordering (smaller first) for fast lookup
+            if b1 <= b2:
+                result.excludes[ex_count] = ExcludeData(b1, b2)
+            else:
+                result.excludes[ex_count] = ExcludeData(b2, b1)
+            ex_count += 1
+
+        var tag_end = contact_sec.find(">", ne)
+        scan_pos = tag_end + 1 if tag_end != -1 else ne + 1
+
+
 def _resolve_geom_materials[
     NBODY: Int,
     NJOINT: Int,
@@ -1658,12 +1764,13 @@ def _resolve_geom_materials[
     NCAM: Int,
     NSITE: Int,
     NEQ: Int = 0,
+    NEXCLUDE: Int = 0,
 ](
     worldbody: String,
     asset_sec: String,
     mut result: FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ],
 ):
     """Resolve material="name" on geoms → material index; copy material rgba."""
@@ -1713,8 +1820,10 @@ def parse_xml_full[
     NCAM: Int = 0,
     NSITE: Int = 0,
     NEQ: Int = 0,
+    NEXCLUDE: Int = 0,
 ](xml: String) -> FlatModelDef[
-    NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE, NEQ
+    NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE, NEQ,
+    NEXCLUDE,
 ]:
     """Full MJCF parse: returns a populated FlatModelDef.
 
@@ -1724,6 +1833,7 @@ def parse_xml_full[
         comptime fmd = parse_xml_full[
             pm.NBODY, pm.NJOINT, pm.NQ, pm.NV, pm.NGEOM, pm.NACT,
             pm.NTEX, pm.NMAT, pm.NLIGHT, pm.NCAM, pm.NSITE,
+            pm.NEQ, pm.NEXCLUDE,
         ](xml)
 
     The NTEX/NMAT/NLIGHT/NCAM/NSITE parameters default to 0 for backward
@@ -1732,7 +1842,7 @@ def parse_xml_full[
     """
     var result = FlatModelDef[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ]()
 
     # Extract top-level sections
@@ -1740,6 +1850,7 @@ def parse_xml_full[
     var actuator_sec = _extract_section(xml, "actuator")
     var asset_sec = _extract_section(xml, "asset")
     var equality_sec = _extract_section(xml, "equality")
+    var contact_sec = _extract_section(xml, "contact")
 
     # Global physics options
     var opt = _parse_option(xml)
@@ -1767,32 +1878,39 @@ def parse_xml_full[
     # Assets: textures and materials
     _fill_assets[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ](asset_sec, result)
 
     # Single DFS pass: bodies + joints + geoms + lights + cameras + sites
     _fill_model[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ](worldbody, defaults, named_defaults, result, deg_factor)
 
     # Actuators
     _fill_actuators[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ](actuator_sec, worldbody, defaults, result)
 
     # Equality constraints
     comptime if NEQ > 0:
         _fill_equality[
             NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM,
-            NSITE, NEQ,
+            NSITE, NEQ, NEXCLUDE,
         ](equality_sec, worldbody, result)
+
+    # Contact exclusion pairs
+    comptime if NEXCLUDE > 0:
+        _fill_excludes[
+            NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM,
+            NSITE, NEQ, NEXCLUDE,
+        ](contact_sec, worldbody, result)
 
     # Post-pass: resolve geom material="name" references
     _resolve_geom_materials[
         NBODY, NJOINT, NQ, NV, NGEOM, NACT, NTEX, NMAT, NLIGHT, NCAM, NSITE,
-        NEQ,
+        NEQ, NEXCLUDE,
     ](worldbody, asset_sec, result)
 
     return result^

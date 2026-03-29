@@ -4,8 +4,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import RK4Integrator, EulerIntegrator
-from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.integrator import RK4Integrator, EulerIntegrator, ImplicitIntegrator
+from mojo_rl.physics3d.solver import NewtonSolver, PGSSolver
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -30,9 +30,6 @@ struct HopperConfig(Phyics3dEnvConfig):
     comptime MAX_PITCH: Scalar[DType.float64] = 0.2  # ~11 deg
 
     comptime INTEGRATOR_WS_EXTRA: Int = 0
-    # comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-    #  HopperModel.NQ, HopperModel.NV
-    # ]()  # RK4 needs NQ + 7*NV extra workspace
 
     # === CPU: Integrator step ===
     @staticmethod

@@ -128,6 +128,24 @@ def quat_rotate[
     return (rx, ry, rz)
 
 
+def quat_rotate_inverse[
+    DTYPE: DType
+](
+    qx: Scalar[DTYPE],
+    qy: Scalar[DTYPE],
+    qz: Scalar[DTYPE],
+    qw: Scalar[DTYPE],
+    vx: Scalar[DTYPE],
+    vy: Scalar[DTYPE],
+    vz: Scalar[DTYPE],
+) -> Tuple[Scalar[DTYPE], Scalar[DTYPE], Scalar[DTYPE]]:
+    """Inverse-rotate a vector by a quaternion: q^(-1) * v * q.
+
+    Equivalent to quat_rotate with conjugate quaternion (-qx, -qy, -qz, qw).
+    """
+    return quat_rotate[DTYPE](-qx, -qy, -qz, qw, vx, vy, vz)
+
+
 # =============================================================================
 # Quaternion Normalization
 # =============================================================================

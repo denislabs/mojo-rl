@@ -21,3 +21,4 @@ comptime GEOM_SPHERE: Int = 1
 comptime GEOM_CAPSULE: Int = 2
 comptime GEOM_BOX: Int = 3
 comptime GEOM_CYLINDER: Int = 4
+comptime GEOM_MESH: Int = 5

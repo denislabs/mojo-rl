@@ -223,8 +223,8 @@ struct Phyics3dEnv[
         """Reset to initial position."""
         Self.MODEL_DEF.reset_data(self.data)
 
-        # Custom reset (e.g., set mocap positions)
-        Self.CONFIG.custom_reset_cpu(self.data)
+        # Custom reset (e.g., set mocap positions, warmup steps)
+        Self.CONFIG.custom_reset_cpu(self.model, self.data)
 
         # Run forward kinematics to compute xpos/xquat
         forward_kinematics(self.model, self.data)
@@ -1086,6 +1086,12 @@ struct Phyics3dEnv[
     # =========================================================================
 
     def init_renderer(mut self) raises -> Bool:
+        return self._init_renderer(show_velocity=True)
+
+    def init_renderer(mut self, show_velocity: Bool) raises -> Bool:
+        return self._init_renderer(show_velocity=show_velocity)
+
+    def _init_renderer(mut self, show_velocity: Bool) raises -> Bool:
         if self._renderer_initialized:
             return True
 
@@ -1098,6 +1104,7 @@ struct Phyics3dEnv[
             axes_offset=1.5,
             vel_arrow_height=0.15,
             vel_arrow_scale=0.1,
+            show_velocity=show_velocity,
         )
         renderer.init()
 

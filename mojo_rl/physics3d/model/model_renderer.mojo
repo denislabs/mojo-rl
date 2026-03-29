@@ -111,6 +111,30 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 cast_shadow=True,
             ))
 
+        # Read visual settings from model (znear, fog, shadow, headlight)
+        var vis = Self.MODEL_DEF.get_visual_settings()
+        var shadow_size = Int(4096)
+        var fog_start = Float32(0.0)
+        var fog_end = Float32(0.0)
+        if len(vis) >= 8:
+            # Apply znear to all cameras
+            var znear = vis[0]
+            for ci in range(len(self.cameras)):
+                # Camera stores fov in radians already, near is Float64
+                self.cameras[ci].near = znear
+            fog_start = Float32(vis[1])
+            fog_end = Float32(vis[2])
+            shadow_size = Int(vis[3])
+            # Headlight ambient: add to all lights
+            var has_hl = vis[7] > 0.5
+            if has_hl:
+                var hl_r = vis[4]
+                var hl_g = vis[5]
+                var hl_b = vis[6]
+                var hl_avg = (hl_r + hl_g + hl_b) / 3.0
+                for li in range(len(lights)):
+                    lights[li].ambient = lights[li].ambient + hl_avg
+
         self.visual_radius_scale = visual_radius_scale
         self.axes_offset = axes_offset
         self.vel_arrow_height = vel_arrow_height
@@ -126,8 +150,11 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             height=height,
             camera=camera,
             draw_grid=True,
-            draw_axes=True,
+            draw_axes=False,
             lights=lights,
+            shadow_size=shadow_size,
+            fog_start=fog_start,
+            fog_end=fog_end,
         )
 
         # Configure skybox from GradientTexture (if model defines one)
@@ -142,14 +169,24 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
                 bottom_b=Float32(skybox[5]),
             )
 
-        # Configure ground checker from CheckerTexture (if model defines one)
+        # Configure ground appearance from model textures/geom colors
         var checker = Self.MODEL_DEF.get_checker_colors()
         if len(checker) == 3:
+            # Model has a checker texture — use it
             self.renderer.set_ground_checker_colors(
                 r=Float32(checker[0]),
                 g=Float32(checker[1]),
                 b=Float32(checker[2]),
             )
+        else:
+            # No checker texture — use plane geom's rgba as solid color
+            var ground_rgba = Self.MODEL_DEF.get_ground_rgba()
+            if len(ground_rgba) == 3:
+                self.renderer.set_ground_solid_color(
+                    r=Float32(ground_rgba[0]),
+                    g=Float32(ground_rgba[1]),
+                    b=Float32(ground_rgba[2]),
+                )
 
         self.step_count = 0
         self.initialized = False
@@ -289,6 +326,10 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             self.renderer.camera.target = Vec3(torso_pos.x, 0.0, torso_pos.z)
             self.renderer.camera.eye = self.renderer.camera.target + offset
 
+        # Prevent camera from going below ground
+        if self.renderer.has_ground:
+            self.renderer.camera.clamp_above_ground(self.renderer.ground_z)
+
         self.renderer.begin_frame()
 
         # Render ground geoms (planes or fallback grid)
@@ -301,14 +342,6 @@ struct ModelRenderer[MODEL_DEF: ModelDefLike](EnvRenderer3D, Movable):
             )
         except:
             pass
-
-        # Coordinate axes
-        if self.follow:
-            self.renderer.draw_coordinate_axes(
-                Vec3(torso_pos.x - self.axes_offset, 0.0, 0.0), 0.2
-            )
-        else:
-            self.renderer.draw_coordinate_axes(Vec3(0.0, 0.0, 0.0), 0.2)
 
         # Render body-attached geoms
         try:
