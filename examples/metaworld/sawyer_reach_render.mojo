@@ -12,4 +12,4 @@ from mojo_rl.envs.metaworld import SawyerReach
 def main() raises:
     seed(42)
     var env = SawyerReach()
-    render_random(env, num_steps=3000, frame_delay_ms=100)
+    render_random(env, num_steps=3000, frame_delay_ms=200)

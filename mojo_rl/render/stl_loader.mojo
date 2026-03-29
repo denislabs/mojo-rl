@@ -96,16 +96,16 @@ def load_stl(path: String) raises -> MeshData:
         dz = Float32(1.0)
 
     # Determine which axis is smallest (project onto the other two)
-    var use_xy = True
+    var use_xy: Bool
     var use_xz = False
-    var use_yz = False
+    # var use_yz = False
     if dz >= dx and dz >= dy:
         use_xy = True  # Z is largest → project onto XY
     elif dy >= dx and dy >= dz:
         use_xz = True  # Y is largest → project onto XZ
         use_xy = False
     else:
-        use_yz = True  # X is largest → project onto YZ
+        # use_yz = True  # X is largest → project onto YZ
         use_xy = False
 
     for i in range(num_vertices):
@@ -122,9 +122,14 @@ def load_stl(path: String) raises -> MeshData:
             u = (vert.py - min_y) / dy
             v = (vert.pz - min_z) / dz
         mesh.vertices[i] = GPUVertex(
-            px=vert.px, py=vert.py, pz=vert.pz,
-            nx=vert.nx, ny=vert.ny, nz=vert.nz,
-            u=u, v=v,
+            px=vert.px,
+            py=vert.py,
+            pz=vert.pz,
+            nx=vert.nx,
+            ny=vert.ny,
+            nz=vert.nz,
+            u=u,
+            v=v,
         )
 
     return mesh^

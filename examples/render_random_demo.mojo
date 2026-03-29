@@ -27,15 +27,15 @@ def main() raises:
 
     # ---- Uncomment matching env ----
     # var env = HalfCheetah()
-    # var env = Ant()
+    var env = Ant()
     # var env = Hopper[TERMINATE_ON_UNHEALTHY=False]()
     # var env = Walker2d()
     # var env = Swimmer()
-    var env = Humanoid()
+    # var env = Humanoid()
     # var env = InvertedPendulum()
     # var env = InvertedDoublePendulum()
     # var env = Reacher()
     # var env = Pusher()
 
     # Use show_velocity=False for non-locomotion envs (Reacher, Pusher)
-    render_random(env, num_steps=3000, frame_delay_ms=100, show_velocity=False)
+    render_random(env, num_steps=3000, frame_delay_ms=32, show_velocity=False)
