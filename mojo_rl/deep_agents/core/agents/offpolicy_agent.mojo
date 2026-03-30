@@ -1738,7 +1738,13 @@ struct GenericOffPolicyAgent[
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        """CPU-side diagnostics: D2H copy + logging. Call outside graph."""
+        """CPU-side bookkeeping + diagnostics. Call outside graph.
+
+        Increments train_step_count/update_count (since graph replay
+        skips CPU code), then logs metrics if diag_every aligns.
+        """
+        self.train_step_count += 1
+        self.update_count += 1
         comptime BS = Self.BATCH
         if (
             self.logger
