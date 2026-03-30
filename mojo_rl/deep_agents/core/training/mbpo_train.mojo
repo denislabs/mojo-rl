@@ -487,6 +487,14 @@ def run_mbpo_train_gpu[
             var recent_count = Int(raw_count) if raw_count > 0.0 and raw_count == raw_count else 0
             var raw_sum = Float64(host_reward_sum[0])
             var recent_sum = raw_sum if raw_sum == raw_sum else 0.0
+            if recent_count > 0 and raw_sum != raw_sum:
+                print(
+                    "[MBPO WARN] NaN in episode reward sum at step "
+                    + String(total_steps)
+                    + " (count="
+                    + String(recent_count)
+                    + ")"
+                )
             completed_episodes += recent_count
 
             if recent_count > 0:

@@ -2974,6 +2974,28 @@ def gaussian_nll_grad_kernel[
 
 
 @always_inline
+def clamp_rewards_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+](
+    rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    lo: Scalar[dtype],
+    hi: Scalar[dtype],
+):
+    """Clamp rewards to [lo, hi] to prevent NaN cascades from model rollouts."""
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+    var r = rewards[b]
+    if r != r:  # NaN check
+        rewards[b] = Scalar[dtype](0.0)
+    elif r < lo:
+        rewards[b] = lo
+    elif r > hi:
+        rewards[b] = hi
+
+
+@always_inline
 def dynamics_sample_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,

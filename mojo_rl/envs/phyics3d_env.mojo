@@ -473,17 +473,18 @@ struct Phyics3dEnv[
         var workspace_buf: DeviceBuffer[gpu_dtype]
 
         if workspace_ptr:
+            # Model buffer: non-owning view at start of workspace_ptr
             model_buf = DeviceBuffer[gpu_dtype](
                 ctx,
                 workspace_ptr,
                 MODEL_SIZE,
                 owning=False,
             )
-            workspace_buf = DeviceBuffer[gpu_dtype](
-                ctx,
-                workspace_ptr + MODEL_SIZE,
-                BATCH_SIZE * WS_SIZE,
-                owning=False,
+            # Per-env workspace: allocate separately to avoid sub-pointer
+            # issues where GPU kernels produce wrong results when the
+            # workspace LayoutTensor starts at a non-zero offset.
+            workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
+                BATCH_SIZE * WS_SIZE
             )
         else:
             model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)

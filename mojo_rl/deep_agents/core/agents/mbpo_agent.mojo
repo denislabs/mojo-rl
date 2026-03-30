@@ -55,6 +55,7 @@ from mojo_rl.deep_agents.core.kernels import (
     build_dynamics_target_kernel,
     gaussian_nll_grad_kernel,
     dynamics_sample_kernel,
+    clamp_rewards_kernel,
     sample_indices_kernel,
 )
 from mojo_rl.core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
@@ -1908,6 +1909,16 @@ struct MBPOAgent[
                 block_dim=(TPB_VAL,),
             )
 
+            # Clamp synthetic rewards to prevent NaN cascades
+            comptime clamp_k = clamp_rewards_kernel[dtype, RB]
+            ctx.enqueue_function[clamp_k, clamp_k](
+                r_rew_t,
+                Scalar[dtype](-100.0),
+                Scalar[dtype](100.0),
+                grid_dim=(RB_BLOCKS,),
+                block_dim=(TPB_VAL,),
+            )
+
             # Set dones to 0 (no termination check on GPU for simplicity)
             ctx.enqueue_memset(gpu_dynamics.r_dones, 0)
 
@@ -2203,6 +2214,66 @@ struct MBPOAgent[
                 gpu_state.critic2_ws,
             )
             gpu_state.critics.pairs[1].online.optimizer_step(ctx)
+
+        # GPU Diagnostic logging (every diag_every train steps)
+        if (
+            self.logger
+            and self.diag_every > 0
+            and self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
+                ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
+                ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
+                ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
+                ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
+                ctx.enqueue_copy(gpu_state.diag_nq_host, gpu_state.next_q)
+                ctx.synchronize()
+                var diag_q_host = gpu_state.diag_q_host
+                var diag_tgt_host = gpu_state.diag_tgt_host
+                var diag_rew_host = gpu_state.diag_rew_host
+                var diag_done_host = gpu_state.diag_done_host
+                var diag_act_host = gpu_state.diag_act_host
+                var diag_nq_host = gpu_state.diag_nq_host
+
+                var mean_q: Float64 = 0.0
+                var mean_tgt: Float64 = 0.0
+                var mean_rew: Float64 = 0.0
+                var mean_done: Float64 = 0.0
+                var critic_loss: Float64 = 0.0
+                var mean_nq: Float64 = 0.0
+                var mean_abs_act: Float64 = 0.0
+                for b in range(BS):
+                    var q_val = Float64(diag_q_host[b])
+                    var tgt_val = Float64(diag_tgt_host[b])
+                    mean_q += q_val
+                    mean_tgt += tgt_val
+                    mean_rew += Float64(diag_rew_host[b])
+                    mean_done += Float64(diag_done_host[b])
+                    mean_nq += Float64(diag_nq_host[b])
+                    critic_loss += (q_val - tgt_val) * (q_val - tgt_val)
+                for i in range(BS * Self.ACTIONS):
+                    var a = Float64(diag_act_host[i])
+                    mean_abs_act += a if a >= 0.0 else -a
+                mean_q /= Float64(BS)
+                mean_tgt /= Float64(BS)
+                mean_rew /= Float64(BS)
+                mean_done /= Float64(BS)
+                mean_nq /= Float64(BS)
+                critic_loss /= Float64(BS)
+                mean_abs_act /= Float64(BS * Self.ACTIONS)
+
+                var step = self.train_step_count
+                self.logger[].log_scalar("critic_loss", critic_loss, step)
+                self.logger[].log_scalar("mean_q", mean_q, step)
+                self.logger[].log_scalar("mean_target", mean_tgt, step)
+                self.logger[].log_scalar("mean_reward", mean_rew, step)
+                self.logger[].log_scalar("mean_next_q", mean_nq, step)
+                self.logger[].log_scalar("mean_done", mean_done, step)
+                self.logger[].log_scalar("mean_abs_action", mean_abs_act, step)
+                self.logger[].log_scalar("alpha", self.alpha, step)
+            except:
+                pass
 
         # Phase 4: Actor update
         self.update_count += 1
