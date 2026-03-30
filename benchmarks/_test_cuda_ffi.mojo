@@ -336,7 +336,7 @@ def main() raises:
     print("=" * 60)
 
     # Load interceptor — use the same dlopen pattern as libcuda.so
-    var intercept = OwnedDLHandle("libcuda_intercept.so")
+    var intercept = OwnedDLHandle("./benchmarks/libcuda_intercept.so")
 
     var get_mojo_stream = intercept.get_function[
         def () -> CUptr
