@@ -14,7 +14,7 @@ Implementations:
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import dtype, TPB
 from mojo_rl.deep_agents.core.kernels import (
@@ -56,7 +56,7 @@ trait TargetValue:
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
     ) raises:
         ...
 
@@ -125,7 +125,7 @@ struct SingleQTarget(TargetValue):
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
     ) raises:
         """GPU dispatch: r + γ * Q * (1 - done)."""
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
@@ -205,12 +205,14 @@ struct TwinQTarget(TargetValue):
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
     ) raises:
         """GPU dispatch: r + γ * min(Q1, Q2) * (1 - done)."""
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
         var gamma_s = Scalar[dtype](gamma)
-        var alpha_s = Scalar[dtype](0.0)  # unused, entropy disabled
+        var alpha_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](alpha_buf.unsafe_ptr())
 
         @always_inline
         def kernel_wrapper(
@@ -223,7 +225,7 @@ struct TwinQTarget(TargetValue):
             dn: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             lp: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             g: Scalar[dtype],
-            a: Scalar[dtype],
+            a: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
         ):
             td_target_min_twin_kernel[dtype, BATCH, False](
                 td_targets, rew, q1_v, q2_v, dn, lp, g, a
@@ -237,7 +239,7 @@ struct TwinQTarget(TargetValue):
             dones,
             log_probs,
             gamma_s,
-            alpha_s,
+            alpha_t,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -295,12 +297,14 @@ struct EntropicTwinQTarget(TargetValue):
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         mut targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         gamma: Float64,
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
     ) raises:
         """GPU dispatch: r + γ * (min(Q1,Q2) - α*log_π) * (1 - done)."""
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
         var gamma_s = Scalar[dtype](gamma)
-        var alpha_s = Scalar[dtype](alpha)
+        var alpha_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](alpha_buf.unsafe_ptr())
 
         @always_inline
         def kernel_wrapper(
@@ -313,7 +317,7 @@ struct EntropicTwinQTarget(TargetValue):
             dn: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             lp: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
             g: Scalar[dtype],
-            a: Scalar[dtype],
+            a: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
         ):
             td_target_min_twin_kernel[dtype, BATCH, True](
                 td_targets, rew, q1_v, q2_v, dn, lp, g, a
@@ -327,7 +331,7 @@ struct EntropicTwinQTarget(TargetValue):
             dones,
             log_probs,
             gamma_s,
-            alpha_s,
+            alpha_t,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

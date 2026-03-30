@@ -67,6 +67,7 @@ from mojo_rl.deep_agents.core.kernels import (
     td_target_continuous_kernel,
     td_target_min_twin_kernel,
     increment_rng_counter_kernel,
+    alpha_adam_update_kernel,
 )
 from mojo_rl.deep_agents.core.kernels import (
     sac_sample_actions_kernel,
@@ -316,6 +317,18 @@ struct GenericGPUState[
     # GPU-side RNG counter for CUDA graph compatible seed generation
     var rng_counter: DeviceBuffer[DType.uint32]
 
+    # GPU-side agent scalars (CUDA graph compatible)
+    # Layout: [alpha, log_alpha, adam_m, adam_v, adam_t]
+    comptime GPU_ALPHA = 0
+    comptime GPU_LOG_ALPHA = 1
+    comptime GPU_ADAM_M = 2
+    comptime GPU_ADAM_V = 3
+    comptime GPU_ADAM_T = 4
+    comptime GPU_TARGET_ENT = 5
+    comptime GPU_ALPHA_LR = 6
+    comptime GPU_SCALARS_SIZE = 7
+    var gpu_scalars: DeviceBuffer[dtype]
+
     # Diagnostic host buffers for GPU→CPU readback (pre-allocated)
     var diag_q_host: HostBuffer[dtype]  # [batch_size]
     var diag_tgt_host: HostBuffer[dtype]  # [batch_size]
@@ -413,6 +426,12 @@ struct GenericGPUState[
         # GPU-side RNG counter (initialized to 0)
         self.rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
         self.rng_counter.enqueue_fill(UInt32(0))
+
+        # GPU-side agent scalars (initialized to zero, uploaded by agent)
+        self.gpu_scalars = ctx.enqueue_create_buffer[dtype](
+            Self.GPU_SCALARS_SIZE
+        )
+        self.gpu_scalars.enqueue_fill(Scalar[dtype](0.0))
 
         # Diagnostic host buffers
 
@@ -1262,18 +1281,56 @@ struct GenericOffPolicyAgent[
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
     ) raises -> None:
-        """Upload CPU network weights to GPU."""
+        """Upload CPU network weights + agent scalars to GPU."""
         gpu_state.actor.upload_from(self.state.actor, ctx)
         gpu_state.critics.upload_from(self.state.critics, ctx)
+
+        # Upload alpha state to GPU scalars
+        var scalars_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.GPUStateType.GPU_SCALARS_SIZE
+        )
+        scalars_host[Self.GPUStateType.GPU_ALPHA] = Scalar[dtype](self.alpha)
+        scalars_host[Self.GPUStateType.GPU_LOG_ALPHA] = Scalar[dtype](
+            self.log_alpha
+        )
+        scalars_host[Self.GPUStateType.GPU_ADAM_M] = Scalar[dtype](
+            self.alpha_adam_m
+        )
+        scalars_host[Self.GPUStateType.GPU_ADAM_V] = Scalar[dtype](
+            self.alpha_adam_v
+        )
+        scalars_host[Self.GPUStateType.GPU_ADAM_T] = Scalar[dtype](
+            self.alpha_adam_t
+        )
+        scalars_host[Self.GPUStateType.GPU_TARGET_ENT] = Scalar[dtype](
+            self.target_entropy
+        )
+        scalars_host[Self.GPUStateType.GPU_ALPHA_LR] = Scalar[dtype](
+            self.alpha_lr
+        )
+        ctx.enqueue_copy(gpu_state.gpu_scalars, scalars_host)
 
     def download_from_gpu(
         mut self,
         mut gpu_state: Self.GPUStateType,
         ctx: DeviceContext,
     ) raises -> None:
-        """Download trained GPU weights back to CPU network states."""
+        """Download trained GPU weights + agent scalars back to CPU."""
         gpu_state.actor.download_to(self.state.actor, ctx)
         gpu_state.critics.download_to(self.state.critics, ctx)
+
+        # Download alpha state from GPU
+        var scalars_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.GPUStateType.GPU_SCALARS_SIZE
+        )
+        ctx.enqueue_copy(scalars_host, gpu_state.gpu_scalars)
+        ctx.synchronize()
+        self.alpha = Float64(
+            scalars_host[Self.GPUStateType.GPU_ALPHA]
+        )
+        self.log_alpha = Float64(
+            scalars_host[Self.GPUStateType.GPU_LOG_ALPHA]
+        )
 
     def select_actions_gpu[
         N_ENVS: Int
@@ -1470,7 +1527,7 @@ struct GenericOffPolicyAgent[
             done_t,
             targets_t,
             self.gamma,
-            self.alpha,
+            gpu_state.gpu_scalars,
         )
 
         comptime if Self.profile >= 2:
@@ -1723,7 +1780,8 @@ struct GenericOffPolicyAgent[
 
             gpu_state.actor.online.optimizer_step(ctx)
 
-            # Alpha auto-tuning (SAC only): copy log_probs GPU→CPU, Adam update
+            # Alpha auto-tuning (SAC only): GPU-side Adam update
+            # No D2H copy or ctx.synchronize — fully CUDA graph compatible
             comptime if Self.Config.ActorLoss.HAS_ALPHA:
                 if self.auto_alpha:
                     comptime LP_OFF = Self.Config.ActorLoss.gpu_lp_offset[
@@ -1732,65 +1790,43 @@ struct GenericOffPolicyAgent[
                         Self.ACTOR_OUT,
                         Self.ACTOR_CS,
                     ]()
-                    # Copy log_probs from strat_ws[LP_OFF] → curr_lp via kernel
                     var src_lp = LayoutTensor[
                         dtype, Layout.row_major(BS), MutAnyOrigin
                     ](gpu_state.strat_ws.unsafe_ptr() + LP_OFF)
-                    var dst_lp = LayoutTensor[
-                        dtype, Layout.row_major(BS), MutAnyOrigin
-                    ](gpu_state.curr_lp.unsafe_ptr())
+
+                    comptime GS = Self.GPUStateType
+                    comptime alpha_k = alpha_adam_update_kernel[
+                        dtype,
+                        BS,
+                        GS.GPU_ALPHA,
+                        GS.GPU_LOG_ALPHA,
+                        GS.GPU_ADAM_M,
+                        GS.GPU_ADAM_V,
+                        GS.GPU_ADAM_T,
+                        GS.GPU_TARGET_ENT,
+                        GS.GPU_ALPHA_LR,
+                    ]
+                    var scalars_t = LayoutTensor[
+                        dtype, Layout.row_major(1), MutAnyOrigin
+                    ](gpu_state.gpu_scalars.unsafe_ptr())
 
                     @always_inline
-                    def copy_lp(
-                        d: LayoutTensor[
-                            dtype, Layout.row_major(BS), MutAnyOrigin
+                    def alpha_wrapper(
+                        sc: LayoutTensor[
+                            dtype, Layout.row_major(1), MutAnyOrigin
                         ],
-                        s: LayoutTensor[
+                        lp: LayoutTensor[
                             dtype, Layout.row_major(BS), MutAnyOrigin
                         ],
                     ):
-                        var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-                        if i < BS:
-                            d.ptr[i] = s.ptr[i]
+                        alpha_k(sc, lp)
 
-                    ctx.enqueue_function[copy_lp, copy_lp](
-                        dst_lp,
+                    ctx.enqueue_function[alpha_wrapper, alpha_wrapper](
+                        scalars_t,
                         src_lp,
-                        grid_dim=(BATCH_BLOCKS,),
-                        block_dim=(TPB,),
+                        grid_dim=(1,),
+                        block_dim=(1,),
                     )
-
-                    # GPU → CPU copy
-                    var lp_host = gpu_state.diag_lp_host
-                    ctx.enqueue_copy(lp_host, gpu_state.curr_lp)
-                    ctx.synchronize()
-
-                    var mean_lp: Float64 = 0.0
-                    for b in range(BS):
-                        mean_lp += Float64(lp_host[b])
-                    mean_lp /= Float64(BS)
-
-                    var grad = -self.alpha * (mean_lp + self.target_entropy)
-                    self.alpha_adam_t += 1
-                    var beta1: Float64 = 0.9
-                    var beta2: Float64 = 0.999
-                    var eps: Float64 = 1e-8
-                    self.alpha_adam_m = (
-                        beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
-                    )
-                    self.alpha_adam_v = (
-                        beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
-                    )
-                    var m_hat = self.alpha_adam_m / (
-                        1.0 - beta1 ** Float64(self.alpha_adam_t)
-                    )
-                    var v_hat = self.alpha_adam_v / (
-                        1.0 - beta2 ** Float64(self.alpha_adam_t)
-                    )
-                    self.log_alpha -= (
-                        self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
-                    )
-                    self.alpha = exp(self.log_alpha)
 
             comptime if Self.profile >= 2:
                 comptime ACTOR_SLOT = 4 if Self.Config.NUM_CRITICS == 1 else 5
@@ -2009,6 +2045,7 @@ struct GenericOffPolicyAgent[
     def train_gpu[
         E: GPUContinuousEnv,
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
+        USE_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         ctx: DeviceContext,
@@ -2057,7 +2094,7 @@ struct GenericOffPolicyAgent[
         var ckpt_path = String(self.checkpoint_path)
         var tgt_steps = self.target_total_steps
         var metrics = run_offpolicy_continuous_train_gpu[
-            E, Self, Self.profile, Self.L, CurriculumType
+            E, Self, Self.profile, Self.L, CurriculumType, USE_CUDA_GRAPH
         ](
             self,
             ctx,

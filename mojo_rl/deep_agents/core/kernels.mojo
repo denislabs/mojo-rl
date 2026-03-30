@@ -436,6 +436,88 @@ def increment_rng_counter_kernel(
 
 
 @always_inline
+def alpha_adam_update_kernel[
+    dtype: DType,
+    BATCH: Int,
+    ALPHA_OFF: Int,
+    LOG_ALPHA_OFF: Int,
+    ADAM_M_OFF: Int,
+    ADAM_V_OFF: Int,
+    ADAM_T_OFF: Int,
+    TARGET_ENT_OFF: Int,
+    ALPHA_LR_OFF: Int,
+](
+    gpu_scalars: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+    log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """GPU-side SAC alpha auto-tuning. Launch with grid=(1,), block=(1,).
+
+    Reduces log_probs to mean, then does one Adam step on log_alpha.
+    All state lives in gpu_scalars at known comptime offsets.
+    Fully CUDA-graph-compatible (no host ops).
+
+    Args:
+        gpu_scalars: Workspace buffer containing alpha, log_alpha, adam_m/v/t.
+        log_probs: Current policy log-probabilities [BATCH].
+    """
+    if Int(thread_idx.x) != 0:
+        return
+
+    # 1. Reduce log_probs to mean
+    var sum_lp = Scalar[dtype](0.0)
+    for b in range(BATCH):
+        sum_lp += log_probs.ptr[b]
+    var mean_lp = sum_lp / Scalar[dtype](BATCH)
+
+    # Guard against NaN
+    if mean_lp != mean_lp:
+        mean_lp = Scalar[dtype](0.0)
+
+    # 2. Read current state from gpu_scalars
+    var alpha = gpu_scalars.ptr[ALPHA_OFF]
+    var log_alpha = gpu_scalars.ptr[LOG_ALPHA_OFF]
+    var adam_m = gpu_scalars.ptr[ADAM_M_OFF]
+    var adam_v = gpu_scalars.ptr[ADAM_V_OFF]
+    var adam_t = gpu_scalars.ptr[ADAM_T_OFF]
+
+    # 3. Compute gradient
+    var target_ent = gpu_scalars.ptr[TARGET_ENT_OFF]
+    var grad = -alpha * (mean_lp + target_ent)
+    if grad != grad:
+        grad = Scalar[dtype](0.0)
+
+    # 4. Adam update
+    var beta1 = Scalar[dtype](0.9)
+    var beta2 = Scalar[dtype](0.999)
+    var eps = Scalar[dtype](1e-8)
+    var lr = gpu_scalars.ptr[ALPHA_LR_OFF]
+
+    adam_t += Scalar[dtype](1.0)
+    adam_m = beta1 * adam_m + (Scalar[dtype](1.0) - beta1) * grad
+    adam_v = beta2 * adam_v + (Scalar[dtype](1.0) - beta2) * grad * grad
+
+    # Bias correction: beta^t via exp(t * log(beta))
+    var b1_corr = Scalar[dtype](1.0) - exp(adam_t * log(beta1))
+    var b2_corr = Scalar[dtype](1.0) - exp(adam_t * log(beta2))
+    var m_hat = adam_m / b1_corr
+    var v_hat = adam_v / b2_corr
+    log_alpha -= lr * m_hat / (sqrt(v_hat) + eps)
+
+    # 5. Clamp log_alpha
+    if log_alpha > Scalar[dtype](2.0):
+        log_alpha = Scalar[dtype](2.0)
+    elif log_alpha < Scalar[dtype](-10.0):
+        log_alpha = Scalar[dtype](-10.0)
+
+    # 6. Write back
+    gpu_scalars.ptr[ALPHA_OFF] = exp(log_alpha)
+    gpu_scalars.ptr[LOG_ALPHA_OFF] = log_alpha
+    gpu_scalars.ptr[ADAM_M_OFF] = adam_m
+    gpu_scalars.ptr[ADAM_V_OFF] = adam_v
+    gpu_scalars.ptr[ADAM_T_OFF] = adam_t
+
+
+@always_inline
 def sample_indices_kernel[
     dtype: DType,
     SAMPLE_SIZE: Int,
@@ -854,7 +936,7 @@ def td_target_min_twin_kernel[
     dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     gamma: Scalar[dtype],
-    alpha: Scalar[dtype],
+    alpha_buf: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
 ):
     """Compute TD3/SAC TD targets with min(Q1,Q2) twin critics.
 
@@ -862,7 +944,7 @@ def td_target_min_twin_kernel[
     SAC: y = r + γ * (min(Q1_t, Q2_t)(s', a') - α * log_π(a'|s')) * (1-done)
 
     Set use_entropy=False for TD3, use_entropy=True for SAC.
-    For TD3, log_probs and alpha are unused (set alpha=0 or use_entropy=False).
+    Reads alpha from GPU memory (CUDA graph compatible).
 
     Args:
         td_targets: Output TD targets [BATCH].
@@ -872,7 +954,7 @@ def td_target_min_twin_kernel[
         dones:      Done flags [BATCH] (1.0 = terminal).
         log_probs:  Log-probabilities of next actions (SAC only) [BATCH].
         gamma:      Discount factor.
-        alpha:      Entropy coefficient (SAC) or 0.0 (TD3).
+        alpha_buf:  GPU-side alpha [1] (read from DeviceBuffer).
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH:
@@ -882,7 +964,8 @@ def td_target_min_twin_kernel[
     var q_min = q1_values[i] if q1_values[i] < q2_values[i] else q2_values[i]
 
     comptime if use_entropy:
-        # SAC: entropy bonus in target
+        # SAC: entropy bonus in target — read alpha from GPU memory
+        var alpha = alpha_buf.ptr[0]
         td_targets[i] = rewards[i] + gamma * (q_min - alpha * log_probs[i]) * (
             one - dones[i]
         )

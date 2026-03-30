@@ -58,6 +58,7 @@ from mojo_rl.deep_agents.core.kernels import (
     clamp_rewards_kernel,
     sample_indices_kernel,
     increment_rng_counter_kernel,
+    alpha_adam_update_kernel,
 )
 from mojo_rl.core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
 from mojo_rl.deep_agents.core.training.mbpo_train import run_mbpo_train, run_mbpo_train_gpu
@@ -554,6 +555,9 @@ struct GPUDynamicsEnsemble[
     var s_done: DeviceBuffer[dtype]
     var s_idx: DeviceBuffer[DType.int32]
 
+    # GPU-side RNG counter for dynamics training
+    var rng_counter: DeviceBuffer[DType.uint32]
+
     def __init__(out self, ctx: DeviceContext) raises:
         # Initialize ensemble members on GPU
         self.members = List[GPUNetworkState[Self.DynModel, Self.DynOpt]](
@@ -608,6 +612,8 @@ struct GPUDynamicsEnsemble[
         self.s_nobs = ctx.enqueue_create_buffer[dtype](SB * Self.obs_dim)
         self.s_done = ctx.enqueue_create_buffer[dtype](SB)
         self.s_idx = ctx.enqueue_create_buffer[DType.int32](SB)
+        self.rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
+        self.rng_counter.enqueue_fill(UInt32(0))
 
     def __init__(out self, *, deinit take: Self):
         self.members = take.members^
@@ -637,6 +643,7 @@ struct GPUDynamicsEnsemble[
         self.s_nobs = take.s_nobs^
         self.s_done = take.s_done^
         self.s_idx = take.s_idx^
+        self.rng_counter = take.rng_counter^
 
     def upload_from(
         mut self,
@@ -704,6 +711,12 @@ struct GPUDynamicsEnsemble[
 
         var holdout_losses = List[Float64](capacity=Self.num_ensemble)
 
+        # RNG counter for dynamics training sampling
+        comptime dyn_incr_k = increment_rng_counter_kernel
+        var dyn_rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](self.rng_counter.unsafe_ptr())
+
         for m in range(Self.num_ensemble):
             var best_holdout = Float64(1e10)
             var epochs_since_update = 0
@@ -711,11 +724,13 @@ struct GPUDynamicsEnsemble[
             for epoch in range(max_epochs):
                 # Training mini-batches
                 for batch_idx in range(n_batches_per_epoch):
-                    var seed = UInt32(m * 1000 + epoch * 100 + batch_idx)
+                    ctx.enqueue_function[dyn_incr_k, dyn_incr_k](
+                        dyn_rng_t, grid_dim=(1,), block_dim=(1,),
+                    )
 
                     # Sample from GPU buffer
                     buffer.sample[TB](
-                        ctx, seed,
+                        ctx, self.rng_counter,
                         self.s_obs, self.s_act, self.s_rew,
                         self.s_nobs, self.s_done, self.s_idx,
                     )
@@ -791,9 +806,11 @@ struct GPUDynamicsEnsemble[
                     self.members[m].optimizer_step(ctx)
 
                 # Holdout evaluation: sample a fresh batch, forward only, check loss
-                var holdout_seed = UInt32(m * 10000 + epoch + 99999)
+                ctx.enqueue_function[dyn_incr_k, dyn_incr_k](
+                    dyn_rng_t, grid_dim=(1,), block_dim=(1,),
+                )
                 buffer.sample[TB](
-                    ctx, holdout_seed,
+                    ctx, self.rng_counter,
                     self.s_obs, self.s_act, self.s_rew,
                     self.s_nobs, self.s_done, self.s_idx,
                 )
@@ -1817,8 +1834,15 @@ struct MBPOAgent[
         var max_lv = Scalar[dtype](gpu_dynamics.max_logvar)
 
         # Sample start observations from GPU buffer
+        comptime rollout_incr_k = increment_rng_counter_kernel
+        var rollout_rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](gpu_state.rng_counter.unsafe_ptr())
+        ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
+            rollout_rng_t, grid_dim=(1,), block_dim=(1,),
+        )
         gpu_state.buffer.sample[RB](
-            ctx, UInt32(self.total_steps),
+            ctx, gpu_state.rng_counter,
             gpu_dynamics.s_obs, gpu_dynamics.s_act, gpu_dynamics.s_rew,
             gpu_dynamics.s_nobs, gpu_dynamics.s_done, gpu_dynamics.s_idx,
         )
@@ -2169,7 +2193,7 @@ struct MBPOAgent[
             done_t,
             targets_t,
             self.gamma,
-            self.alpha,
+            gpu_state.gpu_scalars,
         )
 
         # Phase 3: Critic update
@@ -2334,95 +2358,45 @@ struct MBPOAgent[
             )
             gpu_state.actor.online.optimizer_step(ctx)
 
-            # Alpha auto-tuning
+            # Alpha auto-tuning (GPU-side Adam — no D2H or sync)
             comptime if Self.Config.ActorLoss.HAS_ALPHA:
                 if self.auto_alpha:
-                    comptime ACTOR_CS = Self.Config.ActorModel.CACHE_SIZE
                     comptime LP_OFF = Self.Config.ActorLoss.gpu_lp_offset[
-                        BS, Self.ACTIONS, Self.ACTOR_OUT, ACTOR_CS,
+                        BS, Self.ACTIONS, Self.ACTOR_OUT,
+                        Self.Config.ActorModel.CACHE_SIZE,
                     ]()
                     var src_lp = LayoutTensor[
                         dtype, Layout.row_major(BS), MutAnyOrigin
                     ](gpu_state.strat_ws.unsafe_ptr() + LP_OFF)
-                    var dst_lp = LayoutTensor[
-                        dtype, Layout.row_major(BS), MutAnyOrigin
-                    ](gpu_state.curr_lp.unsafe_ptr())
+
+                    comptime GS = Self.GPUStateType
+                    comptime mbpo_alpha_k = alpha_adam_update_kernel[
+                        dtype, BS,
+                        GS.GPU_ALPHA, GS.GPU_LOG_ALPHA,
+                        GS.GPU_ADAM_M, GS.GPU_ADAM_V, GS.GPU_ADAM_T,
+                        GS.GPU_TARGET_ENT, GS.GPU_ALPHA_LR,
+                    ]
+                    var scalars_t = LayoutTensor[
+                        dtype, Layout.row_major(1), MutAnyOrigin
+                    ](gpu_state.gpu_scalars.unsafe_ptr())
 
                     @always_inline
-                    def copy_lp(
-                        d: LayoutTensor[
-                            dtype, Layout.row_major(BS), MutAnyOrigin
+                    def mbpo_alpha_wrapper(
+                        sc: LayoutTensor[
+                            dtype, Layout.row_major(1), MutAnyOrigin
                         ],
-                        s: LayoutTensor[
+                        lp: LayoutTensor[
                             dtype, Layout.row_major(BS), MutAnyOrigin
                         ],
                     ):
-                        var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-                        if i < BS:
-                            d.ptr[i] = s.ptr[i]
+                        mbpo_alpha_k(sc, lp)
 
-                    ctx.enqueue_function[copy_lp, copy_lp](
-                        dst_lp,
-                        src_lp,
-                        grid_dim=(BATCH_BLOCKS,),
-                        block_dim=(TPB,),
+                    ctx.enqueue_function[
+                        mbpo_alpha_wrapper, mbpo_alpha_wrapper
+                    ](
+                        scalars_t, src_lp,
+                        grid_dim=(1,), block_dim=(1,),
                     )
-
-                    var lp_host = gpu_state.diag_lp_host
-                    ctx.enqueue_copy(lp_host, gpu_state.curr_lp)
-                    ctx.synchronize()
-
-                    var mean_lp: Float64 = 0.0
-                    for b in range(BS):
-                        mean_lp += Float64(lp_host[b])
-                    mean_lp /= Float64(BS)
-
-                    # Debug: print first few alpha updates
-                    if self.alpha_adam_t < 3:
-                        print(
-                            "[MBPO alpha] step="
-                            + String(self.alpha_adam_t)
-                            + " mean_lp="
-                            + String(mean_lp)
-                            + " alpha="
-                            + String(self.alpha)
-                            + " target_ent="
-                            + String(self.target_entropy)
-                        )
-
-                    # Guard against NaN in mean_lp
-                    if mean_lp != mean_lp:
-                        mean_lp = 0.0
-
-                    var grad = -self.alpha * (mean_lp + self.target_entropy)
-                    if grad != grad:
-                        grad = 0.0
-                    self.alpha_adam_t += 1
-                    var beta1: Float64 = 0.9
-                    var beta2: Float64 = 0.999
-                    var eps: Float64 = 1e-8
-                    self.alpha_adam_m = (
-                        beta1 * self.alpha_adam_m + (1.0 - beta1) * grad
-                    )
-                    self.alpha_adam_v = (
-                        beta2 * self.alpha_adam_v + (1.0 - beta2) * grad * grad
-                    )
-                    var m_hat = self.alpha_adam_m / (
-                        1.0 - beta1 ** Float64(self.alpha_adam_t)
-                    )
-                    var v_hat = self.alpha_adam_v / (
-                        1.0 - beta2 ** Float64(self.alpha_adam_t)
-                    )
-                    var alpha_step = self.alpha_lr * m_hat / (sqrt(v_hat) + eps)
-                    if alpha_step != alpha_step:
-                        alpha_step = 0.0
-                    self.log_alpha -= alpha_step
-                    # Clamp log_alpha to prevent divergence
-                    if self.log_alpha > 2.0:
-                        self.log_alpha = 2.0
-                    elif self.log_alpha < -10.0:
-                        self.log_alpha = -10.0
-                    self.alpha = exp(self.log_alpha)
 
     def soft_update_targets_gpu(
         mut self,
