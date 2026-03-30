@@ -64,7 +64,7 @@ from mojo_rl.core import (
 )
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import dtype
-from mojo_rl.cuda.graph import CUDAGraph, _uninit
+from mojo_rl.cuda.graph import CUDAGraph
 from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
@@ -444,8 +444,7 @@ def run_offpolicy_continuous_train_gpu[
     var last_avg_reward: Float64 = 0.0
 
     # CUDA graph state for train step capture
-    var _train_graph = _uninit[CUDAGraph]()
-    var _graph_captured = False
+    var _train_graph: Optional[CUDAGraph] = None
 
     # Threshold-based triggers (avoids modular alignment issues with n_envs)
     var next_print = print_every
@@ -621,25 +620,25 @@ def run_offpolicy_continuous_train_gpu[
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
             comptime if USE_CUDA_GRAPH:
                 # Lazy capture: first time training, capture the graph
-                if not _graph_captured:
+                if not _train_graph:
                     # Warmup: one direct step for kernel compilation
                     agent.do_gpu_train_step(ctx, gpu_state)
                     ctx.synchronize()
                     # Capture
-                    _train_graph = CUDAGraph(ctx)
-                    _train_graph.begin_capture()
+                    var graph = CUDAGraph(ctx)
+                    graph.begin_capture()
                     agent.do_gpu_train_step(ctx, gpu_state)
-                    _train_graph.end_capture()
-                    _graph_captured = True
+                    graph.end_capture()
                     if verbose:
                         print(
                             "[CUDA Graph] Captured train step with "
-                            + String(_train_graph.num_nodes())
+                            + String(graph.num_nodes())
                             + " nodes"
                         )
+                    _train_graph = graph^
                 # Replay
                 for _ in range(grad_steps):
-                    _train_graph.replay()
+                    _train_graph.value()[].replay()
             else:
                 for _ in range(grad_steps):
                     agent.do_gpu_train_step(ctx, gpu_state)
