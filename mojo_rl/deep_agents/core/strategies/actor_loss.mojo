@@ -1691,7 +1691,9 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
         ](ws_ptr + W_GRAD_OUT)
         var neg_inv_batch_s = Scalar[dtype](-1.0 / Float64(BATCH))
-        var alpha_inv_batch_s = Scalar[dtype](alpha / Float64(BATCH))
+        var alpha_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](alpha_buf.unsafe_ptr())
 
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -1699,17 +1701,17 @@ struct AutodiffMaxEntLoss[
         def fill_seed_k(
             seed: LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin],
             neg_inv_batch: Scalar[dtype],
-            alpha_inv_batch: Scalar[dtype],
+            ab: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
         ):
             var b = Int(block_dim.x * block_idx.x + thread_idx.x)
             if b < BATCH:
                 seed[b, 0] = neg_inv_batch
-                seed[b, 1] = alpha_inv_batch
+                seed[b, 1] = ab.ptr[0] / Scalar[dtype](BATCH)
 
         ctx.enqueue_function[fill_seed_k, fill_seed_k](
             grad_out_t,
             neg_inv_batch_s,
-            alpha_inv_batch_s,
+            alpha_t,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
