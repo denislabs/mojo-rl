@@ -612,6 +612,19 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             block_dim=(1,),
         )
 
+        # Advance GPU-side size: min(size + N_ENVS, CAPACITY)
+        from ..kernels import advance_gpu_size_kernel
+
+        comptime size_k = advance_gpu_size_kernel[N_ENVS, Self.CAPACITY]
+        var size_t = LayoutTensor[
+            DType.int32, Layout.row_major(1), MutAnyOrigin
+        ](self.gpu_size.unsafe_ptr())
+        ctx.enqueue_function[size_k, size_k](
+            size_t,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
+
     def sample[
         BATCH: Int
     ](

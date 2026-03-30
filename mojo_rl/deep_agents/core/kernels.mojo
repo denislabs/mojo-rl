@@ -464,6 +464,26 @@ def advance_write_idx_kernel[
 
 
 @always_inline
+def advance_gpu_size_kernel[
+    N_ENVS: Int, CAPACITY: Int
+](
+    size: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+):
+    """Advance GPU-side replay buffer size. Launch with grid=(1,), block=(1,).
+
+    size = min(size + N_ENVS, CAPACITY)
+
+    Used alongside advance_write_idx_kernel inside CUDA graph capture
+    so the sampling range grows correctly.
+    """
+    if Int(thread_idx.x) == 0:
+        var new_size = size[0] + Int32(N_ENVS)
+        if new_size > Int32(CAPACITY):
+            new_size = Int32(CAPACITY)
+        size[0] = new_size
+
+
+@always_inline
 def increment_explore_counter_kernel(
     counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
     step_size: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
