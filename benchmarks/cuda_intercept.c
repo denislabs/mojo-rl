@@ -50,6 +50,7 @@ static int g_num_records = 0;
 static int g_recording = 0;
 static int g_logging = 1;
 static int g_launch_count = 0;
+static CUstream g_mojo_stream = NULL;  /* the stream Mojo actually uses */
 
 /* ---- Real function pointers (resolved from libcuda.so) ---- */
 
@@ -113,6 +114,12 @@ static CUresult wrapped_cuLaunchKernelEx(
                 config->gridDimX, config->gridDimY, config->gridDimZ,
                 config->blockDimX, config->blockDimY, config->blockDimZ,
                 config->sharedMemBytes, config->hStream);
+    }
+
+    /* Capture the stream Mojo uses */
+    if (!g_mojo_stream && config->hStream) {
+        g_mojo_stream = config->hStream;
+        fprintf(stderr, "[intercept] Captured Mojo stream: %p\n", g_mojo_stream);
     }
 
     if (g_recording && g_num_records < MAX_RECORDS) {
@@ -218,6 +225,12 @@ void intercept_set_logging(int enabled) {
 
 int intercept_get_launch_count(void) {
     return g_launch_count;
+}
+
+/* Returns the stream handle that Mojo's AsyncRT actually dispatches on.
+   Call after at least one warmup kernel launch. */
+void* intercept_get_mojo_stream(void) {
+    return (void*)g_mojo_stream;
 }
 
 void intercept_print_summary(void) {
