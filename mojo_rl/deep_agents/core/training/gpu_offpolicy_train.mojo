@@ -619,13 +619,13 @@ def run_offpolicy_continuous_train_gpu[
         # ------------------------------------------------------------------
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
             comptime if USE_CUDA_GRAPH:
-                # Lazy capture: first time, capture _gpu_train_kernels
+                # Lazy capture: first time, capture one train step
                 if not _train_graph:
-                    agent._gpu_train_kernels(ctx, gpu_state)
+                    agent.do_gpu_train_step(ctx, gpu_state)
                     ctx.synchronize()
                     var graph = CUDAGraph(ctx)
                     graph.begin_capture()
-                    agent._gpu_train_kernels(ctx, gpu_state)
+                    agent.do_gpu_train_step(ctx, gpu_state)
                     graph.end_capture()
                     if verbose:
                         print(
@@ -636,10 +636,6 @@ def run_offpolicy_continuous_train_gpu[
                     _train_graph = graph^
                 for _ in range(grad_steps):
                     _train_graph.value().replay()
-                    agent.train_step_count += 1
-                    agent.update_count += 1
-                # Diagnostics outside graph (periodic)
-                agent._gpu_train_diagnostics(ctx, gpu_state)
             else:
                 for _ in range(grad_steps):
                     agent.do_gpu_train_step(ctx, gpu_state)
