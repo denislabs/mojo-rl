@@ -198,25 +198,6 @@ void* dlsym(void *handle, const char *symbol) {
 
 /* ---- API callable from Mojo via FFI ---- */
 
-void intercept_start_recording(void) {
-    g_num_records = 0;
-    g_recording = 1;
-    fprintf(stderr, "[intercept] Recording started\n");
-}
-
-void intercept_stop_recording(void) {
-    g_recording = 0;
-    fprintf(stderr, "[intercept] Recording stopped. %d launches captured.\n", g_num_records);
-}
-
-int intercept_get_num_records(void) {
-    return g_num_records;
-}
-
-void* intercept_get_records(void) {
-    return (void*)g_records;
-}
-
 void intercept_set_logging(int enabled) {
     g_logging = enabled;
 }
@@ -231,32 +212,83 @@ void* intercept_get_mojo_stream(void) {
     return (void*)g_mojo_stream;
 }
 
-void intercept_print_summary(void) {
-    fprintf(stderr, "\n[intercept] === Launch Summary ===\n");
-    fprintf(stderr, "[intercept] Total intercepted launches: %d\n", g_launch_count);
-    fprintf(stderr, "[intercept] Recorded launches: %d\n", g_num_records);
+/* ---- CUDA Graph API wrappers ----
+   These resolve CUDA functions via the already-loaded libcuda.so,
+   avoiding the need for Mojo to dlopen("libcuda.so") separately
+   (which can cause re-entrant crashes with the dlsym hook). */
 
-    /* Report unique streams */
-    CUstream unique_streams[64];
-    int num_unique = 0;
-    for (int i = 0; i < g_num_records; i++) {
-        int found = 0;
-        for (int j = 0; j < num_unique; j++) {
-            if (unique_streams[j] == g_records[i].stream) { found = 1; break; }
-        }
-        if (!found && num_unique < 64) {
-            unique_streams[num_unique++] = g_records[i].stream;
-        }
+static void *g_libcuda = NULL;
+
+static void* cuda_fn(const char *name) {
+    if (!g_libcuda) {
+        g_libcuda = dlopen("libcuda.so", RTLD_LAZY | RTLD_NOLOAD);
+        if (!g_libcuda) g_libcuda = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_NOLOAD);
     }
-    fprintf(stderr, "[intercept] Unique streams used: %d\n", num_unique);
-    for (int i = 0; i < num_unique; i++) {
-        fprintf(stderr, "[intercept]   stream %p", unique_streams[i]);
-        if (unique_streams[i] == (CUstream)0) fprintf(stderr, " (NULL/default)");
-        if (unique_streams[i] == (CUstream)1) fprintf(stderr, " (CU_STREAM_LEGACY)");
-        if (unique_streams[i] == (CUstream)2) fprintf(stderr, " (CU_STREAM_PER_THREAD)");
-        fprintf(stderr, "\n");
-    }
-    fprintf(stderr, "[intercept] ==================\n\n");
+    if (!g_libcuda || !real_dlsym) return NULL;
+    return real_dlsym(g_libcuda, name);
+}
+
+CUresult intercept_stream_create(void **out) {
+    typedef CUresult (*fn_t)(void**, unsigned int);
+    fn_t f = (fn_t)cuda_fn("cuStreamCreate");
+    if (!f) return 1;
+    return f(out, 0);
+}
+
+CUresult intercept_stream_begin_capture(void *stream) {
+    typedef CUresult (*fn_t)(void*, int);
+    fn_t f = (fn_t)cuda_fn("cuStreamBeginCapture");
+    if (!f) return 1;
+    return f(stream, 0);  /* CU_STREAM_CAPTURE_MODE_GLOBAL */
+}
+
+CUresult intercept_stream_end_capture(void *stream, void **graph_out) {
+    typedef CUresult (*fn_t)(void*, void**);
+    fn_t f = (fn_t)cuda_fn("cuStreamEndCapture");
+    if (!f) return 1;
+    return f(stream, graph_out);
+}
+
+CUresult intercept_graph_instantiate(void **exec_out, void *graph) {
+    typedef CUresult (*fn_t)(void**, void*, unsigned long long);
+    fn_t f = (fn_t)cuda_fn("cuGraphInstantiate");
+    if (!f) return 1;
+    return f(exec_out, graph, 0ULL);
+}
+
+CUresult intercept_graph_launch(void *exec, void *stream) {
+    typedef CUresult (*fn_t)(void*, void*);
+    fn_t f = (fn_t)cuda_fn("cuGraphLaunch");
+    if (!f) return 1;
+    return f(exec, stream);
+}
+
+CUresult intercept_stream_synchronize(void *stream) {
+    typedef CUresult (*fn_t)(void*);
+    fn_t f = (fn_t)cuda_fn("cuStreamSynchronize");
+    if (!f) return 1;
+    return f(stream);
+}
+
+CUresult intercept_graph_destroy(void *graph) {
+    typedef CUresult (*fn_t)(void*);
+    fn_t f = (fn_t)cuda_fn("cuGraphDestroy");
+    if (!f) return 1;
+    return f(graph);
+}
+
+CUresult intercept_graph_exec_destroy(void *exec) {
+    typedef CUresult (*fn_t)(void*);
+    fn_t f = (fn_t)cuda_fn("cuGraphExecDestroy");
+    if (!f) return 1;
+    return f(exec);
+}
+
+CUresult intercept_graph_get_nodes(void *graph, unsigned long long *num_nodes) {
+    typedef CUresult (*fn_t)(void*, void*, unsigned long long*);
+    fn_t f = (fn_t)cuda_fn("cuGraphGetNodes");
+    if (!f) return 1;
+    return f(graph, NULL, num_nodes);
 }
 
 /* Constructor: print banner on load */
