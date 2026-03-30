@@ -530,27 +530,24 @@ def run_offpolicy_continuous_train_gpu[
             timer.sync_and_accumulate(2, ctx)
             timer.mark()
 
-        # DEBUG: one-shot dones check right after step (before anything clears it)
-        if total_steps == 0:
+        # DEBUG: check dones for NaN at multiple points in early iterations
+        if total_steps < n_envs * 5:
             var _dd = ctx.enqueue_create_host_buffer[dtype](n_envs)
-            var _dt = ctx.enqueue_create_host_buffer[dtype](n_envs)
-            var _dr = ctx.enqueue_create_host_buffer[dtype](n_envs)
             ctx.enqueue_copy(_dd, dones_buf)
-            ctx.enqueue_copy(_dt, terminated_buf)
-            ctx.enqueue_copy(_dr, rewards_buf)
             ctx.synchronize()
-            print("  [DEBUG step 0] dones:", end="")
-            for _i in range(min(n_envs, 8)):
-                print(" ", Float64(_dd[_i]), end="")
-            print()
-            print("  [DEBUG step 0] term: ", end="")
-            for _i in range(min(n_envs, 8)):
-                print(" ", Float64(_dt[_i]), end="")
-            print()
-            print("  [DEBUG step 0] rew:  ", end="")
-            for _i in range(min(n_envs, 8)):
-                print(" ", Float64(_dr[_i]), end="")
-            print()
+            var _dsum: Float64 = 0
+            var _has_nan = False
+            for _i in range(n_envs):
+                var _v = Float64(_dd[_i])
+                if _v != _v:
+                    _has_nan = True
+                _dsum += _v
+            if _has_nan or total_steps == 0:
+                print(
+                    "  [DBG iter", total_steps // n_envs,
+                    "] after step: dones_sum=", _dsum,
+                    " nan=", _has_nan,
+                )
 
         # ------------------------------------------------------------------
         # Store transitions: (prev_obs, action, reward, next_obs, terminated)
@@ -630,6 +627,18 @@ def run_offpolicy_continuous_train_gpu[
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(5, ctx)
             timer.mark()
+
+        # DEBUG: check dones after selective_reset (first 5 iters)
+        if total_steps < n_envs * 5:
+            var _dd2 = ctx.enqueue_create_host_buffer[dtype](n_envs)
+            ctx.enqueue_copy(_dd2, dones_buf)
+            ctx.synchronize()
+            var _nan2 = False
+            for _i2 in range(n_envs):
+                if Float64(_dd2[_i2]) != Float64(_dd2[_i2]):
+                    _nan2 = True
+            if _nan2:
+                print("  [DBG iter", total_steps // n_envs, "] after reset: NaN in dones!")
 
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
