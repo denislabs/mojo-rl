@@ -1,10 +1,12 @@
-"""CUDA Graph capture of Mojo GPU kernels — PROVEN WORKING.
+"""CUDA Graph Capture Diagnostic.
 
-ctx.enqueue_function dispatches on CU_STREAM_PER_THREAD.
-Graph capture on a fresh cuStreamCreate also captures Mojo kernels.
+Tests which stream Mojo's ctx.enqueue_function actually dispatches on,
+and whether CUDA graph capture can intercept those launches.
 
-This test captures a chain of 5 kernels (simulating a mini forward pass)
-and benchmarks graph replay vs direct dispatch.
+Tries 3 capture strategies:
+  1. CU_STREAM_PER_THREAD (handle=2)
+  2. NULL stream (handle=0) — the legacy default stream
+  3. A freshly created stream
 
 Run with:
     pixi run -e nvidia mojo run -I . benchmarks/_test_cuda_ffi.mojo
@@ -51,12 +53,14 @@ def relu_kernel[N: Int](
 
 
 def main() raises:
-    print("=== CUDA Graph Capture — Mojo Kernel Benchmark ===\n")
+    print("=== CUDA Graph Capture — Diagnostic ===\n")
 
     var ctx = DeviceContext()
     ctx.synchronize()
 
     var cuda = OwnedDLHandle("libcuda.so")
+
+    # --- Load all CUDA driver functions we need ---
     var cuStreamCreate = cuda.get_function[
         def (UnsafePointer[CUptr, MutAnyOrigin], UInt32) -> c_int
     ]("cuStreamCreate")
@@ -82,16 +86,26 @@ def main() raises:
         def (CUptr) -> c_int
     ]("cuGraphExecDestroy")
 
-    # Mojo's ctx.enqueue_function dispatches on CU_STREAM_PER_THREAD
-    var capture_stream = CUptr(unsafe_from_address=2)  # CU_STREAM_PER_THREAD
+    # Diagnostic: count nodes in captured graph
+    # cuGraphGetNodes(graph, nodes_ptr, numNodes_ptr) -> CUresult
+    # When nodes_ptr is null, just fills numNodes with the count
+    var cuGraphGetNodes = cuda.get_function[
+        def (CUptr, CUptr, UnsafePointer[UInt64, MutAnyOrigin]) -> c_int
+    ]("cuGraphGetNodes")
 
-    # Create a separate stream for graph replay (can't replay on PER_THREAD easily)
-    var replay_buf = alloc[CUptr](1)
-    replay_buf[] = CUptr()
-    _ = cuStreamCreate(replay_buf, UInt32(0))
-    var replay_stream = replay_buf[]
+    # Diagnostic: query capture status of a stream
+    # cuStreamIsCapturing(stream, captureStatus_ptr) -> CUresult
+    var cuStreamIsCapturing = cuda.get_function[
+        def (CUptr, UnsafePointer[c_int, MutAnyOrigin]) -> c_int
+    ]("cuStreamIsCapturing")
 
-    # Buffers
+    # Diagnostic: get capture info (CUDA 10.1+)
+    # cuStreamGetCaptureInfo(stream, captureStatus_ptr, id_ptr) -> CUresult
+    var cuStreamGetCaptureInfo = cuda.get_function[
+        def (CUptr, UnsafePointer[c_int, MutAnyOrigin], UnsafePointer[UInt64, MutAnyOrigin]) -> c_int
+    ]("cuStreamGetCaptureInfo")
+
+    # --- Buffers ---
     comptime N = 8192
     comptime TPB = 256
     comptime grid = ((N + TPB - 1) // TPB,)
@@ -118,9 +132,6 @@ def main() raises:
     comptime k_scale = scale_kernel[N]
     comptime k_relu = relu_kernel[N]
 
-    # Define a 5-kernel chain: add → scale → relu → scale → relu
-    # Simulates a mini forward pass
-
     def run_chain() raises:
         ctx.enqueue_function[k_add, k_add](c_t, a_t, b_t, grid_dim=grid, block_dim=block)
         ctx.enqueue_function[k_scale, k_scale](d_t, c_i, grid_dim=grid, block_dim=block)
@@ -128,94 +139,206 @@ def main() raises:
         ctx.enqueue_function[k_scale, k_scale](c_t, d_i, grid_dim=grid, block_dim=block)
         ctx.enqueue_function[k_relu, k_relu](c_t, grid_dim=grid, block_dim=block)
 
-    # Warmup
+    # Warmup + verify direct dispatch works
     run_chain()
     ctx.synchronize()
     with c_buf.map_to_host() as h:
         print("Direct dispatch result: c[0] =", h[0], "(expected 12.0)")
 
-    # --- Capture the chain ---
-    print("\n--- Capturing 5-kernel chain ---")
+    # --- Helper: try capture on a given stream ---
+    var replay_buf = alloc[CUptr](1)
+    replay_buf[] = CUptr()
+    _ = cuStreamCreate(replay_buf, UInt32(0))
+    var replay_stream = replay_buf[]
+
+    var graph_buf = alloc[CUptr](1)
+    var exec_buf = alloc[CUptr](1)
+    var num_nodes_buf = alloc[UInt64](1)
+    var cap_status_buf = alloc[c_int](1)
+    var cap_id_buf = alloc[UInt64](1)
+
+    # ============================================================
+    # Strategy 1: CU_STREAM_PER_THREAD (handle = 2)
+    # ============================================================
+    print("\n" + "=" * 60)
+    print("Strategy 1: CU_STREAM_PER_THREAD (handle=2)")
+    print("=" * 60)
+
+    var per_thread = CUptr(unsafe_from_address=2)
+
     c_buf.enqueue_fill(Scalar[dtype](0.0))
     d_buf.enqueue_fill(Scalar[dtype](0.0))
     ctx.synchronize()
 
-    var r_begin = cuStreamBeginCapture(capture_stream, c_int(0))
-    print("BeginCapture:", r_begin)
+    var r1 = cuStreamBeginCapture(per_thread, c_int(0))
+    print("  BeginCapture:", r1)
+
+    # Check capture status mid-capture
+    cap_status_buf[] = c_int(0)
+    var r1_status = cuStreamIsCapturing(per_thread, cap_status_buf)
+    print("  IsCapturing (PER_THREAD):", r1_status, "status:", cap_status_buf[],
+          "(1=capturing, 0=not)")
 
     run_chain()
 
-    var graph_buf = alloc[CUptr](1)
+    # Check capture status after kernels
+    cap_status_buf[] = c_int(0)
+    r1_status = cuStreamIsCapturing(per_thread, cap_status_buf)
+    print("  IsCapturing after kernels:", r1_status, "status:", cap_status_buf[])
+
     graph_buf[] = CUptr()
-    var r_end = cuStreamEndCapture(capture_stream, graph_buf)
-    var graph = graph_buf[]
-    print("EndCapture:", r_end, "Graph:", Int(graph))
+    var r1_end = cuStreamEndCapture(per_thread, graph_buf)
+    var graph1 = graph_buf[]
+    print("  EndCapture:", r1_end, "Graph:", Int(graph1))
 
-    var exec_buf = alloc[CUptr](1)
-    exec_buf[] = CUptr()
-    var r_inst = cuGraphInstantiate(exec_buf, graph, UInt64(0))
-    print("Instantiate:", r_inst)
+    if Int(graph1) != 0:
+        num_nodes_buf[] = UInt64(0)
+        var r1_nodes = cuGraphGetNodes(graph1, CUptr(), num_nodes_buf)
+        print("  >>> Graph has", num_nodes_buf[], "nodes (expected 5) <<<")
 
-    if r_inst != 0:
-        print("FAILED")
-        return
+        exec_buf[] = CUptr()
+        var r1_inst = cuGraphInstantiate(exec_buf, graph1, UInt64(0))
+        print("  Instantiate:", r1_inst)
 
-    # Verify graph replay
+        if r1_inst == 0:
+            c_buf.enqueue_fill(Scalar[dtype](0.0))
+            d_buf.enqueue_fill(Scalar[dtype](0.0))
+            ctx.synchronize()
+            _ = cuGraphLaunch(exec_buf[], replay_stream)
+            _ = cuStreamSynchronize(replay_stream)
+            with c_buf.map_to_host() as h:
+                print("  Replay result: c[0] =", h[0], "(expected 12.0)")
+            _ = cuGraphExecDestroy(exec_buf[])
+
+        _ = cuGraphDestroy(graph1)
+    else:
+        print("  >>> No graph returned <<<")
+
+    # ============================================================
+    # Strategy 2: NULL stream (handle = 0) — legacy default
+    # ============================================================
+    print("\n" + "=" * 60)
+    print("Strategy 2: NULL stream (handle=0)")
+    print("=" * 60)
+
+    var null_stream = CUptr()
+
     c_buf.enqueue_fill(Scalar[dtype](0.0))
     d_buf.enqueue_fill(Scalar[dtype](0.0))
     ctx.synchronize()
 
-    var r_launch = cuGraphLaunch(exec_buf[], replay_stream)
-    _ = cuStreamSynchronize(replay_stream)
-    with c_buf.map_to_host() as h:
-        print("Graph replay result: c[0] =", h[0], "(expected 12.0)")
-        if h[0] != Scalar[dtype](12.0):
-            print("MISMATCH — graph didn't capture all kernels")
-            return
+    var r2 = cuStreamBeginCapture(null_stream, c_int(0))
+    print("  BeginCapture:", r2)
 
-    print("\n--- Benchmark: 5 kernels × 1000 iterations ---\n")
+    if r2 == 0:
+        cap_status_buf[] = c_int(0)
+        _ = cuStreamIsCapturing(null_stream, cap_status_buf)
+        print("  IsCapturing (NULL):", cap_status_buf[])
 
-    # Direct dispatch benchmark
-    var warmup = 100
-    var iters = 1000
-
-    for _ in range(warmup):
         run_chain()
-        ctx.synchronize()
 
-    var total_direct: UInt = 0
-    for _ in range(iters):
-        var start = perf_counter_ns()
+        graph_buf[] = CUptr()
+        var r2_end = cuStreamEndCapture(null_stream, graph_buf)
+        var graph2 = graph_buf[]
+        print("  EndCapture:", r2_end, "Graph:", Int(graph2))
+
+        if Int(graph2) != 0:
+            num_nodes_buf[] = UInt64(0)
+            _ = cuGraphGetNodes(graph2, CUptr(), num_nodes_buf)
+            print("  >>> Graph has", num_nodes_buf[], "nodes <<<")
+
+            exec_buf[] = CUptr()
+            var r2_inst = cuGraphInstantiate(exec_buf, graph2, UInt64(0))
+            print("  Instantiate:", r2_inst)
+
+            if r2_inst == 0:
+                c_buf.enqueue_fill(Scalar[dtype](0.0))
+                d_buf.enqueue_fill(Scalar[dtype](0.0))
+                ctx.synchronize()
+                _ = cuGraphLaunch(exec_buf[], replay_stream)
+                _ = cuStreamSynchronize(replay_stream)
+                with c_buf.map_to_host() as h:
+                    print("  Replay result: c[0] =", h[0], "(expected 12.0)")
+                _ = cuGraphExecDestroy(exec_buf[])
+
+            _ = cuGraphDestroy(graph2)
+        else:
+            print("  >>> No graph returned <<<")
+    else:
+        print("  BeginCapture FAILED (error", r2, ")")
+        print("  (NULL stream may not support capture without CUDA_API_PER_THREAD_DEFAULT_STREAM)")
+
+    # ============================================================
+    # Strategy 3: Fresh created stream
+    # ============================================================
+    print("\n" + "=" * 60)
+    print("Strategy 3: Fresh created stream")
+    print("=" * 60)
+
+    var fresh_buf = alloc[CUptr](1)
+    fresh_buf[] = CUptr()
+    _ = cuStreamCreate(fresh_buf, UInt32(0))
+    var fresh_stream = fresh_buf[]
+    print("  Created stream:", Int(fresh_stream))
+
+    c_buf.enqueue_fill(Scalar[dtype](0.0))
+    d_buf.enqueue_fill(Scalar[dtype](0.0))
+    ctx.synchronize()
+
+    var r3 = cuStreamBeginCapture(fresh_stream, c_int(0))
+    print("  BeginCapture:", r3)
+
+    if r3 == 0:
+        cap_status_buf[] = c_int(0)
+        _ = cuStreamIsCapturing(fresh_stream, cap_status_buf)
+        print("  IsCapturing (fresh):", cap_status_buf[])
+
         run_chain()
-        ctx.synchronize()
-        total_direct += perf_counter_ns() - start
 
-    # Graph replay benchmark
-    for _ in range(warmup):
-        _ = cuGraphLaunch(exec_buf[], replay_stream)
-        _ = cuStreamSynchronize(replay_stream)
+        graph_buf[] = CUptr()
+        var r3_end = cuStreamEndCapture(fresh_stream, graph_buf)
+        var graph3 = graph_buf[]
+        print("  EndCapture:", r3_end, "Graph:", Int(graph3))
 
-    var total_graph: UInt = 0
-    for _ in range(iters):
-        var start = perf_counter_ns()
-        _ = cuGraphLaunch(exec_buf[], replay_stream)
-        _ = cuStreamSynchronize(replay_stream)
-        total_graph += perf_counter_ns() - start
+        if Int(graph3) != 0:
+            num_nodes_buf[] = UInt64(0)
+            _ = cuGraphGetNodes(graph3, CUptr(), num_nodes_buf)
+            print("  >>> Graph has", num_nodes_buf[], "nodes <<<")
 
-    var avg_direct = Float64(total_direct // UInt(iters)) / 1000.0
-    var avg_graph = Float64(total_graph // UInt(iters)) / 1000.0
+            exec_buf[] = CUptr()
+            var r3_inst = cuGraphInstantiate(exec_buf, graph3, UInt64(0))
+            print("  Instantiate:", r3_inst)
 
-    print("  Direct dispatch (5 kernels): ", avg_direct, " us")
-    print("  Graph replay (5 kernels):    ", avg_graph, " us")
-    if avg_graph > 0.0:
-        print("  Speedup:                     ", avg_direct / avg_graph, "x")
-        print("  Savings per call:            ", avg_direct - avg_graph, " us")
+            if r3_inst == 0:
+                c_buf.enqueue_fill(Scalar[dtype](0.0))
+                d_buf.enqueue_fill(Scalar[dtype](0.0))
+                ctx.synchronize()
+                _ = cuGraphLaunch(exec_buf[], replay_stream)
+                _ = cuStreamSynchronize(replay_stream)
+                with c_buf.map_to_host() as h:
+                    print("  Replay result: c[0] =", h[0], "(expected 12.0)")
+                _ = cuGraphExecDestroy(exec_buf[])
+
+            _ = cuGraphDestroy(graph3)
+        else:
+            print("  >>> No graph returned <<<")
+    else:
+        print("  BeginCapture FAILED (error", r3, ")")
+
+    fresh_buf.free()
 
     # Cleanup
-    _ = cuGraphExecDestroy(exec_buf[])
-    _ = cuGraphDestroy(graph)
     graph_buf.free()
     exec_buf.free()
+    num_nodes_buf.free()
+    cap_status_buf.free()
+    cap_id_buf.free()
     replay_buf.free()
 
-    print("\n=== CUDA Graph Capture of Mojo Kernels: WORKING ===")
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print("If all graphs show 0 nodes, Mojo's AsyncRT dispatches on")
+    print("a stream we cannot capture. Next step: LD_PRELOAD interception")
+    print("to find which CUDA calls Mojo actually makes.")
+    print("=" * 60)
