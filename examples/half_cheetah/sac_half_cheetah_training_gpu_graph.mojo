@@ -135,7 +135,7 @@ def main() raises:
                 verbose=True,
                 print_every=50_000,
                 logger=UnsafePointer(to=logger),
-                diag_every=1_000,
+                diag_every=5_000,
             )
 
             var end_time = perf_counter_ns()
@@ -156,11 +156,7 @@ def main() raises:
             print("=" * 70)
             print()
             print("Total steps: " + String(NUM_STEPS))
-            print(
-                "Training time: "
-                + String(elapsed_s)[byte=:6]
-                + " seconds"
-            )
+            print("Training time: " + String(elapsed_s)[byte=:6] + " seconds")
             print()
 
             var final_avg = metrics.mean_reward_last_n(100)
@@ -169,8 +165,7 @@ def main() raises:
                 + String(final_avg)[byte=:8]
             )
             print(
-                "Best episode reward: "
-                + String(metrics.max_reward())[byte=:8]
+                "Best episode reward: " + String(metrics.max_reward())[byte=:8]
             )
             print()
 
