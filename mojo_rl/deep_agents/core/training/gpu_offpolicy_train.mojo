@@ -530,6 +530,28 @@ def run_offpolicy_continuous_train_gpu[
             timer.sync_and_accumulate(2, ctx)
             timer.mark()
 
+        # DEBUG: one-shot dones check right after step (before anything clears it)
+        if total_steps == 0:
+            var _dd = ctx.enqueue_create_host_buffer[dtype](n_envs)
+            var _dt = ctx.enqueue_create_host_buffer[dtype](n_envs)
+            var _dr = ctx.enqueue_create_host_buffer[dtype](n_envs)
+            ctx.enqueue_copy(_dd, dones_buf)
+            ctx.enqueue_copy(_dt, terminated_buf)
+            ctx.enqueue_copy(_dr, rewards_buf)
+            ctx.synchronize()
+            print("  [DEBUG step 0] dones:", end="")
+            for _i in range(min(n_envs, 8)):
+                print(" ", Float64(_dd[_i]), end="")
+            print()
+            print("  [DEBUG step 0] term: ", end="")
+            for _i in range(min(n_envs, 8)):
+                print(" ", Float64(_dt[_i]), end="")
+            print()
+            print("  [DEBUG step 0] rew:  ", end="")
+            for _i in range(min(n_envs, 8)):
+                print(" ", Float64(_dr[_i]), end="")
+            print()
+
         # ------------------------------------------------------------------
         # Store transitions: (prev_obs, action, reward, next_obs, terminated)
         # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
