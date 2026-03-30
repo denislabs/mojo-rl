@@ -384,6 +384,9 @@ trait GPUDiscreteEnv:
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Perform one environment step and extract observations.
 
@@ -400,6 +403,9 @@ trait GPUDiscreteEnv:
                           When non-null, avoids per-step GPU buffer allocation.
                           Layout: [shared: STEP_WS_SHARED | per_env: BATCH * STEP_WS_PER_ENV].
                           When null, allocates internally (backward compatible).
+            rng_counter_ptr: Optional GPU-side RNG counter pointer.
+                            When non-null, kernel reads seed from GPU memory
+                            (CUDA graph compatible). When null, uses rng_seed scalar.
         """
         ...
 
@@ -434,6 +440,9 @@ trait GPUDiscreteEnv:
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Reset only done environments to random initial values.
 
@@ -446,9 +455,13 @@ trait GPUDiscreteEnv:
             dones: Done flags buffer on GPU.
             rng_seed: Random seed for terrain/initial state generation.
                      Should be different each call (e.g., training step counter).
+                     Ignored when rng_counter_ptr is non-null.
             workspace_ptr: Optional pre-allocated workspace pointer.
                           When non-null, reuses model data from workspace
                           instead of allocating a new buffer each call.
+            rng_counter_ptr: Optional GPU-side RNG counter pointer.
+                            When non-null, kernel reads seed from GPU memory
+                            (CUDA graph compatible). When null, uses rng_seed scalar.
         """
         ...
 
@@ -515,6 +528,9 @@ trait GPUContinuousEnv:
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Perform one environment step with continuous actions.
 
@@ -526,13 +542,16 @@ trait GPUContinuousEnv:
             dones: Done flags buffer on GPU (output) [BATCH_SIZE]. 1.0 if terminated OR truncated.
             terminated: Terminated flags buffer on GPU (output) [BATCH_SIZE]. 1.0 only if truly terminated (not truncated).
             obs: Observations buffer on GPU (output) [BATCH_SIZE * OBS_DIM].
-            rng_seed: Optional random seed for physics.
+            rng_seed: Optional random seed for physics. Ignored when rng_counter_ptr is non-null.
             curriculum_values: Environment-specific curriculum parameters.
                               Empty list uses default (strict) bounds.
             workspace_ptr: Optional pre-allocated workspace pointer.
                           When non-null, avoids per-step GPU buffer allocation.
                           Layout: [shared: STEP_WS_SHARED | per_env: BATCH * STEP_WS_PER_ENV].
                           When null, allocates internally (backward compatible).
+            rng_counter_ptr: Optional GPU-side RNG counter pointer.
+                            When non-null, kernel reads seed from GPU memory
+                            (CUDA graph compatible). When null, uses rng_seed scalar.
         """
         ...
 
@@ -567,6 +586,9 @@ trait GPUContinuousEnv:
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Reset only done environments to random initial values.
 
@@ -579,9 +601,13 @@ trait GPUContinuousEnv:
             dones: Done flags buffer on GPU.
             rng_seed: Random seed for terrain/initial state generation.
                      Should be different each call (e.g., training step counter).
+                     Ignored when rng_counter_ptr is non-null.
             workspace_ptr: Optional pre-allocated workspace pointer.
                           When non-null, reuses model data from workspace
                           instead of allocating a new buffer each call.
+            rng_counter_ptr: Optional GPU-side RNG counter pointer.
+                            When non-null, kernel reads seed from GPU memory
+                            (CUDA graph compatible). When null, uses rng_seed scalar.
         """
         ...
 
@@ -843,6 +869,9 @@ trait GPUTwoPlayerDiscreteEnv:
         mut obs: DeviceBuffer[dtype],
         mut legal_masks: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Perform one environment step for all games in batch.
 
@@ -855,7 +884,8 @@ trait GPUTwoPlayerDiscreteEnv:
             terminated: Terminated flags output [BATCH_SIZE].
             obs: Canonical observations output [BATCH_SIZE * OBS_DIM].
             legal_masks: Legal action mask for NEXT state [BATCH_SIZE * NUM_ACTIONS].
-            rng_seed: Random seed.
+            rng_seed: Random seed. Ignored when rng_counter_ptr is non-null.
+            rng_counter_ptr: Optional GPU-side RNG counter (CUDA graph compatible).
         """
         ...
 
@@ -886,6 +916,9 @@ trait GPUTwoPlayerDiscreteEnv:
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Reset only finished games.
 
@@ -893,7 +926,8 @@ trait GPUTwoPlayerDiscreteEnv:
             ctx: GPU device context.
             states: State buffer [BATCH_SIZE * STATE_SIZE].
             dones: Done flags buffer [BATCH_SIZE].
-            rng_seed: Random seed.
+            rng_seed: Random seed. Ignored when rng_counter_ptr is non-null.
+            rng_counter_ptr: Optional GPU-side RNG counter (CUDA graph compatible).
         """
         ...
 

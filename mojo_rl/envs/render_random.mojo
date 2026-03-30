@@ -43,6 +43,7 @@ def render_random[
         frame_delay_ms: Delay between frames in ms (~16 for 60 FPS).
         verbose: Print step telemetry.
         print_every: Steps between telemetry prints.
+        show_velocity: Show velocity vectors in the renderer.
     """
     var action_dim = env.action_dim()
     var lo = Float64(env.action_low())

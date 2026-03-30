@@ -1498,15 +1498,7 @@ struct ModelDef[
     @staticmethod
     def get_ground_rgba() -> List[Float64]:
         """Return [r, g, b] of the first plane geom's color, or empty list."""
-        var result = List[Float64]()
-        comptime for i in range(Self.Geoms.N):
-            comptime GG = Self.Geoms.geom_types[i]
-            comptime if GG.GEOM_TYPE == 0:  # GEOM_PLANE
-                if len(result) == 0:
-                    result.append(Float64(GG.COLOR.r) / 255.0)
-                    result.append(Float64(GG.COLOR.g) / 255.0)
-                    result.append(Float64(GG.COLOR.b) / 255.0)
-        return result^
+        return Self.Geoms.get_ground_rgba()
 
     @staticmethod
     def get_visual_settings() -> List[Float64]:

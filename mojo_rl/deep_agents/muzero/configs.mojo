@@ -20,6 +20,7 @@ Usage:
 from mojo_rl.nn.model import (
     Model,
     Linear,
+    LinearReLU,
     LinearMish,
     Sequential,
     Parallel,

@@ -167,11 +167,14 @@ struct ModelDefFromXML[
         cone_type:     Friction cone type (default ELLIPTIC).
         max_tendon:    Maximum fixed tendons (default 0).
         nsite:   Total site count (default 0).
+        neq:           Number of equality constraints (default 0).
+        nexclude:      Number of contact exclusion pairs (default 0).
         obs_qpos_skip: Leading qpos DOF to exclude from obs (default 1).
         obs_dim_override: Override OBS_DIM (default -1 = compute from nq-skip+nv).
             Use when custom_extract_obs_gpu produces different dimensionality than
             the default formula (e.g. InvertedDoublePendulum needs OBS_DIM=9 with
             sin/cos transforms despite nq-skip+nv=6).
+        action_dim_override: Override ACTION_DIM (default -1 = use nact).
         timestep:      Simulation timestep (default 0.01).
     """
 

@@ -980,6 +980,9 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         workspace_ptr: UnsafePointer[
             Scalar[gpu_dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Launch step kernel on GPU with fused obs extraction.
 
@@ -993,6 +996,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             obs_buf: Observations buffer [BATCH_SIZE * OBS_DIM] (written).
             rng_seed: Random seed (unused in CartPole, for trait compatibility).
             workspace_ptr: Optional workspace pointer (unused for CartPole).
+            rng_counter_ptr: Optional GPU counter pointer (unused for CartPole).
         """
         # Create tensor views from buffers
         var states = LayoutTensor[
@@ -1131,6 +1135,9 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         workspace_ptr: UnsafePointer[
             Scalar[gpu_dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Launch selective reset kernel on GPU - only resets done environments.
 
@@ -1140,6 +1147,8 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             dones_buf: Dones buffer [BATCH_SIZE] (read to check, cleared for done envs).
             rng_seed: Seed for random number generation (should vary between calls).
             workspace_ptr: Optional workspace pointer (unused for CartPole).
+            rng_counter_ptr: Optional GPU counter pointer. When non-null, reads
+                     seed from GPU memory instead of rng_seed parameter.
         """
         # Create tensor views from buffers
         var states = LayoutTensor[
@@ -1151,33 +1160,68 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Configure grid
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
-        var seed = Scalar[DType.uint64](rng_seed)
 
-        # Define kernel wrapper
-        @always_inline
-        def selective_reset_wrapper(
-            states: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, STATE_SIZE),
-                MutAnyOrigin,
-            ],
-            dones: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-            ],
-            rng_seed: Scalar[DType.uint64],
-        ):
-            # Cast to uint32 for the inner kernel (RNG uses 32-bit state)
-            Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
-                states, dones, Scalar[DType.uint32](rng_seed)
+        if rng_counter_ptr:
+            var counter_t = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin
+            ](rng_counter_ptr)
+
+            @always_inline
+            def selective_reset_counter_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                counter: LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ],
+            ):
+                Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
+                    states, dones, Scalar[DType.uint32](rebind[Scalar[DType.uint64]](counter[0]))
+                )
+
+            ctx.enqueue_function[
+                selective_reset_counter_wrapper,
+                selective_reset_counter_wrapper,
+            ](
+                states,
+                dones,
+                counter_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(Self.TPB,),
             )
+        else:
+            var seed = Scalar[DType.uint64](rng_seed)
 
-        ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
-            states,
-            dones,
-            seed,
-            grid_dim=(BLOCKS,),
-            block_dim=(Self.TPB,),
-        )
+            # Define kernel wrapper
+            @always_inline
+            def selective_reset_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                rng_seed: Scalar[DType.uint64],
+            ):
+                # Cast to uint32 for the inner kernel (RNG uses 32-bit state)
+                Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
+                    states, dones, Scalar[DType.uint32](rng_seed)
+                )
+
+            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+                states,
+                dones,
+                seed,
+                grid_dim=(BLOCKS,),
+                block_dim=(Self.TPB,),
+            )
 
     @staticmethod
     def init_step_workspace_gpu[

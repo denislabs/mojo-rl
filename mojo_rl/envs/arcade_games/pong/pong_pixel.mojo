@@ -416,6 +416,9 @@ struct PongPixelEnv[
         workspace_ptr: UnsafePointer[
             Scalar[gpu_dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -646,6 +649,9 @@ struct PongPixelEnv[
         workspace_ptr: UnsafePointer[
             Scalar[gpu_dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Reset done environments and clear their frame stacks."""
         var states = LayoutTensor[
@@ -656,48 +662,100 @@ struct PongPixelEnv[
         ](dones_buf.unsafe_ptr())
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
-        var seed = Scalar[DType.uint64](rng_seed)
 
-        @always_inline
-        def selective_reset_wrapper(
-            states: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, STATE_SIZE),
-                MutAnyOrigin,
-            ],
-            dones: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-            ],
-            ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
-            rng_seed: Scalar[DType.uint64],
-        ):
-            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if idx >= BATCH_SIZE:
-                return
-            if dones[idx] < Scalar[gpu_dtype](0.5):
-                return
+        if rng_counter_ptr:
+            var counter_t = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin
+            ](rng_counter_ptr)
 
-            # Reset physics
-            PongEnv[DType.float32].selective_reset_kernel[
-                BATCH_SIZE, STATE_SIZE
-            ](states, dones, Scalar[DType.uint32](rng_seed))
+            @always_inline
+            def selective_reset_counter_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+                counter: LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= BATCH_SIZE:
+                    return
+                if dones[idx] < Scalar[gpu_dtype](0.5):
+                    return
 
-            # Clear frame stack for this env
-            var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
-            # Zero frame stack region
-            for i in range(FRAME_STACK_F32_SIZE):
-                env_ws[FRAME_BUF_F32_SIZE + i] = 0.0
-            # Reset frame index
-            env_ws[FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE] = 0.0
+                # Reset physics
+                PongEnv[DType.float32].selective_reset_kernel[
+                    BATCH_SIZE, STATE_SIZE
+                ](states, dones, Scalar[DType.uint32](rebind[Scalar[DType.uint64]](counter[0])))
 
-        ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
-            states,
-            dones,
-            workspace_ptr,
-            seed,
-            grid_dim=(BLOCKS,),
-            block_dim=(Self.TPB,),
-        )
+                # Clear frame stack for this env
+                var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
+                # Zero frame stack region
+                for i in range(FRAME_STACK_F32_SIZE):
+                    env_ws[FRAME_BUF_F32_SIZE + i] = 0.0
+                # Reset frame index
+                env_ws[FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE] = 0.0
+
+            ctx.enqueue_function[
+                selective_reset_counter_wrapper,
+                selective_reset_counter_wrapper,
+            ](
+                states,
+                dones,
+                workspace_ptr,
+                counter_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(Self.TPB,),
+            )
+        else:
+            var seed = Scalar[DType.uint64](rng_seed)
+
+            @always_inline
+            def selective_reset_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+                rng_seed: Scalar[DType.uint64],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= BATCH_SIZE:
+                    return
+                if dones[idx] < Scalar[gpu_dtype](0.5):
+                    return
+
+                # Reset physics
+                PongEnv[DType.float32].selective_reset_kernel[
+                    BATCH_SIZE, STATE_SIZE
+                ](states, dones, Scalar[DType.uint32](rng_seed))
+
+                # Clear frame stack for this env
+                var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
+                # Zero frame stack region
+                for i in range(FRAME_STACK_F32_SIZE):
+                    env_ws[FRAME_BUF_F32_SIZE + i] = 0.0
+                # Reset frame index
+                env_ws[FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE] = 0.0
+
+            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+                states,
+                dones,
+                workspace_ptr,
+                seed,
+                grid_dim=(BLOCKS,),
+                block_dim=(Self.TPB,),
+            )
 
     @staticmethod
     def init_step_workspace_gpu[

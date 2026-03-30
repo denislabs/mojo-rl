@@ -967,6 +967,11 @@ trait GeomsLike:
         ...
 
     @staticmethod
+    def get_ground_rgba() -> List[Float64]:
+        """Return [r, g, b] of the first plane geom's color, or empty list."""
+        ...
+
+    @staticmethod
     def render_ground_geoms(
         mut renderer: Renderer3D,
         torso_x: Float64,
@@ -1037,6 +1042,10 @@ struct _EmptyGeoms(GeomsLike):
         ]
     ):
         pass
+
+    @staticmethod
+    def get_ground_rgba() -> List[Float64]:
+        return List[Float64]()
 
     @staticmethod
     def render_ground_geoms(
@@ -1393,6 +1402,19 @@ struct Geoms[*G: GeomSpec](GeomsLike):
                 else:
                     masses[i] = Scalar[DTYPE](Defaults.GEOM_DENSITY) * vol
         return masses^
+
+    @staticmethod
+    def get_ground_rgba() -> List[Float64]:
+        """Return [r, g, b] of the first plane geom's color, or empty list."""
+        var result = List[Float64]()
+        comptime for i in range(Self.N):
+            comptime GG = Self.geom_types[i]
+            comptime if GG.GEOM_TYPE == 0:  # GEOM_PLANE
+                if len(result) == 0:
+                    result.append(Float64(GG.COLOR.r) / 255.0)
+                    result.append(Float64(GG.COLOR.g) / 255.0)
+                    result.append(Float64(GG.COLOR.b) / 255.0)
+        return result^
 
     @staticmethod
     def render_ground_geoms(

@@ -908,7 +908,7 @@ struct CGSolver(ConstraintSolver):
         var L_M = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
         for k in range(NV * NV):
             M_chol[k] = rebind[Scalar[DTYPE]](workspace[env, M_idx + k])
-        chol_factor_inline[DTYPE, NV, M_SIZE](M_chol, L_M)
+        _ = chol_factor_inline[DTYPE, NV, M_SIZE](M_chol, L_M)
 
         # === Step 3: Initialize qacc, Ma, qfrc_sm ===
         var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)

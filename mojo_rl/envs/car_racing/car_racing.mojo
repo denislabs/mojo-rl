@@ -1065,6 +1065,9 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Perform one environment step with embedded track (GPUContinuousEnv trait).
 
@@ -1087,6 +1090,7 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             rng_seed: Optional random seed (unused, track already embedded).
             curriculum_values: Optional curriculum values (unused).
             workspace_ptr: Optional workspace pointer (unused).
+            rng_counter_ptr: Optional GPU counter pointer for deterministic RNG sequencing.
         """
         var states_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1222,6 +1226,9 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Reset only done environments with new random tracks (GPUContinuousEnv trait).
 
@@ -1235,6 +1242,8 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
             rng_seed: Random seed for initialization. Should be different each call
                      (e.g., training step counter) for varied tracks.
             workspace_ptr: Optional workspace pointer (unused).
+            rng_counter_ptr: Optional GPU counter pointer. When non-null, reads
+                     seed from GPU memory instead of rng_seed parameter.
         """
         var states_tensor = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1246,35 +1255,72 @@ struct CarRacing[DTYPE: DType where DTYPE.is_floating_point()](
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @always_inline
-        def selective_reset_wrapper(
-            states: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-            ],
-            dones: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-            ],
-            seed: Scalar[dtype],
-        ):
-            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if env >= BATCH_SIZE:
-                return
-            # Only reset if done
-            if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
-                # Combine seed with env index using prime multiplier for good distribution
-                var combined_seed = Int(seed) * 2654435761 + env * 12345
-                CarRacing[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                    states, env, combined_seed
-                )
-                dones[env] = Scalar[dtype](0.0)
+        if rng_counter_ptr:
+            var counter_t = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin
+            ](rng_counter_ptr)
 
-        ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
-            states_tensor,
-            dones_tensor,
-            Scalar[dtype](rng_seed),
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
+            @always_inline
+            def selective_reset_counter_wrapper(
+                states: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                ],
+                dones: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                counter: LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ],
+            ):
+                var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if env >= BATCH_SIZE:
+                    return
+                if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
+                    var combined_seed = Int(rebind[Scalar[DType.uint64]](counter[0])) * 2654435761 + env * 12345
+                    CarRacing[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
+                        states, env, combined_seed
+                    )
+                    dones[env] = Scalar[dtype](0.0)
+
+            ctx.enqueue_function[
+                selective_reset_counter_wrapper,
+                selective_reset_counter_wrapper,
+            ](
+                states_tensor,
+                dones_tensor,
+                counter_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
+            )
+        else:
+
+            @always_inline
+            def selective_reset_wrapper(
+                states: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                ],
+                dones: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                seed: Scalar[dtype],
+            ):
+                var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if env >= BATCH_SIZE:
+                    return
+                if rebind[Scalar[dtype]](dones[env]) > Scalar[dtype](0.5):
+                    var combined_seed = Int(seed) * 2654435761 + env * 12345
+                    CarRacing[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
+                        states, env, combined_seed
+                    )
+                    dones[env] = Scalar[dtype](0.0)
+
+            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+                states_tensor,
+                dones_tensor,
+                Scalar[dtype](rng_seed),
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
+            )
 
     @staticmethod
     def extract_obs_kernel_gpu[

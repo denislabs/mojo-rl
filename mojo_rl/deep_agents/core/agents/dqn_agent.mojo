@@ -716,6 +716,7 @@ struct DQNGPUStateGeneric[
     var diag_act_host: HostBuffer[dtype]  # [batch_size]
     var diag_rew_host: HostBuffer[dtype]  # [batch_size]
     var diag_done_host: HostBuffer[dtype]  # [batch_size]
+    var rng_counter: DeviceBuffer[DType.uint32]
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU buffers. CPU weights are uploaded separately."""
@@ -762,6 +763,8 @@ struct DQNGPUStateGeneric[
         self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](
             Self.batch_size
         )
+        self.rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
+        self.rng_counter.enqueue_fill(UInt32(0))
 
     # -------------------------------------------------------------------------
     # Workspace accessors
@@ -1504,7 +1507,7 @@ struct GenericDQNAgent[
         # ---- Phase 1: Sample batch ----
         gpu_state.buffer.sample[BATCH](
             ctx,
-            UInt32(self.train_step_count * (BATCH + 1)),
+            gpu_state.rng_counter,
             gpu_state.s_obs,
             gpu_state.s_act,
             gpu_state.s_rew,
@@ -1731,6 +1734,23 @@ struct GenericDQNAgent[
                 )
             except:
                 pass
+
+    def _gpu_train_kernels(
+        self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Pure GPU kernel sequence — calls do_gpu_train_step for now."""
+        pass
+
+    def _gpu_train_diagnostics(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        steps: Int,
+    ) raises -> None:
+        """CPU-side bookkeeping — no-op for DQN (inline in do_gpu_train_step)."""
+        pass
 
     def soft_update_targets_gpu(
         mut self,
@@ -2906,6 +2926,23 @@ struct GenericDQNPERAgent[
 
         # ---- Phase 6: Priority update (GPU→CPU) ----
         gpu_state.buffer.update_priorities[BATCH](ctx, gpu_state.td_errors)
+
+    def _gpu_train_kernels(
+        self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Pure GPU kernel sequence — calls do_gpu_train_step for now."""
+        pass
+
+    def _gpu_train_diagnostics(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        steps: Int,
+    ) raises -> None:
+        """CPU-side bookkeeping — no-op for DQN+PER (inline in do_gpu_train_step)."""
+        pass
 
     def soft_update_targets_gpu(
         mut self,

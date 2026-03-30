@@ -198,7 +198,7 @@ struct CUDAGraph(Movable):
         ]("intercept_stream_synchronize")(self._replay_stream)
 
     def replay_async(self) raises:
-        """Replay without sync. Call sync() later. No-op on non-NVIDIA."""
+        """Replay without sync on replay stream. Call sync() later. No-op on non-NVIDIA."""
         comptime if not has_nvidia_gpu_accelerator():
             return
 
@@ -208,6 +208,28 @@ struct CUDAGraph(Movable):
         _ = self._lib.get_function[
             def (_CUptr, _CUptr) -> c_int
         ]("intercept_graph_launch")(self._exec, self._replay_stream)
+
+    def replay_on_mojo_stream(self) raises:
+        """Replay on Mojo's main stream (implicit ordering with other kernels).
+
+        Unlike replay_async() which uses a separate replay stream,
+        this launches the graph on the same stream used by ctx.enqueue_function.
+        This ensures correct ordering: kernels enqueued before this call
+        (e.g. select_actions_gpu) complete before the graph starts,
+        and the graph completes before kernels enqueued after.
+
+        No explicit sync needed between pre-graph and post-graph operations.
+        No-op on non-NVIDIA.
+        """
+        comptime if not has_nvidia_gpu_accelerator():
+            return
+
+        if self._state != 2:
+            raise Error("[CUDAGraph] No graph captured.")
+
+        _ = self._lib.get_function[
+            def (_CUptr, _CUptr) -> c_int
+        ]("intercept_graph_launch")(self._exec, self._mojo_stream)
 
     def sync(self) raises:
         """Synchronize the replay stream. No-op on non-NVIDIA."""

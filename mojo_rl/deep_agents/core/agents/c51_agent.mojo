@@ -280,6 +280,9 @@ struct C51GPUState[
     var grad_input: DeviceBuffer[dtype]  # [batch_size * obs_dim]
     var train_ws: DeviceBuffer[dtype]  # [max(1, batch_size * WS_PER_SAMPLE)]
 
+    # RNG counter for replay sampling
+    var rng_counter: DeviceBuffer[DType.uint32]
+
     # Diagnostic host buffers
     var diag_raw_host: HostBuffer[dtype]  # [batch_size * RAW_OUT]
     var diag_act_host: HostBuffer[dtype]  # [batch_size]
@@ -343,6 +346,10 @@ struct C51GPUState[
         )
         var train_ws_size = max(1, Self.batch_size * Self.WS_PER_SAMPLE)
         self.train_ws = ctx.enqueue_create_buffer[dtype](train_ws_size)
+
+        # RNG counter
+        self.rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
+        self.rng_counter.enqueue_fill(UInt32(0))
 
         # Diagnostics
         self.diag_raw_host = ctx.enqueue_create_host_buffer[dtype](
@@ -1199,7 +1206,7 @@ struct GenericC51Agent[
         # ---- Phase 1: Sample batch ----
         gpu_state.buffer.sample[BATCH](
             ctx,
-            UInt32(self.train_step_count * (BATCH + 1)),
+            gpu_state.rng_counter,
             gpu_state.s_obs,
             gpu_state.s_act,
             gpu_state.s_rew,
@@ -1609,6 +1616,23 @@ struct GenericC51Agent[
         var duration = Float64(num_steps) * self.exploration_fraction
         var slope = (self.epsilon_min - 1.0) / duration
         self.epsilon = max(self.epsilon_min, slope * Float64(total_steps) + 1.0)
+
+    def _gpu_train_kernels(
+        self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Pure GPU kernel sequence — no-op stub for C51."""
+        pass
+
+    def _gpu_train_diagnostics(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        steps: Int,
+    ) raises -> None:
+        """CPU-side bookkeeping — no-op stub for C51."""
+        pass
 
     # =========================================================================
     # GPU Training convenience

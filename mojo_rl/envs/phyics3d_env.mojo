@@ -455,6 +455,9 @@ struct Phyics3dEnv[
         workspace_ptr: UnsafePointer[
             Scalar[gpu_dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Batched GPU step function using physics engine."""
         comptime MODEL_SIZE = model_size_with_invweight[
@@ -642,6 +645,9 @@ struct Phyics3dEnv[
         workspace_ptr: UnsafePointer[
             Scalar[gpu_dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Reset only done environments on GPU."""
         var states = LayoutTensor[
@@ -680,49 +686,107 @@ struct Phyics3dEnv[
             gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ](model_buf.unsafe_ptr())
 
-        @always_inline
-        def selective_reset_with_fk_wrapper(
-            states: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-                MutAnyOrigin,
-            ],
-            dones: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-            ],
-            model: LayoutTensor[
-                gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-            ],
-            seed: Int,
-        ):
-            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if i >= BATCH_SIZE:
-                return
-            if dones[i] > Scalar[gpu_dtype](0.5):
-                Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](states, i, seed)
-                forward_kinematics_gpu[
-                    gpu_dtype,
-                    Self.MODEL_DEF.NQ,
-                    Self.MODEL_DEF.NV,
-                    Self.MODEL_DEF.NBODY,
-                    Self.MODEL_DEF.NJOINT,
-                    Self.MODEL_DEF.MAX_CONTACTS,
-                    STATE_SIZE_VAL,
-                    MODEL_SIZE,
-                    BATCH_SIZE,
-                ](i, states, model)
-                dones[i] = Scalar[gpu_dtype](0.0)
+        if rng_counter_ptr:
+            var counter_t = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin
+            ](rng_counter_ptr)
 
-        ctx.enqueue_function[
-            selective_reset_with_fk_wrapper, selective_reset_with_fk_wrapper
-        ](
-            states,
-            dones,
-            model,
-            Int(rng_seed),
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
+            @always_inline
+            def selective_reset_with_fk_counter_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                model: LayoutTensor[
+                    gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+                ],
+                counter: LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ],
+            ):
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= BATCH_SIZE:
+                    return
+                if dones[i] > Scalar[gpu_dtype](0.5):
+                    Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](
+                        states, i, Int(rebind[Scalar[DType.uint64]](counter[0]))
+                    )
+                    forward_kinematics_gpu[
+                        gpu_dtype,
+                        Self.MODEL_DEF.NQ,
+                        Self.MODEL_DEF.NV,
+                        Self.MODEL_DEF.NBODY,
+                        Self.MODEL_DEF.NJOINT,
+                        Self.MODEL_DEF.MAX_CONTACTS,
+                        STATE_SIZE_VAL,
+                        MODEL_SIZE,
+                        BATCH_SIZE,
+                    ](i, states, model)
+                    dones[i] = Scalar[gpu_dtype](0.0)
+
+            ctx.enqueue_function[
+                selective_reset_with_fk_counter_wrapper,
+                selective_reset_with_fk_counter_wrapper,
+            ](
+                states,
+                dones,
+                model,
+                counter_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
+            )
+        else:
+
+            @always_inline
+            def selective_reset_with_fk_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                model: LayoutTensor[
+                    gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+                ],
+                seed: Int,
+            ):
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= BATCH_SIZE:
+                    return
+                if dones[i] > Scalar[gpu_dtype](0.5):
+                    Self._reset_env_gpu[BATCH_SIZE, STATE_SIZE_VAL](
+                        states, i, seed
+                    )
+                    forward_kinematics_gpu[
+                        gpu_dtype,
+                        Self.MODEL_DEF.NQ,
+                        Self.MODEL_DEF.NV,
+                        Self.MODEL_DEF.NBODY,
+                        Self.MODEL_DEF.NJOINT,
+                        Self.MODEL_DEF.MAX_CONTACTS,
+                        STATE_SIZE_VAL,
+                        MODEL_SIZE,
+                        BATCH_SIZE,
+                    ](i, states, model)
+                    dones[i] = Scalar[gpu_dtype](0.0)
+
+            ctx.enqueue_function[
+                selective_reset_with_fk_wrapper,
+                selective_reset_with_fk_wrapper,
+            ](
+                states,
+                dones,
+                model,
+                Int(rng_seed),
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
+            )
 
     @staticmethod
     def extract_obs_kernel_gpu[

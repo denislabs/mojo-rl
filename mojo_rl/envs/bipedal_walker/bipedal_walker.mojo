@@ -1479,6 +1479,9 @@ struct BipedalWalker[
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """GPU step kernel for batched continuous actions."""
         # Workspace layout (total = SHAPES_SIZE + BATCH * PER_ENV_SIZE):
@@ -1610,6 +1613,9 @@ struct BipedalWalker[
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """GPU selective reset kernel - resets only done environments."""
         var states = LayoutTensor[
@@ -1621,36 +1627,74 @@ struct BipedalWalker[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @always_inline
-        def selective_reset_wrapper(
-            states: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-            ],
-            dones: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-            ],
-            seed: Scalar[dtype],
-        ):
-            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if i >= BATCH_SIZE:
-                return
-            # Read done flag and check if > 0.5
-            var done_val = dones[i]
-            if done_val > Scalar[dtype](0.5):
-                var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
-                BipedalWalker[Self.dtype]._reset_env_gpu[
-                    BATCH_SIZE, STATE_SIZE
-                ](states, i, combined_seed)
-                # Clear done flag after reset
-                dones[i] = Scalar[dtype](0.0)
+        if rng_counter_ptr:
+            var counter_t = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin
+            ](rng_counter_ptr)
 
-        ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
-            states,
-            dones,
-            Scalar[dtype](rng_seed),
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
+            @always_inline
+            def selective_reset_counter_wrapper(
+                states: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                ],
+                dones: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                counter: LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ],
+            ):
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= BATCH_SIZE:
+                    return
+                var done_val = dones[i]
+                if done_val > Scalar[dtype](0.5):
+                    var combined_seed = Int(rebind[Scalar[DType.uint64]](counter[0])) * 2654435761 + (i + 1) * 12345
+                    BipedalWalker[Self.dtype]._reset_env_gpu[
+                        BATCH_SIZE, STATE_SIZE
+                    ](states, i, combined_seed)
+                    dones[i] = Scalar[dtype](0.0)
+
+            ctx.enqueue_function[
+                selective_reset_counter_wrapper,
+                selective_reset_counter_wrapper,
+            ](
+                states,
+                dones,
+                counter_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
+            )
+        else:
+
+            @always_inline
+            def selective_reset_wrapper(
+                states: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                ],
+                dones: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                seed: Scalar[dtype],
+            ):
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= BATCH_SIZE:
+                    return
+                var done_val = dones[i]
+                if done_val > Scalar[dtype](0.5):
+                    var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
+                    BipedalWalker[Self.dtype]._reset_env_gpu[
+                        BATCH_SIZE, STATE_SIZE
+                    ](states, i, combined_seed)
+                    dones[i] = Scalar[dtype](0.0)
+
+            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+                states,
+                dones,
+                Scalar[dtype](rng_seed),
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
+            )
 
     @staticmethod
     def extract_obs_kernel_gpu[

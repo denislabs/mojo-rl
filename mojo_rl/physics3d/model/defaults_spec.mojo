@@ -77,6 +77,8 @@ trait ModelDefaultsLike(TrivialRegisterPassable):
     # MuJoCo <compiler> block
     comptime SETTOTALMASS: Float64
     # MuJoCo <option> fluid parameters
+    comptime MOTOR_CTRL_MIN: Float64
+    comptime MOTOR_CTRL_MAX: Float64
     comptime OPT_DENSITY: Float64  # Fluid density (kg/m³), 0 = disabled
     comptime OPT_VISCOSITY: Float64  # Fluid dynamic viscosity (Pa·s), 0 = disabled
 

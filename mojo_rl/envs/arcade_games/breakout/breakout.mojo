@@ -764,6 +764,9 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         workspace_ptr: UnsafePointer[
             Scalar[gpu_dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -893,6 +896,9 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         workspace_ptr: UnsafePointer[
             Scalar[gpu_dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -901,31 +907,66 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
             gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
-        var seed = Scalar[DType.uint64](rng_seed)
 
-        @always_inline
-        def sel_reset_wrapper(
-            states: LayoutTensor[
-                gpu_dtype,
-                Layout.row_major(BATCH_SIZE, STATE_SIZE),
-                MutAnyOrigin,
-            ],
-            dones: LayoutTensor[
-                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-            ],
-            rng_seed: Scalar[DType.uint64],
-        ):
-            Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
-                states, dones, Scalar[DType.uint32](rng_seed)
+        if rng_counter_ptr:
+            var counter_t = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin
+            ](rng_counter_ptr)
+
+            @always_inline
+            def sel_reset_counter_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                counter: LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ],
+            ):
+                Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
+                    states, dones, Scalar[DType.uint32](rebind[Scalar[DType.uint64]](counter[0]))
+                )
+
+            ctx.enqueue_function[
+                sel_reset_counter_wrapper,
+                sel_reset_counter_wrapper,
+            ](
+                states,
+                dones,
+                counter_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(Self.TPB,),
             )
+        else:
+            var seed = Scalar[DType.uint64](rng_seed)
 
-        ctx.enqueue_function[sel_reset_wrapper, sel_reset_wrapper](
-            states,
-            dones,
-            seed,
-            grid_dim=(BLOCKS,),
-            block_dim=(Self.TPB,),
-        )
+            @always_inline
+            def sel_reset_wrapper(
+                states: LayoutTensor[
+                    gpu_dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
+                ],
+                dones: LayoutTensor[
+                    gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                rng_seed: Scalar[DType.uint64],
+            ):
+                Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
+                    states, dones, Scalar[DType.uint32](rng_seed)
+                )
+
+            ctx.enqueue_function[sel_reset_wrapper, sel_reset_wrapper](
+                states,
+                dones,
+                seed,
+                grid_dim=(BLOCKS,),
+                block_dim=(Self.TPB,),
+            )
 
     @staticmethod
     def init_step_workspace_gpu[

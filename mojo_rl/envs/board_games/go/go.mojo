@@ -1190,6 +1190,9 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         mut obs_buf: DeviceBuffer[board_dtype],
         mut legal_masks_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64 = 0,
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1275,6 +1278,9 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         mut states_buf: DeviceBuffer[board_dtype],
         mut dones_buf: DeviceBuffer[board_dtype],
         rng_seed: UInt64,
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         var states = LayoutTensor[
             board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin

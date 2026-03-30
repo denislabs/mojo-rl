@@ -500,7 +500,7 @@ struct OldNewtonSolver(ConstraintSolver):
         ](constraints, D_vals, jar, cstate, H)
 
         # Cholesky factorize H
-        chol_factor[DTYPE, NV, M_SIZE](H, L)
+        _ = chol_factor[DTYPE, NV, M_SIZE](H, L)
 
         # Compute scale for convergence check (MuJoCo: 1/sum(M diagonal))
         var scale: Scalar[DTYPE] = 0
@@ -679,7 +679,7 @@ struct OldNewtonSolver(ConstraintSolver):
                     V_SIZE,
                     M_SIZE,
                 ](constraints, D_vals, jar, cstate, H)
-                chol_factor[DTYPE, NV, M_SIZE](H, L)
+                _ = chol_factor[DTYPE, NV, M_SIZE](H, L)
 
         comptime if NEWTON_CPU_DEBUG:
             print("  [PRIMAL] Final states:")
@@ -1329,7 +1329,7 @@ struct OldNewtonSolver(ConstraintSolver):
                         )
 
         # Cholesky factorize H
-        chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+        _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
 
         # === Step 5: Newton iteration loop ===
         for _iter in range(NEWTON_ITER_GPU):
@@ -1735,7 +1735,7 @@ struct OldNewtonSolver(ConstraintSolver):
                                         + Jt2_2[i] * Jt1_2[j]
                                     )
                                 )
-                chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+                _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
 
         # Write solved qacc back to workspace
         for i in range(NV):

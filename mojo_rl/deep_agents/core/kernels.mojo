@@ -436,6 +436,48 @@ def increment_rng_counter_kernel(
 
 
 @always_inline
+def increment_env_rng_kernel(
+    counter: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Increment GPU-side env RNG counter by 1. Launch with grid=(1,), block=(1,).
+
+    UInt64 variant for environment step/reset seed.
+    Used inside CUDA graph capture so each replay gets a fresh seed.
+    """
+    if Int(thread_idx.x) == 0:
+        counter[0] = counter[0] + UInt64(1)
+
+
+@always_inline
+def advance_write_idx_kernel[
+    N_ENVS: Int, CAPACITY: Int
+](write_idx: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],):
+    """Advance GPU-side replay buffer write index. Launch with grid=(1,), block=(1,).
+
+    write_idx = (write_idx + N_ENVS) % CAPACITY
+
+    Used inside CUDA graph capture for env step graph so the replay buffer
+    write position advances each replay without CPU intervention.
+    """
+    if Int(thread_idx.x) == 0:
+        write_idx[0] = (write_idx[0] + Int32(N_ENVS)) % Int32(CAPACITY)
+
+
+@always_inline
+def increment_explore_counter_kernel(
+    counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+    step_size: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+):
+    """Increment GPU-side explore RNG counter by step_size. Launch with grid=(1,), block=(1,).
+
+    counter += step_size (where step_size = N_ENVS * ACTION_DIM typically).
+    Used inside CUDA graph capture for exploration RNG in select_actions_gpu.
+    """
+    if Int(thread_idx.x) == 0:
+        counter[0] = counter[0] + step_size[0]
+
+
+@always_inline
 def alpha_adam_update_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
@@ -525,12 +567,8 @@ def sample_indices_kernel[
     indices: LayoutTensor[
         DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
     ],
-    buffer_size: LayoutTensor[
-        DType.int32, Layout.row_major(1), MutAnyOrigin
-    ],
-    rng_counter: LayoutTensor[
-        DType.uint32, Layout.row_major(1), MutAnyOrigin
-    ],
+    buffer_size: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
 ):
     """Generate random indices for sampling from replay buffer.
 
@@ -1157,6 +1195,49 @@ def ddpg_exploration_kernel[
     actions_out[b, a] = val
 
 
+@always_inline
+def ddpg_exploration_counter_kernel[
+    dtype: DType,
+    BATCH: Int,
+    ACTION_DIM: Int,
+](
+    actions_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    raw_actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+    ],
+    noise_std: Scalar[dtype],
+    action_scale: Scalar[dtype],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+):
+    """CUDA graph compatible DDPG exploration. Reads seed from GPU counter."""
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH * ACTION_DIM:
+        return
+    var b = tid // ACTION_DIM
+    var a = tid % ACTION_DIM
+
+    var philox = PhiloxRandom(
+        seed=UInt64(Int(rng_counter[0]))
+        + UInt64(b) * UInt64(ACTION_DIM)
+        + UInt64(a),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var u1 = Float32(rand_vals[0]) + Float32(1e-8)
+    var u2 = Float32(rand_vals[1])
+    var mag = sqrt(Float32(-2.0) * log(u1))
+    var z = Scalar[dtype](mag * cos(u2 * Float32(6.283185307179586)))
+
+    var val = raw_actions[b, a] * action_scale + noise_std * action_scale * z
+    if val > action_scale:
+        val = action_scale
+    elif val < -action_scale:
+        val = -action_scale
+    actions_out[b, a] = val
+
+
 # =============================================================================
 # Uniform Random Actions (warmup exploration)
 # =============================================================================
@@ -1669,6 +1750,54 @@ def sac_sample_actions_kernel[
 
 
 @always_inline
+def sac_sample_actions_counter_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    N: Int,
+    ACTION_DIM: Int,
+    ACTOR_OUT_DIM: Int = ACTION_DIM + ACTION_DIM,
+](
+    actions: LayoutTensor[dtype, Layout.row_major(N, ACTION_DIM), MutAnyOrigin],
+    actor_out: LayoutTensor[
+        dtype, Layout.row_major(N, ACTOR_OUT_DIM), MutAnyOrigin
+    ],
+    action_scale: Scalar[dtype],
+    log_std_min: Scalar[dtype],
+    log_std_max: Scalar[dtype],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+):
+    """CUDA graph compatible SAC exploration. Reads seed from GPU counter."""
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= N:
+        return
+
+    var one = Scalar[dtype](1.0)
+    var half = Scalar[dtype](0.5)
+    var ls_range = log_std_max - log_std_min
+
+    for a in range(ACTION_DIM):
+        var mean_val = actor_out[b, a]
+        var tanh_out = actor_out[b, ACTION_DIM + a]
+        var ls = log_std_min + half * ls_range * (tanh_out + one)
+
+        var std_val = exp(ls)
+
+        var seed_val = UInt64(Int(rng_counter[0]))
+        var philox = PhiloxRandom(
+            seed=seed_val + UInt64(b) * UInt64(ACTION_DIM) + UInt64(a),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[dtype](rand_vals[0]) + 1e-8
+        var u2 = Scalar[dtype](rand_vals[1])
+        var mag = sqrt(Scalar[dtype](-2.0) * log(u1))
+        var eps = Scalar[dtype](mag * cos(u2 * 6.283185307179586))
+
+        var z = mean_val + std_val * eps
+        var act = tanh(z) * action_scale
+        actions[b, a] = act
+
+
+@always_inline
 def sac_rsample_with_cache_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
@@ -1818,7 +1947,7 @@ def sac_rsample_bwd_kernel[
     Args:
         actor_grad:        Output gradient [BATCH, 2*ACTION_DIM] for network backward.
         grad_act:          ∂(-mean(Q))/∂a from critic backward [BATCH, ACTION_DIM].
-        alpha_per_sample:  Alpha / BATCH (entropy coefficient, scalar).
+        alpha_buf:         Alpha / BATCH (entropy coefficient, scalar).
         curr_act:          Tanh-squashed actions from forward pass [BATCH, ACTION_DIM].
         eps_cache:         Saved noise ε from forward pass [BATCH, ACTION_DIM].
         actor_out:         Raw actor network output [BATCH, 2*ACTION_DIM] (mean || log_std).

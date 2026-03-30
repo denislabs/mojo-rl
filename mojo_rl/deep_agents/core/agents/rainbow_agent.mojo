@@ -448,8 +448,17 @@ struct RainbowGPUState[
     """GPU state for Rainbow: networks + PER + n-step + distributional buffers.
 
     Parameters:
+        QModel: Q-network model type (distributional output).
+        QOpt: Optimizer type for Q-network.
+        buffer_capacity: Maximum replay buffer capacity.
+        obs_dim: Observation dimensionality.
+        num_actions: Number of discrete actions.
+        num_atoms: Number of distributional atoms (typically 51).
+        n_step: Multi-step return length.
+        batch_size: Training batch size.
+        max_n_envs: Maximum number of parallel environments.
         store_dtype: Storage dtype for replay buffer observations.
-            Use DType.uint8 for pixel obs (4× memory savings).
+            Use DType.uint8 for pixel obs (4x memory savings).
     """
 
     comptime Q_Net = Network[Self.QModel, Self.QOpt]
@@ -2070,6 +2079,23 @@ struct GenericRainbowAgent[
                 )
             except:
                 pass
+
+    def _gpu_train_kernels(
+        self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Pure GPU kernel sequence — no-op stub for Rainbow."""
+        pass
+
+    def _gpu_train_diagnostics(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        steps: Int,
+    ) raises -> None:
+        """CPU-side bookkeeping — no-op stub for Rainbow."""
+        pass
 
     def soft_update_targets_gpu(
         mut self,

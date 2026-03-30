@@ -71,6 +71,8 @@ from mojo_rl.deep_agents.core.kernels import (
 )
 from mojo_rl.deep_agents.core.kernels import (
     sac_sample_actions_kernel,
+    sac_sample_actions_counter_kernel,
+    ddpg_exploration_counter_kernel,
     gradient_norm_kernel,
     gradient_reduce_apply_fused_kernel,
 )
@@ -316,6 +318,8 @@ struct GenericGPUState[
 
     # GPU-side RNG counter for CUDA graph compatible seed generation
     var rng_counter: DeviceBuffer[DType.uint32]
+    # GPU-side explore counter for CUDA graph compatible exploration RNG
+    var explore_counter: DeviceBuffer[DType.uint32]
 
     # GPU-side agent scalars (CUDA graph compatible)
     # Layout: [alpha, log_alpha, adam_m, adam_v, adam_t]
@@ -426,6 +430,9 @@ struct GenericGPUState[
         # GPU-side RNG counter (initialized to 0)
         self.rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
         self.rng_counter.enqueue_fill(UInt32(0))
+        # GPU-side explore counter (initialized to 0, incremented each env step)
+        self.explore_counter = ctx.enqueue_create_buffer[DType.uint32](1)
+        self.explore_counter.enqueue_fill(UInt32(0))
 
         # GPU-side agent scalars (initialized to zero, uploaded by agent)
         self.gpu_scalars = ctx.enqueue_create_buffer[dtype](
@@ -623,6 +630,21 @@ struct GenericGPUState[
         dones_buf: DeviceBuffer[dtype],
     ) raises -> None:
         self.buffer.store[N_ENVS](
+            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
+        )
+
+    def gpu_store_graph[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        rewards_buf: DeviceBuffer[dtype],
+        obs_buf: DeviceBuffer[dtype],
+        dones_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        self.buffer.store_graph[N_ENVS](
             ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
         )
 
@@ -1337,7 +1359,11 @@ struct GenericOffPolicyAgent[
         obs_buf: DeviceBuffer[dtype],
         mut actions_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Forward actor on GPU + exploration noise."""
+        """Forward actor on GPU + exploration noise.
+
+        Uses GPU-side explore_counter for RNG seed (CUDA graph compatible).
+        The counter is incremented by the training loop, not by this method.
+        """
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
@@ -1351,38 +1377,39 @@ struct GenericOffPolicyAgent[
         var act_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.ACTIONS), MutAnyOrigin
         ](actions_buf.unsafe_ptr())
-        var rng_seed_s = Scalar[DType.uint32](
-            UInt32(self.total_steps) * UInt32(Self.ACTIONS)
-        )
+        # GPU-side explore counter (CUDA graph compatible — not baked)
+        var explore_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](gpu_state.explore_counter.unsafe_ptr())
 
         comptime if Self.Config.Explore.IS_STOCHASTIC:
-            # SAC: stochastic sample from actor output
+            # SAC: stochastic sample with GPU counter (CUDA graph compatible)
             comptime BLOCKS = (N_ENVS + TPB - 1) // TPB
-            comptime sac_explore_k = sac_sample_actions_kernel[
+            comptime sac_counter_k = sac_sample_actions_counter_kernel[
                 dtype, N_ENVS, Self.ACTIONS, Self.ACTOR_OUT
             ]
-            ctx.enqueue_function[sac_explore_k, sac_explore_k](
+            ctx.enqueue_function[sac_counter_k, sac_counter_k](
                 act_t,
                 raw_t,
                 Scalar[dtype](self.action_scale),
                 Scalar[dtype](-5.0),
                 Scalar[dtype](2.0),
-                rng_seed_s,
+                explore_t,
                 grid_dim=(BLOCKS,),
                 block_dim=(TPB,),
             )
         else:
-            # DDPG/TD3: deterministic + Gaussian noise
+            # DDPG/TD3: deterministic + Gaussian noise with GPU counter
             comptime BLOCKS = (N_ENVS * Self.ACTIONS + TPB - 1) // TPB
-            comptime ddpg_explore_k = ddpg_exploration_kernel[
+            comptime ddpg_counter_k = ddpg_exploration_counter_kernel[
                 dtype, N_ENVS, Self.ACTIONS
             ]
-            ctx.enqueue_function[ddpg_explore_k, ddpg_explore_k](
+            ctx.enqueue_function[ddpg_counter_k, ddpg_counter_k](
                 act_t,
                 raw_t,
                 Scalar[dtype](self.noise_std),
                 Scalar[dtype](self.action_scale),
-                rng_seed_s,
+                explore_t,
                 grid_dim=(BLOCKS,),
                 block_dim=(TPB,),
             )
@@ -1816,6 +1843,16 @@ struct GenericOffPolicyAgent[
             comptime if Self.Config.HAS_TARGET_ACTOR:
                 gpu_state.actor.soft_update(self.tau, ctx)
             gpu_state.critics.soft_update_all(self.tau, ctx)
+
+    def sync_explore_counter(
+        self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Sync GPU explore counter from CPU total_steps."""
+        gpu_state.explore_counter.enqueue_fill(
+            UInt32(self.total_steps * Self.ACTIONS)
+        )
 
     def decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
         """No-op for DDPG/TD3 (Gaussian noise decay is per-episode, not per-step).

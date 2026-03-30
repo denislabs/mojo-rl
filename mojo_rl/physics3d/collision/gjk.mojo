@@ -321,7 +321,7 @@ def gjk_epa[
         - dist > 0: separated, dist is minimum distance
         - dist <= 0: overlapping, |dist| is penetration depth
         - (cx, cy, cz): contact point (midpoint of witness points)
-        - (nx, ny, nz): contact normal pointing from obj2 toward obj1
+        - (nx, ny, nz): contact normal pointing from obj2 toward obj1.
     """
     # ===== GJK Phase: find minimum distance =====
 

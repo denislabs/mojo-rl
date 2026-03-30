@@ -74,6 +74,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
     var write_idx: Int
     var size: Int
     var gpu_size: DeviceBuffer[DType.int32]  # GPU-side size for graph capture
+    var gpu_write_idx: DeviceBuffer[DType.int32]  # GPU-side write index for env graph capture
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all device buffers and zero-initialize.
@@ -101,6 +102,8 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         self.size = 0
         self.gpu_size = ctx.enqueue_create_buffer[DType.int32](1)
         self.gpu_size.enqueue_fill(Scalar[DType.int32](0))
+        self.gpu_write_idx = ctx.enqueue_create_buffer[DType.int32](1)
+        self.gpu_write_idx.enqueue_fill(Scalar[DType.int32](0))
 
     def __init__(out self, *, deinit take: Self):
         self.states_buf = take.states_buf^
@@ -111,6 +114,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         self.write_idx = take.write_idx
         self.size = take.size
         self.gpu_size = take.gpu_size^
+        self.gpu_write_idx = take.gpu_write_idx^
 
     def is_ready[BATCH: Int](self) -> Bool:
         """Return True if the buffer holds at least BATCH transitions."""
@@ -383,8 +387,230 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         # Update CPU-side tracking
         self.write_idx = (self.write_idx + N_ENVS) % Self.CAPACITY
         self.size = min(self.size + N_ENVS, Self.CAPACITY)
-        # Sync GPU-side size for CUDA graph compatible sampling
+        # Sync GPU-side counters for CUDA graph compatible sampling/storing
         self.gpu_size.enqueue_fill(Scalar[DType.int32](self.size))
+        self.gpu_write_idx.enqueue_fill(Scalar[DType.int32](self.write_idx))
+
+    def store_graph[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        states: DeviceBuffer[dtype],
+        actions: DeviceBuffer[dtype],
+        rewards: DeviceBuffer[dtype],
+        next_states: DeviceBuffer[dtype],
+        dones: DeviceBuffer[dtype],
+    ) raises:
+        """CUDA graph compatible store: reads write_idx from GPU memory.
+
+        Same as store[N_ENVS] but uses gpu_write_idx DeviceBuffer instead of
+        CPU-side write_idx scalar. Does NOT update CPU-side counters (caller
+        must track buffer state externally).
+
+        After storing, enqueues advance_write_idx_kernel to update gpu_write_idx
+        for the next graph replay.
+
+        Args:
+            ctx: GPU device context.
+            states: Current observations [N_ENVS * OBS_DIM].
+            actions: Actions taken [N_ENVS * ACTION_DIM].
+            rewards: Rewards received [N_ENVS].
+            next_states: Next observations [N_ENVS * OBS_DIM].
+            dones: Done flags [N_ENVS].
+        """
+        from ..kernels import advance_write_idx_kernel
+
+        var states_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS_DIM), MutAnyOrigin
+        ](states.unsafe_ptr())
+        var rewards_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](rewards.unsafe_ptr())
+        var next_states_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS, Self.OBS_DIM), MutAnyOrigin
+        ](next_states.unsafe_ptr())
+        var dones_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+        ](dones.unsafe_ptr())
+
+        var buf_states_t = LayoutTensor[
+            dtype, Layout.row_major(Self.CAPACITY, Self.OBS_DIM), MutAnyOrigin
+        ](self.states_buf.unsafe_ptr())
+        var buf_rewards_t = LayoutTensor[
+            dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+        ](self.rewards_buf.unsafe_ptr())
+        var buf_next_states_t = LayoutTensor[
+            dtype, Layout.row_major(Self.CAPACITY, Self.OBS_DIM), MutAnyOrigin
+        ](self.next_states_buf.unsafe_ptr())
+        var buf_dones_t = LayoutTensor[
+            dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+        ](self.dones_buf.unsafe_ptr())
+
+        # GPU-side write index (read on device, not baked)
+        var widx_t = LayoutTensor[
+            DType.int32, Layout.row_major(1), MutAnyOrigin
+        ](self.gpu_write_idx.unsafe_ptr())
+
+        comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
+        comptime OBS_BLOCKS = (Self.OBS_DIM + TPB - 1) // TPB
+
+        comptime if Self.ACTION_DIM == 1:
+            var actions_t = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+            ](actions.unsafe_ptr())
+            var buf_actions_t = LayoutTensor[
+                dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+            ](self.actions_buf.unsafe_ptr())
+
+            @always_inline
+            def store_obs_graph_wrapper(
+                s: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, Self.OBS_DIM), MutAnyOrigin
+                ],
+                ns: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, Self.OBS_DIM), MutAnyOrigin
+                ],
+                bs: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.CAPACITY, Self.OBS_DIM),
+                    MutAnyOrigin,
+                ],
+                bns: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.CAPACITY, Self.OBS_DIM),
+                    MutAnyOrigin,
+                ],
+                widx: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+            ):
+                store_obs_parallel_kernel[
+                    dtype, N_ENVS, Self.OBS_DIM, Self.CAPACITY
+                ](s, ns, bs, bns, rebind[Scalar[DType.int32]](widx[0]))
+
+            ctx.enqueue_function[store_obs_graph_wrapper, store_obs_graph_wrapper](
+                states_t,
+                next_states_t,
+                buf_states_t,
+                buf_next_states_t,
+                widx_t,
+                grid_dim=(OBS_BLOCKS, N_ENVS),
+                block_dim=(TPB,),
+            )
+
+            @always_inline
+            def store_scalars_graph_wrapper(
+                a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+                r: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+                d: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+                ba: LayoutTensor[
+                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                ],
+                br: LayoutTensor[
+                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                ],
+                bd: LayoutTensor[
+                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                ],
+                widx: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+            ):
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= N_ENVS:
+                    return
+                var buf_idx = (Int(rebind[Scalar[DType.int32]](widx[0])) + i) % Self.CAPACITY
+                ba[buf_idx] = a[i]
+                br[buf_idx] = r[i]
+                bd[buf_idx] = d[i]
+
+            ctx.enqueue_function[
+                store_scalars_graph_wrapper, store_scalars_graph_wrapper
+            ](
+                actions_t,
+                rewards_t,
+                dones_t,
+                buf_actions_t,
+                buf_rewards_t,
+                buf_dones_t,
+                widx_t,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
+            )
+        else:
+            var actions_t = LayoutTensor[
+                dtype,
+                Layout.row_major(N_ENVS, Self.ACTION_DIM),
+                MutAnyOrigin,
+            ](actions.unsafe_ptr())
+            var buf_actions_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.CAPACITY, Self.ACTION_DIM),
+                MutAnyOrigin,
+            ](self.actions_buf.unsafe_ptr())
+
+            @always_inline
+            def store_nd_graph_wrapper(
+                s: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, Self.OBS_DIM), MutAnyOrigin
+                ],
+                a: LayoutTensor[
+                    dtype,
+                    Layout.row_major(N_ENVS, Self.ACTION_DIM),
+                    MutAnyOrigin,
+                ],
+                r: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+                ns: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS, Self.OBS_DIM), MutAnyOrigin
+                ],
+                d: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+                bs: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.CAPACITY, Self.OBS_DIM),
+                    MutAnyOrigin,
+                ],
+                ba: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.CAPACITY, Self.ACTION_DIM),
+                    MutAnyOrigin,
+                ],
+                br: LayoutTensor[
+                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                ],
+                bns: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.CAPACITY, Self.OBS_DIM),
+                    MutAnyOrigin,
+                ],
+                bd: LayoutTensor[
+                    dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
+                ],
+                widx: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+            ):
+                store_transitions_kernel_nd[
+                    dtype, N_ENVS, Self.OBS_DIM, Self.ACTION_DIM, Self.CAPACITY
+                ](s, a, r, ns, d, bs, ba, br, bns, bd, rebind[Scalar[DType.int32]](widx[0]))
+
+            ctx.enqueue_function[store_nd_graph_wrapper, store_nd_graph_wrapper](
+                states_t,
+                actions_t,
+                rewards_t,
+                next_states_t,
+                dones_t,
+                buf_states_t,
+                buf_actions_t,
+                buf_rewards_t,
+                buf_next_states_t,
+                buf_dones_t,
+                widx_t,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # Advance GPU-side write index: (write_idx + N_ENVS) % CAPACITY
+        comptime adv_k = advance_write_idx_kernel[N_ENVS, Self.CAPACITY]
+        ctx.enqueue_function[adv_k, adv_k](
+            widx_t,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
 
     def sample[
         BATCH: Int

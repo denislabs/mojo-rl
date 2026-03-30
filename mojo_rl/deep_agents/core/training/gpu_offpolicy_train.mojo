@@ -72,6 +72,8 @@ from mojo_rl.deep_agents.core.kernels import (
     uniform_random_actions_kernel,
     uniform_random_discrete_actions_kernel,
     _extract_obs_kernel,
+    increment_env_rng_kernel,
+    increment_explore_counter_kernel,
 )
 from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
@@ -119,6 +121,26 @@ trait GPUOffPolicyState(ImplicitlyDestructible):
             dones_buf: Done flags [N_ENVS] (1.0 = done).
         """
         ...
+
+    def gpu_store_graph[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        rewards_buf: DeviceBuffer[dtype],
+        obs_buf: DeviceBuffer[dtype],
+        dones_buf: DeviceBuffer[dtype],
+    ) raises -> None:
+        """CUDA graph compatible store: reads write_idx from GPU memory.
+
+        Same as gpu_store but uses GPU-side write index instead of CPU scalar.
+        Does NOT update CPU-side counters. Default delegates to gpu_store.
+        """
+        self.gpu_store[N_ENVS](
+            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, dones_buf
+        )
 
     def gpu_buffer_is_ready(self) -> Bool:
         """Return True if the GPU replay buffer has enough samples to train."""
@@ -287,6 +309,19 @@ trait GPUOffPolicyAgent:
         """
         ...
 
+    def sync_explore_counter(
+        self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Sync GPU-side explore counter from CPU total_steps.
+
+        Called before select_actions_gpu to ensure the GPU counter has the
+        correct value for exploration RNG. No-op for agents that don't use
+        GPU explore counters.
+        """
+        pass
+
     def decay_explore_gpu(mut self, total_steps: Int, num_steps: Int):
         """Decay exploration rate based on training progress.
 
@@ -312,6 +347,7 @@ def run_offpolicy_continuous_train_gpu[
     L: Logger = NoOpLogger,
     CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     USE_CUDA_GRAPH: Bool = False,
+    USE_ENV_CUDA_GRAPH: Bool = False,
 ](
     mut agent: A,
     ctx: DeviceContext,
@@ -354,6 +390,8 @@ def run_offpolicy_continuous_train_gpu[
         PROFILE: Whether to profile the training loop.
         L: Logger for diagnostics.
         CurriculumType: Curriculum scheduler type.
+        USE_CUDA_GRAPH: Use CUDA graph capture for training steps (default: False).
+        USE_ENV_CUDA_GRAPH: Use CUDA graph capture for environment steps (default: False).
 
     Args:
         agent: Off-policy agent with GPU support (updated in-place).
@@ -418,6 +456,18 @@ def run_offpolicy_continuous_train_gpu[
 
     if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
+
+    # ------------------------------------------------------------------
+    # GPU-side counters for CUDA graph capture (env step graph)
+    # ------------------------------------------------------------------
+    var env_rng_counter = ctx.enqueue_create_buffer[DType.uint64](1)
+    env_rng_counter.enqueue_fill(UInt64(42))  # Initial seed
+    # Explore counter step size (N_ENVS * ACTION_DIM per env step)
+    var explore_step_size = ctx.enqueue_create_buffer[DType.uint32](1)
+    explore_step_size.enqueue_fill(UInt32(n_envs * E.ACTION_DIM))
+
+    # CUDA graph state for env step capture
+    var _env_graph: Optional[CUDAGraph] = None
 
     # ------------------------------------------------------------------
     # Initial reset
@@ -499,141 +549,381 @@ def run_offpolicy_continuous_train_gpu[
             )
             E.update_curriculum_gpu(ctx, workspace_buf, curriculum_values)
 
-        # ------------------------------------------------------------------
-        # Save current obs as prev_obs (before environment step)
-        # ------------------------------------------------------------------
-        comptime if PROFILE >= 1:
-            timer.sync_and_mark(ctx)
-        ctx.enqueue_copy(prev_obs_buf, obs_buf)
-        comptime if PROFILE >= 1:
-            timer.sync_and_accumulate(0, ctx)
-            timer.mark()
+        comptime if USE_ENV_CUDA_GRAPH:
+            # ==============================================================
+            # ENV CUDA GRAPH PATH: all env kernels captured in one graph
+            # ==============================================================
+            if total_steps < warmup_steps:
+                # --- Warmup: non-graph path (uniform random actions) ---
+                ctx.enqueue_copy(prev_obs_buf, obs_buf)
+                var act_t_w = LayoutTensor[
+                    dtype,
+                    Layout.row_major(n_envs, E.ACTION_DIM),
+                    MutAnyOrigin,
+                ](actions_buf.unsafe_ptr())
+                var warmup_seed = Scalar[DType.uint32](step_seed)
+                ctx.enqueue_function[warmup_kernel, warmup_kernel](
+                    act_t_w,
+                    action_scale_val,
+                    warmup_seed,
+                    grid_dim=(act_blocks,),
+                    block_dim=(act_tpb,),
+                )
+                E.step_kernel_gpu[
+                    n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM
+                ](
+                    ctx,
+                    states_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
+                    obs_buf,
+                    rng_seed=UInt64(step_seed),
+                    workspace_ptr=workspace_buf.unsafe_ptr(),
+                )
+                gpu_state.gpu_store[n_envs](
+                    ctx,
+                    prev_obs_buf,
+                    actions_buf,
+                    rewards_buf,
+                    obs_buf,
+                    terminated_buf,
+                )
+                # Episode tracking
+                var er_t = LayoutTensor[
+                    dtype, Layout.row_major(n_envs), MutAnyOrigin
+                ](episode_rewards_buf.unsafe_ptr())
+                var rw_t = LayoutTensor[
+                    dtype, Layout.row_major(n_envs), MutAnyOrigin
+                ](rewards_buf.unsafe_ptr())
+                var es_t = LayoutTensor[
+                    dtype, Layout.row_major(n_envs), MutAnyOrigin
+                ](episode_steps_buf.unsafe_ptr())
+                var dn_t = LayoutTensor[
+                    dtype, Layout.row_major(n_envs), MutAnyOrigin
+                ](dones_buf.unsafe_ptr())
+                var rs_t = LayoutTensor[
+                    dtype, Layout.row_major(1), MutAnyOrigin
+                ](gpu_reward_sum_buf.unsafe_ptr())
+                var ec_t = LayoutTensor[
+                    dtype, Layout.row_major(1), MutAnyOrigin
+                ](gpu_episode_count_buf.unsafe_ptr())
+                ctx.enqueue_function[
+                    accum_rewards_wrapper, accum_rewards_wrapper
+                ](er_t, rw_t, grid_dim=(env_blocks,), block_dim=(tpb,))
+                ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
+                    es_t, grid_dim=(env_blocks,), block_dim=(tpb,)
+                )
+                ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+                    dn_t, er_t, es_t, rs_t, ec_t,
+                    grid_dim=(1,), block_dim=(1,),
+                )
+                E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+                    ctx,
+                    states_buf,
+                    dones_buf,
+                    rng_seed=UInt64(step_seed + 1),
+                    workspace_ptr=workspace_buf.unsafe_ptr(),
+                )
+                E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+                    ctx, states_buf, obs_buf
+                )
+                agent.set_total_steps(agent.get_total_steps() + n_envs)
+            else:
+                # --- Post-warmup: graph captured/replayed ---
 
-        # ------------------------------------------------------------------
-        # Select actions: warmup uses uniform random, then agent's policy
-        # ------------------------------------------------------------------
-        if total_steps < warmup_steps:
-            # Uniform random actions matching CleanRL's env.action_space.sample()
-            var act_t = LayoutTensor[
-                dtype,
-                Layout.row_major(n_envs, E.ACTION_DIM),
-                MutAnyOrigin,
-            ](actions_buf.unsafe_ptr())
-            var warmup_seed = Scalar[DType.uint32](step_seed)
-            ctx.enqueue_function[warmup_kernel, warmup_kernel](
-                act_t,
-                action_scale_val,
-                warmup_seed,
-                grid_dim=(act_blocks,),
-                block_dim=(act_tpb,),
-            )
+                # Pre-graph: copy prev_obs + select actions (on mojo stream)
+                ctx.enqueue_copy(prev_obs_buf, obs_buf)
+                agent.sync_explore_counter(ctx, gpu_state)
+                agent.select_actions_gpu[n_envs](
+                    ctx, gpu_state, obs_buf, actions_buf
+                )
+                agent.set_total_steps(agent.get_total_steps() + n_envs)
+
+                if not _env_graph:
+                    # LayoutTensors for GPU counters (capturable pointers)
+                    var env_rng_t = LayoutTensor[
+                        DType.uint64, Layout.row_major(1), MutAnyOrigin
+                    ](env_rng_counter.unsafe_ptr())
+                    var er_g = LayoutTensor[
+                        dtype, Layout.row_major(n_envs), MutAnyOrigin
+                    ](episode_rewards_buf.unsafe_ptr())
+                    var rw_g = LayoutTensor[
+                        dtype, Layout.row_major(n_envs), MutAnyOrigin
+                    ](rewards_buf.unsafe_ptr())
+                    var es_g = LayoutTensor[
+                        dtype, Layout.row_major(n_envs), MutAnyOrigin
+                    ](episode_steps_buf.unsafe_ptr())
+                    var dn_g = LayoutTensor[
+                        dtype, Layout.row_major(n_envs), MutAnyOrigin
+                    ](dones_buf.unsafe_ptr())
+                    var rs_g = LayoutTensor[
+                        dtype, Layout.row_major(1), MutAnyOrigin
+                    ](gpu_reward_sum_buf.unsafe_ptr())
+                    var ec_g = LayoutTensor[
+                        dtype, Layout.row_major(1), MutAnyOrigin
+                    ](gpu_episode_count_buf.unsafe_ptr())
+
+                    # Inline env step kernel sequence (no closure capture)
+                    comptime incr_env_k = increment_env_rng_kernel
+                    ctx.enqueue_function[incr_env_k, incr_env_k](
+                        env_rng_t, grid_dim=(1,), block_dim=(1,),
+                    )
+                    E.step_kernel_gpu[
+                        n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM
+                    ](
+                        ctx,
+                        states_buf,
+                        actions_buf,
+                        rewards_buf,
+                        dones_buf,
+                        terminated_buf,
+                        obs_buf,
+                        workspace_ptr=workspace_buf.unsafe_ptr(),
+                        rng_counter_ptr=env_rng_counter.unsafe_ptr(),
+                    )
+                    gpu_state.gpu_store_graph[n_envs](
+                        ctx,
+                        prev_obs_buf,
+                        actions_buf,
+                        rewards_buf,
+                        obs_buf,
+                        terminated_buf,
+                    )
+                    ctx.enqueue_function[
+                        accum_rewards_wrapper, accum_rewards_wrapper
+                    ](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[
+                        incr_steps_wrapper, incr_steps_wrapper
+                    ](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[
+                        log_reset_wrapper, log_reset_wrapper
+                    ](
+                        dn_g, er_g, es_g, rs_g, ec_g,
+                        grid_dim=(1,), block_dim=(1,),
+                    )
+                    E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+                        ctx,
+                        states_buf,
+                        dones_buf,
+                        rng_seed=0,
+                        workspace_ptr=workspace_buf.unsafe_ptr(),
+                        rng_counter_ptr=env_rng_counter.unsafe_ptr(),
+                    )
+                    E.extract_obs_kernel_gpu[
+                        n_envs, E.STATE_SIZE, E.OBS_DIM
+                    ](ctx, states_buf, obs_buf)
+                    ctx.synchronize()
+
+                    # Now capture the same sequence
+                    var graph = CUDAGraph(ctx)
+                    graph.begin_capture()
+                    ctx.enqueue_function[incr_env_k, incr_env_k](
+                        env_rng_t, grid_dim=(1,), block_dim=(1,),
+                    )
+                    E.step_kernel_gpu[
+                        n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM
+                    ](
+                        ctx,
+                        states_buf,
+                        actions_buf,
+                        rewards_buf,
+                        dones_buf,
+                        terminated_buf,
+                        obs_buf,
+                        workspace_ptr=workspace_buf.unsafe_ptr(),
+                        rng_counter_ptr=env_rng_counter.unsafe_ptr(),
+                    )
+                    gpu_state.gpu_store_graph[n_envs](
+                        ctx,
+                        prev_obs_buf,
+                        actions_buf,
+                        rewards_buf,
+                        obs_buf,
+                        terminated_buf,
+                    )
+                    ctx.enqueue_function[
+                        accum_rewards_wrapper, accum_rewards_wrapper
+                    ](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[
+                        incr_steps_wrapper, incr_steps_wrapper
+                    ](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[
+                        log_reset_wrapper, log_reset_wrapper
+                    ](
+                        dn_g, er_g, es_g, rs_g, ec_g,
+                        grid_dim=(1,), block_dim=(1,),
+                    )
+                    E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+                        ctx,
+                        states_buf,
+                        dones_buf,
+                        rng_seed=0,
+                        workspace_ptr=workspace_buf.unsafe_ptr(),
+                        rng_counter_ptr=env_rng_counter.unsafe_ptr(),
+                    )
+                    E.extract_obs_kernel_gpu[
+                        n_envs, E.STATE_SIZE, E.OBS_DIM
+                    ](ctx, states_buf, obs_buf)
+                    graph.end_capture()
+                    if verbose:
+                        print(
+                            "[CUDA Graph] Captured env step with "
+                            + String(graph.num_nodes())
+                            + " nodes"
+                        )
+                    _env_graph = graph^
+                else:
+                    # Replay env graph on mojo stream (correct ordering
+                    # with pre-graph select_actions_gpu kernels)
+                    _env_graph.value().replay_on_mojo_stream()
         else:
-            agent.select_actions_gpu[n_envs](
-                ctx, gpu_state, obs_buf, actions_buf
+            # ==============================================================
+            # NON-GRAPH PATH: original kernel-by-kernel dispatch
+            # ==============================================================
+
+            # ------------------------------------------------------------------
+            # Save current obs as prev_obs (before environment step)
+            # ------------------------------------------------------------------
+            comptime if PROFILE >= 1:
+                timer.sync_and_mark(ctx)
+            ctx.enqueue_copy(prev_obs_buf, obs_buf)
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(0, ctx)
+                timer.mark()
+
+            # ------------------------------------------------------------------
+            # Select actions: warmup uses uniform random, then agent's policy
+            # ------------------------------------------------------------------
+            if total_steps < warmup_steps:
+                # Uniform random actions matching CleanRL's env.action_space.sample()
+                var act_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(n_envs, E.ACTION_DIM),
+                    MutAnyOrigin,
+                ](actions_buf.unsafe_ptr())
+                var warmup_seed = Scalar[DType.uint32](step_seed)
+                ctx.enqueue_function[warmup_kernel, warmup_kernel](
+                    act_t,
+                    action_scale_val,
+                    warmup_seed,
+                    grid_dim=(act_blocks,),
+                    block_dim=(act_tpb,),
+                )
+            else:
+                agent.sync_explore_counter(ctx, gpu_state)
+                agent.select_actions_gpu[n_envs](
+                    ctx, gpu_state, obs_buf, actions_buf
+                )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(1, ctx)
+                timer.mark()
+
+            # Update agent's total_steps so exploration RNG seed varies each call
+            agent.set_total_steps(agent.get_total_steps() + n_envs)
+
+            # ------------------------------------------------------------------
+            # Step environment (obs_buf now holds next observations)
+            # ------------------------------------------------------------------
+            E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
+                obs_buf,
+                rng_seed=UInt64(step_seed),
+                workspace_ptr=workspace_buf.unsafe_ptr(),
             )
-        comptime if PROFILE >= 1:
-            timer.sync_and_accumulate(1, ctx)
-            timer.mark()
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(2, ctx)
+                timer.mark()
 
-        # Update agent's total_steps so exploration RNG seed varies each call
-        agent.set_total_steps(agent.get_total_steps() + n_envs)
+            # ------------------------------------------------------------------
+            # Store transitions: (prev_obs, action, reward, next_obs, terminated)
+            # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
+            # ------------------------------------------------------------------
+            gpu_state.gpu_store[n_envs](
+                ctx,
+                prev_obs_buf,
+                actions_buf,
+                rewards_buf,
+                obs_buf,
+                terminated_buf,
+            )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(3, ctx)
 
-        # ------------------------------------------------------------------
-        # Step environment (obs_buf now holds next observations)
-        # ------------------------------------------------------------------
-        E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
-            ctx,
-            states_buf,
-            actions_buf,
-            rewards_buf,
-            dones_buf,
-            terminated_buf,
-            obs_buf,
-            rng_seed=UInt64(step_seed),
-            workspace_ptr=workspace_buf.unsafe_ptr(),
-        )
-        comptime if PROFILE >= 1:
-            timer.sync_and_accumulate(2, ctx)
-            timer.mark()
+            # ------------------------------------------------------------------
+            # Accumulate episode rewards/steps + log completed (all on GPU)
+            # ------------------------------------------------------------------
+            var episode_rewards_t = LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ](episode_rewards_buf.unsafe_ptr())
+            var rewards_t = LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ](rewards_buf.unsafe_ptr())
+            var episode_steps_t = LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ](episode_steps_buf.unsafe_ptr())
+            var dones_t = LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ](dones_buf.unsafe_ptr())
+            var reward_sum_t = LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ](gpu_reward_sum_buf.unsafe_ptr())
+            var episode_count_t = LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ](gpu_episode_count_buf.unsafe_ptr())
 
-        # ------------------------------------------------------------------
-        # Store transitions: (prev_obs, action, reward, next_obs, terminated)
-        # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
-        # ------------------------------------------------------------------
-        gpu_state.gpu_store[n_envs](
-            ctx, prev_obs_buf, actions_buf, rewards_buf, obs_buf, terminated_buf
-        )
-        comptime if PROFILE >= 1:
-            timer.sync_and_accumulate(3, ctx)
+            ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
+                episode_rewards_t,
+                rewards_t,
+                grid_dim=(env_blocks,),
+                block_dim=(tpb,),
+            )
+            ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
+                episode_steps_t,
+                grid_dim=(env_blocks,),
+                block_dim=(tpb,),
+            )
 
-        # ------------------------------------------------------------------
-        # Accumulate episode rewards/steps + log completed (all on GPU)
-        # ------------------------------------------------------------------
-        var episode_rewards_t = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](episode_rewards_buf.unsafe_ptr())
-        var rewards_t = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
-        var episode_steps_t = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](episode_steps_buf.unsafe_ptr())
-        var dones_t = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
-        var reward_sum_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](gpu_reward_sum_buf.unsafe_ptr())
-        var episode_count_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](gpu_episode_count_buf.unsafe_ptr())
+            # Log completed episodes to GPU-side stats and reset per-env counters
+            ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+                dones_t,
+                episode_rewards_t,
+                episode_steps_t,
+                reward_sum_t,
+                episode_count_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+            comptime if PROFILE >= 1:
+                timer.sync_and_mark(ctx)
+                timer.accumulate(4)
+                timer.mark()
 
-        ctx.enqueue_function[accum_rewards_wrapper, accum_rewards_wrapper](
-            episode_rewards_t,
-            rewards_t,
-            grid_dim=(env_blocks,),
-            block_dim=(tpb,),
-        )
-        ctx.enqueue_function[incr_steps_wrapper, incr_steps_wrapper](
-            episode_steps_t,
-            grid_dim=(env_blocks,),
-            block_dim=(tpb,),
-        )
-
-        # Log completed episodes to GPU-side stats and reset per-env counters
-        ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
-            dones_t,
-            episode_rewards_t,
-            episode_steps_t,
-            reward_sum_t,
-            episode_count_t,
-            grid_dim=(1,),
-            block_dim=(1,),
-        )
-        comptime if PROFILE >= 1:
-            timer.sync_and_mark(ctx)
-            timer.accumulate(4)
-            timer.mark()
-
-        # ------------------------------------------------------------------
-        # Reset done environments (reuse model from workspace)
-        # ------------------------------------------------------------------
-        E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
-            ctx,
-            states_buf,
-            dones_buf,
-            rng_seed=UInt64(step_seed + 1),
-            workspace_ptr=workspace_buf.unsafe_ptr(),
-        )
-        # Update obs_buf for reset environments — must happen after selective_reset
-        # so that the next step's prev_obs copy sees the initial obs of the new
-        # episode, not the terminal obs of the previous one.
-        E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
-            ctx, states_buf, obs_buf
-        )
-        comptime if PROFILE >= 1:
-            timer.sync_and_accumulate(5, ctx)
-            timer.mark()
+            # ------------------------------------------------------------------
+            # Reset done environments (reuse model from workspace)
+            # ------------------------------------------------------------------
+            E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+                ctx,
+                states_buf,
+                dones_buf,
+                rng_seed=UInt64(step_seed + 1),
+                workspace_ptr=workspace_buf.unsafe_ptr(),
+            )
+            # Update obs_buf for reset environments — must happen after selective_reset
+            # so that the next step's prev_obs copy sees the initial obs of the new
+            # episode, not the terminal obs of the previous one.
+            E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+                ctx, states_buf, obs_buf
+            )
+            comptime if PROFILE >= 1:
+                timer.sync_and_accumulate(5, ctx)
+                timer.mark()
 
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
@@ -655,9 +945,11 @@ def run_offpolicy_continuous_train_gpu[
                             + " nodes"
                         )
                     _train_graph = graph^
-                # All steps via graph replay
+                # All steps via async graph replay (no per-step sync)
                 for _ in range(grad_steps):
-                    _train_graph.value().replay()
+                    _train_graph.value().replay_async()
+                # Single sync after all replays (needed before env step)
+                _train_graph.value().sync()
                 # Bookkeeping + diagnostics outside graph
                 agent._gpu_train_diagnostics(ctx, gpu_state, grad_steps)
             else:

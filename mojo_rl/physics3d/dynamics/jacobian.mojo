@@ -201,6 +201,8 @@ def compute_cdof[
         model: Static model configuration.
         data: Current simulation state (xpos, xquat, xipos must be computed).
         cdof: Output array of 6*NV spatial motion axes.
+        subtree_com: Subtree center-of-mass positions (3*NBODY). Used for
+            HINGE and FREE rotation linear components. Empty list = use xipos.
     """
     # Zero out
     for i in range(NV * 6):

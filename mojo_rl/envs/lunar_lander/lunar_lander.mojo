@@ -1558,6 +1558,9 @@ struct LunarLander[
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """Optimized GPU step kernel with fused obs extraction.
 
@@ -1648,6 +1651,9 @@ struct LunarLander[
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """GPU step kernel for continuous actions (GPUContinuousEnv trait).
 
@@ -1782,6 +1788,9 @@ struct LunarLander[
         workspace_ptr: UnsafePointer[
             Scalar[dtype], MutAnyOrigin
         ] = UnsafePointer[Scalar[dtype], MutAnyOrigin](),
+        rng_counter_ptr: UnsafePointer[
+            Scalar[DType.uint64], MutAnyOrigin
+        ] = UnsafePointer[Scalar[DType.uint64], MutAnyOrigin](),
     ) raises:
         """GPU selective reset kernel - resets only done environments.
 
@@ -1793,6 +1802,8 @@ struct LunarLander[
                      each call (e.g., current training step) to get varied
                      terrains on reset.
             workspace_ptr: Optional workspace pointer (unused for LunarLander).
+            rng_counter_ptr: Optional GPU counter pointer. When non-null, reads
+                     seed from GPU memory instead of rng_seed parameter.
         """
         var states = LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -1804,35 +1815,70 @@ struct LunarLander[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
-        @always_inline
-        def selective_reset_wrapper(
-            states: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-            ],
-            dones: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-            ],
-            seed: Scalar[dtype],
-        ):
-            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-            if i >= BATCH_SIZE:
-                return
-            if rebind[Scalar[dtype]](dones[i]) > Scalar[dtype](0.5):
-                # Combine seed with env index using prime multiplier for good distribution
-                # This ensures different terrains across different reset calls
-                # Using (i+1) aligns with CPU's increment-before-use pattern
-                var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
-                LunarLander[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
-                    states, i, combined_seed
-                )
+        if rng_counter_ptr:
+            var counter_t = LayoutTensor[
+                DType.uint64, Layout.row_major(1), MutAnyOrigin
+            ](rng_counter_ptr)
 
-        ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
-            states,
-            dones,
-            Scalar[dtype](rng_seed),
-            grid_dim=(BLOCKS,),
-            block_dim=(TPB,),
-        )
+            @always_inline
+            def selective_reset_counter_wrapper(
+                states: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                ],
+                dones: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                counter: LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ],
+            ):
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= BATCH_SIZE:
+                    return
+                if rebind[Scalar[dtype]](dones[i]) > Scalar[dtype](0.5):
+                    var combined_seed = Int(rebind[Scalar[DType.uint64]](counter[0])) * 2654435761 + (i + 1) * 12345
+                    LunarLander[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
+                        states, i, combined_seed
+                    )
+
+            ctx.enqueue_function[
+                selective_reset_counter_wrapper,
+                selective_reset_counter_wrapper,
+            ](
+                states,
+                dones,
+                counter_t,
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
+            )
+        else:
+
+            @always_inline
+            def selective_reset_wrapper(
+                states: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                ],
+                dones: LayoutTensor[
+                    dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+                ],
+                seed: Scalar[dtype],
+            ):
+                var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if i >= BATCH_SIZE:
+                    return
+                if rebind[Scalar[dtype]](dones[i]) > Scalar[dtype](0.5):
+                    var combined_seed = Int(seed) * 2654435761 + (i + 1) * 12345
+                    LunarLander[Self.dtype]._reset_env_gpu[BATCH_SIZE, STATE_SIZE](
+                        states, i, combined_seed
+                    )
+
+            ctx.enqueue_function[selective_reset_wrapper, selective_reset_wrapper](
+                states,
+                dones,
+                Scalar[dtype](rng_seed),
+                grid_dim=(BLOCKS,),
+                block_dim=(TPB,),
+            )
 
     @staticmethod
     def extract_obs_kernel_gpu[
