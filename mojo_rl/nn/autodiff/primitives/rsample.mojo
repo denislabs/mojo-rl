@@ -28,6 +28,7 @@ from ...constants import dtype, TPB
 from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from std.math import exp, log, sqrt, tanh, cos, pi
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
@@ -257,24 +258,17 @@ struct RSampleOp[
                 Self.AFFINE_DERIV
             ) * (tanh_raw + Scalar[dtype](1.0))
 
-            # Simple hash-based PRNG for noise (Box-Muller)
-            # Real implementation would use a proper GPU RNG
-            var seed_idx = rng_seed + Scalar[DType.uint32](UInt32(b * A + j))
-            var hash1 = seed_idx * Scalar[DType.uint32](
-                2654435761
-            )  # Knuth multiplicative hash
-            var hash2 = hash1 * Scalar[DType.uint32](2246822519)
-            var u1 = Scalar[dtype](
-                Float64(hash1 % Scalar[DType.uint32](1000000))
-                / 1000000.0
-                * 0.998
-                + 0.001
+            # PhiloxRandom Box-Muller for Gaussian noise (GPU-safe, no Float64)
+            var philox = PhiloxRandom(
+                seed=UInt64(rng_seed) + UInt64(b) * UInt64(A) + UInt64(j),
+                offset=0,
             )
-            var u2 = Scalar[dtype](
-                Float64(hash2 % Scalar[DType.uint32](1000000)) / 1000000.0
-            )
-            var noise = sqrt(Scalar[dtype](-2.0) * log(u1)) * cos(
-                Scalar[dtype](6.283185307) * u2
+            var rand_vals = philox.step_uniform()
+            var u1 = Float32(rand_vals[0]) + Float32(1e-8)
+            var u2 = Float32(rand_vals[1])
+            var mag = sqrt(Float32(-2.0) * log(u1))
+            var noise = Scalar[dtype](
+                mag * cos(u2 * Float32(6.283185307179586))
             )
 
             var std = exp(ls)
