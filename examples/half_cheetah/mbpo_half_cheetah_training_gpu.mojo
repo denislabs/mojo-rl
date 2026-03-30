@@ -44,15 +44,14 @@ comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 comptime HIDDEN_DIM = 256
 
 # Buffer sizes
-# NOTE: reduced for debugging — increase once crash is fixed
-comptime BUFFER_CAPACITY = 10_000     # Real buffer
-comptime SYNTH_CAPACITY = 40_000      # Synthetic buffer
-comptime BATCH_SIZE = 64
+comptime BUFFER_CAPACITY = 1_000_000  # Real buffer (match SAC)
+comptime SYNTH_CAPACITY = 400_000  # Synthetic buffer
+comptime BATCH_SIZE = 256
 
 # Dynamics ensemble
-comptime NUM_ENSEMBLE = 3
-comptime NUM_ELITES = 2
-comptime DYN_HIDDEN = 64
+comptime NUM_ENSEMBLE = 7
+comptime NUM_ELITES = 5
+comptime DYN_HIDDEN = 200
 
 # Training duration
 comptime NUM_STEPS = 300_000  # MBPO needs ~10x fewer steps than SAC
@@ -71,9 +70,9 @@ comptime MBPOHalfCheetahConfig = DefaultMBPOConfig[
     NUM_ENSEMBLE,
     NUM_ELITES,
     DYN_HIDDEN,
-    0.0003,   # actor_lr
-    0.001,    # critic_lr (CleanRL default)
-    0.001,    # model_lr
+    0.0003,  # actor_lr
+    0.001,  # critic_lr (CleanRL default)
+    0.001,  # model_lr
     NeverTerminate,  # HalfCheetah has no termination
 ]
 
@@ -105,7 +104,7 @@ def main() raises:
             target_entropy=-Float64(ACTION_DIM),
             model_train_freq=250,
             rollout_min_length=1,
-            rollout_max_length=1,   # HalfCheetah uses k=1 per MBPO paper
+            rollout_max_length=1,  # HalfCheetah uses k=1 per MBPO paper
             rollout_min_epoch=20,
             rollout_max_epoch=150,
             num_rollouts_per_step=400,
@@ -124,7 +123,13 @@ def main() raises:
         print("  Buffer capacity (real): " + String(BUFFER_CAPACITY))
         print("  Buffer capacity (synth): " + String(SYNTH_CAPACITY))
         print("  Batch size: " + String(BATCH_SIZE))
-        print("  Ensemble: " + String(NUM_ENSEMBLE) + " models, " + String(NUM_ELITES) + " elites")
+        print(
+            "  Ensemble: "
+            + String(NUM_ENSEMBLE)
+            + " models, "
+            + String(NUM_ELITES)
+            + " elites"
+        )
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
         print("    - Critic LR: 1e-3")
@@ -184,7 +189,7 @@ def main() raises:
                 num_steps=NUM_STEPS,
                 warmup_steps=WARMUP_STEPS,
                 verbose=True,
-                print_every=10_000,
+                print_every=50_000,
                 environment_name="HalfCheetah",
                 logger=UnsafePointer(to=logger),
                 diag_every=500,
@@ -214,7 +219,9 @@ def main() raises:
                 "Final average reward (last 100 episodes): "
                 + String(metrics.mean_reward_last_n(100))[byte=:8]
             )
-            print("Best episode reward: " + String(metrics.max_reward())[byte=:8])
+            print(
+                "Best episode reward: " + String(metrics.max_reward())[byte=:8]
+            )
             print()
 
             var final_avg = metrics.mean_reward_last_n(100)
