@@ -81,7 +81,7 @@ trait TargetAction:
         ],
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
-        rng_seed: UInt32,
+        rng_counter: DeviceBuffer[DType.uint32],
     ) raises:
         ...
 
@@ -155,7 +155,7 @@ struct DeterministicTarget(TargetAction):
         ],
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
-        rng_seed: UInt32,
+        rng_counter: DeviceBuffer[DType.uint32],
     ) raises:
         """GPU forward target actor on next_obs -> next_actions."""
         var out_act = LayoutTensor[
@@ -259,7 +259,7 @@ struct SmoothedTarget[
         ],
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
-        rng_seed: UInt32,
+        rng_counter: DeviceBuffer[DType.uint32],
     ) raises:
         """GPU forward target actor, then add clipped Gaussian noise.
 
@@ -284,7 +284,9 @@ struct SmoothedTarget[
         var noise_clip_s = Scalar[dtype](Self.target_noise_clip)
         var act_min_s = Scalar[dtype](-1.0)
         var act_max_s = Scalar[dtype](1.0)
-        var rng_seed_s = Scalar[DType.uint32](rng_seed)
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](rng_counter.unsafe_ptr())
 
         @always_inline
         def noise_wrapper(
@@ -298,10 +300,12 @@ struct SmoothedTarget[
             nc: Scalar[dtype],
             amin: Scalar[dtype],
             amax: Scalar[dtype],
-            seed: Scalar[DType.uint32],
+            rng: LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ],
         ):
             add_gaussian_noise_kernel[dtype, BATCH, ACTIONS](
-                noisy, clean, ns, nc, amin, amax, seed
+                noisy, clean, ns, nc, amin, amax, rng
             )
 
         ctx.enqueue_function[noise_wrapper, noise_wrapper](
@@ -311,7 +315,7 @@ struct SmoothedTarget[
             noise_clip_s,
             act_min_s,
             act_max_s,
-            rng_seed_s,
+            rng_t,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )
@@ -441,7 +445,7 @@ struct ReparamTarget(TargetAction):
         ],
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
-        rng_seed: UInt32,
+        rng_counter: DeviceBuffer[DType.uint32],
     ) raises:
         """GPU forward current actor -> rsample -> actions + log_probs.
 
@@ -467,7 +471,9 @@ struct ReparamTarget(TargetAction):
 
         var log_std_min_s = Scalar[dtype](-5.0)
         var log_std_max_s = Scalar[dtype](2.0)
-        var rng_seed_s = Scalar[DType.uint32](rng_seed)
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](rng_counter.unsafe_ptr())
 
         @always_inline
         def rsample_wrapper(
@@ -485,10 +491,12 @@ struct ReparamTarget(TargetAction):
             ],
             lsmin: Scalar[dtype],
             lsmax: Scalar[dtype],
-            seed: Scalar[DType.uint32],
+            rng: LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ],
         ):
             sac_rsample_with_cache_kernel[dtype, BATCH, ACTIONS](
-                acts, lp, eps, ao, lsmin, lsmax, seed
+                acts, lp, eps, ao, lsmin, lsmax, rng
             )
 
         ctx.enqueue_function[rsample_wrapper, rsample_wrapper](
@@ -498,7 +506,7 @@ struct ReparamTarget(TargetAction):
             raw_out,
             log_std_min_s,
             log_std_max_s,
-            rng_seed_s,
+            rng_t,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
         )

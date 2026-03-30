@@ -57,6 +57,7 @@ from mojo_rl.deep_agents.core.kernels import (
     dynamics_sample_kernel,
     clamp_rewards_kernel,
     sample_indices_kernel,
+    increment_rng_counter_kernel,
 )
 from mojo_rl.core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
 from mojo_rl.deep_agents.core.training.mbpo_train import run_mbpo_train, run_mbpo_train_gpu
@@ -2077,9 +2078,19 @@ struct MBPOAgent[
 
         # Phase 1: Sample batch from GPU buffer
         self.train_step_count += 1
+
+        # Increment GPU-side RNG counter (CUDA graph compatible)
+        comptime incr_k = increment_rng_counter_kernel
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](gpu_state.rng_counter.unsafe_ptr())
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t, grid_dim=(1,), block_dim=(1,),
+        )
+
         gpu_state.buffer.sample[BS](
             ctx,
-            rng_seed=UInt32(self.train_step_count) * UInt32(BS + 1),
+            rng_counter=gpu_state.rng_counter,
             sampled_obs=gpu_state.s_obs,
             sampled_actions=gpu_state.s_act,
             sampled_rewards=gpu_state.s_rew,
@@ -2096,11 +2107,12 @@ struct MBPOAgent[
         var p_actor = gpu_state.actor.online.params_view()
         var p_critic = gpu_state.critics.online_params_view(0)
         var p_critic_t = gpu_state.critics.target_params_view(0)
-        var rng_seed = UInt32(self.train_step_count) * UInt32(
-            BS * Self.ACTIONS + 7
-        )
 
         # Phase 2: Target actions (SAC: use online actor, no target)
+        # Increment RNG counter before target action
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t, grid_dim=(1,), block_dim=(1,),
+        )
         var next_act_t = gpu_state.next_act_view[BS]()
         var next_lp_t = gpu_state.next_lp_view[BS]()
         Self.Config.TargetAction.compute_gpu[
@@ -2116,7 +2128,7 @@ struct MBPOAgent[
             p_actor,
             gpu_state.actor_ws,
             gpu_state.target_strat_ws,
-            rng_seed,
+            gpu_state.rng_counter,
         )
 
         # Concat next_obs + next_act → next_ci, forward target critics
@@ -2292,6 +2304,10 @@ struct MBPOAgent[
                 c2_grads = gpu_state.critics.online_grads_view(1)
                 p_c2 = gpu_state.critics.online_params_view(1)
                 c2_ws = gpu_state.critic2_ws
+            # Increment RNG counter before actor loss
+            ctx.enqueue_function[incr_k, incr_k](
+                rng_t, grid_dim=(1,), block_dim=(1,),
+            )
             _ = Self.Config.ActorLoss.update_actor_gpu[
                 BS,
                 Self.ACTIONS,
@@ -2314,7 +2330,7 @@ struct MBPOAgent[
                 gpu_state.strat_ws,
                 gpu_state.dq,
                 self.alpha,
-                UInt32(self.train_step_count),
+                gpu_state.rng_counter,
             )
             gpu_state.actor.online.optimizer_step(ctx)
 

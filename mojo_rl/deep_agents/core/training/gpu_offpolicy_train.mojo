@@ -378,17 +378,10 @@ def run_offpolicy_continuous_train_gpu[
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
-    # Pad episode tracking buffers to guard against GPU memory corruption
-    # from training kernel buffer overflows (NaN leak from adjacent allocs).
-    comptime _EP_PAD = 256
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](
-        n_envs + _EP_PAD
-    )
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](
-        n_envs + _EP_PAD
-    )
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1 + _EP_PAD)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1 + _EP_PAD)
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
@@ -537,25 +530,6 @@ def run_offpolicy_continuous_train_gpu[
             timer.sync_and_accumulate(2, ctx)
             timer.mark()
 
-        # DEBUG: check dones for NaN at multiple points in early iterations
-        if total_steps < n_envs * 5:
-            var _dd = ctx.enqueue_create_host_buffer[dtype](n_envs)
-            ctx.enqueue_copy(_dd, dones_buf)
-            ctx.synchronize()
-            var _dsum: Float64 = 0
-            var _has_nan = False
-            for _i in range(n_envs):
-                var _v = Float64(_dd[_i])
-                if _v != _v:
-                    _has_nan = True
-                _dsum += _v
-            if _has_nan or total_steps == 0:
-                print(
-                    "  [DBG iter", total_steps // n_envs,
-                    "] after step: dones_sum=", _dsum,
-                    " nan=", _has_nan,
-                )
-
         # ------------------------------------------------------------------
         # Store transitions: (prev_obs, action, reward, next_obs, terminated)
         # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
@@ -635,18 +609,6 @@ def run_offpolicy_continuous_train_gpu[
             timer.sync_and_accumulate(5, ctx)
             timer.mark()
 
-        # DEBUG: check dones after selective_reset (first 5 iters)
-        if total_steps < n_envs * 5:
-            var _dd2 = ctx.enqueue_create_host_buffer[dtype](n_envs)
-            ctx.enqueue_copy(_dd2, dones_buf)
-            ctx.synchronize()
-            var _nan2 = False
-            for _i2 in range(n_envs):
-                if Float64(_dd2[_i2]) != Float64(_dd2[_i2]):
-                    _nan2 = True
-            if _nan2:
-                print("  [DBG iter", total_steps // n_envs, "] after reset: NaN in dones!")
-
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
         # ------------------------------------------------------------------
@@ -699,20 +661,6 @@ def run_offpolicy_continuous_train_gpu[
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
             ctx.synchronize()
-
-            # DEBUG: download dones_buf to check if it's ever non-zero
-            var _dbg_dones = ctx.enqueue_create_host_buffer[dtype](n_envs)
-            ctx.enqueue_copy(_dbg_dones, dones_buf)
-            ctx.synchronize()
-            var _dbg_done_sum: Float64 = 0
-            for _di in range(n_envs):
-                _dbg_done_sum += Float64(_dbg_dones[_di])
-            print(
-                "  [DEBUG] ep_count=",
-                Float64(host_episode_count[0]),
-                " dones_sum=",
-                _dbg_done_sum,
-            )
 
             var recent_count = Int(host_episode_count[0])
             var recent_sum = Float64(host_reward_sum[0])
@@ -893,17 +841,10 @@ def run_offpolicy_discrete_train_gpu[
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
-    # Pad episode tracking buffers to guard against GPU memory corruption
-    # from training kernel buffer overflows (NaN leak from adjacent allocs).
-    comptime _EP_PAD = 256
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](
-        n_envs + _EP_PAD
-    )
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](
-        n_envs + _EP_PAD
-    )
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1 + _EP_PAD)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1 + _EP_PAD)
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)

@@ -384,7 +384,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
     ](
         self,
         ctx: DeviceContext,
-        rng_seed: UInt32,
+        rng_counter: DeviceBuffer[DType.uint32],
         sampled_obs: DeviceBuffer[dtype],
         sampled_actions: DeviceBuffer[dtype],
         sampled_rewards: DeviceBuffer[dtype],
@@ -403,7 +403,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
 
         Args:
             ctx: GPU device context.
-            rng_seed: Base seed for RNG (vary per call).
+            rng_counter: GPU-side RNG counter [1] (CUDA graph compatible).
             sampled_obs: Output observations [BATCH * OBS_DIM].
             sampled_actions: Output actions [BATCH * ACTION_DIM].
             sampled_rewards: Output rewards [BATCH].
@@ -417,7 +417,9 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             DType.int32, Layout.row_major(BATCH), MutAnyOrigin
         ](indices.unsafe_ptr())
         var buf_size = Scalar[DType.int32](self.size)
-        var seed_s = Scalar[DType.uint32](rng_seed)
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](rng_counter.unsafe_ptr())
 
         @always_inline
         def sample_wrapper(
@@ -425,14 +427,16 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 DType.int32, Layout.row_major(BATCH), MutAnyOrigin
             ],
             bsize: Scalar[DType.int32],
-            s: Scalar[DType.uint32],
+            rng: LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ],
         ):
-            sample_indices_kernel[dtype, BATCH](idx, bsize, s)
+            sample_indices_kernel[dtype, BATCH](idx, bsize, rng)
 
         ctx.enqueue_function[sample_wrapper, sample_wrapper](
             indices_t,
             buf_size,
-            seed_s,
+            rng_t,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )

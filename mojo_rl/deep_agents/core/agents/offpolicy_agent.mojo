@@ -66,6 +66,7 @@ from mojo_rl.deep_agents.core.kernels import (
     actor_grad_from_critic_kernel,
     td_target_continuous_kernel,
     td_target_min_twin_kernel,
+    increment_rng_counter_kernel,
 )
 from mojo_rl.deep_agents.core.kernels import (
     sac_sample_actions_kernel,
@@ -312,6 +313,9 @@ struct GenericGPUState[
     # Gradient clipping scratch (partial sums for norm reduction)
     var grad_clip_ps: DeviceBuffer[dtype]
 
+    # GPU-side RNG counter for CUDA graph compatible seed generation
+    var rng_counter: DeviceBuffer[DType.uint32]
+
     # Diagnostic host buffers for GPU→CPU readback (pre-allocated)
     var diag_q_host: HostBuffer[dtype]  # [batch_size]
     var diag_tgt_host: HostBuffer[dtype]  # [batch_size]
@@ -405,6 +409,10 @@ struct GenericGPUState[
         comptime MAX_PS = ACTOR_PS if ACTOR_PS > CRITIC_PS else CRITIC_PS
         comptime MAX_BLOCKS = (MAX_PS + TPB - 1) // TPB
         self.grad_clip_ps = ctx.enqueue_create_buffer[dtype](MAX_BLOCKS)
+
+        # GPU-side RNG counter (initialized to 0)
+        self.rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
+        self.rng_counter.enqueue_fill(UInt32(0))
 
         # Diagnostic host buffers
 
@@ -1342,9 +1350,19 @@ struct GenericOffPolicyAgent[
 
         # Phase 1: Sample batch
         self.train_step_count += 1
+
+        # Increment GPU-side RNG counter (CUDA graph compatible)
+        comptime incr_k = increment_rng_counter_kernel
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](gpu_state.rng_counter.unsafe_ptr())
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t, grid_dim=(1,), block_dim=(1,),
+        )
+
         gpu_state.buffer.sample[BS](
             ctx,
-            rng_seed=UInt32(self.train_step_count) * UInt32(BS + 1),
+            rng_counter=gpu_state.rng_counter,
             sampled_obs=gpu_state.s_obs,
             sampled_actions=gpu_state.s_act,
             sampled_rewards=gpu_state.s_rew,
@@ -1365,15 +1383,16 @@ struct GenericOffPolicyAgent[
         var p_critic_t = gpu_state.critics.target_params_view(0)
         var p_actor = gpu_state.actor.online.params_view()
         var p_critic = gpu_state.critics.online_params_view(0)
-        var rng_seed = UInt32(self.train_step_count) * UInt32(
-            BS * Self.ACTIONS + 7
-        )
 
         comptime if Self.profile >= 2:
             self.train_timer.sync_and_accumulate(0, ctx)
             self.train_timer.mark()
 
         # Phase 2: Target actions — delegate to Config.TargetAction
+        # Increment RNG counter before target action (separate seed from sample)
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t, grid_dim=(1,), block_dim=(1,),
+        )
         var next_act_t = gpu_state.next_act_view[BS]()
         var next_lp_t = gpu_state.next_lp_view[BS]()
         comptime if Self.Config.HAS_TARGET_ACTOR:
@@ -1390,7 +1409,7 @@ struct GenericOffPolicyAgent[
                 p_actor_t,
                 gpu_state.actor_ws,
                 gpu_state.target_strat_ws,
-                rng_seed,
+                gpu_state.rng_counter,
             )
         else:
             Self.Config.TargetAction.compute_gpu[
@@ -1406,7 +1425,7 @@ struct GenericOffPolicyAgent[
                 p_actor,
                 gpu_state.actor_ws,
                 gpu_state.target_strat_ws,
-                rng_seed,
+                gpu_state.rng_counter,
             )
 
         # Phase 2b: Concat next_obs + next_act → next_ci, forward target critics
@@ -1622,6 +1641,10 @@ struct GenericOffPolicyAgent[
                 c2_grads = gpu_state.critics.online_grads_view(1)
                 p_c2 = gpu_state.critics.online_params_view(1)
                 c2_ws = gpu_state.critic2_ws
+            # Increment RNG counter before actor loss (separate seed)
+            ctx.enqueue_function[incr_k, incr_k](
+                rng_t, grid_dim=(1,), block_dim=(1,),
+            )
             _ = Self.Config.ActorLoss.update_actor_gpu[
                 BS,
                 Self.ACTIONS,
@@ -1644,7 +1667,7 @@ struct GenericOffPolicyAgent[
                 gpu_state.strat_ws,
                 gpu_state.dq,
                 self.alpha,
-                UInt32(self.train_step_count),
+                gpu_state.rng_counter,
             )
             # Log actor grad norm before optimizer step overwrites grads
             if (

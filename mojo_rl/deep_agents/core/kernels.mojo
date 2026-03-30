@@ -423,6 +423,19 @@ def store_obs_parallel_kernel[
 
 
 @always_inline
+def increment_rng_counter_kernel(
+    counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+):
+    """Increment GPU-side RNG counter by 1. Launch with grid=(1,), block=(1,).
+
+    Used inside CUDA graph capture so each replay gets a fresh seed.
+    The counter lives in a DeviceBuffer and persists between replays.
+    """
+    if Int(thread_idx.x) == 0:
+        counter[0] = counter[0] + UInt32(1)
+
+
+@always_inline
 def sample_indices_kernel[
     dtype: DType,
     SAMPLE_SIZE: Int,
@@ -431,22 +444,26 @@ def sample_indices_kernel[
         DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
     ],
     buffer_size: Scalar[DType.int32],
-    rng_seed: Scalar[DType.uint32],
+    rng_counter: LayoutTensor[
+        DType.uint32, Layout.row_major(1), MutAnyOrigin
+    ],
 ):
     """Generate random indices for sampling from replay buffer.
 
     Each thread generates one random index in [0, buffer_size).
     Uses PhiloxRandom for GPU-safe randomness (no seed collisions).
+    Reads seed from GPU-side rng_counter (CUDA graph compatible).
 
     Args:
         indices: Output buffer for random indices [SAMPLE_SIZE].
         buffer_size: Current size of replay buffer (samples from [0, buffer_size)).
-        rng_seed: Base seed for random number generation (should vary per call).
+        rng_counter: GPU-side RNG counter [1] (read, not modified).
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= SAMPLE_SIZE:
         return
 
+    var rng_seed = rng_counter[0]
     # PhiloxRandom: unique seed per thread, no collisions
     var philox = PhiloxRandom(
         seed=UInt64(rng_seed) + UInt64(i),
@@ -1436,7 +1453,7 @@ def add_gaussian_noise_kernel[
     noise_clip: Scalar[dtype],
     action_min: Scalar[dtype],
     action_max: Scalar[dtype],
-    rng_seed: Scalar[DType.uint32],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
 ):
     """Add clipped Gaussian exploration noise to actions (TD3-style).
 
@@ -1445,6 +1462,7 @@ def add_gaussian_noise_kernel[
 
     Uses PhiloxRandom for GPU-safe noise generation (no Float64).
     One thread per (batch, action_dim) element.
+    Reads seed from GPU-side rng_counter (CUDA graph compatible).
 
     Args:
         noisy_actions: Output noisy actions [BATCH, ACTION_DIM].
@@ -1453,7 +1471,7 @@ def add_gaussian_noise_kernel[
         noise_clip:    Maximum absolute noise value.
         action_min:    Minimum action value (e.g. -action_scale).
         action_max:    Maximum action value (e.g. +action_scale).
-        rng_seed:      Random seed (should vary per call).
+        rng_counter:   GPU-side RNG counter [1] (read, not modified).
     """
     var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
     if tid >= BATCH * ACTION_DIM:
@@ -1462,6 +1480,7 @@ def add_gaussian_noise_kernel[
     var b = tid // ACTION_DIM
     var a = tid % ACTION_DIM
 
+    var rng_seed = rng_counter[0]
     # PhiloxRandom Box-Muller for Gaussian noise
     var philox = PhiloxRandom(
         seed=UInt64(rng_seed) + UInt64(b) * UInt64(ACTION_DIM) + UInt64(a),
@@ -1582,7 +1601,7 @@ def sac_rsample_with_cache_kernel[
     ],
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
-    rng_seed: Scalar[DType.uint32],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
 ):
     """SAC training forward: reparameterize, compute log_prob, save eps for backward.
 
@@ -1600,6 +1619,7 @@ def sac_rsample_with_cache_kernel[
         log π(a|s) = Σ_j [-0.5*ε_j² - 0.5*log(2π) - ls_j - log(1 - a_j²)]
 
     Uses PhiloxRandom for GPU-safe noise generation.
+    Reads seed from GPU-side rng_counter (CUDA graph compatible).
     One thread per batch sample.
 
     Args:
@@ -1609,12 +1629,13 @@ def sac_rsample_with_cache_kernel[
         actor_out:  Actor network output [BATCH, 2*ACTION_DIM] (mean || log_std).
         log_std_min: Minimum log_std clamp value.
         log_std_max: Maximum log_std clamp value.
-        rng_seed:   Random seed (should vary per call).
+        rng_counter: GPU-side RNG counter [1] (read, not modified).
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
         return
 
+    var rng_seed = rng_counter[0]
     var half_log_2pi = Scalar[dtype](0.9189385332046727)
     var one = Scalar[dtype](1.0)
     var half = Scalar[dtype](0.5)

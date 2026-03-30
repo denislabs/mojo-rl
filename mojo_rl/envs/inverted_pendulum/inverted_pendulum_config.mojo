@@ -5,7 +5,6 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.integrator import RK4Integrator
-from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
 from mojo_rl.physics3d.solver import NewtonSolver
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
