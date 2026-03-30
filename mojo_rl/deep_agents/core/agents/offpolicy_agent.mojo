@@ -1446,9 +1446,6 @@ struct GenericOffPolicyAgent[
             indices=gpu_state.s_idx,
         )
 
-        comptime if Self.profile >= 2:
-            self.train_timer.sync_and_mark(ctx)
-
         var obs_t = gpu_state.obs_view[BS]()
         var nobs_t = gpu_state.nobs_view[BS]()
         var act_t = gpu_state.act_view[BS]()
@@ -1459,9 +1456,7 @@ struct GenericOffPolicyAgent[
         var p_actor = gpu_state.actor.online.params_view()
         var p_critic = gpu_state.critics.online_params_view(0)
 
-        comptime if Self.profile >= 2:
-            self.train_timer.sync_and_accumulate(0, ctx)
-            self.train_timer.mark()
+
 
         # Phase 2: Target actions — delegate to Config.TargetAction
         # Increment RNG counter before target action (separate seed from sample)
@@ -1524,10 +1519,6 @@ struct GenericOffPolicyAgent[
                 ctx, next_ci_t, nq2_t, p_c2t, gpu_state.critic2_ws
             )
 
-        comptime if Self.profile >= 2:
-            self.train_timer.sync_and_accumulate(1, ctx)
-            self.train_timer.mark()
-
         # Phase 2c: TD targets — delegate to Config.TargetValue
         var nq1_flat = LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin](
             gpu_state.next_q.unsafe_ptr()
@@ -1547,10 +1538,6 @@ struct GenericOffPolicyAgent[
             self.gamma,
             gpu_state.gpu_scalars,
         )
-
-        comptime if Self.profile >= 2:
-            self.train_timer.sync_and_accumulate(2, ctx)
-            self.train_timer.mark()
 
         # Phase 3: Critic update
         var ci_t = gpu_state.ci_view[BS]()
@@ -1594,10 +1581,6 @@ struct GenericOffPolicyAgent[
         )
         gpu_state.critics.pairs[0].online.optimizer_step(ctx)
 
-        comptime if Self.profile >= 2:
-            self.train_timer.sync_and_accumulate(3, ctx)
-            self.train_timer.mark()
-
         # Critic2 update (twin critics only)
         comptime if Self.Config.NUM_CRITICS == 2:
             var q2_out_t = gpu_state.q2_out_view[BS]()
@@ -1631,126 +1614,124 @@ struct GenericOffPolicyAgent[
             )
             gpu_state.critics.pairs[1].online.optimizer_step(ctx)
 
-        # Phase 4: Actor update — delegate to Config.ActorLoss
-            gpu_state.actor.online.zero_grads(ctx)
-            gpu_state.critics.pairs[0].online.zero_grads(ctx)
-            var a_grads = gpu_state.actor.online.grads_view()
-            var c_grads = gpu_state.critics.online_grads_view(0)
-            # For twin critics, zero and pass critic2; otherwise reuse critic1
-            var c2_grads = c_grads
-            var p_c2 = p_critic
-            var c2_ws = gpu_state.critic_ws
-            comptime if Self.Config.NUM_CRITICS == 2:
-                gpu_state.critics.pairs[1].online.zero_grads(ctx)
-                c2_grads = gpu_state.critics.online_grads_view(1)
-                p_c2 = gpu_state.critics.online_params_view(1)
-                c2_ws = gpu_state.critic2_ws
-            # Increment RNG counter before actor loss (separate seed)
-            ctx.enqueue_function[incr_k, incr_k](
-                rng_t, grid_dim=(1,), block_dim=(1,),
-            )
-            _ = Self.Config.ActorLoss.update_actor_gpu[
-                BS,
-                Self.ACTIONS,
-                Self.Config.ActorModel,
-                Self.Config.ActorOpt,
-                Self.Config.CriticModel,
-                Self.Config.CriticOpt,
-            ](
-                ctx,
-                obs_t,
-                p_actor,
+        # Phase 4: Actor update — always included for graph capture
+        gpu_state.actor.online.zero_grads(ctx)
+        gpu_state.critics.pairs[0].online.zero_grads(ctx)
+        var a_grads = gpu_state.actor.online.grads_view()
+        var c_grads = gpu_state.critics.online_grads_view(0)
+        var c2_grads = c_grads
+        var p_c2_actor = p_critic
+        var c2_ws = gpu_state.critic_ws
+        comptime if Self.Config.NUM_CRITICS == 2:
+            gpu_state.critics.pairs[1].online.zero_grads(ctx)
+            c2_grads = gpu_state.critics.online_grads_view(1)
+            p_c2_actor = gpu_state.critics.online_params_view(1)
+            c2_ws = gpu_state.critic2_ws
+        # Increment RNG counter before actor loss (separate seed)
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t, grid_dim=(1,), block_dim=(1,),
+        )
+        _ = Self.Config.ActorLoss.update_actor_gpu[
+            BS,
+            Self.ACTIONS,
+            Self.Config.ActorModel,
+            Self.Config.ActorOpt,
+            Self.Config.CriticModel,
+            Self.Config.CriticOpt,
+        ](
+            ctx,
+            obs_t,
+            p_actor,
+            a_grads,
+            p_critic,
+            c_grads,
+            p_c2_actor,
+            c2_grads,
+            gpu_state.actor_ws,
+            gpu_state.critic_ws,
+            c2_ws,
+            gpu_state.strat_ws,
+            gpu_state.dq,
+            gpu_state.gpu_scalars,
+            gpu_state.rng_counter,
+        )
+
+        # Clip actor gradients
+        if self.max_grad_norm > 0.0:
+            comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
+            comptime A_BLOCKS = (A_PS + TPB - 1) // TPB
+            comptime norm_k = gradient_norm_kernel[
+                dtype, A_PS, A_BLOCKS, TPB
+            ]
+            comptime clip_k = gradient_reduce_apply_fused_kernel[
+                dtype, A_PS, A_BLOCKS, TPB
+            ]
+            var ps_t = LayoutTensor[
+                dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
+            ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+            ctx.enqueue_function[norm_k, norm_k](
+                ps_t,
                 a_grads,
-                p_critic,
-                c_grads,
-                p_c2,
-                c2_grads,
-                gpu_state.actor_ws,
-                gpu_state.critic_ws,
-                c2_ws,
-                gpu_state.strat_ws,
-                gpu_state.dq,
-                gpu_state.gpu_scalars,
-                gpu_state.rng_counter,
+                grid_dim=(A_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[clip_k, clip_k](
+                a_grads,
+                ps_t,
+                Scalar[dtype](self.max_grad_norm),
+                grid_dim=(A_BLOCKS,),
+                block_dim=(TPB,),
             )
 
-            # Clip actor gradients
-            if self.max_grad_norm > 0.0:
-                comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
-                comptime A_BLOCKS = (A_PS + TPB - 1) // TPB
-                comptime norm_k = gradient_norm_kernel[
-                    dtype, A_PS, A_BLOCKS, TPB
+        gpu_state.actor.online.optimizer_step(ctx)
+
+        # Alpha auto-tuning (SAC only): GPU-side Adam update
+        comptime if Self.Config.ActorLoss.HAS_ALPHA:
+            if self.auto_alpha:
+                comptime LP_OFF = Self.Config.ActorLoss.gpu_lp_offset[
+                    BS,
+                    Self.ACTIONS,
+                    Self.ACTOR_OUT,
+                    Self.ACTOR_CS,
+                ]()
+                var src_lp = LayoutTensor[
+                    dtype, Layout.row_major(BS), MutAnyOrigin
+                ](gpu_state.strat_ws.unsafe_ptr() + LP_OFF)
+
+                comptime GS = Self.GPUStateType
+                comptime alpha_k = alpha_adam_update_kernel[
+                    dtype,
+                    BS,
+                    GS.GPU_ALPHA,
+                    GS.GPU_LOG_ALPHA,
+                    GS.GPU_ADAM_M,
+                    GS.GPU_ADAM_V,
+                    GS.GPU_ADAM_T,
+                    GS.GPU_TARGET_ENT,
+                    GS.GPU_ALPHA_LR,
                 ]
-                comptime clip_k = gradient_reduce_apply_fused_kernel[
-                    dtype, A_PS, A_BLOCKS, TPB
-                ]
-                var ps_t = LayoutTensor[
-                    dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
-                ](gpu_state.grad_clip_ps.unsafe_ptr())
+                var scalars_t = LayoutTensor[
+                    dtype, Layout.row_major(1), MutAnyOrigin
+                ](gpu_state.gpu_scalars.unsafe_ptr())
 
-                ctx.enqueue_function[norm_k, norm_k](
-                    ps_t,
-                    a_grads,
-                    grid_dim=(A_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-                ctx.enqueue_function[clip_k, clip_k](
-                    a_grads,
-                    ps_t,
-                    Scalar[dtype](self.max_grad_norm),
-                    grid_dim=(A_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-
-            gpu_state.actor.online.optimizer_step(ctx)
-
-            # Alpha auto-tuning (SAC only): GPU-side Adam update
-            # No D2H copy or ctx.synchronize — fully CUDA graph compatible
-            comptime if Self.Config.ActorLoss.HAS_ALPHA:
-                if self.auto_alpha:
-                    comptime LP_OFF = Self.Config.ActorLoss.gpu_lp_offset[
-                        BS,
-                        Self.ACTIONS,
-                        Self.ACTOR_OUT,
-                        Self.ACTOR_CS,
-                    ]()
-                    var src_lp = LayoutTensor[
-                        dtype, Layout.row_major(BS), MutAnyOrigin
-                    ](gpu_state.strat_ws.unsafe_ptr() + LP_OFF)
-
-                    comptime GS = Self.GPUStateType
-                    comptime alpha_k = alpha_adam_update_kernel[
-                        dtype,
-                        BS,
-                        GS.GPU_ALPHA,
-                        GS.GPU_LOG_ALPHA,
-                        GS.GPU_ADAM_M,
-                        GS.GPU_ADAM_V,
-                        GS.GPU_ADAM_T,
-                        GS.GPU_TARGET_ENT,
-                        GS.GPU_ALPHA_LR,
-                    ]
-                    var scalars_t = LayoutTensor[
+                @always_inline
+                def alpha_wrapper(
+                    sc: LayoutTensor[
                         dtype, Layout.row_major(1), MutAnyOrigin
-                    ](gpu_state.gpu_scalars.unsafe_ptr())
+                    ],
+                    lp: LayoutTensor[
+                        dtype, Layout.row_major(BS), MutAnyOrigin
+                    ],
+                ):
+                    alpha_k(sc, lp)
 
-                    @always_inline
-                    def alpha_wrapper(
-                        sc: LayoutTensor[
-                            dtype, Layout.row_major(1), MutAnyOrigin
-                        ],
-                        lp: LayoutTensor[
-                            dtype, Layout.row_major(BS), MutAnyOrigin
-                        ],
-                    ):
-                        alpha_k(sc, lp)
-
-                    ctx.enqueue_function[alpha_wrapper, alpha_wrapper](
-                        scalars_t,
-                        src_lp,
-                        grid_dim=(1,),
-                        block_dim=(1,),
-                    )
+                ctx.enqueue_function[alpha_wrapper, alpha_wrapper](
+                    scalars_t,
+                    src_lp,
+                    grid_dim=(1,),
+                    block_dim=(1,),
+                )
 
     def _gpu_train_diagnostics(
         mut self,
