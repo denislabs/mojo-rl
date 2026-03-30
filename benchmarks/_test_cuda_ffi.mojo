@@ -335,126 +335,116 @@ def main() raises:
     print("Strategy 4: Mojo's actual AsyncRT stream (via interceptor)")
     print("=" * 60)
 
-    # Try to load the interceptor library (only works under LD_PRELOAD)
-    var has_interceptor = True
-    var intercept: OwnedDLHandle
-    try:
-        intercept = OwnedDLHandle("libcuda_intercept.so")
-    except:
-        print("  Interceptor not loaded (run with LD_PRELOAD). Skipping.")
-        has_interceptor = False
+    # Load interceptor — use the same dlopen pattern as libcuda.so
+    var intercept = OwnedDLHandle("libcuda_intercept.so")
 
-    if has_interceptor:
-        var get_mojo_stream = intercept.get_function[
-            def () -> CUptr
-        ]("intercept_get_mojo_stream")
-        var set_logging = intercept.get_function[
-            def (c_int) -> NoneType
-        ]("intercept_set_logging")
+    var get_mojo_stream = intercept.get_function[
+        def () -> CUptr
+    ]("intercept_get_mojo_stream")
+    var set_logging = intercept.get_function[
+        def (c_int) -> NoneType
+    ]("intercept_set_logging")
 
-        var mojo_stream = get_mojo_stream()
-        print("  Mojo's internal stream:", Int(mojo_stream))
+    var mojo_stream = get_mojo_stream()
+    print("  Mojo's internal stream:", Int(mojo_stream))
 
-        if Int(mojo_stream) == 0:
-            print("  No stream captured yet — need at least one warmup kernel")
-        else:
-            # Disable interceptor logging for cleaner output
-            set_logging(c_int(0))
+    if Int(mojo_stream) == 0:
+        print("  No stream captured yet — need at least one warmup kernel")
+    else:
+        # Disable interceptor logging for cleaner output
+        set_logging(c_int(0))
 
-            c_buf.enqueue_fill(Scalar[dtype](0.0))
-            d_buf.enqueue_fill(Scalar[dtype](0.0))
-            ctx.synchronize()
+        c_buf.enqueue_fill(Scalar[dtype](0.0))
+        d_buf.enqueue_fill(Scalar[dtype](0.0))
+        ctx.synchronize()
 
-            var r4 = cuStreamBeginCapture(mojo_stream, c_int(0))
-            print("  BeginCapture on Mojo stream:", r4)
+        var r4 = cuStreamBeginCapture(mojo_stream, c_int(0))
+        print("  BeginCapture on Mojo stream:", r4)
 
-            if r4 == 0:
-                cap_status_buf = alloc[c_int](1)
-                cap_status_buf[] = c_int(0)
-                _ = cuStreamIsCapturing(mojo_stream, cap_status_buf)
-                print("  IsCapturing:", cap_status_buf[])
+        if r4 == 0:
+            var cap_buf2 = alloc[c_int](1)
+            cap_buf2[] = c_int(0)
+            _ = cuStreamIsCapturing(mojo_stream, cap_buf2)
+            print("  IsCapturing:", cap_buf2[])
+            cap_buf2.free()
 
-                run_chain()
+            run_chain()
 
-                graph_buf = alloc[CUptr](1)
-                graph_buf[] = CUptr()
-                var r4_end = cuStreamEndCapture(mojo_stream, graph_buf)
-                var graph4 = graph_buf[]
-                print("  EndCapture:", r4_end, "Graph:", Int(graph4))
+            var gbuf2 = alloc[CUptr](1)
+            gbuf2[] = CUptr()
+            var r4_end = cuStreamEndCapture(mojo_stream, gbuf2)
+            var graph4 = gbuf2[]
+            print("  EndCapture:", r4_end, "Graph:", Int(graph4))
 
-                if Int(graph4) != 0:
-                    num_nodes_buf = alloc[UInt64](1)
-                    num_nodes_buf[] = UInt64(0)
-                    _ = cuGraphGetNodes(graph4, CUptr(), num_nodes_buf)
-                    print("  >>> Graph has", num_nodes_buf[], "nodes (expected 5) <<<")
+            if Int(graph4) != 0:
+                var nnbuf = alloc[UInt64](1)
+                nnbuf[] = UInt64(0)
+                _ = cuGraphGetNodes(graph4, CUptr(), nnbuf)
+                print("  >>> Graph has", nnbuf[], "nodes (expected 5) <<<")
 
-                    exec_buf = alloc[CUptr](1)
-                    exec_buf[] = CUptr()
-                    var r4_inst = cuGraphInstantiate(exec_buf, graph4, UInt64(0))
-                    print("  Instantiate:", r4_inst)
+                var ebuf = alloc[CUptr](1)
+                ebuf[] = CUptr()
+                var r4_inst = cuGraphInstantiate(ebuf, graph4, UInt64(0))
+                print("  Instantiate:", r4_inst)
 
-                    if r4_inst == 0:
-                        c_buf.enqueue_fill(Scalar[dtype](0.0))
-                        d_buf.enqueue_fill(Scalar[dtype](0.0))
-                        ctx.synchronize()
-                        _ = cuGraphLaunch(exec_buf[], replay_stream)
-                        _ = cuStreamSynchronize(replay_stream)
-                        with c_buf.map_to_host() as h:
-                            print("  Replay result: c[0] =", h[0], "(expected 12.0)")
-                            if h[0] == Scalar[dtype](12.0):
-                                print("\n  *** SUCCESS — CUDA Graph captured Mojo kernels! ***")
+                if r4_inst == 0:
+                    c_buf.enqueue_fill(Scalar[dtype](0.0))
+                    d_buf.enqueue_fill(Scalar[dtype](0.0))
+                    ctx.synchronize()
+                    _ = cuGraphLaunch(ebuf[], replay_stream)
+                    _ = cuStreamSynchronize(replay_stream)
+                    with c_buf.map_to_host() as h:
+                        print("  Replay result: c[0] =", h[0], "(expected 12.0)")
+                        if h[0] == Scalar[dtype](12.0):
+                            print("\n  *** SUCCESS — CUDA Graph captured Mojo kernels! ***")
 
-                                # Quick benchmark
-                                print("\n  --- Quick benchmark: 1000 iterations ---")
-                                var warmup = 100
-                                var iters = 1000
+                            # Quick benchmark
+                            print("\n  --- Quick benchmark: 1000 iterations ---")
+                            var warmup_n = 100
+                            var iters_n = 1000
 
-                                # Re-enable logging off for benchmark
-                                for _ in range(warmup):
-                                    run_chain()
-                                    ctx.synchronize()
+                            for _ in range(warmup_n):
+                                run_chain()
+                                ctx.synchronize()
 
-                                var total_direct: UInt = 0
-                                for _ in range(iters):
-                                    var start = perf_counter_ns()
-                                    run_chain()
-                                    ctx.synchronize()
-                                    total_direct += perf_counter_ns() - start
+                            var total_direct: UInt = 0
+                            for _ in range(iters_n):
+                                var start = perf_counter_ns()
+                                run_chain()
+                                ctx.synchronize()
+                                total_direct += perf_counter_ns() - start
 
-                                for _ in range(warmup):
-                                    _ = cuGraphLaunch(exec_buf[], replay_stream)
-                                    _ = cuStreamSynchronize(replay_stream)
+                            for _ in range(warmup_n):
+                                _ = cuGraphLaunch(ebuf[], replay_stream)
+                                _ = cuStreamSynchronize(replay_stream)
 
-                                var total_graph: UInt = 0
-                                for _ in range(iters):
-                                    var start = perf_counter_ns()
-                                    _ = cuGraphLaunch(exec_buf[], replay_stream)
-                                    _ = cuStreamSynchronize(replay_stream)
-                                    total_graph += perf_counter_ns() - start
+                            var total_graph: UInt = 0
+                            for _ in range(iters_n):
+                                var start = perf_counter_ns()
+                                _ = cuGraphLaunch(ebuf[], replay_stream)
+                                _ = cuStreamSynchronize(replay_stream)
+                                total_graph += perf_counter_ns() - start
 
-                                var avg_direct = Float64(total_direct // UInt(iters)) / 1000.0
-                                var avg_graph = Float64(total_graph // UInt(iters)) / 1000.0
-                                print("  Direct dispatch: ", avg_direct, " us")
-                                print("  Graph replay:    ", avg_graph, " us")
-                                if avg_graph > 0.0:
-                                    print("  Speedup:         ", avg_direct / avg_graph, "x")
+                            var avg_direct = Float64(total_direct // UInt(iters_n)) / 1000.0
+                            var avg_graph = Float64(total_graph // UInt(iters_n)) / 1000.0
+                            print("  Direct dispatch: ", avg_direct, " us")
+                            print("  Graph replay:    ", avg_graph, " us")
+                            if avg_graph > 0.0:
+                                print("  Speedup:         ", avg_direct / avg_graph, "x")
 
-                        _ = cuGraphExecDestroy(exec_buf[])
-                    _ = cuGraphDestroy(graph4)
-
-                    num_nodes_buf.free()
-                    exec_buf.free()
-                    graph_buf.free()
-                else:
-                    print("  >>> No graph returned <<<")
-                    graph_buf.free()
-
-                cap_status_buf.free()
+                    _ = cuGraphExecDestroy(ebuf[])
+                _ = cuGraphDestroy(graph4)
+                nnbuf.free()
+                ebuf.free()
             else:
-                print("  BeginCapture FAILED (error", r4, ")")
+                print("  >>> No graph returned <<<")
 
-            # Re-enable logging
-            set_logging(c_int(1))
+            gbuf2.free()
+        else:
+            print("  BeginCapture FAILED (error", r4, ")")
+
+        # Re-enable logging
+        set_logging(c_int(1))
 
     replay_buf.free()
 
