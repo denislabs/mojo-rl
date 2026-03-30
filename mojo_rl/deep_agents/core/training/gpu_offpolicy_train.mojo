@@ -444,9 +444,8 @@ def run_offpolicy_continuous_train_gpu[
     var last_avg_reward: Float64 = 0.0
 
     # CUDA graph state for train step capture
-    comptime if USE_CUDA_GRAPH:
-        var _train_graph = _uninit[CUDAGraph]()
-        var _graph_captured = False
+    var _train_graph = _uninit[CUDAGraph]()
+    var _graph_captured = False
 
     # Threshold-based triggers (avoids modular alignment issues with n_envs)
     var next_print = print_every

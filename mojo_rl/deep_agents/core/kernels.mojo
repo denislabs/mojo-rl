@@ -437,7 +437,7 @@ def increment_rng_counter_kernel(
 
 @always_inline
 def alpha_adam_update_kernel[
-    dtype: DType,
+    dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
     ALPHA_OFF: Int,
     LOG_ALPHA_OFF: Int,
