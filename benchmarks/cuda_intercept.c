@@ -1,15 +1,16 @@
 /*
- * CUDA kernel launch interceptor via LD_PRELOAD.
+ * CUDA kernel launch interceptor via dlsym hooking.
  *
- * Intercepts cuLaunchKernel and cuLaunchKernelEx to log what stream
- * Mojo's AsyncRT actually dispatches on, and records kernel launches
- * for later CUDA graph construction.
+ * Mojo loads libcuda.so via dlopen/dlsym, which bypasses LD_PRELOAD.
+ * We intercept dlsym itself to return our wrappers when Mojo requests
+ * cuLaunchKernel or cuLaunchKernelEx.
  *
  * Build:
  *   gcc -shared -fPIC -o libcuda_intercept.so cuda_intercept.c -ldl
  *
  * Use:
- *   LD_PRELOAD=./libcuda_intercept.so pixi run -e nvidia mojo run -I . benchmarks/_test_cuda_ffi.mojo
+ *   LD_PRELOAD=$PWD/benchmarks/libcuda_intercept.so pixi run -e nvidia \
+ *     bash -c 'mojo run -I . benchmarks/_test_cuda_ffi.mojo' 2>&1
  */
 
 #define _GNU_SOURCE
@@ -18,10 +19,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Opaque CUDA types — we only need the handles as pointers */
+/* Opaque CUDA types */
 typedef void* CUfunction;
 typedef void* CUstream;
 typedef int CUresult;
+
+/* CUlaunchConfig for cuLaunchKernelEx (CUDA 12+) */
+typedef struct {
+    unsigned int gridDimX, gridDimY, gridDimZ;
+    unsigned int blockDimX, blockDimY, blockDimZ;
+    unsigned int sharedMemBytes;
+    CUstream hStream;
+    void **attrs;       /* CUlaunchAttribute array */
+    unsigned int numAttrs;
+} CUlaunchConfig;
 
 /* ---- Recording state ---- */
 
@@ -36,10 +47,11 @@ typedef struct {
 #define MAX_RECORDS 256
 static KernelRecord g_records[MAX_RECORDS];
 static int g_num_records = 0;
-static int g_recording = 0;  /* controlled from Mojo via exported functions */
-static int g_logging = 1;    /* always log by default */
+static int g_recording = 0;
+static int g_logging = 1;
+static int g_launch_count = 0;
 
-/* ---- Intercept cuLaunchKernel ---- */
+/* ---- Real function pointers (resolved from libcuda.so) ---- */
 
 typedef CUresult (*cuLaunchKernel_t)(
     CUfunction f,
@@ -48,29 +60,29 @@ typedef CUresult (*cuLaunchKernel_t)(
     unsigned int sharedMemBytes, CUstream hStream,
     void **kernelParams, void **extra);
 
-static cuLaunchKernel_t real_cuLaunchKernel = NULL;
+typedef CUresult (*cuLaunchKernelEx_t)(
+    const CUlaunchConfig *config, CUfunction f,
+    void **kernelParams, void **extra);
 
-CUresult cuLaunchKernel(
+static cuLaunchKernel_t real_cuLaunchKernel = NULL;
+static cuLaunchKernelEx_t real_cuLaunchKernelEx = NULL;
+
+/* ---- Our wrapper functions ---- */
+
+static CUresult wrapped_cuLaunchKernel(
     CUfunction f,
     unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ,
     unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ,
     unsigned int sharedMemBytes, CUstream hStream,
     void **kernelParams, void **extra)
 {
-    if (!real_cuLaunchKernel) {
-        real_cuLaunchKernel = (cuLaunchKernel_t)dlsym(RTLD_NEXT, "cuLaunchKernel");
-        if (!real_cuLaunchKernel) {
-            fprintf(stderr, "[intercept] FATAL: cannot find real cuLaunchKernel\n");
-            return 1;
-        }
-    }
+    g_launch_count++;
 
     if (g_logging) {
-        fprintf(stderr, "[intercept] cuLaunchKernel: func=%p grid=(%u,%u,%u) "
+        fprintf(stderr, "[intercept] cuLaunchKernel #%d: func=%p grid=(%u,%u,%u) "
                 "block=(%u,%u,%u) shm=%u stream=%p\n",
-                f, gridDimX, gridDimY, gridDimZ,
-                blockDimX, blockDimY, blockDimZ,
-                sharedMemBytes, hStream);
+                g_launch_count, f, gridDimX, gridDimY, gridDimZ,
+                blockDimX, blockDimY, blockDimZ, sharedMemBytes, hStream);
     }
 
     if (g_recording && g_num_records < MAX_RECORDS) {
@@ -88,30 +100,95 @@ CUresult cuLaunchKernel(
                                 kernelParams, extra);
 }
 
-/* ---- Intercept cuLaunchKernelEx (CUDA 12+) ---- */
-
-/* CUlaunchConfig is a struct but we just need to forward it */
-typedef CUresult (*cuLaunchKernelEx_t)(
-    void *config, CUfunction f, void **kernelParams, void **extra);
-
-static cuLaunchKernelEx_t real_cuLaunchKernelEx = NULL;
-
-CUresult cuLaunchKernelEx(
-    void *config, CUfunction f, void **kernelParams, void **extra)
+static CUresult wrapped_cuLaunchKernelEx(
+    const CUlaunchConfig *config, CUfunction f,
+    void **kernelParams, void **extra)
 {
-    if (!real_cuLaunchKernelEx) {
-        real_cuLaunchKernelEx = (cuLaunchKernelEx_t)dlsym(RTLD_NEXT, "cuLaunchKernelEx");
-        if (!real_cuLaunchKernelEx) {
-            fprintf(stderr, "[intercept] FATAL: cannot find real cuLaunchKernelEx\n");
-            return 1;
-        }
-    }
+    g_launch_count++;
 
     if (g_logging) {
-        fprintf(stderr, "[intercept] cuLaunchKernelEx: func=%p config=%p\n", f, config);
+        fprintf(stderr, "[intercept] cuLaunchKernelEx #%d: func=%p grid=(%u,%u,%u) "
+                "block=(%u,%u,%u) shm=%u stream=%p\n",
+                g_launch_count, f,
+                config->gridDimX, config->gridDimY, config->gridDimZ,
+                config->blockDimX, config->blockDimY, config->blockDimZ,
+                config->sharedMemBytes, config->hStream);
+    }
+
+    if (g_recording && g_num_records < MAX_RECORDS) {
+        KernelRecord *r = &g_records[g_num_records++];
+        r->func = f;
+        r->gridX = config->gridDimX; r->gridY = config->gridDimY; r->gridZ = config->gridDimZ;
+        r->blockX = config->blockDimX; r->blockY = config->blockDimY; r->blockZ = config->blockDimZ;
+        r->sharedMem = config->sharedMemBytes;
+        r->stream = config->hStream;
     }
 
     return real_cuLaunchKernelEx(config, f, kernelParams, extra);
+}
+
+/* ---- dlsym interception ---- */
+
+/* We need the real dlsym to resolve everything else */
+typedef void* (*dlsym_t)(void *handle, const char *symbol);
+static dlsym_t real_dlsym = NULL;
+
+static void ensure_real_dlsym(void) {
+    if (!real_dlsym) {
+        /* Use dlvsym to get the real dlsym from glibc */
+        real_dlsym = (dlsym_t)dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.2.5");
+        if (!real_dlsym) {
+            /* Fallback: try without version */
+            real_dlsym = (dlsym_t)dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.17");
+        }
+        if (!real_dlsym) {
+            fprintf(stderr, "[intercept] WARNING: could not resolve real dlsym via dlvsym, "
+                    "trying __libc_dlsym\n");
+            /* Last resort */
+            void *libc = dlopen("libc.so.6", RTLD_LAZY | RTLD_NOLOAD);
+            if (libc) {
+                real_dlsym = (dlsym_t)dlvsym(libc, "dlsym", "GLIBC_2.2.5");
+            }
+        }
+        if (real_dlsym) {
+            fprintf(stderr, "[intercept] dlsym hook installed successfully\n");
+        } else {
+            fprintf(stderr, "[intercept] FATAL: cannot find real dlsym\n");
+        }
+    }
+}
+
+/* Override dlsym — this IS picked up by LD_PRELOAD since dlsym is called
+   through the normal dynamic linker path */
+void* dlsym(void *handle, const char *symbol) {
+    ensure_real_dlsym();
+
+    if (!symbol || !real_dlsym) {
+        return real_dlsym ? real_dlsym(handle, symbol) : NULL;
+    }
+
+    /* Intercept cuLaunchKernel */
+    if (strcmp(symbol, "cuLaunchKernel") == 0) {
+        /* Save the real function pointer */
+        void *real_fn = real_dlsym(handle, symbol);
+        if (real_fn && !real_cuLaunchKernel) {
+            real_cuLaunchKernel = (cuLaunchKernel_t)real_fn;
+            fprintf(stderr, "[intercept] Hooked cuLaunchKernel -> %p\n", real_fn);
+        }
+        return (void*)wrapped_cuLaunchKernel;
+    }
+
+    /* Intercept cuLaunchKernelEx */
+    if (strcmp(symbol, "cuLaunchKernelEx") == 0) {
+        void *real_fn = real_dlsym(handle, symbol);
+        if (real_fn && !real_cuLaunchKernelEx) {
+            real_cuLaunchKernelEx = (cuLaunchKernelEx_t)real_fn;
+            fprintf(stderr, "[intercept] Hooked cuLaunchKernelEx -> %p\n", real_fn);
+        }
+        return (void*)wrapped_cuLaunchKernelEx;
+    }
+
+    return real_dlsym(handle, symbol);
 }
 
 /* ---- API callable from Mojo via FFI ---- */
@@ -131,7 +208,6 @@ int intercept_get_num_records(void) {
     return g_num_records;
 }
 
-/* Returns pointer to the records array (for Mojo to read) */
 void* intercept_get_records(void) {
     return (void*)g_records;
 }
@@ -140,17 +216,16 @@ void intercept_set_logging(int enabled) {
     g_logging = enabled;
 }
 
+int intercept_get_launch_count(void) {
+    return g_launch_count;
+}
+
 void intercept_print_summary(void) {
     fprintf(stderr, "\n[intercept] === Launch Summary ===\n");
-    fprintf(stderr, "[intercept] Total launches: %d\n", g_num_records);
-    for (int i = 0; i < g_num_records; i++) {
-        KernelRecord *r = &g_records[i];
-        fprintf(stderr, "[intercept]   #%d: func=%p grid=(%u,%u,%u) block=(%u,%u,%u) stream=%p\n",
-                i, r->func, r->gridX, r->gridY, r->gridZ,
-                r->blockX, r->blockY, r->blockZ, r->stream);
-    }
+    fprintf(stderr, "[intercept] Total intercepted launches: %d\n", g_launch_count);
+    fprintf(stderr, "[intercept] Recorded launches: %d\n", g_num_records);
 
-    /* Report unique streams used */
+    /* Report unique streams */
     CUstream unique_streams[64];
     int num_unique = 0;
     for (int i = 0; i < g_num_records; i++) {
@@ -171,4 +246,10 @@ void intercept_print_summary(void) {
         fprintf(stderr, "\n");
     }
     fprintf(stderr, "[intercept] ==================\n\n");
+}
+
+/* Constructor: print banner on load */
+__attribute__((constructor))
+static void on_load(void) {
+    fprintf(stderr, "[intercept] CUDA interceptor loaded (dlsym hooking mode)\n");
 }
