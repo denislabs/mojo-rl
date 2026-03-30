@@ -1325,12 +1325,8 @@ struct GenericOffPolicyAgent[
         )
         ctx.enqueue_copy(scalars_host, gpu_state.gpu_scalars)
         ctx.synchronize()
-        self.alpha = Float64(
-            scalars_host[Self.GPUStateType.GPU_ALPHA]
-        )
-        self.log_alpha = Float64(
-            scalars_host[Self.GPUStateType.GPU_LOG_ALPHA]
-        )
+        self.alpha = Float64(scalars_host[Self.GPUStateType.GPU_ALPHA])
+        self.log_alpha = Float64(scalars_host[Self.GPUStateType.GPU_LOG_ALPHA])
 
     def select_actions_gpu[
         N_ENVS: Int
@@ -1405,7 +1401,7 @@ struct GenericOffPolicyAgent[
         self.train_step_count += 1
         self.update_count += 1
         self._gpu_train_kernels(ctx, gpu_state)
-        self._gpu_train_diagnostics(ctx, gpu_state)
+        self._gpu_train_diagnostics(ctx, gpu_state, 1)
 
     def _gpu_train_kernels(
         self,
@@ -1432,7 +1428,9 @@ struct GenericOffPolicyAgent[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.rng_counter.unsafe_ptr())
         ctx.enqueue_function[incr_k, incr_k](
-            rng_t, grid_dim=(1,), block_dim=(1,),
+            rng_t,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
 
         gpu_state.buffer.sample[BS](
@@ -1456,12 +1454,12 @@ struct GenericOffPolicyAgent[
         var p_actor = gpu_state.actor.online.params_view()
         var p_critic = gpu_state.critics.online_params_view(0)
 
-
-
         # Phase 2: Target actions — delegate to Config.TargetAction
         # Increment RNG counter before target action (separate seed from sample)
         ctx.enqueue_function[incr_k, incr_k](
-            rng_t, grid_dim=(1,), block_dim=(1,),
+            rng_t,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
         var next_act_t = gpu_state.next_act_view[BS]()
         var next_lp_t = gpu_state.next_lp_view[BS]()
@@ -1629,7 +1627,9 @@ struct GenericOffPolicyAgent[
             c2_ws = gpu_state.critic2_ws
         # Increment RNG counter before actor loss (separate seed)
         ctx.enqueue_function[incr_k, incr_k](
-            rng_t, grid_dim=(1,), block_dim=(1,),
+            rng_t,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
         _ = Self.Config.ActorLoss.update_actor_gpu[
             BS,
@@ -1660,9 +1660,7 @@ struct GenericOffPolicyAgent[
         if self.max_grad_norm > 0.0:
             comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
             comptime A_BLOCKS = (A_PS + TPB - 1) // TPB
-            comptime norm_k = gradient_norm_kernel[
-                dtype, A_PS, A_BLOCKS, TPB
-            ]
+            comptime norm_k = gradient_norm_kernel[dtype, A_PS, A_BLOCKS, TPB]
             comptime clip_k = gradient_reduce_apply_fused_kernel[
                 dtype, A_PS, A_BLOCKS, TPB
             ]
@@ -1717,12 +1715,8 @@ struct GenericOffPolicyAgent[
 
                 @always_inline
                 def alpha_wrapper(
-                    sc: LayoutTensor[
-                        dtype, Layout.row_major(1), MutAnyOrigin
-                    ],
-                    lp: LayoutTensor[
-                        dtype, Layout.row_major(BS), MutAnyOrigin
-                    ],
+                    sc: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+                    lp: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
                 ):
                     alpha_k(sc, lp)
 
@@ -1755,21 +1749,11 @@ struct GenericOffPolicyAgent[
             ):
                 try:
                     ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
-                    ctx.enqueue_copy(
-                        gpu_state.diag_tgt_host, gpu_state.targets
-                    )
-                    ctx.enqueue_copy(
-                        gpu_state.diag_rew_host, gpu_state.s_rew
-                    )
-                    ctx.enqueue_copy(
-                        gpu_state.diag_done_host, gpu_state.s_done
-                    )
-                    ctx.enqueue_copy(
-                        gpu_state.diag_act_host, gpu_state.s_act
-                    )
-                    ctx.enqueue_copy(
-                        gpu_state.diag_nq_host, gpu_state.next_q
-                    )
+                    ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
+                    ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
+                    ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
+                    ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
+                    ctx.enqueue_copy(gpu_state.diag_nq_host, gpu_state.next_q)
                     ctx.synchronize()
 
                     var mean_q: Float64 = 0.0
@@ -1800,32 +1784,20 @@ struct GenericOffPolicyAgent[
                     mean_abs_act /= Float64(BS * Self.ACTIONS)
 
                     var step = self.train_step_count
-                    self.logger[].log_scalar(
-                        "critic_loss", critic_loss, step
-                    )
+                    self.logger[].log_scalar("critic_loss", critic_loss, step)
                     self.logger[].log_scalar("mean_q", mean_q, step)
-                    self.logger[].log_scalar(
-                        "mean_target", mean_tgt, step
-                    )
-                    self.logger[].log_scalar(
-                        "mean_reward", mean_rew, step
-                    )
-                    self.logger[].log_scalar(
-                        "mean_next_q", mean_nq, step
-                    )
-                    self.logger[].log_scalar(
-                        "mean_done", mean_done, step
-                    )
+                    self.logger[].log_scalar("mean_target", mean_tgt, step)
+                    self.logger[].log_scalar("mean_reward", mean_rew, step)
+                    self.logger[].log_scalar("mean_next_q", mean_nq, step)
+                    self.logger[].log_scalar("mean_done", mean_done, step)
                     self.logger[].log_scalar(
                         "mean_abs_action", mean_abs_act, step
                     )
                     comptime if Self.Config.ActorLoss.HAS_ALPHA:
-                        var alpha_host = (
-                            ctx.enqueue_create_host_buffer[dtype](1)
+                        var alpha_host = ctx.enqueue_create_host_buffer[dtype](
+                            1
                         )
-                        ctx.enqueue_copy(
-                            alpha_host, gpu_state.gpu_scalars
-                        )
+                        ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
                         ctx.synchronize()
                         self.logger[].log_scalar(
                             "alpha", Float64(alpha_host[0]), step
