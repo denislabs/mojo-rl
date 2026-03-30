@@ -45,10 +45,18 @@ def main() raises:
         ReLU[HIDDEN],
         Linear[HIDDEN, OUT_DIM],
     ]
-    comptime TRAINER = Trainer[MODEL, Adam, MSELoss]
+    comptime TRAINER = Trainer[MODEL, Adam[], MSELoss]
 
-    print("  Network: " + String(IN_DIM) + " → " + String(HIDDEN)
-        + " → ReLU → " + String(HIDDEN) + " → ReLU → " + String(OUT_DIM))
+    print(
+        "  Network: "
+        + String(IN_DIM)
+        + " → "
+        + String(HIDDEN)
+        + " → ReLU → "
+        + String(HIDDEN)
+        + " → ReLU → "
+        + String(OUT_DIM)
+    )
     print("  Params:", MODEL.PARAM_SIZE)
     print("  Batch:", BATCH)
 
@@ -83,7 +91,7 @@ def main() raises:
     # =================================================================
     print("\n--- Part 1: Direct GPU Training (1000 epochs) ---")
 
-    var state1 = TRAINER.init_state_gpu[Kaiming](ctx)
+    var state1 = TRAINER.init_state_gpu[Kaiming[]](ctx)
     ctx.synchronize()
 
     # Warmup
@@ -106,7 +114,7 @@ def main() raises:
     # =================================================================
     print("\n--- Part 2: CUDA Graph Training (1000 epochs) ---")
 
-    var state2 = TRAINER.init_state_gpu[Kaiming](ctx)
+    var state2 = TRAINER.init_state_gpu[Kaiming[]](ctx)
     ctx.synchronize()
 
     # Warmup (also discovers the Mojo stream)
