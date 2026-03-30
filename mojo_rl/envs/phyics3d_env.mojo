@@ -473,21 +473,17 @@ struct Phyics3dEnv[
         var workspace_buf: DeviceBuffer[gpu_dtype]
 
         if workspace_ptr:
-            # Copy model data to a fresh buffer to avoid non-owning
-            # DeviceBuffer sub-pointer issues on GPU.
-            var ws_model_view = DeviceBuffer[gpu_dtype](
+            model_buf = DeviceBuffer[gpu_dtype](
                 ctx,
                 workspace_ptr,
                 MODEL_SIZE,
                 owning=False,
             )
-            model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
-            ctx.enqueue_copy(model_buf, ws_model_view)
-            # Per-env workspace: allocate separately to avoid sub-pointer
-            # issues where GPU kernels produce wrong results when the
-            # workspace LayoutTensor starts at a non-zero offset.
-            workspace_buf = ctx.enqueue_create_buffer[gpu_dtype](
-                BATCH_SIZE * WS_SIZE
+            workspace_buf = DeviceBuffer[gpu_dtype](
+                ctx,
+                workspace_ptr + MODEL_SIZE,
+                BATCH_SIZE * WS_SIZE,
+                owning=False,
             )
         else:
             model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)

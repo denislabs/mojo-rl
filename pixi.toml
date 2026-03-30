@@ -27,7 +27,8 @@ cudnn = ">=9.14.0.64,<10"     # cuDNN for conv_gpu/conv_cudnn
 # and works with any CUDA container (12.x or 13.x) on driver >= 570.
 # On CUDA 13 containers (RTX 5090): ptxas 13.x → supports sm_120 (Blackwell) ✅
 # On CUDA 12.8 containers (RTX 4090): ptxas 12.x → supports sm_89 (Ada) ✅
-env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas" }
+env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas", LD_PRELOAD = "$PIXI_PROJECT_ROOT/mojo_rl/cuda/libcuda_intercept.so" }
+scripts = ["scripts/build_cuda_intercept.sh"]
 
 [feature.amd]
 system-requirements = {}

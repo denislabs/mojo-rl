@@ -5,12 +5,10 @@
  * We intercept dlsym itself to return our wrappers when Mojo requests
  * cuLaunchKernel or cuLaunchKernelEx.
  *
- * Build:
- *   gcc -shared -fPIC -o libcuda_intercept.so cuda_intercept.c -ldl
+ * Build (handled by pixi activation script):
+ *   gcc -shared -fPIC -o mojo_rl/cuda/libcuda_intercept.so mojo_rl/cuda/cuda_intercept.c -ldl
  *
- * Use:
- *   LD_PRELOAD=$PWD/benchmarks/libcuda_intercept.so pixi run -e nvidia \
- *     bash -c 'mojo run -I . benchmarks/_test_cuda_ffi.mojo' 2>&1
+ * Loaded automatically via LD_PRELOAD in the nvidia pixi environment.
  */
 
 #define _GNU_SOURCE
@@ -48,7 +46,7 @@ typedef struct {
 static KernelRecord g_records[MAX_RECORDS];
 static int g_num_records = 0;
 static int g_recording = 0;
-static int g_logging = 1;
+static int g_logging = 0;  /* quiet by default — enable via intercept_set_logging(1) */
 static int g_launch_count = 0;
 static CUstream g_mojo_stream = NULL;  /* the stream Mojo actually uses */
 
