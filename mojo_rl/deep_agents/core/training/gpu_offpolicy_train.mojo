@@ -662,12 +662,18 @@ def run_offpolicy_continuous_train_gpu[
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
             ctx.synchronize()
 
-            # DEBUG: print raw downloaded values
+            # DEBUG: download dones_buf to check if it's ever non-zero
+            var _dbg_dones = ctx.enqueue_create_host_buffer[dtype](n_envs)
+            ctx.enqueue_copy(_dbg_dones, dones_buf)
+            ctx.synchronize()
+            var _dbg_done_sum: Float64 = 0
+            for _di in range(n_envs):
+                _dbg_done_sum += Float64(_dbg_dones[_di])
             print(
-                "  [DEBUG] raw episode_count=",
+                "  [DEBUG] ep_count=",
                 Float64(host_episode_count[0]),
-                " raw reward_sum=",
-                Float64(host_reward_sum[0]),
+                " dones_sum=",
+                _dbg_done_sum,
             )
 
             var recent_count = Int(host_episode_count[0])
