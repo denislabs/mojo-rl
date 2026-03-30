@@ -44,8 +44,8 @@ comptime BATCH_SIZE = 64
 comptime MAX_N_ENVS = 32
 
 # Training duration (simple task, converges fast)
-comptime NUM_STEPS = 100_000
-comptime WARMUP_STEPS = 5_000
+comptime NUM_STEPS = 50_000
+comptime WARMUP_STEPS = 999_999  # DEBUG: disable training to test if NaN comes from train step
 
 comptime dtype = DType.float32
 

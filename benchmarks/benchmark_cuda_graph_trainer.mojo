@@ -1,9 +1,7 @@
 """Benchmark: CUDA Graph capture on Trainer.train_gpu.
 
 Compares direct GPU training vs graph-captured training on a simple
-feedforward network. The Trainer's GPU loop has a fixed kernel sequence
-per epoch (forward → loss_backward → backward → optimizer_step),
-making it an ideal CUDA graph target.
+feedforward network using the USE_CUDA_GRAPH comptime parameter.
 
 Run with:
     pixi run -e nvidia mojo run -I . benchmarks/benchmark_cuda_graph_trainer.mojo
@@ -12,7 +10,7 @@ Run with:
 from std.random import seed, random_float64
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model.linear import Linear
@@ -21,9 +19,7 @@ from mojo_rl.nn.model.sequential import Sequential
 from mojo_rl.nn.loss.mse import MSELoss
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.training.trainer import Trainer
-from mojo_rl.nn.training.gpu_network_state import GPUNetworkState
 from mojo_rl.nn.initializer.initializers import Kaiming
-from mojo_rl.cuda import CUDAGraph
 
 
 def main() raises:
@@ -32,11 +28,11 @@ def main() raises:
     seed(42)
     var ctx = DeviceContext()
 
-    # --- Network: 4 → 64 → ReLU → 64 → ReLU → 2 ---
     comptime IN_DIM = 4
     comptime HIDDEN = 64
     comptime OUT_DIM = 2
     comptime BATCH = 32
+    comptime EPOCHS = 1000
 
     comptime MODEL = Sequential[
         Linear[IN_DIM, HIDDEN],
@@ -59,6 +55,7 @@ def main() raises:
     )
     print("  Params:", MODEL.PARAM_SIZE)
     print("  Batch:", BATCH)
+    print("  Epochs:", EPOCHS)
 
     # --- Generate synthetic data ---
     var input_data = InlineArray[Scalar[dtype], BATCH * IN_DIM](
@@ -72,7 +69,6 @@ def main() raises:
             input_data[b * IN_DIM + i] = Scalar[dtype](
                 random_float64(-1.0, 1.0)
             )
-        # Simple target: sum of inputs
         var s = Scalar[dtype](0)
         for i in range(IN_DIM):
             s += input_data[b * IN_DIM + i]
@@ -87,12 +83,11 @@ def main() raises:
     ](target_data.unsafe_ptr())
 
     # =================================================================
-    # Part 1: Direct GPU training (baseline)
+    # Direct GPU training (baseline)
     # =================================================================
-    print("\n--- Part 1: Direct GPU Training (1000 epochs) ---")
+    print("\n--- Direct GPU Training ---")
 
     var state1 = TRAINER.init_state_gpu[Kaiming[]](ctx)
-    ctx.synchronize()
 
     # Warmup
     _ = TRAINER.train_gpu[BATCH](state1, ctx, input_t, target_t, epochs=10)
@@ -100,62 +95,43 @@ def main() raises:
 
     var start = perf_counter_ns()
     var result1 = TRAINER.train_gpu[BATCH](
-        state1, ctx, input_t, target_t, epochs=1000
+        state1, ctx, input_t, target_t, epochs=EPOCHS
     )
     ctx.synchronize()
     var time_direct = Float64(perf_counter_ns() - start) / 1e6
 
     print("  Final loss:", result1.final_loss)
     print("  Time:", String(time_direct)[byte=:8], "ms")
-    print("  Per epoch:", String(time_direct / 1000.0)[byte=:8], "ms")
 
     # =================================================================
-    # Part 2: CUDA Graph captured training
+    # CUDA Graph training
     # =================================================================
-    print("\n--- Part 2: CUDA Graph Training (1000 epochs) ---")
+    print("\n--- CUDA Graph Training ---")
 
     var state2 = TRAINER.init_state_gpu[Kaiming[]](ctx)
-    ctx.synchronize()
 
-    # Warmup (also discovers the Mojo stream)
+    # Warmup (discovers the Mojo stream)
     _ = TRAINER.train_gpu[BATCH](state2, ctx, input_t, target_t, epochs=10)
     ctx.synchronize()
 
-    # Capture one epoch
-    var graph = CUDAGraph(ctx)
-    graph.begin_capture()
-    _ = TRAINER.train_gpu[BATCH](state2, ctx, input_t, target_t, epochs=1)
-    graph.end_capture()
-
-    print("  Captured graph with", graph.num_nodes(), "nodes")
-
-    # Replay for remaining epochs
-    # Warmup the graph replay
-    for _ in range(10):
-        graph.replay()
-
     start = perf_counter_ns()
-    for _ in range(1000):
-        graph.replay()
-    var time_graph = Float64(perf_counter_ns() - start) / 1e6
-
-    # Check final loss by running one direct epoch to read it
-    var result2 = TRAINER.train_gpu[BATCH](
-        state2, ctx, input_t, target_t, epochs=1, print_every=1
+    var result2 = TRAINER.train_gpu[BATCH, USE_CUDA_GRAPH=True](
+        state2, ctx, input_t, target_t, epochs=EPOCHS
     )
+    ctx.synchronize()
+    var time_graph = Float64(perf_counter_ns() - start) / 1e6
 
     print("  Final loss:", result2.final_loss)
     print("  Time:", String(time_graph)[byte=:8], "ms")
-    print("  Per epoch:", String(time_graph / 1000.0)[byte=:8], "ms")
 
     # =================================================================
     # Summary
     # =================================================================
     print("\n" + "=" * 50)
-    print("SUMMARY")
+    print("SUMMARY (" + String(EPOCHS) + " epochs)")
     print("=" * 50)
-    print("  Direct:     ", String(time_direct)[byte=:8], "ms (1000 epochs)")
-    print("  Graph:      ", String(time_graph)[byte=:8], "ms (1000 replays)")
+    print("  Direct:  ", String(time_direct)[byte=:8], "ms")
+    print("  Graph:   ", String(time_graph)[byte=:8], "ms")
     if time_graph > 0.0:
-        print("  Speedup:    ", String(time_direct / time_graph)[byte=:6], "x")
+        print("  Speedup: ", String(time_direct / time_graph)[byte=:6], "x")
     print("=" * 50)

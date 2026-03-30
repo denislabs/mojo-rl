@@ -283,7 +283,8 @@ struct Trainer[
 
     @staticmethod
     def train_gpu[
-        BATCH: Int
+        BATCH: Int,
+        USE_CUDA_GRAPH: Bool = False,
     ](
         mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER],
         ctx: DeviceContext,
@@ -303,8 +304,16 @@ struct Trainer[
         gpu.download_to(state, ctx)).  Input/target are CPU-side LayoutTensors
         uploaded to device once before the loop.
 
+        Parameters:
+            BATCH: Number of samples per batch.
+            USE_CUDA_GRAPH: When True, captures one epoch's kernel sequence
+                into a CUDA graph and replays it for all subsequent epochs.
+                Eliminates per-kernel launch overhead. Requires LD_PRELOAD
+                with libcuda_intercept.so (set by pixi nvidia env).
+                No-op on non-NVIDIA platforms.
+
         Args:
-            state: GPU network state — updated in-place.
+            state: GPU network state (params, grads, optimizer state) — updated.
             ctx: GPU device context.
             input: CPU input tensor [BATCH, IN_DIM] — caller manages memory.
             target: CPU target tensor [BATCH, OUT_DIM] — caller manages memory.
@@ -374,13 +383,12 @@ struct Trainer[
 
         var final_loss: Float64 = 0.0
 
-        for epoch in range(epochs):
+        # --- Helper: run one training epoch (pure GPU, no host ops) ---
+        @always_inline
+        def _run_one_epoch() raises:
             state.zero_grads(ctx)
-
-            # Fresh lvalue views each epoch
             var params = state.params_view()
             var grads = state.grads_view()
-
             Self.MODEL.forward_gpu[BATCH](
                 ctx, output_t, input_t, params, cache_t, ws_buf
             )
@@ -392,24 +400,47 @@ struct Trainer[
             )
             state.optimizer_step(ctx)
 
-            if print_every > 0 and epoch % print_every == 0:
-                Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                    ctx, loss_t, output_t, target_t
-                )
-                ctx.enqueue_copy(loss_host, loss_buf)
-                ctx.synchronize()
-                final_loss = Float64(loss_host[0])
-                print(
-                    "Epoch " + String(epoch) + " - Loss: " + String(final_loss)
-                )
+        comptime if USE_CUDA_GRAPH:
+            from mojo_rl.cuda import CUDAGraph
 
-        # Compute final loss if the last epoch was not a print epoch
-        if print_every == 0 or (epochs - 1) % print_every != 0:
-            Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                ctx, loss_t, output_t, target_t
-            )
-            ctx.enqueue_copy(loss_host, loss_buf)
+            # Warmup: run one epoch to ensure stream is discoverable
+            _run_one_epoch()
             ctx.synchronize()
-            final_loss = Float64(loss_host[0])
+
+            # Capture one epoch into a CUDA graph
+            var graph = CUDAGraph(ctx)
+            graph.begin_capture()
+            _run_one_epoch()
+            graph.end_capture()
+
+            # Replay for remaining epochs (first epoch already ran)
+            for _ in range(epochs - 1):
+                graph.replay()
+
+        else:
+            for epoch in range(epochs):
+                _run_one_epoch()
+
+                if print_every > 0 and epoch % print_every == 0:
+                    Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
+                        ctx, loss_t, output_t, target_t
+                    )
+                    ctx.enqueue_copy(loss_host, loss_buf)
+                    ctx.synchronize()
+                    final_loss = Float64(loss_host[0])
+                    print(
+                        "Epoch "
+                        + String(epoch)
+                        + " - Loss: "
+                        + String(final_loss)
+                    )
+
+        # Compute final loss (always runs outside capture)
+        Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
+            ctx, loss_t, output_t, target_t
+        )
+        ctx.enqueue_copy(loss_host, loss_buf)
+        ctx.synchronize()
+        final_loss = Float64(loss_host[0])
 
         return TrainResult(final_loss, epochs)
