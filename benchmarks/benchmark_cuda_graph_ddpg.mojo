@@ -36,7 +36,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     # DDPG agent: obs=3, act=1, hidden=64, buffer=10000, batch=64
-    comptime CONFIG = DDPGConfig[3, 1, 64, 10000, 64]
+    comptime CONFIG = DDPGConfig[3, 1, 64, 10000, 32]
     comptime A = GenericOffPolicyAgent[CONFIG]
     var agent = A(action_scale=2.0)
 
