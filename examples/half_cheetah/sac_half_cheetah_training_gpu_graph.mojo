@@ -1,12 +1,11 @@
 """SAC Agent GPU Training on HalfCheetah — CUDA Graph accelerated.
 
 Same as sac_half_cheetah_training_gpu.mojo but with CUDA graph capture
-for the training step. Uses fixed alpha (no auto-tuning) since
-alpha tuning requires ctx.synchronize() which is not capturable.
+for the training step. All dynamic state (RNG, alpha, buffer size) lives
+on GPU, so graph replay produces correct training.
 
-The CUDA graph captures the full do_gpu_train_step (108+ kernels)
-and replays it, eliminating per-kernel launch overhead (~2.9x speedup
-on the training step).
+The CUDA graph captures _gpu_train_kernels (216 nodes) and replays it,
+eliminating per-kernel launch overhead (~1.5x end-to-end speedup).
 
 Run with:
     pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu_graph.mojo
@@ -18,6 +17,8 @@ from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.core.agents import DeepSACAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
@@ -50,8 +51,6 @@ def main() raises:
     print()
 
     with DeviceContext() as ctx:
-        # Fixed alpha (no auto-tuning) — required for CUDA graph capture
-        # since alpha tuning does ctx.synchronize() inside the train step
         var agent = DeepSACAgent[
             obs_dim=OBS_DIM,
             action_dim=ACTION_DIM,
@@ -60,15 +59,18 @@ def main() raises:
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
             critic_lr=0.001,
+            L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
             alpha=0.2,
-            auto_alpha=True,  # GPU-side alpha tuning (graph compatible)
+            auto_alpha=True,
             alpha_lr=0.001,
             target_entropy=-1.0,
+            checkpoint_every=100_000,
+            checkpoint_path="sac_half_cheetah_graph.ckpt",
         )
 
         print("Environment: HalfCheetah Continuous (GPU)")
@@ -79,7 +81,43 @@ def main() raises:
         print("  Buffer capacity: " + String(BUFFER_CAPACITY))
         print("  Batch size: " + String(BATCH_SIZE))
         print("  Max parallel envs: " + String(MAX_N_ENVS))
+        print("  Key hyperparameters:")
+        print("    - Actor LR: 3e-4")
+        print("    - Critic LR: 1e-3 (CleanRL default)")
+        print("    - Alpha LR: 1e-3 (CleanRL default)")
+        print("    - Tau (soft update): 0.005")
+        print("    - Initial alpha: 0.2 (auto-tuned on GPU)")
+        print("    - Target entropy: -" + String(ACTION_DIM))
+        print("    - Warmup steps: " + String(WARMUP_STEPS))
         print()
+
+        # =====================================================================
+        # Setup logger
+        # =====================================================================
+
+        var env_vars = load_dotenv()
+        var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+        var url = env_vars.get("RL_MONITOR_URL", "")
+
+        var logger = RemoteLogger(
+            server_url=url,
+            run_name="SAC HalfCheetah GPU Graph",
+            buffer_size=64,
+            api_key=api_key,
+        )
+        logger.set_config("agent", "SAC Generic (CUDA Graph)")
+        logger.set_config("env", "HalfCheetah")
+        logger.set_config("hidden_dim", String(HIDDEN_DIM))
+        logger.set_config("actor_lr", "3e-4")
+        logger.set_config("critic_lr", "1e-3")
+        logger.set_config("alpha_lr", "1e-3")
+        logger.set_config("batch_size", String(BATCH_SIZE))
+        logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
+        logger.set_config("cuda_graph", "true")
+
+        # =====================================================================
+        # Train using the train_gpu() method with CUDA Graph
+        # =====================================================================
 
         print("Starting GPU training...")
         print("-" * 70)
@@ -96,15 +134,25 @@ def main() raises:
                 warmup_steps=WARMUP_STEPS,
                 verbose=True,
                 print_every=50_000,
+                logger=UnsafePointer(to=logger),
+                diag_every=1_000,
             )
 
             var end_time = perf_counter_ns()
             var elapsed_s = Float64(end_time - start_time) / 1e9
 
+            logger.close()
+
             print("-" * 70)
             print()
+            print(">>> train_gpu returned successfully! <<<")
+
+            # =================================================================
+            # Summary
+            # =================================================================
+
             print("=" * 70)
-            print("GPU Training Complete")
+            print("GPU Training Complete (CUDA Graph)")
             print("=" * 70)
             print()
             print("Total steps: " + String(NUM_STEPS))

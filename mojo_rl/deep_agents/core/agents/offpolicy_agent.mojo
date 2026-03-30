@@ -1396,7 +1396,27 @@ struct GenericOffPolicyAgent[
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
-        """GPU training step delegating to strategies."""
+        """GPU training step with CPU bookkeeping + diagnostics.
+
+        For CUDA graph capture, use _gpu_train_kernels() instead (pure GPU,
+        no CPU counters or D2H copies). Call do_gpu_train_diagnostics()
+        periodically outside the graph for metrics logging.
+        """
+        self.train_step_count += 1
+        self.update_count += 1
+        self._gpu_train_kernels(ctx, gpu_state)
+        self._gpu_train_diagnostics(ctx, gpu_state)
+
+    def _gpu_train_kernels(
+        self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """Pure GPU kernel sequence for one training step.
+
+        Contains ONLY GPU kernel enqueues — no CPU counters, no diagnostics,
+        no ctx.synchronize(). Fully CUDA graph capturable.
+        """
         comptime BS = Self.BATCH
         comptime ELEM_BLOCKS = (BS * Self.CRITIC_IN + TPB - 1) // TPB
         comptime BATCH_BLOCKS = (BS + TPB - 1) // TPB
@@ -1406,8 +1426,6 @@ struct GenericOffPolicyAgent[
         comptime mse_grad_k = td_mse_grad_kernel[dtype, BS, Self.CRITIC_OUT]
 
         # Phase 1: Sample batch
-        self.train_step_count += 1
-
         # Increment GPU-side RNG counter (CUDA graph compatible)
         comptime incr_k = increment_rng_counter_kernel
         var rng_t = LayoutTensor[
@@ -1613,78 +1631,7 @@ struct GenericOffPolicyAgent[
             )
             gpu_state.critics.pairs[1].online.optimizer_step(ctx)
 
-            comptime if Self.profile >= 2:
-                self.train_timer.sync_and_accumulate(4, ctx)
-                self.train_timer.mark()
-
-        # GPU Diagnostic logging (every diag_every train steps)
-        if (
-            self.logger
-            and self.diag_every > 0
-            and self.train_step_count % self.diag_every == 0
-        ):
-            try:
-                # Reuse pre-allocated host buffers
-                ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
-                ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
-                ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
-                ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
-                ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
-                ctx.enqueue_copy(gpu_state.diag_nq_host, gpu_state.next_q)
-                ctx.synchronize()
-                var diag_q_host = gpu_state.diag_q_host
-                var diag_tgt_host = gpu_state.diag_tgt_host
-                var diag_rew_host = gpu_state.diag_rew_host
-                var diag_done_host = gpu_state.diag_done_host
-                var diag_act_host = gpu_state.diag_act_host
-                var diag_nq_host = gpu_state.diag_nq_host
-
-                # Compute mean Q, mean target, critic loss, mean reward
-                var mean_q: Float64 = 0.0
-                var mean_tgt: Float64 = 0.0
-                var mean_rew: Float64 = 0.0
-                var mean_done: Float64 = 0.0
-                var critic_loss: Float64 = 0.0
-                var mean_nq: Float64 = 0.0
-                var mean_abs_act: Float64 = 0.0
-                for b in range(BS):
-                    var q_val = Float64(diag_q_host[b])
-                    var tgt_val = Float64(diag_tgt_host[b])
-                    mean_q += q_val
-                    mean_tgt += tgt_val
-                    mean_rew += Float64(diag_rew_host[b])
-                    mean_done += Float64(diag_done_host[b])
-                    mean_nq += Float64(diag_nq_host[b])
-                    critic_loss += (q_val - tgt_val) * (q_val - tgt_val)
-                for i in range(BS * Self.ACTIONS):
-                    var a = Float64(diag_act_host[i])
-                    mean_abs_act += a if a >= 0.0 else -a
-                mean_q /= Float64(BS)
-                mean_tgt /= Float64(BS)
-                mean_rew /= Float64(BS)
-                mean_done /= Float64(BS)
-                mean_nq /= Float64(BS)
-                critic_loss /= Float64(BS)
-                mean_abs_act /= Float64(BS * Self.ACTIONS)
-
-                var step = self.train_step_count
-                self.logger[].log_scalar("critic_loss", critic_loss, step)
-                self.logger[].log_scalar("mean_q", mean_q, step)
-                self.logger[].log_scalar("mean_target", mean_tgt, step)
-                self.logger[].log_scalar("mean_reward", mean_rew, step)
-                self.logger[].log_scalar("mean_next_q", mean_nq, step)
-                self.logger[].log_scalar("mean_done", mean_done, step)
-                self.logger[].log_scalar("mean_abs_action", mean_abs_act, step)
-                comptime if Self.Config.ActorLoss.HAS_ALPHA:
-                    self.logger[].log_scalar("alpha", self.alpha, step)
-            except:
-                pass
-
         # Phase 4: Actor update — delegate to Config.ActorLoss
-        self.update_count += 1
-        if Self.Config.Schedule.should_update_actor(
-            self.update_count, self.policy_delay
-        ):
             gpu_state.actor.online.zero_grads(ctx)
             gpu_state.critics.pairs[0].online.zero_grads(ctx)
             var a_grads = gpu_state.actor.online.grads_view()
@@ -1726,29 +1673,6 @@ struct GenericOffPolicyAgent[
                 gpu_state.gpu_scalars,
                 gpu_state.rng_counter,
             )
-            # Log actor grad norm before optimizer step overwrites grads
-            if (
-                self.logger
-                and self.diag_every > 0
-                and self.train_step_count % self.diag_every == 0
-            ):
-                try:
-                    comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
-                    var ag_host = gpu_state.diag_ag_host
-                    ctx.enqueue_copy(ag_host, gpu_state.actor.online.grads_buf)
-                    ctx.synchronize()
-                    var grad_norm: Float64 = 0.0
-                    for i in range(A_PS):
-                        var g = Float64(ag_host[i])
-                        grad_norm += g * g
-                    grad_norm = sqrt(grad_norm)
-                    self.logger[].log_scalar(
-                        "actor_grad_norm",
-                        grad_norm,
-                        self.train_step_count,
-                    )
-                except:
-                    pass
 
             # Clip actor gradients
             if self.max_grad_norm > 0.0:
@@ -1828,9 +1752,74 @@ struct GenericOffPolicyAgent[
                         block_dim=(1,),
                     )
 
-            comptime if Self.profile >= 2:
-                comptime ACTOR_SLOT = 4 if Self.Config.NUM_CRITICS == 1 else 5
-                self.train_timer.sync_and_accumulate(ACTOR_SLOT, ctx)
+    def _gpu_train_diagnostics(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """CPU-side diagnostics: D2H copy + logging. Call outside graph."""
+        comptime BS = Self.BATCH
+        if (
+            self.logger
+            and self.diag_every > 0
+            and self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
+                ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
+                ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
+                ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
+                ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
+                ctx.enqueue_copy(gpu_state.diag_nq_host, gpu_state.next_q)
+                ctx.synchronize()
+
+                var mean_q: Float64 = 0.0
+                var mean_tgt: Float64 = 0.0
+                var mean_rew: Float64 = 0.0
+                var mean_done: Float64 = 0.0
+                var critic_loss: Float64 = 0.0
+                var mean_nq: Float64 = 0.0
+                var mean_abs_act: Float64 = 0.0
+                for b in range(BS):
+                    var q_val = Float64(gpu_state.diag_q_host[b])
+                    var tgt_val = Float64(gpu_state.diag_tgt_host[b])
+                    mean_q += q_val
+                    mean_tgt += tgt_val
+                    mean_rew += Float64(gpu_state.diag_rew_host[b])
+                    mean_done += Float64(gpu_state.diag_done_host[b])
+                    mean_nq += Float64(gpu_state.diag_nq_host[b])
+                    critic_loss += (q_val - tgt_val) * (q_val - tgt_val)
+                for i in range(BS * Self.ACTIONS):
+                    var a = Float64(gpu_state.diag_act_host[i])
+                    mean_abs_act += a if a >= 0.0 else -a
+                mean_q /= Float64(BS)
+                mean_tgt /= Float64(BS)
+                mean_rew /= Float64(BS)
+                mean_done /= Float64(BS)
+                mean_nq /= Float64(BS)
+                critic_loss /= Float64(BS)
+                mean_abs_act /= Float64(BS * Self.ACTIONS)
+
+                var step = self.train_step_count
+                self.logger[].log_scalar("critic_loss", critic_loss, step)
+                self.logger[].log_scalar("mean_q", mean_q, step)
+                self.logger[].log_scalar("mean_target", mean_tgt, step)
+                self.logger[].log_scalar("mean_reward", mean_rew, step)
+                self.logger[].log_scalar("mean_next_q", mean_nq, step)
+                self.logger[].log_scalar("mean_done", mean_done, step)
+                self.logger[].log_scalar(
+                    "mean_abs_action", mean_abs_act, step
+                )
+                comptime if Self.Config.ActorLoss.HAS_ALPHA:
+                    # Read alpha from GPU scalars for logging
+                    var alpha_host = ctx.enqueue_create_host_buffer[dtype](1)
+                    ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
+                    ctx.synchronize()
+                    self.logger[].log_scalar(
+                        "alpha", Float64(alpha_host[0]), step
+                    )
+            except:
+                pass
 
     def soft_update_targets_gpu(
         mut self,
