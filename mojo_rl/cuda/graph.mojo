@@ -64,11 +64,12 @@ struct CUDAGraph(Movable):
     def _init_nvidia(mut self, ctx: DeviceContext) raises:
         ctx.synchronize()
 
-        self._lib = alloc[OwnedDLHandle](1).bitcast[
-            OwnedDLHandle, origin=MutAnyOrigin
-        ]()
-        self._lib.init_pointee_move(
+        var lib_ptr = alloc[OwnedDLHandle](1)
+        lib_ptr.init_pointee_move(
             OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
+        )
+        self._lib = UnsafePointer[OwnedDLHandle, MutAnyOrigin](
+            unsafe_from_address=Int(lib_ptr)
         )
 
         # Get Mojo's internal stream
@@ -110,7 +111,9 @@ struct CUDAGraph(Movable):
                 _ = graph_destroy(self._graph)
             if self._lib:
                 self._lib.destroy_pointee()
-                self._lib.bitcast[OwnedDLHandle]().free()
+                UnsafePointer[OwnedDLHandle](
+                    unsafe_from_address=Int(self._lib)
+                ).free()
 
     def begin_capture(mut self) raises:
         """Begin capturing GPU kernel launches. No-op on non-NVIDIA."""
