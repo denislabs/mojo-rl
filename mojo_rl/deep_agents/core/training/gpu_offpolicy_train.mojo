@@ -253,8 +253,9 @@ trait GPUOffPolicyAgent:
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
+        steps: Int,
     ) raises -> None:
-        """CPU-side diagnostics: D2H copies + logging. Call outside graph."""
+        """CPU-side bookkeeping + diagnostics. Call outside graph."""
         ...
 
     def do_gpu_train_step(
@@ -657,8 +658,8 @@ def run_offpolicy_continuous_train_gpu[
                 # All steps via graph replay
                 for _ in range(grad_steps):
                     _train_graph.value().replay()
-                # Diagnostics outside graph (periodic, uses D2H + sync)
-                agent._gpu_train_diagnostics(ctx, gpu_state)
+                # Bookkeeping + diagnostics outside graph
+                agent._gpu_train_diagnostics(ctx, gpu_state, grad_steps)
             else:
                 for _ in range(grad_steps):
                     agent.do_gpu_train_step(ctx, gpu_state)
