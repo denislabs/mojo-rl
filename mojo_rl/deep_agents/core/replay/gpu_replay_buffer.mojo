@@ -73,6 +73,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
     var dones_buf: DeviceBuffer[dtype]
     var write_idx: Int
     var size: Int
+    var gpu_size: DeviceBuffer[DType.int32]  # GPU-side size for graph capture
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all device buffers and zero-initialize.
@@ -98,6 +99,8 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         ctx.enqueue_memset(self.dones_buf, 0)
         self.write_idx = 0
         self.size = 0
+        self.gpu_size = ctx.enqueue_create_buffer[DType.int32](1)
+        self.gpu_size.enqueue_fill(Scalar[DType.int32](0))
 
     def __init__(out self, *, deinit take: Self):
         self.states_buf = take.states_buf^
@@ -107,6 +110,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         self.dones_buf = take.dones_buf^
         self.write_idx = take.write_idx
         self.size = take.size
+        self.gpu_size = take.gpu_size^
 
     def is_ready[BATCH: Int](self) -> Bool:
         """Return True if the buffer holds at least BATCH transitions."""
@@ -166,6 +170,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
 
         self.write_idx = cpu_buf.ptr
         self.size = cpu_buf.size
+        self.gpu_size.enqueue_fill(Scalar[DType.int32](self.size))
 
     def store[
         N_ENVS: Int
@@ -378,6 +383,8 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         # Update CPU-side tracking
         self.write_idx = (self.write_idx + N_ENVS) % Self.CAPACITY
         self.size = min(self.size + N_ENVS, Self.CAPACITY)
+        # Sync GPU-side size for CUDA graph compatible sampling
+        self.gpu_size.enqueue_fill(Scalar[DType.int32](self.size))
 
     def sample[
         BATCH: Int
@@ -416,7 +423,9 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         var indices_t = LayoutTensor[
             DType.int32, Layout.row_major(BATCH), MutAnyOrigin
         ](indices.unsafe_ptr())
-        var buf_size = Scalar[DType.int32](self.size)
+        var buf_size_t = LayoutTensor[
+            DType.int32, Layout.row_major(1), MutAnyOrigin
+        ](self.gpu_size.unsafe_ptr())
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](rng_counter.unsafe_ptr())
@@ -426,7 +435,9 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             idx: LayoutTensor[
                 DType.int32, Layout.row_major(BATCH), MutAnyOrigin
             ],
-            bsize: Scalar[DType.int32],
+            bsize: LayoutTensor[
+                DType.int32, Layout.row_major(1), MutAnyOrigin
+            ],
             rng: LayoutTensor[
                 DType.uint32, Layout.row_major(1), MutAnyOrigin
             ],
@@ -435,7 +446,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
 
         ctx.enqueue_function[sample_wrapper, sample_wrapper](
             indices_t,
-            buf_size,
+            buf_size_t,
             rng_t,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),

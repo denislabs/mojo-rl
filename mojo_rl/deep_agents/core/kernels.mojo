@@ -525,7 +525,9 @@ def sample_indices_kernel[
     indices: LayoutTensor[
         DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
     ],
-    buffer_size: Scalar[DType.int32],
+    buffer_size: LayoutTensor[
+        DType.int32, Layout.row_major(1), MutAnyOrigin
+    ],
     rng_counter: LayoutTensor[
         DType.uint32, Layout.row_major(1), MutAnyOrigin
     ],
@@ -534,11 +536,11 @@ def sample_indices_kernel[
 
     Each thread generates one random index in [0, buffer_size).
     Uses PhiloxRandom for GPU-safe randomness (no seed collisions).
-    Reads seed from GPU-side rng_counter (CUDA graph compatible).
+    Reads seed and buffer_size from GPU memory (CUDA graph compatible).
 
     Args:
         indices: Output buffer for random indices [SAMPLE_SIZE].
-        buffer_size: Current size of replay buffer (samples from [0, buffer_size)).
+        buffer_size: GPU-side buffer size [1] (read from DeviceBuffer).
         rng_counter: GPU-side RNG counter [1] (read, not modified).
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -546,6 +548,7 @@ def sample_indices_kernel[
         return
 
     var rng_seed = UInt64(rng_counter.ptr[0])
+    var buf_sz = buffer_size.ptr[0]
     # PhiloxRandom: unique seed per thread, no collisions
     var philox = PhiloxRandom(
         seed=rng_seed + UInt64(i),
@@ -553,7 +556,7 @@ def sample_indices_kernel[
     )
     var rand_vals = philox.step_uniform()
     var u: Scalar[dtype] = Scalar[dtype](rand_vals[0])
-    var idx = Int(u * Scalar[dtype](buffer_size))
+    var idx = Int(u * Scalar[dtype](buf_sz))
     indices[i] = Scalar[DType.int32](idx)
 
 
