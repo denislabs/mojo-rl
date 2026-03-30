@@ -662,6 +662,14 @@ def run_offpolicy_continuous_train_gpu[
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
             ctx.synchronize()
 
+            # DEBUG: print raw downloaded values
+            print(
+                "  [DEBUG] raw episode_count=",
+                Float64(host_episode_count[0]),
+                " raw reward_sum=",
+                Float64(host_reward_sum[0]),
+            )
+
             var recent_count = Int(host_episode_count[0])
             var recent_sum = Float64(host_reward_sum[0])
             completed_episodes += recent_count
