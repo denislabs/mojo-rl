@@ -621,10 +621,8 @@ def run_offpolicy_continuous_train_gpu[
             comptime if USE_CUDA_GRAPH:
                 # Lazy capture: first time training, capture the graph
                 if not _train_graph:
-                    # Warmup: one direct step for kernel compilation
                     agent.do_gpu_train_step(ctx, gpu_state)
                     ctx.synchronize()
-                    # Capture
                     var graph = CUDAGraph(ctx)
                     graph.begin_capture()
                     agent.do_gpu_train_step(ctx, gpu_state)
@@ -636,12 +634,8 @@ def run_offpolicy_continuous_train_gpu[
                             + " nodes"
                         )
                     _train_graph = graph^
-                # Replay
                 for _ in range(grad_steps):
-                    if _train_graph:
-                        _train_graph.value().replay()
-                    else:
-                        agent.do_gpu_train_step(ctx, gpu_state)
+                    _train_graph.value().replay()
             else:
                 for _ in range(grad_steps):
                     agent.do_gpu_train_step(ctx, gpu_state)

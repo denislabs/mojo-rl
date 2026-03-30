@@ -66,11 +66,13 @@ def main() raises:
             tau=0.005,
             action_scale=1.0,
             alpha=0.2,
-            auto_alpha=False,  # Fixed alpha for graph capture compatibility
+            auto_alpha=True,  # GPU-side alpha tuning (graph compatible)
+            alpha_lr=0.001,
+            target_entropy=-1.0,
         )
 
         print("Environment: HalfCheetah Continuous (GPU)")
-        print("Agent: SAC (fixed alpha=0.2, CUDA Graph)")
+        print("Agent: SAC (auto alpha, CUDA Graph)")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
         print("  Hidden dim: " + String(HIDDEN_DIM))
