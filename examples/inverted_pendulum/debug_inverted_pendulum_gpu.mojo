@@ -66,7 +66,7 @@ def dump(
     ctx: DeviceContext,
     states_buf: DeviceBuffer[gpu_dtype],
     label: String,
-):
+) raises:
     var h = ctx.enqueue_create_host_buffer[gpu_dtype](N_ENVS * STATE_SIZE)
     ctx.enqueue_copy(h, states_buf)
     ctx.synchronize()
