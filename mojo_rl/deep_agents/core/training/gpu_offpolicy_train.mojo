@@ -374,16 +374,21 @@ def run_offpolicy_continuous_train_gpu[
     var prev_obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
     var actions_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.ACTION_DIM)
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    # Pad dones_buf to prevent GPU memory corruption from adjacent
-    # buffer overflows in training kernels (NaN leak into dones tracking).
-    var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs + 256)
+    var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
+    # Pad episode tracking buffers to guard against GPU memory corruption
+    # from training kernel buffer overflows (NaN leak from adjacent allocs).
+    comptime _EP_PAD = 256
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](
+        n_envs + _EP_PAD
+    )
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](
+        n_envs + _EP_PAD
+    )
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1 + _EP_PAD)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1 + _EP_PAD)
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
@@ -884,16 +889,21 @@ def run_offpolicy_discrete_train_gpu[
     # For discrete envs, actions are Float32 indices (shape: [n_envs])
     var actions_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    # Pad dones_buf to prevent GPU memory corruption from adjacent
-    # buffer overflows in training kernels (NaN leak into dones tracking).
-    var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs + 256)
+    var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
+    # Pad episode tracking buffers to guard against GPU memory corruption
+    # from training kernel buffer overflows (NaN leak from adjacent allocs).
+    comptime _EP_PAD = 256
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](
+        n_envs + _EP_PAD
+    )
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](
+        n_envs + _EP_PAD
+    )
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1 + _EP_PAD)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1 + _EP_PAD)
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
