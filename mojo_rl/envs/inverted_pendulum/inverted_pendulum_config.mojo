@@ -5,6 +5,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.integrator import RK4Integrator
+from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
 from mojo_rl.physics3d.solver import NewtonSolver
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
@@ -19,11 +20,9 @@ from ..phyics3d_env_config import Phyics3dEnvConfig
 
 struct InvertedPendulumConfig(Phyics3dEnvConfig):
     # === Physics ===
-    comptime FRAME_SKIP: Int = 2
+    comptime FRAME_SKIP: Int = 5  # Euler needs more substeps than RK4
     comptime MAX_STEPS: Int = 1000
-    comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-        InvertedPendulumModel.NQ, InvertedPendulumModel.NV
-    ]()
+    comptime INTEGRATOR_WS_EXTRA: Int = 0  # Euler doesn't need extra workspace
 
     # Termination bounds
     comptime MAX_CART_POS = 1.0  # slider range is ±1
@@ -146,7 +145,7 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE,
             NQ,
             NV,
