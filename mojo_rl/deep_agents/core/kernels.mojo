@@ -463,7 +463,7 @@ def sample_indices_kernel[
     if i >= SAMPLE_SIZE:
         return
 
-    var rng_seed = UInt64(rng_counter[0].cast[DType.uint64]())
+    var rng_seed = UInt64(rng_counter.ptr[0])
     # PhiloxRandom: unique seed per thread, no collisions
     var philox = PhiloxRandom(
         seed=rng_seed + UInt64(i),
@@ -1480,7 +1480,7 @@ def add_gaussian_noise_kernel[
     var b = tid // ACTION_DIM
     var a = tid % ACTION_DIM
 
-    var rng_seed = UInt64(rng_counter[0].cast[DType.uint64]())
+    var rng_seed = UInt64(rng_counter.ptr[0])
     # PhiloxRandom Box-Muller for Gaussian noise
     var philox = PhiloxRandom(
         seed=rng_seed + UInt64(b) * UInt64(ACTION_DIM) + UInt64(a),
@@ -1635,7 +1635,7 @@ def sac_rsample_with_cache_kernel[
     if b >= BATCH:
         return
 
-    var rng_seed = UInt64(rng_counter[0].cast[DType.uint64]())
+    var rng_seed = UInt64(rng_counter.ptr[0])
     var half_log_2pi = Scalar[dtype](0.9189385332046727)
     var one = Scalar[dtype](1.0)
     var half = Scalar[dtype](0.5)
