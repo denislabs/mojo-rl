@@ -638,7 +638,10 @@ def run_offpolicy_continuous_train_gpu[
                     _train_graph = graph^
                 # Replay
                 for _ in range(grad_steps):
-                    graph.replay()
+                    if _train_graph:
+                        _train_graph.value().replay()
+                    else:
+                        agent.do_gpu_train_step(ctx, gpu_state)
             else:
                 for _ in range(grad_steps):
                     agent.do_gpu_train_step(ctx, gpu_state)
