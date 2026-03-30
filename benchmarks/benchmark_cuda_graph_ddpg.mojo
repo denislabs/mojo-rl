@@ -1,8 +1,8 @@
-"""Benchmark: CUDA Graph capture on DDPG GPU training step.
+"""Benchmark: CUDA Graph capture on TD3 GPU training step.
 
-Runs DDPG training on PendulumV2 and compares direct dispatch vs
-graph-captured train steps. The graph captures one do_gpu_train_step
-and replays it, eliminating per-kernel launch overhead.
+Runs TD3 on PendulumV2 and compares direct dispatch vs
+graph-captured train steps. TD3 has twin critics + delayed actor.
+The captured graph bakes the actor update branch.
 
 Note: graph replay uses the same RNG seed (baked at capture time),
 so this benchmarks launch overhead, not training quality.
@@ -16,7 +16,7 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, DDPGConfig
+from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, TD3Config
 from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
@@ -30,13 +30,13 @@ from layout import Layout, LayoutTensor
 
 
 def main() raises:
-    print("=== CUDA Graph DDPG Benchmark ===\n")
+    print("=== CUDA Graph TD3 Benchmark ===\n")
 
     seed(42)
     var ctx = DeviceContext()
 
-    # DDPG agent: obs=3, act=1, hidden=64, buffer=10000, batch=64
-    comptime CONFIG = DDPGConfig[3, 1, 64, 10000, 32]
+    # TD3: obs=3, act=1, hidden=64, buffer=10000, batch=32
+    comptime CONFIG = TD3Config[3, 1, 64, 10000, 32]
     comptime A = GenericOffPolicyAgent[CONFIG]
     var agent = A(action_scale=2.0)
 
