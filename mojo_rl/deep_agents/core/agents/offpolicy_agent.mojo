@@ -2056,6 +2056,7 @@ struct GenericOffPolicyAgent[
         E: GPUContinuousEnv,
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
         USE_CUDA_GRAPH: Bool = False,
+        USE_ENV_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         ctx: DeviceContext,
@@ -2104,7 +2105,13 @@ struct GenericOffPolicyAgent[
         var ckpt_path = String(self.checkpoint_path)
         var tgt_steps = self.target_total_steps
         var metrics = run_offpolicy_continuous_train_gpu[
-            E, Self, Self.profile, Self.L, CurriculumType, USE_CUDA_GRAPH
+            E,
+            Self,
+            Self.profile,
+            Self.L,
+            CurriculumType,
+            USE_CUDA_GRAPH,
+            USE_ENV_CUDA_GRAPH,
         ](
             self,
             ctx,
