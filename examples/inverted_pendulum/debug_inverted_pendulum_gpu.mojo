@@ -55,7 +55,7 @@ comptime ENV = InvertedPendulum[gpu_dtype, TERMINATE_ON_UNHEALTHY=True]
 def run_rk4_test(
     ctx: DeviceContext,
     label: String,
-    model_buf: DeviceBuffer[gpu_dtype],
+    mut model_buf: DeviceBuffer[gpu_dtype],
     mut ws_buf: DeviceBuffer[gpu_dtype],
 ) raises:
     """Reset env, set qfrc=50, run 1 RK4 step, print qacc."""
