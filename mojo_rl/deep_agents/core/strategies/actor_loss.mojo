@@ -147,7 +147,7 @@ trait ActorLoss:
         critic2_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         dq_buf: DeviceBuffer[dtype],
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
     ) raises -> Float64:
         ...
@@ -400,7 +400,7 @@ struct DPGLoss(ActorLoss):
         critic2_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         dq_buf: DeviceBuffer[dtype],
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
     ) raises -> Float64:
         """GPU deterministic policy gradient: actor -> critic -> dQ/da -> actor bwd.
@@ -927,7 +927,7 @@ struct MaxEntLoss[
         critic2_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         dq_buf: DeviceBuffer[dtype],
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
     ) raises -> Float64:
         """GPU max-entropy actor gradient via reparameterized sampling.
@@ -1201,7 +1201,9 @@ struct MaxEntLoss[
         var actor_grad_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](ws_ptr + W_AGRAD)
-        var alpha_per_sample = Scalar[dtype](alpha / Float64(BATCH))
+        var alpha_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](alpha_buf.unsafe_ptr())
 
         @always_inline
         def rsample_bwd(
@@ -1213,7 +1215,7 @@ struct MaxEntLoss[
             ga: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
-            aps: Scalar[dtype],
+            ab: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
             ca: LayoutTensor[
                 dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
             ],
@@ -1229,13 +1231,13 @@ struct MaxEntLoss[
             lsmax: Scalar[dtype],
         ):
             sac_rsample_bwd_kernel[dtype, BATCH, ACTIONS](
-                agrad, ga, aps, ca, eps, ao, lsmin, lsmax
+                agrad, ga, ab, ca, eps, ao, lsmin, lsmax
             )
 
         ctx.enqueue_function[rsample_bwd, rsample_bwd](
             actor_grad_t,
             grad_act_t,
-            alpha_per_sample,
+            alpha_t,
             curr_act_t,
             eps_cache_t,
             actor_out_t,
@@ -1543,7 +1545,7 @@ struct AutodiffMaxEntLoss[
         critic2_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         dq_buf: DeviceBuffer[dtype],
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
     ) raises -> Float64:
         """GPU max-entropy actor gradient via composed autodiff graph.
@@ -2032,7 +2034,7 @@ struct AutodiffDPGLoss(ActorLoss):
         critic2_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         dq_buf: DeviceBuffer[dtype],
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
     ) raises -> Float64:
         """GPU deterministic policy gradient via composed autodiff graph.
@@ -2460,7 +2462,7 @@ struct AutodiffTD3Loss(ActorLoss):
         critic2_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         dq_buf: DeviceBuffer[dtype],
-        alpha: Float64,
+        alpha_buf: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
     ) raises -> Float64:
         """GPU TD3 deterministic policy gradient via composed autodiff graph.

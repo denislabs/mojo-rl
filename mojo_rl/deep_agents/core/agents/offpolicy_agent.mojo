@@ -1723,7 +1723,7 @@ struct GenericOffPolicyAgent[
                 c2_ws,
                 gpu_state.strat_ws,
                 gpu_state.dq,
-                self.alpha,
+                gpu_state.gpu_scalars,
                 gpu_state.rng_counter,
             )
             # Log actor grad norm before optimizer step overwrites grads

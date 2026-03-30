@@ -1779,7 +1779,7 @@ def sac_rsample_bwd_kernel[
     grad_act: LayoutTensor[
         dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
     ],
-    alpha_per_sample: Scalar[dtype],
+    alpha_buf: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
     curr_act: LayoutTensor[
         dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
     ],
@@ -1826,6 +1826,7 @@ def sac_rsample_bwd_kernel[
     if b >= BATCH:
         return
 
+    var alpha_per_sample = alpha_buf.ptr[0] / Scalar[dtype](BATCH)
     var one = Scalar[dtype](1.0)
     var two = Scalar[dtype](2.0)
     var half = Scalar[dtype](0.5)
