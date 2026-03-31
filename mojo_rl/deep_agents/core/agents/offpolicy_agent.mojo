@@ -1501,7 +1501,6 @@ struct GenericOffPolicyAgent[
         var p_actor = gpu_state.actor.online.params_view()
         var p_critic = gpu_state.critics.online_params_view(0)
 
-        return  # DEBUG: early return after sample to bisect corruption
         # Phase 2: Target actions — delegate to Config.TargetAction
         # Increment RNG counter before target action (separate seed from sample)
         ctx.enqueue_function[incr_k, incr_k](
