@@ -1115,7 +1115,46 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             )
 
             # 2. Matmul: output = input @ W
-            max_matmul[target="gpu"](output, input_immut, W, ctx)
+            comptime if has_nvidia_gpu_accelerator() and Self.out_dim < 64:
+                from ...gpu.matmul_ops import matmul_kernel as safe_mm
+
+                comptime MM_TILE = 8
+                comptime MM_GRID = (
+                    (Self.out_dim + MM_TILE - 1) // MM_TILE,
+                    (BATCH + MM_TILE - 1) // MM_TILE,
+                )
+
+                @always_inline
+                def _safe_mm_wrapper(
+                    out: LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.out_dim),
+                        MutAnyOrigin,
+                    ],
+                    a: LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.in_dim),
+                        ImmutAnyOrigin,
+                    ],
+                    b: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.in_dim, Self.out_dim),
+                        ImmutAnyOrigin,
+                    ],
+                ):
+                    safe_mm[
+                        dtype, BATCH, Self.out_dim, Self.in_dim, MM_TILE
+                    ](out, a, b)
+
+                ctx.enqueue_function[_safe_mm_wrapper, _safe_mm_wrapper](
+                    output,
+                    input_immut,
+                    W,
+                    grid_dim=MM_GRID,
+                    block_dim=(MM_TILE, MM_TILE),
+                )
+            else:
+                max_matmul[target="gpu"](output, input_immut, W, ctx)
 
             # 3. Bias add
             comptime bias_elems = BATCH * Self.out_dim

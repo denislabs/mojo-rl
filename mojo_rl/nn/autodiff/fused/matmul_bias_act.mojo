@@ -1263,7 +1263,49 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
             )
 
             # 2. Matmul: output = input @ W
-            max_matmul[target="gpu"](output, input_immut, W, ctx)
+            # For small out_dim on NVIDIA, max_matmul (cuBLAS) overflows the
+            # output buffer due to tile-aligned writes. Use our bounds-checked
+            # tiled kernel instead. Threshold: 64 covers Blackwell tile sizes.
+            comptime if has_nvidia_gpu_accelerator() and Self.out_dim < 64:
+                from ...gpu.matmul_ops import matmul_kernel as safe_mm
+
+                comptime MM_TILE = 8
+                comptime MM_GRID = (
+                    (Self.out_dim + MM_TILE - 1) // MM_TILE,
+                    (BATCH + MM_TILE - 1) // MM_TILE,
+                )
+
+                @always_inline
+                def _safe_mm_wrapper(
+                    out: LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.out_dim),
+                        MutAnyOrigin,
+                    ],
+                    a: LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.in_dim),
+                        ImmutAnyOrigin,
+                    ],
+                    b: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.in_dim, Self.out_dim),
+                        ImmutAnyOrigin,
+                    ],
+                ):
+                    safe_mm[
+                        dtype, BATCH, Self.out_dim, Self.in_dim, MM_TILE
+                    ](out, a, b)
+
+                ctx.enqueue_function[_safe_mm_wrapper, _safe_mm_wrapper](
+                    output,
+                    input_immut,
+                    W,
+                    grid_dim=MM_GRID,
+                    block_dim=(MM_TILE, MM_TILE),
+                )
+            else:
+                max_matmul[target="gpu"](output, input_immut, W, ctx)
 
             # 3. Bias + activation + cache activation state
             comptime act_elems = BATCH * Self.out_dim
