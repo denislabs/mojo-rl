@@ -439,17 +439,19 @@ def run_offpolicy_continuous_train_gpu[
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
-    # Padded to 4096 elements (16KB) to survive NVIDIA cuBLAS overflow
-    # from adjacent small-dim matmul output buffers in GenericGPUState.
-    comptime EP_PAD = 4096
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
     var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
+
+    # Debug: host buffers to verify dones/rewards aren't corrupted
+    var host_dbg_dones = ctx.enqueue_create_host_buffer[dtype](n_envs)
+    var host_dbg_rewards = ctx.enqueue_create_host_buffer[dtype](n_envs)
+    var host_dbg_ep_rewards = ctx.enqueue_create_host_buffer[dtype](n_envs)
 
     # Workspace buffer (shared model state for physics envs)
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
@@ -1018,6 +1020,10 @@ def run_offpolicy_continuous_train_gpu[
             # Download GPU-side episode stats (only sync point for tracking)
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+            # Debug: also read dones, rewards, episode_rewards
+            ctx.enqueue_copy(host_dbg_dones, dones_buf)
+            ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
+            ctx.enqueue_copy(host_dbg_ep_rewards, episode_rewards_buf)
             ctx.synchronize()
 
             var recent_count = Int(host_episode_count[0])
@@ -1031,6 +1037,25 @@ def run_offpolicy_continuous_train_gpu[
                     metrics.log_episode(
                         completed_episodes, last_avg_reward, 0, 0.0
                     )
+
+            # Debug: count dones and sum rewards from raw buffers
+            var _dbg_n_done = 0
+            var _dbg_sum_r: Float64 = 0.0
+            var _dbg_sum_ep_r: Float64 = 0.0
+            for _i in range(n_envs):
+                if Float64(host_dbg_dones[_i]) > 0.5:
+                    _dbg_n_done += 1
+                _dbg_sum_r += Float64(host_dbg_rewards[_i])
+                _dbg_sum_ep_r += Float64(host_dbg_ep_rewards[_i])
+            print(
+                "[DBG] gpu_ep_count="
+                + String(Float64(host_episode_count[0]))[byte=:10]
+                + " gpu_rw_sum="
+                + String(Float64(host_reward_sum[0]))[byte=:10]
+                + " n_done=" + String(_dbg_n_done)
+                + " raw_rw=" + String(_dbg_sum_r)[byte=:8]
+                + " ep_rw=" + String(_dbg_sum_ep_r)[byte=:10]
+            )
 
             # Reset GPU-side accumulators for next interval
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
@@ -1199,17 +1224,19 @@ def run_offpolicy_discrete_train_gpu[
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
-    # Padded to 4096 elements (16KB) to survive NVIDIA cuBLAS overflow
-    # from adjacent small-dim matmul output buffers in GenericGPUState.
-    comptime EP_PAD = 4096
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
     var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
+
+    # Debug: host buffers to verify dones/rewards aren't corrupted
+    var host_dbg_dones = ctx.enqueue_create_host_buffer[dtype](n_envs)
+    var host_dbg_rewards = ctx.enqueue_create_host_buffer[dtype](n_envs)
+    var host_dbg_ep_rewards = ctx.enqueue_create_host_buffer[dtype](n_envs)
 
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:
