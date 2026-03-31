@@ -1033,6 +1033,17 @@ def run_offpolicy_continuous_train_gpu[
             agent.save_checkpoint(checkpoint_path)
             next_checkpoint += checkpoint_every
 
+        # Keep-alive fence: prevent premature deallocation of env buffers
+        # by the Mojo compiler. Without this, GPU memory may be reused by
+        # training step allocations, corrupting env data.
+        _ = rewards_buf.unsafe_ptr()
+        _ = dones_buf.unsafe_ptr()
+        _ = terminated_buf.unsafe_ptr()
+        _ = episode_rewards_buf.unsafe_ptr()
+        _ = episode_steps_buf.unsafe_ptr()
+        _ = gpu_reward_sum_buf.unsafe_ptr()
+        _ = gpu_episode_count_buf.unsafe_ptr()
+
         total_steps += n_envs
         step_seed += 1
 
