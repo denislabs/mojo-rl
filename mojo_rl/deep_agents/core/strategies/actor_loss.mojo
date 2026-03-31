@@ -1864,8 +1864,8 @@ struct AutodiffDPGLoss(ActorLoss):
         # bound from CACHE_SIZE. For Sequential[Linear...] models,
         # PARAM_SIZE ≈ CACHE_SIZE * hidden_dim / 2 (weights dominate).
         # Use 8 * CACHE_SIZE as a safe multiplier for PARAM_SIZE.
-        comptime ACTOR_PS_UPPER = max(ACTOR_CS * 8, 4096)
-        comptime CRITIC_PS_UPPER = max(CRITIC_CS * 8, 4096)
+        comptime ACTOR_PS_UPPER = max(ACTOR_CS * 64, 16384)
+        comptime CRITIC_PS_UPPER = max(CRITIC_CS * 64, 16384)
         comptime TOTAL_PS_UPPER = ACTOR_PS_UPPER + CRITIC_PS_UPPER
         comptime SkipConcatCS = OBS + ACTOR_CS + ACTOR_OUT
         comptime GRAPH_CS = SkipConcatCS + CRITIC_CS + 1
