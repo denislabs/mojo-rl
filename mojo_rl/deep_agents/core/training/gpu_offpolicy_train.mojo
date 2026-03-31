@@ -860,6 +860,25 @@ def run_offpolicy_continuous_train_gpu[
                 timer.sync_and_accumulate(2, ctx)
                 timer.mark()
 
+            # DEBUG: check dones_buf after env step (before store/tracking)
+            if total_steps >= warmup_steps and total_steps <= warmup_steps + 320 and total_steps % 32 == 0:
+                var _dbg_dones = ctx.enqueue_create_host_buffer[dtype](n_envs)
+                var _dbg_rews = ctx.enqueue_create_host_buffer[dtype](n_envs)
+                ctx.enqueue_copy(_dbg_dones, dones_buf)
+                ctx.enqueue_copy(_dbg_rews, rewards_buf)
+                ctx.synchronize()
+                var _n_done = 0
+                var _sum_r = Float64(0)
+                for _i in range(n_envs):
+                    if Float64(_dbg_dones[_i]) > 0.5:
+                        _n_done += 1
+                    _sum_r += Float64(_dbg_rews[_i])
+                print(
+                    "[DBG] step=" + String(total_steps)
+                    + " n_done=" + String(_n_done)
+                    + " sum_r=" + String(_sum_r)[byte=:8]
+                )
+
             # ------------------------------------------------------------------
             # Store transitions: (prev_obs, action, reward, next_obs, terminated)
             # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
@@ -943,19 +962,6 @@ def run_offpolicy_continuous_train_gpu[
             comptime if PROFILE >= 1:
                 timer.sync_and_accumulate(5, ctx)
                 timer.mark()
-
-        # ------------------------------------------------------------------
-        # DEBUG: check episode tracking around warmup boundary
-        # ------------------------------------------------------------------
-        if (total_steps >= warmup_steps - 64 and total_steps <= warmup_steps + 320) and total_steps % 32 == 0:
-            ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
-            ctx.synchronize()
-            var _dbg = Float64(host_episode_count[0])
-            print(
-                "[DBG] step=" + String(total_steps)
-                + " ep=" + String(_dbg)[byte=:10]
-                + " warmup=" + String(total_steps < warmup_steps)
-            )
 
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
