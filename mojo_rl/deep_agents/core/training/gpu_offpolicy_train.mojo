@@ -439,10 +439,13 @@ def run_offpolicy_continuous_train_gpu[
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
+    # Padded to 4096 elements (16KB) to survive NVIDIA cuBLAS overflow
+    # from adjacent small-dim matmul output buffers in GenericGPUState.
+    comptime EP_PAD = 4096
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
@@ -1196,10 +1199,13 @@ def run_offpolicy_discrete_train_gpu[
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
     # Episode tracking: per-env accumulators + GPU-side stats
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
+    # Padded to 4096 elements (16KB) to survive NVIDIA cuBLAS overflow
+    # from adjacent small-dim matmul output buffers in GenericGPUState.
+    comptime EP_PAD = 4096
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
