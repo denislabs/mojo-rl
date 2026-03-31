@@ -1080,6 +1080,10 @@ def run_offpolicy_continuous_train_gpu[
     comptime if PROFILE >= 1:
         timer.accumulate(7)
 
+    # Final checkpoint save (CPU state is now synced from GPU)
+    if checkpoint_every > 0 and len(checkpoint_path) > 0:
+        agent.save_checkpoint(checkpoint_path)
+
     # Final logger flush + print
     if logger and logger[].is_active():
         logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
@@ -1524,6 +1528,10 @@ def run_offpolicy_discrete_train_gpu[
     agent.download_from_gpu(gpu_state, ctx)
     comptime if PROFILE >= 1:
         timer.accumulate(7)
+
+    # Final checkpoint save (CPU state is now synced from GPU)
+    if checkpoint_every > 0 and len(checkpoint_path) > 0:
+        agent.save_checkpoint(checkpoint_path)
 
     # Final logger flush + print
     if logger:
