@@ -448,19 +448,30 @@ def run_offpolicy_continuous_train_gpu[
     if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
 
-    # Episode tracking: per-env accumulators + GPU-side stats
-    # Padded to 256 elements minimum to guard against matmul overflow from
-    # adjacent CUDA allocations (max_matmul/cuBLAS can write beyond small
-    # output buffers on NVIDIA).
-    comptime EP_PAD = 256
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](
-        max(n_envs, EP_PAD)
+    # Episode tracking: pack all tracking data into ONE large buffer with
+    # 4KB guard regions on each side to survive cuBLAS/max_matmul overflow
+    # from adjacent CUDA allocations (NVIDIA-specific memory corruption).
+    # Layout: [GUARD_LO | ep_rewards | ep_steps | reward_sum | ep_count | GUARD_HI]
+    comptime GUARD = 1024  # 4KB guard on each side
+    comptime EP_RW_OFF = GUARD
+    comptime EP_ST_OFF = EP_RW_OFF + n_envs
+    comptime EP_RS_OFF = EP_ST_OFF + n_envs
+    comptime EP_EC_OFF = EP_RS_OFF + 1
+    comptime EP_TOTAL = EP_EC_OFF + 1 + GUARD
+    var ep_tracking_buf = ctx.enqueue_create_buffer[dtype](EP_TOTAL)
+    # Create sub-views (non-owning) pointing into the packed buffer
+    var episode_rewards_buf = DeviceBuffer[dtype](
+        ctx, ep_tracking_buf.unsafe_ptr() + EP_RW_OFF, n_envs, owning=False
     )
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](
-        max(n_envs, EP_PAD)
+    var episode_steps_buf = DeviceBuffer[dtype](
+        ctx, ep_tracking_buf.unsafe_ptr() + EP_ST_OFF, n_envs, owning=False
     )
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var gpu_reward_sum_buf = DeviceBuffer[dtype](
+        ctx, ep_tracking_buf.unsafe_ptr() + EP_RS_OFF, 1, owning=False
+    )
+    var gpu_episode_count_buf = DeviceBuffer[dtype](
+        ctx, ep_tracking_buf.unsafe_ptr() + EP_EC_OFF, 1, owning=False
+    )
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
@@ -495,10 +506,8 @@ def run_offpolicy_continuous_train_gpu[
     )
 
     # Initialize episode tracking (use enqueue_fill for typed zero, not memset)
-    episode_rewards_buf.enqueue_fill(Scalar[dtype](0))
-    episode_steps_buf.enqueue_fill(Scalar[dtype](0))
-    gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
-    gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
+    # Zero the entire packed tracking buffer (including guards)
+    ep_tracking_buf.enqueue_fill(Scalar[dtype](0))
 
     # ------------------------------------------------------------------
     # Kernel wrappers (defined once outside the loop)
@@ -1214,17 +1223,28 @@ def run_offpolicy_discrete_train_gpu[
     if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
 
-    # Episode tracking: per-env accumulators + GPU-side stats
-    # Padded to guard against matmul overflow from adjacent allocations.
-    comptime EP_PAD = 256
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](
-        max(n_envs, EP_PAD)
+    # Episode tracking: pack into ONE large buffer with 4KB guard regions
+    # to survive cuBLAS/max_matmul overflow from adjacent CUDA allocations.
+    # Layout: [GUARD_LO | ep_rewards | ep_steps | reward_sum | ep_count | GUARD_HI]
+    comptime GUARD = 1024
+    comptime EP_RW_OFF = GUARD
+    comptime EP_ST_OFF = EP_RW_OFF + n_envs
+    comptime EP_RS_OFF = EP_ST_OFF + n_envs
+    comptime EP_EC_OFF = EP_RS_OFF + 1
+    comptime EP_TOTAL = EP_EC_OFF + 1 + GUARD
+    var ep_tracking_buf = ctx.enqueue_create_buffer[dtype](EP_TOTAL)
+    var episode_rewards_buf = DeviceBuffer[dtype](
+        ctx, ep_tracking_buf.unsafe_ptr() + EP_RW_OFF, n_envs, owning=False
     )
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](
-        max(n_envs, EP_PAD)
+    var episode_steps_buf = DeviceBuffer[dtype](
+        ctx, ep_tracking_buf.unsafe_ptr() + EP_ST_OFF, n_envs, owning=False
     )
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var gpu_reward_sum_buf = DeviceBuffer[dtype](
+        ctx, ep_tracking_buf.unsafe_ptr() + EP_RS_OFF, 1, owning=False
+    )
+    var gpu_episode_count_buf = DeviceBuffer[dtype](
+        ctx, ep_tracking_buf.unsafe_ptr() + EP_EC_OFF, 1, owning=False
+    )
 
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
@@ -1243,11 +1263,8 @@ def run_offpolicy_discrete_train_gpu[
         workspace_ptr=workspace_buf.unsafe_ptr(),
     )
 
-    # Initialize episode tracking (use enqueue_fill for typed zero, not memset)
-    episode_rewards_buf.enqueue_fill(Scalar[dtype](0))
-    episode_steps_buf.enqueue_fill(Scalar[dtype](0))
-    gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
-    gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
+    # Zero the entire packed tracking buffer (including guards)
+    ep_tracking_buf.enqueue_fill(Scalar[dtype](0))
 
     # Kernel wrappers
     comptime tpb = 256
