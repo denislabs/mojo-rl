@@ -456,12 +456,11 @@ def run_mbpo_train_gpu[
             ctx, states_buf, obs_buf
         )
 
-        # GPU SAC gradient steps (mixed sampling: real + synthetic)
-        if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
-            # Only train if synthetic buffer also has data
+        # GPU SAC gradient steps
+        if gpu_state.gpu_buffer_is_ready():
             if synth_buffer.is_ready[SYNTH_BS]():
+                # Mixed sampling: REAL_BS real + SYNTH_BS synthetic
                 comptime if USE_CUDA_GRAPH:
-                    # Lazy capture: first time, capture pure GPU kernels
                     if not _train_graph:
                         agent._gpu_train_kernels(
                             ctx, gpu_state, synth_buffer,
@@ -482,12 +481,9 @@ def run_mbpo_train_gpu[
                                 + " nodes"
                             )
                         _train_graph = graph^
-                    # All SAC steps via async graph replay (no per-step sync)
                     for _ in range(agent.sac_updates_per_step):
                         _train_graph.value().replay_async()
-                    # Single sync after all replays
                     _train_graph.value().sync()
-                    # Bookkeeping + diagnostics outside graph
                     agent._gpu_train_diagnostics(
                         ctx, gpu_state, agent.sac_updates_per_step
                     )
@@ -497,8 +493,12 @@ def run_mbpo_train_gpu[
                             ctx, gpu_state, synth_buffer,
                             s_real_idx, s_synth_idx,
                         )
-                agent.soft_update_targets_gpu(ctx, gpu_state)
-                total_train_steps += agent.sac_updates_per_step
+            else:
+                # No synthetic data yet: train on 100% real (like CPU path)
+                for _ in range(agent.sac_updates_per_step):
+                    agent.do_gpu_train_step_real_only(ctx, gpu_state)
+            agent.soft_update_targets_gpu(ctx, gpu_state)
+            total_train_steps += agent.sac_updates_per_step
 
         # Periodic dynamics training
         total_steps += n_envs

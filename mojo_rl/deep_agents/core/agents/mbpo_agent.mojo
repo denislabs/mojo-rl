@@ -2365,6 +2365,32 @@ struct MBPOAgent[
             indices=s_synth_idx,
         )
 
+        # SAC critic + actor update on whatever is in s_obs, s_act, etc.
+        self._gpu_sac_update(ctx, gpu_state)
+
+    def _gpu_sac_update(
+        self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises:
+        """SAC critic + actor update on pre-filled batch buffers.
+
+        Assumes gpu_state.s_obs, s_act, s_rew, s_nobs, s_done are already
+        filled with a training batch (from mixed or real-only sampling).
+        Pure GPU kernel sequence — CUDA graph capturable.
+        """
+        comptime BS = Self.BATCH
+        comptime ELEM_BLOCKS = (BS * Self.CRITIC_IN + TPB - 1) // TPB
+        comptime BATCH_BLOCKS = (BS + TPB - 1) // TPB
+        comptime concat_k = concat_obs_action_kernel[
+            dtype, BS, Self.OBS, Self.ACTIONS, Self.CRITIC_IN
+        ]
+        comptime mse_grad_k = td_mse_grad_kernel[dtype, BS, Self.CRITIC_OUT]
+        comptime incr_k = increment_rng_counter_kernel
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](gpu_state.rng_counter.unsafe_ptr())
+
         var obs_t = gpu_state.obs_view[BS]()
         var nobs_t = gpu_state.nobs_view[BS]()
         var act_t = gpu_state.act_view[BS]()
@@ -2680,6 +2706,42 @@ struct MBPOAgent[
                 self.logger[].log_scalar("alpha", self.alpha, step)
             except:
                 pass
+
+    def do_gpu_train_step_real_only(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises:
+        """GPU SAC training step on real data only (no synthetic).
+
+        Used before synthetic data is available. Samples full BATCH
+        from gpu_state.buffer (real), then runs the standard SAC
+        critic + actor update.
+        """
+        self.train_step_count += 1
+        self.update_count += 1
+
+        comptime BS = Self.BATCH
+        comptime incr_k = increment_rng_counter_kernel
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](gpu_state.rng_counter.unsafe_ptr())
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t, grid_dim=(1,), block_dim=(1,),
+        )
+        gpu_state.buffer.sample[BS](
+            ctx,
+            rng_counter=gpu_state.rng_counter,
+            sampled_obs=gpu_state.s_obs,
+            sampled_actions=gpu_state.s_act,
+            sampled_rewards=gpu_state.s_rew,
+            sampled_next_obs=gpu_state.s_nobs,
+            sampled_dones=gpu_state.s_done,
+            indices=gpu_state.s_idx,
+        )
+        # Run SAC update on the sampled batch (same code as _gpu_train_kernels
+        # post-sampling section)
+        self._gpu_sac_update(ctx, gpu_state)
 
     def do_gpu_train_step(
         mut self,
