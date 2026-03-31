@@ -427,21 +427,6 @@ def run_offpolicy_continuous_train_gpu[
     var gpu_state = agent.make_gpu_state(ctx)
     agent.upload_to_gpu(gpu_state, ctx)
 
-    # DEBUG: print GenericGPUState buffer addresses to find overlap
-    if verbose:
-        print("[GPU_STATE] s_obs=" + String(Int(gpu_state.s_obs.unsafe_ptr())))
-        print("[GPU_STATE] s_act=" + String(Int(gpu_state.s_act.unsafe_ptr())))
-        print("[GPU_STATE] s_rew=" + String(Int(gpu_state.s_rew.unsafe_ptr())))
-        print("[GPU_STATE] s_nobs=" + String(Int(gpu_state.s_nobs.unsafe_ptr())))
-        print("[GPU_STATE] s_done=" + String(Int(gpu_state.s_done.unsafe_ptr())))
-        print("[GPU_STATE] next_q=" + String(Int(gpu_state.next_q.unsafe_ptr())))
-        print("[GPU_STATE] q_out=" + String(Int(gpu_state.q_out.unsafe_ptr())))
-        print("[GPU_STATE] q_grad=" + String(Int(gpu_state.q_grad.unsafe_ptr())))
-        print("[GPU_STATE] targets=" + String(Int(gpu_state.targets.unsafe_ptr())))
-        print("[GPU_STATE] nq2=" + String(Int(gpu_state.nq2.unsafe_ptr())))
-        print("[GPU_STATE] q2_out=" + String(Int(gpu_state.q2_out.unsafe_ptr())))
-        print("[GPU_STATE] explore=" + String(Int(gpu_state.explore_buf.unsafe_ptr())))
-
     # ------------------------------------------------------------------
     # Allocate environment buffers (loop-owned, comptime sizes)
     # ------------------------------------------------------------------
