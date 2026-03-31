@@ -425,10 +425,10 @@ struct GenericGPUState[
         # Twin critic extra
 
         self.nq2 = ctx.enqueue_create_buffer[dtype](
-            _mm_safe(BS * Self.CRITIC_OUT)
+            _mm_safe[BS](BS * Self.CRITIC_OUT)
         )
         self.q2_out = ctx.enqueue_create_buffer[dtype](
-            _mm_safe(BS * Self.CRITIC_OUT)
+            _mm_safe[BS](BS * Self.CRITIC_OUT)
         )
         self.q2_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
         self.critic2_ws = ctx.enqueue_create_buffer[dtype](
