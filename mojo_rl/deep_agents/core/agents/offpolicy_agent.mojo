@@ -1659,7 +1659,6 @@ struct GenericOffPolicyAgent[
             )
             gpu_state.critics.pairs[1].online.optimizer_step(ctx)
 
-        return  # DEBUG BISECT: after critic update, before actor
         # Phase 4: Actor update — always included for graph capture
         gpu_state.actor.online.zero_grads(ctx)
         gpu_state.critics.pairs[0].online.zero_grads(ctx)
@@ -1732,6 +1731,7 @@ struct GenericOffPolicyAgent[
 
         gpu_state.actor.online.optimizer_step(ctx)
 
+        return  # DEBUG BISECT: after actor update, before alpha
         # Alpha auto-tuning (SAC only): GPU-side Adam update
         comptime if Self.Config.ActorLoss.HAS_ALPHA:
             if self.auto_alpha:
