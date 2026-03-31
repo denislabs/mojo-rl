@@ -229,7 +229,7 @@ def _mm_safe[BS: Int](n: Int) -> Int:
 
     Blackwell (RTX 5090) uses larger tiles than older architectures.
     """
-    return max(n, BS * 1)
+    return max(n, BS * 64)
 
 
 struct GenericGPUState[
