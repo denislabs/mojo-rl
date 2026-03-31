@@ -998,8 +998,39 @@ def run_offpolicy_continuous_train_gpu[
                 # Bookkeeping + diagnostics outside graph
                 agent._gpu_train_diagnostics(ctx, gpu_state, grad_steps)
             else:
-                for _ in range(grad_steps):
-                    agent.do_gpu_train_step(ctx, gpu_state)
+                # DEBUG: bisect training corruption — 1 step at a time
+                if total_steps >= warmup_steps and total_steps < warmup_steps + 2 * n_envs:
+                    # Single train step with sync after each phase
+                    agent._gpu_train_kernels(ctx, gpu_state)
+                    ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
+                    ctx.synchronize()
+                    var _rk: Float64 = 0
+                    for _i in range(n_envs):
+                        _rk += Float64(host_dbg_rewards[_i])
+                    print("[AFTER _gpu_train_kernels] rw=" + String(_rk)[byte=:8])
+
+                    agent._gpu_train_diagnostics(ctx, gpu_state, 1)
+                    ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
+                    ctx.synchronize()
+                    _rk = 0
+                    for _i in range(n_envs):
+                        _rk += Float64(host_dbg_rewards[_i])
+                    print("[AFTER _gpu_train_diagnostics] rw=" + String(_rk)[byte=:8])
+
+                    agent.soft_update_targets_gpu(ctx, gpu_state)
+                    ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
+                    ctx.synchronize()
+                    _rk = 0
+                    for _i in range(n_envs):
+                        _rk += Float64(host_dbg_rewards[_i])
+                    print("[AFTER soft_update] rw=" + String(_rk)[byte=:8])
+
+                    # Remaining grad_steps - 1
+                    for _ in range(grad_steps - 1):
+                        agent.do_gpu_train_step(ctx, gpu_state)
+                else:
+                    for _ in range(grad_steps):
+                        agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
 
