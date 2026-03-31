@@ -12,7 +12,6 @@ from ...constants import (
     MMA_NUM_WARPS,
     MMA_BLOCK_THREADS,
 )
-from ...gpu.matmul import tiled_matmul_kernel
 from ...autodiff.op import DiffOp, FusedOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
@@ -1116,23 +1115,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             )
 
             # 2. Matmul: output = input @ W
-            comptime if Self.out_dim < 1_000_000:
-                comptime _TILE = 8
-                comptime _k = tiled_matmul_kernel[
-                    dtype, BATCH, Self.out_dim, Self.in_dim, _TILE
-                ]
-                ctx.enqueue_function[_k, _k](
-                    output,
-                    input_immut,
-                    W,
-                    grid_dim=(
-                        (Self.out_dim + _TILE - 1) // _TILE,
-                        (BATCH + _TILE - 1) // _TILE,
-                    ),
-                    block_dim=(_TILE, _TILE),
-                )
-            else:
-                max_matmul[target="gpu"](output, input_immut, W, ctx)
+            max_matmul[target="gpu"](output, input_immut, W, ctx)
 
             # 3. Bias add
             comptime bias_elems = BATCH * Self.out_dim
