@@ -958,7 +958,7 @@ def run_offpolicy_continuous_train_gpu[
                 timer.mark()
 
         # DEBUG: check buffers BEFORE training step (after env step + tracking)
-        if total_steps == warmup_steps + n_envs:
+        if total_steps >= warmup_steps and total_steps < warmup_steps + 2 * n_envs:
             ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
             ctx.enqueue_copy(host_dbg_dones, dones_buf)
             ctx.synchronize()
@@ -1004,7 +1004,7 @@ def run_offpolicy_continuous_train_gpu[
             total_train_steps += grad_steps
 
             # DEBUG: check buffers AFTER training step
-            if total_steps == warmup_steps + n_envs:
+            if total_steps >= warmup_steps and total_steps < warmup_steps + 2 * n_envs:
                 ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
                 ctx.enqueue_copy(host_dbg_dones, dones_buf)
                 ctx.synchronize()
