@@ -485,11 +485,11 @@ def run_offpolicy_continuous_train_gpu[
         workspace_ptr=workspace_buf.unsafe_ptr(),
     )
 
-    # Initialize episode tracking
-    ctx.enqueue_memset(episode_rewards_buf, 0)
-    ctx.enqueue_memset(episode_steps_buf, 0)
-    ctx.enqueue_memset(gpu_reward_sum_buf, 0)
-    ctx.enqueue_memset(gpu_episode_count_buf, 0)
+    # Initialize episode tracking (use enqueue_fill for typed zero, not memset)
+    episode_rewards_buf.enqueue_fill(Scalar[dtype](0))
+    episode_steps_buf.enqueue_fill(Scalar[dtype](0))
+    gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
+    gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
 
     # ------------------------------------------------------------------
     # Kernel wrappers (defined once outside the loop)
@@ -1030,8 +1030,8 @@ def run_offpolicy_continuous_train_gpu[
                     )
 
             # Reset GPU-side accumulators for next interval
-            ctx.enqueue_memset(gpu_reward_sum_buf, 0)
-            ctx.enqueue_memset(gpu_episode_count_buf, 0)
+            gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
+            gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
 
             # Logger: record metrics
             if logger:
@@ -1226,11 +1226,11 @@ def run_offpolicy_discrete_train_gpu[
         workspace_ptr=workspace_buf.unsafe_ptr(),
     )
 
-    # Initialize episode tracking
-    ctx.enqueue_memset(episode_rewards_buf, 0)
-    ctx.enqueue_memset(episode_steps_buf, 0)
-    ctx.enqueue_memset(gpu_reward_sum_buf, 0)
-    ctx.enqueue_memset(gpu_episode_count_buf, 0)
+    # Initialize episode tracking (use enqueue_fill for typed zero, not memset)
+    episode_rewards_buf.enqueue_fill(Scalar[dtype](0))
+    episode_steps_buf.enqueue_fill(Scalar[dtype](0))
+    gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
+    gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
 
     # Kernel wrappers
     comptime tpb = 256
@@ -1475,8 +1475,8 @@ def run_offpolicy_discrete_train_gpu[
                         completed_episodes, last_avg_reward, 0, 0.0
                     )
 
-            ctx.enqueue_memset(gpu_reward_sum_buf, 0)
-            ctx.enqueue_memset(gpu_episode_count_buf, 0)
+            gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
+            gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
 
             # Logger: record metrics
             if logger:

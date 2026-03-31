@@ -142,6 +142,8 @@ def main() raises:
         try:
             var metrics = agent.train_gpu[
                 InvertedPendulum[dtype, TERMINATE_ON_UNHEALTHY=True],
+                USE_CUDA_GRAPH=False,
+                USE_ENV_CUDA_GRAPH=False,
             ](
                 ctx,
                 num_steps=NUM_STEPS,
@@ -184,13 +186,9 @@ def main() raises:
 
             var final_avg = metrics.mean_reward_last_n(100)
             if final_avg > 950.0:
-                print(
-                    "EXCELLENT: Perfect balance! (avg reward > 950)"
-                )
+                print("EXCELLENT: Perfect balance! (avg reward > 950)")
             elif final_avg > 500.0:
-                print(
-                    "SUCCESS: Agent learned to balance! (avg reward > 500)"
-                )
+                print("SUCCESS: Agent learned to balance! (avg reward > 500)")
             elif final_avg > 100.0:
                 print(
                     "GOOD PROGRESS: Agent is learning to balance"
