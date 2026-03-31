@@ -73,6 +73,8 @@ trait ActorLoss:
         CRITIC_IN: Int,
         CRITIC_OUT: Int,
         CRITIC_CS: Int,
+        ACTOR_PS: Int = 0,
+        CRITIC_PS: Int = 0,
     ]() -> Int:
         ...
 
@@ -221,6 +223,8 @@ struct DPGLoss(ActorLoss):
         CRITIC_IN: Int,
         CRITIC_OUT: Int,
         CRITIC_CS: Int,
+        ACTOR_PS: Int = 0,
+        CRITIC_PS: Int = 0,
     ]() -> Int:
         return (
             BATCH * ACTIONS
@@ -599,6 +603,8 @@ struct MaxEntLoss[
         CRITIC_IN: Int,
         CRITIC_OUT: Int,
         CRITIC_CS: Int,
+        ACTOR_PS: Int = 0,
+        CRITIC_PS: Int = 0,
     ]() -> Int:
         return (
             BATCH * ACTOR_OUT  # raw_out
@@ -1327,35 +1333,36 @@ struct AutodiffMaxEntLoss[
         CRITIC_IN: Int,
         CRITIC_OUT: Int,
         CRITIC_CS: Int,
+        ACTOR_PS: Int = 0,
+        CRITIC_PS: Int = 0,
     ]() -> Int:
         # Must match the GPU workspace layout in update_actor_gpu:
-        #   [combined_params | output | cache | workspace | grad_out | grad_obs | combined_grads | lp_buf]
-        # TOTAL_PS = SACGraph.PARAM_SIZE includes actor + 2 critics with
-        # alignment padding. ws_size doesn't have access to PARAM_SIZE, so
-        # we use CACHE_SIZE * 64 as a safe upper bound (ratio is ~32x for
-        # hidden=64 networks, 64x gives 2x safety margin).
-        comptime ACTOR_PS_UPPER = max(ACTOR_CS * 64, 16384)
-        comptime CRITIC_PS_UPPER = max(CRITIC_CS * 64, 16384)
-        # SAC graph has actor + 2 critics (with 4-element alignment padding)
-        comptime TOTAL_PS_UPPER = ACTOR_PS_UPPER + 2 * CRITIC_PS_UPPER + 8
-        # Graph cache/workspace: approximate from model cache sizes
-        comptime GRAPH_CS_UPPER = (
-            OBS + ACTOR_CS + ACTOR_OUT  # ActorSkip
+        #   [combined_params | output | cache | workspace |
+        #    grad_out | grad_obs | combined_grads | lp_buf]
+        # SAC graph = Sequential[SkipConcat[Actor, RSample],
+        #   SplitApply[DualPath[Critic, Critic] → Min, Slice]]
+        # TOTAL_PS includes actor + 2 critics with 4-element alignment padding.
+        comptime _align4 = ((CRITIC_PS + 3) & ~3)
+        comptime TOTAL_PS = ACTOR_PS + _align4 + CRITIC_PS
+        # Graph cache: each op caches input + output
+        comptime GRAPH_CS_EST = (
+            OBS + ACTOR_CS + ACTOR_OUT
             + ACTIONS + ACTIONS  # RSample
-            + 2 * CRITIC_CS  # DualPath[Critic, Critic]
+            + 2 * CRITIC_CS  # DualPath
             + CRITIC_OUT  # Min
-            + ACTIONS  # Slice (LogProbPass)
-            + OBS + ACTIONS + 1  # SplitApply overhead
+            + ACTIONS  # Slice
+            + OBS + ACTIONS + 1  # SplitApply
         )
-        comptime GRAPH_WS_UPPER = max(CRITIC_OUT * 2, 64)
+        comptime GRAPH_WS_EST = max(CRITIC_OUT * 2, 64)
         return (
-            2 * TOTAL_PS_UPPER  # combined_params + combined_grads
+            2 * TOTAL_PS  # combined_params + combined_grads
             + BATCH * 2  # output (min_Q + log_prob)
-            + max(1, BATCH * GRAPH_CS_UPPER)  # cache
-            + max(1, BATCH * GRAPH_WS_UPPER)  # workspace
+            + max(1, BATCH * GRAPH_CS_EST)  # cache
+            + max(1, BATCH * GRAPH_WS_EST)  # workspace
             + BATCH * 2  # grad_out (seed)
             + BATCH * OBS  # grad_obs
             + BATCH  # lp_buf
+            + 1024  # safety margin for alignment padding
         )
 
     @staticmethod
@@ -1858,6 +1865,8 @@ struct AutodiffDPGLoss(ActorLoss):
         CRITIC_IN: Int,
         CRITIC_OUT: Int,
         CRITIC_CS: Int,
+        ACTOR_PS: Int = 0,
+        CRITIC_PS: Int = 0,
     ]() -> Int:
         # Same workspace size as DPGLoss
         return (
@@ -2281,6 +2290,8 @@ struct AutodiffTD3Loss(ActorLoss):
         CRITIC_IN: Int,
         CRITIC_OUT: Int,
         CRITIC_CS: Int,
+        ACTOR_PS: Int = 0,
+        CRITIC_PS: Int = 0,
     ]() -> Int:
         # Same workspace size as DPGLoss
         return (

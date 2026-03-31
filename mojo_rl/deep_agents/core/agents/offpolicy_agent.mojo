@@ -455,26 +455,6 @@ struct GenericGPUState[
         )
         self.diag_lp_host = ctx.enqueue_create_host_buffer[dtype](BS)
 
-        # DEBUG: print all GPU buffer addresses
-        self.debug_print_addresses()
-
-    def debug_print_addresses(self):
-        """Print GPU buffer addresses for overlap debugging."""
-        print("[GPU] s_obs=" + String(Int(self.s_obs.unsafe_ptr())))
-        print("[GPU] s_act=" + String(Int(self.s_act.unsafe_ptr())))
-        print("[GPU] s_rew=" + String(Int(self.s_rew.unsafe_ptr())))
-        print("[GPU] s_done=" + String(Int(self.s_done.unsafe_ptr())))
-        print("[GPU] next_act=" + String(Int(self.next_act.unsafe_ptr())))
-        print("[GPU] next_q=" + String(Int(self.next_q.unsafe_ptr())))
-        print("[GPU] q_out=" + String(Int(self.q_out.unsafe_ptr())))
-        print("[GPU] q_grad=" + String(Int(self.q_grad.unsafe_ptr())))
-        print("[GPU] nq2=" + String(Int(self.nq2.unsafe_ptr())))
-        print("[GPU] q2_out=" + String(Int(self.q2_out.unsafe_ptr())))
-        print("[GPU] explore=" + String(Int(self.explore_buf.unsafe_ptr())))
-        print("[GPU] ci=" + String(Int(self.ci.unsafe_ptr())))
-        print("[GPU] d_ci=" + String(Int(self.d_ci.unsafe_ptr())))
-        print("[GPU] dq=" + String(Int(self.dq.unsafe_ptr())))
-        print("[GPU] scalars=" + String(Int(self.gpu_scalars.unsafe_ptr())))
 
     # =========================================================================
     # LayoutTensor views via workspace (backward-compatible API)
@@ -708,6 +688,8 @@ struct GenericOffPolicyAgent[
         Self.CRITIC_IN,
         Self.CRITIC_OUT,
         Self.CRITIC_CS,
+        Self.Config.ActorModel.PARAM_SIZE,
+        Self.Config.CriticModel.PARAM_SIZE,
     ]()
     comptime _TA_WS: Int = Self.Config.TargetAction.ws_size[
         Self.BATCH,

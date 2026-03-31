@@ -448,11 +448,6 @@ def run_offpolicy_continuous_train_gpu[
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
     var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
 
-    # Debug: host buffers to verify dones/rewards aren't corrupted
-    var host_dbg_dones = ctx.enqueue_create_host_buffer[dtype](n_envs)
-    var host_dbg_rewards = ctx.enqueue_create_host_buffer[dtype](n_envs)
-    var host_dbg_ep_rewards = ctx.enqueue_create_host_buffer[dtype](n_envs)
-
     # Workspace buffer (shared model state for physics envs)
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:
@@ -489,18 +484,6 @@ def run_offpolicy_continuous_train_gpu[
         rng_seed=0,
         workspace_ptr=workspace_buf.unsafe_ptr(),
     )
-
-    # Debug: print buffer addresses to check for overlap
-    if verbose:
-        print("[ADDR] states_buf     =" + String(Int(states_buf.unsafe_ptr())))
-        print("[ADDR] rewards_buf    =" + String(Int(rewards_buf.unsafe_ptr())))
-        print("[ADDR] dones_buf      =" + String(Int(dones_buf.unsafe_ptr())))
-        print("[ADDR] terminated_buf =" + String(Int(terminated_buf.unsafe_ptr())))
-        print("[ADDR] ep_rewards_buf =" + String(Int(episode_rewards_buf.unsafe_ptr())))
-        print("[ADDR] ep_steps_buf   =" + String(Int(episode_steps_buf.unsafe_ptr())))
-        print("[ADDR] rw_sum_buf     =" + String(Int(gpu_reward_sum_buf.unsafe_ptr())))
-        print("[ADDR] ep_count_buf   =" + String(Int(gpu_episode_count_buf.unsafe_ptr())))
-        print("[ADDR] workspace_buf  =" + String(Int(workspace_buf.unsafe_ptr())))
 
     # Initialize episode tracking
     ctx.enqueue_memset(episode_rewards_buf, 0)
@@ -957,19 +940,6 @@ def run_offpolicy_continuous_train_gpu[
                 timer.sync_and_accumulate(5, ctx)
                 timer.mark()
 
-        # DEBUG: check buffers BEFORE training step (after env step + tracking)
-        if total_steps >= warmup_steps and total_steps < warmup_steps + 2 * n_envs:
-            ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
-            ctx.enqueue_copy(host_dbg_dones, dones_buf)
-            ctx.synchronize()
-            var _dr: Float64 = 0
-            var _dd = 0
-            for _i in range(n_envs):
-                _dr += Float64(host_dbg_rewards[_i])
-                if Float64(host_dbg_dones[_i]) > 0.5:
-                    _dd += 1
-            print("[PRE-TRAIN] rw=" + String(_dr)[byte=:8] + " done=" + String(_dd))
-
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
         # ------------------------------------------------------------------
@@ -998,74 +968,10 @@ def run_offpolicy_continuous_train_gpu[
                 # Bookkeeping + diagnostics outside graph
                 agent._gpu_train_diagnostics(ctx, gpu_state, grad_steps)
             else:
-                # DEBUG: bisect training corruption — 1 step at a time
-                if total_steps >= warmup_steps and total_steps < warmup_steps + 2 * n_envs:
-                    # Single train step with sync after each phase
-                    agent._gpu_train_kernels(ctx, gpu_state)
-                    # Check actions_buf for NaN (produced by actor forward on next step)
-                    ctx.enqueue_copy(prev_obs_buf, obs_buf)
-                    agent.select_actions_gpu[n_envs](
-                        ctx, gpu_state, obs_buf, actions_buf
-                    )
-                    var _h_act = ctx.enqueue_create_host_buffer[dtype](
-                        n_envs * E.ACTION_DIM
-                    )
-                    ctx.enqueue_copy(_h_act, actions_buf)
-                    ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
-                    ctx.synchronize()
-                    var _nan_act = 0
-                    var _a0 = Float64(_h_act[0])
-                    for _i in range(n_envs * E.ACTION_DIM):
-                        var _v = Float64(_h_act[_i])
-                        if _v != _v:
-                            _nan_act += 1
-                    var _rk: Float64 = 0
-                    for _i in range(n_envs):
-                        _rk += Float64(host_dbg_rewards[_i])
-                    print(
-                        "[AFTER _gpu_train_kernels] rw=" + String(_rk)[byte=:8]
-                        + " act_nan=" + String(_nan_act)
-                        + " a[0]=" + String(_a0)[byte=:12]
-                    )
-
-                    agent._gpu_train_diagnostics(ctx, gpu_state, 1)
-                    ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
-                    ctx.synchronize()
-                    _rk = 0
-                    for _i in range(n_envs):
-                        _rk += Float64(host_dbg_rewards[_i])
-                    print("[AFTER _gpu_train_diagnostics] rw=" + String(_rk)[byte=:8])
-
-                    agent.soft_update_targets_gpu(ctx, gpu_state)
-                    ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
-                    ctx.synchronize()
-                    _rk = 0
-                    for _i in range(n_envs):
-                        _rk += Float64(host_dbg_rewards[_i])
-                    print("[AFTER soft_update] rw=" + String(_rk)[byte=:8])
-
-                    # Remaining grad_steps - 1
-                    for _ in range(grad_steps - 1):
-                        agent.do_gpu_train_step(ctx, gpu_state)
-                else:
-                    for _ in range(grad_steps):
-                        agent.do_gpu_train_step(ctx, gpu_state)
+                for _ in range(grad_steps):
+                    agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
-
-            # DEBUG: check buffers AFTER training step
-            if total_steps >= warmup_steps and total_steps < warmup_steps + 2 * n_envs:
-                ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
-                ctx.enqueue_copy(host_dbg_dones, dones_buf)
-                ctx.synchronize()
-                var _dr2: Float64 = 0
-                var _dd2 = 0
-                for _i in range(n_envs):
-                    _dr2 += Float64(host_dbg_rewards[_i])
-                    if Float64(host_dbg_dones[_i]) > 0.5:
-                        _dd2 += 1
-                print("[POST-TRAIN] rw=" + String(_dr2)[byte=:8] + " done=" + String(_dd2))
-
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)
 
@@ -1082,17 +988,6 @@ def run_offpolicy_continuous_train_gpu[
                 agent.download_from_gpu(gpu_state, ctx)
             agent.save_checkpoint(checkpoint_path)
             next_checkpoint += checkpoint_every
-
-        # Keep-alive fence: prevent premature deallocation of env buffers
-        # by the Mojo compiler. Without this, GPU memory may be reused by
-        # training step allocations, corrupting env data.
-        _ = rewards_buf.unsafe_ptr()
-        _ = dones_buf.unsafe_ptr()
-        _ = terminated_buf.unsafe_ptr()
-        _ = episode_rewards_buf.unsafe_ptr()
-        _ = episode_steps_buf.unsafe_ptr()
-        _ = gpu_reward_sum_buf.unsafe_ptr()
-        _ = gpu_episode_count_buf.unsafe_ptr()
 
         total_steps += n_envs
         step_seed += 1
@@ -1120,10 +1015,6 @@ def run_offpolicy_continuous_train_gpu[
             # Download GPU-side episode stats (only sync point for tracking)
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
-            # Debug: also read dones, rewards, episode_rewards
-            ctx.enqueue_copy(host_dbg_dones, dones_buf)
-            ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
-            ctx.enqueue_copy(host_dbg_ep_rewards, episode_rewards_buf)
             ctx.synchronize()
 
             var recent_count = Int(host_episode_count[0])
@@ -1137,25 +1028,6 @@ def run_offpolicy_continuous_train_gpu[
                     metrics.log_episode(
                         completed_episodes, last_avg_reward, 0, 0.0
                     )
-
-            # Debug: count dones and sum rewards from raw buffers
-            var _dbg_n_done = 0
-            var _dbg_sum_r: Float64 = 0.0
-            var _dbg_sum_ep_r: Float64 = 0.0
-            for _i in range(n_envs):
-                if Float64(host_dbg_dones[_i]) > 0.5:
-                    _dbg_n_done += 1
-                _dbg_sum_r += Float64(host_dbg_rewards[_i])
-                _dbg_sum_ep_r += Float64(host_dbg_ep_rewards[_i])
-            print(
-                "[DBG] gpu_ep_count="
-                + String(Float64(host_episode_count[0]))[byte=:10]
-                + " gpu_rw_sum="
-                + String(Float64(host_reward_sum[0]))[byte=:10]
-                + " n_done=" + String(_dbg_n_done)
-                + " raw_rw=" + String(_dbg_sum_r)[byte=:8]
-                + " ep_rw=" + String(_dbg_sum_ep_r)[byte=:10]
-            )
 
             # Reset GPU-side accumulators for next interval
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
@@ -1332,11 +1204,6 @@ def run_offpolicy_discrete_train_gpu[
     # Host buffers for periodic readback (only at print boundaries)
     var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
     var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
-
-    # Debug: host buffers to verify dones/rewards aren't corrupted
-    var host_dbg_dones = ctx.enqueue_create_host_buffer[dtype](n_envs)
-    var host_dbg_rewards = ctx.enqueue_create_host_buffer[dtype](n_envs)
-    var host_dbg_ep_rewards = ctx.enqueue_create_host_buffer[dtype](n_envs)
 
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:

@@ -1085,6 +1085,8 @@ struct MBPOCPUState[
         Self.Config.CriticModel.IN_DIM,
         Self.Config.CriticModel.OUT_DIM,
         Self.Config.CriticModel.CACHE_SIZE,
+        Self.Config.ActorModel.PARAM_SIZE,
+        Self.Config.CriticModel.PARAM_SIZE,
     ]()
     comptime _TA_WS: Int = Self.Config.TargetAction.ws_size[
         Self.batch_size,
