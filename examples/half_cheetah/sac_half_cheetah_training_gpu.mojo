@@ -151,8 +151,6 @@ def main() raises:
         try:
             var metrics = agent.train_gpu[
                 HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
-                USE_CUDA_GRAPH=False,
-                USE_ENV_CUDA_GRAPH=False,
             ](
                 ctx,
                 num_steps=NUM_STEPS,
