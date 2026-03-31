@@ -1584,6 +1584,7 @@ struct GenericOffPolicyAgent[
             gpu_state.gpu_scalars,
         )
 
+        return  # DEBUG BISECT: after targets, before critic update
         # Phase 3: Critic update
         var ci_t = gpu_state.ci_view[BS]()
         var q_t = gpu_state.q_out_view[BS]()
