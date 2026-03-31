@@ -1584,7 +1584,6 @@ struct GenericOffPolicyAgent[
             gpu_state.gpu_scalars,
         )
 
-        return  # DEBUG BISECT: after targets, before critic update
         # Phase 3: Critic update
         var ci_t = gpu_state.ci_view[BS]()
         var q_t = gpu_state.q_out_view[BS]()
@@ -1660,6 +1659,7 @@ struct GenericOffPolicyAgent[
             )
             gpu_state.critics.pairs[1].online.optimizer_step(ctx)
 
+        return  # DEBUG BISECT: after critic update, before actor
         # Phase 4: Actor update — always included for graph capture
         gpu_state.actor.online.zero_grads(ctx)
         gpu_state.critics.pairs[0].online.zero_grads(ctx)
