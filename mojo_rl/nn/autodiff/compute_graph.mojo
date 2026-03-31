@@ -397,11 +397,16 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     # =========================================================================
 
     @staticmethod
+    def _mm_pad(dim: Int) -> Int:
+        """Pad dimension for cuBLAS/max_matmul overflow safety on NVIDIA."""
+        return max(dim, 64)
+
+    @staticmethod
     def _total_act_size() -> Int:
-        """Total activation storage per sample (all node outputs)."""
+        """Total activation storage per sample (all node outputs, padded)."""
         var total = 0
         comptime for i in range(Self.N):
-            total += Self.node_types[i].OP_OUT_DIM
+            total += Self._mm_pad(Self.node_types[i].OP_OUT_DIM)
         return total
 
     @staticmethod
@@ -414,10 +419,10 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     @staticmethod
     def _act_offset[idx: Int]() -> Int:
-        """Per-sample offset to node idx's activation output."""
+        """Per-sample offset to node idx's activation output (padded)."""
         var total = 0
         comptime for j in range(idx):
-            total += Self.node_types[j].OP_OUT_DIM
+            total += Self._mm_pad(Self.node_types[j].OP_OUT_DIM)
         return total
 
     @staticmethod

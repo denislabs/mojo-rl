@@ -61,13 +61,23 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         return total
 
     @staticmethod
+    def _mm_pad(dim: Int) -> Int:
+        """Pad dimension to absorb cuBLAS/max_matmul column overflow on NVIDIA.
+
+        cuBLAS may write up to 64 columns even when OUT_DIM is smaller
+        (observed on Blackwell/RTX 5090). Padding prevents adjacent buffer
+        corruption in packed workspace layouts.
+        """
+        return max(dim, 64)
+
+    @staticmethod
     def _total_inter() -> Int:
-        """Per-sample intermediate buffer size (sum of OUT_DIM for ops 0..N-2).
+        """Per-sample intermediate buffer size (sum of padded OUT_DIM for ops 0..N-2).
         """
         var total = 0
 
         comptime for i in range(Self.N - 1):
-            total += Self.op_types[i].OUT_DIM
+            total += Self._mm_pad(Self.op_types[i].OUT_DIM)
         return total
 
     @staticmethod
@@ -106,11 +116,11 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
 
     @staticmethod
     def _inter_offset[idx: Int]() -> Int:
-        """Offset of intermediate slot idx (per sample)."""
+        """Offset of intermediate slot idx (per sample), with matmul padding."""
         var total = 0
 
         comptime for j in range(idx):
-            total += Self.op_types[j].OUT_DIM
+            total += Self._mm_pad(Self.op_types[j].OUT_DIM)
         return total
 
     # =========================================================================

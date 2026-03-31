@@ -860,35 +860,6 @@ def run_offpolicy_continuous_train_gpu[
                 timer.sync_and_accumulate(2, ctx)
                 timer.mark()
 
-            # DEBUG: check dones + step_count around truncation point
-            # step_count=1000 truncation with 32 envs → ~37k total_steps
-            if total_steps >= 36000 and total_steps <= 38000 and total_steps % 256 == 0:
-                var _dbg_dones = ctx.enqueue_create_host_buffer[dtype](n_envs)
-                var _dbg_states = ctx.enqueue_create_host_buffer[dtype](
-                    n_envs * E.STATE_SIZE
-                )
-                ctx.enqueue_copy(_dbg_dones, dones_buf)
-                ctx.enqueue_copy(_dbg_states, states_buf)
-                ctx.synchronize()
-                var _n_done = 0
-                for _i in range(n_envs):
-                    if Float64(_dbg_dones[_i]) > 0.5:
-                        _n_done += 1
-                # Read step_count for env 0 from states metadata
-                comptime _META_OFF = 166  # metadata_offset for InvertedPendulum
-                var _sc0 = Float64(
-                    _dbg_states[0 * E.STATE_SIZE + _META_OFF + 1]
-                )
-                var _sc1 = Float64(
-                    _dbg_states[1 * E.STATE_SIZE + _META_OFF + 1]
-                )
-                print(
-                    "[DBG] step=" + String(total_steps)
-                    + " n_done=" + String(_n_done)
-                    + " env0_sc=" + String(_sc0)[byte=:8]
-                    + " env1_sc=" + String(_sc1)[byte=:8]
-                )
-
             # ------------------------------------------------------------------
             # Store transitions: (prev_obs, action, reward, next_obs, terminated)
             # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
@@ -1462,16 +1433,6 @@ def run_offpolicy_discrete_train_gpu[
                 agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
-
-            # DEBUG: after training step
-            if (total_steps >= warmup_steps - 64 and total_steps <= warmup_steps + 320) and total_steps % 32 == 0:
-                ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
-                ctx.synchronize()
-                var _dbg2 = Float64(host_episode_count[0])
-                print(
-                    "[DBG] step=" + String(total_steps)
-                    + " ep_AFTER=" + String(_dbg2)[byte=:10]
-                )
 
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)
