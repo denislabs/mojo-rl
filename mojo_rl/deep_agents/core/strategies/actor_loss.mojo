@@ -1611,9 +1611,10 @@ struct AutodiffMaxEntLoss[
         comptime GRAPH_CS = SACGraph.CACHE_SIZE
         comptime GRAPH_WS = SACGraph.WORKSPACE_SIZE_PER_SAMPLE
 
-        # Aligned offsets matching DualPath/SplitApply padding
-        comptime CRITIC1_OFF = ACTOR_PS
-        comptime CRITIC2_OFF = ACTOR_PS + _align4(CRITIC_PS)
+        # Aligned offsets: Sequential pads ActorSkip.PS to align4, then
+        # DualPath pads critic1.PS to align4 within SACOutput params.
+        comptime CRITIC1_OFF = _align4(ACTOR_PS)
+        comptime CRITIC2_OFF = _align4(ACTOR_PS) + _align4(CRITIC_PS)
         comptime TOTAL_PS = SACGraph.PARAM_SIZE
 
         # =================================================================
@@ -1896,17 +1897,23 @@ struct AutodiffDPGLoss(ActorLoss):
         ACTOR_WS: Int = 0,
         CRITIC_WS: Int = 0,
     ]() -> Int:
-        # Same workspace size as DPGLoss
+        # GPU layout: [params | output | cache | workspace | grad_out | grad_obs | grads]
+        # DDPGGraph = Sequential[SkipConcat[Actor], Critic, Negate[1]]
+        comptime TOTAL_PS = _align4(ACTOR_PS) + _align4(CRITIC_PS)
+        comptime GRAPH_WS = (
+            ACTIONS + ACTOR_WS  # SkipConcat: inner_out + inner_ws
+            + CRITIC_WS  # Critic workspace
+            + OBS + ACTIONS + CRITIC_OUT  # Sequential intermediates
+        )
+        comptime GRAPH_CS = ACTOR_CS + CRITIC_CS + CRITIC_OUT
         return (
-            BATCH * ACTIONS
-            + BATCH * ACTOR_CS
-            + BATCH * CRITIC_IN
-            + BATCH * CRITIC_OUT
-            + BATCH * CRITIC_CS
-            + BATCH * CRITIC_OUT
-            + BATCH * CRITIC_IN
-            + BATCH * ACTIONS
+            2 * TOTAL_PS
+            + BATCH  # output (-Q)
+            + max(1, BATCH * GRAPH_CS)
+            + max(1, BATCH * GRAPH_WS)
+            + BATCH  # grad_out (seed)
             + BATCH * OBS
+            + 1024  # safety margin
         )
 
     @staticmethod
@@ -2088,7 +2095,6 @@ struct AutodiffDPGLoss(ActorLoss):
         comptime OBS = ActorModel.IN_DIM
         comptime ACTOR_PS = ActorModel.PARAM_SIZE
         comptime CRITIC_PS = CriticModel.PARAM_SIZE
-        comptime TOTAL_PS = ACTOR_PS + CRITIC_PS
 
         # =================================================================
         # Build the composed DDPG graph type (same as CPU)
@@ -2097,6 +2103,10 @@ struct AutodiffDPGLoss(ActorLoss):
         comptime DDPGGraph = Sequential[ActorSkip, CriticModel, Negate[1]]
         comptime GRAPH_CS = DDPGGraph.CACHE_SIZE
         comptime GRAPH_WS = DDPGGraph.WORKSPACE_SIZE_PER_SAMPLE
+
+        # Aligned offset: Sequential pads ActorSkip.PS to align4
+        comptime CRITIC_OFF = _align4(ACTOR_PS)
+        comptime TOTAL_PS = DDPGGraph.PARAM_SIZE
 
         # =================================================================
         # Workspace layout in strat_ws (all sliced from pre-allocated buffer):
@@ -2141,8 +2151,11 @@ struct AutodiffDPGLoss(ActorLoss):
                 return
             if i < ACTOR_PS:
                 dst.ptr[i] = ap.ptr[i]
+            elif i >= CRITIC_OFF and i < CRITIC_OFF + CRITIC_PS:
+                dst.ptr[i] = cp.ptr[i - CRITIC_OFF]
             else:
-                dst.ptr[i] = cp.ptr[i - ACTOR_PS]
+                # Padding region — zero it
+                dst.ptr[i] = 0.0
 
         ctx.enqueue_function[concat_params_kernel, concat_params_kernel](
             params_t,
@@ -2263,8 +2276,8 @@ struct AutodiffDPGLoss(ActorLoss):
                 return
             if i < ACTOR_PS:
                 ag.ptr[i] = src.ptr[i]
-            else:
-                cg.ptr[i - ACTOR_PS] = src.ptr[i]
+            elif i >= CRITIC_OFF and i < CRITIC_OFF + CRITIC_PS:
+                cg.ptr[i - CRITIC_OFF] = src.ptr[i]
 
         ctx.enqueue_function[scatter_grads_kernel, scatter_grads_kernel](
             grads_t,
@@ -2323,17 +2336,26 @@ struct AutodiffTD3Loss(ActorLoss):
         ACTOR_WS: Int = 0,
         CRITIC_WS: Int = 0,
     ]() -> Int:
-        # Same workspace size as DPGLoss
+        # GPU layout: [params | output | cache | workspace | grad_out | grad_obs | grads]
+        # TD3Graph = Sequential[SkipConcat[Actor], Sequential[DualPath[C,C], Min[1]], Negate[1]]
+        comptime _a4_cps = ((CRITIC_PS + 3) & ~3)
+        comptime TOTAL_PS = ((ACTOR_PS + 3) & ~3) + _a4_cps + _a4_cps + CRITIC_PS
+        # Graph workspace: exact formula from combinator structure
+        comptime GRAPH_WS = (
+            ACTIONS + ACTOR_WS  # SkipConcat
+            + 2 * CRITIC_OUT + OBS + ACTIONS + 2 * CRITIC_WS  # DualPath
+            + CRITIC_OUT  # Min
+            + 2 * CRITIC_OUT + OBS + ACTIONS + CRITIC_OUT  # Sequential intermediates
+        )
+        comptime GRAPH_CS = ACTOR_CS + 2 * CRITIC_CS + CRITIC_OUT
         return (
-            BATCH * ACTIONS
-            + BATCH * ACTOR_CS
-            + BATCH * CRITIC_IN
-            + BATCH * CRITIC_OUT
-            + BATCH * CRITIC_CS
-            + BATCH * CRITIC_OUT
-            + BATCH * CRITIC_IN
-            + BATCH * ACTIONS
+            2 * TOTAL_PS
+            + BATCH  # output (-min_Q)
+            + max(1, BATCH * GRAPH_CS)
+            + max(1, BATCH * GRAPH_WS)
+            + BATCH  # grad_out (seed)
             + BATCH * OBS
+            + 1024  # safety margin
         )
 
     @staticmethod
@@ -2532,9 +2554,10 @@ struct AutodiffTD3Loss(ActorLoss):
         comptime GRAPH_CS = TD3Graph.CACHE_SIZE
         comptime GRAPH_WS = TD3Graph.WORKSPACE_SIZE_PER_SAMPLE
 
-        # Aligned offsets matching DualPath padding
-        comptime CRITIC1_OFF = ACTOR_PS
-        comptime CRITIC2_OFF = ACTOR_PS + _align4(CRITIC_PS)
+        # Aligned offsets: Sequential pads ActorSkip.PS to align4, then
+        # DualPath pads critic1.PS to align4 within TwinCriticMin params.
+        comptime CRITIC1_OFF = _align4(ACTOR_PS)
+        comptime CRITIC2_OFF = _align4(ACTOR_PS) + _align4(CRITIC_PS)
         comptime TOTAL_PS = TD3Graph.PARAM_SIZE
 
         # =================================================================
