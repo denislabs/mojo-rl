@@ -950,23 +950,6 @@ def run_offpolicy_continuous_train_gpu[
                 timer.mark()
 
         # ------------------------------------------------------------------
-        # DEBUG: check episode tracking integrity around warmup boundary
-        # ------------------------------------------------------------------
-        if (total_steps >= warmup_steps - 128 and total_steps <= warmup_steps + 256) and total_steps % 32 == 0:
-            ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
-            ctx.synchronize()
-            var _dbg_ep = Float64(host_episode_count[0])
-            print(
-                "[DBG] step="
-                + String(total_steps)
-                + " ep_count_BEFORE_train="
-                + String(_dbg_ep)[byte=:10]
-                + " (warmup="
-                + String(total_steps < warmup_steps)
-                + ")"
-            )
-
-        # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
         # ------------------------------------------------------------------
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
@@ -998,18 +981,6 @@ def run_offpolicy_continuous_train_gpu[
                     agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
-
-            # DEBUG: check if training step corrupted episode count
-            if (total_steps >= warmup_steps - 128 and total_steps <= warmup_steps + 256) and total_steps % 32 == 0:
-                ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
-                ctx.synchronize()
-                var _dbg_ep2 = Float64(host_episode_count[0])
-                print(
-                    "[DBG] step="
-                    + String(total_steps)
-                    + " ep_count_AFTER_train="
-                    + String(_dbg_ep2)[byte=:10]
-                )
 
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)

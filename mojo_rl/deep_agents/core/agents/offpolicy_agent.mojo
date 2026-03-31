@@ -357,7 +357,8 @@ struct GenericGPUState[
 
         # Matmul-safe padding: on NVIDIA, max_matmul (cuBLAS) may write
         # beyond small trailing dimensions. Pad buffers that serve as matmul
-        # outputs to at least BS * 8 elements to absorb alignment overflow.
+        # outputs to at least BS * 8 elements to prevent overflow into
+        # adjacent CUDA allocations.
         @parameter
         def _mm_safe(n: Int) -> Int:
             return max(n, BS * 8)
