@@ -1678,30 +1678,32 @@ struct GenericOffPolicyAgent[
             grid_dim=(1,),
             block_dim=(1,),
         )
-        # _ = Self.Config.ActorLoss.update_actor_gpu[
-        #     BS,
-        #     Self.ACTIONS,
-        #     Self.Config.ActorModel,
-        #     Self.Config.ActorOpt,
-        #     Self.Config.CriticModel,
-        #     Self.Config.CriticOpt,
-        # ](
-        #     ctx,
-        #     obs_t,
-        #     p_actor,
-        #     a_grads,
-        #     p_critic,
-        #     c_grads,
-        #     p_c2_actor,
-        #     c2_grads,
-        #     gpu_state.actor_ws,
-        #     gpu_state.critic_ws,
-        #     c2_ws,
-        #     gpu_state.strat_ws,
-        #     gpu_state.dq,
-        #     gpu_state.gpu_scalars,
-        #     gpu_state.rng_counter,
-        # )
+        _ = Self.Config.ActorLoss.update_actor_gpu[
+            BS,
+            Self.ACTIONS,
+            Self.Config.ActorModel,
+            Self.Config.ActorOpt,
+            Self.Config.CriticModel,
+            Self.Config.CriticOpt,
+        ](
+            ctx,
+            obs_t,
+            p_actor,
+            a_grads,
+            p_critic,
+            c_grads,
+            p_c2_actor,
+            c2_grads,
+            gpu_state.actor_ws,
+            gpu_state.critic_ws,
+            c2_ws,
+            gpu_state.strat_ws,
+            gpu_state.dq,
+            gpu_state.gpu_scalars,
+            gpu_state.rng_counter,
+        )
+
+        return
 
         # Clip actor gradients
         if self.max_grad_norm > 0.0:
