@@ -2055,8 +2055,8 @@ struct GenericOffPolicyAgent[
     def train_gpu[
         E: GPUContinuousEnv,
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
-        USE_CUDA_GRAPH: Bool = False,
-        USE_ENV_CUDA_GRAPH: Bool = False,
+        USE_CUDA_GRAPH: Bool = True,
+        USE_ENV_CUDA_GRAPH: Bool = True,
     ](
         mut self,
         ctx: DeviceContext,

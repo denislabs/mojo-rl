@@ -346,8 +346,8 @@ def run_offpolicy_continuous_train_gpu[
     PROFILE: Int = 0,
     L: Logger = NoOpLogger,
     CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
-    USE_CUDA_GRAPH: Bool = False,
-    USE_ENV_CUDA_GRAPH: Bool = False,
+    USE_CUDA_GRAPH: Bool = True,
+    USE_ENV_CUDA_GRAPH: Bool = True,
 ](
     mut agent: A,
     ctx: DeviceContext,
@@ -616,8 +616,13 @@ def run_offpolicy_continuous_train_gpu[
                     es_t, grid_dim=(env_blocks,), block_dim=(tpb,)
                 )
                 ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
-                    dn_t, er_t, es_t, rs_t, ec_t,
-                    grid_dim=(1,), block_dim=(1,),
+                    dn_t,
+                    er_t,
+                    es_t,
+                    rs_t,
+                    ec_t,
+                    grid_dim=(1,),
+                    block_dim=(1,),
                 )
                 E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
                     ctx,
@@ -668,7 +673,9 @@ def run_offpolicy_continuous_train_gpu[
                     # Inline env step kernel sequence (no closure capture)
                     comptime incr_env_k = increment_env_rng_kernel
                     ctx.enqueue_function[incr_env_k, incr_env_k](
-                        env_rng_t, grid_dim=(1,), block_dim=(1,),
+                        env_rng_t,
+                        grid_dim=(1,),
+                        block_dim=(1,),
                     )
                     E.step_kernel_gpu[
                         n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM
@@ -697,11 +704,14 @@ def run_offpolicy_continuous_train_gpu[
                     ctx.enqueue_function[
                         incr_steps_wrapper, incr_steps_wrapper
                     ](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
-                    ctx.enqueue_function[
-                        log_reset_wrapper, log_reset_wrapper
-                    ](
-                        dn_g, er_g, es_g, rs_g, ec_g,
-                        grid_dim=(1,), block_dim=(1,),
+                    ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+                        dn_g,
+                        er_g,
+                        es_g,
+                        rs_g,
+                        ec_g,
+                        grid_dim=(1,),
+                        block_dim=(1,),
                     )
                     E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
                         ctx,
@@ -711,16 +721,18 @@ def run_offpolicy_continuous_train_gpu[
                         workspace_ptr=workspace_buf.unsafe_ptr(),
                         rng_counter_ptr=env_rng_counter.unsafe_ptr(),
                     )
-                    E.extract_obs_kernel_gpu[
-                        n_envs, E.STATE_SIZE, E.OBS_DIM
-                    ](ctx, states_buf, obs_buf)
+                    E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+                        ctx, states_buf, obs_buf
+                    )
                     ctx.synchronize()
 
                     # Now capture the same sequence
                     var graph = CUDAGraph(ctx)
                     graph.begin_capture()
                     ctx.enqueue_function[incr_env_k, incr_env_k](
-                        env_rng_t, grid_dim=(1,), block_dim=(1,),
+                        env_rng_t,
+                        grid_dim=(1,),
+                        block_dim=(1,),
                     )
                     E.step_kernel_gpu[
                         n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM
@@ -749,11 +761,14 @@ def run_offpolicy_continuous_train_gpu[
                     ctx.enqueue_function[
                         incr_steps_wrapper, incr_steps_wrapper
                     ](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
-                    ctx.enqueue_function[
-                        log_reset_wrapper, log_reset_wrapper
-                    ](
-                        dn_g, er_g, es_g, rs_g, ec_g,
-                        grid_dim=(1,), block_dim=(1,),
+                    ctx.enqueue_function[log_reset_wrapper, log_reset_wrapper](
+                        dn_g,
+                        er_g,
+                        es_g,
+                        rs_g,
+                        ec_g,
+                        grid_dim=(1,),
+                        block_dim=(1,),
                     )
                     E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
                         ctx,
@@ -763,9 +778,9 @@ def run_offpolicy_continuous_train_gpu[
                         workspace_ptr=workspace_buf.unsafe_ptr(),
                         rng_counter_ptr=env_rng_counter.unsafe_ptr(),
                     )
-                    E.extract_obs_kernel_gpu[
-                        n_envs, E.STATE_SIZE, E.OBS_DIM
-                    ](ctx, states_buf, obs_buf)
+                    E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+                        ctx, states_buf, obs_buf
+                    )
                     graph.end_capture()
                     if verbose:
                         print(
