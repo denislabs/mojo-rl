@@ -4,7 +4,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import RK4Integrator
+from mojo_rl.physics3d.integrator import RK4Integrator, EulerIntegrator
 from mojo_rl.physics3d.solver import NewtonSolver
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
@@ -21,10 +21,10 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 2
     comptime MAX_STEPS: Int = 1000
-    # comptime INTEGRATOR_WS_EXTRA: Int = 0
-    comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-        InvertedPendulumModel.NQ, InvertedPendulumModel.NV
-    ]()
+    comptime INTEGRATOR_WS_EXTRA: Int = 0
+    # comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
+    #     InvertedPendulumModel.NQ, InvertedPendulumModel.NV
+    # ]()
 
     # Termination bounds
     comptime MAX_CART_POS = 1.0  # slider range is ±1
@@ -69,7 +69,7 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         ],
         verbose: Bool,
     ):
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
+        EulerIntegrator[SOLVER=NewtonSolver].step(model, data)
 
     # === CPU: Pre-step hook ===
     @staticmethod
@@ -147,7 +147,7 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE,
             NQ,
             NV,
@@ -221,24 +221,6 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
             reward = Scalar[DTYPE](1.0)
 
         return (reward, terminated)
-
-    # === GPU: Observation-based termination ===
-    @always_inline
-    @staticmethod
-    def is_terminal_from_obs_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        obs: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ],
-        env: Int,
-    ) -> Bool:
-        """InvertedPendulum: terminate if |angle| > 0.2.
-        Obs layout: [x, x_dot, theta, theta_dot]."""
-        var angle = rebind[Scalar[DTYPE]](obs[env, 2])
-        return angle > Scalar[DTYPE](0.2) or angle < Scalar[DTYPE](-0.2)
 
     # === GPU inline: Non-zero qpos init (no-op for InvertedPendulum) ===
     @always_inline
