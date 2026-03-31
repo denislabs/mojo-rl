@@ -1703,6 +1703,7 @@ struct GenericOffPolicyAgent[
             gpu_state.rng_counter,
         )
 
+        return  # DEBUG BISECT: after update_actor_gpu, before grad clip
         # Clip actor gradients
         if self.max_grad_norm > 0.0:
             comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
