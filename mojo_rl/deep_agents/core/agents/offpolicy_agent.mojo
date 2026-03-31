@@ -219,6 +219,15 @@ def _concat_obs_act[
 # =============================================================================
 
 
+# Matmul-safe padding: on NVIDIA, max_matmul (cuBLAS) may write
+# beyond small trailing dimensions. Pad buffers that serve as matmul
+# outputs to at least BS * 8 elements to prevent overflow into
+# adjacent CUDA allocations.
+@always_inline
+def _mm_safe[BS: Int](n: Int) -> Int:
+    return max(n, BS * 8)
+
+
 struct GenericGPUState[
     ActorModel: Model,
     ActorOpt: Optimizer,
@@ -355,14 +364,6 @@ struct GenericGPUState[
         comptime BS = Self.batch_size
         comptime MNE = Self.max_n_envs
 
-        # Matmul-safe padding: on NVIDIA, max_matmul (cuBLAS) may write
-        # beyond small trailing dimensions. Pad buffers that serve as matmul
-        # outputs to at least BS * 8 elements to prevent overflow into
-        # adjacent CUDA allocations.
-        @parameter
-        def _mm_safe(n: Int) -> Int:
-            return max(n, BS * 8)
-
         # Exploration workspace
         self.explore_buf = ctx.enqueue_create_buffer[dtype](Self.EWS.TOTAL_SIZE)
         self.explore = Self.EWS(self.explore_buf.unsafe_ptr())
@@ -370,7 +371,7 @@ struct GenericGPUState[
         # Sample output
         self.s_obs = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
         self.s_act = ctx.enqueue_create_buffer[dtype](
-            _mm_safe(BS * Self.ACTIONS)
+            _mm_safe[BS](BS * Self.ACTIONS)
         )
         self.s_rew = ctx.enqueue_create_buffer[dtype](BS)
         self.s_nobs = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
@@ -380,12 +381,12 @@ struct GenericGPUState[
         # TD targets
 
         self.next_act = ctx.enqueue_create_buffer[dtype](
-            _mm_safe(BS * Self.ACTIONS)
+            _mm_safe[BS](BS * Self.ACTIONS)
         )
         self.next_lp = ctx.enqueue_create_buffer[dtype](BS)
         self.next_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
         self.next_q = ctx.enqueue_create_buffer[dtype](
-            _mm_safe(BS * Self.CRITIC_OUT)
+            _mm_safe[BS](BS * Self.CRITIC_OUT)
         )
         self.targets = ctx.enqueue_create_buffer[dtype](BS)
 
@@ -393,14 +394,14 @@ struct GenericGPUState[
 
         self.ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
         self.q_out = ctx.enqueue_create_buffer[dtype](
-            _mm_safe(BS * Self.CRITIC_OUT)
+            _mm_safe[BS](BS * Self.CRITIC_OUT)
         )
         self.q_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
         self.critic_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.CRITIC_WS)
         )
         self.q_grad = ctx.enqueue_create_buffer[dtype](
-            _mm_safe(BS * Self.CRITIC_OUT)
+            _mm_safe[BS](BS * Self.CRITIC_OUT)
         )
         self.d_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
 
