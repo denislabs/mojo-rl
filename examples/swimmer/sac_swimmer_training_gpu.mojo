@@ -37,8 +37,8 @@ comptime HIDDEN_DIM = 128
 
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 300_000
-comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 32
+comptime BATCH_SIZE = 64
+comptime MAX_N_ENVS = 4
 
 # Training duration (Swimmer is simpler)
 comptime NUM_STEPS = 500_000
@@ -71,7 +71,7 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.001,
+            critic_lr=0.0003,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
@@ -80,7 +80,7 @@ def main() raises:
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.001,
+            alpha_lr=0.0003,
             target_entropy=-1.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_swimmer.ckpt",
@@ -181,16 +181,11 @@ def main() raises:
 
             var final_avg = metrics.mean_reward_last_n(100)
             if final_avg > 300.0:
-                print(
-                    "EXCELLENT: Swimmer is moving fast! (avg reward > 300)"
-                )
+                print("EXCELLENT: Swimmer is moving fast! (avg reward > 300)")
             elif final_avg > 100.0:
                 print("SUCCESS: Swimmer learned to swim! (avg reward > 100)")
             elif final_avg > 30.0:
-                print(
-                    "GOOD PROGRESS: Swimmer is learning"
-                    " (avg reward > 30)"
-                )
+                print("GOOD PROGRESS: Swimmer is learning (avg reward > 30)")
             elif final_avg > 0.0:
                 print(
                     "LEARNING: Agent improving but needs more training"
