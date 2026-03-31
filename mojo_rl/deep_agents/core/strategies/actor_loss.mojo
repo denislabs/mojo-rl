@@ -75,6 +75,8 @@ trait ActorLoss:
         CRITIC_CS: Int,
         ACTOR_PS: Int = 0,
         CRITIC_PS: Int = 0,
+        ACTOR_WS: Int = 0,
+        CRITIC_WS: Int = 0,
     ]() -> Int:
         ...
 
@@ -225,6 +227,8 @@ struct DPGLoss(ActorLoss):
         CRITIC_CS: Int,
         ACTOR_PS: Int = 0,
         CRITIC_PS: Int = 0,
+        ACTOR_WS: Int = 0,
+        CRITIC_WS: Int = 0,
     ]() -> Int:
         return (
             BATCH * ACTIONS
@@ -605,6 +609,8 @@ struct MaxEntLoss[
         CRITIC_CS: Int,
         ACTOR_PS: Int = 0,
         CRITIC_PS: Int = 0,
+        ACTOR_WS: Int = 0,
+        CRITIC_WS: Int = 0,
     ]() -> Int:
         return (
             BATCH * ACTOR_OUT  # raw_out
@@ -1335,16 +1341,26 @@ struct AutodiffMaxEntLoss[
         CRITIC_CS: Int,
         ACTOR_PS: Int = 0,
         CRITIC_PS: Int = 0,
+        ACTOR_WS: Int = 0,
+        CRITIC_WS: Int = 0,
     ]() -> Int:
         # Must match the GPU workspace layout in update_actor_gpu:
         #   [combined_params | output | cache | workspace |
         #    grad_out | grad_obs | combined_grads | lp_buf]
         # SAC graph = Sequential[SkipConcat[Actor, RSample],
         #   SplitApply[DualPath[Critic, Critic] → Min, Slice]]
-        # TOTAL_PS includes actor + 2 critics with 4-element alignment padding.
-        comptime _align4 = ((CRITIC_PS + 3) & ~3)
-        comptime TOTAL_PS = ACTOR_PS + _align4 + CRITIC_PS
-        # Graph cache: each op caches input + output
+
+        # TOTAL_PS: exact graph param layout with nested alignment padding
+        #   Sequential[ActorSkip, SplitApply[Sequential[DualPath[C,C], Min], Slice]]
+        #   = _align4(ACTOR_PS) + _align4(_align4(_align4(CRITIC_PS) + CRITIC_PS))
+        comptime _a4_cps = ((CRITIC_PS + 3) & ~3)
+        comptime _dual_ps = _a4_cps + CRITIC_PS
+        comptime _a4_dual = ((_dual_ps + 3) & ~3)
+        comptime _a4_a4_dual = ((_a4_dual + 3) & ~3)
+        comptime _a4_aps = ((ACTOR_PS + 3) & ~3)
+        comptime TOTAL_PS = _a4_aps + _a4_a4_dual
+
+        # Graph cache (overestimate is safe)
         comptime GRAPH_CS_EST = (
             OBS + ACTOR_CS + ACTOR_OUT
             + ACTIONS + ACTIONS  # RSample
@@ -1353,12 +1369,22 @@ struct AutodiffMaxEntLoss[
             + ACTIONS  # Slice
             + OBS + ACTIONS + 1  # SplitApply
         )
-        comptime GRAPH_WS_EST = max(CRITIC_OUT * 2, 64)
+
+        # Graph workspace: exact formula derived from combinator structure
+        #   SACGraph = Sequential[SkipConcat[Sequential[Actor, RSample]],
+        #                         SplitApply[Sequential[DualPath[C,C], Min], Slice]]
+        # GRAPH_WS = 3*OBS + 7*ACTIONS + ACTOR_OUT + ACTOR_WS
+        #          + 6*CRITIC_OUT + 2*CRITIC_WS + 4
+        comptime GRAPH_WS = (
+            3 * OBS + 7 * ACTIONS + ACTOR_OUT + ACTOR_WS
+            + 6 * CRITIC_OUT + 2 * CRITIC_WS + 4
+        )
+
         return (
             2 * TOTAL_PS  # combined_params + combined_grads
             + BATCH * 2  # output (min_Q + log_prob)
             + max(1, BATCH * GRAPH_CS_EST)  # cache
-            + max(1, BATCH * GRAPH_WS_EST)  # workspace
+            + max(1, BATCH * GRAPH_WS)  # workspace
             + BATCH * 2  # grad_out (seed)
             + BATCH * OBS  # grad_obs
             + BATCH  # lp_buf
@@ -1867,6 +1893,8 @@ struct AutodiffDPGLoss(ActorLoss):
         CRITIC_CS: Int,
         ACTOR_PS: Int = 0,
         CRITIC_PS: Int = 0,
+        ACTOR_WS: Int = 0,
+        CRITIC_WS: Int = 0,
     ]() -> Int:
         # Same workspace size as DPGLoss
         return (
@@ -2292,6 +2320,8 @@ struct AutodiffTD3Loss(ActorLoss):
         CRITIC_CS: Int,
         ACTOR_PS: Int = 0,
         CRITIC_PS: Int = 0,
+        ACTOR_WS: Int = 0,
+        CRITIC_WS: Int = 0,
     ]() -> Int:
         # Same workspace size as DPGLoss
         return (

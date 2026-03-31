@@ -689,6 +689,8 @@ struct GenericOffPolicyAgent[
         Self.CRITIC_CS,
         Self.Config.ActorModel.PARAM_SIZE,
         Self.Config.CriticModel.PARAM_SIZE,
+        Self.Config.ActorModel.WORKSPACE_SIZE_PER_SAMPLE,
+        Self.Config.CriticModel.WORKSPACE_SIZE_PER_SAMPLE,
     ]()
     comptime _TA_WS: Int = Self.Config.TargetAction.ws_size[
         Self.BATCH,
