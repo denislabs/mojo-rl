@@ -45,7 +45,7 @@ comptime MAX_N_ENVS = 32
 
 # Training duration (simple task, converges fast)
 comptime NUM_STEPS = 100_000
-comptime WARMUP_STEPS = 5_000
+comptime WARMUP_STEPS = 200_000
 
 comptime dtype = DType.float32
 
@@ -141,7 +141,7 @@ def main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                InvertedPendulum[dtype, TERMINATE_ON_UNHEALTHY=False],
+                InvertedPendulum[dtype, TERMINATE_ON_UNHEALTHY=True],
                 USE_CUDA_GRAPH=False,
                 USE_ENV_CUDA_GRAPH=False,
             ](
