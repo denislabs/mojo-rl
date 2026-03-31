@@ -427,12 +427,6 @@ def run_offpolicy_continuous_train_gpu[
     var gpu_state = agent.make_gpu_state(ctx)
     agent.upload_to_gpu(gpu_state, ctx)
 
-    # NVIDIA firewall: large dummy allocation between gpu_state and env
-    # buffers to absorb any cuBLAS/max_matmul overflow from training kernels.
-    # Without this, overflows from small-dim matmul outputs (CRITIC_OUT=1)
-    # corrupt adjacent env/tracking buffers. 256KB is enough for any tile size.
-    var _gpu_firewall = ctx.enqueue_create_buffer[dtype](65536)
-
     # ------------------------------------------------------------------
     # Allocate environment buffers (loop-owned, comptime sizes)
     # ------------------------------------------------------------------
@@ -444,8 +438,17 @@ def run_offpolicy_continuous_train_gpu[
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
+    # Episode tracking: per-env accumulators + GPU-side stats
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
+
+    # Host buffers for periodic readback (only at print boundaries)
+    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
+    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
+
     # Workspace buffer (shared model state for physics envs)
-    # Allocated BEFORE episode tracking to avoid matmul overflow corruption.
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:
         ws_size = 1
@@ -453,19 +456,6 @@ def run_offpolicy_continuous_train_gpu[
 
     if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
-
-    # Episode tracking: per-env accumulators + GPU-side stats.
-    # Each buffer uses a large allocation (16KB) to survive NVIDIA
-    # cuBLAS/max_matmul overflow from adjacent CUDA allocations.
-    comptime EP_BUF_SIZE = 4096  # 16KB per buffer — overflow-proof
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](EP_BUF_SIZE)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](EP_BUF_SIZE)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_BUF_SIZE)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_BUF_SIZE)
-
-    # Host buffers for periodic readback (only at print boundaries)
-    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
-    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
 
     # ------------------------------------------------------------------
     # GPU-side counters for CUDA graph capture (env step graph)
@@ -496,10 +486,10 @@ def run_offpolicy_continuous_train_gpu[
     )
 
     # Initialize episode tracking
-    episode_rewards_buf.enqueue_fill(Scalar[dtype](0))
-    episode_steps_buf.enqueue_fill(Scalar[dtype](0))
-    gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
-    gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
+    ctx.enqueue_memset(episode_rewards_buf, 0)
+    ctx.enqueue_memset(episode_steps_buf, 0)
+    ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+    ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
     # ------------------------------------------------------------------
     # Kernel wrappers (defined once outside the loop)
@@ -982,7 +972,6 @@ def run_offpolicy_continuous_train_gpu[
                     agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
-
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)
 
@@ -1041,8 +1030,8 @@ def run_offpolicy_continuous_train_gpu[
                     )
 
             # Reset GPU-side accumulators for next interval
-            gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
-            gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
+            ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+            ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
             # Logger: record metrics
             if logger:
@@ -1206,7 +1195,16 @@ def run_offpolicy_discrete_train_gpu[
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
-    # Workspace buffer (allocated before episode tracking for memory layout)
+    # Episode tracking: per-env accumulators + GPU-side stats
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
+
+    # Host buffers for periodic readback (only at print boundaries)
+    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
+    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
+
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:
         ws_size = 1
@@ -1214,18 +1212,6 @@ def run_offpolicy_discrete_train_gpu[
 
     if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
-
-    # Episode tracking: per-env accumulators + GPU-side stats.
-    # Large allocations (16KB each) to survive NVIDIA cuBLAS overflow.
-    comptime EP_BUF_SIZE = 4096
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](EP_BUF_SIZE)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](EP_BUF_SIZE)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_BUF_SIZE)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_BUF_SIZE)
-
-    # Host buffers for periodic readback (only at print boundaries)
-    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
-    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
 
     E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf, rng_seed=0)
     E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
@@ -1241,10 +1227,10 @@ def run_offpolicy_discrete_train_gpu[
     )
 
     # Initialize episode tracking
-    episode_rewards_buf.enqueue_fill(Scalar[dtype](0))
-    episode_steps_buf.enqueue_fill(Scalar[dtype](0))
-    gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
-    gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
+    ctx.enqueue_memset(episode_rewards_buf, 0)
+    ctx.enqueue_memset(episode_steps_buf, 0)
+    ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+    ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
     # Kernel wrappers
     comptime tpb = 256
@@ -1439,7 +1425,6 @@ def run_offpolicy_discrete_train_gpu[
                 agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
-
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)
 
@@ -1490,8 +1475,8 @@ def run_offpolicy_discrete_train_gpu[
                         completed_episodes, last_avg_reward, 0, 0.0
                     )
 
-            gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0))
-            gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0))
+            ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+            ctx.enqueue_memset(gpu_episode_count_buf, 0)
 
             # Logger: record metrics
             if logger:
