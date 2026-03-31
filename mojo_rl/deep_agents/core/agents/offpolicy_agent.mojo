@@ -219,19 +219,6 @@ def _concat_obs_act[
 # =============================================================================
 
 
-# Matmul-safe padding: on NVIDIA, max_matmul (cuBLAS) may write
-# beyond small trailing dimensions. Pad buffers that serve as matmul
-# outputs to at least BS * 8 elements to prevent overflow into
-# adjacent CUDA allocations.
-@always_inline
-def _mm_safe[BS: Int](n: Int) -> Int:
-    """Pad matmul output buffers for cuBLAS alignment on NVIDIA.
-
-    Blackwell (RTX 5090) uses larger tiles than older architectures.
-    """
-    return max(n, BS * 64)
-
-
 struct GenericGPUState[
     ActorModel: Model,
     ActorOpt: Optimizer,
@@ -264,6 +251,10 @@ struct GenericGPUState[
     comptime CriticNet = Network[Self.CriticModel, Self.CriticOpt]
     comptime ACTOR_WS = Self.ActorNet.WORKSPACE_SIZE_PER_SAMPLE
     comptime CRITIC_WS = Self.CriticNet.WORKSPACE_SIZE_PER_SAMPLE
+
+    # GPU-safe output dims (padded for cuBLAS alignment on NVIDIA)
+    comptime GPU_ACTOR_OUT = Self.ActorNet.GPU_OUT_DIM
+    comptime GPU_CRITIC_OUT = Self.CriticNet.GPU_OUT_DIM
 
     # Exploration workspace type alias
     comptime EWS = ExplorationWS[Self.max_n_envs, Self.ACTOR_OUT, Self.ACTOR_WS]
@@ -374,43 +365,34 @@ struct GenericGPUState[
 
         # Sample output
         self.s_obs = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
-        self.s_act = ctx.enqueue_create_buffer[dtype](
-            _mm_safe[BS](BS * Self.ACTIONS)
-        )
+        self.s_act = ctx.enqueue_create_buffer[dtype](BS * Self.GPU_ACTOR_OUT)
         self.s_rew = ctx.enqueue_create_buffer[dtype](BS)
         self.s_nobs = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
         self.s_done = ctx.enqueue_create_buffer[dtype](BS)
         self.s_idx = ctx.enqueue_create_buffer[DType.int32](BS)
 
         # TD targets
-
-        self.next_act = ctx.enqueue_create_buffer[dtype](
-            _mm_safe[BS](BS * Self.ACTIONS)
-        )
+        self.next_act = ctx.enqueue_create_buffer[dtype](BS * Self.GPU_ACTOR_OUT)
         self.next_lp = ctx.enqueue_create_buffer[dtype](BS)
         self.next_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
         self.next_q = ctx.enqueue_create_buffer[dtype](
-            _mm_safe[BS](BS * Self.CRITIC_OUT)
+            BS * Self.GPU_CRITIC_OUT
         )
         self.targets = ctx.enqueue_create_buffer[dtype](BS)
 
         # Critic
-
         self.ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
-        self.q_out = ctx.enqueue_create_buffer[dtype](
-            _mm_safe[BS](BS * Self.CRITIC_OUT)
-        )
+        self.q_out = ctx.enqueue_create_buffer[dtype](BS * Self.GPU_CRITIC_OUT)
         self.q_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
         self.critic_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.CRITIC_WS)
         )
         self.q_grad = ctx.enqueue_create_buffer[dtype](
-            _mm_safe[BS](BS * Self.CRITIC_OUT)
+            BS * Self.GPU_CRITIC_OUT
         )
         self.d_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
 
         # Network workspaces
-
         self.actor_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.ACTOR_WS)
         )
@@ -427,12 +409,9 @@ struct GenericGPUState[
         self.curr_lp = ctx.enqueue_create_buffer[dtype](BS)
 
         # Twin critic extra
-
-        self.nq2 = ctx.enqueue_create_buffer[dtype](
-            _mm_safe[BS](BS * Self.CRITIC_OUT)
-        )
+        self.nq2 = ctx.enqueue_create_buffer[dtype](BS * Self.GPU_CRITIC_OUT)
         self.q2_out = ctx.enqueue_create_buffer[dtype](
-            _mm_safe[BS](BS * Self.CRITIC_OUT)
+            BS * Self.GPU_CRITIC_OUT
         )
         self.q2_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
         self.critic2_ws = ctx.enqueue_create_buffer[dtype](

@@ -66,6 +66,11 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
     comptime CACHE_SIZE: Int = Self.MODEL.CACHE_SIZE
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
 
+    # Padded OUT_DIM for GPU matmul output buffers. cuBLAS on NVIDIA may
+    # write beyond small trailing dimensions (up to 64 columns on Blackwell).
+    # Use GPU_OUT_DIM instead of OUT_DIM when sizing matmul output buffers.
+    comptime GPU_OUT_DIM: Int = max(Self.OUT_DIM, 64)
+
     # =========================================================================
     # CPU Forward Pass
     # =========================================================================
