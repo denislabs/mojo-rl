@@ -1427,8 +1427,6 @@ struct GenericOffPolicyAgent[
         no CPU counters or D2H copies). Call do_gpu_train_diagnostics()
         periodically outside the graph for metrics logging.
         """
-        self.train_step_count += 1
-        self.update_count += 1
         self._gpu_train_kernels(ctx, gpu_state)
         self._gpu_train_diagnostics(ctx, gpu_state, 1)
 
