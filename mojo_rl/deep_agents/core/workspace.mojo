@@ -315,14 +315,8 @@ struct ExplorationWS[
     var ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]
 
     comptime _O_RAW_ACT: Int = 0
-    # Pad raw_act region to absorb cuBLAS/max_matmul column padding
-    # overflow on NVIDIA GPUs (Blackwell needs up to 64 columns).
-    comptime _O_INF_WS: Int = Self._O_RAW_ACT + Self.MAX_N_ENVS * max(
-        Self.ACTOR_OUT, 64
-    )
-    comptime TOTAL_SIZE: Int = Self._O_INF_WS + max(
-        1, Self.MAX_N_ENVS * Self.ACTOR_WS
-    )
+    comptime _O_INF_WS: Int = Self._O_RAW_ACT + Self.MAX_N_ENVS * Self.ACTOR_OUT
+    comptime TOTAL_SIZE: Int = Self._O_INF_WS + max(1, Self.MAX_N_ENVS * Self.ACTOR_WS)
 
     def __init__(out self, ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin]):
         self.ptr = ptr

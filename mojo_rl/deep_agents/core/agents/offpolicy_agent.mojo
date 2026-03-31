@@ -252,7 +252,6 @@ struct GenericGPUState[
     comptime ACTOR_WS = Self.ActorNet.WORKSPACE_SIZE_PER_SAMPLE
     comptime CRITIC_WS = Self.CriticNet.WORKSPACE_SIZE_PER_SAMPLE
 
-
     # Exploration workspace type alias
     comptime EWS = ExplorationWS[Self.max_n_envs, Self.ACTOR_OUT, Self.ACTOR_WS]
 
@@ -360,7 +359,7 @@ struct GenericGPUState[
         self.explore_buf = ctx.enqueue_create_buffer[dtype](Self.EWS.TOTAL_SIZE)
         self.explore = Self.EWS(self.explore_buf.unsafe_ptr())
 
-        # Sample output (from replay buffer — NOT matmul targets, no GPU padding)
+        # Sample output
         self.s_obs = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
         self.s_act = ctx.enqueue_create_buffer[dtype](BS * Self.ACTIONS)
         self.s_rew = ctx.enqueue_create_buffer[dtype](BS)
@@ -368,28 +367,27 @@ struct GenericGPUState[
         self.s_done = ctx.enqueue_create_buffer[dtype](BS)
         self.s_idx = ctx.enqueue_create_buffer[DType.int32](BS)
 
-        # TD targets (next_act and next_q are matmul outputs — use GPU-padded dims)
+        # TD targets
+
         self.next_act = ctx.enqueue_create_buffer[dtype](BS * Self.ACTIONS)
         self.next_lp = ctx.enqueue_create_buffer[dtype](BS)
         self.next_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
-        self.next_q = ctx.enqueue_create_buffer[dtype](
-            BS * Self.CRITIC_OUT
-        )
+        self.next_q = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.targets = ctx.enqueue_create_buffer[dtype](BS)
 
-        # Critic (q_out and q_grad are matmul outputs — use GPU-padded dim)
+        # Critic
+
         self.ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
         self.q_out = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.q_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
         self.critic_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.CRITIC_WS)
         )
-        self.q_grad = ctx.enqueue_create_buffer[dtype](
-            BS * Self.CRITIC_OUT
-        )
+        self.q_grad = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.d_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
 
         # Network workspaces
+
         self.actor_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.ACTOR_WS)
         )
@@ -405,11 +403,10 @@ struct GenericGPUState[
         # Alpha auto-tuning
         self.curr_lp = ctx.enqueue_create_buffer[dtype](BS)
 
-        # Twin critic extra (matmul outputs — GPU-padded)
+        # Twin critic extra
+
         self.nq2 = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
-        self.q2_out = ctx.enqueue_create_buffer[dtype](
-            BS * Self.CRITIC_OUT
-        )
+        self.q2_out = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.q2_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
         self.critic2_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.CRITIC_WS)

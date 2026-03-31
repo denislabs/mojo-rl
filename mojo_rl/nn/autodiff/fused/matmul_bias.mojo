@@ -1115,26 +1115,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             )
 
             # 2. Matmul: output = input @ W
-            comptime if has_nvidia_gpu_accelerator() and Self.out_dim < 64:
-                from ...gpu import tiled_matmul_kernel
-
-                comptime MM_TILE = 8
-                comptime MM_GRID = (
-                    (Self.out_dim + MM_TILE - 1) // MM_TILE,
-                    (BATCH + MM_TILE - 1) // MM_TILE,
-                )
-                comptime safe_mm = tiled_matmul_kernel[
-                    dtype, BATCH, Self.out_dim, Self.in_dim, MM_TILE
-                ]
-                ctx.enqueue_function[safe_mm, safe_mm](
-                    output,
-                    input_immut,
-                    W,
-                    grid_dim=MM_GRID,
-                    block_dim=(MM_TILE, MM_TILE),
-                )
-            else:
-                max_matmul[target="gpu"](output, input_immut, W, ctx)
+            max_matmul[target="gpu"](output, input_immut, W, ctx)
 
             # 3. Bias add
             comptime bias_elems = BATCH * Self.out_dim
