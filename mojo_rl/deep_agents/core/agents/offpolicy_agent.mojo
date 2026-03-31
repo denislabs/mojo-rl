@@ -225,7 +225,11 @@ def _concat_obs_act[
 # adjacent CUDA allocations.
 @always_inline
 def _mm_safe[BS: Int](n: Int) -> Int:
-    return max(n, BS * 8)
+    """Pad matmul output buffers for cuBLAS alignment on NVIDIA.
+
+    Blackwell (RTX 5090) uses larger tiles than older architectures.
+    """
+    return max(n, BS * 64)
 
 
 struct GenericGPUState[

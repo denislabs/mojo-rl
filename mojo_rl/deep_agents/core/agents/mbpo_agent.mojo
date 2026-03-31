@@ -1213,10 +1213,14 @@ struct MBPOAgent[
     comptime _AL_WS: Int = Self.CPUStateType._AL_WS
     comptime _TA_WS: Int = Self.CPUStateType._TA_WS
 
-    # Combined buffer capacity for GPU (real + synthetic)
-    comptime GPU_BUF_CAP: Int = Self.Config.buffer_capacity + Self.Config.SYNTH_CAPACITY
+    # GPU buffer: real-only capacity (synthetic buffer is separate)
+    comptime GPU_BUF_CAP: Int = Self.Config.buffer_capacity
 
-    # GPU state type — reuses GenericGPUState with combined buffer capacity
+    # Mixed sampling: 5% real, 95% synthetic (MBPO paper default)
+    comptime REAL_BS: Int = max(1, Self.Config.batch_size * 5 // 100)
+    comptime SYNTH_BS: Int = Self.Config.batch_size - Self.REAL_BS
+
+    # GPU state type — reuses GenericGPUState with real buffer capacity
     comptime GPU_N_ENVS: Int = 32
     comptime GPUStateType = GenericGPUState[
         Self.Config.ActorModel,
@@ -1953,8 +1957,11 @@ struct MBPOAgent[
             Self.Config.action_dim,
         ],
         mut gpu_state: Self.GPUStateType,
+        mut synth_buffer: GPUReplayBuffer[
+            Self.Config.SYNTH_CAPACITY, Self.Config.obs_dim, Self.Config.action_dim
+        ],
     ) raises:
-        """GPU model rollouts: sample starts, actor+dynamics forward, store in GPU buffer.
+        """GPU model rollouts: sample starts from real buffer, store in synth buffer.
 
         For each rollout step:
         1. Sample rollout_batch start obs from GPU buffer
@@ -2150,7 +2157,7 @@ struct MBPOAgent[
             )
 
             # Store transitions in GPU buffer
-            gpu_state.buffer.store[RB](
+            synth_buffer.store[RB](
                 ctx,
                 gpu_dynamics.r_obs,
                 gpu_dynamics.r_actions,
@@ -2179,82 +2186,18 @@ struct MBPOAgent[
     # GPU SAC methods
     # =========================================================================
 
-    def _merge_and_upload_to_gpu(
+    def _upload_buffers_to_gpu(
         self,
         cpu_state: Self.CPUStateType,
         mut gpu_state: Self.GPUStateType,
+        mut synth_buffer: GPUReplayBuffer[
+            Self.Config.SYNTH_CAPACITY, Self.Config.obs_dim, Self.Config.action_dim
+        ],
         ctx: DeviceContext,
     ) raises:
-        """Merge real + synth CPU buffers into a combined CPU buffer and upload to GPU.
-        """
-        var combined = HeapReplayBuffer[
-            Self.GPU_BUF_CAP, Self.Config.obs_dim, Self.Config.action_dim, dtype
-        ]()
-
-        # Copy real buffer transitions
-        for idx in range(cpu_state.real_buffer.size):
-            var obs_arr = InlineArray[Scalar[dtype], Self.Config.obs_dim](
-                uninitialized=True
-            )
-            var next_arr = InlineArray[Scalar[dtype], Self.Config.obs_dim](
-                uninitialized=True
-            )
-            var act_arr = InlineArray[Scalar[dtype], Self.Config.action_dim](
-                uninitialized=True
-            )
-            for i in range(Self.Config.obs_dim):
-                obs_arr[i] = cpu_state.real_buffer.obs[
-                    idx * Self.Config.obs_dim + i
-                ]
-                next_arr[i] = cpu_state.real_buffer.next_obs[
-                    idx * Self.Config.obs_dim + i
-                ]
-            for i in range(Self.Config.action_dim):
-                act_arr[i] = cpu_state.real_buffer.actions[
-                    idx * Self.Config.action_dim + i
-                ]
-            var done = cpu_state.real_buffer.dones[idx] > Scalar[dtype](0.5)
-            combined.add(
-                obs_arr,
-                act_arr,
-                cpu_state.real_buffer.rewards[idx],
-                next_arr,
-                done,
-            )
-
-        # Copy synthetic buffer transitions
-        for idx in range(cpu_state.synth_buffer.size):
-            var obs_arr = InlineArray[Scalar[dtype], Self.Config.obs_dim](
-                uninitialized=True
-            )
-            var next_arr = InlineArray[Scalar[dtype], Self.Config.obs_dim](
-                uninitialized=True
-            )
-            var act_arr = InlineArray[Scalar[dtype], Self.Config.action_dim](
-                uninitialized=True
-            )
-            for i in range(Self.Config.obs_dim):
-                obs_arr[i] = cpu_state.synth_buffer.obs[
-                    idx * Self.Config.obs_dim + i
-                ]
-                next_arr[i] = cpu_state.synth_buffer.next_obs[
-                    idx * Self.Config.obs_dim + i
-                ]
-            for i in range(Self.Config.action_dim):
-                act_arr[i] = cpu_state.synth_buffer.actions[
-                    idx * Self.Config.action_dim + i
-                ]
-            var done = cpu_state.synth_buffer.dones[idx] > Scalar[dtype](0.5)
-            combined.add(
-                obs_arr,
-                act_arr,
-                cpu_state.synth_buffer.rewards[idx],
-                next_arr,
-                done,
-            )
-
-        # Upload to GPU
-        gpu_state.buffer.upload_from(combined, ctx)
+        """Upload CPU real + synth buffers to separate GPU buffers."""
+        gpu_state.buffer.upload_from(cpu_state.real_buffer, ctx)
+        synth_buffer.upload_from(cpu_state.synth_buffer, ctx)
         ctx.synchronize()
 
     def select_actions_gpu[
@@ -2304,11 +2247,22 @@ struct MBPOAgent[
         self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
+        synth_buffer: GPUReplayBuffer[
+            Self.Config.SYNTH_CAPACITY,
+            Self.Config.obs_dim,
+            Self.Config.action_dim,
+        ],
+        s_real_idx: DeviceBuffer[DType.int32],
+        s_synth_idx: DeviceBuffer[DType.int32],
     ) raises:
         """Pure GPU kernel sequence for one SAC training step.
 
         Contains ONLY GPU kernel enqueues — no CPU counters, no diagnostics,
         no ctx.synchronize(). Fully CUDA graph capturable.
+
+        Uses dual-buffer mixed sampling: REAL_BS from gpu_state.buffer (real),
+        SYNTH_BS from synth_buffer. Output is concatenated into gpu_state.s_*
+        scratch buffers at offset regions.
         """
         comptime BS = Self.BATCH
         comptime ELEM_BLOCKS = (BS * Self.CRITIC_IN + TPB - 1) // TPB
@@ -2318,7 +2272,9 @@ struct MBPOAgent[
         ]
         comptime mse_grad_k = td_mse_grad_kernel[dtype, BS, Self.CRITIC_OUT]
 
-        # Phase 1: Sample batch from GPU buffer
+        # Phase 1: Mixed sampling — REAL_BS from real, SYNTH_BS from synthetic
+        comptime RBS = Self.REAL_BS
+        comptime SBS = Self.SYNTH_BS
 
         # Increment GPU-side RNG counter (CUDA graph compatible)
         comptime incr_k = increment_rng_counter_kernel
@@ -2331,15 +2287,80 @@ struct MBPOAgent[
             block_dim=(1,),
         )
 
-        gpu_state.buffer.sample[BS](
+        # Sample REAL_BS from real buffer into first portion of batch
+        var real_s_obs = DeviceBuffer[dtype](
+            ctx, gpu_state.s_obs.unsafe_ptr(), RBS * Self.OBS, owning=False
+        )
+        var real_s_act = DeviceBuffer[dtype](
+            ctx, gpu_state.s_act.unsafe_ptr(), RBS * Self.ACTIONS, owning=False
+        )
+        var real_s_rew = DeviceBuffer[dtype](
+            ctx, gpu_state.s_rew.unsafe_ptr(), RBS, owning=False
+        )
+        var real_s_nobs = DeviceBuffer[dtype](
+            ctx, gpu_state.s_nobs.unsafe_ptr(), RBS * Self.OBS, owning=False
+        )
+        var real_s_done = DeviceBuffer[dtype](
+            ctx, gpu_state.s_done.unsafe_ptr(), RBS, owning=False
+        )
+        gpu_state.buffer.sample[RBS](
             ctx,
             rng_counter=gpu_state.rng_counter,
-            sampled_obs=gpu_state.s_obs,
-            sampled_actions=gpu_state.s_act,
-            sampled_rewards=gpu_state.s_rew,
-            sampled_next_obs=gpu_state.s_nobs,
-            sampled_dones=gpu_state.s_done,
-            indices=gpu_state.s_idx,
+            sampled_obs=real_s_obs,
+            sampled_actions=real_s_act,
+            sampled_rewards=real_s_rew,
+            sampled_next_obs=real_s_nobs,
+            sampled_dones=real_s_done,
+            indices=s_real_idx,
+        )
+
+        # Increment RNG again for independent synthetic sampling
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
+
+        # Sample SYNTH_BS from synthetic buffer into remaining portion
+        var synth_s_obs = DeviceBuffer[dtype](
+            ctx,
+            gpu_state.s_obs.unsafe_ptr() + RBS * Self.OBS,
+            SBS * Self.OBS,
+            owning=False,
+        )
+        var synth_s_act = DeviceBuffer[dtype](
+            ctx,
+            gpu_state.s_act.unsafe_ptr() + RBS * Self.ACTIONS,
+            SBS * Self.ACTIONS,
+            owning=False,
+        )
+        var synth_s_rew = DeviceBuffer[dtype](
+            ctx,
+            gpu_state.s_rew.unsafe_ptr() + RBS,
+            SBS,
+            owning=False,
+        )
+        var synth_s_nobs = DeviceBuffer[dtype](
+            ctx,
+            gpu_state.s_nobs.unsafe_ptr() + RBS * Self.OBS,
+            SBS * Self.OBS,
+            owning=False,
+        )
+        var synth_s_done = DeviceBuffer[dtype](
+            ctx,
+            gpu_state.s_done.unsafe_ptr() + RBS,
+            SBS,
+            owning=False,
+        )
+        synth_buffer.sample[SBS](
+            ctx,
+            rng_counter=gpu_state.rng_counter,
+            sampled_obs=synth_s_obs,
+            sampled_actions=synth_s_act,
+            sampled_rewards=synth_s_rew,
+            sampled_next_obs=synth_s_nobs,
+            sampled_dones=synth_s_done,
+            indices=s_synth_idx,
         )
 
         var obs_t = gpu_state.obs_view[BS]()
@@ -2662,6 +2683,11 @@ struct MBPOAgent[
         mut self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
+        synth_buffer: GPUReplayBuffer[
+            Self.Config.SYNTH_CAPACITY, Self.Config.obs_dim, Self.Config.action_dim
+        ],
+        s_real_idx: DeviceBuffer[DType.int32],
+        s_synth_idx: DeviceBuffer[DType.int32],
     ) raises:
         """GPU SAC training step with CPU bookkeeping + diagnostics.
 
@@ -2669,7 +2695,9 @@ struct MBPOAgent[
         no CPU counters or D2H copies). Call _gpu_train_diagnostics()
         periodically outside the graph for metrics logging.
         """
-        self._gpu_train_kernels(ctx, gpu_state)
+        self._gpu_train_kernels(
+            ctx, gpu_state, synth_buffer, s_real_idx, s_synth_idx
+        )
         self._gpu_train_diagnostics(ctx, gpu_state, 1)
 
     def soft_update_targets_gpu(

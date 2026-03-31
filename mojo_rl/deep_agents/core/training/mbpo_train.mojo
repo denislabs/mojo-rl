@@ -16,6 +16,7 @@ from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import dtype
 from ..checkpoint_trait import Checkpointable
 from ..agents.mbpo_agent import MBPOAgent, GPUDynamicsEnsemble
+from ..replay.gpu_replay_buffer import GPUReplayBuffer
 from ..configs.mbpo_config import MBPOConfig
 from ..kernels import (
     accumulate_rewards_kernel,
@@ -306,6 +307,16 @@ def run_mbpo_train_gpu[
     gpu_state.actor.upload_from(cpu_state.actor, ctx)
     gpu_state.critics.upload_from(cpu_state.critics, ctx)
 
+    # Synthetic replay buffer (separate from real buffer in gpu_state)
+    var synth_buffer = GPUReplayBuffer[
+        Config.SYNTH_CAPACITY, Config.obs_dim, Config.action_dim
+    ](ctx)
+    # Scratch index buffers for mixed sampling
+    comptime REAL_BS = MBPOAgent[Config, L].REAL_BS
+    comptime SYNTH_BS = MBPOAgent[Config, L].SYNTH_BS
+    var s_real_idx = ctx.enqueue_create_buffer[DType.int32](REAL_BS)
+    var s_synth_idx = ctx.enqueue_create_buffer[DType.int32](SYNTH_BS)
+
     # Allocate environment buffers
     var states_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.STATE_SIZE)
     var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
@@ -445,53 +456,66 @@ def run_mbpo_train_gpu[
             ctx, states_buf, obs_buf
         )
 
-        # GPU SAC gradient steps
+        # GPU SAC gradient steps (mixed sampling: real + synthetic)
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
-            comptime if USE_CUDA_GRAPH:
-                # Lazy capture: first time, capture pure GPU kernels
-                if not _train_graph:
-                    agent._gpu_train_kernels(ctx, gpu_state)
-                    ctx.synchronize()
-                    var graph = CUDAGraph(ctx)
-                    graph.begin_capture()
-                    agent._gpu_train_kernels(ctx, gpu_state)
-                    graph.end_capture()
-                    if verbose:
-                        print(
-                            "[CUDA Graph] Captured MBPO SAC train step with "
-                            + String(graph.num_nodes())
-                            + " nodes"
+            # Only train if synthetic buffer also has data
+            if synth_buffer.is_ready[SYNTH_BS]():
+                comptime if USE_CUDA_GRAPH:
+                    # Lazy capture: first time, capture pure GPU kernels
+                    if not _train_graph:
+                        agent._gpu_train_kernels(
+                            ctx, gpu_state, synth_buffer,
+                            s_real_idx, s_synth_idx,
                         )
-                    _train_graph = graph^
-                # All SAC steps via async graph replay (no per-step sync)
-                for _ in range(agent.sac_updates_per_step):
-                    _train_graph.value().replay_async()
-                # Single sync after all replays
-                _train_graph.value().sync()
-                # Bookkeeping + diagnostics outside graph
-                agent._gpu_train_diagnostics(
-                    ctx, gpu_state, agent.sac_updates_per_step
-                )
-            else:
-                for _ in range(agent.sac_updates_per_step):
-                    agent.do_gpu_train_step(ctx, gpu_state)
-            agent.soft_update_targets_gpu(ctx, gpu_state)
-            total_train_steps += agent.sac_updates_per_step
+                        ctx.synchronize()
+                        var graph = CUDAGraph(ctx)
+                        graph.begin_capture()
+                        agent._gpu_train_kernels(
+                            ctx, gpu_state, synth_buffer,
+                            s_real_idx, s_synth_idx,
+                        )
+                        graph.end_capture()
+                        if verbose:
+                            print(
+                                "[CUDA Graph] Captured MBPO SAC train step with "
+                                + String(graph.num_nodes())
+                                + " nodes"
+                            )
+                        _train_graph = graph^
+                    # All SAC steps via async graph replay (no per-step sync)
+                    for _ in range(agent.sac_updates_per_step):
+                        _train_graph.value().replay_async()
+                    # Single sync after all replays
+                    _train_graph.value().sync()
+                    # Bookkeeping + diagnostics outside graph
+                    agent._gpu_train_diagnostics(
+                        ctx, gpu_state, agent.sac_updates_per_step
+                    )
+                else:
+                    for _ in range(agent.sac_updates_per_step):
+                        agent.do_gpu_train_step(
+                            ctx, gpu_state, synth_buffer,
+                            s_real_idx, s_synth_idx,
+                        )
+                agent.soft_update_targets_gpu(ctx, gpu_state)
+                total_train_steps += agent.sac_updates_per_step
 
         # Periodic dynamics training
         total_steps += n_envs
         step_seed += 1
 
         if total_steps >= next_model_train and total_steps >= warmup_steps:
-            # GPU dynamics training: data stays on GPU
+            # GPU dynamics training on REAL data only (paper design)
             gpu_dynamics.train_on_buffer[MBPOAgent[Config, L].GPU_BUF_CAP](
                 ctx, gpu_state.buffer,
             )
             agent.update_rollout_length(epoch)
             epoch += 1
 
-            # GPU model rollouts
-            agent.do_model_rollouts_gpu[E](ctx, gpu_dynamics, gpu_state)
+            # GPU model rollouts → store in synth_buffer
+            agent.do_model_rollouts_gpu[E](
+                ctx, gpu_dynamics, gpu_state, synth_buffer
+            )
             next_model_train += agent.model_train_freq
 
         # Progress bar (no GPU sync, pure CPU counters)
@@ -555,8 +579,13 @@ def run_mbpo_train_gpu[
                     total_steps,
                 )
                 logger[].log_scalar(
-                    "buffer_size",
+                    "real_buffer_size",
                     Float64(gpu_state.buffer.size),
+                    total_steps,
+                )
+                logger[].log_scalar(
+                    "synth_buffer_size",
+                    Float64(synth_buffer.size),
                     total_steps,
                 )
                 logger[].log_scalar(
@@ -579,8 +608,10 @@ def run_mbpo_train_gpu[
                     + String(agent.alpha)[byte=:6]
                     + " | Train: "
                     + String(total_train_steps)
-                    + " | Buf: "
+                    + " | R: "
                     + String(gpu_state.buffer.size)
+                    + " S: "
+                    + String(synth_buffer.size)
                 )
 
             # Autosave checkpoint
