@@ -24,6 +24,7 @@ from ..kernels import (
     uniform_random_actions_kernel,
 )
 from ..utils import print_progress_bar, clear_progress_bar
+from mojo_rl.cuda.graph import CUDAGraph
 
 
 def run_mbpo_train[
@@ -242,6 +243,7 @@ def run_mbpo_train_gpu[
     E: GPUContinuousEnv,
     Config: MBPOConfig,
     L: Logger = NoOpLogger,
+    USE_CUDA_GRAPH: Bool = False,
 ](
     mut agent: MBPOAgent[Config, L],
     mut cpu_state: MBPOAgent[Config, L].CPUStateType,
@@ -361,6 +363,9 @@ def run_mbpo_train_gpu[
     var next_model_train = agent.model_train_freq
     var epoch = 0
 
+    # CUDA graph state for SAC train step capture
+    var _train_graph: Optional[CUDAGraph] = None
+
     # Progress bar: ~20 updates per print interval
     var progress_interval = print_every // 20
     if progress_interval < n_envs:
@@ -442,8 +447,34 @@ def run_mbpo_train_gpu[
 
         # GPU SAC gradient steps
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
-            for _ in range(agent.sac_updates_per_step):
-                agent.do_gpu_train_step(ctx, gpu_state)
+            comptime if USE_CUDA_GRAPH:
+                # Lazy capture: first time, capture pure GPU kernels
+                if not _train_graph:
+                    agent._gpu_train_kernels(ctx, gpu_state)
+                    ctx.synchronize()
+                    var graph = CUDAGraph(ctx)
+                    graph.begin_capture()
+                    agent._gpu_train_kernels(ctx, gpu_state)
+                    graph.end_capture()
+                    if verbose:
+                        print(
+                            "[CUDA Graph] Captured MBPO SAC train step with "
+                            + String(graph.num_nodes())
+                            + " nodes"
+                        )
+                    _train_graph = graph^
+                # All SAC steps via async graph replay (no per-step sync)
+                for _ in range(agent.sac_updates_per_step):
+                    _train_graph.value().replay_async()
+                # Single sync after all replays
+                _train_graph.value().sync()
+                # Bookkeeping + diagnostics outside graph
+                agent._gpu_train_diagnostics(
+                    ctx, gpu_state, agent.sac_updates_per_step
+                )
+            else:
+                for _ in range(agent.sac_updates_per_step):
+                    agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += agent.sac_updates_per_step
 

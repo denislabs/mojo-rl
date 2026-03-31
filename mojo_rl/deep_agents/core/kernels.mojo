@@ -3231,6 +3231,28 @@ def gaussian_nll_grad_kernel[
 
 
 @always_inline
+def reduce_mean_loss_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+](
+    loss: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    result: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+):
+    """Reduce per-sample losses to mean. Launch with grid=(1,), block=(1,).
+
+    result[0] = mean(loss[0:BATCH])
+
+    Used to compute holdout loss on GPU instead of downloading full batch.
+    Single-thread serial sum — fine for BATCH<=1024 (microsecond-scale).
+    """
+    if Int(thread_idx.x) == 0:
+        var total = Scalar[dtype](0.0)
+        for i in range(BATCH):
+            total += rebind[Scalar[dtype]](loss[i])
+        result[0] = total / Scalar[dtype](BATCH)
+
+
+@always_inline
 def clamp_rewards_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,

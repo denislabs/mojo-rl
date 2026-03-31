@@ -65,6 +65,7 @@ from mojo_rl.deep_agents.core.kernels import (
     sample_indices_kernel,
     increment_rng_counter_kernel,
     alpha_adam_update_kernel,
+    reduce_mean_loss_kernel,
 )
 from mojo_rl.core import (
     TrainingMetrics,
@@ -567,7 +568,8 @@ struct GPUDynamicsEnsemble[
     var t_grad_in: DeviceBuffer[dtype]  # [train_batch * DYN_IN]
     var t_ws: DeviceBuffer[dtype]  # workspace
     var t_loss: DeviceBuffer[dtype]  # [train_batch]
-    var t_loss_host: HostBuffer[dtype]  # [train_batch] for CPU readback
+    var t_loss_host: HostBuffer[dtype]  # [1] reduced mean loss for CPU readback
+    var t_loss_scalar: DeviceBuffer[dtype]  # [1] GPU-side reduced mean loss
 
     # Pre-allocated GPU buffers for rollouts (fixed rollout_batch size)
     var r_obs: DeviceBuffer[dtype]  # [rollout_batch * obs_dim]
@@ -621,7 +623,8 @@ struct GPUDynamicsEnsemble[
         self.t_grad_in = ctx.enqueue_create_buffer[dtype](TB * Self.DYN_IN)
         self.t_ws = ctx.enqueue_create_buffer[dtype](WS_SIZE)
         self.t_loss = ctx.enqueue_create_buffer[dtype](TB)
-        self.t_loss_host = ctx.enqueue_create_host_buffer[dtype](TB)
+        self.t_loss_host = ctx.enqueue_create_host_buffer[dtype](1)
+        self.t_loss_scalar = ctx.enqueue_create_buffer[dtype](1)
 
         # Rollout buffers
         comptime RB = Self.rollout_batch
@@ -661,6 +664,7 @@ struct GPUDynamicsEnsemble[
         self.t_ws = take.t_ws^
         self.t_loss = take.t_loss^
         self.t_loss_host = take.t_loss_host^
+        self.t_loss_scalar = take.t_loss_scalar^
         self.r_obs = take.r_obs^
         self.r_next_obs = take.r_next_obs^
         self.r_actions = take.r_actions^
@@ -704,6 +708,7 @@ struct GPUDynamicsEnsemble[
         buffer: GPUReplayBuffer[BUF_CAP, Self.obs_dim, Self.action_dim],
         max_epochs: Int = 100,
         max_epochs_since_update: Int = 5,
+        holdout_check_every: Int = 5,
     ) raises:
         """Train all ensemble members on data from GPU replay buffer.
 
@@ -714,7 +719,7 @@ struct GPUDynamicsEnsemble[
         4. gaussian_nll_grad_kernel → grad_output
         5. backward_gpu → accumulate gradients
         6. optimizer_step on GPU
-        7. Compute holdout loss (forward on separate batch, download)
+        7. Periodically: holdout loss via GPU reduction + single scalar download
         8. Early stopping based on holdout improvement
         """
         comptime TB = Self.train_batch
@@ -881,109 +886,124 @@ struct GPUDynamicsEnsemble[
                     # Optimizer step
                     self.members[m].optimizer_step(ctx)
 
-                # Holdout evaluation: sample a fresh batch, forward only, check loss
-                ctx.enqueue_function[dyn_incr_k, dyn_incr_k](
-                    dyn_rng_t,
-                    grid_dim=(1,),
-                    block_dim=(1,),
-                )
-                buffer.sample[TB](
-                    ctx,
-                    self.rng_counter,
-                    self.s_obs,
-                    self.s_act,
-                    self.s_rew,
-                    self.s_nobs,
-                    self.s_done,
-                    self.s_idx,
-                )
+                # Holdout evaluation: check every holdout_check_every epochs
+                # to reduce GPU sync overhead (main Phase 2 optimization)
+                if (epoch + 1) % holdout_check_every == 0 or epoch == max_epochs - 1:
+                    ctx.enqueue_function[dyn_incr_k, dyn_incr_k](
+                        dyn_rng_t,
+                        grid_dim=(1,),
+                        block_dim=(1,),
+                    )
+                    buffer.sample[TB](
+                        ctx,
+                        self.rng_counter,
+                        self.s_obs,
+                        self.s_act,
+                        self.s_rew,
+                        self.s_nobs,
+                        self.s_done,
+                        self.s_idx,
+                    )
 
-                var h_obs_t = LayoutTensor[
-                    dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
-                ](self.s_obs.unsafe_ptr())
-                var h_act_t = LayoutTensor[
-                    dtype, Layout.row_major(TB, Self.action_dim), MutAnyOrigin
-                ](self.s_act.unsafe_ptr())
-                var h_input_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(TB, Self.DynModel.IN_DIM),
-                    MutAnyOrigin,
-                ](self.t_input.unsafe_ptr())
-                ctx.enqueue_function[concat_k, concat_k](
-                    h_input_t,
-                    h_obs_t,
-                    h_act_t,
-                    grid_dim=(DYN_IN_BLOCKS,),
-                    block_dim=(TPB_VAL,),
-                )
+                    var h_obs_t = LayoutTensor[
+                        dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
+                    ](self.s_obs.unsafe_ptr())
+                    var h_act_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(TB, Self.action_dim),
+                        MutAnyOrigin,
+                    ](self.s_act.unsafe_ptr())
+                    var h_input_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(TB, Self.DynModel.IN_DIM),
+                        MutAnyOrigin,
+                    ](self.t_input.unsafe_ptr())
+                    ctx.enqueue_function[concat_k, concat_k](
+                        h_input_t,
+                        h_obs_t,
+                        h_act_t,
+                        grid_dim=(DYN_IN_BLOCKS,),
+                        block_dim=(TPB_VAL,),
+                    )
 
-                var h_nobs_t = LayoutTensor[
-                    dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
-                ](self.s_nobs.unsafe_ptr())
-                var h_rew_t = LayoutTensor[
-                    dtype, Layout.row_major(TB), MutAnyOrigin
-                ](self.s_rew.unsafe_ptr())
-                var h_target_t = LayoutTensor[
-                    dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
-                ](self.t_target.unsafe_ptr())
-                ctx.enqueue_function[target_k, target_k](
-                    h_target_t,
-                    h_obs_t,
-                    h_nobs_t,
-                    h_rew_t,
-                    grid_dim=(PRED_BLOCKS,),
-                    block_dim=(TPB_VAL,),
-                )
+                    var h_nobs_t = LayoutTensor[
+                        dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
+                    ](self.s_nobs.unsafe_ptr())
+                    var h_rew_t = LayoutTensor[
+                        dtype, Layout.row_major(TB), MutAnyOrigin
+                    ](self.s_rew.unsafe_ptr())
+                    var h_target_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(TB, Self.DYN_PRED),
+                        MutAnyOrigin,
+                    ](self.t_target.unsafe_ptr())
+                    ctx.enqueue_function[target_k, target_k](
+                        h_target_t,
+                        h_obs_t,
+                        h_nobs_t,
+                        h_rew_t,
+                        grid_dim=(PRED_BLOCKS,),
+                        block_dim=(TPB_VAL,),
+                    )
 
-                var h_output_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(TB, Self.DynModel.OUT_DIM),
-                    MutAnyOrigin,
-                ](self.t_output.unsafe_ptr())
-                var p_h = self.members[m].params_view()
-                Self.DynNet.forward_gpu[TB](
-                    ctx,
-                    h_input_t,
-                    h_output_t,
-                    p_h,
-                    self.t_ws,
-                )
+                    var h_output_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(TB, Self.DynModel.OUT_DIM),
+                        MutAnyOrigin,
+                    ](self.t_output.unsafe_ptr())
+                    var p_h = self.members[m].params_view()
+                    Self.DynNet.forward_gpu[TB](
+                        ctx,
+                        h_input_t,
+                        h_output_t,
+                        p_h,
+                        self.t_ws,
+                    )
 
-                # Compute loss only (reuse NLL kernel, ignore gradients)
-                var h_grad_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(TB, Self.DynModel.OUT_DIM),
-                    MutAnyOrigin,
-                ](self.t_grad_out.unsafe_ptr())
-                var h_loss_t = LayoutTensor[
-                    dtype, Layout.row_major(TB), MutAnyOrigin
-                ](self.t_loss.unsafe_ptr())
-                ctx.enqueue_function[nll_k, nll_k](
-                    h_grad_t,
-                    h_output_t,
-                    h_target_t,
-                    h_loss_t,
-                    min_lv,
-                    max_lv,
-                    grid_dim=(PRED_BLOCKS,),
-                    block_dim=(TPB_VAL,),
-                )
+                    # Compute loss (reuse NLL kernel, ignore gradients)
+                    var h_grad_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(TB, Self.DynModel.OUT_DIM),
+                        MutAnyOrigin,
+                    ](self.t_grad_out.unsafe_ptr())
+                    var h_loss_t = LayoutTensor[
+                        dtype, Layout.row_major(TB), MutAnyOrigin
+                    ](self.t_loss.unsafe_ptr())
+                    ctx.enqueue_function[nll_k, nll_k](
+                        h_grad_t,
+                        h_output_t,
+                        h_target_t,
+                        h_loss_t,
+                        min_lv,
+                        max_lv,
+                        grid_dim=(PRED_BLOCKS,),
+                        block_dim=(TPB_VAL,),
+                    )
 
-                # Download loss to CPU for early stopping
-                ctx.enqueue_copy(self.t_loss_host, self.t_loss)
-                ctx.synchronize()
-                var holdout_loss: Float64 = 0.0
-                for b in range(TB):
-                    holdout_loss += Float64(self.t_loss_host[b])
-                holdout_loss /= Float64(TB)
+                    # GPU reduction: mean loss → single scalar
+                    comptime reduce_k = reduce_mean_loss_kernel[dtype, TB]
+                    var loss_scalar_t = LayoutTensor[
+                        dtype, Layout.row_major(1), MutAnyOrigin
+                    ](self.t_loss_scalar.unsafe_ptr())
+                    ctx.enqueue_function[reduce_k, reduce_k](
+                        h_loss_t,
+                        loss_scalar_t,
+                        grid_dim=(1,),
+                        block_dim=(1,),
+                    )
 
-                if holdout_loss < best_holdout:
-                    best_holdout = holdout_loss
-                    epochs_since_update = 0
-                else:
-                    epochs_since_update += 1
-                    if epochs_since_update >= max_epochs_since_update:
-                        break
+                    # Download 1 scalar (not TB elements)
+                    ctx.enqueue_copy(self.t_loss_host, self.t_loss_scalar)
+                    ctx.synchronize()
+                    var holdout_loss = Float64(self.t_loss_host[0])
+
+                    if holdout_loss < best_holdout:
+                        best_holdout = holdout_loss
+                        epochs_since_update = 0
+                    else:
+                        epochs_since_update += holdout_check_every
+                        if epochs_since_update >= max_epochs_since_update:
+                            break
 
             holdout_losses.append(best_holdout)
 
@@ -2238,12 +2258,16 @@ struct MBPOAgent[
             block_dim=(TPB,),
         )
 
-    def do_gpu_train_step(
-        mut self,
+    def _gpu_train_kernels(
+        self,
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
     ) raises:
-        """GPU SAC training step — identical to GenericOffPolicyAgent."""
+        """Pure GPU kernel sequence for one SAC training step.
+
+        Contains ONLY GPU kernel enqueues — no CPU counters, no diagnostics,
+        no ctx.synchronize(). Fully CUDA graph capturable.
+        """
         comptime BS = Self.BATCH
         comptime ELEM_BLOCKS = (BS * Self.CRITIC_IN + TPB - 1) // TPB
         comptime BATCH_BLOCKS = (BS + TPB - 1) // TPB
@@ -2253,7 +2277,6 @@ struct MBPOAgent[
         comptime mse_grad_k = td_mse_grad_kernel[dtype, BS, Self.CRITIC_OUT]
 
         # Phase 1: Sample batch from GPU buffer
-        self.train_step_count += 1
 
         # Increment GPU-side RNG counter (CUDA graph compatible)
         comptime incr_k = increment_rng_counter_kernel
@@ -2427,71 +2450,8 @@ struct MBPOAgent[
             )
             gpu_state.critics.pairs[1].online.optimizer_step(ctx)
 
-        # GPU Diagnostic logging (every diag_every train steps)
-        if (
-            self.logger
-            and self.diag_every > 0
-            and self.train_step_count % self.diag_every == 0
-        ):
-            try:
-                ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
-                ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
-                ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
-                ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
-                ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
-                ctx.enqueue_copy(gpu_state.diag_nq_host, gpu_state.next_q)
-                ctx.synchronize()
-                var diag_q_host = gpu_state.diag_q_host
-                var diag_tgt_host = gpu_state.diag_tgt_host
-                var diag_rew_host = gpu_state.diag_rew_host
-                var diag_done_host = gpu_state.diag_done_host
-                var diag_act_host = gpu_state.diag_act_host
-                var diag_nq_host = gpu_state.diag_nq_host
-
-                var mean_q: Float64 = 0.0
-                var mean_tgt: Float64 = 0.0
-                var mean_rew: Float64 = 0.0
-                var mean_done: Float64 = 0.0
-                var critic_loss: Float64 = 0.0
-                var mean_nq: Float64 = 0.0
-                var mean_abs_act: Float64 = 0.0
-                for b in range(BS):
-                    var q_val = Float64(diag_q_host[b])
-                    var tgt_val = Float64(diag_tgt_host[b])
-                    mean_q += q_val
-                    mean_tgt += tgt_val
-                    mean_rew += Float64(diag_rew_host[b])
-                    mean_done += Float64(diag_done_host[b])
-                    mean_nq += Float64(diag_nq_host[b])
-                    critic_loss += (q_val - tgt_val) * (q_val - tgt_val)
-                for i in range(BS * Self.ACTIONS):
-                    var a = Float64(diag_act_host[i])
-                    mean_abs_act += a if a >= 0.0 else -a
-                mean_q /= Float64(BS)
-                mean_tgt /= Float64(BS)
-                mean_rew /= Float64(BS)
-                mean_done /= Float64(BS)
-                mean_nq /= Float64(BS)
-                critic_loss /= Float64(BS)
-                mean_abs_act /= Float64(BS * Self.ACTIONS)
-
-                var step = self.train_step_count
-                self.logger[].log_scalar("critic_loss", critic_loss, step)
-                self.logger[].log_scalar("mean_q", mean_q, step)
-                self.logger[].log_scalar("mean_target", mean_tgt, step)
-                self.logger[].log_scalar("mean_reward", mean_rew, step)
-                self.logger[].log_scalar("mean_next_q", mean_nq, step)
-                self.logger[].log_scalar("mean_done", mean_done, step)
-                self.logger[].log_scalar("mean_abs_action", mean_abs_act, step)
-                self.logger[].log_scalar("alpha", self.alpha, step)
-            except:
-                pass
-
-        # Phase 4: Actor update
-        self.update_count += 1
-        if Self.Config.Schedule.should_update_actor(
-            self.update_count, self.policy_delay
-        ):
+        # Phase 4: Actor update (always runs for SAC/EveryStep schedule)
+        if Self.Config.Schedule.should_update_actor(1, self.policy_delay):
             gpu_state.actor.online.zero_grads(ctx)
             gpu_state.critics.pairs[0].online.zero_grads(ctx)
             var a_grads = gpu_state.actor.online.grads_view()
@@ -2585,6 +2545,91 @@ struct MBPOAgent[
                         block_dim=(1,),
                     )
 
+    def _gpu_train_diagnostics(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        steps: Int,
+    ) raises:
+        """CPU-side bookkeeping + diagnostics. Call outside graph."""
+        self.train_step_count += steps
+        self.update_count += steps
+
+        # GPU Diagnostic logging (periodic)
+        comptime BS = Self.BATCH
+        if (
+            self.logger
+            and self.diag_every > 0
+            and self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
+                ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
+                ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
+                ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
+                ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
+                ctx.enqueue_copy(gpu_state.diag_nq_host, gpu_state.next_q)
+                ctx.synchronize()
+                var diag_q_host = gpu_state.diag_q_host
+                var diag_tgt_host = gpu_state.diag_tgt_host
+                var diag_rew_host = gpu_state.diag_rew_host
+                var diag_done_host = gpu_state.diag_done_host
+                var diag_act_host = gpu_state.diag_act_host
+                var diag_nq_host = gpu_state.diag_nq_host
+
+                var mean_q: Float64 = 0.0
+                var mean_tgt: Float64 = 0.0
+                var mean_rew: Float64 = 0.0
+                var mean_done: Float64 = 0.0
+                var critic_loss: Float64 = 0.0
+                var mean_nq: Float64 = 0.0
+                var mean_abs_act: Float64 = 0.0
+                for b in range(BS):
+                    var q_val = Float64(diag_q_host[b])
+                    var tgt_val = Float64(diag_tgt_host[b])
+                    mean_q += q_val
+                    mean_tgt += tgt_val
+                    mean_rew += Float64(diag_rew_host[b])
+                    mean_done += Float64(diag_done_host[b])
+                    mean_nq += Float64(diag_nq_host[b])
+                    critic_loss += (q_val - tgt_val) * (q_val - tgt_val)
+                for i in range(BS * Self.ACTIONS):
+                    var a = Float64(diag_act_host[i])
+                    mean_abs_act += a if a >= 0.0 else -a
+                mean_q /= Float64(BS)
+                mean_tgt /= Float64(BS)
+                mean_rew /= Float64(BS)
+                mean_done /= Float64(BS)
+                mean_nq /= Float64(BS)
+                critic_loss /= Float64(BS)
+                mean_abs_act /= Float64(BS * Self.ACTIONS)
+
+                var step = self.train_step_count
+                self.logger[].log_scalar("critic_loss", critic_loss, step)
+                self.logger[].log_scalar("mean_q", mean_q, step)
+                self.logger[].log_scalar("mean_target", mean_tgt, step)
+                self.logger[].log_scalar("mean_reward", mean_rew, step)
+                self.logger[].log_scalar("mean_next_q", mean_nq, step)
+                self.logger[].log_scalar("mean_done", mean_done, step)
+                self.logger[].log_scalar("mean_abs_action", mean_abs_act, step)
+                self.logger[].log_scalar("alpha", self.alpha, step)
+            except:
+                pass
+
+    def do_gpu_train_step(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises:
+        """GPU SAC training step with CPU bookkeeping + diagnostics.
+
+        For CUDA graph capture, use _gpu_train_kernels() instead (pure GPU,
+        no CPU counters or D2H copies). Call _gpu_train_diagnostics()
+        periodically outside the graph for metrics logging.
+        """
+        self._gpu_train_kernels(ctx, gpu_state)
+        self._gpu_train_diagnostics(ctx, gpu_state, 1)
+
     def soft_update_targets_gpu(
         mut self,
         ctx: DeviceContext,
@@ -2601,6 +2646,7 @@ struct MBPOAgent[
 
     def train_gpu[
         E: GPUContinuousEnv,
+        USE_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         ctx: DeviceContext,
@@ -2632,7 +2678,7 @@ struct MBPOAgent[
         self.logger = logger
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
-        var metrics = run_mbpo_train_gpu[E, Self.Config, Self.L](
+        var metrics = run_mbpo_train_gpu[E, Self.Config, Self.L, USE_CUDA_GRAPH](
             self,
             cpu_state,
             ctx,
