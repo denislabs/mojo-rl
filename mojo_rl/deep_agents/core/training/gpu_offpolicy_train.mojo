@@ -490,6 +490,18 @@ def run_offpolicy_continuous_train_gpu[
         workspace_ptr=workspace_buf.unsafe_ptr(),
     )
 
+    # Debug: print buffer addresses to check for overlap
+    if verbose:
+        print("[ADDR] states_buf     =" + String(Int(states_buf.unsafe_ptr())))
+        print("[ADDR] rewards_buf    =" + String(Int(rewards_buf.unsafe_ptr())))
+        print("[ADDR] dones_buf      =" + String(Int(dones_buf.unsafe_ptr())))
+        print("[ADDR] terminated_buf =" + String(Int(terminated_buf.unsafe_ptr())))
+        print("[ADDR] ep_rewards_buf =" + String(Int(episode_rewards_buf.unsafe_ptr())))
+        print("[ADDR] ep_steps_buf   =" + String(Int(episode_steps_buf.unsafe_ptr())))
+        print("[ADDR] rw_sum_buf     =" + String(Int(gpu_reward_sum_buf.unsafe_ptr())))
+        print("[ADDR] ep_count_buf   =" + String(Int(gpu_episode_count_buf.unsafe_ptr())))
+        print("[ADDR] workspace_buf  =" + String(Int(workspace_buf.unsafe_ptr())))
+
     # Initialize episode tracking
     ctx.enqueue_memset(episode_rewards_buf, 0)
     ctx.enqueue_memset(episode_steps_buf, 0)
