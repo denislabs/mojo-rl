@@ -438,17 +438,8 @@ def run_offpolicy_continuous_train_gpu[
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
-    # Episode tracking: per-env accumulators + GPU-side stats
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
-
-    # Host buffers for periodic readback (only at print boundaries)
-    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
-    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
-
     # Workspace buffer (shared model state for physics envs)
+    # Allocated BEFORE episode tracking to avoid matmul overflow corruption.
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:
         ws_size = 1
@@ -456,6 +447,24 @@ def run_offpolicy_continuous_train_gpu[
 
     if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
+
+    # Episode tracking: per-env accumulators + GPU-side stats
+    # Padded to 256 elements minimum to guard against matmul overflow from
+    # adjacent CUDA allocations (max_matmul/cuBLAS can write beyond small
+    # output buffers on NVIDIA).
+    comptime EP_PAD = 256
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](
+        max(n_envs, EP_PAD)
+    )
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](
+        max(n_envs, EP_PAD)
+    )
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+
+    # Host buffers for periodic readback (only at print boundaries)
+    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
+    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
 
     # ------------------------------------------------------------------
     # GPU-side counters for CUDA graph capture (env step graph)
@@ -1225,16 +1234,7 @@ def run_offpolicy_discrete_train_gpu[
     var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
-    # Episode tracking: per-env accumulators + GPU-side stats
-    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
-    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
-    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
-
-    # Host buffers for periodic readback (only at print boundaries)
-    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
-    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
-
+    # Workspace buffer (allocated before episode tracking for memory layout)
     var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
     if ws_size == 0:
         ws_size = 1
@@ -1242,6 +1242,22 @@ def run_offpolicy_discrete_train_gpu[
 
     if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
+
+    # Episode tracking: per-env accumulators + GPU-side stats
+    # Padded to guard against matmul overflow from adjacent allocations.
+    comptime EP_PAD = 256
+    var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](
+        max(n_envs, EP_PAD)
+    )
+    var episode_steps_buf = ctx.enqueue_create_buffer[dtype](
+        max(n_envs, EP_PAD)
+    )
+    var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+    var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](EP_PAD)
+
+    # Host buffers for periodic readback (only at print boundaries)
+    var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
+    var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
 
     E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf, rng_seed=0)
     E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
