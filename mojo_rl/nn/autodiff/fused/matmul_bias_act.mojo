@@ -1267,37 +1267,17 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
             # output buffer due to tile-aligned writes. Use our bounds-checked
             # tiled kernel instead. Threshold: 64 covers Blackwell tile sizes.
             comptime if has_nvidia_gpu_accelerator() and Self.out_dim < 64:
-                from ...gpu.matmul_ops import matmul_kernel as safe_mm
+                from ...gpu import tiled_matmul_kernel
 
                 comptime MM_TILE = 8
                 comptime MM_GRID = (
                     (Self.out_dim + MM_TILE - 1) // MM_TILE,
                     (BATCH + MM_TILE - 1) // MM_TILE,
                 )
-
-                @always_inline
-                def _safe_mm_wrapper(
-                    mm_out: LayoutTensor[
-                        dtype,
-                        Layout.row_major(BATCH, Self.out_dim),
-                        MutAnyOrigin,
-                    ],
-                    a: LayoutTensor[
-                        dtype,
-                        Layout.row_major(BATCH, Self.in_dim),
-                        ImmutAnyOrigin,
-                    ],
-                    b: LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.in_dim, Self.out_dim),
-                        ImmutAnyOrigin,
-                    ],
-                ):
-                    safe_mm[
-                        dtype, BATCH, Self.out_dim, Self.in_dim, MM_TILE
-                    ](mm_out, a, b)
-
-                ctx.enqueue_function[_safe_mm_wrapper, _safe_mm_wrapper](
+                comptime safe_mm = tiled_matmul_kernel[
+                    dtype, BATCH, Self.out_dim, Self.in_dim, MM_TILE
+                ]
+                ctx.enqueue_function[safe_mm, safe_mm](
                     output,
                     input_immut,
                     W,
