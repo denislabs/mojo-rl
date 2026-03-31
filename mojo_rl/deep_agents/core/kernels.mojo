@@ -3275,6 +3275,54 @@ def clamp_rewards_kernel[
 
 
 @always_inline
+def mask_dead_rollouts_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+](
+    alive: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """Zero out rewards and set done=1 for dead rollouts.
+
+    For rollouts where alive[b]==0 (already terminated in a previous step):
+    - reward[b] = 0 (no reward signal)
+    - dones[b] = 1 (done flag prevents TD bootstrapping)
+
+    This makes dead rollout transitions harmless noise in the replay buffer.
+    One thread per batch element. Launch with grid=(BLOCKS,), block=(TPB,).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+    if rebind[Scalar[dtype]](alive[b]) < Scalar[dtype](0.5):
+        rewards[b] = Scalar[dtype](0.0)
+        dones[b] = Scalar[dtype](1.0)
+
+
+@always_inline
+def update_alive_mask_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+](
+    alive: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """Update alive mask: alive[b] *= (1 - dones[b]).
+
+    After this kernel, rollouts that just terminated have alive=0 and
+    won't contribute useful transitions in subsequent rollout steps.
+    One thread per batch element. Launch with grid=(BLOCKS,), block=(TPB,).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+    alive[b] = rebind[Scalar[dtype]](alive[b]) * (
+        Scalar[dtype](1.0) - rebind[Scalar[dtype]](dones[b])
+    )
+
+
+@always_inline
 def dynamics_sample_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,

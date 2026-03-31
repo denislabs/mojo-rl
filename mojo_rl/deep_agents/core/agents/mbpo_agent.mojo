@@ -66,6 +66,8 @@ from mojo_rl.deep_agents.core.kernels import (
     increment_rng_counter_kernel,
     alpha_adam_update_kernel,
     reduce_mean_loss_kernel,
+    mask_dead_rollouts_kernel,
+    update_alive_mask_kernel,
 )
 from mojo_rl.cuda.graph import CUDAGraph
 from mojo_rl.core import (
@@ -578,6 +580,7 @@ struct GPUDynamicsEnsemble[
     var r_actions: DeviceBuffer[dtype]  # [rollout_batch * action_dim]
     var r_rewards: DeviceBuffer[dtype]  # [rollout_batch]
     var r_dones: DeviceBuffer[dtype]  # [rollout_batch]
+    var r_alive: DeviceBuffer[dtype]  # [rollout_batch] alive mask for multi-step
     var r_dyn_input: DeviceBuffer[dtype]  # [rollout_batch * DYN_IN]
     var r_dyn_output: DeviceBuffer[dtype]  # [rollout_batch * DYN_OUT]
     var r_ws: DeviceBuffer[dtype]  # workspace for rollout forward
@@ -636,6 +639,7 @@ struct GPUDynamicsEnsemble[
         self.r_actions = ctx.enqueue_create_buffer[dtype](RB * Self.action_dim)
         self.r_rewards = ctx.enqueue_create_buffer[dtype](RB)
         self.r_dones = ctx.enqueue_create_buffer[dtype](RB)
+        self.r_alive = ctx.enqueue_create_buffer[dtype](RB)
         self.r_dyn_input = ctx.enqueue_create_buffer[dtype](RB * Self.DYN_IN)
         self.r_dyn_output = ctx.enqueue_create_buffer[dtype](RB * Self.DYN_OUT)
         self.r_ws = ctx.enqueue_create_buffer[dtype](RWS_SIZE)
@@ -671,6 +675,7 @@ struct GPUDynamicsEnsemble[
         self.r_actions = take.r_actions^
         self.r_rewards = take.r_rewards^
         self.r_dones = take.r_dones^
+        self.r_alive = take.r_alive^
         self.r_dyn_input = take.r_dyn_input^
         self.r_dyn_output = take.r_dyn_output^
         self.r_ws = take.r_ws^
@@ -2006,6 +2011,9 @@ struct MBPOAgent[
         # Copy sampled obs as rollout start states
         ctx.enqueue_copy(gpu_dynamics.r_obs, gpu_dynamics.s_obs)
 
+        # Initialize alive mask (all rollouts start alive)
+        gpu_dynamics.r_alive.enqueue_fill(Scalar[dtype](1.0))
+
         for step in range(self.rollout_length):
             # Select elite model (round-robin)
             var elite_idx = gpu_dynamics.elite_indices[step % num_elites]
@@ -2124,9 +2132,24 @@ struct MBPOAgent[
                 ctx, gpu_dynamics.r_next_obs, gpu_dynamics.r_dones
             )
 
+            # Mask dead rollouts: zero reward + set done=1 for already-dead
+            # This prevents storing meaningless transitions from terminated rollouts
+            comptime mask_dead_k = mask_dead_rollouts_kernel[dtype, RB]
+            var alive_t = LayoutTensor[
+                dtype, Layout.row_major(RB), MutAnyOrigin
+            ](gpu_dynamics.r_alive.unsafe_ptr())
+            var dones_for_mask = LayoutTensor[
+                dtype, Layout.row_major(RB), MutAnyOrigin
+            ](gpu_dynamics.r_dones.unsafe_ptr())
+            ctx.enqueue_function[mask_dead_k, mask_dead_k](
+                alive_t,
+                r_rew_t,
+                dones_for_mask,
+                grid_dim=(RB_BLOCKS,),
+                block_dim=(TPB_VAL,),
+            )
+
             # Store transitions in GPU buffer
-            # Need to normalize actions first (divide by action_scale)
-            # For simplicity, store raw actions (already in [-1,1] from SAC)
             gpu_state.buffer.store[RB](
                 ctx,
                 gpu_dynamics.r_obs,
@@ -2134,6 +2157,19 @@ struct MBPOAgent[
                 gpu_dynamics.r_rewards,
                 gpu_dynamics.r_next_obs,
                 gpu_dynamics.r_dones,
+            )
+
+            # Update alive mask: alive[b] *= (1 - dones[b])
+            # Must use ORIGINAL dones (before mask_dead zeroed them),
+            # but mask_dead only sets dones=1 for already-dead, so
+            # dones now has 1.0 for both newly terminated AND already dead.
+            # alive * (1-1) = 0 for both cases — correct.
+            comptime update_alive_k = update_alive_mask_kernel[dtype, RB]
+            ctx.enqueue_function[update_alive_k, update_alive_k](
+                alive_t,
+                dones_for_mask,
+                grid_dim=(RB_BLOCKS,),
+                block_dim=(TPB_VAL,),
             )
 
             # Copy next_obs → obs for next rollout step
