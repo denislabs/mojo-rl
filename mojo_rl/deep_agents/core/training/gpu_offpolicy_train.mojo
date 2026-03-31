@@ -957,6 +957,19 @@ def run_offpolicy_continuous_train_gpu[
                 timer.sync_and_accumulate(5, ctx)
                 timer.mark()
 
+        # DEBUG: check buffers BEFORE training step (after env step + tracking)
+        if total_steps == warmup_steps + n_envs:
+            ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
+            ctx.enqueue_copy(host_dbg_dones, dones_buf)
+            ctx.synchronize()
+            var _dr: Float64 = 0
+            var _dd = 0
+            for _i in range(n_envs):
+                _dr += Float64(host_dbg_rewards[_i])
+                if Float64(host_dbg_dones[_i]) > 0.5:
+                    _dd += 1
+            print("[PRE-TRAIN] rw=" + String(_dr)[byte=:8] + " done=" + String(_dd))
+
         # ------------------------------------------------------------------
         # Training steps (gradient_steps per env collection iteration)
         # ------------------------------------------------------------------
@@ -989,6 +1002,20 @@ def run_offpolicy_continuous_train_gpu[
                     agent.do_gpu_train_step(ctx, gpu_state)
             agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
+
+            # DEBUG: check buffers AFTER training step
+            if total_steps == warmup_steps + n_envs:
+                ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
+                ctx.enqueue_copy(host_dbg_dones, dones_buf)
+                ctx.synchronize()
+                var _dr2: Float64 = 0
+                var _dd2 = 0
+                for _i in range(n_envs):
+                    _dr2 += Float64(host_dbg_rewards[_i])
+                    if Float64(host_dbg_dones[_i]) > 0.5:
+                        _dd2 += 1
+                print("[POST-TRAIN] rw=" + String(_dr2)[byte=:8] + " done=" + String(_dd2))
+
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)
 
