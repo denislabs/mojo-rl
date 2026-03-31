@@ -40,12 +40,12 @@ comptime HIDDEN_DIM = 64
 
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 100_000
-comptime BATCH_SIZE = 64
+comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
 # Training duration (simple task, converges fast)
 comptime NUM_STEPS = 100_000
-comptime WARMUP_STEPS = 5_000
+comptime WARMUP_STEPS = 10_000
 
 comptime dtype = DType.float32
 
@@ -83,8 +83,8 @@ def main() raises:
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.0001,
-            target_entropy=-0.2,
+            alpha_lr=0.0003,
+            target_entropy=-1.0,
             checkpoint_every=50_000,
             checkpoint_path="sac_inverted_pendulum.ckpt",
         )
@@ -100,10 +100,10 @@ def main() raises:
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
         print("    - Critic LR: 3e-4")
-        print("    - Alpha LR: 1e-4")
+        print("    - Alpha LR: 3e-4")
         print("    - Tau (soft update): 0.005")
         print("    - Initial alpha: 0.2 (auto-tuned)")
-        print("    - Target entropy: -0.2")
+        print("    - Target entropy: -1.0")
         print("    - Warmup steps: " + String(WARMUP_STEPS))
         print()
 
@@ -126,7 +126,7 @@ def main() raises:
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("actor_lr", "3e-4")
         logger.set_config("critic_lr", "3e-4")
-        logger.set_config("alpha_lr", "1e-4")
+        logger.set_config("alpha_lr", "3e-4")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
 
