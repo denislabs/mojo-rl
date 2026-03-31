@@ -1732,7 +1732,6 @@ struct GenericOffPolicyAgent[
 
         gpu_state.actor.online.optimizer_step(ctx)
 
-        return  # DEBUG BISECT: after actor update, before alpha
         # Alpha auto-tuning (SAC only): GPU-side Adam update
         comptime if Self.Config.ActorLoss.HAS_ALPHA:
             if self.auto_alpha:

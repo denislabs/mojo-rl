@@ -1858,16 +1858,24 @@ struct AutodiffDPGLoss(ActorLoss):
         CRITIC_OUT: Int,
         CRITIC_CS: Int,
     ]() -> Int:
-        # Same workspace size as DPGLoss
+        # Must match the workspace layout in update_actor_gpu:
+        #   [combined_params | output | cache | workspace | grad_out | grad_obs | combined_grads]
+        # ws_size doesn't have access to PARAM_SIZE, so we compute an upper
+        # bound from CACHE_SIZE. For Sequential[Linear...] models,
+        # PARAM_SIZE ≈ CACHE_SIZE * hidden_dim / 2 (weights dominate).
+        # Use 8 * CACHE_SIZE as a safe multiplier for PARAM_SIZE.
+        comptime ACTOR_PS_UPPER = max(ACTOR_CS * 8, 4096)
+        comptime CRITIC_PS_UPPER = max(CRITIC_CS * 8, 4096)
+        comptime TOTAL_PS_UPPER = ACTOR_PS_UPPER + CRITIC_PS_UPPER
+        comptime SkipConcatCS = OBS + ACTOR_CS + ACTOR_OUT
+        comptime GRAPH_CS = SkipConcatCS + CRITIC_CS + 1
+        comptime GRAPH_WS = max(CRITIC_OUT, 1)
         return (
-            BATCH * ACTIONS
-            + BATCH * ACTOR_CS
-            + BATCH * CRITIC_IN
-            + BATCH * CRITIC_OUT
-            + BATCH * CRITIC_CS
-            + BATCH * CRITIC_OUT
-            + BATCH * CRITIC_IN
-            + BATCH * ACTIONS
+            2 * TOTAL_PS_UPPER
+            + BATCH
+            + max(1, BATCH * GRAPH_CS)
+            + max(1, BATCH * GRAPH_WS)
+            + BATCH
             + BATCH * OBS
         )
 
