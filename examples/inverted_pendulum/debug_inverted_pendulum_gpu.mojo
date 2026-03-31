@@ -1,205 +1,201 @@
-"""Diagnostic: RK4 with offset workspace pointer vs fresh allocation.
+"""Diagnostic: test InvertedPendulum GPU episode tracking end-to-end.
 
-Tests whether the workspace sub-pointer causes NaN in RK4.
-Uses hardcoded correct sizes (not from ENV config) to avoid coupling.
+Runs the exact same kernel sequence as the training loop:
+  step → accum_rewards → incr_steps → log_reset → selective_reset → extract_obs
 
 Run with:
     pixi run -e apple mojo run -I . examples/inverted_pendulum/debug_inverted_pendulum_gpu.mojo
 """
 
 from std.random import seed
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from layout import Layout, LayoutTensor
 
 from mojo_rl.envs.inverted_pendulum import InvertedPendulum
-from mojo_rl.envs.inverted_pendulum.inverted_pendulum_xml import (
-    InvertedPendulumModel,
-)
-from mojo_rl.physics3d.integrator import RK4Integrator
-from mojo_rl.physics3d.solver import NewtonSolver
 from mojo_rl.physics3d.gpu.constants import (
     qpos_offset,
-    qvel_offset,
-    qacc_offset,
-    qfrc_offset,
-    state_size,
-    model_size_with_invweight,
-    integrator_workspace_size,
-    rk4_extra_workspace_size,
+    metadata_offset,
+    META_IDX_STEP_COUNT,
 )
-from mojo_rl.nn import dtype as gpu_dtype
-
-comptime N_ENVS = 4
-comptime NQ = InvertedPendulumModel.NQ
-comptime NV = InvertedPendulumModel.NV
-comptime NBODY = InvertedPendulumModel.NBODY
-comptime NJOINT = InvertedPendulumModel.NJOINT
-comptime NGEOM = InvertedPendulumModel.NGEOM
-comptime MAX_CONTACTS = InvertedPendulumModel.MAX_CONTACTS
-
-comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS]()
-comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
-comptime SOLVER_WS = NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
-comptime RK4_EXTRA = rk4_extra_workspace_size[NQ, NV]()
-comptime WS_SIZE = (
-    integrator_workspace_size[NV, NBODY]() + NV * NV + SOLVER_WS + RK4_EXTRA
+from mojo_rl.nn import dtype
+from mojo_rl.deep_agents.core.kernels import (
+    accumulate_rewards_kernel,
+    increment_steps_kernel,
+    log_and_reset_completed_kernel,
 )
 
-comptime QPOS_OFF = qpos_offset[NQ, NV]()
-comptime QVEL_OFF = qvel_offset[NQ, NV]()
-comptime QACC_OFF = qacc_offset[NQ, NV]()
-comptime QFRC_OFF = qfrc_offset[NQ, NV]()
 
-comptime ENV = InvertedPendulum[gpu_dtype, TERMINATE_ON_UNHEALTHY=True]
+comptime N_ENVS = 32
+comptime Env = InvertedPendulum[dtype, TERMINATE_ON_UNHEALTHY=True]
+comptime QPOS_OFF = qpos_offset[2, 2]()
+comptime META_OFF = metadata_offset[2, 2, 3, 5]()
+comptime tpb = 256
+comptime env_blocks = (N_ENVS + tpb - 1) // tpb
 
-
-def run_rk4_test(
-    ctx: DeviceContext,
-    label: String,
-    mut model_buf: DeviceBuffer[gpu_dtype],
-    mut ws_buf: DeviceBuffer[gpu_dtype],
-) raises:
-    """Reset env, set qfrc=50, run 1 RK4 step, print qacc."""
-    var states_buf = ctx.enqueue_create_buffer[gpu_dtype](N_ENVS * STATE_SIZE)
-    ENV.reset_kernel_gpu[N_ENVS, STATE_SIZE](ctx, states_buf, rng_seed=0)
-
-    var h = ctx.enqueue_create_host_buffer[gpu_dtype](N_ENVS * STATE_SIZE)
-    ctx.enqueue_copy(h, states_buf)
-    ctx.synchronize()
-    for e in range(N_ENVS):
-        h[e * STATE_SIZE + QFRC_OFF] = Scalar[gpu_dtype](50.0)
-    ctx.enqueue_copy(states_buf, h)
-    ctx.synchronize()
-
-    RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-        gpu_dtype,
-        NQ,
-        NV,
-        NBODY,
-        NJOINT,
-        MAX_CONTACTS,
-        N_ENVS,
-        NGEOM,
-        STEP_THREADS=NV,
-    ](ctx, states_buf, model_buf, ws_buf)
-
-    ctx.enqueue_copy(h, states_buf)
-    ctx.synchronize()
-    var a0 = Float64(h[QACC_OFF])
-    var a1 = Float64(h[QACC_OFF + 1])
-    var v0 = Float64(h[QVEL_OFF])
-    var v1 = Float64(h[QVEL_OFF + 1])
-    print(
-        " ",
-        label,
-        "| qacc=[",
-        a0,
-        ",",
-        a1,
-        "] qvel=[",
-        v0,
-        ",",
-        v1,
-        "]",
-    )
-    if a0 != a0:
-        print("  >>> NaN! <<<")
+comptime accum_k = accumulate_rewards_kernel[dtype, N_ENVS]
+comptime incr_k = increment_steps_kernel[dtype, N_ENVS]
+comptime log_reset_k = log_and_reset_completed_kernel[dtype, N_ENVS]
 
 
 def main() raises:
     seed(42)
-    print("=" * 70)
-    print("RK4 offset-pointer workspace diagnostic")
-    print("=" * 70)
-    print(
-        "MODEL_SIZE=",
-        MODEL_SIZE,
-        " WS_SIZE=",
-        WS_SIZE,
-        " RK4_EXTRA=",
-        RK4_EXTRA,
-    )
+    print("=" * 60)
+    print("InvertedPendulum Episode Tracking Diagnostic")
+    print("=" * 60)
+    print("N_ENVS:", N_ENVS, " STATE_SIZE:", Env.STATE_SIZE)
     print()
 
     with DeviceContext() as ctx:
-        # Fresh model
-        var fresh_model = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
-        InvertedPendulumModel.init_model_gpu(ctx, fresh_model)
+        # === Env buffers ===
+        var states_buf = ctx.enqueue_create_buffer[dtype](
+            N_ENVS * Env.STATE_SIZE
+        )
+        var obs_buf = ctx.enqueue_create_buffer[dtype](N_ENVS * Env.OBS_DIM)
+        var actions_buf = ctx.enqueue_create_buffer[dtype](
+            N_ENVS * Env.ACTION_DIM
+        )
+        var rewards_buf = ctx.enqueue_create_buffer[dtype](N_ENVS)
+        var dones_buf = ctx.enqueue_create_buffer[dtype](N_ENVS)
+        var terminated_buf = ctx.enqueue_create_buffer[dtype](N_ENVS)
 
-        # ====== Test 1: Fresh model + fresh workspace ======
-        var ws1 = ctx.enqueue_create_buffer[gpu_dtype](N_ENVS * WS_SIZE)
-        run_rk4_test(ctx, "Fresh model + fresh WS", fresh_model, ws1)
+        # Workspace
+        var ws_size = Env.STEP_WS_SHARED + N_ENVS * Env.STEP_WS_PER_ENV
+        if ws_size == 0:
+            ws_size = 1
+        var workspace_buf = ctx.enqueue_create_buffer[dtype](ws_size)
+        if Env.STEP_WS_SHARED + Env.STEP_WS_PER_ENV > 0:
+            Env.init_step_workspace_gpu[N_ENVS](ctx, workspace_buf)
 
-        # ====== Test 2: Fresh model + offset workspace ======
-        # Simulate the step_kernel_gpu pattern: model at start, workspace after
-        var combined_size = MODEL_SIZE + N_ENVS * WS_SIZE
-        var combined = ctx.enqueue_create_buffer[gpu_dtype](combined_size)
+        # === Episode tracking buffers (same as training loop) ===
+        var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](N_ENVS)
+        var episode_steps_buf = ctx.enqueue_create_buffer[dtype](N_ENVS)
+        var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+        var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
 
-        # Copy fresh model data to beginning of combined buffer
-        var model_host = ctx.enqueue_create_host_buffer[gpu_dtype](MODEL_SIZE)
-        ctx.enqueue_copy(model_host, fresh_model)
+        # Explicitly zero them (training loop does NOT do this)
+        episode_rewards_buf.enqueue_fill(Scalar[dtype](0.0))
+        episode_steps_buf.enqueue_fill(Scalar[dtype](0.0))
+        gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0.0))
+        gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0.0))
+
+        # Host readback
+        var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
+        var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
+        var host_dones = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
+
+        # Reset all envs
+        Env.reset_kernel_gpu[N_ENVS, Env.STATE_SIZE](
+            ctx, states_buf, rng_seed=0
+        )
+        actions_buf.enqueue_fill(Scalar[dtype](0.0))
         ctx.synchronize()
 
-        var combined_host = ctx.enqueue_create_host_buffer[gpu_dtype](
-            combined_size
-        )
-        for i in range(MODEL_SIZE):
-            combined_host[i] = model_host[i]
-        for i in range(N_ENVS * WS_SIZE):
-            combined_host[MODEL_SIZE + i] = Scalar[gpu_dtype](0)
-        ctx.enqueue_copy(combined, combined_host)
+        # === Run training-like loop ===
+        var completed = 0
+        for step in range(500):
+            # 1. Step
+            Env.step_kernel_gpu[
+                N_ENVS, Env.STATE_SIZE, Env.OBS_DIM, Env.ACTION_DIM
+            ](
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
+                obs_buf,
+                rng_seed=UInt64(step),
+                workspace_ptr=workspace_buf.unsafe_ptr(),
+            )
+
+            # 2. Accumulate rewards + increment steps
+            var er_t = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+            ](episode_rewards_buf.unsafe_ptr())
+            var rw_t = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+            ](rewards_buf.unsafe_ptr())
+            var es_t = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+            ](episode_steps_buf.unsafe_ptr())
+            var dn_t = LayoutTensor[
+                dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+            ](dones_buf.unsafe_ptr())
+            var rs_t = LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ](gpu_reward_sum_buf.unsafe_ptr())
+            var ec_t = LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ](gpu_episode_count_buf.unsafe_ptr())
+
+            ctx.enqueue_function[accum_k, accum_k](
+                er_t, rw_t, grid_dim=(env_blocks,), block_dim=(tpb,)
+            )
+            ctx.enqueue_function[incr_k, incr_k](
+                es_t, grid_dim=(env_blocks,), block_dim=(tpb,)
+            )
+
+            # 3. Log and reset completed episodes
+            ctx.enqueue_function[log_reset_k, log_reset_k](
+                dn_t, er_t, es_t, rs_t, ec_t,
+                grid_dim=(1,), block_dim=(1,),
+            )
+
+            # 4. Selective reset
+            Env.selective_reset_kernel_gpu[N_ENVS, Env.STATE_SIZE](
+                ctx,
+                states_buf,
+                dones_buf,
+                rng_seed=UInt64(step + 1000),
+                workspace_ptr=workspace_buf.unsafe_ptr(),
+            )
+
+            # 5. Extract obs for next step
+            Env.extract_obs_kernel_gpu[N_ENVS, Env.STATE_SIZE, Env.OBS_DIM](
+                ctx, states_buf, obs_buf
+            )
+
+            # Check every 50 steps
+            if step % 50 == 49 or step < 3:
+                ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
+                ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+                ctx.enqueue_copy(host_dones, dones_buf)
+                ctx.synchronize()
+
+                var ep_count = Float64(host_episode_count[0])
+                var rw_sum = Float64(host_reward_sum[0])
+                var n_done = 0
+                for i in range(N_ENVS):
+                    if Float64(host_dones[i]) > 0.5:
+                        n_done += 1
+
+                print(
+                    "Step "
+                    + String(step)
+                    + ": ep_count="
+                    + String(ep_count)[byte=:8]
+                    + " rw_sum="
+                    + String(rw_sum)[byte=:10]
+                    + " n_done_now="
+                    + String(n_done)
+                    + " Int(ep)="
+                    + String(Int(ep_count))
+                )
+
+        # Final read
+        ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
+        ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
         ctx.synchronize()
-
-        # Create sub-pointer views (EXACTLY like step_kernel_gpu does)
-        var sub_model = DeviceBuffer[gpu_dtype](
-            ctx,
-            combined.unsafe_ptr(),
-            MODEL_SIZE,
-            owning=False,
-        )
-        var sub_ws = DeviceBuffer[gpu_dtype](
-            ctx,
-            combined.unsafe_ptr() + MODEL_SIZE,
-            N_ENVS * WS_SIZE,
-            owning=False,
-        )
-        run_rk4_test(ctx, "Sub-ptr model + sub-ptr WS", sub_model, sub_ws)
-
-        # ====== Test 3: Fresh model + offset workspace (offset only) ======
-        var ws_only_combined = ctx.enqueue_create_buffer[gpu_dtype](
-            MODEL_SIZE + N_ENVS * WS_SIZE
-        )
-        # Don't init model, just use offset for workspace
-        var sub_ws2 = DeviceBuffer[gpu_dtype](
-            ctx,
-            ws_only_combined.unsafe_ptr() + MODEL_SIZE,
-            N_ENVS * WS_SIZE,
-            owning=False,
-        )
-        run_rk4_test(
-            ctx, "Fresh model + offset-only WS", fresh_model, sub_ws2
-        )
-
-        # ====== Test 4: init_step_workspace (actual training path) ======
-        var ws_total = MODEL_SIZE + N_ENVS * WS_SIZE
-        var training_ws = ctx.enqueue_create_buffer[gpu_dtype](ws_total)
-        ENV.init_step_workspace_gpu[N_ENVS](ctx, training_ws)
-        ctx.synchronize()
-
-        var train_model = DeviceBuffer[gpu_dtype](
-            ctx,
-            training_ws.unsafe_ptr(),
-            MODEL_SIZE,
-            owning=False,
-        )
-        var train_ws = DeviceBuffer[gpu_dtype](
-            ctx,
-            training_ws.unsafe_ptr() + MODEL_SIZE,
-            N_ENVS * WS_SIZE,
-            owning=False,
-        )
-        run_rk4_test(
-            ctx, "init_step_workspace model+WS", train_model, train_ws
-        )
+        var final_ep = Float64(host_episode_count[0])
+        var final_rw = Float64(host_reward_sum[0])
+        print()
+        print("FINAL: episodes=" + String(Int(final_ep))
+              + " reward_sum=" + String(final_rw)[byte=:10])
+        if Int(final_ep) > 0:
+            print("Avg reward: " + String(final_rw / final_ep)[byte=:10])
+            print(">>> Episode tracking WORKS <<<")
+        else:
+            print(">>> Episode tracking BROKEN - 0 episodes after 500 steps! <<<")
 
     print()
-    print(">>> Done <<<")
+    print("Done.")

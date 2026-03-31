@@ -803,6 +803,53 @@ struct Phyics3dEnv[
             gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
         ](ctx, states_buf, obs_buf)
 
+    @staticmethod
+    def is_terminal_obs_gpu[
+        BATCH_SIZE: Int,
+        OBS_DIM_VAL: Int,
+    ](
+        ctx: DeviceContext,
+        obs_buf: DeviceBuffer[gpu_dtype],
+        mut dones_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Check termination from observations for model-based rollouts."""
+        comptime TPB_VAL = 256
+        comptime BLOCKS = (BATCH_SIZE + TPB_VAL - 1) // TPB_VAL
+
+        @always_inline
+        def term_obs_wrapper(
+            obs: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+                MutAnyOrigin,
+            ],
+            dones: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+            ],
+        ):
+            var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if i >= BATCH_SIZE:
+                return
+            if Self.CONFIG.is_terminal_from_obs_gpu[
+                gpu_dtype, BATCH_SIZE, OBS_DIM_VAL
+            ](obs, i):
+                dones[i] = Scalar[gpu_dtype](1.0)
+            else:
+                dones[i] = Scalar[gpu_dtype](0.0)
+
+        var obs_t = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+            MutAnyOrigin,
+        ](obs_buf.unsafe_ptr())
+        var dones_t = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
+        ](dones_buf.unsafe_ptr())
+        ctx.enqueue_function[term_obs_wrapper, term_obs_wrapper](
+            obs_t, dones_t,
+            grid_dim=(BLOCKS,), block_dim=(TPB_VAL,),
+        )
+
     # =========================================================================
     # GPU Helper Functions
     # =========================================================================

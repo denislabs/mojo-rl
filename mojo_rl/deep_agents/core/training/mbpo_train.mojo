@@ -491,7 +491,7 @@ def run_mbpo_train_gpu[
             epoch += 1
 
             # GPU model rollouts
-            agent.do_model_rollouts_gpu(ctx, gpu_dynamics, gpu_state)
+            agent.do_model_rollouts_gpu[E](ctx, gpu_dynamics, gpu_state)
             next_model_train += agent.model_train_freq
 
         # Progress bar (no GPU sync, pure CPU counters)

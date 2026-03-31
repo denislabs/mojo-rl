@@ -276,6 +276,29 @@ struct HopperConfig(Phyics3dEnvConfig):
         var reward = x_velocity + healthy_reward - ctrl_cost
         return (reward, not is_healthy)
 
+    # === GPU: Observation-based termination ===
+    @always_inline
+    @staticmethod
+    def is_terminal_from_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """Hopper: terminate if z_height < 0.7 or |angle| > 0.2.
+        Obs layout: [z_pos, angle, ...]."""
+        var height = rebind[Scalar[DTYPE]](obs[env, 0])
+        var angle = rebind[Scalar[DTYPE]](obs[env, 1])
+        return (
+            height < Scalar[DTYPE](0.7)
+            or angle > Scalar[DTYPE](0.2)
+            or angle < Scalar[DTYPE](-0.2)
+        )
+
     # === GPU inline: Non-zero qpos init (no-op for Hopper) ===
     @always_inline
     @staticmethod

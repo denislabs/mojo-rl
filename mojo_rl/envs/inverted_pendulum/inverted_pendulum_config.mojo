@@ -222,6 +222,24 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
 
         return (reward, terminated)
 
+    # === GPU: Observation-based termination ===
+    @always_inline
+    @staticmethod
+    def is_terminal_from_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """InvertedPendulum: terminate if |angle| > 0.2.
+        Obs layout: [x, x_dot, theta, theta_dot]."""
+        var angle = rebind[Scalar[DTYPE]](obs[env, 2])
+        return angle > Scalar[DTYPE](0.2) or angle < Scalar[DTYPE](-0.2)
+
     # === GPU inline: Non-zero qpos init (no-op for InvertedPendulum) ===
     @always_inline
     @staticmethod

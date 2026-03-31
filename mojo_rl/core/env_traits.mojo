@@ -677,6 +677,30 @@ trait GPUContinuousEnv:
         """
         ...
 
+    @staticmethod
+    def is_terminal_obs_gpu[
+        BATCH_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        obs: DeviceBuffer[dtype],
+        mut dones: DeviceBuffer[dtype],
+    ) raises:
+        """Check termination from observations for a batch (GPU).
+
+        Used by model-based agents (MBPO) to detect terminal states in
+        synthetic rollouts where only predicted observations are available.
+
+        Default: no termination (memset dones to 0). Override for envs
+        with observation-based termination conditions (Hopper, Ant, etc.).
+
+        Args:
+            ctx: GPU device context.
+            obs: Observations buffer [BATCH_SIZE * OBS_DIM].
+            dones: Output done flags [BATCH_SIZE]. 1.0 = terminal.
+        """
+        ctx.enqueue_memset(dones, 0)
+
 
 trait CurriculumScheduler(Copyable, Movable):
     """Trait for environments that support curriculum scheduling.

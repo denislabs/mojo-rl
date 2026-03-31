@@ -293,6 +293,24 @@ struct AntConfig(Phyics3dEnvConfig):
         var reward = x_velocity + healthy_reward - ctrl_cost
         return (reward, not is_healthy)
 
+    # === GPU: Observation-based termination ===
+    @always_inline
+    @staticmethod
+    def is_terminal_from_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """Ant: terminate if z_height not in [0.2, 1.0].
+        Obs layout: [z_pos, ...]."""
+        var height = rebind[Scalar[DTYPE]](obs[env, 0])
+        return height < Scalar[DTYPE](0.2) or height > Scalar[DTYPE](1.0)
+
     # === GPU inline: Non-zero qpos init (no-op for Ant) ===
     @always_inline
     @staticmethod

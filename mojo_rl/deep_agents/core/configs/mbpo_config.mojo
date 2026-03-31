@@ -53,7 +53,7 @@ trait MBPOConfig(OffPolicyConfig):
     # Synthetic buffer capacity
     comptime SYNTH_CAPACITY: Int
 
-    # Termination function for model rollouts
+    # Termination function for CPU model rollouts (legacy — GPU uses env-side)
     comptime TermFn: TerminationFn
 
 
@@ -85,7 +85,7 @@ struct DefaultMBPOConfig[
     - NUM_ELITES: Networks selected by holdout loss (default: 5)
     - DYN_HIDDEN: Dynamics network hidden width (default: 200)
     - SYNTH_CAP: Synthetic replay buffer capacity (default: 400000)
-    - TFn: Environment-specific termination check for model rollouts
+    - TFn: Environment-specific termination for CPU rollouts (GPU uses env-side)
     """
 
     comptime NAME: String = "MBPO"

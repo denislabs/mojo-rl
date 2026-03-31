@@ -1934,7 +1934,9 @@ struct MBPOAgent[
             gpu_buffer,
         )
 
-    def do_model_rollouts_gpu(
+    def do_model_rollouts_gpu[
+        E: GPUContinuousEnv,
+    ](
         mut self,
         ctx: DeviceContext,
         mut gpu_dynamics: GPUDynamicsEnsemble[
@@ -2117,8 +2119,10 @@ struct MBPOAgent[
                 block_dim=(TPB_VAL,),
             )
 
-            # Set dones to 0 (no termination check on GPU for simplicity)
-            ctx.enqueue_memset(gpu_dynamics.r_dones, 0)
+            # GPU termination check on predicted next_obs (env-side)
+            E.is_terminal_obs_gpu[RB, Self.OBS](
+                ctx, gpu_dynamics.r_next_obs, gpu_dynamics.r_dones
+            )
 
             # Store transitions in GPU buffer
             # Need to normalize actions first (divide by action_scale)

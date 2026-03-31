@@ -291,6 +291,29 @@ trait Phyics3dEnvConfig:
         """
         ...
 
+    # === GPU: Observation-based termination (for model-based rollouts) ===
+    @always_inline
+    @staticmethod
+    def is_terminal_from_obs_gpu[
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        obs: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ],
+        env: Int,
+    ) -> Bool:
+        """Check termination from observations only (no full state access).
+
+        Used by model-based agents (MBPO) during synthetic rollouts where
+        only predicted observations are available. Default: no termination.
+
+        Override for envs with observation-based termination conditions.
+        Observation layout matches the env's observation vector.
+        """
+        return False
+
     # === GPU inline: Non-zero qpos init after reset ===
     @always_inline
     @staticmethod
