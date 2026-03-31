@@ -4,7 +4,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import RK4Integrator, EulerIntegrator
+from mojo_rl.physics3d.integrator import RK4Integrator
 from mojo_rl.physics3d.solver import NewtonSolver
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
@@ -21,10 +21,10 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
     # === Physics ===
     comptime FRAME_SKIP: Int = 2
     comptime MAX_STEPS: Int = 1000
-    comptime INTEGRATOR_WS_EXTRA: Int = 0
-    # comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-    #     InvertedPendulumModel.NQ, InvertedPendulumModel.NV
-    # ]()
+    # comptime INTEGRATOR_WS_EXTRA: Int = 0
+    comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
+        InvertedPendulumModel.NQ, InvertedPendulumModel.NV
+    ]()
 
     # Termination bounds
     comptime MAX_CART_POS = 1.0  # slider range is ±1
@@ -69,7 +69,7 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         ],
         verbose: Bool,
     ):
-        EulerIntegrator[SOLVER=NewtonSolver].step(model, data)
+        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
 
     # === CPU: Pre-step hook ===
     @staticmethod
@@ -147,7 +147,7 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
-        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
+        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE,
             NQ,
             NV,
