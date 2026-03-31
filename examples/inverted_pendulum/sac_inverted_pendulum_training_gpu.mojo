@@ -74,7 +74,7 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.0003,
+            critic_lr=0.001,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
@@ -83,8 +83,8 @@ def main() raises:
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.0001,
-            target_entropy=-0.2,
+            alpha_lr=0.0003,
+            target_entropy=-0.5,
             checkpoint_every=50_000,
             checkpoint_path="sac_inverted_pendulum.ckpt",
         )
