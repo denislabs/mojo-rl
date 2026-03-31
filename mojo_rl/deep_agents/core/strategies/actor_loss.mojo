@@ -1328,33 +1328,34 @@ struct AutodiffMaxEntLoss[
         CRITIC_OUT: Int,
         CRITIC_CS: Int,
     ]() -> Int:
-        # Conservative workspace estimate — same as MaxEntLoss for CPU path.
-        # GPU path slices this buffer for its own needs; the CPU workspace
-        # (which includes BATCH * CRITIC_CS * 2) is always larger than the
-        # GPU-specific needs (which are dominated by 2 * TOTAL_PS << BATCH * CRITIC_CS).
+        # Must match the GPU workspace layout in update_actor_gpu:
+        #   [combined_params | output | cache | workspace | grad_out | grad_obs | combined_grads | lp_buf]
+        # TOTAL_PS = SACGraph.PARAM_SIZE includes actor + 2 critics with
+        # alignment padding. ws_size doesn't have access to PARAM_SIZE, so
+        # we use CACHE_SIZE * 64 as a safe upper bound (ratio is ~32x for
+        # hidden=64 networks, 64x gives 2x safety margin).
+        comptime ACTOR_PS_UPPER = max(ACTOR_CS * 64, 16384)
+        comptime CRITIC_PS_UPPER = max(CRITIC_CS * 64, 16384)
+        # SAC graph has actor + 2 critics (with 4-element alignment padding)
+        comptime TOTAL_PS_UPPER = ACTOR_PS_UPPER + 2 * CRITIC_PS_UPPER + 8
+        # Graph cache/workspace: approximate from model cache sizes
+        comptime GRAPH_CS_UPPER = (
+            OBS + ACTOR_CS + ACTOR_OUT  # ActorSkip
+            + ACTIONS + ACTIONS  # RSample
+            + 2 * CRITIC_CS  # DualPath[Critic, Critic]
+            + CRITIC_OUT  # Min
+            + ACTIONS  # Slice (LogProbPass)
+            + OBS + ACTIONS + 1  # SplitApply overhead
+        )
+        comptime GRAPH_WS_UPPER = max(CRITIC_OUT * 2, 64)
         return (
-            BATCH * ACTOR_OUT  # raw_out
-            + BATCH * ACTOR_CS  # actor_cache
-            + BATCH * ACTIONS  # mean
-            + BATCH * ACTIONS  # log_std
-            + BATCH * ACTIONS  # noise
-            + BATCH * ACTIONS  # act
-            + BATCH  # log_probs
-            + BATCH * ACTIONS  # z_cache
-            + BATCH * CRITIC_IN  # critic_input
-            + BATCH * CRITIC_OUT  # Q1
-            + BATCH * CRITIC_CS  # Q1 cache
-            + BATCH * CRITIC_OUT  # Q2
-            + BATCH * CRITIC_CS  # Q2 cache
-            + BATCH * CRITIC_OUT  # dq1
-            + BATCH * CRITIC_OUT  # dq2
-            + BATCH * CRITIC_IN  # d_ci1
-            + BATCH * CRITIC_IN  # d_ci2
-            + BATCH * ACTIONS  # d_act
-            + BATCH * ACTIONS  # grad_mean
-            + BATCH * ACTIONS  # grad_log_std
-            + BATCH * ACTOR_OUT  # actor_grad
-            + BATCH * OBS  # d_obs
+            2 * TOTAL_PS_UPPER  # combined_params + combined_grads
+            + BATCH * 2  # output (min_Q + log_prob)
+            + max(1, BATCH * GRAPH_CS_UPPER)  # cache
+            + max(1, BATCH * GRAPH_WS_UPPER)  # workspace
+            + BATCH * 2  # grad_out (seed)
+            + BATCH * OBS  # grad_obs
+            + BATCH  # lp_buf
         )
 
     @staticmethod
