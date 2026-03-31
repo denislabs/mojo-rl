@@ -67,6 +67,7 @@ from mojo_rl.deep_agents.core.kernels import (
     alpha_adam_update_kernel,
     reduce_mean_loss_kernel,
 )
+from mojo_rl.cuda.graph import CUDAGraph
 from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
@@ -700,6 +701,103 @@ struct GPUDynamicsEnsemble[
         for i in range(len(cpu_ensemble.elite_indices)):
             self.elite_indices.append(cpu_ensemble.elite_indices[i])
 
+    def _enqueue_train_batch[
+        BUF_CAP: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        buffer: GPUReplayBuffer[BUF_CAP, Self.obs_dim, Self.action_dim],
+        m: Int,
+        min_lv: Scalar[dtype],
+        max_lv: Scalar[dtype],
+    ) raises:
+        """Enqueue one dynamics training batch for model m (pure GPU, capturable).
+
+        Sequence: incr_rng → sample → concat → target → forward → NLL_grad
+                  → zero_grads → backward → optimizer_step
+        """
+        comptime TB = Self.train_batch
+        comptime TPB_VAL = 256
+        comptime PRED_BLOCKS = (TB * Self.DYN_PRED + TPB_VAL - 1) // TPB_VAL
+        comptime DYN_IN_BLOCKS = (TB * Self.DYN_IN + TPB_VAL - 1) // TPB_VAL
+        comptime incr_k = increment_rng_counter_kernel
+        comptime cat_k = concat_obs_action_kernel[
+            dtype, TB, Self.obs_dim, Self.action_dim, Self.DYN_IN
+        ]
+        comptime tgt_k = build_dynamics_target_kernel[
+            dtype, TB, Self.obs_dim, Self.DYN_PRED
+        ]
+        comptime nll_k = gaussian_nll_grad_kernel[
+            dtype, TB, Self.DYN_PRED, Self.DYN_OUT
+        ]
+
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](self.rng_counter.unsafe_ptr())
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t, grid_dim=(1,), block_dim=(1,),
+        )
+        buffer.sample[TB](
+            ctx, self.rng_counter,
+            self.s_obs, self.s_act, self.s_rew,
+            self.s_nobs, self.s_done, self.s_idx,
+        )
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
+        ](self.s_obs.unsafe_ptr())
+        var act_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.action_dim), MutAnyOrigin
+        ](self.s_act.unsafe_ptr())
+        var input_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DynModel.IN_DIM), MutAnyOrigin
+        ](self.t_input.unsafe_ptr())
+        ctx.enqueue_function[cat_k, cat_k](
+            input_t, obs_t, act_t,
+            grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
+        )
+        var nobs_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
+        ](self.s_nobs.unsafe_ptr())
+        var rew_t = LayoutTensor[
+            dtype, Layout.row_major(TB), MutAnyOrigin
+        ](self.s_rew.unsafe_ptr())
+        var target_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+        ](self.t_target.unsafe_ptr())
+        ctx.enqueue_function[tgt_k, tgt_k](
+            target_t, obs_t, nobs_t, rew_t,
+            grid_dim=(PRED_BLOCKS,), block_dim=(TPB_VAL,),
+        )
+        var output_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DynModel.OUT_DIM), MutAnyOrigin
+        ](self.t_output.unsafe_ptr())
+        var cache_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DynModel.CACHE_SIZE), MutAnyOrigin
+        ](self.t_cache.unsafe_ptr())
+        var p = self.members[m].params_view()
+        Self.DynNet.forward_gpu_with_cache[TB](
+            ctx, input_t, output_t, p, cache_t, self.t_ws,
+        )
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DynModel.OUT_DIM), MutAnyOrigin
+        ](self.t_grad_out.unsafe_ptr())
+        var loss_t = LayoutTensor[
+            dtype, Layout.row_major(TB), MutAnyOrigin
+        ](self.t_loss.unsafe_ptr())
+        ctx.enqueue_function[nll_k, nll_k](
+            grad_out_t, output_t, target_t, loss_t, min_lv, max_lv,
+            grid_dim=(PRED_BLOCKS,), block_dim=(TPB_VAL,),
+        )
+        var grad_in_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DynModel.IN_DIM), MutAnyOrigin
+        ](self.t_grad_in.unsafe_ptr())
+        var g = self.members[m].grads_view()
+        self.members[m].zero_grads(ctx)
+        Self.DynNet.backward_gpu[TB](
+            ctx, grad_out_t, grad_in_t, p, cache_t, g, self.t_ws,
+        )
+        self.members[m].optimizer_step(ctx)
+
     def train_on_buffer[
         BUF_CAP: Int,
     ](
@@ -762,129 +860,33 @@ struct GPUDynamicsEnsemble[
             var best_holdout = Float64(1e10)
             var epochs_since_update = 0
 
+            # CUDA graph for this model's training batch (re-captured per model)
+            var _dyn_graph: Optional[CUDAGraph] = None
+
             for epoch in range(max_epochs):
-                # Training mini-batches
-                for batch_idx in range(n_batches_per_epoch):
-                    ctx.enqueue_function[dyn_incr_k, dyn_incr_k](
-                        dyn_rng_t,
-                        grid_dim=(1,),
-                        block_dim=(1,),
+                # Training mini-batches via graph replay
+                if not _dyn_graph:
+                    # First epoch: warm-up + capture
+                    self._enqueue_train_batch[BUF_CAP](
+                        ctx, buffer, m, min_lv, max_lv
                     )
-
-                    # Sample from GPU buffer
-                    buffer.sample[TB](
-                        ctx,
-                        self.rng_counter,
-                        self.s_obs,
-                        self.s_act,
-                        self.s_rew,
-                        self.s_nobs,
-                        self.s_done,
-                        self.s_idx,
+                    ctx.synchronize()
+                    var graph = CUDAGraph(ctx)
+                    graph.begin_capture()
+                    self._enqueue_train_batch[BUF_CAP](
+                        ctx, buffer, m, min_lv, max_lv
                     )
-
-                    # Build input: concat [obs, action]
-                    var obs_t = LayoutTensor[
-                        dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
-                    ](self.s_obs.unsafe_ptr())
-                    var act_t = LayoutTensor[
-                        dtype,
-                        Layout.row_major(TB, Self.action_dim),
-                        MutAnyOrigin,
-                    ](self.s_act.unsafe_ptr())
-                    var input_t = LayoutTensor[
-                        dtype,
-                        Layout.row_major(TB, Self.DynModel.IN_DIM),
-                        MutAnyOrigin,
-                    ](self.t_input.unsafe_ptr())
-                    ctx.enqueue_function[concat_k, concat_k](
-                        input_t,
-                        obs_t,
-                        act_t,
-                        grid_dim=(DYN_IN_BLOCKS,),
-                        block_dim=(TPB_VAL,),
-                    )
-
-                    # Build target: [reward, next_obs - obs]
-                    var nobs_t = LayoutTensor[
-                        dtype, Layout.row_major(TB, Self.obs_dim), MutAnyOrigin
-                    ](self.s_nobs.unsafe_ptr())
-                    var rew_t = LayoutTensor[
-                        dtype, Layout.row_major(TB), MutAnyOrigin
-                    ](self.s_rew.unsafe_ptr())
-                    var target_t = LayoutTensor[
-                        dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
-                    ](self.t_target.unsafe_ptr())
-                    ctx.enqueue_function[target_k, target_k](
-                        target_t,
-                        obs_t,
-                        nobs_t,
-                        rew_t,
-                        grid_dim=(PRED_BLOCKS,),
-                        block_dim=(TPB_VAL,),
-                    )
-
-                    # Forward with cache
-                    var output_t = LayoutTensor[
-                        dtype,
-                        Layout.row_major(TB, Self.DynModel.OUT_DIM),
-                        MutAnyOrigin,
-                    ](self.t_output.unsafe_ptr())
-                    var cache_t = LayoutTensor[
-                        dtype,
-                        Layout.row_major(TB, Self.DynModel.CACHE_SIZE),
-                        MutAnyOrigin,
-                    ](self.t_cache.unsafe_ptr())
-                    var p = self.members[m].params_view()
-                    Self.DynNet.forward_gpu_with_cache[TB](
-                        ctx,
-                        input_t,
-                        output_t,
-                        p,
-                        cache_t,
-                        self.t_ws,
-                    )
-
-                    # Compute NLL gradient
-                    var grad_out_t = LayoutTensor[
-                        dtype,
-                        Layout.row_major(TB, Self.DynModel.OUT_DIM),
-                        MutAnyOrigin,
-                    ](self.t_grad_out.unsafe_ptr())
-                    var loss_t = LayoutTensor[
-                        dtype, Layout.row_major(TB), MutAnyOrigin
-                    ](self.t_loss.unsafe_ptr())
-                    ctx.enqueue_function[nll_k, nll_k](
-                        grad_out_t,
-                        output_t,
-                        target_t,
-                        loss_t,
-                        min_lv,
-                        max_lv,
-                        grid_dim=(PRED_BLOCKS,),
-                        block_dim=(TPB_VAL,),
-                    )
-
-                    # Backward
-                    var grad_in_t = LayoutTensor[
-                        dtype,
-                        Layout.row_major(TB, Self.DynModel.IN_DIM),
-                        MutAnyOrigin,
-                    ](self.t_grad_in.unsafe_ptr())
-                    var g = self.members[m].grads_view()
-                    self.members[m].zero_grads(ctx)
-                    Self.DynNet.backward_gpu[TB](
-                        ctx,
-                        grad_out_t,
-                        grad_in_t,
-                        p,
-                        cache_t,
-                        g,
-                        self.t_ws,
-                    )
-
-                    # Optimizer step
-                    self.members[m].optimizer_step(ctx)
+                    graph.end_capture()
+                    _dyn_graph = graph^
+                    # First batch ran in warm-up, replay remaining
+                    for _ in range(n_batches_per_epoch - 1):
+                        _dyn_graph.value().replay_async()
+                    _dyn_graph.value().sync()
+                else:
+                    # Subsequent epochs: all batches via graph replay
+                    for _ in range(n_batches_per_epoch):
+                        _dyn_graph.value().replay_async()
+                    _dyn_graph.value().sync()
 
                 # Holdout evaluation: check every holdout_check_every epochs
                 # to reduce GPU sync overhead (main Phase 2 optimization)
