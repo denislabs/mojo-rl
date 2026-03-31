@@ -1116,7 +1116,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             )
 
             # 2. Matmul: output = input @ W
-            comptime if Self.out_dim < 64:
+            comptime if Self.out_dim < 1_000_000:
                 comptime _TILE = 8
                 comptime _k = tiled_matmul_kernel[
                     dtype, BATCH, Self.out_dim, Self.in_dim, _TILE

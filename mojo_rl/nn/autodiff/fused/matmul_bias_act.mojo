@@ -1266,7 +1266,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
             # 2. Matmul: output = input @ W
             # On NVIDIA with small out_dim, cuBLAS overflows the output buffer.
             # Fall back to bounds-checked tiled kernel (no overflow).
-            comptime if Self.out_dim < 64:
+            comptime if Self.out_dim < 1_000_000:
                 comptime _TILE = 8
                 comptime _k = tiled_matmul_kernel[
                     dtype, BATCH, Self.out_dim, Self.in_dim, _TILE
