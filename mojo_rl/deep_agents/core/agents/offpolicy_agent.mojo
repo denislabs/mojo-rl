@@ -1703,8 +1703,6 @@ struct GenericOffPolicyAgent[
             gpu_state.rng_counter,
         )
 
-        return
-
         # Clip actor gradients
         if self.max_grad_norm > 0.0:
             comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
