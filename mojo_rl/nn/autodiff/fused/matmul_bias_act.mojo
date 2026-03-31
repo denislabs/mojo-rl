@@ -1277,7 +1277,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
 
                 @always_inline
                 def _safe_mm_wrapper(
-                    out: LayoutTensor[
+                    mm_out: LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.out_dim),
                         MutAnyOrigin,
@@ -1295,7 +1295,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
                 ):
                     safe_mm[
                         dtype, BATCH, Self.out_dim, Self.in_dim, MM_TILE
-                    ](out, a, b)
+                    ](mm_out, a, b)
 
                 ctx.enqueue_function[_safe_mm_wrapper, _safe_mm_wrapper](
                     output,
