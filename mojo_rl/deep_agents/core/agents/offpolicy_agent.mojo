@@ -363,9 +363,9 @@ struct GenericGPUState[
         self.explore_buf = ctx.enqueue_create_buffer[dtype](Self.EWS.TOTAL_SIZE)
         self.explore = Self.EWS(self.explore_buf.unsafe_ptr())
 
-        # Sample output
+        # Sample output (from replay buffer — NOT matmul targets, no padding)
         self.s_obs = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
-        self.s_act = ctx.enqueue_create_buffer[dtype](BS * Self.GPU_ACTOR_OUT)
+        self.s_act = ctx.enqueue_create_buffer[dtype](BS * Self.ACTIONS)
         self.s_rew = ctx.enqueue_create_buffer[dtype](BS)
         self.s_nobs = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
         self.s_done = ctx.enqueue_create_buffer[dtype](BS)
