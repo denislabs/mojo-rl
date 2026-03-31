@@ -252,8 +252,6 @@ struct GenericGPUState[
     comptime ACTOR_WS = Self.ActorNet.WORKSPACE_SIZE_PER_SAMPLE
     comptime CRITIC_WS = Self.CriticNet.WORKSPACE_SIZE_PER_SAMPLE
 
-    # GPU-safe output dim for critic (padded for cuBLAS on NVIDIA)
-    comptime GPU_CRITIC_OUT = Self.CriticNet.GPU_OUT_DIM
 
     # Exploration workspace type alias
     comptime EWS = ExplorationWS[Self.max_n_envs, Self.ACTOR_OUT, Self.ACTOR_WS]
@@ -375,19 +373,19 @@ struct GenericGPUState[
         self.next_lp = ctx.enqueue_create_buffer[dtype](BS)
         self.next_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
         self.next_q = ctx.enqueue_create_buffer[dtype](
-            BS * Self.GPU_CRITIC_OUT
+            BS * Self.CRITIC_OUT
         )
         self.targets = ctx.enqueue_create_buffer[dtype](BS)
 
         # Critic (q_out and q_grad are matmul outputs — use GPU-padded dim)
         self.ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
-        self.q_out = ctx.enqueue_create_buffer[dtype](BS * Self.GPU_CRITIC_OUT)
+        self.q_out = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.q_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
         self.critic_ws = ctx.enqueue_create_buffer[dtype](
             max(1, BS * Self.CRITIC_WS)
         )
         self.q_grad = ctx.enqueue_create_buffer[dtype](
-            BS * Self.GPU_CRITIC_OUT
+            BS * Self.CRITIC_OUT
         )
         self.d_ci = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_IN)
 
@@ -408,9 +406,9 @@ struct GenericGPUState[
         self.curr_lp = ctx.enqueue_create_buffer[dtype](BS)
 
         # Twin critic extra (matmul outputs — GPU-padded)
-        self.nq2 = ctx.enqueue_create_buffer[dtype](BS * Self.GPU_CRITIC_OUT)
+        self.nq2 = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_OUT)
         self.q2_out = ctx.enqueue_create_buffer[dtype](
-            BS * Self.GPU_CRITIC_OUT
+            BS * Self.CRITIC_OUT
         )
         self.q2_cache = ctx.enqueue_create_buffer[dtype](BS * Self.CRITIC_CS)
         self.critic2_ws = ctx.enqueue_create_buffer[dtype](

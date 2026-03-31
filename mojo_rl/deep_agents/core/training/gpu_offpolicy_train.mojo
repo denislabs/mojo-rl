@@ -427,6 +427,12 @@ def run_offpolicy_continuous_train_gpu[
     var gpu_state = agent.make_gpu_state(ctx)
     agent.upload_to_gpu(gpu_state, ctx)
 
+    # NVIDIA firewall: large dummy allocation between gpu_state and env
+    # buffers to absorb any cuBLAS/max_matmul overflow from training kernels.
+    # Without this, overflows from small-dim matmul outputs (CRITIC_OUT=1)
+    # corrupt adjacent env/tracking buffers. 256KB is enough for any tile size.
+    var _gpu_firewall = ctx.enqueue_create_buffer[dtype](65536)
+
     # ------------------------------------------------------------------
     # Allocate environment buffers (loop-owned, comptime sizes)
     # ------------------------------------------------------------------
