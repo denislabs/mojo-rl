@@ -1002,27 +1002,30 @@ def run_offpolicy_continuous_train_gpu[
                 if total_steps >= warmup_steps and total_steps < warmup_steps + 2 * n_envs:
                     # Single train step with sync after each phase
                     agent._gpu_train_kernels(ctx, gpu_state)
+                    # Check actions_buf for NaN (produced by actor forward on next step)
+                    ctx.enqueue_copy(prev_obs_buf, obs_buf)
+                    agent.select_actions_gpu[n_envs](
+                        ctx, gpu_state, obs_buf, actions_buf
+                    )
+                    var _h_act = ctx.enqueue_create_host_buffer[dtype](
+                        n_envs * E.ACTION_DIM
+                    )
+                    ctx.enqueue_copy(_h_act, actions_buf)
                     ctx.enqueue_copy(host_dbg_rewards, rewards_buf)
-                    # Check actor params for NaN
-                    comptime _APS = A.OBS_DIM * 64 + 64  # first layer size approx
-                    var _h_params = ctx.enqueue_create_host_buffer[dtype](128)
-                    ctx.enqueue_copy(_h_params, gpu_state.actor.online.params)
                     ctx.synchronize()
-                    var _nan_count = 0
-                    var _p0 = Float64(_h_params[0])
-                    var _p1 = Float64(_h_params[1])
-                    for _i in range(128):
-                        var _v = Float64(_h_params[_i])
-                        if _v != _v:  # NaN check
-                            _nan_count += 1
+                    var _nan_act = 0
+                    var _a0 = Float64(_h_act[0])
+                    for _i in range(n_envs * E.ACTION_DIM):
+                        var _v = Float64(_h_act[_i])
+                        if _v != _v:
+                            _nan_act += 1
                     var _rk: Float64 = 0
                     for _i in range(n_envs):
                         _rk += Float64(host_dbg_rewards[_i])
                     print(
                         "[AFTER _gpu_train_kernels] rw=" + String(_rk)[byte=:8]
-                        + " actor_nan=" + String(_nan_count)
-                        + " p[0]=" + String(_p0)[byte=:12]
-                        + " p[1]=" + String(_p1)[byte=:12]
+                        + " act_nan=" + String(_nan_act)
+                        + " a[0]=" + String(_a0)[byte=:12]
                     )
 
                     agent._gpu_train_diagnostics(ctx, gpu_state, 1)
