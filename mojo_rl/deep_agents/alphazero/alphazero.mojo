@@ -65,6 +65,7 @@ from mojo_rl.deep_agents.muzero.evaluators import (
     GPUEvaluator,
     RandomOpponent,
 )
+from mojo_rl.cuda.graph import CUDAGraph
 from .configs import AlphaZeroConfig
 from .state import AlphaZeroCPUState, AlphaZeroGPUState
 
@@ -898,6 +899,479 @@ struct GenericAlphaZeroAgent[
                 )
             except:
                 pass
+
+    # ══════════════════════════════════════════════════════════════
+    # CUDA Graph Helpers (split train_step_gpu for capturable kernels)
+    # ══════════════════════════════════════════════════════════════
+
+    def _sample_and_upload_batch(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu: Self.GPUStateType,
+    ) raises:
+        """Sample random batch from CPU replay buffer and upload to GPU.
+
+        This is NOT CUDA-graph-capturable (CPU work + H2D copies).
+        Must be called before each graph replay so GPU buffers have fresh data.
+        """
+        comptime BATCH = Self.Config.batch_size
+        comptime OBS = Self.Config.obs_dim
+        comptime ACT = Self.Config.action_dim
+
+        for b in range(BATCH):
+            var idx = Int(random_float64() * Float64(self.state.buf_size))
+            if idx >= self.state.buf_size:
+                idx = self.state.buf_size - 1
+            for i in range(OBS):
+                gpu.obs_host[b * OBS + i] = self.state.buf_obs[idx * OBS + i]
+            for i in range(ACT):
+                gpu.policy_host[b * ACT + i] = self.state.buf_policy[
+                    idx * ACT + i
+                ]
+            gpu.value_host[b] = self.state.buf_value[idx]
+
+        ctx.enqueue_copy(gpu.batch_obs, gpu.obs_host)
+        ctx.enqueue_copy(gpu.batch_policy, gpu.policy_host)
+        ctx.enqueue_copy(gpu.batch_value, gpu.value_host)
+
+    def _gpu_train_kernels(
+        self,
+        ctx: DeviceContext,
+        mut gpu: Self.GPUStateType,
+    ) raises:
+        """Pure GPU kernel sequence for one training step.
+
+        Contains ONLY GPU kernel enqueues — no CPU counters, no diagnostics,
+        no ctx.synchronize(). Fully CUDA graph capturable.
+        """
+        comptime BATCH = Self.Config.batch_size
+        comptime OBS = Self.Config.obs_dim
+        comptime ACT = Self.Config.action_dim
+        comptime PRED_IN = Self.Config.PredModel.IN_DIM
+        comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
+        comptime PRED_CS = Self.Config.PredModel.CACHE_SIZE
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
+
+        # Forward with cache
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, PRED_IN), MutAnyOrigin
+        ](gpu.batch_obs.unsafe_ptr())
+        var pred_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, PRED_OUT_DIM), MutAnyOrigin
+        ](gpu.pred_out.unsafe_ptr())
+        var cache_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, PRED_CS), MutAnyOrigin
+        ](gpu.pred_cache.unsafe_ptr())
+
+        Self.PredNet.forward_gpu_with_cache[BATCH](
+            ctx,
+            obs_t,
+            pred_t,
+            gpu.prediction.params_view(),
+            cache_t,
+            gpu.workspace,
+        )
+
+        # Compute gradient on GPU
+        var grad_1d = LayoutTensor[
+            dtype, Layout.row_major(BATCH * Self.PRED_OUT), MutAnyOrigin
+        ](gpu.grad_out.unsafe_ptr())
+        var pred_1d = LayoutTensor[
+            dtype, Layout.row_major(BATCH * Self.PRED_OUT), MutAnyOrigin
+        ](gpu.pred_out.unsafe_ptr())
+        var pol_1d = LayoutTensor[
+            dtype, Layout.row_major(BATCH * ACT), MutAnyOrigin
+        ](gpu.batch_policy.unsafe_ptr())
+        var val_1d = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
+            gpu.batch_value.unsafe_ptr()
+        )
+
+        comptime run_grad = az_policy_value_grad_kernel[
+            BATCH, ACT, Self.PRED_OUT, dtype
+        ]
+        ctx.enqueue_function[run_grad, run_grad](
+            grad_1d,
+            pred_1d,
+            pol_1d,
+            val_1d,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # Backward + optimizer
+        var grad_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, PRED_OUT_DIM), MutAnyOrigin
+        ](gpu.grad_out.unsafe_ptr())
+        ctx.enqueue_memset(gpu.grad_in, 0)
+        var grad_in_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, PRED_IN), MutAnyOrigin
+        ](gpu.grad_in.unsafe_ptr())
+
+        gpu.prediction.zero_grads(ctx)
+        var grads = gpu.prediction.grads_view()
+        Self.PredNet.backward_gpu[BATCH](
+            ctx,
+            grad_out_t,
+            grad_in_t,
+            gpu.prediction.params_view(),
+            cache_t,
+            grads,
+            gpu.workspace,
+        )
+        gpu.prediction.optimizer_step(ctx)
+
+    def _gpu_train_diagnostics(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu: Self.GPUStateType,
+        num_steps: Int,
+        diag_pred_host: HostBuffer[dtype],
+        diag_go_host: HostBuffer[dtype],
+        diag_params_host: HostBuffer[dtype],
+        diag_grads_host: HostBuffer[dtype],
+    ) raises:
+        """CPU-side diagnostics after CUDA graph training replays.
+
+        Updates train_step_count and logs metrics for the last step only.
+        """
+        self.train_step_count += num_steps
+
+        if not self.logger or (
+            self.diag_every > 0
+            and self.train_step_count % self.diag_every != 0
+        ):
+            return
+
+        comptime BATCH = Self.Config.batch_size
+        comptime ACT = Self.Config.action_dim
+        comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
+
+        try:
+            # Reuse pre-allocated diagnostic buffers
+            ctx.enqueue_copy(diag_pred_host, gpu.pred_out)
+            ctx.synchronize()
+
+            var step = self.train_step_count
+            var batch_ploss: Float64 = 0.0
+            var batch_vloss: Float64 = 0.0
+            var batch_entropy: Float64 = 0.0
+            var batch_vmean: Float64 = 0.0
+
+            for b in range(BATCH):
+                var pred_off = b * Self.PRED_OUT
+
+                # Policy CE
+                var max_l: Float64 = -1e18
+                for a in range(ACT):
+                    var l = Float64(diag_pred_host[pred_off + a])
+                    if l > max_l:
+                        max_l = l
+                var sum_e: Float64 = 0.0
+                for a in range(ACT):
+                    sum_e += exp(
+                        Float64(diag_pred_host[pred_off + a]) - max_l
+                    )
+
+                var ce: Float64 = 0.0
+                var ent: Float64 = 0.0
+                for a in range(ACT):
+                    var prob = exp(
+                        Float64(diag_pred_host[pred_off + a]) - max_l
+                    ) / sum_e
+                    var target = Float64(gpu.policy_host[b * ACT + a])
+                    if target > 1e-8 and prob > 1e-8:
+                        ce -= target * log(prob)
+                    if prob > 1e-8:
+                        ent -= prob * log(prob)
+                batch_ploss += ce
+                batch_entropy += ent
+
+                # Value MSE
+                var raw_v = Float64(diag_pred_host[pred_off + ACT])
+                var tanh_v: Float64 = 0.0
+                if raw_v != raw_v:
+                    pass  # NaN — leave tanh_v = 0
+                elif raw_v > 15.0:
+                    tanh_v = 1.0
+                elif raw_v < -15.0:
+                    tanh_v = -1.0
+                else:
+                    var e2 = exp(2.0 * raw_v)
+                    tanh_v = (e2 - 1.0) / (e2 + 1.0)
+                var target_v = Float64(gpu.value_host[b])
+                batch_vloss += (tanh_v - target_v) * (tanh_v - target_v)
+                batch_vmean += tanh_v
+
+            var n = Float64(BATCH)
+            var pl = batch_ploss / n
+            var vl = batch_vloss / n
+            var pe = batch_entropy / n
+            var vm = batch_vmean / n
+
+            # Clamp to avoid NaN/inf being silently dropped by logger
+            if vl != vl or vl > 1e10:
+                vl = 0.0
+            if vm != vm or vm > 1e10 or vm < -1e10:
+                vm = 0.0
+
+            self.logger[].log_scalar("policy_ce", pl, step)
+            self.logger[].log_scalar("policy_entropy", pe, step)
+            self.logger[].log_scalar("value_mse", vl, step)
+            self.logger[].log_scalar("value_mean", vm, step)
+
+            # MCTS target entropy
+            var target_entropy_sum: Float64 = 0.0
+            var target_max_sum: Float64 = 0.0
+            for b2 in range(BATCH):
+                var tent: Float64 = 0.0
+                var tmax: Float64 = 0.0
+                for a2 in range(ACT):
+                    var tp = Float64(gpu.policy_host[b2 * ACT + a2])
+                    if tp > 1e-8:
+                        tent -= tp * log(tp)
+                    if tp > tmax:
+                        tmax = tp
+                target_entropy_sum += tent
+                target_max_sum += tmax
+            self.logger[].log_scalar(
+                "target_entropy", target_entropy_sum / n, step
+            )
+            self.logger[].log_scalar(
+                "target_max_prob", target_max_sum / n, step
+            )
+
+            # Gradient diagnostics
+            comptime PS = Self.Config.PredModel.PARAM_SIZE
+            ctx.enqueue_copy(diag_go_host, gpu.grad_out)
+            ctx.enqueue_copy(diag_grads_host, gpu.prediction.grads_buf)
+            ctx.enqueue_copy(diag_params_host, gpu.prediction.params_buf)
+            ctx.synchronize()
+
+            var go_norm: Float64 = 0.0
+            var go_max: Float64 = 0.0
+            for i in range(BATCH * Self.PRED_OUT):
+                var g = Float64(diag_go_host[i])
+                if g == g:
+                    go_norm += g * g
+                    var ag = g if g > 0 else -g
+                    if ag > go_max:
+                        go_max = ag
+            var go_n = sqrt(go_norm) if go_norm == go_norm else 0.0
+            self.logger[].log_scalar("grad_output_norm", go_n, step)
+            self.logger[].log_scalar("grad_output_max", go_max, step)
+
+            var grad_norm: Float64 = 0.0
+            var grad_max: Float64 = 0.0
+            for i in range(PS):
+                var g = Float64(diag_grads_host[i])
+                if g == g:
+                    grad_norm += g * g
+                    var ag = g if g > 0 else -g
+                    if ag > grad_max:
+                        grad_max = ag
+            var gn = sqrt(grad_norm) if grad_norm == grad_norm else 0.0
+            self.logger[].log_scalar("grad_param_norm", gn, step)
+            self.logger[].log_scalar("grad_param_max", grad_max, step)
+
+            var param_norm: Float64 = 0.0
+            for i in range(PS):
+                var p = Float64(diag_params_host[i])
+                if p == p:
+                    param_norm += p * p
+            var pn = sqrt(param_norm) if param_norm == param_norm else 0.0
+            self.logger[].log_scalar("param_norm", pn, step)
+
+            var vt_sum: Float64 = 0.0
+            var vt_pos = 0
+            var vt_neg = 0
+            for b2 in range(BATCH):
+                var t = Float64(gpu.value_host[b2])
+                vt_sum += t
+                if t > 0.5:
+                    vt_pos += 1
+                elif t < -0.5:
+                    vt_neg += 1
+            self.logger[].log_scalar("value_target_mean", vt_sum / n, step)
+            self.logger[].log_scalar(
+                "value_target_pos_frac",
+                Float64(vt_pos) / n,
+                step,
+            )
+        except:
+            pass
+
+    # ══════════════════════════════════════════════════════════════
+    # MCTS Round Kernels (CUDA graph capturable)
+    # ══════════════════════════════════════════════════════════════
+
+    def _mcts_round_kernels[
+        E: GPUTwoPlayerDiscreteEnv & DataAugmentable,
+    ](
+        self,
+        ctx: DeviceContext,
+        gpu: Self.GPUStateType,
+        mut gpu_mcts: GPUMCTSState[
+            Self.n_envs,
+            Self.Config.max_nodes,
+            Self.Config.action_dim,
+            Self.Config.obs_dim,
+            1,
+            E.STATE_SIZE,
+        ],
+        mut exp_rewards: DeviceBuffer[dtype],
+        mut exp_dones: DeviceBuffer[dtype],
+        mut exp_terminated: DeviceBuffer[dtype],
+        mut exp_obs: DeviceBuffer[dtype],
+        mut mcts_ws: DeviceBuffer[dtype],
+        # MCTS tree LayoutTensor views (pre-created by caller)
+        vc: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            MutAnyOrigin,
+        ],
+        tv: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            MutAnyOrigin,
+        ],
+        pr: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            MutAnyOrigin,
+        ],
+        rw: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            MutAnyOrigin,
+        ],
+        ci: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            MutAnyOrigin,
+        ],
+        tvis: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs * Self.Config.max_nodes),
+            MutAnyOrigin,
+        ],
+        nc: LayoutTensor[
+            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+        ],
+        miq: LayoutTensor[
+            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+        ],
+        mxq: LayoutTensor[
+            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+        ],
+        gs: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs * Self.Config.max_nodes * E.STATE_SIZE),
+            MutAnyOrigin,
+        ],
+        # Batched simulation buffers
+        b_pp: LayoutTensor[
+            dtype, Layout.row_major(Self.n_envs * 8), MutAnyOrigin
+        ],
+        b_pa: LayoutTensor[
+            dtype, Layout.row_major(Self.n_envs * 8), MutAnyOrigin
+        ],
+        b_exp_st: LayoutTensor[
+            dtype, Layout.row_major(Self.n_envs * 8 * E.STATE_SIZE), MutAnyOrigin
+        ],
+        b_sp: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs * 8 * MAX_DEPTH),
+            MutAnyOrigin,
+        ],
+        b_ap: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.n_envs * 8 * MAX_DEPTH),
+            MutAnyOrigin,
+        ],
+        b_pl: LayoutTensor[
+            dtype, Layout.row_major(Self.n_envs * 8), MutAnyOrigin
+        ],
+    ) raises:
+        """One MCTS simulation round: select → env.step → predict → backup.
+
+        Contains ONLY GPU kernel enqueues — fully CUDA graph capturable.
+        """
+        comptime ACT = Self.Config.action_dim
+        comptime OBS = Self.Config.obs_dim
+        comptime MAX_NODES = Self.Config.max_nodes
+        comptime GS = E.STATE_SIZE
+        comptime BATCH_SIMS = 8
+        comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
+        comptime PRED_IN = Self.Config.PredModel.IN_DIM
+        comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
+        comptime MCTS_PRED_OUT = ACT + 1
+        comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
+
+        # 1. Fused select + copy
+        comptime run_sel_cp = gpu_mcts_batched_select_and_copy_kernel[
+            Self.n_envs, MAX_NODES, ACT, BATCH_SIMS, GS, dtype
+        ]
+        ctx.enqueue_function[run_sel_cp, run_sel_cp](
+            vc, tv, pr, ci, tvis, nc, miq, mxq, gs,
+            b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
+            Scalar[dtype](Self.Config.PUCT.C_BASE),
+            Scalar[dtype](Self.Config.PUCT.C_INIT),
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # 2. Batched env.step
+        E.step_kernel_gpu[TOTAL_EXPAND, GS, OBS](
+            ctx,
+            gpu_mcts.expansion_states,
+            gpu_mcts.pending_action,
+            exp_rewards,
+            exp_dones,
+            exp_terminated,
+            exp_obs,
+            gpu_mcts.expansion_legal_masks,
+            rng_seed=UInt64(0),  # Fixed seed (graph-safe)
+        )
+
+        # 3. Batched prediction
+        var p_in = LayoutTensor[
+            dtype,
+            Layout.row_major(TOTAL_EXPAND, PRED_IN),
+            MutAnyOrigin,
+        ](exp_obs.unsafe_ptr())
+        var p_out = LayoutTensor[
+            dtype,
+            Layout.row_major(TOTAL_EXPAND, PRED_OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_mcts.pred_output.unsafe_ptr())
+        Self.PredNet.forward_gpu[TOTAL_EXPAND](
+            ctx, p_in, p_out, gpu.prediction.params_view(), mcts_ws
+        )
+
+        # 4. Fused expand + backup + remove virtual losses
+        var b_po = LayoutTensor[
+            dtype,
+            Layout.row_major(TOTAL_EXPAND * MCTS_PRED_OUT),
+            MutAnyOrigin,
+        ](gpu_mcts.pred_output.unsafe_ptr())
+        var b_rew = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
+        ](exp_rewards.unsafe_ptr())
+        comptime run_exp_bk = gpu_mcts_batched_expand_backup_kernel[
+            Self.n_envs,
+            MAX_NODES,
+            ACT,
+            BATCH_SIMS,
+            MCTS_PRED_OUT,
+            GS,
+            dtype,
+        ]
+        ctx.enqueue_function[run_exp_bk, run_exp_bk](
+            vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs,
+            b_exp_st, b_pp, b_pa, b_po, b_rew, b_sp, b_ap, b_pl,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
     # ══════════════════════════════════════════════════════════════
     # Data Augmentation (via DataAugmentable trait on environment)
@@ -1963,6 +2437,7 @@ struct GenericAlphaZeroAgent[
         E: GPUTwoPlayerDiscreteEnv & DataAugmentable,
         GPUEval: GPUEvaluator = RandomOpponent,
         GPUEval2: GPUEvaluator = RandomOpponent,
+        USE_CUDA_GRAPH: Bool = True,
     ](
         mut self,
         ctx: DeviceContext,
@@ -1982,6 +2457,7 @@ struct GenericAlphaZeroAgent[
             Self.L, MutAnyOrigin
         ](),
         diag_every: Int = 50,
+        verbose: Bool = True,
     ) raises -> TrainingMetrics:
         """Train via batch-then-train (like alpha-zero-general).
 
@@ -2124,6 +2600,10 @@ struct GenericAlphaZeroAgent[
             best_params[i] = self.state.prediction.params[i]
         var arena_accepts = 0
         var arena_rejects = 0
+
+        # CUDA Graph state (lazy-captured on first use)
+        var _train_graph: Optional[CUDAGraph] = None
+        var _mcts_round_graph: Optional[CUDAGraph] = None
 
         # ══════════════════════════════════════════════════════════
         # Iteration loop (batch-then-train)
@@ -2303,101 +2783,51 @@ struct GenericAlphaZeroAgent[
                         dtype, Layout.row_major(TOTAL_EXPAND * GS), MutAnyOrigin
                     ](gpu_mcts.expansion_states.unsafe_ptr())
 
-                    for _round in range(NUM_ROUNDS):
-                        # 1. Fused select + copy
-                        comptime run_sel_cp = gpu_mcts_batched_select_and_copy_kernel[
-                            Self.n_envs, MAX_NODES, ACT, BATCH_SIMS, GS, dtype
-                        ]
-                        ctx.enqueue_function[run_sel_cp, run_sel_cp](
-                            vc,
-                            tv,
-                            pr,
-                            ci,
-                            tvis,
-                            nc,
-                            miq,
-                            mxq,
-                            gs,
-                            b_pp,
-                            b_pa,
-                            b_exp_st,
-                            b_sp,
-                            b_ap,
-                            b_pl,
-                            Scalar[dtype](Self.Config.PUCT.C_BASE),
-                            Scalar[dtype](Self.Config.PUCT.C_INIT),
-                            grid_dim=(ENV_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-
-                        # 2. Batched env.step
-                        E.step_kernel_gpu[TOTAL_EXPAND, GS, OBS](
-                            ctx,
-                            gpu_mcts.expansion_states,
-                            gpu_mcts.pending_action,
-                            exp_rewards,
-                            exp_dones,
-                            exp_terminated,
-                            exp_obs,
-                            gpu_mcts.expansion_legal_masks,
-                            rng_seed=UInt64(total_steps * NUM_ROUNDS + _round),
-                        )
-
-                        # 3. Batched prediction
-                        var p_in = LayoutTensor[
-                            dtype,
-                            Layout.row_major(TOTAL_EXPAND, PRED_IN),
-                            MutAnyOrigin,
-                        ](exp_obs.unsafe_ptr())
-                        var p_out = LayoutTensor[
-                            dtype,
-                            Layout.row_major(TOTAL_EXPAND, PRED_OUT_DIM),
-                            MutAnyOrigin,
-                        ](gpu_mcts.pred_output.unsafe_ptr())
-                        Self.PredNet.forward_gpu[TOTAL_EXPAND](
-                            ctx, p_in, p_out, gpu.prediction.params_view(), mcts_ws
-                        )
-
-                        # 4. Fused expand + backup + remove virtual losses
-                        var b_po = LayoutTensor[
-                            dtype,
-                            Layout.row_major(TOTAL_EXPAND * MCTS_PRED_OUT),
-                            MutAnyOrigin,
-                        ](gpu_mcts.pred_output.unsafe_ptr())
-                        var b_rew = LayoutTensor[
-                            dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
-                        ](exp_rewards.unsafe_ptr())
-                        comptime run_exp_bk = gpu_mcts_batched_expand_backup_kernel[
-                            Self.n_envs,
-                            MAX_NODES,
-                            ACT,
-                            BATCH_SIMS,
-                            MCTS_PRED_OUT,
-                            GS,
-                            dtype,
-                        ]
-                        ctx.enqueue_function[run_exp_bk, run_exp_bk](
-                            vc,
-                            tv,
-                            pr,
-                            rw,
-                            ci,
-                            tvis,
-                            nc,
-                            miq,
-                            mxq,
-                            gs,
-                            b_exp_st,
-                            b_pp,
-                            b_pa,
-                            b_po,
-                            b_rew,
-                            b_sp,
-                            b_ap,
-                            b_pl,
-                            grid_dim=(ENV_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
+                    comptime if USE_CUDA_GRAPH:
+                        if not _mcts_round_graph:
+                            # Warmup: run one round without capture
+                            self._mcts_round_kernels[E](
+                                ctx, gpu, gpu_mcts,
+                                exp_rewards, exp_dones, exp_terminated,
+                                exp_obs, mcts_ws,
+                                vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs,
+                                b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
+                            )
+                            ctx.synchronize()
+                            # Capture
+                            var graph = CUDAGraph(ctx)
+                            graph.begin_capture()
+                            self._mcts_round_kernels[E](
+                                ctx, gpu, gpu_mcts,
+                                exp_rewards, exp_dones, exp_terminated,
+                                exp_obs, mcts_ws,
+                                vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs,
+                                b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
+                            )
+                            graph.end_capture()
+                            if verbose:
+                                print(
+                                    "[CUDA Graph] Captured MCTS round with "
+                                    + String(graph.num_nodes())
+                                    + " nodes"
+                                )
+                            _mcts_round_graph = graph^
+                            # Replay remaining rounds on Mojo stream
+                            # (preserves ordering with init_root/extract_actions)
+                            for _ in range(NUM_ROUNDS - 1):
+                                _mcts_round_graph.value().replay_on_mojo_stream()
+                        else:
+                            for _ in range(NUM_ROUNDS):
+                                _mcts_round_graph.value().replay_on_mojo_stream()
+                    else:
+                        for _round in range(NUM_ROUNDS):
+                            self._mcts_round_kernels[E](
+                                ctx, gpu, gpu_mcts,
+                                exp_rewards, exp_dones, exp_terminated,
+                                exp_obs, mcts_ws,
+                                vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs,
+                                b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
+                            )
 
                     # Extract actions with temperature annealing
                     var act_out = LayoutTensor[
@@ -2614,15 +3044,51 @@ struct GenericAlphaZeroAgent[
                 var num_train_steps = train_epochs * buf_sz // BATCH
                 # Upload latest params to GPU for training
                 gpu.upload_from(self.state, ctx)
-                for _ in range(num_train_steps):
-                    self.train_step_gpu(
+
+                comptime if USE_CUDA_GRAPH:
+                    # Lazy capture: first time, warmup + capture pure GPU kernels
+                    if not _train_graph:
+                        self._sample_and_upload_batch(ctx, gpu)
+                        self._gpu_train_kernels(ctx, gpu)
+                        ctx.synchronize()
+                        var graph = CUDAGraph(ctx)
+                        graph.begin_capture()
+                        self._gpu_train_kernels(ctx, gpu)
+                        graph.end_capture()
+                        if verbose:
+                            print(
+                                "[CUDA Graph] Captured train step with "
+                                + String(graph.num_nodes())
+                                + " nodes"
+                            )
+                        _train_graph = graph^
+                    # Each step: sample new batch on CPU, upload, replay on Mojo stream
+                    # (replay_on_mojo_stream preserves ordering with enqueue_copy)
+                    for _ in range(num_train_steps):
+                        self._sample_and_upload_batch(ctx, gpu)
+                        _train_graph.value().replay_on_mojo_stream()
+                    ctx.synchronize()
+                    # Diagnostics outside graph (once after all replays)
+                    self._gpu_train_diagnostics(
                         ctx,
                         gpu,
+                        num_train_steps,
                         diag_pred_host,
                         diag_go_host,
                         diag_params_host,
                         diag_grads_host,
                     )
+                else:
+                    for _ in range(num_train_steps):
+                        self.train_step_gpu(
+                            ctx,
+                            gpu,
+                            diag_pred_host,
+                            diag_go_host,
+                            diag_params_host,
+                            diag_grads_host,
+                        )
+
                 # Download trained params back to CPU
                 gpu.download_to(self.state, ctx)
 
