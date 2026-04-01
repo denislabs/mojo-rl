@@ -513,9 +513,16 @@ def run_mbpo_train_gpu[
             epoch += 1
 
             # GPU model rollouts → store in synth_buffer
-            agent.do_model_rollouts_gpu[E](
-                ctx, gpu_dynamics, gpu_state, synth_buffer
+            # num_rollouts_per_step controls total rollouts per training call
+            # Reference uses 100K; GPU does rollout_batch (400) per call
+            var n_rollout_batches = max(
+                1,
+                agent.num_rollouts_per_step // gpu_dynamics.rollout_batch,
             )
+            for _ in range(n_rollout_batches):
+                agent.do_model_rollouts_gpu[E](
+                    ctx, gpu_dynamics, gpu_state, synth_buffer
+                )
             next_model_train += agent.model_train_freq
 
         # Progress bar (no GPU sync, pure CPU counters)

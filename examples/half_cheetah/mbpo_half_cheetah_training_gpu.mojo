@@ -101,15 +101,15 @@ def main() raises:
             alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.001,
-            target_entropy=-Float64(ACTION_DIM),
+            target_entropy=-3.0,  # Reference uses -3 (not -ACTION_DIM)
             model_train_freq=250,
             rollout_min_length=1,
             rollout_max_length=1,  # HalfCheetah uses k=1 per MBPO paper
             rollout_min_epoch=20,
             rollout_max_epoch=150,
-            num_rollouts_per_step=400,
+            num_rollouts_per_step=100_000,  # Reference: 100K per dynamics training
             real_ratio=0.05,
-            sac_updates_per_step=20,
+            sac_updates_per_step=40,  # Reference: n_train_repeat=40
             checkpoint_every=50_000,
             checkpoint_path="mbpo_half_cheetah",
         )
