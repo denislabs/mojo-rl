@@ -112,7 +112,7 @@ def main() raises:
         max_steps_per_episode=MAX_STEPS,
         verbose=True,
         render=True,
-        frame_delay_ms=100,
+        frame_delay_ms=32,
     )
 
     var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000
