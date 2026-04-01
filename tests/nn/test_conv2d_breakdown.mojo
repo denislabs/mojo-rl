@@ -326,7 +326,7 @@ def main() raises:
         bench_breakdown[32, 64, 64, 3, 1, 0, 9, 9, 1000, "Atari conv3"](ctx)
         bench_breakdown[64, 128, 128, 3, 1, 1, 6, 7, 1000, "AZ ConnectFour"](ctx)
         bench_breakdown[64, 64, 64, 3, 1, 1, 3, 3, 1000, "AZ TicTacToe"](ctx)
-        # B=128 skipped: K_TOTAL=51200 exceeds batched_matmul dim constraint
-        bench_breakdown[64, 4, 32, 8, 4, 0, 84, 84, 1000, "Atari conv1 B=64"](ctx)
+        # B=64+ Atari conv1 skipped: K_TOTAL too large for standalone batched_matmul
+        bench_breakdown[32, 4, 32, 8, 4, 0, 84, 84, 1000, "Atari conv1 (2nd run)"](ctx)
 
     print("=" * 70)
