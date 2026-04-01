@@ -196,6 +196,14 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
     var policy_host: HostBuffer[dtype]  # [BATCH * ACT]
     var value_host: HostBuffer[dtype]  # [BATCH]
 
+    # GPU replay buffer (for CUDA-graph-compatible sampling)
+    var replay_obs: DeviceBuffer[dtype]  # [CAP * OBS]
+    var replay_policy: DeviceBuffer[dtype]  # [CAP * ACT]
+    var replay_value: DeviceBuffer[dtype]  # [CAP]
+    var replay_size: DeviceBuffer[DType.int32]  # [1]
+    var sample_indices: DeviceBuffer[DType.int32]  # [BATCH]
+    var rng_counter: DeviceBuffer[DType.uint32]  # [1]
+
     def __init__(out self, ctx: DeviceContext) raises:
         self.prediction = GPUNetworkState[Self.PredModel, Self.OptType](ctx)
 
@@ -232,6 +240,15 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
         )
         self.value_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
 
+        # GPU replay buffer
+        comptime CAP = Self.Config.buffer_capacity
+        self.replay_obs = ctx.enqueue_create_buffer[dtype](CAP * Self.OBS)
+        self.replay_policy = ctx.enqueue_create_buffer[dtype](CAP * Self.ACT)
+        self.replay_value = ctx.enqueue_create_buffer[dtype](CAP)
+        self.replay_size = ctx.enqueue_create_buffer[DType.int32](1)
+        self.sample_indices = ctx.enqueue_create_buffer[DType.int32](Self.BATCH)
+        self.rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
+
     def __init__(out self, *, deinit take: Self):
         self.prediction = take.prediction^
         self.batch_obs = take.batch_obs^
@@ -245,6 +262,12 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
         self.obs_host = take.obs_host^
         self.policy_host = take.policy_host^
         self.value_host = take.value_host^
+        self.replay_obs = take.replay_obs^
+        self.replay_policy = take.replay_policy^
+        self.replay_value = take.replay_value^
+        self.replay_size = take.replay_size^
+        self.sample_indices = take.sample_indices^
+        self.rng_counter = take.rng_counter^
 
     def upload_from(
         mut self, cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext
@@ -255,3 +278,34 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
         mut self, mut cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext
     ) raises:
         self.prediction.download_to(cpu.prediction, ctx)
+
+    def upload_replay(
+        mut self, cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext
+    ) raises:
+        """Upload CPU replay buffer contents to GPU for graph-compatible sampling."""
+        var buf_size = cpu.buf_size
+        if buf_size == 0:
+            return
+
+        # Upload active region of CPU replay to GPU
+        # Use a temporary host buffer for the size scalar
+        var size_host = ctx.enqueue_create_host_buffer[DType.int32](1)
+        size_host[0] = Scalar[DType.int32](buf_size)
+        ctx.enqueue_copy(self.replay_size, size_host)
+
+        # Copy obs, policy, value (only active region)
+        comptime OBS = Self.OBS
+        comptime ACT = Self.ACT
+        var obs_host = ctx.enqueue_create_host_buffer[dtype](buf_size * OBS)
+        var pol_host = ctx.enqueue_create_host_buffer[dtype](buf_size * ACT)
+        var val_host = ctx.enqueue_create_host_buffer[dtype](buf_size)
+        for i in range(buf_size * OBS):
+            obs_host[i] = cpu.buf_obs[i]
+        for i in range(buf_size * ACT):
+            pol_host[i] = cpu.buf_policy[i]
+        for i in range(buf_size):
+            val_host[i] = cpu.buf_value[i]
+        ctx.enqueue_copy(self.replay_obs, obs_host)
+        ctx.enqueue_copy(self.replay_policy, pol_host)
+        ctx.enqueue_copy(self.replay_value, val_host)
+        ctx.synchronize()

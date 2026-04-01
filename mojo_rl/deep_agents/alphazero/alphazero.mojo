@@ -42,6 +42,8 @@ from mojo_rl.deep_agents.core.utils import (
 from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
+    increment_rng_counter_kernel,
+    sample_indices_kernel,
     log_and_reset_completed_kernel,
     uniform_random_discrete_actions_kernel,
     uniform_random_legal_actions_kernel,
@@ -139,6 +141,54 @@ def az_policy_value_grad_kernel[
     grad_out[pred_off + ACT] = (
         Scalar[dtype](2.0) * (tanh_v - target_v) * dtanh * inv_batch
     )
+
+
+@always_inline
+def az_gather_batch_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    OBS: Int,
+    ACT: Int,
+    CAPACITY: Int,
+](
+    # Output batch
+    batch_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+    ],
+    batch_policy: LayoutTensor[
+        dtype, Layout.row_major(BATCH, ACT), MutAnyOrigin
+    ],
+    batch_value: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    # GPU replay storage
+    replay_obs: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, OBS), MutAnyOrigin
+    ],
+    replay_policy: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY, ACT), MutAnyOrigin
+    ],
+    replay_value: LayoutTensor[
+        dtype, Layout.row_major(CAPACITY), MutAnyOrigin
+    ],
+    # Sampled indices
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+):
+    """Gather AlphaZero training batch from GPU replay buffer by indices.
+
+    Each thread gathers one sample (obs, policy, value).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+
+    var buf_idx = Int(indices[i])
+
+    for d in range(OBS):
+        batch_obs[i, d] = replay_obs[buf_idx, d]
+    for d in range(ACT):
+        batch_policy[i, d] = replay_policy[buf_idx, d]
+    batch_value[i] = replay_value[buf_idx]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -943,6 +993,8 @@ struct GenericAlphaZeroAgent[
 
         Contains ONLY GPU kernel enqueues — no CPU counters, no diagnostics,
         no ctx.synchronize(). Fully CUDA graph capturable.
+
+        Includes GPU-side sampling: increment RNG → sample indices → gather batch.
         """
         comptime BATCH = Self.Config.batch_size
         comptime OBS = Self.Config.obs_dim
@@ -951,8 +1003,59 @@ struct GenericAlphaZeroAgent[
         comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
         comptime PRED_CS = Self.Config.PredModel.CACHE_SIZE
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
+        comptime CAP = Self.Config.buffer_capacity
 
-        # Forward with cache
+        # ── GPU-side sampling ────────────────────────────────────
+        # 1. Increment RNG counter (fresh seed each replay)
+        comptime incr_k = increment_rng_counter_kernel
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](gpu.rng_counter.unsafe_ptr())
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t, grid_dim=(1,), block_dim=(1,),
+        )
+
+        # 2. Sample random indices
+        var idx_t = LayoutTensor[
+            DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu.sample_indices.unsafe_ptr())
+        var buf_sz_t = LayoutTensor[
+            DType.int32, Layout.row_major(1), MutAnyOrigin
+        ](gpu.replay_size.unsafe_ptr())
+        comptime sample_k = sample_indices_kernel[dtype, BATCH]
+        ctx.enqueue_function[sample_k, sample_k](
+            idx_t, buf_sz_t, rng_t,
+            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+        )
+
+        # 3. Gather batch from GPU replay buffer
+        var b_obs_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
+        ](gpu.batch_obs.unsafe_ptr())
+        var b_pol_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, ACT), MutAnyOrigin
+        ](gpu.batch_policy.unsafe_ptr())
+        var b_val_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu.batch_value.unsafe_ptr())
+        var r_obs_t = LayoutTensor[
+            dtype, Layout.row_major(CAP, OBS), MutAnyOrigin
+        ](gpu.replay_obs.unsafe_ptr())
+        var r_pol_t = LayoutTensor[
+            dtype, Layout.row_major(CAP, ACT), MutAnyOrigin
+        ](gpu.replay_policy.unsafe_ptr())
+        var r_val_t = LayoutTensor[
+            dtype, Layout.row_major(CAP), MutAnyOrigin
+        ](gpu.replay_value.unsafe_ptr())
+        comptime gather_k = az_gather_batch_kernel[dtype, BATCH, OBS, ACT, CAP]
+        ctx.enqueue_function[gather_k, gather_k](
+            b_obs_t, b_pol_t, b_val_t,
+            r_obs_t, r_pol_t, r_val_t,
+            idx_t,
+            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+        )
+
+        # ── Forward with cache ───────────────────────────────────
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, PRED_IN), MutAnyOrigin
         ](gpu.batch_obs.unsafe_ptr())
@@ -1047,6 +1150,9 @@ struct GenericAlphaZeroAgent[
         comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
 
         try:
+            # Download last batch targets (GPU sampling doesn't fill host buffers)
+            ctx.enqueue_copy(gpu.policy_host, gpu.batch_policy)
+            ctx.enqueue_copy(gpu.value_host, gpu.batch_value)
             # Reuse pre-allocated diagnostic buffers
             ctx.enqueue_copy(diag_pred_host, gpu.pred_out)
             ctx.synchronize()
@@ -3046,9 +3152,12 @@ struct GenericAlphaZeroAgent[
                 gpu.upload_from(self.state, ctx)
 
                 comptime if USE_CUDA_GRAPH:
-                    # Lazy capture: first time, warmup + capture pure GPU kernels
+                    # Upload replay buffer to GPU (one bulk copy per iteration)
+                    gpu.upload_replay(self.state, ctx)
+
+                    # Lazy capture: first time, warmup + capture
+                    # (sampling is now GPU-side inside _gpu_train_kernels)
                     if not _train_graph:
-                        self._sample_and_upload_batch(ctx, gpu)
                         self._gpu_train_kernels(ctx, gpu)
                         ctx.synchronize()
                         var graph = CUDAGraph(ctx)
@@ -3062,12 +3171,10 @@ struct GenericAlphaZeroAgent[
                                 + " nodes"
                             )
                         _train_graph = graph^
-                    # Each step: sample new batch on CPU, upload, replay on Mojo stream
-                    # (replay_on_mojo_stream preserves ordering with enqueue_copy)
+                    # All steps via async graph replay (no per-step CPU work)
                     for _ in range(num_train_steps):
-                        self._sample_and_upload_batch(ctx, gpu)
-                        _train_graph.value().replay_on_mojo_stream()
-                    ctx.synchronize()
+                        _train_graph.value().replay_async()
+                    _train_graph.value().sync()
                     # Diagnostics outside graph (once after all replays)
                     self._gpu_train_diagnostics(
                         ctx,
