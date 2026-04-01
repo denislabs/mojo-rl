@@ -37,8 +37,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 @always_inline
 def _cp_align4(x: Int) -> Int:
     """Round up to next multiple of 4 for GPU alignment."""
-    return x
-    # return (x + 3) & ~3
+    return (x + 3) & ~3
 
 
 struct CompositeParams[*MODELS: Model]:
