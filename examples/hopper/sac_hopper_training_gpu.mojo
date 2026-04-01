@@ -41,8 +41,8 @@ comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
 # Training duration
-comptime NUM_STEPS = 1_000_000
-comptime WARMUP_STEPS = 5_000
+comptime NUM_STEPS = 1_500_000
+comptime WARMUP_STEPS = 10_000
 
 comptime dtype = DType.float32
 
@@ -71,17 +71,17 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.0003,
+            critic_lr=0.001,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
-            alpha=0.1,
+            alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.0003,
-            target_entropy=-3.0,
+            target_entropy=-2.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
         )
@@ -96,10 +96,10 @@ def main() raises:
         print("  Max parallel envs: " + String(MAX_N_ENVS))
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 3e-4")
+        print("    - Critic LR: 1e-3")
         print("    - Alpha LR: 3e-4")
         print("    - Tau (soft update): 0.005")
-        print("    - Initial alpha: 0.1 (auto-tuned)")
+        print("    - Initial alpha: 0.2 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))
         print("    - Warmup steps: " + String(WARMUP_STEPS))
         print()
@@ -122,7 +122,7 @@ def main() raises:
         logger.set_config("env", "Hopper")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("actor_lr", "3e-4")
-        logger.set_config("critic_lr", "3e-4")
+        logger.set_config("critic_lr", "1e-3")
         logger.set_config("alpha_lr", "3e-4")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
