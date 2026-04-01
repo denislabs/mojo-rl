@@ -35,17 +35,17 @@ from mojo_rl.envs.inverted_pendulum import InvertedPendulum
 comptime OBS_DIM = 4  # qpos[0:2] + qvel[0:2]
 comptime ACTION_DIM = 1  # cart slider force
 
-# Network architecture (small for simple task)
-comptime HIDDEN_DIM = 64
+# Network architecture
+comptime HIDDEN_DIM = 256
 
 # Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 100_000
-comptime BATCH_SIZE = 64
-comptime MAX_N_ENVS = 4
+comptime BUFFER_CAPACITY = 300_000
+comptime BATCH_SIZE = 256
+comptime MAX_N_ENVS = 8
 
-# Training duration (simple task, converges fast)
-comptime NUM_STEPS = 100_000
-comptime WARMUP_STEPS = 10_000
+# Training duration
+comptime NUM_STEPS = 300_000
+comptime WARMUP_STEPS = 5_000
 
 comptime dtype = DType.float32
 
@@ -81,9 +81,9 @@ def main() raises:
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
-            alpha=0.2,
+            alpha=0.1,
             auto_alpha=True,
-            alpha_lr=0.0003,
+            alpha_lr=0.001,
             target_entropy=-1.0,
             checkpoint_every=50_000,
             checkpoint_path="sac_inverted_pendulum.ckpt",
