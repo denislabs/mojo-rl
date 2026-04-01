@@ -1198,168 +1198,172 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         # Note: when STEP_THREADS > 1, all threads run the serial phases
         # redundantly (idempotent writes to same env). Only mass matrix
         # is actually distributed across threads via compute_mass_matrix_full_gpu_mt.
+        # Invalid envs (env >= BATCH) must still reach barriers but skip all
+        # state/workspace writes to avoid out-of-bounds GPU memory corruption.
 
-        comptime if STAGE == 0:
-            # Save initial state to workspace
-            for i in range(NQ):
-                workspace[env, q0_idx + i] = state[env, qpos_off + i]
-            for i in range(NV):
-                workspace[env, v0_idx + i] = state[env, qvel_off + i]
-        elif STAGE == 1:
-            # Save A[0] from qacc_constrained
-            for i in range(NV):
-                workspace[env, A0_idx + i] = workspace[
-                    env, qacc_constrained_idx + i
-                ]
-            # Set intermediate state: qpos = q0 + dt/2 * v0 (C[0] = v0)
-            # qvel = v0 + dt/2 * A[0]
-            _integrate_pos_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace, q0_idx, v0_idx, half_dt)
-            for i in range(NV):
-                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
-                var a0_i = rebind[Scalar[DTYPE]](workspace[env, A0_idx + i])
-                state[env, qvel_off + i] = v0_i + half_dt * a0_i
-        elif STAGE == 2:
-            # Save A[1] from qacc_constrained
-            for i in range(NV):
-                workspace[env, A1_idx + i] = workspace[
-                    env, qacc_constrained_idx + i
-                ]
-            # C[1] = v0 + dt/2 * A[0] — save to workspace for combine kernel
-            for i in range(NV):
-                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
-                var a0_i = rebind[Scalar[DTYPE]](workspace[env, A0_idx + i])
-                workspace[env, c1_idx + i] = v0_i + half_dt * a0_i
-            # Set intermediate state: qpos = q0 + dt/2 * C[1]
-            # qvel = v0 + dt/2 * A[1]
-            _integrate_pos_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace, q0_idx, c1_idx, half_dt)
-            for i in range(NV):
-                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
-                var a1_i = rebind[Scalar[DTYPE]](workspace[env, A1_idx + i])
-                state[env, qvel_off + i] = v0_i + half_dt * a1_i
-        elif STAGE == 3:
-            # Save A[2] from qacc_constrained
-            for i in range(NV):
-                workspace[env, A2_idx + i] = workspace[
-                    env, qacc_constrained_idx + i
-                ]
-            # C[2] = v0 + dt/2 * A[1] — save to workspace for combine kernel
-            for i in range(NV):
-                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
-                var a1_i = rebind[Scalar[DTYPE]](workspace[env, A1_idx + i])
-                workspace[env, c2_idx + i] = v0_i + half_dt * a1_i
-            # Set intermediate state: qpos = q0 + dt * C[2]
-            # qvel = v0 + dt * A[2]
-            _integrate_pos_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace, q0_idx, c2_idx, dt)
-            for i in range(NV):
-                var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
-                var a2_i = rebind[Scalar[DTYPE]](workspace[env, A2_idx + i])
-                state[env, qvel_off + i] = v0_i + dt * a2_i
+        if valid_env:
+            comptime if STAGE == 0:
+                # Save initial state to workspace
+                for i in range(NQ):
+                    workspace[env, q0_idx + i] = state[env, qpos_off + i]
+                for i in range(NV):
+                    workspace[env, v0_idx + i] = state[env, qvel_off + i]
+            elif STAGE == 1:
+                # Save A[0] from qacc_constrained
+                for i in range(NV):
+                    workspace[env, A0_idx + i] = workspace[
+                        env, qacc_constrained_idx + i
+                    ]
+                # Set intermediate state: qpos = q0 + dt/2 * v0 (C[0] = v0)
+                # qvel = v0 + dt/2 * A[0]
+                _integrate_pos_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace, q0_idx, v0_idx, half_dt)
+                for i in range(NV):
+                    var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                    var a0_i = rebind[Scalar[DTYPE]](workspace[env, A0_idx + i])
+                    state[env, qvel_off + i] = v0_i + half_dt * a0_i
+            elif STAGE == 2:
+                # Save A[1] from qacc_constrained
+                for i in range(NV):
+                    workspace[env, A1_idx + i] = workspace[
+                        env, qacc_constrained_idx + i
+                    ]
+                # C[1] = v0 + dt/2 * A[0] — save to workspace for combine kernel
+                for i in range(NV):
+                    var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                    var a0_i = rebind[Scalar[DTYPE]](workspace[env, A0_idx + i])
+                    workspace[env, c1_idx + i] = v0_i + half_dt * a0_i
+                # Set intermediate state: qpos = q0 + dt/2 * C[1]
+                # qvel = v0 + dt/2 * A[1]
+                _integrate_pos_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace, q0_idx, c1_idx, half_dt)
+                for i in range(NV):
+                    var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                    var a1_i = rebind[Scalar[DTYPE]](workspace[env, A1_idx + i])
+                    state[env, qvel_off + i] = v0_i + half_dt * a1_i
+            elif STAGE == 3:
+                # Save A[2] from qacc_constrained
+                for i in range(NV):
+                    workspace[env, A2_idx + i] = workspace[
+                        env, qacc_constrained_idx + i
+                    ]
+                # C[2] = v0 + dt/2 * A[1] — save to workspace for combine kernel
+                for i in range(NV):
+                    var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                    var a1_i = rebind[Scalar[DTYPE]](workspace[env, A1_idx + i])
+                    workspace[env, c2_idx + i] = v0_i + half_dt * a1_i
+                # Set intermediate state: qpos = q0 + dt * C[2]
+                # qvel = v0 + dt * A[2]
+                _integrate_pos_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace, q0_idx, c2_idx, dt)
+                for i in range(NV):
+                    var v0_i = rebind[Scalar[DTYPE]](workspace[env, v0_idx + i])
+                    var a2_i = rebind[Scalar[DTYPE]](workspace[env, A2_idx + i])
+                    state[env, qvel_off + i] = v0_i + dt * a2_i
 
         # ---- Forward dynamics pipeline (same as EulerIntegrator.step_kernel) ----
 
-        # 1. Forward kinematics
-        forward_kinematics_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-        ](env, state, model)
+        if valid_env:
+            # 1. Forward kinematics
+            forward_kinematics_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+            ](env, state, model)
 
-        # 2. Body velocities
-        compute_body_velocities_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-        ](env, state, model)
+            # 2. Body velocities
+            compute_body_velocities_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+            ](env, state, model)
 
-        # 3. Detect contacts
-        detect_contacts_auto_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            NGEOM,
-        ](env, state, model)
+            # 3. Detect contacts
+            detect_contacts_auto_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                NGEOM,
+            ](env, state, model)
 
-        # 3a. Compute subtree_com
-        compute_subtree_com_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-            STATE_SIZE, MODEL_SIZE, BATCH,
-        ](env, state, model)
+            # 3a. Compute subtree_com
+            compute_subtree_com_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH,
+            ](env, state, model)
 
-        # 4. Compute cdof
-        compute_cdof_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-        ](env, state, model, workspace)
+            # 4. Compute cdof
+            compute_cdof_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace)
 
-        # 5. Composite rigid body inertia
-        compute_composite_inertia_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-        ](env, state, model, workspace)
+            # 5. Composite rigid body inertia
+            compute_composite_inertia_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace)
 
         # 6. Full mass matrix (multi-threaded when STEP_THREADS > 1)
         comptime if STEP_THREADS > 1:
@@ -1422,6 +1426,8 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         comptime if STEP_THREADS > 1:
             if tid != 0:
                 return
+        if not valid_env:
+            return
 
         # 6b. Armature only (no implicit damping for RK4)
         for j in range(NJOINT):

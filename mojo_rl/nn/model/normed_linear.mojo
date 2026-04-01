@@ -22,7 +22,8 @@ from std.gpu.primitives import block, lane_id
 from std.gpu.compute.mma import mma
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.math import sqrt, exp, log
-from linalg.matmul import matmul as max_matmul
+from linalg.bmm import batched_matmul as max_matmul
+from layout.tile_tensor import lt_to_tt
 
 
 struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
@@ -1948,7 +1949,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             )
 
             # Vendor BLAS matmul
-            max_matmul[target="gpu"](linear_out_mut, input_immut, W, ctx)
+            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), context=ctx)
 
             # Bias add
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
@@ -2098,7 +2099,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # Kernel 1: Linear matmul (vendor BLAS on NVIDIA, MMA/2x2 fallback)
         comptime if has_nvidia_gpu_accelerator():
             # Use vendor BLAS (cuBLAS) — host-side API, not a GPU kernel
-            max_matmul[target="gpu"](linear_out_mut, input_immut, W, ctx)
+            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), context=ctx)
             # Bias add (separate small kernel)
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
@@ -2235,7 +2236,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # On NVIDIA, the stream caller (MPPI) will need to synchronize streams
         # before and after this call anyway, so this is functionally correct.
         comptime if has_nvidia_gpu_accelerator():
-            max_matmul[target="gpu"](linear_out_mut, input_immut, W, ctx)
+            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), context=ctx)
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
             @always_inline
@@ -2432,7 +2433,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         comptime if has_nvidia_gpu_accelerator():
             max_matmul[transpose_b=True, target="gpu"](
-                grad_input, d_linear_out_immut, W, ctx
+                lt_to_tt(grad_input), lt_to_tt(d_linear_out_immut), lt_to_tt(W), context=ctx
             )
         else:
             comptime dx_grid_x = (Self.IN_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N

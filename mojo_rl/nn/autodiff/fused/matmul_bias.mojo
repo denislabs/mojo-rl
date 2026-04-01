@@ -20,7 +20,8 @@ from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.gpu.compute.mma import mma
-from linalg.matmul import matmul as max_matmul
+from linalg.bmm import batched_matmul as max_matmul
+from layout.tile_tensor import lt_to_tt
 
 
 struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
@@ -1115,7 +1116,7 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             )
 
             # 2. Matmul: output = input @ W
-            max_matmul[target="gpu"](output, input_immut, W, ctx)
+            max_matmul[target="gpu"](lt_to_tt(output), lt_to_tt(input_immut), lt_to_tt(W), context=ctx)
 
             # 3. Bias add
             comptime bias_elems = BATCH * Self.out_dim

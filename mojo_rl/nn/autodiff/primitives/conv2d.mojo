@@ -20,7 +20,8 @@ from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.gpu.compute.mma import mma
-from linalg.matmul import matmul as max_matmul
+from linalg.bmm import batched_matmul as max_matmul
+from layout.tile_tensor import lt_to_tt
 
 
 struct Conv2D[
@@ -1093,7 +1094,7 @@ struct Conv2D[
                 MutAnyOrigin,
             ](workspace)
 
-            max_matmul[target="gpu", transpose_b=True](out_temp, col_flat, W_mat, ctx)
+            max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), context=ctx)
 
             # 4. Transpose output + bias: (K_TOTAL, OC) → (BATCH, OC*S)
             # out_temp[b*S+s, oc] → output[b, oc*S+s] + bias[oc]
@@ -1272,7 +1273,7 @@ struct Conv2D[
             )
 
             # Zero-alloc dW: dW = grad_reshaped @ col_flat
-            max_matmul[target="gpu"](dW, grad_reshaped, col_flat, ctx)
+            max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), context=ctx)
 
             # ── dx via matmul + col2im gather ──
             # dcol = W.T @ grad_reshaped, then col2im gather
@@ -1325,7 +1326,7 @@ struct Conv2D[
                 MutAnyOrigin,
             ](workspace)
 
-            max_matmul[target="gpu"](dcol, w_t_bwd, grad_reshaped, ctx)
+            max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), context=ctx)
 
             # col2im gather: one thread per input element
             var total_dx = BATCH * Self.IN_DIM
