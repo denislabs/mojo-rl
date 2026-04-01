@@ -18,7 +18,7 @@ Note: MuJoCo 3.3.6 includes Coriolis derivatives for ImplicitFast, causing
 
 from std.math import sqrt
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from layout import LayoutTensor, Layout
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
@@ -35,6 +35,7 @@ from ..dynamics.mass_matrix import (
     compute_mass_matrix,
     compute_mass_matrix_full,
     compute_mass_matrix_full_gpu,
+    compute_mass_matrix_full_gpu_mt,
     ldl_factor,
     ldl_factor_gpu,
     ldl_solve,
@@ -1310,6 +1311,398 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
 
     @always_inline
     @staticmethod
+    def step_kernel_mt[
+        DTYPE: DType,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        STATE_SIZE: Int,
+        MODEL_SIZE: Int,
+        BATCH: Int,
+        WS_SIZE: Int,
+        NGEOM: Int = 0,
+        MAX_EQUALITY: Int = 0,
+        CONE_TYPE: Int = ConeType.ELLIPTIC,
+        MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
+        NM: Int = 0,
+        SPARSE: Bool = False,
+        STEP_THREADS: Int = 1,
+    ](
+        state: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+        ],
+        model: LayoutTensor[
+            DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
+        ],
+        workspace: LayoutTensor[
+            DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Multi-threaded implicit-fast step kernel (pre-solver).
+
+        Uses 2D blocks (envs, STEP_THREADS) to parallelize mass matrix
+        computation across STEP_THREADS threads per environment.
+        Serial stages run on tid==0 only with barrier() synchronization.
+        """
+
+        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+        var tid = Int(thread_idx.y)
+        if env >= BATCH:
+            # Invalid envs must still hit all barriers to avoid deadlock
+            pass
+        var valid_env = env < BATCH
+
+        comptime V_SIZE = _max_one[NV]()
+        comptime M_idx = ws_M_offset[NV, NBODY]()
+        comptime bias_idx = ws_bias_offset[NV, NBODY]()
+        comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
+        comptime qacc_ws_idx = ws_qacc_ws_offset[NV, NBODY]()
+        comptime qacc_constrained_idx = ws_qacc_constrained_offset[NV, NBODY]()
+        comptime m_inv_idx = ws_m_inv_offset[NV, NBODY]()
+        comptime NM_SAFE = _ensure_positive[NM]()
+        var sp_row_nnz = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_row_adr = InlineArray[Int, _ensure_positive[NV]()](fill=0)
+        var sp_col_ind = InlineArray[Int, NM_SAFE](fill=0)
+
+        comptime if SPARSE:
+            _ = build_sparse_pattern_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM, MODEL_SIZE
+            ](model, sp_row_nnz, sp_row_adr, sp_col_ind)
+
+        # =====================================================================
+        # SERIAL PHASE 1: FK, body velocities, contacts, subtree_com, cdof, CRB
+        # =====================================================================
+        if tid == 0 and valid_env:
+            forward_kinematics_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH,
+            ](env, state, model)
+
+            compute_body_velocities_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH,
+            ](env, state, model)
+
+            detect_contacts_auto_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH, NGEOM,
+                MAX_EQUALITY, MAX_TENDON, NSITE,
+            ](env, state, model)
+
+            compute_subtree_com_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH,
+            ](env, state, model)
+
+            compute_cdof_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            ](env, state, model, workspace)
+
+            compute_composite_inertia_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            ](env, state, model, workspace)
+
+        barrier()
+
+        # =====================================================================
+        # PARALLEL PHASE 1: Mass matrix computation
+        # =====================================================================
+        if valid_env:
+            comptime if SPARSE:
+                if tid == 0:
+                    compute_mass_matrix_sparse_gpu[
+                        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NM,
+                        STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+                    ](
+                        env, state, model, workspace,
+                        sp_row_nnz, sp_row_adr, sp_col_ind,
+                    )
+            else:
+                compute_mass_matrix_full_gpu_mt[
+                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                    STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+                ](env, tid, STEP_THREADS, state, model, workspace)
+
+        barrier()
+
+        # =====================================================================
+        # SERIAL PHASE 2: Armature, LDL factor, M_inv, bias forces
+        # =====================================================================
+        if tid == 0 and valid_env:
+            # 6b. Add armature to mass matrix diagonal
+            for j in range(NJOINT):
+                var joint_off = model_joint_offset[NBODY](j)
+                var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
+                var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
+                var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        workspace[env, idx] += arm
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        workspace[env, idx] += arm
+                else:
+                    var idx = M_idx + dof_adr * NV + dof_adr
+                    workspace[env, idx] += arm
+
+            # 7. LDL factorize M, conditionally compute M_inv
+            comptime if SPARSE:
+                ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                    env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+                )
+                comptime if Self.SOLVER.NEEDS_M_INV:
+                    compute_M_inv_from_sparse_ldl_gpu[
+                        DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+                    ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+            else:
+                ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                    env, workspace
+                )
+                comptime if Self.SOLVER.NEEDS_M_INV:
+                    compute_M_inv_from_ldl_gpu[
+                        DTYPE, NV, NBODY, BATCH, WS_SIZE
+                    ](env, workspace)
+
+            # 8. Bias forces
+            compute_bias_forces_rne_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            ](env, state, model, workspace)
+
+        barrier()
+
+        # =====================================================================
+        # PARALLEL PHASE 2: f_net = qfrc - bias (strided)
+        # =====================================================================
+        if valid_env:
+            var qfrc_off = qfrc_offset[NQ, NV]()
+            for i in range(tid, NV, STEP_THREADS):
+                var qfrc = rebind[Scalar[DTYPE]](state[env, qfrc_off + i])
+                var bias_val = rebind[Scalar[DTYPE]](
+                    workspace[env, bias_idx + i]
+                )
+                workspace[env, fnet_idx + i] = qfrc - bias_val
+
+        barrier()
+
+        # =====================================================================
+        # SERIAL PHASE 3: Passive forces, LDL solve, warm-start, qacc write
+        # =====================================================================
+        if tid == 0 and valid_env:
+            var qvel_off = qvel_offset[NQ, NV]()
+            var qacc_off = qacc_offset[NQ, NV]()
+            var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+
+            # 8b. Passive joint forces: damping
+            for j in range(NJOINT):
+                var joint_off_d = model_joint_offset[NBODY](j)
+                var jnt_type_d = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off_d + JOINT_IDX_TYPE]
+                    )
+                )
+                var dof_adr_d = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off_d + JOINT_IDX_DOF_ADR]
+                    )
+                )
+                var damp_d = rebind[Scalar[DTYPE]](
+                    model[0, joint_off_d + JOINT_IDX_DAMPING]
+                )
+                if damp_d > Scalar[DTYPE](0):
+                    if jnt_type_d == JNT_FREE:
+                        for d in range(6):
+                            var v = rebind[Scalar[DTYPE]](
+                                state[env, qvel_off + dof_adr_d + d]
+                            )
+                            var cur = rebind[Scalar[DTYPE]](
+                                workspace[env, fnet_idx + dof_adr_d + d]
+                            )
+                            workspace[env, fnet_idx + dof_adr_d + d] = (
+                                cur - damp_d * v
+                            )
+                    elif jnt_type_d == JNT_BALL:
+                        for d in range(3):
+                            var v = rebind[Scalar[DTYPE]](
+                                state[env, qvel_off + dof_adr_d + d]
+                            )
+                            var cur = rebind[Scalar[DTYPE]](
+                                workspace[env, fnet_idx + dof_adr_d + d]
+                            )
+                            workspace[env, fnet_idx + dof_adr_d + d] = (
+                                cur - damp_d * v
+                            )
+                    else:
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr_d]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr_d]
+                        )
+                        workspace[env, fnet_idx + dof_adr_d] = cur - damp_d * v
+
+            # Stiffness + frictionloss
+            var qpos_off_stiff = qpos_offset[NQ, NV]()
+            for j in range(NJOINT):
+                var joint_off = model_joint_offset[NBODY](j)
+                var jnt_type = Int(
+                    rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+                )
+                var dof_adr = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_DOF_ADR]
+                    )
+                )
+                var qpos_adr = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, joint_off + JOINT_IDX_QPOS_ADR]
+                    )
+                )
+                var stiff = rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_STIFFNESS]
+                )
+                var sref = rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_SPRINGREF]
+                )
+                var floss = rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_FRICTIONLOSS]
+                )
+                if stiff > Scalar[DTYPE](0):
+                    if jnt_type == JNT_FREE:
+                        for d in range(6):
+                            var qpos_d = rebind[Scalar[DTYPE]](
+                                state[env, qpos_off_stiff + qpos_adr + d]
+                            )
+                            var cur = rebind[Scalar[DTYPE]](
+                                workspace[env, fnet_idx + dof_adr + d]
+                            )
+                            workspace[env, fnet_idx + dof_adr + d] = (
+                                cur - stiff * (qpos_d - sref)
+                            )
+                    elif jnt_type == JNT_BALL:
+                        for d in range(3):
+                            var qpos_d = rebind[Scalar[DTYPE]](
+                                state[env, qpos_off_stiff + qpos_adr + d]
+                            )
+                            var cur = rebind[Scalar[DTYPE]](
+                                workspace[env, fnet_idx + dof_adr + d]
+                            )
+                            workspace[env, fnet_idx + dof_adr + d] = (
+                                cur - stiff * (qpos_d - sref)
+                            )
+                    else:
+                        var qpos_d = rebind[Scalar[DTYPE]](
+                            state[env, qpos_off_stiff + qpos_adr]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr]
+                        )
+                        workspace[env, fnet_idx + dof_adr] = cur - stiff * (
+                            qpos_d - sref
+                        )
+                if floss > Scalar[DTYPE](0):
+                    comptime VEL_THRESH: Scalar[DTYPE] = 1e-4
+                    if jnt_type == JNT_FREE:
+                        for d in range(6):
+                            var v = rebind[Scalar[DTYPE]](
+                                state[env, qvel_off + dof_adr + d]
+                            )
+                            var cur = rebind[Scalar[DTYPE]](
+                                workspace[env, fnet_idx + dof_adr + d]
+                            )
+                            if v > VEL_THRESH:
+                                workspace[
+                                    env, fnet_idx + dof_adr + d
+                                ] = cur - floss
+                            elif v < -VEL_THRESH:
+                                workspace[
+                                    env, fnet_idx + dof_adr + d
+                                ] = cur + floss
+                    elif jnt_type == JNT_BALL:
+                        for d in range(3):
+                            var v = rebind[Scalar[DTYPE]](
+                                state[env, qvel_off + dof_adr + d]
+                            )
+                            var cur = rebind[Scalar[DTYPE]](
+                                workspace[env, fnet_idx + dof_adr + d]
+                            )
+                            if v > VEL_THRESH:
+                                workspace[
+                                    env, fnet_idx + dof_adr + d
+                                ] = cur - floss
+                            elif v < -VEL_THRESH:
+                                workspace[
+                                    env, fnet_idx + dof_adr + d
+                                ] = cur + floss
+                    else:
+                        var v = rebind[Scalar[DTYPE]](
+                            state[env, qvel_off + dof_adr]
+                        )
+                        var cur = rebind[Scalar[DTYPE]](
+                            workspace[env, fnet_idx + dof_adr]
+                        )
+                        if v > VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr] = cur - floss
+                        elif v < -VEL_THRESH:
+                            workspace[env, fnet_idx + dof_adr] = cur + floss
+
+            # LDL solve
+            comptime if SPARSE:
+                ldl_solve_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                    env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+                )
+            else:
+                ldl_solve_workspace_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                    env, workspace
+                )
+
+            # Warm-start logic
+            comptime meta_off_ws = metadata_offset[
+                NQ, NV, NBODY, MAX_CONTACTS
+            ]()
+            var nc_for_ws = Int(
+                rebind[Scalar[DTYPE]](
+                    state[env, meta_off_ws + META_IDX_NUM_CONTACTS]
+                )
+            )
+            if nc_for_ws > MAX_CONTACTS:
+                nc_for_ws = MAX_CONTACTS
+            var has_warmstart = False
+            if nc_for_ws > 0:
+                for i in range(NV):
+                    if rebind[Scalar[DTYPE]](
+                        state[env, qacc_off + i]
+                    ) != Scalar[DTYPE](0):
+                        has_warmstart = True
+                        break
+
+            if has_warmstart:
+                for i in range(NV):
+                    workspace[env, qacc_constrained_idx + i] = state[
+                        env, qacc_off + i
+                    ]
+            else:
+                for i in range(NV):
+                    workspace[env, qacc_constrained_idx + i] = workspace[
+                        env, qacc_ws_idx + i
+                    ]
+
+            # Write unconstrained qacc to state
+            for i in range(NV):
+                var qacc_val = rebind[Scalar[DTYPE]](
+                    workspace[env, qacc_ws_idx + i]
+                )
+                state[env, qacc_off + i] = qacc_val
+
+    @always_inline
+    @staticmethod
     def step_finalize_kernel[
         DTYPE: DType,
         NQ: Int,
@@ -1567,33 +1960,68 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
         ](workspace_buf)
 
-        comptime kernel_wrapper = Self.step_kernel[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-            NGEOM,
-            MAX_EQUALITY,
-            CONE_TYPE,
-            MAX_TENDON,
-            NSITE,
-            NM,
-            SPARSE,
-        ]
+        comptime if STEP_THREADS > 1:
+            comptime STEP_ENV_TPB = TPB // STEP_THREADS
+            comptime STEP_ENV_BLOCKS = (
+                BATCH + STEP_ENV_TPB - 1
+            ) // STEP_ENV_TPB
 
-        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(ENV_BLOCKS,),
-            block_dim=(TPB,),
-        )
+            comptime mt_kernel_wrapper = Self.step_kernel_mt[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
+                MAX_TENDON,
+                NSITE,
+                NM,
+                SPARSE,
+                STEP_THREADS,
+            ]
+
+            ctx.enqueue_function[mt_kernel_wrapper, mt_kernel_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(STEP_ENV_BLOCKS, 1),
+                block_dim=(STEP_ENV_TPB, STEP_THREADS),
+            )
+        else:
+            comptime kernel_wrapper = Self.step_kernel[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
+                MAX_TENDON,
+                NSITE,
+                NM,
+                SPARSE,
+            ]
+
+            ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(ENV_BLOCKS,),
+                block_dim=(TPB,),
+            )
 
         comptime V_SIZE = _max_one[NV]()
 
