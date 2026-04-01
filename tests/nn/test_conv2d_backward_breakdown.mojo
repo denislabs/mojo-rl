@@ -15,7 +15,8 @@ Run:
 from std.random import seed, random_float64
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
+from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 from layout.tile_tensor import lt_to_tt
 from linalg.matmul import matmul as max_matmul
@@ -219,7 +220,7 @@ def bench_backward[
         var tid = Int(thread_idx.x)
         var smem = LayoutTensor[
             dtype, Layout.row_major(TPB), MutAnyOrigin,
-            address_space = __mlir_attr.`#std.gpu<address_space shared>`,
+            address_space=AddressSpace.SHARED,
         ].stack_allocation()
 
         var local_sum: Scalar[dtype] = 0
@@ -234,7 +235,6 @@ def bench_backward[
             i += TPB
         smem[tid] = local_sum
 
-        from std.gpu import barrier
         barrier()
 
         # Tree reduction
