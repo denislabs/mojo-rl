@@ -25,6 +25,7 @@ from std.utils import IndexList
 
 from mojo_rl.nn.constants import dtype, TPB, MMA_BLOCK_THREADS
 from mojo_rl.nn.autodiff.primitives.conv2d import Conv2D
+from layout.tile_tensor import lt_to_tt
 
 # Max conv kernels
 from nn.conv.conv import conv_gpu, conv2d_gpu_naive_nhwc_rscf
@@ -35,7 +36,7 @@ from nn.conv.conv import conv_gpu, conv2d_gpu_naive_nhwc_rscf
 # ─────────────────────────────────────────────────────────────────────
 
 
-fn bench_config[
+def bench_config[
     BATCH: Int,
     IC: Int,
     OC: Int,
@@ -187,6 +188,11 @@ fn bench_config[
     ctx.enqueue_memset(out_buf_naive, 0)
     ctx.enqueue_memset(out_buf_ours, 0)
     ctx.enqueue_memset(cache_buf, 0)
+
+    # Workspace for our Conv2D (used as temp buffer in eval_gpu)
+    comptime ws_size = max(BATCH * OurConv.OUT_DIM, BATCH * OurConv.CACHE_SIZE)
+    var workspace_buf = ctx.enqueue_create_buffer[dtype](ws_size)
+    ctx.enqueue_memset(workspace_buf, 0)
     ctx.synchronize()
 
     # ── LayoutTensors ──
@@ -245,7 +251,7 @@ fn bench_config[
     # ── Warmup (3 iterations each) ──
     for _ in range(3):
         conv_gpu(
-            input_nhwc, filter_rscf, out_max,
+            lt_to_tt(input_nhwc), lt_to_tt(filter_rscf), lt_to_tt(out_max),
             IndexList[2](STRIDE, STRIDE),
             IndexList[2](1, 1),
             IndexList[4](PAD, PAD, PAD, PAD),
@@ -256,7 +262,7 @@ fn bench_config[
             grid_dim=(grid_x_naive, grid_y_naive, BATCH),
             block_dim=(BS, BS),
         )
-        OurConv.eval_gpu[BATCH](ctx, out_ours, input_chw, params_t, cache_t)
+        OurConv.eval_gpu[BATCH](ctx, out_ours, input_chw, params_t, cache_t, workspace_buf.unsafe_ptr())
     ctx.synchronize()
 
     # ══════════════════════════════════════════════════════════════
@@ -266,7 +272,7 @@ fn bench_config[
     var t0 = perf_counter_ns()
     for _ in range(N_ITERS):
         conv_gpu(
-            input_nhwc, filter_rscf, out_max,
+            lt_to_tt(input_nhwc), lt_to_tt(filter_rscf), lt_to_tt(out_max),
             IndexList[2](STRIDE, STRIDE),
             IndexList[2](1, 1),
             IndexList[4](PAD, PAD, PAD, PAD),
@@ -299,7 +305,7 @@ fn bench_config[
     ctx.synchronize()
     var t4 = perf_counter_ns()
     for _ in range(N_ITERS):
-        OurConv.eval_gpu[BATCH](ctx, out_ours, input_chw, params_t, cache_t)
+        OurConv.eval_gpu[BATCH](ctx, out_ours, input_chw, params_t, cache_t, workspace_buf.unsafe_ptr())
     ctx.synchronize()
     var t5 = perf_counter_ns()
     var ours_us = Float64(t5 - t4) / 1000.0 / Float64(N_ITERS)
