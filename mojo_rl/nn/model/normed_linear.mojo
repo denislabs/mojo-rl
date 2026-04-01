@@ -2433,7 +2433,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         comptime if has_nvidia_gpu_accelerator():
             max_matmul[transpose_b=True, target="gpu"](
-                lt_to_tt(grad_input), lt_to_tt(d_linear_out_immut), lt_to_tt(W), context=ctx
+                lt_to_tt(grad_input), lt_to_tt(d_linear_out_immut), lt_to_tt(W), ctx
             )
         else:
             comptime dx_grid_x = (Self.IN_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
