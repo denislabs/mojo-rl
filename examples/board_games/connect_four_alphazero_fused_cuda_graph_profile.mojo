@@ -44,12 +44,12 @@ def main() raises:
 
     var agent = GenericAlphaZeroAgent[Config, 64]()
 
-    # Short run: 1 iter, 500 steps — enough to capture all kernel patterns.
+    # 2 iters, 3000 steps each — enough to complete games and trigger training.
     _ = agent.train_selfplay_gpu[C4, RandomOpponent, USE_CUDA_GRAPH=True](
         ctx,
-        num_iters=1,
-        steps_per_iter=500,
-        train_epochs=1,
+        num_iters=2,
+        steps_per_iter=3000,
+        train_epochs=2,
         warmup_iters=0,
         arena_threshold=0.52,
         do_eval=False,
