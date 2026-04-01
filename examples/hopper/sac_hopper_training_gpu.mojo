@@ -71,12 +71,12 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.001,
+            critic_lr=0.0005,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
-            tau=0.005,
+            tau=0.01,
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
@@ -96,9 +96,9 @@ def main() raises:
         print("  Max parallel envs: " + String(MAX_N_ENVS))
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 1e-3")
+        print("    - Critic LR: 5e-4")
         print("    - Alpha LR: 3e-4")
-        print("    - Tau (soft update): 0.005")
+        print("    - Tau (soft update): 0.01")
         print("    - Initial alpha: 0.2 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))
         print("    - Warmup steps: " + String(WARMUP_STEPS))
@@ -122,7 +122,7 @@ def main() raises:
         logger.set_config("env", "Hopper")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("actor_lr", "3e-4")
-        logger.set_config("critic_lr", "1e-3")
+        logger.set_config("critic_lr", "5e-4")
         logger.set_config("alpha_lr", "3e-4")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
