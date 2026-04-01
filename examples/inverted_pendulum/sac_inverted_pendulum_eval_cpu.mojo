@@ -18,12 +18,23 @@ from mojo_rl.envs.inverted_pendulum import InvertedPendulum
 # Constants (must match training configuration)
 # =============================================================================
 
+# InvertedPendulum: 4D observation, 1D continuous action
 comptime OBS_DIM = 4  # qpos[0:2] + qvel[0:2]
 comptime ACTION_DIM = 1  # cart slider force
-comptime HIDDEN_DIM = 64
-comptime BUFFER_CAPACITY = 100_000
-comptime BATCH_SIZE = 64
-comptime MAX_N_ENVS = 32
+
+# Network architecture
+comptime HIDDEN_DIM = 256
+
+# Off-policy GPU training parameters
+comptime BUFFER_CAPACITY = 300_000
+comptime BATCH_SIZE = 256
+comptime MAX_N_ENVS = 8
+
+# Training duration
+comptime NUM_STEPS = 300_000
+comptime WARMUP_STEPS = 5_000
+
+comptime dtype = DType.float32
 
 # Evaluation settings
 comptime NUM_EPISODES = 10
