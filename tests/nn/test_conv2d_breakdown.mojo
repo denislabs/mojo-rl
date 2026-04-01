@@ -191,9 +191,7 @@ def bench_breakdown[
             cache_lt, input_immut,
             grid_dim=(im2col_blocks,), block_dim=(TPB,),
         )
-        max_matmul[target="gpu", transpose_b=True](
-            lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), context=ctx,
-        )
+        max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), ctx)
         ctx.enqueue_function[transpose_bias_kernel, transpose_bias_kernel](
             out_lt, out_temp, bias_lt,
             grid_dim=(out_blocks,), block_dim=(TPB,),
@@ -220,9 +218,7 @@ def bench_breakdown[
     ctx.synchronize()
     var t2 = perf_counter_ns()
     for _ in range(N_ITERS):
-        max_matmul[target="gpu", transpose_b=True](
-            lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), context=ctx,
-        )
+        max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), ctx)
     ctx.synchronize()
     var t3 = perf_counter_ns()
     var matmul_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)
@@ -251,9 +247,7 @@ def bench_breakdown[
             cache_lt, input_immut,
             grid_dim=(im2col_blocks,), block_dim=(TPB,),
         )
-        max_matmul[target="gpu", transpose_b=True](
-            lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), context=ctx,
-        )
+        max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), ctx)
         ctx.enqueue_function[transpose_bias_kernel, transpose_bias_kernel](
             out_lt, out_temp, bias_lt,
             grid_dim=(out_blocks,), block_dim=(TPB,),
@@ -326,7 +320,6 @@ def main() raises:
         bench_breakdown[32, 64, 64, 3, 1, 0, 9, 9, 1000, "Atari conv3"](ctx)
         bench_breakdown[64, 128, 128, 3, 1, 1, 6, 7, 1000, "AZ ConnectFour"](ctx)
         bench_breakdown[64, 64, 64, 3, 1, 1, 3, 3, 1000, "AZ TicTacToe"](ctx)
-        # B=64+ Atari conv1 skipped: K_TOTAL too large for standalone batched_matmul
-        bench_breakdown[32, 4, 32, 8, 4, 0, 84, 84, 1000, "Atari conv1 (2nd run)"](ctx)
+        bench_breakdown[128, 4, 32, 8, 4, 0, 84, 84, 1000, "Atari conv1 B=128"](ctx)
 
     print("=" * 70)
