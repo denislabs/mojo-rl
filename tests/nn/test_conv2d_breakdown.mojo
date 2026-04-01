@@ -18,7 +18,7 @@ from std.gpu.host import DeviceContext
 from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from layout.tile_tensor import lt_to_tt
-from linalg.bmm import batched_matmul as max_matmul
+from linalg.matmul import matmul as max_matmul
 
 from mojo_rl.nn.constants import dtype, TPB, MMA_BLOCK_THREADS
 from mojo_rl.nn.autodiff.primitives.conv2d import Conv2D
