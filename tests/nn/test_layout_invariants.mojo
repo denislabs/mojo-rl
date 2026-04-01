@@ -247,7 +247,8 @@ def _check_sac[OBS: Int, ACT: Int, H: Int, BS: Int]():
 
 def test_sac_layouts():
     _check_sac[8, 2, 128, 128]()      # Swimmer
-    _check_sac[4, 1, 256, 256]()      # InvertedPendulum
+    _check_sac[4, 1, 256, 256]()      # InvertedPendulum (H=256)
+    _check_sac[4, 1, 64, 64]()       # InvertedPendulum (actual: H=64, BS=64)
     _check_sac[17, 6, 256, 256]()     # HalfCheetah
     _check_sac[11, 3, 256, 256]()     # Hopper
     _check_sac[27, 8, 256, 256]()     # Ant

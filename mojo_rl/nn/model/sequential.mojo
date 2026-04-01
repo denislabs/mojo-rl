@@ -12,7 +12,8 @@ from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 @always_inline
 def _seq_align4(x: Int) -> Int:
     """Round up to next multiple of 4 for GPU alignment."""
-    return (x + 3) & ~3
+    return x
+    # return (x + 3) & ~3
 
 
 # =============================================================================

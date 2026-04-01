@@ -1044,9 +1044,7 @@ struct MaxEntLoss[
             ],
             lsmin: Scalar[dtype],
             lsmax: Scalar[dtype],
-            rng: LayoutTensor[
-                DType.uint32, Layout.row_major(1), MutAnyOrigin
-            ],
+            rng: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
         ):
             sac_rsample_with_cache_kernel[dtype, BATCH, ACTIONS](
                 acts, lp, eps, ao, lsmin, lsmax, rng
@@ -1213,9 +1211,9 @@ struct MaxEntLoss[
         var actor_grad_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](ws_ptr + W_AGRAD)
-        var alpha_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](alpha_buf.unsafe_ptr())
+        var alpha_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+            alpha_buf.unsafe_ptr()
+        )
 
         @always_inline
         def rsample_bwd(
@@ -1298,7 +1296,8 @@ from mojo_rl.nn.autodiff.composite_params import CompositeParams
 @always_inline
 def _align4(x: Int) -> Int:
     """Round up to next multiple of 4 for GPU alignment."""
-    return (x + 3) & ~3
+    return x
+    # return (x + 3) & ~3
 
 
 struct AutodiffMaxEntLoss[
@@ -1362,12 +1361,17 @@ struct AutodiffMaxEntLoss[
 
         # Graph cache (overestimate is safe)
         comptime GRAPH_CS_EST = (
-            OBS + ACTOR_CS + ACTOR_OUT
-            + ACTIONS + ACTIONS  # RSample
+            OBS
+            + ACTOR_CS
+            + ACTOR_OUT
+            + ACTIONS
+            + ACTIONS  # RSample
             + 2 * CRITIC_CS  # DualPath
             + CRITIC_OUT  # Min
             + ACTIONS  # Slice
-            + OBS + ACTIONS + 1  # SplitApply
+            + OBS
+            + ACTIONS
+            + 1  # SplitApply
         )
 
         # Graph workspace: exact formula derived from combinator structure
@@ -1376,8 +1380,13 @@ struct AutodiffMaxEntLoss[
         # GRAPH_WS = 3*OBS + 7*ACTIONS + ACTOR_OUT + ACTOR_WS
         #          + 6*CRITIC_OUT + 2*CRITIC_WS + 4
         comptime GRAPH_WS = (
-            3 * OBS + 7 * ACTIONS + ACTOR_OUT + ACTOR_WS
-            + 6 * CRITIC_OUT + 2 * CRITIC_WS + 4
+            3 * OBS
+            + 7 * ACTIONS
+            + ACTOR_OUT
+            + ACTOR_WS
+            + 6 * CRITIC_OUT
+            + 2 * CRITIC_WS
+            + 4
         )
 
         return (
@@ -1726,9 +1735,9 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
         ](ws_ptr + W_GRAD_OUT)
         var neg_inv_batch_s = Scalar[dtype](-1.0 / Float64(BATCH))
-        var alpha_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](alpha_buf.unsafe_ptr())
+        var alpha_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+            alpha_buf.unsafe_ptr()
+        )
 
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -1901,9 +1910,12 @@ struct AutodiffDPGLoss(ActorLoss):
         # DDPGGraph = Sequential[SkipConcat[Actor], Critic, Negate[1]]
         comptime TOTAL_PS = _align4(ACTOR_PS) + _align4(CRITIC_PS)
         comptime GRAPH_WS = (
-            ACTIONS + ACTOR_WS  # SkipConcat: inner_out + inner_ws
+            ACTIONS
+            + ACTOR_WS  # SkipConcat: inner_out + inner_ws
             + CRITIC_WS  # Critic workspace
-            + OBS + ACTIONS + CRITIC_OUT  # Sequential intermediates
+            + OBS
+            + ACTIONS
+            + CRITIC_OUT  # Sequential intermediates
         )
         comptime GRAPH_CS = ACTOR_CS + CRITIC_CS + CRITIC_OUT
         return (
@@ -2339,13 +2351,22 @@ struct AutodiffTD3Loss(ActorLoss):
         # GPU layout: [params | output | cache | workspace | grad_out | grad_obs | grads]
         # TD3Graph = Sequential[SkipConcat[Actor], Sequential[DualPath[C,C], Min[1]], Negate[1]]
         comptime _a4_cps = ((CRITIC_PS + 3) & ~3)
-        comptime TOTAL_PS = ((ACTOR_PS + 3) & ~3) + _a4_cps + _a4_cps + CRITIC_PS
+        comptime TOTAL_PS = (
+            (ACTOR_PS + 3) & ~3
+        ) + _a4_cps + _a4_cps + CRITIC_PS
         # Graph workspace: exact formula from combinator structure
         comptime GRAPH_WS = (
-            ACTIONS + ACTOR_WS  # SkipConcat
-            + 2 * CRITIC_OUT + OBS + ACTIONS + 2 * CRITIC_WS  # DualPath
+            ACTIONS
+            + ACTOR_WS  # SkipConcat
+            + 2 * CRITIC_OUT
+            + OBS
+            + ACTIONS
+            + 2 * CRITIC_WS  # DualPath
             + CRITIC_OUT  # Min
-            + 2 * CRITIC_OUT + OBS + ACTIONS + CRITIC_OUT  # Sequential intermediates
+            + 2 * CRITIC_OUT
+            + OBS
+            + ACTIONS
+            + CRITIC_OUT  # Sequential intermediates
         )
         comptime GRAPH_CS = ACTOR_CS + 2 * CRITIC_CS + CRITIC_OUT
         return (
