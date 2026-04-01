@@ -22,7 +22,7 @@ from std.gpu.primitives import block, lane_id
 from std.gpu.compute.mma import mma
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.math import sqrt, exp, log
-from linalg.bmm import batched_matmul as max_matmul
+from linalg.matmul.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
 
 
@@ -1949,7 +1949,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             )
 
             # Vendor BLAS matmul
-            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), context=ctx)
+            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), ctx)
 
             # Bias add
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
@@ -2099,7 +2099,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # Kernel 1: Linear matmul (vendor BLAS on NVIDIA, MMA/2x2 fallback)
         comptime if has_nvidia_gpu_accelerator():
             # Use vendor BLAS (cuBLAS) — host-side API, not a GPU kernel
-            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), context=ctx)
+            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), ctx)
             # Bias add (separate small kernel)
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
@@ -2236,7 +2236,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # On NVIDIA, the stream caller (MPPI) will need to synchronize streams
         # before and after this call anyway, so this is functionally correct.
         comptime if has_nvidia_gpu_accelerator():
-            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), context=ctx)
+            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), ctx)
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
             @always_inline
