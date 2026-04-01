@@ -223,15 +223,7 @@ def _check_sac[OBS: Int, ACT: Int, H: Int, BS: Int]():
 
     # ws_size must cover actual GPU layout
     comptime WS_EST = AutodiffMaxEntLoss[].ws_size[
-        BS, OBS, ACT,
-        ActorModel.OUT_DIM,
-        ActorModel.CACHE_SIZE,
-        CriticModel.IN_DIM,
-        CriticModel.OUT_DIM,
-        CriticModel.CACHE_SIZE,
-        APS, CPS,
-        ActorModel.WORKSPACE_SIZE_PER_SAMPLE,
-        CriticModel.WORKSPACE_SIZE_PER_SAMPLE,
+        BS, ACT, ActorModel, CriticModel,
     ]()
     comptime assert WS_EST >= ACTUAL_NEEDED
 
@@ -319,15 +311,7 @@ def _check_ddpg[OBS: Int, ACT: Int, H: Int, BS: Int]():
 
     # ws_size must cover actual GPU layout
     comptime WS_EST = AutodiffDPGLoss.ws_size[
-        BS, OBS, ACT,
-        ActorModel.OUT_DIM,
-        ActorModel.CACHE_SIZE,
-        CriticModel.IN_DIM,
-        CriticModel.OUT_DIM,
-        CriticModel.CACHE_SIZE,
-        APS, CPS,
-        ActorModel.WORKSPACE_SIZE_PER_SAMPLE,
-        CriticModel.WORKSPACE_SIZE_PER_SAMPLE,
+        BS, ACT, ActorModel, CriticModel,
     ]()
     comptime assert WS_EST >= ACTUAL_NEEDED
 
@@ -410,15 +394,7 @@ def _check_td3[OBS: Int, ACT: Int, H: Int, BS: Int]():
 
     # ws_size must cover actual GPU layout
     comptime WS_EST = AutodiffTD3Loss.ws_size[
-        BS, OBS, ACT,
-        ActorModel.OUT_DIM,
-        ActorModel.CACHE_SIZE,
-        CriticModel.IN_DIM,
-        CriticModel.OUT_DIM,
-        CriticModel.CACHE_SIZE,
-        APS, CPS,
-        ActorModel.WORKSPACE_SIZE_PER_SAMPLE,
-        CriticModel.WORKSPACE_SIZE_PER_SAMPLE,
+        BS, ACT, ActorModel, CriticModel,
     ]()
     comptime assert WS_EST >= ACTUAL_NEEDED
 
@@ -564,60 +540,67 @@ def test_offpolicy_workspace():
 def test_manual_loss_layouts():
     """Verify manual (non-autodiff) loss ws_size covers their GPU layouts."""
 
-    # DPGLoss GPU layout: 9 buffers
-    # [actor_act | actor_cache | new_ci | new_q | new_q_cache | dq | d_ci | d_act | d_obs]
     comptime BS = 128
-    comptime OBS = 17
     comptime ACT = 6
-    comptime ACTOR_CS = 500  # representative value
-    comptime CI = OBS + ACT  # 23
-    comptime CO = 1
-    comptime CCS = 400  # representative value
+    comptime H = 256
 
-    comptime DPG_WS = DPGLoss.ws_size[
-        BS, OBS, ACT, ACT, ACTOR_CS, CI, CO, CCS,
-    ]()
+    # DDPG-style actor/critic
+    comptime DDPGActor = Sequential[
+        LinearReLU[17, H], LinearReLU[H, H], LinearTanh[H, ACT],
+    ]
+    comptime DDPGCritic = Sequential[
+        LinearReLU[17 + ACT, H], LinearReLU[H, H], Linear[H, 1],
+    ]
+
+    # DPGLoss GPU layout: 9 buffers
+    comptime DPG_WS = DPGLoss.ws_size[BS, ACT, DDPGActor, DDPGCritic]()
     comptime DPG_ACTUAL = (
-        BS * ACT       # actor_act
-        + BS * ACTOR_CS  # actor_cache
-        + BS * CI        # new_ci
-        + BS * CO        # new_q
-        + BS * CCS       # new_q_cache
-        + BS * CO        # dq
-        + BS * CI        # d_ci
-        + BS * ACT       # d_act
-        + BS * OBS       # d_obs
+        BS * ACT                        # actor_act
+        + BS * DDPGActor.CACHE_SIZE     # actor_cache
+        + BS * DDPGCritic.IN_DIM        # new_ci
+        + BS * DDPGCritic.OUT_DIM       # new_q
+        + BS * DDPGCritic.CACHE_SIZE    # new_q_cache
+        + BS * DDPGCritic.OUT_DIM       # dq
+        + BS * DDPGCritic.IN_DIM        # d_ci
+        + BS * ACT                      # d_act
+        + BS * DDPGActor.IN_DIM         # d_obs
     )
     comptime assert DPG_WS == DPG_ACTUAL
 
-    # MaxEntLoss GPU layout: 17 buffers
-    comptime ACTOR_OUT = 2 * ACT  # SAC Parallel[mean, log_std]
-    comptime ME_WS = MaxEntLoss[].ws_size[
-        BS, OBS, ACT, ACTOR_OUT, ACTOR_CS, CI, CO, CCS,
-    ]()
+    # SAC-style actor/critic
+    comptime SACActor = Sequential[
+        LinearReLU[17, H], LinearReLU[H, H],
+        Parallel[Linear[H, ACT], LinearTanh[H, ACT]],
+    ]
+    comptime SACCritic = Sequential[
+        LinearReLU[17 + ACT, H], LinearReLU[H, H], Linear[H, 1],
+    ]
+
+    # MaxEntLoss GPU layout: 22 buffers
+    comptime ME_WS = MaxEntLoss[].ws_size[BS, ACT, SACActor, SACCritic]()
     comptime ME_ACTUAL = (
-        BS * ACTOR_OUT   # raw_out
-        + BS * ACTOR_CS  # actor_cache
-        + BS * ACT       # mean
-        + BS * ACT       # log_std
-        + BS * ACT       # noise
-        + BS * ACT       # act
-        + BS             # log_probs
-        + BS * ACT       # z_cache
-        + BS * CI        # critic_input
-        + BS * CO        # Q1
-        + BS * CCS       # Q1 cache
-        + BS * CO        # Q2
-        + BS * CCS       # Q2 cache
-        + BS * CO        # dq1
-        + BS * CO        # dq2
-        + BS * CI        # d_ci1
-        + BS * CI        # d_ci2
-        + BS * ACT       # d_act
-        + BS * ACT       # grad_mean
-        + BS * ACT       # grad_log_std
-        + BS * ACTOR_OUT # actor_grad
-        + BS * OBS       # d_obs
+        BS * SACActor.OUT_DIM          # raw_out
+        + BS * SACActor.CACHE_SIZE     # actor_cache
+        + BS * ACT                     # mean
+        + BS * ACT                     # log_std
+        + BS * ACT                     # noise
+        + BS * ACT                     # act
+        + BS                           # log_probs
+        + BS * ACT                     # z_cache
+        + BS * SACCritic.IN_DIM        # critic_input
+        + BS * SACCritic.OUT_DIM       # Q1
+        + BS * SACCritic.CACHE_SIZE    # Q1 cache
+        + BS * SACCritic.OUT_DIM       # Q2
+        + BS * SACCritic.CACHE_SIZE    # Q2 cache
+        + BS * SACCritic.OUT_DIM       # dq1
+        + BS * SACCritic.OUT_DIM       # dq2
+        + BS * SACCritic.IN_DIM        # d_ci1
+        + BS * SACCritic.IN_DIM        # d_ci2
+        + BS * ACT                     # d_act
+        + BS * ACT                     # grad_mean
+        + BS * ACT                     # grad_log_std
+        + BS * SACActor.OUT_DIM        # actor_grad
+        + BS * SACActor.IN_DIM         # d_obs
     )
     comptime assert ME_WS == ME_ACTUAL
 

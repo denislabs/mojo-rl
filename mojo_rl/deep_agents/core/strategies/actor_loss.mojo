@@ -66,17 +66,9 @@ trait ActorLoss:
     @staticmethod
     def ws_size[
         BATCH: Int,
-        OBS: Int,
         ACTIONS: Int,
-        ACTOR_OUT: Int,
-        ACTOR_CS: Int,
-        CRITIC_IN: Int,
-        CRITIC_OUT: Int,
-        CRITIC_CS: Int,
-        ACTOR_PS: Int = 0,
-        CRITIC_PS: Int = 0,
-        ACTOR_WS: Int = 0,
-        CRITIC_WS: Int = 0,
+        ActorModel: Model,
+        CriticModel: Model,
     ]() -> Int:
         ...
 
@@ -218,28 +210,20 @@ struct DPGLoss(ActorLoss):
     @staticmethod
     def ws_size[
         BATCH: Int,
-        OBS: Int,
         ACTIONS: Int,
-        ACTOR_OUT: Int,
-        ACTOR_CS: Int,
-        CRITIC_IN: Int,
-        CRITIC_OUT: Int,
-        CRITIC_CS: Int,
-        ACTOR_PS: Int = 0,
-        CRITIC_PS: Int = 0,
-        ACTOR_WS: Int = 0,
-        CRITIC_WS: Int = 0,
+        ActorModel: Model,
+        CriticModel: Model,
     ]() -> Int:
         return (
             BATCH * ACTIONS
-            + BATCH * ACTOR_CS
-            + BATCH * CRITIC_IN
-            + BATCH * CRITIC_OUT
-            + BATCH * CRITIC_CS
-            + BATCH * CRITIC_OUT
-            + BATCH * CRITIC_IN
+            + BATCH * ActorModel.CACHE_SIZE
+            + BATCH * CriticModel.IN_DIM
+            + BATCH * CriticModel.OUT_DIM
+            + BATCH * CriticModel.CACHE_SIZE
+            + BATCH * CriticModel.OUT_DIM
+            + BATCH * CriticModel.IN_DIM
             + BATCH * ACTIONS
-            + BATCH * OBS
+            + BATCH * ActorModel.IN_DIM
         )
 
     @staticmethod
@@ -600,18 +584,16 @@ struct MaxEntLoss[
     @staticmethod
     def ws_size[
         BATCH: Int,
-        OBS: Int,
         ACTIONS: Int,
-        ACTOR_OUT: Int,
-        ACTOR_CS: Int,
-        CRITIC_IN: Int,
-        CRITIC_OUT: Int,
-        CRITIC_CS: Int,
-        ACTOR_PS: Int = 0,
-        CRITIC_PS: Int = 0,
-        ACTOR_WS: Int = 0,
-        CRITIC_WS: Int = 0,
+        ActorModel: Model,
+        CriticModel: Model,
     ]() -> Int:
+        comptime ACTOR_OUT = ActorModel.OUT_DIM
+        comptime ACTOR_CS = ActorModel.CACHE_SIZE
+        comptime CRITIC_IN = CriticModel.IN_DIM
+        comptime CRITIC_OUT = CriticModel.OUT_DIM
+        comptime CRITIC_CS = CriticModel.CACHE_SIZE
+        comptime OBS = ActorModel.IN_DIM
         return (
             BATCH * ACTOR_OUT  # raw_out
             + BATCH * ACTOR_CS  # actor_cache
@@ -1330,73 +1312,35 @@ struct AutodiffMaxEntLoss[
     @staticmethod
     def ws_size[
         BATCH: Int,
-        OBS: Int,
         ACTIONS: Int,
-        ACTOR_OUT: Int,
-        ACTOR_CS: Int,
-        CRITIC_IN: Int,
-        CRITIC_OUT: Int,
-        CRITIC_CS: Int,
-        ACTOR_PS: Int = 0,
-        CRITIC_PS: Int = 0,
-        ACTOR_WS: Int = 0,
-        CRITIC_WS: Int = 0,
+        ActorModel: Model,
+        CriticModel: Model,
     ]() -> Int:
-        # Must match the GPU workspace layout in update_actor_gpu:
-        #   [combined_params | output | cache | workspace |
-        #    grad_out | grad_obs | combined_grads | lp_buf]
-        # SAC graph = Sequential[SkipConcat[Actor, RSample],
-        #   SplitApply[DualPath[Critic, Critic] → Min, Slice]]
+        # Build the exact same graph as update_actor_gpu and read its sizes.
+        comptime OBS = ActorModel.IN_DIM
+        comptime ActorRSample = Sequential[ActorModel, RSample[ACTIONS]]
+        comptime ActorSkip = SkipConcat[ActorRSample]
+        comptime TwinCriticMin = Sequential[
+            DualPath[CriticModel, CriticModel], Min[1]
+        ]
+        comptime LogProbPass = Slice[1, 0, 1]
+        comptime SACOutput = SplitApply[
+            TwinCriticMin, LogProbPass, OBS + ACTIONS
+        ]
+        comptime SACGraph = Sequential[ActorSkip, SACOutput]
 
-        # TOTAL_PS: exact graph param layout with nested alignment padding
-        #   Sequential[ActorSkip, SplitApply[Sequential[DualPath[C,C], Min], Slice]]
-        #   = _align4(ACTOR_PS) + _align4(_align4(_align4(CRITIC_PS) + CRITIC_PS))
-        comptime _a4_cps = ((CRITIC_PS + 3) & ~3)
-        comptime _dual_ps = _a4_cps + CRITIC_PS
-        comptime _a4_dual = ((_dual_ps + 3) & ~3)
-        comptime _a4_a4_dual = ((_a4_dual + 3) & ~3)
-        comptime _a4_aps = ((ACTOR_PS + 3) & ~3)
-        comptime TOTAL_PS = _a4_aps + _a4_a4_dual
-
-        # Graph cache (overestimate is safe)
-        comptime GRAPH_CS_EST = (
-            OBS
-            + ACTOR_CS
-            + ACTOR_OUT
-            + ACTIONS
-            + ACTIONS  # RSample
-            + 2 * CRITIC_CS  # DualPath
-            + CRITIC_OUT  # Min
-            + ACTIONS  # Slice
-            + OBS
-            + ACTIONS
-            + 1  # SplitApply
-        )
-
-        # Graph workspace: exact formula derived from combinator structure
-        #   SACGraph = Sequential[SkipConcat[Sequential[Actor, RSample]],
-        #                         SplitApply[Sequential[DualPath[C,C], Min], Slice]]
-        # GRAPH_WS = 3*OBS + 7*ACTIONS + ACTOR_OUT + ACTOR_WS
-        #          + 6*CRITIC_OUT + 2*CRITIC_WS + 4
-        comptime GRAPH_WS = (
-            3 * OBS
-            + 7 * ACTIONS
-            + ACTOR_OUT
-            + ACTOR_WS
-            + 6 * CRITIC_OUT
-            + 2 * CRITIC_WS
-            + 4
-        )
+        comptime TOTAL_PS = SACGraph.PARAM_SIZE
+        comptime GRAPH_CS = SACGraph.CACHE_SIZE
+        comptime GRAPH_WS = SACGraph.WORKSPACE_SIZE_PER_SAMPLE
 
         return (
             2 * TOTAL_PS  # combined_params + combined_grads
             + BATCH * 2  # output (min_Q + log_prob)
-            + max(1, BATCH * GRAPH_CS_EST)  # cache
+            + max(1, BATCH * GRAPH_CS)  # cache
             + max(1, BATCH * GRAPH_WS)  # workspace
             + BATCH * 2  # grad_out (seed)
             + BATCH * OBS  # grad_obs
             + BATCH  # lp_buf
-            + 1024  # safety margin for alignment padding
         )
 
     @staticmethod
@@ -1893,30 +1837,19 @@ struct AutodiffDPGLoss(ActorLoss):
     @staticmethod
     def ws_size[
         BATCH: Int,
-        OBS: Int,
         ACTIONS: Int,
-        ACTOR_OUT: Int,
-        ACTOR_CS: Int,
-        CRITIC_IN: Int,
-        CRITIC_OUT: Int,
-        CRITIC_CS: Int,
-        ACTOR_PS: Int = 0,
-        CRITIC_PS: Int = 0,
-        ACTOR_WS: Int = 0,
-        CRITIC_WS: Int = 0,
+        ActorModel: Model,
+        CriticModel: Model,
     ]() -> Int:
-        # GPU layout: [params | output | cache | workspace | grad_out | grad_obs | grads]
-        # DDPGGraph = Sequential[SkipConcat[Actor], Critic, Negate[1]]
-        comptime TOTAL_PS = _align4(ACTOR_PS) + _align4(CRITIC_PS)
-        comptime GRAPH_WS = (
-            ACTIONS
-            + ACTOR_WS  # SkipConcat: inner_out + inner_ws
-            + CRITIC_WS  # Critic workspace
-            + OBS
-            + ACTIONS
-            + CRITIC_OUT  # Sequential intermediates
-        )
-        comptime GRAPH_CS = ACTOR_CS + CRITIC_CS + CRITIC_OUT
+        # Build the exact same graph as update_actor_gpu and read its sizes.
+        comptime OBS = ActorModel.IN_DIM
+        comptime ActorSkip = SkipConcat[ActorModel]
+        comptime DDPGGraph = Sequential[ActorSkip, CriticModel, Negate[1]]
+
+        comptime TOTAL_PS = DDPGGraph.PARAM_SIZE
+        comptime GRAPH_CS = DDPGGraph.CACHE_SIZE
+        comptime GRAPH_WS = DDPGGraph.WORKSPACE_SIZE_PER_SAMPLE
+
         return (
             2 * TOTAL_PS
             + BATCH  # output (-Q)
@@ -1924,7 +1857,6 @@ struct AutodiffDPGLoss(ActorLoss):
             + max(1, BATCH * GRAPH_WS)
             + BATCH  # grad_out (seed)
             + BATCH * OBS
-            + 1024  # safety margin
         )
 
     @staticmethod
@@ -2335,39 +2267,22 @@ struct AutodiffTD3Loss(ActorLoss):
     @staticmethod
     def ws_size[
         BATCH: Int,
-        OBS: Int,
         ACTIONS: Int,
-        ACTOR_OUT: Int,
-        ACTOR_CS: Int,
-        CRITIC_IN: Int,
-        CRITIC_OUT: Int,
-        CRITIC_CS: Int,
-        ACTOR_PS: Int = 0,
-        CRITIC_PS: Int = 0,
-        ACTOR_WS: Int = 0,
-        CRITIC_WS: Int = 0,
+        ActorModel: Model,
+        CriticModel: Model,
     ]() -> Int:
-        # GPU layout: [params | output | cache | workspace | grad_out | grad_obs | grads]
-        # TD3Graph = Sequential[SkipConcat[Actor], Sequential[DualPath[C,C], Min[1]], Negate[1]]
-        comptime _a4_cps = ((CRITIC_PS + 3) & ~3)
-        comptime TOTAL_PS = (
-            (ACTOR_PS + 3) & ~3
-        ) + _a4_cps + _a4_cps + CRITIC_PS
-        # Graph workspace: exact formula from combinator structure
-        comptime GRAPH_WS = (
-            ACTIONS
-            + ACTOR_WS  # SkipConcat
-            + 2 * CRITIC_OUT
-            + OBS
-            + ACTIONS
-            + 2 * CRITIC_WS  # DualPath
-            + CRITIC_OUT  # Min
-            + 2 * CRITIC_OUT
-            + OBS
-            + ACTIONS
-            + CRITIC_OUT  # Sequential intermediates
-        )
-        comptime GRAPH_CS = ACTOR_CS + 2 * CRITIC_CS + CRITIC_OUT
+        # Build the exact same graph as update_actor_gpu and read its sizes.
+        comptime OBS = ActorModel.IN_DIM
+        comptime ActorSkip = SkipConcat[ActorModel]
+        comptime TwinCriticMin = Sequential[
+            DualPath[CriticModel, CriticModel], Min[1]
+        ]
+        comptime TD3Graph = Sequential[ActorSkip, TwinCriticMin, Negate[1]]
+
+        comptime TOTAL_PS = TD3Graph.PARAM_SIZE
+        comptime GRAPH_CS = TD3Graph.CACHE_SIZE
+        comptime GRAPH_WS = TD3Graph.WORKSPACE_SIZE_PER_SAMPLE
+
         return (
             2 * TOTAL_PS
             + BATCH  # output (-min_Q)
@@ -2375,7 +2290,6 @@ struct AutodiffTD3Loss(ActorLoss):
             + max(1, BATCH * GRAPH_WS)
             + BATCH  # grad_out (seed)
             + BATCH * OBS
-            + 1024  # safety margin
         )
 
     @staticmethod

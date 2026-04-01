@@ -680,17 +680,9 @@ struct GenericOffPolicyAgent[
     # Strategy workspace sizes
     comptime _AL_WS: Int = Self.Config.ActorLoss.ws_size[
         Self.BATCH,
-        Self.OBS,
         Self.ACTIONS,
-        Self.ACTOR_OUT,
-        Self.ACTOR_CS,
-        Self.CRITIC_IN,
-        Self.CRITIC_OUT,
-        Self.CRITIC_CS,
-        Self.Config.ActorModel.PARAM_SIZE,
-        Self.Config.CriticModel.PARAM_SIZE,
-        Self.Config.ActorModel.WORKSPACE_SIZE_PER_SAMPLE,
-        Self.Config.CriticModel.WORKSPACE_SIZE_PER_SAMPLE,
+        Self.Config.ActorModel,
+        Self.Config.CriticModel,
     ]()
     comptime _TA_WS: Int = Self.Config.TargetAction.ws_size[
         Self.BATCH,

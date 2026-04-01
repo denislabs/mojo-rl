@@ -1078,17 +1078,9 @@ struct MBPOCPUState[
     # Workspace for SAC training
     comptime _AL_WS: Int = Self.Config.ActorLoss.ws_size[
         Self.batch_size,
-        Self.obs_dim,
         Self.action_dim,
-        Self.Config.ActorModel.OUT_DIM,
-        Self.Config.ActorModel.CACHE_SIZE,
-        Self.Config.CriticModel.IN_DIM,
-        Self.Config.CriticModel.OUT_DIM,
-        Self.Config.CriticModel.CACHE_SIZE,
-        Self.Config.ActorModel.PARAM_SIZE,
-        Self.Config.CriticModel.PARAM_SIZE,
-        Self.Config.ActorModel.WORKSPACE_SIZE_PER_SAMPLE,
-        Self.Config.CriticModel.WORKSPACE_SIZE_PER_SAMPLE,
+        Self.Config.ActorModel,
+        Self.Config.CriticModel,
     ]()
     comptime _TA_WS: Int = Self.Config.TargetAction.ws_size[
         Self.batch_size,
