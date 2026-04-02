@@ -972,6 +972,8 @@ struct FlatModelDef[
     var gravity_y: Float64
     var gravity_z: Float64
     var timestep: Float64
+    var opt_density: Float64  # Fluid density (kg/m³), 0 = disabled
+    var opt_viscosity: Float64  # Fluid dynamic viscosity (Pa·s), 0 = disabled
 
     # Mesh assets: name → file path mapping (max 16 meshes)
     var mesh_asset_names: InlineArray[String, 17]  # +1 sentinel
@@ -1004,6 +1006,8 @@ struct FlatModelDef[
         self.gravity_y = Float64(0)
         self.gravity_z = Float64(-9.81)
         self.timestep = Float64(0.01)
+        self.opt_density = Float64(0)
+        self.opt_viscosity = Float64(0)
         self.mesh_asset_names = InlineArray[String, 17](fill=String(""))
         self.mesh_asset_files = InlineArray[String, 17](fill=String(""))
         self.num_mesh_assets = 0
@@ -1044,6 +1048,8 @@ struct FlatModelDef[
             Scalar[DTYPE](0),
         )
         model.timestep = Scalar[DTYPE](self.timestep)
+        model.opt_density = Scalar[DTYPE](self.opt_density)
+        model.opt_viscosity = Scalar[DTYPE](self.opt_viscosity)
 
         # Contact solimp/solref from first geom's parsed values (geom[0] =
         # floor / first worldbody geom, which inherits the <default><geom> solimp).

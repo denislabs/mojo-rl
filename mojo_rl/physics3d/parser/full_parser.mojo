@@ -106,19 +106,21 @@ def _min_valid(a: Int, b: Int) -> Int:
 # =============================================================================
 
 
-def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64]:
-    """Extract (gravity_x, gravity_y, gravity_z, timestep) from <option .../>.
+def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64, Float64, Float64]:
+    """Extract (gravity_x, gravity_y, gravity_z, timestep, density, viscosity) from <option .../>.
 
-    Defaults: gravity=(0,0,-9.81), timestep=0.01.
+    Defaults: gravity=(0,0,-9.81), timestep=0.01, density=0.0, viscosity=0.0.
     """
     var gx = Float64(0)
     var gy = Float64(0)
     var gz = Float64(-9.81)
     var ts = Float64(0.01)
+    var dens = Float64(0)
+    var visc = Float64(0)
 
     var pos = xml.find("<option")
     if pos == -1:
-        return (gx, gy, gz, ts)
+        return (gx, gy, gz, ts, dens, visc)
 
     var tag = _extract_opening_tag(xml, pos)
 
@@ -133,7 +135,15 @@ def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64]:
     if len(ts_str) > 0:
         ts = _parse_float(ts_str)
 
-    return (gx, gy, gz, ts)
+    var dens_str = _extract_attr(tag, "density")
+    if len(dens_str) > 0:
+        dens = _parse_float(dens_str)
+
+    var visc_str = _extract_attr(tag, "viscosity")
+    if len(visc_str) > 0:
+        visc = _parse_float(visc_str)
+
+    return (gx, gy, gz, ts, dens, visc)
 
 
 # =============================================================================
@@ -1858,6 +1868,8 @@ def parse_xml_full[
     result.gravity_y = opt[1]
     result.gravity_z = opt[2]
     result.timestep = opt[3]
+    result.opt_density = opt[4]
+    result.opt_viscosity = opt[5]
 
     # Defaults (applied when specific attrs are absent)
     var defaults_tuple = _parse_defaults(xml)
