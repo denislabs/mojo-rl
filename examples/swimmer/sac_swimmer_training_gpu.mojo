@@ -41,7 +41,7 @@ comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
 # Training duration (Swimmer needs longer due to symmetric dynamics)
-comptime NUM_STEPS = 1_000_000
+comptime NUM_STEPS = 1_500_000
 comptime WARMUP_STEPS = 5_000
 
 comptime dtype = DType.float32
