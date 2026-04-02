@@ -94,10 +94,21 @@ def main() raises:
 
         var ws = UnsafePointer[Scalar[dtype], MutAnyOrigin]()
 
+        # FMB needs separate param/grad buffers (different PARAM_SIZE due to bias)
+        var fmb_params_buf = ctx.enqueue_create_buffer[dtype](FMB.PARAM_SIZE)
+        ctx.enqueue_memset(fmb_params_buf, 0)
+        # Copy W part from params
+        var fmb_params_hb = ctx.enqueue_create_host_buffer[dtype](FMB.PARAM_SIZE)
+        for i in range(IN * OUT):
+            fmb_params_hb.unsafe_ptr()[i] = hb.unsafe_ptr()[i]
+        ctx.enqueue_copy(fmb_params_buf, fmb_params_hb)
+        ctx.synchronize()
+        var fmb_params_lt = LayoutTensor[dtype, Layout.row_major(FMB.PARAM_SIZE), MutAnyOrigin](fmb_params_buf.unsafe_ptr())
+
         # Warmup
         for _ in range(5):
             MM.vjp_gpu[BATCH](ctx, go_lt, gi_lt, params_lt, cache_lt, gp_lt, ws)
-            FMB.vjp_gpu[BATCH](ctx, go_lt, gi_lt, params_lt, cache_lt, fmb_gp_lt, ws)
+            FMB.vjp_gpu[BATCH](ctx, go_lt, gi_lt, fmb_params_lt, cache_lt, fmb_gp_lt, ws)
             max_matmul[target="gpu", transpose_b=True](lt_to_tt(dx_mm), lt_to_tt(go_mm), lt_to_tt(W_mm), ctx)
         ctx.synchronize()
 
@@ -114,7 +125,7 @@ def main() raises:
         ctx.synchronize()
         var t2 = perf_counter_ns()
         for _ in range(N_ITERS):
-            FMB.vjp_gpu[BATCH](ctx, go_lt, gi_lt, params_lt, cache_lt, fmb_gp_lt, ws)
+            FMB.vjp_gpu[BATCH](ctx, go_lt, gi_lt, fmb_params_lt, cache_lt, fmb_gp_lt, ws)
         ctx.synchronize()
         var t3 = perf_counter_ns()
         var fmb_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)
