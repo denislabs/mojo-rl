@@ -54,6 +54,7 @@ from ..gpu.constants import (
     CONTACT_IDX_NY,
     CONTACT_IDX_NZ,
     CONTACT_IDX_DIST,
+    CONTACT_IDX_INCLUDEMARGIN,
     CONTACT_IDX_FORCE_N,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_SOLREF_LIMIT_0,
@@ -254,12 +255,14 @@ def precompute_contact_normal_gpu[
             rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_BODY_B])
         )
         var dist = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_DIST])
+        var includemargin = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_INCLUDEMARGIN])
 
-        workspace[env, ws_c_dist + c] = dist
+        # Store dist - includemargin so later >= 0 checks work correctly
+        workspace[env, ws_c_dist + c] = dist - includemargin
         workspace[env, ws_c_body + c] = Scalar[DTYPE](body)
         workspace[env, ws_c_body_b + c] = Scalar[DTYPE](body_b)
 
-        if dist < Scalar[DTYPE](0):
+        if dist < includemargin:
             workspace[env, ws_c_px + c] = state[env, c_off + CONTACT_IDX_POS_X]
             workspace[env, ws_c_py + c] = state[env, c_off + CONTACT_IDX_POS_Y]
             workspace[env, ws_c_pz + c] = state[env, c_off + CONTACT_IDX_POS_Z]
@@ -325,7 +328,8 @@ def precompute_contact_normal_gpu[
             workspace[env, ws_K_n + c] = k
 
             # Acceleration-level aref: MuJoCo piecewise power impedance
-            var penetration = -dist
+            # MuJoCo: aref uses (pos - includemargin), penetration = -(dist - margin)
+            var penetration = -(dist - includemargin)
             var imp: Scalar[DTYPE]
             if si_dmin == si_dmax or si_width <= Scalar[DTYPE](0):
                 imp = Scalar[DTYPE](0.5) * (si_dmin + si_dmax)

@@ -801,7 +801,7 @@ struct DefaultsData(Copyable, ImplicitlyCopyable, Movable):
         joint_solimp_limit_3: Float64 = 0.5,
         joint_solimp_limit_4: Float64 = 2.0,
         geom_density: Float64 = 1000.0,
-        geom_friction: Float64 = 0.5,
+        geom_friction: Float64 = 1.0,
         geom_friction_spin: Float64 = 0.005,
         geom_friction_roll: Float64 = 0.0001,
         geom_contype: Int = 1,

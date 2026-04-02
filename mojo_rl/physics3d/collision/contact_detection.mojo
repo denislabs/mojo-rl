@@ -44,6 +44,7 @@ from ..gpu.constants import (
     CONTACT_IDX_NY,
     CONTACT_IDX_NZ,
     CONTACT_IDX_DIST,
+    CONTACT_IDX_INCLUDEMARGIN,
     CONTACT_IDX_FRICTION,
     CONTACT_IDX_FRICTION_SPIN,
     CONTACT_IDX_FRICTION_ROLL,
@@ -473,7 +474,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist1 - contact_margin
+                        data.contacts[idx].dist = dist1
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -502,7 +504,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist2 - contact_margin
+                        data.contacts[idx].dist = dist2
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -539,7 +542,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist - contact_margin
+                        data.contacts[idx].dist = dist
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -562,7 +566,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist - contact_margin
+                        data.contacts[idx].dist = dist
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -585,7 +590,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist - contact_margin
+                        data.contacts[idx].dist = dist
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -620,7 +626,8 @@ def detect_contacts[
                             data.contacts[idx].normal_x = Scalar[DTYPE](0)
                             data.contacts[idx].normal_y = Scalar[DTYPE](0)
                             data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                            data.contacts[idx].dist = dist_v - contact_margin
+                            data.contacts[idx].dist = dist_v
+                            data.contacts[idx].includemargin = contact_margin
                             data.contacts[idx].friction = contact_friction
                             data.contacts[idx].friction_spin = contact_friction_spin
                             data.contacts[idx].friction_roll = contact_friction_roll
@@ -661,7 +668,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist1 - contact_margin
+                        data.contacts[idx].dist = dist1
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -690,7 +698,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist2 - contact_margin
+                        data.contacts[idx].dist = dist2
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -727,7 +736,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist - contact_margin
+                        data.contacts[idx].dist = dist
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -750,7 +760,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist - contact_margin
+                        data.contacts[idx].dist = dist
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -773,7 +784,8 @@ def detect_contacts[
                         data.contacts[idx].normal_x = Scalar[DTYPE](0)
                         data.contacts[idx].normal_y = Scalar[DTYPE](0)
                         data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                        data.contacts[idx].dist = dist - contact_margin
+                        data.contacts[idx].dist = dist
+                        data.contacts[idx].includemargin = contact_margin
                         data.contacts[idx].friction = contact_friction
                         data.contacts[idx].friction_spin = contact_friction_spin
                         data.contacts[idx].friction_roll = contact_friction_roll
@@ -807,7 +819,8 @@ def detect_contacts[
                             data.contacts[idx].normal_x = Scalar[DTYPE](0)
                             data.contacts[idx].normal_y = Scalar[DTYPE](0)
                             data.contacts[idx].normal_z = Scalar[DTYPE](1)
-                            data.contacts[idx].dist = dist_v - contact_margin
+                            data.contacts[idx].dist = dist_v
+                            data.contacts[idx].includemargin = contact_margin
                             data.contacts[idx].friction = contact_friction
                             data.contacts[idx].friction_spin = contact_friction_spin
                             data.contacts[idx].friction_roll = contact_friction_roll
@@ -1213,7 +1226,8 @@ def detect_contacts[
                 data.contacts[idx].normal_x = nx
                 data.contacts[idx].normal_y = ny
                 data.contacts[idx].normal_z = nz
-                data.contacts[idx].dist = dist - contact_margin
+                data.contacts[idx].dist = dist
+                data.contacts[idx].includemargin = contact_margin
                 data.contacts[idx].friction = contact_friction
                 data.contacts[idx].friction_spin = contact_friction_spin
                 data.contacts[idx].friction_roll = contact_friction_roll
@@ -1574,7 +1588,7 @@ def detect_contacts_gpu[
             var margin_gj = rebind[Scalar[DTYPE]](
                 model[0, gj_off + GEOM_IDX_MARGIN]
             )
-            # MuJoCo 3.5+: margin = sum
+            # MuJoCo 3.5+ convention: margin = sum of both geoms
             var contact_margin = margin_gi + margin_gj
 
             # --- Plane handling ---
@@ -1612,7 +1626,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist1 - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist1
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1650,7 +1665,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist2 - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist2
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1696,7 +1712,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1728,7 +1745,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1764,7 +1782,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1810,7 +1829,8 @@ def detect_contacts_gpu[
                                 state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                                 state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                                 state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                                state[env, c_off + CONTACT_IDX_DIST] = dist_v - contact_margin
+                                state[env, c_off + CONTACT_IDX_DIST] = dist_v
+                                state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                                 state[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
                                 state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = contact_friction_spin
                                 state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = contact_friction_roll
@@ -1852,7 +1872,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist1 - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist1
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1890,7 +1911,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist2 - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist2
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1936,7 +1958,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -1968,7 +1991,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2004,7 +2028,8 @@ def detect_contacts_gpu[
                         state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                         state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                        state[env, c_off + CONTACT_IDX_DIST] = (dist - contact_margin)
+                        state[env, c_off + CONTACT_IDX_DIST] = dist
+                        state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                         state[
                             env, c_off + CONTACT_IDX_FRICTION
                         ] = contact_friction
@@ -2049,7 +2074,8 @@ def detect_contacts_gpu[
                                 state[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
                                 state[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
                                 state[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
-                                state[env, c_off + CONTACT_IDX_DIST] = dist_v - contact_margin
+                                state[env, c_off + CONTACT_IDX_DIST] = dist_v
+                                state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                                 state[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
                                 state[env, c_off + CONTACT_IDX_FRICTION_SPIN] = contact_friction_spin
                                 state[env, c_off + CONTACT_IDX_FRICTION_ROLL] = contact_friction_roll
@@ -2467,7 +2493,8 @@ def detect_contacts_gpu[
                 state[env, c_off + CONTACT_IDX_NX] = nx
                 state[env, c_off + CONTACT_IDX_NY] = ny
                 state[env, c_off + CONTACT_IDX_NZ] = nz
-                state[env, c_off + CONTACT_IDX_DIST] = dist - contact_margin
+                state[env, c_off + CONTACT_IDX_DIST] = dist
+                state[env, c_off + CONTACT_IDX_INCLUDEMARGIN] = contact_margin
                 state[env, c_off + CONTACT_IDX_FRICTION] = contact_friction
                 state[
                     env, c_off + CONTACT_IDX_FRICTION_SPIN

@@ -97,7 +97,7 @@ def compare_step(
 
     var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    mj_model.opt.cone = 1  # mjCONE_ELLIPTIC (matches HopperModel)
+    mj_model.opt.cone = 0  # mjCONE_PYRAMIDAL (matches HopperModel default)
     mj_model.opt.solver = 2  # mjSOL_NEWTON
     mj_model.opt.integrator = 0  # mjINT_EULER
     var mj_data = mujoco.MjData(mj_model)

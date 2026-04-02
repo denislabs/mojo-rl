@@ -256,6 +256,7 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
     var normal_y: Scalar[Self.DTYPE]
     var normal_z: Scalar[Self.DTYPE]
     var dist: Scalar[Self.DTYPE]  # Signed distance (negative = penetration)
+    var includemargin: Scalar[Self.DTYPE]  # MuJoCo includemargin = margin - gap
     var force_n: Scalar[Self.DTYPE]  # Normal constraint force
     var force_t1: Scalar[Self.DTYPE]  # Tangent constraint force 1
     var force_t2: Scalar[Self.DTYPE]  # Tangent constraint force 2
@@ -287,6 +288,7 @@ struct ContactInfo[DTYPE: DType](ImplicitlyCopyable, Movable):
             normal_y=Scalar[Self.DTYPE](0),
             normal_z=Scalar[Self.DTYPE](1),
             dist=Scalar[Self.DTYPE](0),
+            includemargin=Scalar[Self.DTYPE](0),
             force_n=Scalar[Self.DTYPE](0),
             force_t1=Scalar[Self.DTYPE](0),
             force_t2=Scalar[Self.DTYPE](0),

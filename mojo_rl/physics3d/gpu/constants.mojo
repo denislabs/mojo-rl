@@ -111,7 +111,7 @@ def xangvel_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:
 # =============================================================================
 
 # Contact layout (same as Cartesian engine: 12 floats per contact)
-comptime CONTACT_SIZE: Int = 22
+comptime CONTACT_SIZE: Int = 23
 
 comptime CONTACT_IDX_BODY_A: Int = 0
 comptime CONTACT_IDX_BODY_B: Int = 1
@@ -122,19 +122,20 @@ comptime CONTACT_IDX_NX: Int = 5
 comptime CONTACT_IDX_NY: Int = 6
 comptime CONTACT_IDX_NZ: Int = 7
 comptime CONTACT_IDX_DIST: Int = 8
-comptime CONTACT_IDX_FORCE_N: Int = 9
-comptime CONTACT_IDX_FORCE_T1: Int = 10
-comptime CONTACT_IDX_FORCE_T2: Int = 11
-comptime CONTACT_IDX_FRICTION: Int = 12
-comptime CONTACT_IDX_FRICTION_SPIN: Int = 13
-comptime CONTACT_IDX_FRICTION_ROLL: Int = 14
-comptime CONTACT_IDX_CONDIM: Int = 15
-comptime CONTACT_IDX_FORCE_TORSION: Int = 16
-comptime CONTACT_IDX_FORCE_ROLL1: Int = 17
-comptime CONTACT_IDX_FORCE_ROLL2: Int = 18
-comptime CONTACT_IDX_FRAME_T1_X: Int = 19  # T1 hint for tangent frame (capsule axis)
-comptime CONTACT_IDX_FRAME_T1_Y: Int = 20
-comptime CONTACT_IDX_FRAME_T1_Z: Int = 21
+comptime CONTACT_IDX_INCLUDEMARGIN: Int = 9
+comptime CONTACT_IDX_FORCE_N: Int = 10
+comptime CONTACT_IDX_FORCE_T1: Int = 11
+comptime CONTACT_IDX_FORCE_T2: Int = 12
+comptime CONTACT_IDX_FRICTION: Int = 13
+comptime CONTACT_IDX_FRICTION_SPIN: Int = 14
+comptime CONTACT_IDX_FRICTION_ROLL: Int = 15
+comptime CONTACT_IDX_CONDIM: Int = 16
+comptime CONTACT_IDX_FORCE_TORSION: Int = 17
+comptime CONTACT_IDX_FORCE_ROLL1: Int = 18
+comptime CONTACT_IDX_FORCE_ROLL2: Int = 19
+comptime CONTACT_IDX_FRAME_T1_X: Int = 20  # T1 hint for tangent frame (capsule axis)
+comptime CONTACT_IDX_FRAME_T1_Y: Int = 21
+comptime CONTACT_IDX_FRAME_T1_Z: Int = 22
 
 
 def contacts_offset[NQ: Int, NV: Int, NBODY: Int]() -> Int:

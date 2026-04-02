@@ -435,7 +435,7 @@ def build_constraints[
 
         for c in range(nc):
             var contact = data.contacts[c]
-            if contact.dist >= Scalar[DTYPE](0):
+            if contact.dist >= contact.includemargin:
                 continue
 
             var condim = contact.condim
@@ -480,7 +480,8 @@ def build_constraints[
             if diag_n < Scalar[DTYPE](1e-10):
                 diag_n = k_n
 
-            var penetration = -contact.dist
+            # MuJoCo: aref uses (pos - includemargin), penetration = -(dist - margin)
+            var penetration = -(contact.dist - contact.includemargin)
             var imp_result = _compute_aref[DTYPE](
                 penetration,
                 si_dmin,
@@ -831,7 +832,7 @@ def build_constraints[
         for c in range(nc):
             var contact = data.contacts[c]
 
-            if contact.dist >= Scalar[DTYPE](0):
+            if contact.dist >= contact.includemargin:
                 continue
 
             if row_idx >= MAX_ROWS:
@@ -877,7 +878,8 @@ def build_constraints[
             if diag_n < Scalar[DTYPE](1e-10):
                 diag_n = k  # Fallback to exact K if no invweight0
 
-            var penetration = -contact.dist
+            # MuJoCo: aref uses (pos - includemargin), penetration = -(dist - margin)
+            var penetration = -(contact.dist - contact.includemargin)
             var imp_result = _compute_aref[DTYPE](
                 penetration,
                 si_dmin,
