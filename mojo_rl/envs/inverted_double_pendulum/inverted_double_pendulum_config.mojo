@@ -231,6 +231,10 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         frame_skip: Int,
         timestep: Scalar[DTYPE],
     ) -> Tuple[Scalar[DTYPE], Bool]:
+        comptime assert (
+            DTYPE.is_floating_point()
+        ), "DTYPE must be floating point"
+
         var q0 = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])  # cart x
         var q1 = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])  # pole1 angle
         var q2 = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])  # pole2 angle
