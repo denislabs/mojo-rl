@@ -1096,13 +1096,45 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
         ](input.ptr)
 
-        # TODO: Use max_matmul for large K (>512) once CUDA graph compatibility
-        # is resolved. Benchmark showed 3.7x speedup for K=5376 (196μs → 53μs).
-        # See tests/nn/test_matmul_forward_bench.mojo for details.
+        comptime if has_nvidia_gpu_accelerator():
+            # NVIDIA: use max_matmul (optimized GEMM from linalg)
+            # Cache input for backward (separate kernel since max_matmul
+            # doesn't have access to the cache buffer)
+            comptime cache_elems = BATCH * Self.in_dim
+            comptime cache_blocks = (cache_elems + TPB - 1) // TPB
 
-        # Use 32×32 block tiles with 256 threads (MMA or 2x2 register-tiled)
-        comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+            @always_inline
+            def cache_input_wrapper(
+                cache: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+                ],
+                input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx < cache_elems:
+                    cache.ptr[idx] = input.ptr[idx]
+
+            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
+                cache,
+                input_immut,
+                grid_dim=(cache_blocks,),
+                block_dim=(TPB,),
+            )
+
+            # output = input @ W via max_matmul
+            var input_mm = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+            ](input.ptr)
+            var W_mm = LayoutTensor[
+                dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+            ](params.ptr)
+            _max_matmul[target="gpu"](lt_to_tt(output), lt_to_tt(input_mm), lt_to_tt(W_mm), ctx)
+        else:
+            # Apple: use hand-written 2x2 tiled kernel
+            comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
             @always_inline
             def wrapper(
@@ -1121,10 +1153,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
                     dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
                 ],
             ):
-                comptime if is_nvidia_gpu():
-                    Self.eval_kernel_mma[BATCH](output, input, W, cache)
-                else:
-                    Self.eval_kernel_2x2[BATCH](output, input, W, cache)
+                Self.eval_kernel_2x2[BATCH](output, input, W, cache)
 
             ctx.enqueue_function[wrapper, wrapper](
                 output,
