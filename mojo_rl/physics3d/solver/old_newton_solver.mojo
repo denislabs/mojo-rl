@@ -967,13 +967,15 @@ struct OldNewtonSolver(ConstraintSolver):
             if hint_x * hint_x + hint_y * hint_y + hint_z * hint_z < Scalar[
                 DTYPE
             ](0.25):
-                hint_x = Scalar[DTYPE](0)
-                if ny >= Scalar[DTYPE](-0.5) and ny <= Scalar[DTYPE](0.5):
-                    hint_y = Scalar[DTYPE](1)
-                    hint_z = Scalar[DTYPE](0)
+                var abs_nx = abs(nx)
+                var abs_ny = abs(ny)
+                var abs_nz = abs(nz)
+                if abs_nx <= abs_ny and abs_nx <= abs_nz:
+                    hint_x = Scalar[DTYPE](1); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](0)
+                elif abs_ny <= abs_nz:
+                    hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](1); hint_z = Scalar[DTYPE](0)
                 else:
-                    hint_y = Scalar[DTYPE](0)
-                    hint_z = Scalar[DTYPE](1)
+                    hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](1)
 
             # Gram-Schmidt: orthogonalize hint against normal → T1
             var dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
@@ -981,6 +983,22 @@ struct OldNewtonSolver(ConstraintSolver):
             var t1y = hint_y - dot_nh * ny
             var t1z = hint_z - dot_nh * nz
             var t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
+            if t1_mag < Scalar[DTYPE](1e-10):
+                # Hint parallel to normal — fall back to least-aligned axis
+                var abs_nx = abs(nx)
+                var abs_ny = abs(ny)
+                var abs_nz = abs(nz)
+                if abs_nx <= abs_ny and abs_nx <= abs_nz:
+                    hint_x = Scalar[DTYPE](1); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](0)
+                elif abs_ny <= abs_nz:
+                    hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](1); hint_z = Scalar[DTYPE](0)
+                else:
+                    hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](1)
+                dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
+                t1x = hint_x - dot_nh * nx
+                t1y = hint_y - dot_nh * ny
+                t1z = hint_z - dot_nh * nz
+                t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
             if t1_mag > Scalar[DTYPE](1e-10):
                 t1x = t1x / t1_mag
                 t1y = t1y / t1_mag

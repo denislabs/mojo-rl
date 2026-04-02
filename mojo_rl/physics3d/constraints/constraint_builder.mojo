@@ -563,10 +563,33 @@ def build_constraints[
             var t1_y = hint_y - dot_nh * ny
             var t1_z = hint_z - dot_nh * nz
             var t1_mag = sqrt(t1_x * t1_x + t1_y * t1_y + t1_z * t1_z)
+            if t1_mag < Scalar[DTYPE](1e-10):
+                # Hint is parallel to normal (e.g. vertical capsule on ground).
+                # Fall back using MuJoCo mju_makeFrame: pick least-aligned axis.
+                var abs_nx = abs(nx)
+                var abs_ny = abs(ny)
+                var abs_nz = abs(nz)
+                if abs_nx <= abs_ny and abs_nx <= abs_nz:
+                    hint_x = Scalar[DTYPE](1)
+                    hint_y = Scalar[DTYPE](0)
+                    hint_z = Scalar[DTYPE](0)
+                elif abs_ny <= abs_nz:
+                    hint_x = Scalar[DTYPE](0)
+                    hint_y = Scalar[DTYPE](1)
+                    hint_z = Scalar[DTYPE](0)
+                else:
+                    hint_x = Scalar[DTYPE](0)
+                    hint_y = Scalar[DTYPE](0)
+                    hint_z = Scalar[DTYPE](1)
+                dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
+                t1_x = hint_x - dot_nh * nx
+                t1_y = hint_y - dot_nh * ny
+                t1_z = hint_z - dot_nh * nz
+                t1_mag = sqrt(t1_x * t1_x + t1_y * t1_y + t1_z * t1_z)
             if t1_mag > Scalar[DTYPE](1e-10):
-                t1_x /= t1_mag
-                t1_y /= t1_mag
-                t1_z /= t1_mag
+                t1_x = t1_x / t1_mag
+                t1_y = t1_y / t1_mag
+                t1_z = t1_z / t1_mag
 
             # T2 = cross(normal, T1)
             var t2_x = ny * t1_z - nz * t1_y
