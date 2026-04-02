@@ -1597,6 +1597,31 @@ struct GenericOffPolicyAgent[
             g_critic,
             gpu_state.critic_ws,
         )
+        # Clip critic1 gradients
+        if self.max_grad_norm > 0.0:
+            comptime C_PS = Self.Config.CriticModel.PARAM_SIZE
+            comptime C_BLOCKS = (C_PS + TPB - 1) // TPB
+            comptime c_norm_k = gradient_norm_kernel[dtype, C_PS, C_BLOCKS, TPB]
+            comptime c_clip_k = gradient_reduce_apply_fused_kernel[
+                dtype, C_PS, C_BLOCKS, TPB
+            ]
+            var c_ps_t = LayoutTensor[
+                dtype, Layout.row_major(C_BLOCKS), MutAnyOrigin
+            ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+            ctx.enqueue_function[c_norm_k, c_norm_k](
+                c_ps_t,
+                g_critic,
+                grid_dim=(C_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[c_clip_k, c_clip_k](
+                g_critic,
+                c_ps_t,
+                Scalar[dtype](self.max_grad_norm),
+                grid_dim=(C_BLOCKS,),
+                block_dim=(TPB,),
+            )
         gpu_state.critics.pairs[0].online.optimizer_step(ctx)
 
         # Critic2 update (twin critics only)
@@ -1630,6 +1655,33 @@ struct GenericOffPolicyAgent[
                 g_c2,
                 gpu_state.critic2_ws,
             )
+            # Clip critic2 gradients
+            if self.max_grad_norm > 0.0:
+                comptime C_PS2 = Self.Config.CriticModel.PARAM_SIZE
+                comptime C_BLOCKS2 = (C_PS2 + TPB - 1) // TPB
+                comptime c2_norm_k = gradient_norm_kernel[
+                    dtype, C_PS2, C_BLOCKS2, TPB
+                ]
+                comptime c2_clip_k = gradient_reduce_apply_fused_kernel[
+                    dtype, C_PS2, C_BLOCKS2, TPB
+                ]
+                var c2_ps_t = LayoutTensor[
+                    dtype, Layout.row_major(C_BLOCKS2), MutAnyOrigin
+                ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+                ctx.enqueue_function[c2_norm_k, c2_norm_k](
+                    c2_ps_t,
+                    g_c2,
+                    grid_dim=(C_BLOCKS2,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[c2_clip_k, c2_clip_k](
+                    g_c2,
+                    c2_ps_t,
+                    Scalar[dtype](self.max_grad_norm),
+                    grid_dim=(C_BLOCKS2,),
+                    block_dim=(TPB,),
+                )
             gpu_state.critics.pairs[1].online.optimizer_step(ctx)
 
         # Phase 4: Actor update — always included for graph capture

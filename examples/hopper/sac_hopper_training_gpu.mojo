@@ -71,17 +71,18 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.0005,
+            critic_lr=0.001,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
-            tau=0.01,
+            tau=0.005,
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.0003,
             target_entropy=-2.0,
+            max_grad_norm=1.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
         )
@@ -96,9 +97,9 @@ def main() raises:
         print("  Max parallel envs: " + String(MAX_N_ENVS))
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 5e-4")
+        print("    - Critic LR: 1e-3")
         print("    - Alpha LR: 3e-4")
-        print("    - Tau (soft update): 0.01")
+        print("    - Tau (soft update): 0.005")
         print("    - Initial alpha: 0.2 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))
         print("    - Warmup steps: " + String(WARMUP_STEPS))
