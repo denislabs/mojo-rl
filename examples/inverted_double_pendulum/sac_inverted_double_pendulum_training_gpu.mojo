@@ -39,9 +39,9 @@ comptime ACTION_DIM = 1  # cart slider force
 comptime HIDDEN_DIM = 128
 
 # Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 300_000
+comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 128
-comptime MAX_N_ENVS = 32
+comptime MAX_N_ENVS = 8
 
 # Training duration
 comptime NUM_STEPS = 300_000
@@ -184,20 +184,11 @@ def main() raises:
 
             var final_avg = metrics.mean_reward_last_n(100)
             if final_avg > 9000.0:
-                print(
-                    "EXCELLENT: Perfect double balance!"
-                    " (avg reward > 9000)"
-                )
+                print("EXCELLENT: Perfect double balance! (avg reward > 9000)")
             elif final_avg > 5000.0:
-                print(
-                    "SUCCESS: Agent learned to balance!"
-                    " (avg reward > 5000)"
-                )
+                print("SUCCESS: Agent learned to balance! (avg reward > 5000)")
             elif final_avg > 1000.0:
-                print(
-                    "GOOD PROGRESS: Agent is learning"
-                    " (avg reward > 1000)"
-                )
+                print("GOOD PROGRESS: Agent is learning (avg reward > 1000)")
             elif final_avg > 0.0:
                 print(
                     "LEARNING: Agent improving but needs more training"
