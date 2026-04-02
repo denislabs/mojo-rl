@@ -1,15 +1,20 @@
-"""SAC Agent GPU Training on Walker2d.
+"""TD3 Agent GPU Training on Swimmer.
 
-This trains the SAC (Soft Actor-Critic) agent on the Walker2d environment
+This trains the TD3 (Twin Delayed DDPG) agent on the Swimmer environment
 using GPU-accelerated off-policy training with:
 - Parallel environments on GPU
 - Generalized Coordinates (GC) physics engine (MuJoCo-style)
-- 6D continuous action space (joint torques)
-- 17D observation (qpos + qvel excluding rootx)
+- 2D continuous action space (joint torques)
+- 8D observation (qpos + qvel excluding rootx/rooty)
+
+TD3 is well-suited for Swimmer because:
+- Deterministic policy commits to one direction (no entropy fighting)
+- Twin critics prevent Q-value overestimation
+- Delayed policy updates stabilize learning
 
 Run with:
-    pixi run -e apple mojo run -I . examples/walker2d/sac_walker2d_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/walker2d/sac_walker2d_training_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . examples/swimmer/td3_swimmer_training_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/swimmer/td3_swimmer_training_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed
@@ -20,23 +25,23 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.core.agents import DeepSACAgent
-from mojo_rl.envs.walker2d import Walker2d
+from mojo_rl.deep_agents.core.agents import DeepTD3Agent
+from mojo_rl.envs.swimmer import Swimmer
 
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-# Walker2d: 17D observation, 6D continuous action
-comptime OBS_DIM = 17  # qpos[1:9] + qvel[0:9]
-comptime ACTION_DIM = 6  # thigh, leg, foot x 2 legs
+# Swimmer: 8D observation, 2D continuous action
+comptime OBS_DIM = 8  # qpos[2:5] + qvel[0:5]
+comptime ACTION_DIM = 2  # 2 rotational motors
 
 # Network architecture
 comptime HIDDEN_DIM = 256
 
 # Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 1_000_000
+comptime BUFFER_CAPACITY = 300_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
@@ -55,7 +60,7 @@ comptime dtype = DType.float32
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC Agent GPU Training on Walker2d")
+    print("TD3 Agent GPU Training on Swimmer")
     print("=" * 70)
     print()
 
@@ -64,13 +69,13 @@ def main() raises:
     # =========================================================================
 
     with DeviceContext() as ctx:
-        var agent = DeepSACAgent[
+        var agent = DeepTD3Agent[
             obs_dim=OBS_DIM,
             action_dim=ACTION_DIM,
             hidden_dim=HIDDEN_DIM,
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
-            actor_lr=0.0003,
+            actor_lr=0.001,
             critic_lr=0.001,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
@@ -78,16 +83,18 @@ def main() raises:
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
-            alpha=0.2,
-            auto_alpha=True,
-            alpha_lr=0.001,
-            target_entropy=-6.0,
+            noise_std=0.1,
+            noise_std_min=0.1,
+            noise_decay=1.0,
+            policy_delay=2,
+            target_noise_std=0.2,
+            target_noise_clip=0.5,
             checkpoint_every=100_000,
-            checkpoint_path="sac_walker2d.ckpt",
+            checkpoint_path="td3_swimmer.ckpt",
         )
 
-        print("Environment: Walker2d Continuous (GPU)")
-        print("Agent: SAC (Soft Actor-Critic)")
+        print("Environment: Swimmer Continuous (GPU)")
+        print("Agent: TD3 (Twin Delayed DDPG)")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
         print("  Hidden dim: " + String(HIDDEN_DIM))
@@ -95,12 +102,12 @@ def main() raises:
         print("  Batch size: " + String(BATCH_SIZE))
         print("  Max parallel envs: " + String(MAX_N_ENVS))
         print("  Key hyperparameters:")
-        print("    - Actor LR: 3e-4")
+        print("    - Actor LR: 1e-3")
         print("    - Critic LR: 1e-3")
-        print("    - Alpha LR: 1e-3")
         print("    - Tau (soft update): 0.005")
-        print("    - Initial alpha: 0.2 (auto-tuned)")
-        print("    - Target entropy: -" + String(ACTION_DIM))
+        print("    - Exploration noise: 0.1 (constant)")
+        print("    - Policy delay: 2")
+        print("    - Target noise: 0.2 (clip 0.5)")
         print("    - Warmup steps: " + String(WARMUP_STEPS))
         print()
 
@@ -114,16 +121,15 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC Walker2d GPU",
+            run_name="TD3 Swimmer GPU",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "SAC")
-        logger.set_config("env", "Walker2d")
+        logger.set_config("agent", "TD3")
+        logger.set_config("env", "Swimmer")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
-        logger.set_config("actor_lr", "3e-4")
+        logger.set_config("actor_lr", "1e-3")
         logger.set_config("critic_lr", "1e-3")
-        logger.set_config("alpha_lr", "1e-3")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
 
@@ -138,7 +144,7 @@ def main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                Walker2d[dtype, TERMINATE_ON_UNHEALTHY=True],
+                Swimmer[dtype, TERMINATE_ON_UNHEALTHY=False],
             ](
                 ctx,
                 num_steps=NUM_STEPS,
@@ -180,17 +186,12 @@ def main() raises:
             print()
 
             var final_avg = metrics.mean_reward_last_n(100)
-            if final_avg > 4000.0:
-                print(
-                    "EXCELLENT: Walker is running fast! (avg reward > 4000)"
-                )
-            elif final_avg > 2000.0:
-                print("SUCCESS: Walker learned to walk! (avg reward > 2000)")
-            elif final_avg > 500.0:
-                print(
-                    "GOOD PROGRESS: Walker is learning locomotion"
-                    " (avg reward > 500)"
-                )
+            if final_avg > 300.0:
+                print("EXCELLENT: Swimmer is moving fast! (avg reward > 300)")
+            elif final_avg > 100.0:
+                print("SUCCESS: Swimmer learned to swim! (avg reward > 100)")
+            elif final_avg > 30.0:
+                print("GOOD PROGRESS: Swimmer is learning (avg reward > 30)")
             elif final_avg > 0.0:
                 print(
                     "LEARNING: Agent improving but needs more training"

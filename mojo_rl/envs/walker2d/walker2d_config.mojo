@@ -30,12 +30,10 @@ struct Walker2dConfig(Phyics3dEnvConfig):
     comptime CTRL_COST_WEIGHT = 0.001
     comptime HEALTHY_REWARD = 1.0
 
-    # Health bounds (adjusted for zero-init qpos).
-    # Gymnasium checks world_z ∈ [0.8, 2.0], where world_z = torso_pos_z(1.25) + qpos[rootz].
-    # Since we reset qpos[rootz]=0, world_z ≈ 1.25 at reset.
-    # Equivalent qpos[1] bounds: (-0.45, 0.75).
-    comptime MIN_Z = -0.45  # qpos[1] lower bound (world_z ≥ 0.8)
-    comptime MAX_Z = 0.75  # qpos[1] upper bound (world_z ≤ 2.0)
+    # Health bounds in world-z coordinates (qpos[1] = rootz, reset to ref=1.25).
+    # Gymnasium: healthy_z_range = (0.8, 2.0) — exclusive on both ends.
+    comptime MIN_Z = 0.8  # qpos[1] lower bound (world z)
+    comptime MAX_Z = 2.0  # qpos[1] upper bound (world z)
     comptime MAX_ANGLE = 1.0  # |qpos[2]| (rooty) upper bound
 
     # === CPU: Integrator step ===
@@ -251,8 +249,8 @@ struct Walker2dConfig(Phyics3dEnvConfig):
             abs_angle = -abs_angle
 
         var is_healthy = (
-            z > Scalar[DTYPE](-0.45)
-            and z < Scalar[DTYPE](0.75)
+            z > Scalar[DTYPE](0.8)
+            and z < Scalar[DTYPE](2.0)
             and abs_angle < Scalar[DTYPE](1.0)
         )
 
@@ -289,8 +287,8 @@ struct Walker2dConfig(Phyics3dEnvConfig):
         env: Int,
         qpos_off: Int,
     ):
-        # rootz joint ref=1.25 in MJCF, so world-z is already correct at qpos=0.
-        # Health bounds are adjusted accordingly (see MIN_Z / MAX_Z constants).
+        # rootz joint ref=1.25 in MJCF → qpos[1] resets to 1.25 (world z).
+        # Health bounds use world-z coordinates directly.
         pass
 
     # === GPU inline: Custom obs extraction (none, use model default) ===

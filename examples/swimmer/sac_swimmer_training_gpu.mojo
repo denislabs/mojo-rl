@@ -40,8 +40,8 @@ comptime BUFFER_CAPACITY = 300_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
-# Training duration (Swimmer is simpler)
-comptime NUM_STEPS = 500_000
+# Training duration (Swimmer needs longer due to symmetric dynamics)
+comptime NUM_STEPS = 1_000_000
 comptime WARMUP_STEPS = 5_000
 
 comptime dtype = DType.float32
@@ -71,17 +71,17 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.0003,
+            critic_lr=0.001,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
-            alpha=0.2,
+            alpha=0.1,
             auto_alpha=True,
-            alpha_lr=0.0003,
-            target_entropy=-1.0,
+            alpha_lr=0.001,
+            target_entropy=-2.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_swimmer.ckpt",
         )
@@ -99,7 +99,7 @@ def main() raises:
         print("    - Critic LR: 1e-3")
         print("    - Alpha LR: 1e-3")
         print("    - Tau (soft update): 0.005")
-        print("    - Initial alpha: 0.2 (auto-tuned)")
+        print("    - Initial alpha: 0.1 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))
         print("    - Warmup steps: " + String(WARMUP_STEPS))
         print()

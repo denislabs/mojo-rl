@@ -46,7 +46,7 @@ comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 8
 
 # Training duration
-comptime NUM_STEPS = 1_500_000
+comptime NUM_STEPS = 2_000_000
 comptime WARMUP_STEPS = 10_000
 
 comptime dtype = DType.float32
