@@ -237,10 +237,10 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
 
         # Tip position: analytical from joint angles
         var pole_len = Scalar[DTYPE](_POLE_LEN)
-        var s1 = Scalar[DTYPE](sin(Float64(q1)))
-        var s12 = Scalar[DTYPE](sin(Float64(q1) + Float64(q2)))
-        var c1 = Scalar[DTYPE](cos(Float64(q1)))
-        var c12 = Scalar[DTYPE](cos(Float64(q1) + Float64(q2)))
+        var s1 = Scalar[DTYPE](sin(q1))
+        var s12 = Scalar[DTYPE](sin(q1 + q2))
+        var c1 = Scalar[DTYPE](cos(q1))
+        var c12 = Scalar[DTYPE](cos(q1 + q2))
 
         var x_tip = q0 + pole_len * s1 + pole_len * s12
         var z_tip = pole_len * c1 + pole_len * c12
