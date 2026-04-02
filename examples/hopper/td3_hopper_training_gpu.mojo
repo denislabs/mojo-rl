@@ -84,8 +84,8 @@ def main() raises:
             tau=0.005,
             action_scale=1.0,
             noise_std=0.1,
-            noise_std_min=0.01,
-            noise_decay=0.995,
+            noise_std_min=0.1,
+            noise_decay=1.0,
             policy_delay=2,
             target_noise_std=0.2,
             target_noise_clip=0.5,
@@ -105,7 +105,7 @@ def main() raises:
         print("    - Actor LR: 3e-4")
         print("    - Critic LR: 3e-4")
         print("    - Tau (soft update): 0.005")
-        print("    - Exploration noise: 0.1 (decaying)")
+        print("    - Exploration noise: 0.1 (constant)")
         print("    - Policy delay: 2")
         print("    - Target noise: 0.2 (clip 0.5)")
         print("    - Warmup steps: " + String(WARMUP_STEPS))
