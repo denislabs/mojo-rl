@@ -129,6 +129,8 @@ from ..gpu.constants import (
     BODY_IDX_IYY,
     BODY_IDX_IZZ,
     BODY_IDX_PARENT,
+    BODY_IDX_ROOTID,
+    subtree_com_offset,
     xquat_offset,
     xvel_offset,
     xangvel_offset,
@@ -490,7 +492,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             MAX_EQUALITY,
             CONE_TYPE,
             MAX_TENDON,
-        ](model, data, cdof, f_net)
+        ](model, data, cdof, f_net, stcom_tmp)
 
         # qacc = M^-1 * f_net via LDL solve
         var qacc = List[Scalar[DTYPE]](capacity=V_SIZE)
@@ -1355,12 +1357,18 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var tw_b = gpu_quat_rotate[DTYPE](qx_b, qy_b, qz_b, qw_b, ltx, lty, ltz)
                 var fx_w = fw_b[0]; var fy_w = fw_b[1]; var fz_w = fw_b[2]
                 var tx_w = tw_b[0]; var ty_w = tw_b[1]; var tz_w = tw_b[2]
+                # Transport wrench to subtree_com[rootid] (cdof reference point)
+                comptime stcom_off_fl = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
                 var px_b = rebind[Scalar[DTYPE]](state[env, xipos_off_fl + b * 3 + 0])
                 var py_b = rebind[Scalar[DTYPE]](state[env, xipos_off_fl + b * 3 + 1])
                 var pz_b = rebind[Scalar[DTYPE]](state[env, xipos_off_fl + b * 3 + 2])
-                var tau_ox = tx_w + py_b * fz_w - pz_b * fy_w
-                var tau_oy = ty_w + pz_b * fx_w - px_b * fz_w
-                var tau_oz = tz_w + px_b * fy_w - py_b * fx_w
+                var rootid_b = Int(rebind[Scalar[DTYPE]](model[0, body_off_b + BODY_IDX_ROOTID]))
+                var dx_b = px_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 0])
+                var dy_b = py_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 1])
+                var dz_b = pz_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 2])
+                var tau_ox = tx_w + dy_b * fz_w - dz_b * fy_w
+                var tau_oy = ty_w + dz_b * fx_w - dx_b * fz_w
+                var tau_oz = tz_w + dx_b * fy_w - dy_b * fx_w
                 var anc = b
                 while anc > 0:
                     for j2 in range(NJOINT):
@@ -1852,12 +1860,18 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                     var tw_b = gpu_quat_rotate[DTYPE](qx_b, qy_b, qz_b, qw_b, ltx, lty, ltz)
                     var fx_w = fw_b[0]; var fy_w = fw_b[1]; var fz_w = fw_b[2]
                     var tx_w = tw_b[0]; var ty_w = tw_b[1]; var tz_w = tw_b[2]
+                    # Transport wrench to subtree_com[rootid] (cdof reference point)
+                    comptime stcom_off_fl = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
                     var px_b = rebind[Scalar[DTYPE]](state[env, xipos_off_fl + b * 3 + 0])
                     var py_b = rebind[Scalar[DTYPE]](state[env, xipos_off_fl + b * 3 + 1])
                     var pz_b = rebind[Scalar[DTYPE]](state[env, xipos_off_fl + b * 3 + 2])
-                    var tau_ox = tx_w + py_b * fz_w - pz_b * fy_w
-                    var tau_oy = ty_w + pz_b * fx_w - px_b * fz_w
-                    var tau_oz = tz_w + px_b * fy_w - py_b * fx_w
+                    var rootid_b = Int(rebind[Scalar[DTYPE]](model[0, body_off_b + BODY_IDX_ROOTID]))
+                    var dx_b = px_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 0])
+                    var dy_b = py_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 1])
+                    var dz_b = pz_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 2])
+                    var tau_ox = tx_w + dy_b * fz_w - dz_b * fy_w
+                    var tau_oy = ty_w + dz_b * fx_w - dx_b * fz_w
+                    var tau_oz = tz_w + dx_b * fy_w - dy_b * fx_w
                     var anc = b
                     while anc > 0:
                         for j2 in range(NJOINT):

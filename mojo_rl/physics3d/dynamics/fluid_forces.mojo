@@ -60,6 +60,7 @@ def compute_fluid_forces[
     data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
     cdof: List[Scalar[DTYPE]],
     mut f_net: List[Scalar[DTYPE]],
+    subtree_com: List[Scalar[DTYPE]] = List[Scalar[DTYPE]](),
 ):
     """Apply inertia-box fluid forces to f_net (MuJoCo-matching).
 
@@ -67,13 +68,18 @@ def compute_fluid_forces[
     using equivalent box dimensions from the diagonal inertia tensor. Forces are
     applied to f_net via the Jacobian transpose (walking the kinematic tree).
 
-    Matches MuJoCo's mj_inertiaBoxFluidModel behavior.
+    Matches MuJoCo's mj_inertiaBoxFluidModel + mj_applyFT behavior.
+
+    The wrench is transported to subtree_com[rootid] (the cdof reference point)
+    before applying via J^T. This matches MuJoCo's spatial algebra convention.
 
     Args:
         model: Static model configuration (must have opt_density or opt_viscosity > 0).
         data: Mutable simulation state (xquat, xvel, xangvel, xipos must be current).
         cdof: Spatial motion subspace matrix (NV x 6), [ang; lin] per DOF.
         f_net: Generalized force vector to accumulate fluid forces into.
+        subtree_com: Subtree CoM positions (3*NBODY). If empty, falls back to
+            data.subtree_com (must have been computed).
     """
     var rho = model.opt_density
     var mu = model.opt_viscosity
@@ -186,19 +192,43 @@ def compute_fluid_forces[
         var ty_w = tw[1]
         var tz_w = tw[2]
 
-        # --- 7. Apply wrench at CoM (xipos) via Jacobian transpose ---
-        # Principle of virtual work: qfrc[d] += J[d]^T * F_spatial
-        # For force f at point p and torque tau:
-        #   qfrc[d] += dot(cdof[d,3:6], f) + dot(cdof[d,0:3], tau + p×f)
-        # where cdof[:,0:3] = angular component, cdof[:,3:6] = linear component.
+        # --- 7. Apply wrench at xipos via Jacobian transpose ---
+        # cdof is defined relative to subtree_com[rootid], so the wrench must
+        # be transported to the same reference point for correct spatial algebra:
+        #   qfrc[d] = cdof[d]^T · wrench_at_subtree_com
+        # Transport: tau_at_ref = tau_at_xipos + (xipos - ref) × force
         var px = data.xipos[b * 3 + 0]
         var py = data.xipos[b * 3 + 1]
         var pz = data.xipos[b * 3 + 2]
 
-        # Transport torque to world origin: tau_origin = tau + p × f
-        var tau_ox = tx_w + py * fz_w - pz * fy_w
-        var tau_oy = ty_w + pz * fx_w - px * fz_w
-        var tau_oz = tz_w + px * fy_w - py * fx_w
+        # Get subtree_com reference point for this body's root
+        var has_stcom = len(subtree_com) >= NBODY * 3
+        var ref_x: Scalar[DTYPE]
+        var ref_y: Scalar[DTYPE]
+        var ref_z: Scalar[DTYPE]
+        if has_stcom:
+            var root = model.body_rootid[b]
+            ref_x = subtree_com[root * 3 + 0]
+            ref_y = subtree_com[root * 3 + 1]
+            ref_z = subtree_com[root * 3 + 2]
+        elif data.has_subtree_com:
+            var root = model.body_rootid[b]
+            ref_x = data.subtree_com[root * 3 + 0]
+            ref_y = data.subtree_com[root * 3 + 1]
+            ref_z = data.subtree_com[root * 3 + 2]
+        else:
+            # Fallback: use world origin (less accurate but doesn't crash)
+            ref_x = Scalar[DTYPE](0)
+            ref_y = Scalar[DTYPE](0)
+            ref_z = Scalar[DTYPE](0)
+
+        # Transport torque from xipos to subtree_com reference
+        var dx = px - ref_x
+        var dy = py - ref_y
+        var dz = pz - ref_z
+        var tau_ox = tx_w + dy * fz_w - dz * fy_w
+        var tau_oy = ty_w + dz * fx_w - dx * fz_w
+        var tau_oz = tz_w + dx * fy_w - dy * fx_w
 
         # Walk kinematic tree from body b to root (worldbody = 0)
         var body = b
