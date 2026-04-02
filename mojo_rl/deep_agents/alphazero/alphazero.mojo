@@ -152,9 +152,7 @@ def az_gather_batch_kernel[
     CAPACITY: Int,
 ](
     # Output batch
-    batch_obs: LayoutTensor[
-        dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
-    ],
+    batch_obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin],
     batch_policy: LayoutTensor[
         dtype, Layout.row_major(BATCH, ACT), MutAnyOrigin
     ],
@@ -166,13 +164,9 @@ def az_gather_batch_kernel[
     replay_policy: LayoutTensor[
         dtype, Layout.row_major(CAPACITY, ACT), MutAnyOrigin
     ],
-    replay_value: LayoutTensor[
-        dtype, Layout.row_major(CAPACITY), MutAnyOrigin
-    ],
+    replay_value: LayoutTensor[dtype, Layout.row_major(CAPACITY), MutAnyOrigin],
     # Sampled indices
-    indices: LayoutTensor[
-        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-    ],
+    indices: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
 ):
     """Gather AlphaZero training batch from GPU replay buffer by indices.
 
@@ -314,11 +308,17 @@ struct GenericAlphaZeroAgent[
         var obs_ptr = alloc[Scalar[dtype]](OBS)
         for i in range(OBS):
             obs_ptr[i] = obs[i] if i < len(obs) else Scalar[dtype](0.0)
-        var obs_t = LayoutTensor[dtype, Layout.row_major(B, PRED_IN), MutAnyOrigin](obs_ptr)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(B, PRED_IN), MutAnyOrigin
+        ](obs_ptr)
         var pred_ptr = alloc[Scalar[dtype]](PRED_OUT_DIM)
         memset(pred_ptr, 0, PRED_OUT_DIM)
-        var pred_t = LayoutTensor[dtype, Layout.row_major(B, PRED_OUT_DIM), MutAnyOrigin](pred_ptr)
-        Self.PredNet.forward[B](obs_t, pred_t, self.state.prediction.params_view())
+        var pred_t = LayoutTensor[
+            dtype, Layout.row_major(B, PRED_OUT_DIM), MutAnyOrigin
+        ](pred_ptr)
+        Self.PredNet.forward[B](
+            obs_t, pred_t, self.state.prediction.params_view()
+        )
 
         # Softmax over legal actions for root prior
         var prior = alloc[Float64](ACT)
@@ -330,7 +330,9 @@ struct GenericAlphaZeroAgent[
         var sum_exp: Float64 = 0.0
         for a in range(ACT):
             if a < len(legal_mask) and legal_mask[a]:
-                prior[a] = exp(Float64(rebind[Scalar[dtype]](pred_t[0, a])) - max_logit)
+                prior[a] = exp(
+                    Float64(rebind[Scalar[dtype]](pred_t[0, a])) - max_logit
+                )
                 sum_exp += prior[a]
             else:
                 prior[a] = 0.0
@@ -362,7 +364,9 @@ struct GenericAlphaZeroAgent[
 
         # Save root state
         var root_save = alloc[Scalar[dtype]](E.SAVE_SIZE)
-        env.save_env_state(rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](root_save))
+        env.save_env_state(
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](root_save)
+        )
         for i in range(E.SAVE_SIZE):
             node_states[0 * E.SAVE_SIZE + i] = root_save[i]
 
@@ -371,7 +375,9 @@ struct GenericAlphaZeroAgent[
                 break
 
             # Restore env to root
-            env.load_env_state(rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](root_save))
+            env.load_env_state(
+                rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](root_save)
+            )
 
             var node = 0
             var path = List[Int]()
@@ -408,7 +414,11 @@ struct GenericAlphaZeroAgent[
                 if ci < 0:
                     # Restore parent state and step
                     var parent_state = node_states + node * E.SAVE_SIZE
-                    env.load_env_state(rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](parent_state))
+                    env.load_env_state(
+                        rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                            parent_state
+                        )
+                    )
                     _ = env.step(env.action_from_index(best_a))
                     var game_result = env.game_result()
 
@@ -419,7 +429,9 @@ struct GenericAlphaZeroAgent[
                             leaf_value = 0.0
                         else:
                             var moved_player = 1 - env.current_player()
-                            leaf_value = 1.0 if game_result == moved_player + 1 else -1.0
+                            leaf_value = (
+                                1.0 if game_result == moved_player + 1 else -1.0
+                            )
                     else:
                         # Expand: create child node
                         var ci_new = node_count
@@ -429,30 +441,57 @@ struct GenericAlphaZeroAgent[
 
                         # Save child env state
                         var child_state = node_states + ci_new * E.SAVE_SIZE
-                        env.save_env_state(rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](child_state))
+                        env.save_env_state(
+                            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                                child_state
+                            )
+                        )
 
                         # Network forward on child observation
                         var child_obs_raw = env.get_obs_list()
                         var child_obs = alloc[Scalar[dtype]](OBS)
                         for i in range(OBS):
-                            child_obs[i] = Scalar[dtype](child_obs_raw[i]) if i < len(child_obs_raw) else Scalar[dtype](0.0)
-                        var c_obs_t = LayoutTensor[dtype, Layout.row_major(B, PRED_IN), MutAnyOrigin](child_obs)
+                            child_obs[i] = Scalar[dtype](
+                                child_obs_raw[i]
+                            ) if i < len(child_obs_raw) else Scalar[dtype](0.0)
+                        var c_obs_t = LayoutTensor[
+                            dtype, Layout.row_major(B, PRED_IN), MutAnyOrigin
+                        ](child_obs)
                         var c_pred_ptr = alloc[Scalar[dtype]](PRED_OUT_DIM)
                         memset(c_pred_ptr, 0, PRED_OUT_DIM)
-                        var c_pred_t = LayoutTensor[dtype, Layout.row_major(B, PRED_OUT_DIM), MutAnyOrigin](c_pred_ptr)
-                        Self.PredNet.forward[B](c_obs_t, c_pred_t, self.state.prediction.params_view())
+                        var c_pred_t = LayoutTensor[
+                            dtype,
+                            Layout.row_major(B, PRED_OUT_DIM),
+                            MutAnyOrigin,
+                        ](c_pred_ptr)
+                        Self.PredNet.forward[B](
+                            c_obs_t,
+                            c_pred_t,
+                            self.state.prediction.params_view(),
+                        )
 
                         # Child prior (softmax over legal)
                         var child_legal = env.legal_action_mask()
                         var c_max: Float64 = -1e18
                         for a2 in range(ACT):
-                            var l2 = Float64(rebind[Scalar[dtype]](c_pred_t[0, a2]))
-                            if a2 < len(child_legal) and child_legal[a2] and l2 > c_max:
+                            var l2 = Float64(
+                                rebind[Scalar[dtype]](c_pred_t[0, a2])
+                            )
+                            if (
+                                a2 < len(child_legal)
+                                and child_legal[a2]
+                                and l2 > c_max
+                            ):
                                 c_max = l2
                         var c_sum: Float64 = 0.0
                         for a2 in range(ACT):
                             if a2 < len(child_legal) and child_legal[a2]:
-                                node_prior[ci_new * ACT + a2] = exp(Float64(rebind[Scalar[dtype]](c_pred_t[0, a2])) - c_max)
+                                node_prior[ci_new * ACT + a2] = exp(
+                                    Float64(
+                                        rebind[Scalar[dtype]](c_pred_t[0, a2])
+                                    )
+                                    - c_max
+                                )
                                 c_sum += node_prior[ci_new * ACT + a2]
                             else:
                                 node_prior[ci_new * ACT + a2] = 0.0
@@ -461,7 +500,9 @@ struct GenericAlphaZeroAgent[
                                 node_prior[ci_new * ACT + a2] /= c_sum
 
                         # Value from tanh output
-                        var raw_v = Float64(rebind[Scalar[dtype]](c_pred_t[0, ACT]))
+                        var raw_v = Float64(
+                            rebind[Scalar[dtype]](c_pred_t[0, ACT])
+                        )
                         if raw_v > 15.0:
                             leaf_value = 1.0
                         elif raw_v < -15.0:
@@ -477,18 +518,28 @@ struct GenericAlphaZeroAgent[
                     var v = leaf_value
                     for p_idx in range(len(path) - 1, -1, -1):
                         v = -v
-                        visit_count[path[p_idx] * ACT + path_actions[p_idx]] += 1
-                        total_value[path[p_idx] * ACT + path_actions[p_idx]] += v
+                        visit_count[
+                            path[p_idx] * ACT + path_actions[p_idx]
+                        ] += 1
+                        total_value[
+                            path[p_idx] * ACT + path_actions[p_idx]
+                        ] += v
                         node_visits[path[p_idx]] += 1
                     found_leaf = True
                 else:
                     # Restore child state and continue descent
                     var child_state = node_states + ci * E.SAVE_SIZE
-                    env.load_env_state(rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](child_state))
+                    env.load_env_state(
+                        rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                            child_state
+                        )
+                    )
                     node = ci
 
         # Restore env to root state
-        env.load_env_state(rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](root_save))
+        env.load_env_state(
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](root_save)
+        )
 
         # Pick action with highest visit count
         var best_action = -1
@@ -750,9 +801,13 @@ struct GenericAlphaZeroAgent[
             gpu.workspace,
         )
         # Log param delta across optimizer step (every diag_every steps)
-        if self.logger and self.train_step_count > 0 and (
-            self.diag_every <= 0
-            or (self.train_step_count + 1) % self.diag_every == 0
+        if (
+            self.logger
+            and self.train_step_count > 0
+            and (
+                self.diag_every <= 0
+                or (self.train_step_count + 1) % self.diag_every == 0
+            )
         ):
             try:
                 comptime _PS = Self.Config.PredModel.PARAM_SIZE
@@ -768,7 +823,9 @@ struct GenericAlphaZeroAgent[
                 var delta_norm: Float64 = 0.0
                 var delta_max: Float64 = 0.0
                 for i in range(_PS):
-                    var d = Float64(diag_grads_host[i]) - Float64(diag_params_host[i])
+                    var d = Float64(diag_grads_host[i]) - Float64(
+                        diag_params_host[i]
+                    )
                     delta_norm += d * d
                     var ad = d if d > 0 else -d
                     if ad > delta_max:
@@ -789,8 +846,7 @@ struct GenericAlphaZeroAgent[
 
         # ── Log training diagnostics ────────────────────────────────
         if self.logger and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             try:
                 # Reuse pre-allocated diagnostic buffers
@@ -821,9 +877,10 @@ struct GenericAlphaZeroAgent[
                     var ce: Float64 = 0.0
                     var ent: Float64 = 0.0
                     for a in range(ACT):
-                        var prob = exp(
-                            Float64(diag_pred_host[pred_off + a]) - max_l
-                        ) / sum_e
+                        var prob = (
+                            exp(Float64(diag_pred_host[pred_off + a]) - max_l)
+                            / sum_e
+                        )
                         var target = Float64(gpu.policy_host[b * ACT + a])
                         if target > 1e-8 and prob > 1e-8:
                             ce -= target * log(prob)
@@ -1012,7 +1069,9 @@ struct GenericAlphaZeroAgent[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](gpu.rng_counter.unsafe_ptr())
         ctx.enqueue_function[incr_k, incr_k](
-            rng_t, grid_dim=(1,), block_dim=(1,),
+            rng_t,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
 
         # 2. Sample random indices
@@ -1024,8 +1083,11 @@ struct GenericAlphaZeroAgent[
         ](gpu.replay_size.unsafe_ptr())
         comptime sample_k = sample_indices_kernel[dtype, BATCH]
         ctx.enqueue_function[sample_k, sample_k](
-            idx_t, buf_sz_t, rng_t,
-            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+            idx_t,
+            buf_sz_t,
+            rng_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # 3. Gather batch from GPU replay buffer
@@ -1044,15 +1106,20 @@ struct GenericAlphaZeroAgent[
         var r_pol_t = LayoutTensor[
             dtype, Layout.row_major(CAP, ACT), MutAnyOrigin
         ](gpu.replay_policy.unsafe_ptr())
-        var r_val_t = LayoutTensor[
-            dtype, Layout.row_major(CAP), MutAnyOrigin
-        ](gpu.replay_value.unsafe_ptr())
+        var r_val_t = LayoutTensor[dtype, Layout.row_major(CAP), MutAnyOrigin](
+            gpu.replay_value.unsafe_ptr()
+        )
         comptime gather_k = az_gather_batch_kernel[dtype, BATCH, OBS, ACT, CAP]
         ctx.enqueue_function[gather_k, gather_k](
-            b_obs_t, b_pol_t, b_val_t,
-            r_obs_t, r_pol_t, r_val_t,
+            b_obs_t,
+            b_pol_t,
+            b_val_t,
+            r_obs_t,
+            r_pol_t,
+            r_val_t,
             idx_t,
-            grid_dim=(BATCH_BLOCKS,), block_dim=(TPB,),
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # ── Forward with cache ───────────────────────────────────
@@ -1140,8 +1207,7 @@ struct GenericAlphaZeroAgent[
         self.train_step_count += num_steps
 
         if not self.logger or (
-            self.diag_every > 0
-            and self.train_step_count % self.diag_every != 0
+            self.diag_every > 0 and self.train_step_count % self.diag_every != 0
         ):
             return
 
@@ -1174,16 +1240,15 @@ struct GenericAlphaZeroAgent[
                         max_l = l
                 var sum_e: Float64 = 0.0
                 for a in range(ACT):
-                    sum_e += exp(
-                        Float64(diag_pred_host[pred_off + a]) - max_l
-                    )
+                    sum_e += exp(Float64(diag_pred_host[pred_off + a]) - max_l)
 
                 var ce: Float64 = 0.0
                 var ent: Float64 = 0.0
                 for a in range(ACT):
-                    var prob = exp(
-                        Float64(diag_pred_host[pred_off + a]) - max_l
-                    ) / sum_e
+                    var prob = (
+                        exp(Float64(diag_pred_host[pred_off + a]) - max_l)
+                        / sum_e
+                    )
                     var target = Float64(gpu.policy_host[b * ACT + a])
                     if target > 1e-8 and prob > 1e-8:
                         ce -= target * log(prob)
@@ -1332,27 +1397,37 @@ struct GenericAlphaZeroAgent[
         # MCTS tree LayoutTensor views (pre-created by caller)
         vc: LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            Layout.row_major(
+                Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim
+            ),
             MutAnyOrigin,
         ],
         tv: LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            Layout.row_major(
+                Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim
+            ),
             MutAnyOrigin,
         ],
         pr: LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            Layout.row_major(
+                Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim
+            ),
             MutAnyOrigin,
         ],
         rw: LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            Layout.row_major(
+                Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim
+            ),
             MutAnyOrigin,
         ],
         ci: LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim),
+            Layout.row_major(
+                Self.n_envs * Self.Config.max_nodes * Self.Config.action_dim
+            ),
             MutAnyOrigin,
         ],
         tvis: LayoutTensor[
@@ -1360,18 +1435,14 @@ struct GenericAlphaZeroAgent[
             Layout.row_major(Self.n_envs * Self.Config.max_nodes),
             MutAnyOrigin,
         ],
-        nc: LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ],
-        miq: LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ],
-        mxq: LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
-        ],
+        nc: LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin],
+        miq: LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin],
+        mxq: LayoutTensor[dtype, Layout.row_major(Self.n_envs), MutAnyOrigin],
         gs: LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs * Self.Config.max_nodes * E.STATE_SIZE),
+            Layout.row_major(
+                Self.n_envs * Self.Config.max_nodes * E.STATE_SIZE
+            ),
             MutAnyOrigin,
         ],
         # Batched simulation buffers
@@ -1382,7 +1453,9 @@ struct GenericAlphaZeroAgent[
             dtype, Layout.row_major(Self.n_envs * 8), MutAnyOrigin
         ],
         b_exp_st: LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs * 8 * E.STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.n_envs * 8 * E.STATE_SIZE),
+            MutAnyOrigin,
         ],
         b_sp: LayoutTensor[
             dtype,
@@ -1418,8 +1491,21 @@ struct GenericAlphaZeroAgent[
             Self.n_envs, MAX_NODES, ACT, BATCH_SIMS, GS, dtype
         ]
         ctx.enqueue_function[run_sel_cp, run_sel_cp](
-            vc, tv, pr, ci, tvis, nc, miq, mxq, gs,
-            b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
+            vc,
+            tv,
+            pr,
+            ci,
+            tvis,
+            nc,
+            miq,
+            mxq,
+            gs,
+            b_pp,
+            b_pa,
+            b_exp_st,
+            b_sp,
+            b_ap,
+            b_pl,
             Scalar[dtype](Self.Config.PUCT.C_BASE),
             Scalar[dtype](Self.Config.PUCT.C_INIT),
             grid_dim=(ENV_BLOCKS,),
@@ -1473,8 +1559,24 @@ struct GenericAlphaZeroAgent[
             dtype,
         ]
         ctx.enqueue_function[run_exp_bk, run_exp_bk](
-            vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs,
-            b_exp_st, b_pp, b_pa, b_po, b_rew, b_sp, b_ap, b_pl,
+            vc,
+            tv,
+            pr,
+            rw,
+            ci,
+            tvis,
+            nc,
+            miq,
+            mxq,
+            gs,
+            b_exp_st,
+            b_pp,
+            b_pa,
+            b_po,
+            b_rew,
+            b_sp,
+            b_ap,
+            b_pl,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -2721,7 +2823,9 @@ struct GenericAlphaZeroAgent[
             # Slow window: limit effective history to a growing window
             # that starts small and reaches full size over time.
             if slow_window_start > 0:
-                var effective_window = slow_window_start + iter // slow_window_growth
+                var effective_window = (
+                    slow_window_start + iter // slow_window_growth
+                )
                 comptime FULL_WINDOW = Self.Config.history_window
                 if effective_window > FULL_WINDOW:
                     effective_window = FULL_WINDOW
@@ -2750,7 +2854,9 @@ struct GenericAlphaZeroAgent[
                 if use_mcts:
                     # Prediction on obs for root
                     var pred_obs = LayoutTensor[
-                        dtype, Layout.row_major(Self.n_envs, PRED_IN), MutAnyOrigin
+                        dtype,
+                        Layout.row_major(Self.n_envs, PRED_IN),
+                        MutAnyOrigin,
                     ](obs_buf.unsafe_ptr())
                     var pred_out = LayoutTensor[
                         dtype,
@@ -2893,22 +2999,60 @@ struct GenericAlphaZeroAgent[
                         if not _mcts_round_graph:
                             # Warmup: run one round without capture
                             self._mcts_round_kernels[E](
-                                ctx, gpu, gpu_mcts,
-                                exp_rewards, exp_dones, exp_terminated,
-                                exp_obs, mcts_ws,
-                                vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs,
-                                b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
+                                ctx,
+                                gpu,
+                                gpu_mcts,
+                                exp_rewards,
+                                exp_dones,
+                                exp_terminated,
+                                exp_obs,
+                                mcts_ws,
+                                vc,
+                                tv,
+                                pr,
+                                rw,
+                                ci,
+                                tvis,
+                                nc,
+                                miq,
+                                mxq,
+                                gs,
+                                b_pp,
+                                b_pa,
+                                b_exp_st,
+                                b_sp,
+                                b_ap,
+                                b_pl,
                             )
                             ctx.synchronize()
                             # Capture
                             var graph = CUDAGraph(ctx)
                             graph.begin_capture()
                             self._mcts_round_kernels[E](
-                                ctx, gpu, gpu_mcts,
-                                exp_rewards, exp_dones, exp_terminated,
-                                exp_obs, mcts_ws,
-                                vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs,
-                                b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
+                                ctx,
+                                gpu,
+                                gpu_mcts,
+                                exp_rewards,
+                                exp_dones,
+                                exp_terminated,
+                                exp_obs,
+                                mcts_ws,
+                                vc,
+                                tv,
+                                pr,
+                                rw,
+                                ci,
+                                tvis,
+                                nc,
+                                miq,
+                                mxq,
+                                gs,
+                                b_pp,
+                                b_pa,
+                                b_exp_st,
+                                b_sp,
+                                b_ap,
+                                b_pl,
                             )
                             graph.end_capture()
                             if verbose:
@@ -2928,11 +3072,30 @@ struct GenericAlphaZeroAgent[
                     else:
                         for _round in range(NUM_ROUNDS):
                             self._mcts_round_kernels[E](
-                                ctx, gpu, gpu_mcts,
-                                exp_rewards, exp_dones, exp_terminated,
-                                exp_obs, mcts_ws,
-                                vc, tv, pr, rw, ci, tvis, nc, miq, mxq, gs,
-                                b_pp, b_pa, b_exp_st, b_sp, b_ap, b_pl,
+                                ctx,
+                                gpu,
+                                gpu_mcts,
+                                exp_rewards,
+                                exp_dones,
+                                exp_terminated,
+                                exp_obs,
+                                mcts_ws,
+                                vc,
+                                tv,
+                                pr,
+                                rw,
+                                ci,
+                                tvis,
+                                nc,
+                                miq,
+                                mxq,
+                                gs,
+                                b_pp,
+                                b_pa,
+                                b_exp_st,
+                                b_sp,
+                                b_ap,
+                                b_pl,
                             )
 
                     # Extract actions with temperature annealing
@@ -2971,7 +3134,9 @@ struct GenericAlphaZeroAgent[
                         ctx.enqueue_copy(q_tv_host, gpu_mcts.total_value)
                         ctx.synchronize()
                         for e_q in range(Self.n_envs):
-                            var root_off = e_q * MAX_NODES * ACT  # root = node 0
+                            var root_off = (
+                                e_q * MAX_NODES * ACT
+                            )  # root = node 0
                             var total_v: Float64 = 0.0
                             var total_n: Float64 = 0.0
                             for a_q in range(ACT):
@@ -3025,7 +3190,9 @@ struct GenericAlphaZeroAgent[
                 var eps_t = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                 ](ep_steps_buf.unsafe_ptr())
-                comptime run_accum = accumulate_rewards_kernel[dtype, Self.n_envs]
+                comptime run_accum = accumulate_rewards_kernel[
+                    dtype, Self.n_envs
+                ]
                 ctx.enqueue_function[run_accum, run_accum](
                     epr_t, rew_t, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                 )
@@ -3033,12 +3200,12 @@ struct GenericAlphaZeroAgent[
                 ctx.enqueue_function[run_incr, run_incr](
                     eps_t, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                 )
-                var rs_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
-                    rew_sum_buf.unsafe_ptr()
-                )
-                var ec_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
-                    ep_count_buf.unsafe_ptr()
-                )
+                var rs_t = LayoutTensor[
+                    dtype, Layout.row_major(1), MutAnyOrigin
+                ](rew_sum_buf.unsafe_ptr())
+                var ec_t = LayoutTensor[
+                    dtype, Layout.row_major(1), MutAnyOrigin
+                ](ep_count_buf.unsafe_ptr())
                 comptime run_log = log_and_reset_completed_kernel[
                     dtype, Self.n_envs
                 ]
@@ -3077,7 +3244,9 @@ struct GenericAlphaZeroAgent[
                             var last_reward = Float64(rewards_host[e])
                             var ep_len = len(env_obs_history[e])
 
-                            var is_draw = last_reward > -0.01 and last_reward < 0.01
+                            var is_draw = (
+                                last_reward > -0.01 and last_reward < 0.01
+                            )
 
                             comptime QW = Self.Config.value_target_q_weight
 
@@ -3173,8 +3342,8 @@ struct GenericAlphaZeroAgent[
                         _train_graph = graph^
                     # All steps via async graph replay (no per-step CPU work)
                     for _ in range(num_train_steps):
-                        _train_graph.value().replay_async()
-                    _train_graph.value().sync()
+                        _train_graph.value().replay_on_mojo_stream()
+
                     # Diagnostics outside graph (once after all replays)
                     self._gpu_train_diagnostics(
                         ctx,
@@ -3276,17 +3445,33 @@ struct GenericAlphaZeroAgent[
                     arena_accepts += 1
                     print(
                         "  Arena: ACCEPTED",
-                        "W", a_new, "D", a_draw, "L", a_old,
-                        "(", arena_accepts, "/",
-                        arena_accepts + arena_rejects, ")",
+                        "W",
+                        a_new,
+                        "D",
+                        a_draw,
+                        "L",
+                        a_old,
+                        "(",
+                        arena_accepts,
+                        "/",
+                        arena_accepts + arena_rejects,
+                        ")",
                     )
                 else:
                     arena_rejects += 1
                     print(
                         "  Arena: rejected",
-                        "W", a_new, "D", a_draw, "L", a_old,
-                        "(", arena_accepts, "/",
-                        arena_accepts + arena_rejects, ")",
+                        "W",
+                        a_new,
+                        "D",
+                        a_draw,
+                        "L",
+                        a_old,
+                        "(",
+                        arena_accepts,
+                        "/",
+                        arena_accepts + arena_rejects,
+                        ")",
                     )
 
             # ── 6. Checkpoint ───────────────────────────────────
