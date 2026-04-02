@@ -25,7 +25,7 @@ comptime walker2d_xml = """
           <geom friction="0.9" name="leg_geom" size="0.040000000000000001 0.25" type="capsule"/>
           <body name="foot" pos="0.20000000000000001 0 -0.34999999999999998">
             <joint axis="0 -1 0" name="foot_joint" pos="-0.20000000000000001 0 0.10000000000000001" range="-45 45" type="hinge"/>
-            <geom friction="1.9" pos="-0.10000000000000001 0 0.10000000000000001" quat="0.70710678118654757 0 -0.70710678118654746 0" name="foot_geom" size="0.059999999999999998 0.10000000000000001" type="capsule"/>
+            <geom friction="0.9" pos="-0.10000000000000001 0 0.10000000000000001" quat="0.70710678118654757 0 -0.70710678118654746 0" name="foot_geom" size="0.059999999999999998 0.10000000000000001" type="capsule"/>
           </body>
         </body>
       </body>

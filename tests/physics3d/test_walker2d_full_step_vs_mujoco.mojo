@@ -279,19 +279,28 @@ def test_free_fall_with_actions() raises:
 
 
 def test_standing_no_action() raises:
-    """Standing at default height — may have ground contact.
-    rootz=1.25 is the standing ref height."""
+    """Standing with asymmetric joint angles to break L/R symmetry.
+    qpos=0 puts both legs at identical positions with identical joint limits,
+    creating an ill-conditioned constraint problem where MuJoCo breaks symmetry
+    via solver ordering. Use slightly different L/R angles instead."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
-    # rootz=0 means world_z = torso_pos_z(1.25) + rootz_ref(1.25) + qpos[1](0) = ~1.25
-    # Use default qpos (all zeros) for standing pose
+    # Asymmetric joint angles to avoid ill-conditioned symmetric problem
+    qpos[3] = -0.1  # thigh_joint (right)
+    qpos[4] = -0.2  # leg_joint (right)
+    qpos[6] = -0.15  # thigh_left_joint
+    qpos[7] = -0.25  # leg_left_joint
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
-    compare_step("Standing, no action", qpos, qvel, actions)
+    compare_step("Standing, asymmetric joints", qpos, qvel, actions)
 
 
 def test_standing_with_actions() raises:
-    """Standing at default height with moderate actions."""
+    """Standing with asymmetric joints and moderate actions."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[3] = -0.1  # thigh_joint (right)
+    qpos[4] = -0.2  # leg_joint (right)
+    qpos[6] = -0.15  # thigh_left_joint
+    qpos[7] = -0.25  # leg_left_joint
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     actions[0] = 0.5  # thigh_joint
@@ -300,7 +309,7 @@ def test_standing_with_actions() raises:
     actions[3] = -0.4  # thigh_left_joint
     actions[4] = 0.3  # leg_left_joint
     actions[5] = -0.1  # foot_left_joint
-    compare_step("Standing, moderate actions", qpos, qvel, actions)
+    compare_step("Standing, asymmetric + actions", qpos, qvel, actions)
 
 
 def test_falling_10_steps() raises:
@@ -316,12 +325,20 @@ def test_falling_10_steps() raises:
 
 
 def test_ground_contact_10_steps() raises:
-    """Standing 10 steps with no actions — tests contact solver stability."""
+    """10 steps with asymmetric joints — tests contact solver stability."""
     var qpos = InlineArray[Float64, NQ](fill=0.0)
+    qpos[3] = -0.1  # thigh_joint (right)
+    qpos[4] = -0.2  # leg_joint (right)
+    qpos[6] = -0.15  # thigh_left_joint
+    qpos[7] = -0.25  # leg_left_joint
     var qvel = InlineArray[Float64, NV](fill=0.0)
     var actions = InlineArray[Float64, ACTION_DIM](fill=0.0)
     compare_step(
-        "Ground contact (10 steps)", qpos, qvel, actions, num_steps=10
+        "Ground contact, asymmetric (10 steps)",
+        qpos,
+        qvel,
+        actions,
+        num_steps=10,
     )
 
 
