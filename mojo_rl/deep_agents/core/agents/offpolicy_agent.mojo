@@ -2114,6 +2114,7 @@ struct GenericOffPolicyAgent[
             Self.L, MutAnyOrigin
         ](),
         diag_every: Int = 0,
+        gradient_steps: Int = 0,
     ) raises -> TrainingMetrics:
         """Train using GPU-accelerated training loop.
 
@@ -2129,6 +2130,8 @@ struct GenericOffPolicyAgent[
             environment_name: Name for metrics labeling.
             logger: Optional metrics logger.
             diag_every: Log diagnostics every N train steps (default: 0).
+            gradient_steps: Training steps per env collection iteration.
+                0 = n_envs (default, 1:1 ratio).
 
         Returns:
             TrainingMetrics with episode-level statistics.
@@ -2170,6 +2173,7 @@ struct GenericOffPolicyAgent[
             environment_name=environment_name,
             logger=logger,
             target_total_steps=tgt_steps,
+            gradient_steps=gradient_steps,
         )
 
         comptime if Self.profile >= 2:
