@@ -304,6 +304,9 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         qvel_off: Int,
         xpos_off: Int,
     ) -> Bool:
+        comptime assert (
+            DTYPE.is_floating_point()
+        ), "DTYPE must be floating point"
         # OBS_DIM=9: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2),
         #              clip(qvel[0],-10,10), clip(qvel[1],-10,10), clip(qvel[2],-10,10),
         #              0.0]  # qfrc_constraint[0] not in state buffer → 0
@@ -312,10 +315,10 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         var q2 = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
 
         obs[env, 0] = q0
-        obs[env, 1] = Scalar[DTYPE](sin(Float64(q1)))
-        obs[env, 2] = Scalar[DTYPE](sin(Float64(q2)))
-        obs[env, 3] = Scalar[DTYPE](cos(Float64(q1)))
-        obs[env, 4] = Scalar[DTYPE](cos(Float64(q2)))
+        obs[env, 1] = Scalar[DTYPE](sin(q1))
+        obs[env, 2] = Scalar[DTYPE](sin(q2))
+        obs[env, 3] = Scalar[DTYPE](cos(q1))
+        obs[env, 4] = Scalar[DTYPE](cos(q2))
 
         comptime for i in range(3):
             var v = rebind[Scalar[DTYPE]](states[env, qvel_off + i])
