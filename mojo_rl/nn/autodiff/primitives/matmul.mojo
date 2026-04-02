@@ -18,8 +18,10 @@ from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
-from std.sys import is_nvidia_gpu
+from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.gpu.compute.mma import mma
+from linalg.matmul import matmul as _max_matmul
+from layout.tile_tensor import lt_to_tt
 
 
 struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
@@ -1094,40 +1096,79 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
         ](input.ptr)
 
-        # Use 32×32 block tiles with 256 threads (MMA or 2x2 register-tiled)
-        comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+        # NVIDIA with large K: use max_matmul (avoids 672 barrier()s for K=5376)
+        # Threshold: MMA kernel has (in_dim/MMA_K) k-tiles with barrier each.
+        # max_matmul is faster when k-tiles > ~64 (in_dim > ~512).
+        comptime num_k_tiles = (Self.in_dim + MMA_K - 1) // MMA_K
+        comptime if has_nvidia_gpu_accelerator() and num_k_tiles > 64:
+            # Cache input for backward (separate kernel since max_matmul
+            # doesn't have access to the cache buffer)
+            comptime cache_elems = BATCH * Self.in_dim
+            comptime cache_blocks = (cache_elems + TPB - 1) // TPB
 
-        @always_inline
-        def wrapper(
-            output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
-            ],
-            input: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-            ],
-            W: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.out_dim),
-                ImmutAnyOrigin,
-            ],
-            cache: LayoutTensor[
+            @always_inline
+            def cache_input_wrapper(
+                cache: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+                ],
+                input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx < cache_elems:
+                    cache.ptr[idx] = input.ptr[idx]
+
+            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
+                cache,
+                input_immut,
+                grid_dim=(cache_blocks,),
+                block_dim=(TPB,),
+            )
+
+            # output = input @ W via max_matmul
+            var input_mm = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-            ],
-        ):
-            comptime if is_nvidia_gpu():
-                Self.eval_kernel_mma[BATCH](output, input, W, cache)
-            else:
-                Self.eval_kernel_2x2[BATCH](output, input, W, cache)
+            ](input.ptr)
+            var W_mm = LayoutTensor[
+                dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+            ](params.ptr)
+            _max_matmul[target="gpu"](lt_to_tt(output), lt_to_tt(input_mm), lt_to_tt(W_mm), ctx)
+        else:
+            # Small K: use hand-written tiled kernels (lower launch overhead)
+            comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
-        ctx.enqueue_function[wrapper, wrapper](
-            output,
-            input_immut,
-            W,
-            cache,
-            grid_dim=(grid_x, grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
+            @always_inline
+            def wrapper(
+                output: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+                ],
+                input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+                ],
+                W: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.in_dim, Self.out_dim),
+                    ImmutAnyOrigin,
+                ],
+                cache: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+                ],
+            ):
+                comptime if is_nvidia_gpu():
+                    Self.eval_kernel_mma[BATCH](output, input, W, cache)
+                else:
+                    Self.eval_kernel_2x2[BATCH](output, input, W, cache)
+
+            ctx.enqueue_function[wrapper, wrapper](
+                output,
+                input_immut,
+                W,
+                cache,
+                grid_dim=(grid_x, grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
     @staticmethod
     def vjp_gpu[
