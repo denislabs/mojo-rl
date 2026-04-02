@@ -205,8 +205,8 @@ def _bn_skip_relu_bwd_kernel[
         var go = rebind[Scalar[dtype]](grad_output[b, c_off + s])
         # ReLU mask
         var dy = go if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
-        # Skip gradient accumulation
-        grad_skip[b, c_off + s] = rebind[Scalar[dtype]](grad_skip[b, c_off + s]) + dy
+        # Skip gradient (write, not accumulate — buffer may contain stale data)
+        grad_skip[b, c_off + s] = dy
         # BN backward partials
         var x_hat = rebind[Scalar[dtype]](cache[b, XHAT_OFF + c_off + s])
         local_d_gamma += dy * x_hat
