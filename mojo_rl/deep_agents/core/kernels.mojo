@@ -981,7 +981,19 @@ def td_target_continuous_kernel[
         return
 
     var one = Scalar[dtype](1.0)
-    td_targets[i] = rewards[i] + gamma * next_q_values[i] * (one - dones[i])
+    var q = next_q_values[i]
+    # Guard NaN in Q-values
+    if q != q:
+        q = Scalar[dtype](0.0)
+    var tgt = rewards[i] + gamma * q * (one - dones[i])
+    # Clamp targets to prevent Q-value divergence
+    var lo = Scalar[dtype](-1000.0)
+    var hi = Scalar[dtype](1000.0)
+    if tgt < lo:
+        tgt = lo
+    elif tgt > hi:
+        tgt = hi
+    td_targets[i] = tgt
 
 
 @always_inline
@@ -1022,17 +1034,34 @@ def td_target_min_twin_kernel[
         return
 
     var one = Scalar[dtype](1.0)
-    var q_min = q1_values[i] if q1_values[i] < q2_values[i] else q2_values[i]
+    var q1 = q1_values[i]
+    var q2 = q2_values[i]
+    # Guard NaN in Q-values
+    if q1 != q1:
+        q1 = Scalar[dtype](0.0)
+    if q2 != q2:
+        q2 = Scalar[dtype](0.0)
+    var q_min = q1 if q1 < q2 else q2
 
+    var tgt = Scalar[dtype](0.0)
     comptime if use_entropy:
         # SAC: entropy bonus in target — read alpha from GPU memory
         var alpha = alpha_buf.ptr[0]
-        td_targets[i] = rewards[i] + gamma * (q_min - alpha * log_probs[i]) * (
+        tgt = rewards[i] + gamma * (q_min - alpha * log_probs[i]) * (
             one - dones[i]
         )
     else:
         # TD3: no entropy
-        td_targets[i] = rewards[i] + gamma * q_min * (one - dones[i])
+        tgt = rewards[i] + gamma * q_min * (one - dones[i])
+
+    # Clamp targets to prevent Q-value divergence
+    var lo = Scalar[dtype](-1000.0)
+    var hi = Scalar[dtype](1000.0)
+    if tgt < lo:
+        tgt = lo
+    elif tgt > hi:
+        tgt = hi
+    td_targets[i] = tgt
 
 
 # =============================================================================

@@ -82,7 +82,7 @@ def main() raises:
             auto_alpha=True,
             alpha_lr=0.0003,
             target_entropy=-2.0,
-            max_grad_norm=1.0,
+            max_grad_norm=0.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
         )
