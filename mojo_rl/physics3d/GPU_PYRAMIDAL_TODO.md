@@ -2,7 +2,7 @@
 
 ## Status
 
-**FIXED.** The GPU PYRAMIDAL Newton solver now produces correct constraint forces, matching the ELLIPTIC GPU path's accuracy. 3/6 CPU vs GPU tests pass (same pass/fail pattern as ELLIPTIC GPU). All CPU vs MuJoCo tests still pass (4/4 pyramidal, 7/7 contact, 4/4 solver forces).
+**ALL PASSING.** 6/6 CPU vs GPU tests pass for both PYRAMIDAL and ELLIPTIC. All CPU vs MuJoCo tests still pass (4/4 pyramidal, 7/7 contact, 4/4 solver forces).
 
 ## Bugs Found and Fixed
 
@@ -37,6 +37,20 @@ Since `body_invweight0` is stored after geom/equality/tendon/site data in the mo
 
 **Fix:** Pass all template parameters to `model_body_invweight0_offset`.
 
+### Bug 4: GPU _compute_invweight0_gpu produces wrong translational body_invweight0 (model_def.mojo, model_def_from_xml.mojo)
+
+The GPU `_compute_invweight0_gpu` kernel computes `body_invweight0[2*i]` (translational component) incorrectly — values differ by ~9x from the CPU's `compute_body_invweight0`. The rotational component `body_invweight0[2*i+1]` was correct.
+
+This caused `diag_n` in the constraint builder to be ~9x too large, which made `R_n` ~9x too large and `D` (force scaling) ~9x too small. All constraint forces were ~9x weaker than they should be, producing dramatically wrong qvel/qpos.
+
+Both `ModelDef.init_model_gpu` and `ModelDefFromXML.init_model_gpu` called `_compute_invweight0_gpu` after copying CPU-computed values, overwriting correct data with wrong GPU-computed values.
+
+**Fix:** Removed the `_compute_invweight0_gpu` calls. For `ModelDefFromXML`, the CPU `setup_model_and_data` already computes correct `body_invweight0` which is serialized via `copy_invweight0_to_buffer`. For `ModelDef`, added CPU-side invweight0 computation using a temporary Model/Data.
+
+### Additional: Store imp/diag_n in common normal workspace (constraint_builder_gpu.mojo)
+
+Extended the common normal workspace block from `13*MC + 2*MC*NV` to `15*MC + 2*MC*NV` by adding `imp_n` (slot 13) and `diag_n` (slot 14). The friction builder now computes `R_n = (1-imp)/imp * diag_n` directly instead of the lossy float32 round-trip `R = 1/inv_K_imp - K`. While this was not the root cause of the large errors (Bug 4 was), it improves float32 precision for constraint parameters.
+
 ## What's Done
 
 1. **Shared friction builder** (`constraint_builder_gpu.mojo: precompute_contact_friction_gpu`)
@@ -55,49 +69,9 @@ Since `body_invweight0` is stored after geom/equality/tendon/site data in the mo
    - Updated to 33*MC + 6*MC*NV (accommodates both ELLIPTIC and PYRAMIDAL)
    - PYRAMIDAL layout: 4*MC*NV edge J + scalars at pyr_sc = ws_Jt1_idx + 4*MC*NV
 
-## Remaining Failures (Shared GPU Infrastructure)
+## Previous Failures (Now Fixed)
 
-3/6 CPU vs GPU tests fail for PYRAMIDAL — the **exact same 3 tests** that also fail for ELLIPTIC, with **identical error magnitudes**:
-
-| Test | PYRAMIDAL max qvel err | ELLIPTIC max qvel err | Notes |
-|------|----------------------|---------------------|-------|
-| Ground contact 1 step | 1.577 | 1.577 | Identical |
-| Deep penetration 1 step | 4.404 | 4.404 | Identical |
-| Moving + contacts 1 step | 2.763 | 2.763 | Identical |
-| Ground contact + actions 1 step | PASS | PASS | |
-| Ground contact 5 steps | PASS | PASS | |
-| Ground contact + actions 5 steps | PASS | PASS | |
-
-### Hypothesis: GPU D_n computed from float32 round-trip through inv_K_imp
-
-Both ELLIPTIC and PYRAMIDAL GPU solvers compute `D_n` by extracting `R_n` indirectly:
-```
-R_n = 1/inv_K_imp - K_n
-D_n = 1/R_n
-```
-
-The CPU computes `R_n` directly from the impedance formula:
-```
-R_n = (1-imp)/imp * diag_n
-```
-
-In float32, the round-trip `R = 1/(1/(K+R)) - K` loses precision when `K >> R` or `K << R`. For deep penetration contacts, `K` (the constraint-space stiffness) and `R` (the regularizer) can differ by orders of magnitude, causing significant float32 cancellation error in the GPU's extracted `R_n`.
-
-This affects the D value (force scaling), which directly scales all constraint forces. A ~30-60% error in D explains the observed ~30-60% error in qvel.
-
-**Evidence supporting this hypothesis:**
-- The 3 failing tests all involve deep penetration or high-velocity contacts (large K*imp*pen)
-- The 3 passing tests have moderate penetration with actions (better K/R ratio)
-- Multi-step tests (5 steps) accumulate corrections and converge, masking single-step D errors
-- PYRAMIDAL and ELLIPTIC produce identical errors, confirming the issue is in the shared normal precompute path, not in the cone-specific code
-
-### Possible fixes (future work)
-
-1. **Store imp and diag_n from normal precompute**: Add workspace slots for `imp` and `diag_n` per contact. The friction builder (and D computation) can then compute `R = (1-imp)/imp * diag_n` directly instead of extracting it from `inv_K_imp`.
-
-2. **Compute D_n directly**: Instead of `D = 1/(1/inv_K_imp - K)`, compute `D = imp/((1-imp)*diag_n)` using stored `imp` and `diag_n`.
-
-3. **Use float64 for constraint parameter computation**: The constraint parameter precompute is per-contact (not per-edge, not inner-loop), so the cost of float64 is negligible.
+All 3/6 CPU vs GPU test failures were caused by Bug 4 (incorrect GPU `body_invweight0`), not by the float32 precision hypothesis. After fixing Bug 4, all 6/6 tests pass for both PYRAMIDAL and ELLIPTIC with errors at float32 rounding level (~1e-6).
 
 ## Other GPU Solvers (After Newton Works)
 

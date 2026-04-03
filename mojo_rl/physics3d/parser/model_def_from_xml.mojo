@@ -506,11 +506,9 @@ struct ModelDefFromXML[
         copy_invweight0_to_buffer(model, host_buf)
         copy_mesh_hull_to_buffer(model, host_buf)
 
-        # Copy to GPU
+        # Copy to GPU (invweight0 already computed correctly by CPU's
+        # compute_body_invweight0 via setup_model_and_data)
         ctx.enqueue_copy(model_buf, host_buf)
-
-        # Recompute invweight0 on GPU for accuracy
-        Self._compute_invweight0_gpu[DTYPE](ctx, model_buf)
 
     # =========================================================================
     # GPU: _compute_invweight0_gpu (duplicated from ModelDef, dims from params)

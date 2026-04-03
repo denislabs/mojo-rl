@@ -734,11 +734,36 @@ struct ModelDef[
         comptime if Self.Defaults.SETTOTALMASS > 0.0:
             Self._settotalmass_buffer[DTYPE](host_buf)
 
-        # Copy to GPU (invweight0 slots are still zero)
-        ctx.enqueue_copy(model_buf, host_buf)
+        # Compute invweight0 on CPU (the GPU kernel has a numerical divergence
+        # in translational body_invweight0 vs CPU, causing constraint force errors)
+        var model_tmp = Model[
+            DTYPE,
+            Self.NQ,
+            Self.NV,
+            Self.NBODY,
+            Self.NJOINT,
+            1,  # MAX_CONTACTS (minimal, only need for Model struct)
+            Self.NGEOM,
+            Self.MAX_EQUALITY,
+            Self.CONE_TYPE,
+            Self.MAX_TENDON,
+            Self.NSITE,
+        ]()
+        var data_tmp = Data[
+            DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT, 1, Self.NSITE
+        ]()
+        Self.Bodies.setup_model(model_tmp)
+        Self.Joints.setup_model[Defaults=Self.Defaults](model_tmp)
+        Self.Geoms.setup_model[Defaults=Self.Defaults](model_tmp)
+        Self.Sites.setup_model(model_tmp)
+        Self.Joints.reset_data(data_tmp)
+        Self.finalize(model_tmp, data_tmp)
 
-        # Compute invweight0 on GPU (avoids CPU stack overflow)
-        Self._compute_invweight0_gpu[DTYPE](ctx, model_buf)
+        # Copy CPU invweight0 to host buffer
+        copy_invweight0_to_buffer(model_tmp, host_buf)
+
+        # Copy to GPU
+        ctx.enqueue_copy(model_buf, host_buf)
 
     @staticmethod
     def _write_metadata_to_buffer[
