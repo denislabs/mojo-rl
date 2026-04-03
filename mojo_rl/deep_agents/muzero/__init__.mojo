@@ -13,6 +13,8 @@ from .configs import (
     MuZeroResNetConfig,
     MuZeroLargeConfig,
     EfficientZeroConfig,
+    MuZeroTicTacToeConfig,
+    MuZeroConnectFourConfig,
 )
 from .strategies import (
     SearchMode, LearnedDynamics, TrueGameRules,

@@ -1395,6 +1395,7 @@ struct GenericAlphaZeroAgent[
             Self.Config.obs_dim,
             1,
             E.STATE_SIZE,
+            Self.Config.batch_sims,
         ],
         mut exp_rewards: DeviceBuffer[dtype],
         mut exp_dones: DeviceBuffer[dtype],
@@ -1454,28 +1455,28 @@ struct GenericAlphaZeroAgent[
         ],
         # Batched simulation buffers
         b_pp: LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs * 8), MutAnyOrigin
+            dtype, Layout.row_major(Self.n_envs * Self.Config.batch_sims), MutAnyOrigin
         ],
         b_pa: LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs * 8), MutAnyOrigin
+            dtype, Layout.row_major(Self.n_envs * Self.Config.batch_sims), MutAnyOrigin
         ],
         b_exp_st: LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs * 8 * E.STATE_SIZE),
+            Layout.row_major(Self.n_envs * Self.Config.batch_sims * E.STATE_SIZE),
             MutAnyOrigin,
         ],
         b_sp: LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs * 8 * MAX_DEPTH),
+            Layout.row_major(Self.n_envs * Self.Config.batch_sims * MAX_DEPTH),
             MutAnyOrigin,
         ],
         b_ap: LayoutTensor[
             dtype,
-            Layout.row_major(Self.n_envs * 8 * MAX_DEPTH),
+            Layout.row_major(Self.n_envs * Self.Config.batch_sims * MAX_DEPTH),
             MutAnyOrigin,
         ],
         b_pl: LayoutTensor[
-            dtype, Layout.row_major(Self.n_envs * 8), MutAnyOrigin
+            dtype, Layout.row_major(Self.n_envs * Self.Config.batch_sims), MutAnyOrigin
         ],
     ) raises:
         """One MCTS simulation round: select → env.step → predict → backup.
@@ -1486,7 +1487,7 @@ struct GenericAlphaZeroAgent[
         comptime OBS = Self.Config.obs_dim
         comptime MAX_NODES = Self.Config.max_nodes
         comptime GS = E.STATE_SIZE
-        comptime BATCH_SIMS = 8
+        comptime BATCH_SIMS = Self.Config.batch_sims
         comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
         comptime PRED_IN = Self.Config.PredModel.IN_DIM
         comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
@@ -1763,6 +1764,7 @@ struct GenericAlphaZeroAgent[
             Self.Config.obs_dim,
             1,
             E.STATE_SIZE,
+            Self.Config.batch_sims,
         ],
         mut mcts_ws: DeviceBuffer[dtype],
         mut states_buf: DeviceBuffer[dtype],
@@ -1794,7 +1796,7 @@ struct GenericAlphaZeroAgent[
         comptime MCTS_PRED_OUT = ACT + 1
         comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
         comptime SIMS = Self.Config.num_simulations
-        comptime BATCH_SIMS = 8
+        comptime BATCH_SIMS = Self.Config.batch_sims
         comptime NUM_ROUNDS = SIMS // BATCH_SIMS
         comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
 
@@ -2143,6 +2145,7 @@ struct GenericAlphaZeroAgent[
         mut self,
         ctx: DeviceContext,
         prev_params: UnsafePointer[Scalar[dtype], origin],
+        prev_opt_state: UnsafePointer[Scalar[dtype], origin],
         # Pre-allocated arena param buffers
         mut arena_new_params: DeviceBuffer[dtype],
         mut arena_old_params: DeviceBuffer[dtype],
@@ -2155,6 +2158,7 @@ struct GenericAlphaZeroAgent[
             Self.Config.obs_dim,
             1,
             E.STATE_SIZE,
+            Self.Config.batch_sims,
         ],
         mut mcts_ws: DeviceBuffer[dtype],
         mut states_buf: DeviceBuffer[dtype],
@@ -2253,9 +2257,12 @@ struct GenericAlphaZeroAgent[
             accepted = win_rate >= threshold
 
         if not accepted:
-            # Revert to previous params
+            # Revert params and optimizer state to previous best
             for i in range(PS):
                 self.state.prediction.params[i] = prev_params[i]
+            comptime OPT_STATE_SIZE = Self.Config.PredModel.PARAM_SIZE * Self.Config.OptType.STATE_PER_PARAM
+            for i in range(OPT_STATE_SIZE):
+                self.state.prediction.optimizer_state[i] = prev_opt_state[i]
 
         return (accepted, new_wins, draws, old_wins)
 
@@ -2277,6 +2284,7 @@ struct GenericAlphaZeroAgent[
             Self.Config.obs_dim,
             1,
             E.STATE_SIZE,
+            Self.Config.batch_sims,
         ],
         mut mcts_ws: DeviceBuffer[dtype],
         mut eval_states: DeviceBuffer[dtype],
@@ -2307,7 +2315,7 @@ struct GenericAlphaZeroAgent[
         comptime PRED_IN = Self.Config.PredModel.IN_DIM
         comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
         comptime MCTS_PRED_OUT = ACT + 1
-        comptime BATCH_SIMS = 8
+        comptime BATCH_SIMS = Self.Config.batch_sims
         comptime NUM_ROUNDS = Self.Config.num_simulations // BATCH_SIMS
         comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
 
@@ -2733,7 +2741,7 @@ struct GenericAlphaZeroAgent[
         comptime PRED_IN = Self.Config.PredModel.IN_DIM
         comptime PRED_OUT_DIM = Self.Config.PredModel.OUT_DIM
         comptime MCTS_PRED_OUT = ACT + 1
-        comptime BATCH_SIMS = 8
+        comptime BATCH_SIMS = Self.Config.batch_sims
         comptime NUM_ROUNDS = SIMS // BATCH_SIMS
         comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
 
@@ -2744,11 +2752,12 @@ struct GenericAlphaZeroAgent[
         # GPU MCTS state (with game states for true-rules expansion)
         # Use a minimal LATENT=OBS since we run PredNet on obs directly
         var gpu_mcts = GPUMCTSState[
-            Self.n_envs, MAX_NODES, ACT, OBS, 1, E.STATE_SIZE
+            Self.n_envs, MAX_NODES, ACT, OBS, 1, E.STATE_SIZE,
+            Self.Config.batch_sims,
         ](ctx)
 
         # Network workspace (sized for batched prediction: n_envs * BATCH_SIMS)
-        comptime BATCH_SIMS_C = 8  # Must match BATCH_SIMS in simulation loop
+        comptime BATCH_SIMS_C = Self.Config.batch_sims
         comptime WS = Self.Config.PredModel.WORKSPACE_SIZE_PER_SAMPLE
         comptime WS_SIZE = Self.n_envs * BATCH_SIMS_C * WS if WS > 0 else 1
         var mcts_ws = ctx.enqueue_create_buffer[dtype](WS_SIZE)
@@ -2775,7 +2784,7 @@ struct GenericAlphaZeroAgent[
         var ep_count_host = ctx.enqueue_create_host_buffer[dtype](1)
 
         # Expansion scratch for batched MCTS (BATCH_SIMS per env)
-        comptime BATCH_SIMS_ALLOC = 8  # Must match BATCH_SIMS in simulation loop
+        comptime BATCH_SIMS_ALLOC = Self.Config.batch_sims
         comptime TOTAL_EXPAND_ALLOC = Self.n_envs * BATCH_SIMS_ALLOC
         var exp_rewards = ctx.enqueue_create_buffer[dtype](TOTAL_EXPAND_ALLOC)
         var exp_dones = ctx.enqueue_create_buffer[dtype](TOTAL_EXPAND_ALLOC)
@@ -2855,11 +2864,15 @@ struct GenericAlphaZeroAgent[
         var metrics = TrainingMetrics(algorithm_name="AlphaZero")
         var total_steps = 0
 
-        # Save initial params for arena comparison
+        # Save initial params + optimizer state for arena comparison
         comptime PS = Self.Config.PredModel.PARAM_SIZE
+        comptime OPT_SS = PS * Self.Config.OptType.STATE_PER_PARAM
         var best_params = alloc[Scalar[dtype]](PS)
+        var best_opt_state = alloc[Scalar[dtype]](OPT_SS)
         for i in range(PS):
             best_params[i] = self.state.prediction.params[i]
+        for i in range(OPT_SS):
+            best_opt_state[i] = self.state.prediction.optimizer_state[i]
         var arena_accepts = 0
         var arena_rejects = 0
 
@@ -3021,7 +3034,7 @@ struct GenericAlphaZeroAgent[
                     )
 
                     # Batched simulations (BATCH_SIMS leaves per round)
-                    comptime BATCH_SIMS = 8
+                    comptime BATCH_SIMS = Self.Config.batch_sims
                     comptime NUM_ROUNDS = SIMS // BATCH_SIMS
                     comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
 
@@ -3520,6 +3533,9 @@ struct GenericAlphaZeroAgent[
                     rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
                         best_params
                     ),
+                    rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                        best_opt_state
+                    ),
                     arena_new_params,
                     arena_old_params,
                     arena_params_host,
@@ -3548,6 +3564,8 @@ struct GenericAlphaZeroAgent[
                 if accepted:
                     for i in range(PS):
                         best_params[i] = self.state.prediction.params[i]
+                    for i in range(OPT_SS):
+                        best_opt_state[i] = self.state.prediction.optimizer_state[i]
                     arena_accepts += 1
                     print(
                         "  Arena: ACCEPTED",
@@ -3586,6 +3604,7 @@ struct GenericAlphaZeroAgent[
 
         # end iteration loop
         best_params.free()
+        best_opt_state.free()
         if do_arena:
             print("Arena: accepted", arena_accepts, "/ rejected", arena_rejects)
         if checkpoint_every > 0:

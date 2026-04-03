@@ -71,6 +71,7 @@ trait AlphaZeroConfig:
     comptime num_simulations: Int
     comptime max_nodes: Int
     comptime temp_threshold: Int  # Use temp=1 for first N moves, temp=0 after
+    comptime batch_sims: Int  # Parallel MCTS sims per round (8, 16, or 32)
 
     # ── Value target ─────────────────────────────────────────────
     # Blend between game outcome (z) and MCTS root Q-value (q):
@@ -120,6 +121,7 @@ struct AlphaZeroTicTacToeConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 15  # temp=1 first 15 moves, then temp=0
+    comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[0.25, 0.25]
@@ -179,6 +181,7 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 15
+    comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[0.25, 0.25]
@@ -223,6 +226,7 @@ struct AlphaZeroConnectFourConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
+    comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[0.25, 1.0]  # alpha=1.0 for C4
@@ -289,6 +293,7 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
+    comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[
@@ -399,6 +404,7 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
+    comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[0.25, 1.0]
@@ -456,6 +462,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
+    comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[0.25, 1.0]
@@ -510,6 +517,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 15
+    comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[0.25, 0.25]
@@ -553,6 +561,7 @@ struct AlphaZeroChessConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 30
+    comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[

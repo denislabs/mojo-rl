@@ -26,7 +26,7 @@ from mojo_rl.nn.model import (
     Parallel,
 )
 from mojo_rl.nn.model import Conv2DReLU, FlattenLayer
-from mojo_rl.nn.optimizer import Optimizer, Adam
+from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 from mojo_rl.nn.autodiff.combinators import Residual
 from .strategies import (
     SearchMode,
@@ -39,11 +39,14 @@ from .strategies import (
     DirichletNoise,
     PUCTFormula,
     MuZeroPUCT,
+    AlphaGoPUCT,
     BackupMode,
     NStepBootstrap,
+    MonteCarloReturn,
     LambdaReturn,
     PlayerMode,
     SinglePlayer,
+    SelfPlay,
 )
 
 
@@ -502,3 +505,177 @@ struct EfficientZeroConfig[
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = True         # Always use Reanalyze
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MuZero TicTacToe Config (27D obs, 9 actions, self-play)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct MuZeroTicTacToeConfig[
+    LATENT: Int = 128,
+    HIDDEN: Int = 128,
+    BINS: Int = 51,
+    LR: Float64 = 1e-3,
+    CAP: Int = 50000,
+    BS: Int = 64,
+    K: Int = 5,
+    N: Int = 10,
+    SIMS: Int = 100,
+    NODES: Int = 128,
+    C_PUCT: Float64 = 1.0,
+](MuZeroConfig):
+    """MuZero for TicTacToe via learned dynamics + self-play.
+
+    Unlike AlphaZero which uses true game rules in MCTS, MuZero learns
+    the dynamics model g(s, a) → (r, s') and plans in latent space.
+    Uses Monte Carlo returns (no bootstrapping) since board games
+    have clear terminal outcomes.
+    """
+
+    comptime NAME: String = "MuZero-TicTacToe"
+
+    # Dimensions
+    comptime obs_dim: Int = 27    # 3 planes × 3×3
+    comptime action_dim: Int = 9
+    comptime latent_dim: Int = Self.LATENT
+    comptime num_bins: Int = Self.BINS
+    comptime DYN_IN: Int = Self.LATENT + 9
+    comptime DYN_OUT: Int = Self.LATENT + Self.BINS
+    comptime PRED_OUT: Int = 9 + Self.BINS
+
+    # Networks
+    comptime RepModel = Sequential[
+        LinearMish[27, Self.HIDDEN],
+        LinearMish[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.LATENT],
+    ]
+
+    comptime DynModel = Sequential[
+        LinearMish[Self.DYN_IN, Self.HIDDEN],
+        LinearMish[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.DYN_OUT],
+    ]
+
+    comptime PredModel = Sequential[
+        LinearMish[Self.LATENT, Self.HIDDEN],
+        Parallel[
+            Linear[Self.HIDDEN, 9],       # Policy head
+            Linear[Self.HIDDEN, Self.BINS],  # Value head (distributional)
+        ],
+    ]
+
+    comptime OptType = Adam[LR=Self.LR]
+
+    # Training
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime unroll_steps: Int = Self.K
+    comptime td_steps: Int = Self.N
+
+    # MCTS
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+
+    # Strategy types — board game self-play
+    comptime Search = LearnedDynamics
+    comptime Encoding = CategoricalEncoding
+    comptime Scaling = MinMaxScale
+    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
+    comptime Backup = MonteCarloReturn
+    comptime Players = SelfPlay
+
+    comptime USE_REANALYZE: Bool = False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MuZero ConnectFour Config (126D obs, 7 actions, self-play)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct MuZeroConnectFourConfig[
+    LATENT: Int = 256,
+    HIDDEN: Int = 256,
+    BINS: Int = 51,
+    LR: Float64 = 1e-3,
+    WD: Float64 = 1e-4,
+    CAP: Int = 200000,
+    BS: Int = 128,
+    K: Int = 5,
+    N: Int = 10,
+    SIMS: Int = 100,
+    NODES: Int = 256,
+    C_PUCT: Float64 = 2.0,
+](MuZeroConfig):
+    """MuZero for Connect Four via learned dynamics + self-play.
+
+    Larger networks than TicTacToe due to higher board complexity
+    (6×7 board, 3 channels). Uses ResNet-style residual blocks in
+    the representation and dynamics networks for deeper feature
+    extraction. AdamW with weight decay for regularization.
+    """
+
+    comptime NAME: String = "MuZero-ConnectFour"
+
+    # Dimensions
+    comptime obs_dim: Int = 126   # 3 planes × 6×7
+    comptime action_dim: Int = 7
+    comptime latent_dim: Int = Self.LATENT
+    comptime num_bins: Int = Self.BINS
+    comptime DYN_IN: Int = Self.LATENT + 7
+    comptime DYN_OUT: Int = Self.LATENT + Self.BINS
+    comptime PRED_OUT: Int = 7 + Self.BINS
+
+    # Representation with ResBlock
+    comptime RepModel = Sequential[
+        LinearMish[126, Self.HIDDEN],
+        Residual[Sequential[
+            LinearMish[Self.HIDDEN, Self.HIDDEN],
+            Linear[Self.HIDDEN, Self.HIDDEN],
+        ]],
+        Linear[Self.HIDDEN, Self.LATENT],
+    ]
+
+    # Dynamics with ResBlock
+    comptime DynModel = Sequential[
+        LinearMish[Self.DYN_IN, Self.HIDDEN],
+        Residual[Sequential[
+            LinearMish[Self.HIDDEN, Self.HIDDEN],
+            Linear[Self.HIDDEN, Self.HIDDEN],
+        ]],
+        Linear[Self.HIDDEN, Self.DYN_OUT],
+    ]
+
+    # Prediction with deeper heads
+    comptime PredModel = Sequential[
+        LinearMish[Self.LATENT, Self.HIDDEN],
+        LinearMish[Self.HIDDEN, Self.HIDDEN],
+        Parallel[
+            Linear[Self.HIDDEN, 7],       # Policy head
+            Linear[Self.HIDDEN, Self.BINS],  # Value head (distributional)
+        ],
+    ]
+
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
+
+    # Training
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime unroll_steps: Int = Self.K
+    comptime td_steps: Int = Self.N
+
+    # MCTS
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+
+    # Strategy types — board game self-play
+    comptime Search = LearnedDynamics
+    comptime Encoding = CategoricalEncoding
+    comptime Scaling = MinMaxScale
+    comptime Noise = DirichletNoise[0.25, 1.0]  # alpha=1.0 for C4 (fewer actions)
+    comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
+    comptime Backup = MonteCarloReturn
+    comptime Players = SelfPlay
+
+    comptime USE_REANALYZE: Bool = False
