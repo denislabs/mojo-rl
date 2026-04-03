@@ -1,6 +1,6 @@
 """AlphaZero training on Connect Four — fully GPU with remote logging.
 
-ResNet architecture with 4 residual blocks, 128 filters, 100 MCTS sims.
+ResNet architecture with 5 residual blocks, 128 filters, 100 MCTS sims.
 
 Usage:
     pixi run -e nvidia mojo run -I . examples/board_games/connect_four_alphazero.mojo
@@ -46,7 +46,7 @@ def main() raises:
     # CNN (Conv+BN+ReLU, matching alpha-zero-general):
     # comptime Config = AlphaZeroConnectFourCNNConfig[]
     # ResNet (closest to original AlphaZero):
-    comptime Config = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=20]
+    comptime Config = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=5]
     # comptime Config = AlphaZeroConnectFourResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
@@ -77,7 +77,7 @@ def main() raises:
         checkpoint_every=10,
         checkpoint_path="connect_four_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
-        diag_every=1_000,
+        diag_every=500,
     )
 
     logger.close()
