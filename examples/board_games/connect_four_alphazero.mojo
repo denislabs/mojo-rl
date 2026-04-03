@@ -42,11 +42,11 @@ def main() raises:
     )
 
     # MLP config (best for ConnectFour — peaked initial policy helps MCTS)
-    # comptime Config = AlphaZeroConnectFourConfig[]
+    comptime Config = AlphaZeroConnectFourConfig[]
     # CNN (Conv+BN+ReLU, matching alpha-zero-general):
     # comptime Config = AlphaZeroConnectFourCNNConfig[]
     # ResNet (closest to original AlphaZero):
-    comptime Config = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=5]
+    # comptime Config = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=5]
     # comptime Config = AlphaZeroConnectFourResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
