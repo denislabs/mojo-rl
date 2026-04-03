@@ -102,9 +102,9 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 
 | Component                        | Integrator       | Solver       | MuJoCo vs CPU | CPU vs GPU | Notes |
 |----------------------------------|------------------|--------------|:-------------:|:----------:|-------|
-| Full Step no contact             | Implicit (full)  | PGS          | DONE          | DONE       | MuJoCo: 6 configs, err~5.9e-6. GPU: 8 configs (float32). |
+| Full Step no contact             | Implicit (full)  | PGS          | DONE          | DONE       | MuJoCo: 6 configs, err~1e-15. GPU: 8 configs (float32). |
 | qDeriv finite diff               | Implicit (full)  | —            | DONE          | —          | RNE velocity derivative matches finite diff. |
-| qDeriv vs MuJoCo                 | Implicit (full)  | —            | DONE          | —          | qDeriv matches MuJoCo's efc_D at nonzero velocity. |
+| qDeriv vs MuJoCo                 | Implicit (full)  | —            | DONE          | —          | qDeriv matches MuJoCo's d->qDeriv at nonzero velocity. |
 
 **Implicit (full) integrator notes:**
 - Uses `M_hat = M + arm + dt*(D - qDeriv)` where `qDeriv = d(qfrc_bias)/d(qvel)` (RNE velocity derivative)
@@ -117,6 +117,13 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 - **GPU subtree-COM convention**: `compute_rne_vel_derivative_gpu` rewritten to use subtree-COM
   convention matching the CPU version. Eliminates frame transfers in spatial propagation.
   Validated by CPU vs GPU test (8/8 pass, nonzero vel err ~2.8e-4 in float32).
+- **cdof convention bug fixed (2026-04-03)**: `compute_rne_vel_derivative` was called with
+  subtree_com-based cdof (from `compute_cdof(model, data, cdof, stcom_tmp)`), but it expects
+  xipos-based cdof (from `compute_cdof(model, data, cdof)`). The internal body-origin conversion
+  produces different results with subtree_com vs xipos reference points, causing qDeriv[2,2]
+  to be ~5.5 instead of ~2.2 (HalfCheetah rooty DOF). Fix: compute a separate cdof without
+  subtree_com for the RNE derivative. MuJoCo comparison now matches at ~1e-15 (was ~0.8 qvel error).
+  GPU version still uses workspace cdof (subtree_com-based) — TODO: fix for GPU Implicit.
 
 ---
 
@@ -259,8 +266,8 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_contacts_cpu_vs_gpu.mojo` | Contact detection pos, normal, dist (float32) | PASS | 6 (high, default, low, very low, bent, tilted) | pos: 1e-3, dist: 1e-3, normal_dot>0.999 |
 | `test_jacobian_cpu_vs_gpu.mojo` | Normal Jacobian J_n rows (float32) | PASS | 4 (low static, low moving, very low, bent) | abs: 1e-3 (actual err ~6e-8) |
 | `test_full_step_contact_cpu_vs_gpu.mojo` | Full step with contacts (float32) | PASS (6/6) | 6 (static, actions, deep pen, moving, 5-step) | qpos: 5e-2, qvel: 1.0 (actual err ~1e-6, near float32 rounding) |
-| `test_implicit_fast_newton_cpu_vs_gpu.mojo` | ImplicitFast+Newton full step (float32) | 5/7 PASS | 7 (3 no-contact + 4 contact) | 1-step: pass (err ~1e-6). 5-step: 2 fail (accumulated float32 divergence) |
-| `test_implicit_fast_pgs_cpu_vs_gpu.mojo` | ImplicitFast+PGS full step (float32) | 6/8 PASS | 8 (3 no-contact + 5 contact) | 1-step: pass. 5-step: 2 fail (accumulated float32 divergence) |
+| `test_implicit_fast_newton_cpu_vs_gpu.mojo` | ImplicitFast+Newton full step (float32) | 7/7 PASS | 7 (3 no-contact + 4 contact) | All pass. 5-step contact err ~1e-5. |
+| `test_implicit_fast_pgs_cpu_vs_gpu.mojo` | ImplicitFast+PGS full step (float32) | 8/8 PASS | 8 (3 no-contact + 5 contact) | All pass. 5-step contact err ~2.3e-2. |
 | `test_implicit_cpu_vs_gpu.mojo` | Implicit(full)+PGS full step (float32) | PASS | 8 (zero vel, nonzero vel, actions, contact) | qpos: 5e-2, qvel: 1.0 (nonzero vel err ~2.8e-4, contact ~0.01) |
 | `test_pyramidal_cpu_vs_gpu.mojo` | Pyramidal cone Euler+Newton CPU vs GPU (float32) | PASS (6/6) | 6 (static, actions, deep pen, moving, 5-step) | qpos: 5e-2, qvel: 1.0 (actual err ~1e-6, near float32 rounding) |
 | `test_rk4_cpu_vs_gpu.mojo` | RK4+Newton full step CPU vs GPU (float32) | PASS | 6 (free fall, actions, moving, fast spin, 10-step, ground contact) | qpos: 3e-2, qvel: 5e-1 (actual err ~0, exact match) |
@@ -570,8 +577,8 @@ after already having correct CPU-computed values, overwriting them.
 |------|--------|-------|-------|
 | test_full_step_contact_cpu_vs_gpu (ELLIPTIC) | 3/6 | **6/6** | All single-step errors ~1e-6 |
 | test_pyramidal_cpu_vs_gpu (PYRAMIDAL) | 3/6 | **6/6** | All errors ~1e-6 |
-| test_implicit_fast_newton_cpu_vs_gpu | 3/7 | **5/7** | 1-step contacts now pass; 5-step still diverge |
-| test_implicit_fast_pgs_cpu_vs_gpu | 4/8 | **6/8** | 1-step contacts now pass; 5-step still diverge |
+| test_implicit_fast_newton_cpu_vs_gpu | 3/7 | **7/7** | All pass. Warm-start bug fixed (was using prev step qacc as solver initial guess on GPU only). |
+| test_implicit_fast_pgs_cpu_vs_gpu | 4/8 | **8/8** | All pass. Same warm-start fix. |
 | test_pyramidal_vs_mujoco | 4/4 | 4/4 | Unchanged |
 | test_full_step_contact_vs_mujoco | 7/7 | 7/7 | Unchanged |
 | test_solver_forces_vs_mujoco | 4/4 | 4/4 | Unchanged |

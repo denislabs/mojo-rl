@@ -306,7 +306,15 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 qDeriv[dof_adr * NV + dof_adr] = -damp
 
         # (b) RNE velocity derivative: subtract d(bias)/d(qvel) from qDeriv
-        compute_rne_vel_derivative(model, data, cdof, qDeriv)
+        # Note: compute_rne_vel_derivative internally converts cdof to body-origin
+        # convention. The conversion is validated with xipos-based cdof (no subtree_com).
+        # Use a separate cdof without subtree_com for the RNE derivative to match
+        # the validated convention and produce correct qDeriv values.
+        var cdof_rne = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
+        for _ in range(CDOF_SIZE):
+            cdof_rne.append(Scalar[DTYPE](0))
+        compute_cdof(model, data, cdof_rne)
+        compute_rne_vel_derivative(model, data, cdof_rne, qDeriv)
 
         # Now form M_hat = M + armature - dt * qDeriv
         # Add armature to diagonal
