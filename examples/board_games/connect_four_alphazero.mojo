@@ -68,7 +68,7 @@ def main() raises:
         steps_per_iter=32_000,  # ~3000+ games per iter (AlphaZero.jl uses 5000)
         train_epochs=2,  # Oracle article: 2 epochs optimal for C4
         warmup_iters=1,
-        arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
+        arena_threshold=0.5,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
         do_eval=True,
         do_eval2=True,  # Eval vs Minimax depth 5
         do_arena=True,
