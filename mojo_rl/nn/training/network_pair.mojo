@@ -28,7 +28,7 @@ Usage:
 from ..model import Model
 from ..optimizer import Optimizer
 from ..initializer import Initializer, Kaiming
-from ..constants import dtype
+from ..constants import dtype as default_dtype
 from .network_state import NetworkState
 from .gpu_network_state import GPUNetworkState
 
@@ -36,7 +36,7 @@ from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
 
 
-struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
+struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype](
     ImplicitlyCopyable, Movable
 ):
     """Pair of (online, target) NetworkState with shared operations.
@@ -47,21 +47,22 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     Parameters:
         MODEL: The model architecture (implements Model trait).
         OPTIMIZER: The optimizer (implements Optimizer trait).
+        dtype: Data type for all buffers (default: DType.float32).
     """
 
     comptime PARAM_SIZE: Int = Self.MODEL.PARAM_SIZE
 
-    var online: NetworkState[Self.MODEL, Self.OPTIMIZER]
-    var target: NetworkState[Self.MODEL, Self.OPTIMIZER]
+    var online: NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]
+    var target: NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]
 
     def __init__(out self):
         """Allocate and zero-initialize both online and target states."""
-        self.online = NetworkState[Self.MODEL, Self.OPTIMIZER]()
-        self.target = NetworkState[Self.MODEL, Self.OPTIMIZER]()
+        self.online = NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]()
+        self.target = NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]()
 
     def __init__(out self, *, copy: Self):
-        self.online = NetworkState[Self.MODEL, Self.OPTIMIZER](copy=copy.online)
-        self.target = NetworkState[Self.MODEL, Self.OPTIMIZER](copy=copy.target)
+        self.online = NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype](copy=copy.online)
+        self.target = NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype](copy=copy.target)
 
     def __init__(out self, *, deinit take: Self):
         self.online = take.online^
@@ -102,13 +103,13 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
 
     def params_view(
         self,
-    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
+    ) -> LayoutTensor[Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online params (zero-copy)."""
         return self.online.params_view()
 
     def grads_view(
         self,
-    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
+    ) -> LayoutTensor[Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online grads (zero-copy)."""
         return self.online.grads_view()
 
@@ -155,7 +156,7 @@ struct NetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
 # =============================================================================
 
 
-struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
+struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype](
     ImplicitlyCopyable, Movable
 ):
     """GPU-side pair of (online, target) GPUNetworkState.
@@ -165,12 +166,13 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
     Parameters:
         MODEL: The model architecture (implements Model trait).
         OPTIMIZER: The optimizer (implements Optimizer trait).
+        dtype: Data type for all buffers (default: DType.float32).
     """
 
     comptime PARAM_SIZE: Int = Self.MODEL.PARAM_SIZE
 
-    var online: GPUNetworkState[Self.MODEL, Self.OPTIMIZER]
-    var target: GPUNetworkState[Self.MODEL, Self.OPTIMIZER]
+    var online: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]
+    var target: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate both online and target device buffers.
@@ -178,14 +180,14 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
         Args:
             ctx: GPU device context.
         """
-        self.online = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](ctx)
-        self.target = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](ctx)
+        self.online = GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype](ctx)
+        self.target = GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype](ctx)
 
     def __init__(out self, *, copy: Self):
-        self.online = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](
+        self.online = GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype](
             copy=copy.online
         )
-        self.target = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](
+        self.target = GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype](
             copy=copy.target
         )
 
@@ -222,13 +224,13 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
 
     def params_view(
         self,
-    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
+    ) -> LayoutTensor[Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online params (zero-copy)."""
         return self.online.params_view()
 
     def grads_view(
         self,
-    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
+    ) -> LayoutTensor[Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin,]:
         """LayoutTensor view over online grads (zero-copy)."""
         return self.online.grads_view()
 
@@ -246,7 +248,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
 
     def upload_from(
         mut self,
-        cpu: NetworkPair[Self.MODEL, Self.OPTIMIZER],
+        cpu: NetworkPair[Self.MODEL, Self.OPTIMIZER, Self.dtype],
         ctx: DeviceContext,
     ) raises:
         """Upload both online and target from CPU to GPU.
@@ -260,7 +262,7 @@ struct GPUNetworkPair[MODEL: Model, OPTIMIZER: Optimizer](
 
     def download_to(
         mut self,
-        mut cpu: NetworkPair[Self.MODEL, Self.OPTIMIZER],
+        mut cpu: NetworkPair[Self.MODEL, Self.OPTIMIZER, Self.dtype],
         ctx: DeviceContext,
     ) raises:
         """Download both online and target from std.gpu to CPU (synchronizes).

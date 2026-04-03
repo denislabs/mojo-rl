@@ -33,17 +33,16 @@ Usage:
     var gamma = ckpt.get_metadata("gamma")
 """
 
-from ..constants import dtype
 from layout import Layout, LayoutTensor
 
 
-struct FloatSection(Copyable, Movable):
-    """A named section of float32 data."""
+struct FloatSection[dtype: DType = DType.float32](Copyable, Movable):
+    """A named section of float data."""
 
     var name: String
-    var data: List[Scalar[dtype]]
+    var data: List[Scalar[Self.dtype]]
 
-    def __init__(out self, name: String, data: List[Scalar[dtype]]):
+    def __init__(out self, name: String, data: List[Scalar[Self.dtype]]):
         self.name = name
         self.data = data.copy()
 
@@ -64,7 +63,7 @@ comptime MAGIC_3: UInt8 = UInt8(ord("K"))
 comptime BINARY_VERSION: UInt32 = 2
 
 
-struct BinaryCheckpoint(Copyable, Movable):
+struct BinaryCheckpoint[dtype: DType = DType.float32](Copyable, Movable):
     """Binary checkpoint container for efficient model serialization.
 
     Holds named float sections and key=value metadata. Serializes float data
@@ -72,12 +71,12 @@ struct BinaryCheckpoint(Copyable, Movable):
     """
 
     var checkpoint_type: String
-    var sections: List[FloatSection]
+    var sections: List[FloatSection[Self.dtype]]
     var metadata: List[String]
 
     def __init__(out self, checkpoint_type: String = "network"):
         self.checkpoint_type = checkpoint_type
-        self.sections = List[FloatSection]()
+        self.sections = List[FloatSection[Self.dtype]]()
         self.metadata = List[String]()
 
     def __init__(out self, *, copy: Self):
@@ -94,17 +93,17 @@ struct BinaryCheckpoint(Copyable, Movable):
     # Building
     # =========================================================================
 
-    def add_float_section(mut self, name: String, data: List[Scalar[dtype]]):
+    def add_float_section(mut self, name: String, data: List[Scalar[Self.dtype]]):
         """Add a named float section.
 
         Args:
             name: Section name (e.g., "actor_params", "critic_optimizer_state").
             data: Float values to store.
         """
-        self.sections.append(FloatSection(name, data))
+        self.sections.append(FloatSection[Self.dtype](name, data))
 
     def add_float_section_ptr(
-        mut self, name: String, data: UnsafePointer[Scalar[dtype], _], size: Int
+        mut self, name: String, data: UnsafePointer[Scalar[Self.dtype], _], size: Int
     ):
         """Add a named float section from a raw pointer.
 
@@ -113,10 +112,10 @@ struct BinaryCheckpoint(Copyable, Movable):
             data: Pointer to contiguous float data.
             size: Number of float values.
         """
-        var lst = List[Scalar[dtype]](capacity=size)
+        var lst = List[Scalar[Self.dtype]](capacity=size)
         for i in range(size):
             lst.append((data + i)[])
-        self.sections.append(FloatSection(name, lst^))
+        self.sections.append(FloatSection[Self.dtype](name, lst^))
 
     def add_metadata(mut self, key: String, value: String):
         """Add a metadata key=value pair.
@@ -141,7 +140,7 @@ struct BinaryCheckpoint(Copyable, Movable):
 
     def get_float_section(
         self, name: String, size: Int
-    ) raises -> List[Scalar[dtype]]:
+    ) raises -> List[Scalar[Self.dtype]]:
         """Get float data for a named section.
 
         Args:
@@ -157,13 +156,13 @@ struct BinaryCheckpoint(Copyable, Movable):
                 ref section = self.sections[i]
                 if len(section.data) >= size:
                     # Return first `size` values
-                    var result = List[Scalar[dtype]](capacity=size)
+                    var result = List[Scalar[Self.dtype]](capacity=size)
                     for j in range(size):
                         result.append(section.data[j])
                     return result^
                 else:
                     # Pad with zeros
-                    var result = List[Scalar[dtype]](capacity=size)
+                    var result = List[Scalar[Self.dtype]](capacity=size)
                     for j in range(len(section.data)):
                         result.append(section.data[j])
                     for _ in range(size - len(section.data)):
@@ -171,7 +170,7 @@ struct BinaryCheckpoint(Copyable, Movable):
                     return result^
 
         # Section not found — return zeros
-        var result = List[Scalar[dtype]](capacity=size)
+        var result = List[Scalar[Self.dtype]](capacity=size)
         for _ in range(size):
             result.append(0)
         return result^
@@ -254,7 +253,7 @@ struct BinaryCheckpoint(Copyable, Movable):
         return buf^
 
     @staticmethod
-    def from_bytes(data: List[UInt8]) raises -> BinaryCheckpoint:
+    def from_bytes(data: List[UInt8]) raises -> BinaryCheckpoint[Self.dtype]:
         """Deserialize from binary format.
 
         Args:
@@ -294,7 +293,7 @@ struct BinaryCheckpoint(Copyable, Movable):
         var checkpoint_type = _read_string(data, pos, type_len)
         pos += type_len
 
-        var ckpt = BinaryCheckpoint(checkpoint_type)
+        var ckpt = BinaryCheckpoint[Self.dtype](checkpoint_type)
 
         # Float sections
         var num_sections = Int(_read_uint32(data, pos))
@@ -311,13 +310,13 @@ struct BinaryCheckpoint(Copyable, Movable):
             pos += 4
 
             # Float data
-            var section_data = List[Scalar[dtype]](capacity=count)
-            var fptr = (data.unsafe_ptr() + pos).bitcast[Scalar[dtype]]()
+            var section_data = List[Scalar[Self.dtype]](capacity=count)
+            var fptr = (data.unsafe_ptr() + pos).bitcast[Scalar[Self.dtype]]()
             for j in range(count):
                 section_data.append((fptr + j)[])
             pos += count * 4
 
-            ckpt.sections.append(FloatSection(name, section_data^))
+            ckpt.sections.append(FloatSection[Self.dtype](name, section_data^))
 
         # Metadata entries
         if pos + 4 <= len(data):
@@ -364,7 +363,7 @@ struct BinaryCheckpoint(Copyable, Movable):
             f.write_bytes(data)
 
     @staticmethod
-    def load(filepath: String) raises -> BinaryCheckpoint:
+    def load(filepath: String) raises -> BinaryCheckpoint[Self.dtype]:
         """Load checkpoint from binary file.
 
         Args:
@@ -375,7 +374,7 @@ struct BinaryCheckpoint(Copyable, Movable):
         """
         with open(filepath, "r") as f:
             var data = f.read_bytes()
-            return BinaryCheckpoint.from_bytes(data)
+            return BinaryCheckpoint[Self.dtype].from_bytes(data)
 
 
 # =============================================================================

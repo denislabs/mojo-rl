@@ -87,7 +87,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -101,7 +101,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -190,7 +190,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -257,7 +257,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -389,7 +389,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_linear_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -463,7 +463,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_linear_kernel_impl_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -532,7 +532,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _bias_add_kernel[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -559,7 +559,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _linear_kernel_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -766,7 +766,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _linear_kernel_with_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -999,7 +999,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_ln_mish_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -1123,7 +1123,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_ln_mish_kernel_impl_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -1234,7 +1234,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def backward_mish_ln_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         d_linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -1333,7 +1333,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _backward_dx_kernel[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -1527,7 +1527,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _backward_dW_kernel[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         dW: LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
@@ -1720,7 +1720,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def backward_linear_fused_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -1869,7 +1869,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -1965,7 +1965,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
                 ],
             ):
-                Self._bias_add_kernel[BATCH](output, b)
+                Self._bias_add_kernel[BATCH, dtype](output, b)
 
             ctx.enqueue_function[bias_cache_wrapper, bias_cache_wrapper](
                 linear_out_mut,
@@ -2003,7 +2003,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     MutAnyOrigin,
                 ],
             ):
-                Self._linear_kernel_with_cache[BATCH](
+                Self._linear_kernel_with_cache[BATCH, dtype](
                     linear_out, input, W, b, cache
                 )
 
@@ -2037,7 +2037,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             ],
             eps: Scalar[dtype],
         ):
-            Self.forward_ln_mish_kernel_impl[BATCH](
+            Self.forward_ln_mish_kernel_impl[BATCH, dtype](
                 output, linear_out, gamma, beta, cache, eps
             )
 
@@ -2054,7 +2054,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -2114,7 +2114,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
                 ],
             ):
-                Self._bias_add_kernel[BATCH](output, b)
+                Self._bias_add_kernel[BATCH, dtype](output, b)
 
             ctx.enqueue_function[bias_nc_wrapper, bias_nc_wrapper](
                 linear_out_mut,
@@ -2147,7 +2147,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
                 ],
             ):
-                Self._linear_kernel_no_cache[BATCH](linear_out, input, W, b)
+                Self._linear_kernel_no_cache[BATCH, dtype](linear_out, input, W, b)
 
             ctx.enqueue_function[linear_nc_wrapper, linear_nc_wrapper](
                 linear_out_mut,
@@ -2175,7 +2175,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             ],
             eps: Scalar[dtype],
         ):
-            Self.forward_ln_mish_kernel_impl_no_cache[BATCH](
+            Self.forward_ln_mish_kernel_impl_no_cache[BATCH, dtype](
                 output, linear_out, gamma, beta, eps
             )
 
@@ -2191,7 +2191,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -2250,7 +2250,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
                 ],
             ):
-                Self._bias_add_kernel[BATCH](output, b)
+                Self._bias_add_kernel[BATCH, dtype](output, b)
 
             ctx.enqueue_function[bias_stream_wrapper, bias_stream_wrapper](
                 linear_out_mut,
@@ -2283,7 +2283,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
                 ],
             ):
-                Self._linear_kernel_no_cache[BATCH](linear_out, input, W, b)
+                Self._linear_kernel_no_cache[BATCH, dtype](linear_out, input, W, b)
 
             var compiled_linear = ctx.compile_function[
                 linear_stream_wrapper, linear_stream_wrapper
@@ -2314,7 +2314,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             ],
             eps: Scalar[dtype],
         ):
-            Self.forward_ln_mish_kernel_impl_no_cache[BATCH](
+            Self.forward_ln_mish_kernel_impl_no_cache[BATCH, dtype](
                 output, linear_out, gamma, beta, eps
             )
 
@@ -2334,7 +2334,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -2406,7 +2406,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
             ],
         ):
-            Self.backward_mish_ln_kernel_impl[BATCH](
+            Self.backward_mish_ln_kernel_impl[BATCH, dtype](
                 d_linear_out, grad_output, gamma, cache, dgamma, dbeta
             )
 
@@ -2455,7 +2455,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     ImmutAnyOrigin,
                 ],
             ):
-                Self._backward_dx_kernel[BATCH](grad_input, d_linear_out, W)
+                Self._backward_dx_kernel[BATCH, dtype](grad_input, d_linear_out, W)
 
             ctx.enqueue_function[dx_wrapper, dx_wrapper](
                 grad_input,
@@ -2485,7 +2485,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            Self._backward_dW_kernel[BATCH](dW, cache, d_linear_out)
+            Self._backward_dW_kernel[BATCH, dtype](dW, cache, d_linear_out)
 
         ctx.enqueue_function[dW_wrapper, dW_wrapper](
             dW,

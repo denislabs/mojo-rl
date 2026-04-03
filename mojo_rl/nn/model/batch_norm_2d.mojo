@@ -70,7 +70,7 @@ struct BatchNorm2D[
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -89,7 +89,7 @@ struct BatchNorm2D[
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -156,7 +156,7 @@ struct BatchNorm2D[
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -211,7 +211,7 @@ struct BatchNorm2D[
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -292,7 +292,7 @@ struct BatchNorm2D[
     @always_inline
     @staticmethod
     def forward_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -397,7 +397,7 @@ struct BatchNorm2D[
     @always_inline
     @staticmethod
     def forward_kernel_impl_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -490,7 +490,7 @@ struct BatchNorm2D[
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -620,7 +620,7 @@ struct BatchNorm2D[
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -659,7 +659,7 @@ struct BatchNorm2D[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl[BATCH](output, input, params, cache)
+            Self.forward_kernel_impl[BATCH, dtype](output, input, params, cache)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -672,7 +672,7 @@ struct BatchNorm2D[
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -708,7 +708,7 @@ struct BatchNorm2D[
                 dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl_no_cache[BATCH](output, input, params)
+            Self.forward_kernel_impl_no_cache[BATCH, dtype](output, input, params)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -720,7 +720,7 @@ struct BatchNorm2D[
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -736,11 +736,11 @@ struct BatchNorm2D[
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU inference forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -791,7 +791,7 @@ struct BatchNorm2D[
                 dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH](
+            Self.backward_kernel_impl[BATCH, dtype](
                 grad_input, grad_output, params, cache, grads
             )
 

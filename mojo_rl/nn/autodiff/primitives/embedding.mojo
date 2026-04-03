@@ -42,7 +42,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -80,7 +80,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -134,7 +134,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.embed_dim), MutAnyOrigin
@@ -173,7 +173,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_dx_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.vocab_size), MutAnyOrigin
@@ -204,7 +204,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_dW_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         dW: LayoutTensor[
             dtype,
@@ -238,7 +238,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -285,7 +285,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.vocab_size), MutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, W, cache)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, W, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -298,7 +298,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -355,7 +355,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_dx_kernel_impl[BATCH](grad_input, grad_output, W)
+            Self.backward_dx_kernel_impl[BATCH, dtype](grad_input, grad_output, W)
 
         ctx.enqueue_function[dx_wrapper, dx_wrapper](
             grad_input,
@@ -387,7 +387,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_dW_kernel_impl[BATCH](dW, grad_output, cache)
+            Self.backward_dW_kernel_impl[BATCH, dtype](dW, grad_output, cache)
 
         ctx.enqueue_function[dW_wrapper, dW_wrapper](
             dW,

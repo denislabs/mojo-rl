@@ -41,7 +41,7 @@ struct LayerNormOp[dim: Int](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -89,7 +89,7 @@ struct LayerNormOp[dim: Int](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -155,7 +155,7 @@ struct LayerNormOp[dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -221,7 +221,7 @@ struct LayerNormOp[dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -283,7 +283,7 @@ struct LayerNormOp[dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_dparams_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         dgamma: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
         dbeta: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
@@ -328,7 +328,7 @@ struct LayerNormOp[dim: Int](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -367,7 +367,7 @@ struct LayerNormOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, params, cache)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, params, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -380,7 +380,7 @@ struct LayerNormOp[dim: Int](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -426,7 +426,7 @@ struct LayerNormOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH](
+            Self.backward_kernel_impl[BATCH, dtype](
                 grad_input, grad_output, params, cache
             )
 
@@ -464,7 +464,7 @@ struct LayerNormOp[dim: Int](DiffOp):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_dparams_kernel_impl[BATCH](
+            Self.backward_dparams_kernel_impl[BATCH, dtype](
                 dgamma, dbeta, grad_output, cache
             )
 

@@ -89,7 +89,7 @@ struct FusedConv2DActivation[
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -167,7 +167,7 @@ struct FusedConv2DActivation[
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -279,7 +279,7 @@ struct FusedConv2DActivation[
     @always_inline
     @staticmethod
     def backward_dx_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -353,7 +353,7 @@ struct FusedConv2DActivation[
     @always_inline
     @staticmethod
     def eval_kernel_2x2[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -559,7 +559,7 @@ struct FusedConv2DActivation[
     @always_inline
     @staticmethod
     def eval_kernel_mma[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -748,7 +748,7 @@ struct FusedConv2DActivation[
     @always_inline
     @staticmethod
     def backward_dW_kernel_2x2[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         dW: LayoutTensor[
             dtype,
@@ -888,7 +888,7 @@ struct FusedConv2DActivation[
     @always_inline
     @staticmethod
     def backward_dW_kernel_mma[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         dW: LayoutTensor[
             dtype,
@@ -1021,7 +1021,7 @@ struct FusedConv2DActivation[
     @always_inline
     @staticmethod
     def backward_db_kernel[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         db: LayoutTensor[
             dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
@@ -1086,7 +1086,7 @@ struct FusedConv2DActivation[
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -1301,7 +1301,7 @@ struct FusedConv2DActivation[
                     MutAnyOrigin,
                 ],
             ):
-                Self.eval_kernel_2x2[BATCH](output, input, params, cache)
+                Self.eval_kernel_2x2[BATCH, dtype](output, input, params, cache)
 
             ctx.enqueue_function[wrapper, wrapper](
                 output,
@@ -1314,7 +1314,7 @@ struct FusedConv2DActivation[
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -1587,7 +1587,7 @@ struct FusedConv2DActivation[
                     ImmutAnyOrigin,
                 ],
             ):
-                Self.backward_dx_kernel_impl[BATCH](
+                Self.backward_dx_kernel_impl[BATCH, dtype](
                     grad_input, grad_output, params, cache
                 )
 
@@ -1621,7 +1621,7 @@ struct FusedConv2DActivation[
                     ImmutAnyOrigin,
                 ],
             ):
-                Self.backward_dW_kernel_2x2[BATCH](dW, cache, grad_output)
+                Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
 
             ctx.enqueue_function[dW_wrapper, dW_wrapper](
                 dW,
@@ -1649,7 +1649,7 @@ struct FusedConv2DActivation[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
             ],
         ):
-            Self.backward_db_kernel[BATCH](db, grad_output, cache)
+            Self.backward_db_kernel[BATCH, dtype](db, grad_output, cache)
 
         ctx.enqueue_function[db_wrapper, db_wrapper](
             db,

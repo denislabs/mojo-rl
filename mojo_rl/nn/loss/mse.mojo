@@ -26,6 +26,7 @@ struct MSELoss(LossFunction):
     def forward[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -49,6 +50,7 @@ struct MSELoss(LossFunction):
     def backward[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -78,6 +80,7 @@ struct MSELoss(LossFunction):
     def forward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
         predictions: LayoutTensor[
@@ -115,6 +118,7 @@ struct MSELoss(LossFunction):
     def backward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -146,6 +150,7 @@ struct MSELoss(LossFunction):
     def forward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -168,7 +173,7 @@ struct MSELoss(LossFunction):
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl[BATCH, OUT_DIM](loss, predictions, targets)
+            Self.forward_kernel_impl[BATCH, OUT_DIM, dtype](loss, predictions, targets)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             loss,
@@ -182,6 +187,7 @@ struct MSELoss(LossFunction):
     def backward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut grad_output: LayoutTensor[
@@ -208,7 +214,7 @@ struct MSELoss(LossFunction):
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, OUT_DIM](
+            Self.backward_kernel_impl[BATCH, OUT_DIM, dtype](
                 grad_output, predictions, targets
             )
 

@@ -38,8 +38,9 @@ from std.random.philox import Random as PhiloxRandom
 
 
 @always_inline
-def _noise_transform(x: Scalar[dtype]) -> Scalar[dtype]:
+def _noise_transform[dtype: DType = DType.float32](x: Scalar[dtype]) -> Scalar[dtype]:
     """Factorized noise transform: f(x) = sign(x) * sqrt(|x|)."""
+    comptime assert dtype.is_floating_point(), "dtype must be floating point"
     var ax = abs(x)
     var s = sqrt(ax)
     if x < 0:
@@ -53,14 +54,14 @@ def _noise_transform(x: Scalar[dtype]) -> Scalar[dtype]:
 
 
 @always_inline
-def _gaussian_sample() -> Scalar[dtype]:
+def _gaussian_sample[dtype: DType = DType.float32]() -> Scalar[dtype]:
     """Generate a single N(0,1) sample using Box-Muller."""
+    comptime assert dtype.is_floating_point(), "dtype must be floating point"
     var u1 = Scalar[dtype](random_float64(0.0, 1.0))
     var u2 = Scalar[dtype](random_float64(0.0, 1.0))
     # Clamp u1 away from 0 to avoid log(0)
     if u1 < 1e-7:
         u1 = Scalar[dtype](1e-7)
-    from std.math import log, cos
 
     var pi2 = Scalar[dtype](6.283185307179586)
     return sqrt(Scalar[dtype](-2.0) * log(u1)) * cos(pi2 * u2)
@@ -116,7 +117,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -149,7 +150,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -173,9 +174,9 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             uninitialized=True
         )
         for i in range(Self.in_dim):
-            noise_p[i] = _noise_transform(_gaussian_sample())
+            noise_p[i] = _noise_transform[dtype](_gaussian_sample[dtype]())
         for j in range(Self.out_dim):
-            noise_q[j] = _noise_transform(_gaussian_sample())
+            noise_q[j] = _noise_transform[dtype](_gaussian_sample[dtype]())
 
         for b in range(BATCH):
             # Cache input
@@ -207,7 +208,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -232,9 +233,9 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             uninitialized=True
         )
         for i in range(Self.in_dim):
-            noise_p[i] = _noise_transform(_gaussian_sample())
+            noise_p[i] = _noise_transform[dtype](_gaussian_sample[dtype]())
         for j in range(Self.out_dim):
-            noise_q[j] = _noise_transform(_gaussian_sample())
+            noise_q[j] = _noise_transform[dtype](_gaussian_sample[dtype]())
 
         for b in range(BATCH):
             for j in range(Self.out_dim):
@@ -260,7 +261,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -346,7 +347,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -511,7 +512,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -650,7 +651,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -665,7 +666,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -673,7 +674,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[

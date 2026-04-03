@@ -40,7 +40,7 @@ struct RMSprop[
 
     @staticmethod
     def step[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
@@ -77,7 +77,7 @@ struct RMSprop[
     @always_inline
     @staticmethod
     def step_kernel_impl[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -109,7 +109,7 @@ struct RMSprop[
 
     @staticmethod
     def step_gpu[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut params: LayoutTensor[
@@ -144,7 +144,7 @@ struct RMSprop[
             alpha: Scalar[dtype],
             eps: Scalar[dtype],
         ):
-            Self.step_kernel_impl[PARAM_SIZE](
+            Self.step_kernel_impl[PARAM_SIZE, dtype](
                 params, grads, state, lr, alpha, eps
             )
 

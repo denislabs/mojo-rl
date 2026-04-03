@@ -33,7 +33,7 @@ from ..model import Model
 from ..optimizer import Optimizer
 from ..loss import LossFunction
 from ..initializer import Initializer, Xavier
-from ..constants import dtype
+from ..constants import dtype as default_dtype
 from .network_state import NetworkState
 from .gpu_network_state import GPUNetworkState
 
@@ -56,6 +56,7 @@ struct Trainer[
     MODEL: Model,
     OPTIMIZER: Optimizer,
     LOSS_FUNCTION: LossFunction,
+    dtype: DType = default_dtype,
 ]:
     """All-static training loop namespace.
 
@@ -67,6 +68,7 @@ struct Trainer[
         MODEL: Stateless model architecture (implements Model trait).
         OPTIMIZER: Stateless optimizer (implements Optimizer trait).
         LOSS_FUNCTION: Stateless loss function (implements LossFunction trait).
+        dtype: Data type for all tensors and buffers (default: DType.float32).
     """
 
     # =========================================================================
@@ -76,7 +78,7 @@ struct Trainer[
     @staticmethod
     def init_state[
         INITIALIZER: Initializer = Xavier[]
-    ]() -> NetworkState[Self.MODEL, Self.OPTIMIZER]:
+    ]() -> NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]:
         """Create and initialize a CPU NetworkState.
 
         Parameters:
@@ -85,14 +87,14 @@ struct Trainer[
         Returns:
             Initialized NetworkState ready for CPU training or upload to GPU.
         """
-        var state = NetworkState[Self.MODEL, Self.OPTIMIZER]()
+        var state = NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]()
         state.initialize[INITIALIZER]()
         return state^
 
     @staticmethod
     def init_state_gpu[
         INITIALIZER: Initializer = Xavier[]
-    ](ctx: DeviceContext) raises -> GPUNetworkState[Self.MODEL, Self.OPTIMIZER]:
+    ](ctx: DeviceContext) raises -> GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]:
         """Create a GPUNetworkState with initialized weights, no persistent CPU state.
 
         Allocates a transient CPU NetworkState, initializes weights, uploads to
@@ -108,9 +110,9 @@ struct Trainer[
         Returns:
             GPUNetworkState with initialized weights on device.
         """
-        var cpu = NetworkState[Self.MODEL, Self.OPTIMIZER]()
+        var cpu = NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]()
         cpu.initialize[INITIALIZER]()
-        var gpu = GPUNetworkState[Self.MODEL, Self.OPTIMIZER](ctx)
+        var gpu = GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype](ctx)
         gpu.upload_from(cpu, ctx)
         return gpu^
 
@@ -122,12 +124,12 @@ struct Trainer[
     def train[
         BATCH: Int
     ](
-        mut state: NetworkState[Self.MODEL, Self.OPTIMIZER],
+        mut state: NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
         input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         target: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ],
         epochs: Int = 100,
         print_every: Int = 0,
@@ -156,30 +158,30 @@ struct Trainer[
         comptime CACHE_SIZE_ = BATCH * Self.MODEL.CACHE_SIZE
 
         # Heap-allocated intermediate buffers
-        var output_data = List[Scalar[dtype]](capacity=OUT_SIZE)
-        var grad_out_data = List[Scalar[dtype]](capacity=OUT_SIZE)
-        var grad_in_data = List[Scalar[dtype]](capacity=IN_SIZE)
-        var cache_data = List[Scalar[dtype]](capacity=CACHE_SIZE_)
+        var output_data = List[Scalar[Self.dtype]](capacity=OUT_SIZE)
+        var grad_out_data = List[Scalar[Self.dtype]](capacity=OUT_SIZE)
+        var grad_in_data = List[Scalar[Self.dtype]](capacity=IN_SIZE)
+        var cache_data = List[Scalar[Self.dtype]](capacity=CACHE_SIZE_)
         for _ in range(OUT_SIZE):
-            output_data.append(Scalar[dtype](0))
-            grad_out_data.append(Scalar[dtype](0))
+            output_data.append(Scalar[Self.dtype](0))
+            grad_out_data.append(Scalar[Self.dtype](0))
         for _ in range(IN_SIZE):
-            grad_in_data.append(Scalar[dtype](0))
+            grad_in_data.append(Scalar[Self.dtype](0))
         for _ in range(CACHE_SIZE_):
-            cache_data.append(Scalar[dtype](0))
+            cache_data.append(Scalar[Self.dtype](0))
 
         # 2D LayoutTensor views (zero-copy, created once from List.unsafe_ptr())
         var output_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ](output_data.unsafe_ptr())
         var grad_out_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ](grad_out_data.unsafe_ptr())
         var grad_in_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ](grad_in_data.unsafe_ptr())
         var cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ](cache_data.unsafe_ptr())
 
         # State views — lvalue vars required (params/state are mut in step())
@@ -237,13 +239,13 @@ struct Trainer[
         BATCH: Int
     ](
         params: LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
         input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         target: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ],
     ) -> Float64:
         """CPU forward pass + loss, no gradient computation.
@@ -262,12 +264,12 @@ struct Trainer[
         """
         comptime OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
 
-        var output_data = List[Scalar[dtype]](capacity=OUT_SIZE)
+        var output_data = List[Scalar[Self.dtype]](capacity=OUT_SIZE)
         for _ in range(OUT_SIZE):
-            output_data.append(Scalar[dtype](0))
+            output_data.append(Scalar[Self.dtype](0))
 
         var output_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ](output_data.unsafe_ptr())
 
         # params is already an lvalue from the caller — pass directly
@@ -286,13 +288,13 @@ struct Trainer[
         BATCH: Int,
         USE_CUDA_GRAPH: Bool = False,
     ](
-        mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER],
+        mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
         ctx: DeviceContext,
         input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         target: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ],
         epochs: Int = 100,
         print_every: Int = 0,
@@ -330,56 +332,56 @@ struct Trainer[
 
         # Upload input and target via pinned host buffers (once before loop).
         # LayoutTensor has no unsafe_ptr() — copy via 2D element indexing.
-        var input_host = ctx.enqueue_create_host_buffer[dtype](IN_SIZE)
-        var target_host = ctx.enqueue_create_host_buffer[dtype](OUT_SIZE)
+        var input_host = ctx.enqueue_create_host_buffer[Self.dtype](IN_SIZE)
+        var target_host = ctx.enqueue_create_host_buffer[Self.dtype](OUT_SIZE)
         for row in range(BATCH):
             for col in range(Self.MODEL.IN_DIM):
                 input_host[row * Self.MODEL.IN_DIM + col] = rebind[
-                    Scalar[dtype]
+                    Scalar[Self.dtype]
                 ](input[row, col])
         for row in range(BATCH):
             for col in range(Self.MODEL.OUT_DIM):
                 target_host[row * Self.MODEL.OUT_DIM + col] = rebind[
-                    Scalar[dtype]
+                    Scalar[Self.dtype]
                 ](target[row, col])
-        var input_buf = ctx.enqueue_create_buffer[dtype](IN_SIZE)
-        var target_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
+        var input_buf = ctx.enqueue_create_buffer[Self.dtype](IN_SIZE)
+        var target_buf = ctx.enqueue_create_buffer[Self.dtype](OUT_SIZE)
         ctx.enqueue_copy(input_buf, input_host)
         ctx.enqueue_copy(target_buf, target_host)
 
         # Per-epoch device buffers (allocated once, reused each epoch)
-        var output_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
-        var cache_buf = ctx.enqueue_create_buffer[dtype](CACHE_SIZE_)
-        var grad_out_buf = ctx.enqueue_create_buffer[dtype](OUT_SIZE)
-        var grad_in_buf = ctx.enqueue_create_buffer[dtype](IN_SIZE)
-        var loss_buf = ctx.enqueue_create_buffer[dtype](1)
-        var ws_buf = ctx.enqueue_create_buffer[dtype](
+        var output_buf = ctx.enqueue_create_buffer[Self.dtype](OUT_SIZE)
+        var cache_buf = ctx.enqueue_create_buffer[Self.dtype](CACHE_SIZE_)
+        var grad_out_buf = ctx.enqueue_create_buffer[Self.dtype](OUT_SIZE)
+        var grad_in_buf = ctx.enqueue_create_buffer[Self.dtype](IN_SIZE)
+        var loss_buf = ctx.enqueue_create_buffer[Self.dtype](1)
+        var ws_buf = ctx.enqueue_create_buffer[Self.dtype](
             WS_SIZE if WS_SIZE > 0 else 1
         )
 
         # LayoutTensor views over device buffers (created once)
         var input_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ](input_buf.unsafe_ptr())
         var target_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ](target_buf.unsafe_ptr())
         var output_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ](output_buf.unsafe_ptr())
         var cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ](cache_buf.unsafe_ptr())
         var grad_out_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ](grad_out_buf.unsafe_ptr())
         var grad_in_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ](grad_in_buf.unsafe_ptr())
-        var loss_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
+        var loss_t = LayoutTensor[Self.dtype, Layout.row_major(1), MutAnyOrigin](
             loss_buf.unsafe_ptr()
         )
-        var loss_host = ctx.enqueue_create_host_buffer[dtype](1)
+        var loss_host = ctx.enqueue_create_host_buffer[Self.dtype](1)
 
         var final_loss: Float64 = 0.0
 

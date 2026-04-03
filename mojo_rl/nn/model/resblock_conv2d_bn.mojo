@@ -46,7 +46,7 @@ def _bn_skip_relu_fwd_kernel[
     INVSTD_OFF: Int,
     BN_EPSILON: Float64,
     BN_MOMENTUM: Float64,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType = DType.float32,
 ](
     output: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
     skip: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
@@ -161,7 +161,7 @@ def _bn_skip_relu_bwd_kernel[
     BETA_OFF: Int,
     XHAT_OFF: Int,
     INVSTD_OFF: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType = DType.float32,
 ](
     grad_conv2: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
     grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
@@ -285,7 +285,7 @@ def _bn_skip_relu_bwd_kernel[
 
 def _add_kernel_flat[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType = DType.float32,
 ](
     a: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     b: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -367,6 +367,7 @@ struct ResBlockConv2DBN[
     @staticmethod
     def initialize_params[
         INIT: Initializer,
+        dtype: DType = DType.float32,
     ](
         mut params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
@@ -384,7 +385,7 @@ struct ResBlockConv2DBN[
     # ── CPU Forward ────────────────────────────────────────────────
 
     @staticmethod
-    def forward[BATCH: Int](
+    def forward[BATCH: Int, dtype: DType = DType.float32](
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
@@ -393,7 +394,7 @@ struct ResBlockConv2DBN[
         pass  # CPU forward not needed — use GPU
 
     @staticmethod
-    def forward[BATCH: Int](
+    def forward[BATCH: Int, dtype: DType = DType.float32](
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
@@ -401,7 +402,7 @@ struct ResBlockConv2DBN[
         pass  # CPU inference not needed — use GPU
 
     @staticmethod
-    def backward[BATCH: Int](
+    def backward[BATCH: Int, dtype: DType = DType.float32](
         grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
@@ -415,6 +416,7 @@ struct ResBlockConv2DBN[
     @staticmethod
     def forward_gpu[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -465,6 +467,7 @@ struct ResBlockConv2DBN[
     @staticmethod
     def forward_gpu_no_cache[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -509,6 +512,7 @@ struct ResBlockConv2DBN[
     @staticmethod
     def forward_gpu_no_cache_on_stream[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -517,13 +521,14 @@ struct ResBlockConv2DBN[
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     # ── GPU Backward ─────────────────────────────────────────────
 
     @staticmethod
     def backward_gpu[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],

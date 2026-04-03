@@ -118,7 +118,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -132,7 +132,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     Layout.row_major(Self.branch_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
-                Self.branch_types[i].initialize_params[INIT](branch_params)
+                Self.branch_types[i].initialize_params[INIT, dtype](branch_params)
 
     # =========================================================================
     # CPU Forward (with cache)
@@ -140,7 +140,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -185,7 +185,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            Self.branch_types[i].forward[BATCH](inp_i, buf_i, pi, ci)
+            Self.branch_types[i].forward[BATCH, dtype](inp_i, buf_i, pi, ci)
 
         # Interleave: for each row, copy each branch's output into correct columns
         for b in range(BATCH):
@@ -205,7 +205,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -241,7 +241,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            Self.branch_types[i].forward[BATCH](inp_i, buf_i, pi)
+            Self.branch_types[i].forward[BATCH, dtype](inp_i, buf_i, pi)
 
         for b in range(BATCH):
             comptime for i in range(Self.N):
@@ -260,7 +260,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -338,7 +338,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     MutAnyOrigin,
                 ]
             ](gi_i)
-            Self.branch_types[i].backward[BATCH](grad_i, gi_rb, pi, ci, gp_i)
+            Self.branch_types[i].backward[BATCH, dtype](grad_i, gi_rb, pi, ci, gp_i)
 
         # Sum all grad_input contributions
         for k in range(BATCH * Self.IN_DIM):
@@ -353,7 +353,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -409,7 +409,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            Self.branch_types[i].forward_gpu[BATCH](
+            Self.branch_types[i].forward_gpu[BATCH, dtype](
                 ctx, buf_i, inp_i, pi, ci, ws_i
             )
 
@@ -459,7 +459,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -506,7 +506,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            Self.branch_types[i].forward_gpu_no_cache[BATCH](
+            Self.branch_types[i].forward_gpu_no_cache[BATCH, dtype](
                 ctx, buf_i, inp_i, pi, ws_i
             )
 
@@ -551,7 +551,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -567,7 +567,7 @@ struct Parallel[*BRANCHES: Model](Model):
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -575,7 +575,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -691,7 +691,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     MutAnyOrigin,
                 ]
             ](gi_i)
-            Self.branch_types[i].backward_gpu[BATCH](
+            Self.branch_types[i].backward_gpu[BATCH, dtype](
                 ctx, gi_rb, grad_i, pi, ci, gp_i, ws_i
             )
 

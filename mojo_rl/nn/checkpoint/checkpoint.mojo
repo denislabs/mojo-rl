@@ -31,7 +31,6 @@ Usage:
     var state = read_float_section("model.ckpt", "optimizer_state:", header.state_size)
 """
 
-from ..constants import dtype
 from layout import Layout, LayoutTensor
 
 
@@ -104,7 +103,7 @@ def write_checkpoint_header(
 
 
 def write_float_section[
-    SIZE: Int
+    dtype: DType, SIZE: Int
 ](section_name: String, data: InlineArray[Scalar[dtype], SIZE]) -> String:
     """Generate string for a float array section.
 
@@ -121,9 +120,9 @@ def write_float_section[
     return content
 
 
-def write_float_section_list(
-    section_name: String, data: List[Scalar[dtype]]
-) -> String:
+def write_float_section_list[
+    dtype: DType
+](section_name: String, data: List[Scalar[dtype]]) -> String:
     """Generate string for a float array section from List.
 
     Args:
@@ -139,7 +138,9 @@ def write_float_section_list(
     return content
 
 
-def write_float_section_ptr(
+def write_float_section_ptr[
+    dtype: DType
+](
     section_name: String,
     data: UnsafePointer[Scalar[dtype], _],
     size: Int,
@@ -271,7 +272,7 @@ def find_section_start(lines: List[String], section_name: String) -> Int:
 
 
 def read_float_section[
-    SIZE: Int
+    dtype: DType, SIZE: Int
 ](content: String, section_name: String) raises -> InlineArray[
     Scalar[dtype], SIZE
 ]:
@@ -309,9 +310,11 @@ def read_float_section[
     return result^
 
 
-def read_float_section_list(
-    content: String, section_name: String, size: Int
-) raises -> List[Scalar[dtype]]:
+def read_float_section_list[
+    dtype: DType
+](content: String, section_name: String, size: Int) raises -> List[
+    Scalar[dtype]
+]:
     """Read a float array section from checkpoint content into a List.
 
     Args:

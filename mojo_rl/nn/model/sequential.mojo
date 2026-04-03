@@ -138,7 +138,7 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -159,7 +159,7 @@ struct Sequential[*LAYERS: Model](Model):
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
-                Self.model_types[i].initialize_params[INIT](layer_params)
+                Self.model_types[i].initialize_params[INIT, dtype](layer_params)
 
     # =========================================================================
     # CPU Forward (with cache)
@@ -167,7 +167,7 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -203,7 +203,7 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
                 MutAnyOrigin,
             ](cache.ptr)
-            Self.model_types[0].forward[BATCH](in_v, out_v, p_v, c_v)
+            Self.model_types[0].forward[BATCH, dtype](in_v, out_v, p_v, c_v)
         else:
             # Flat intermediate buffer for all N-1 inter-layer activations
             var inter_storage = List[Scalar[dtype]](
@@ -236,7 +236,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr)
-                    Self.model_types[i].forward[BATCH](
+                    Self.model_types[i].forward[BATCH, dtype](
                         li_in, li_out, li_p, li_c
                     )
                 elif i == Self.N - 1:
@@ -250,7 +250,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](output.ptr)
-                    Self.model_types[i].forward[BATCH](
+                    Self.model_types[i].forward[BATCH, dtype](
                         li_in, li_out, li_p, li_c
                     )
                 else:
@@ -264,7 +264,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i]())
-                    Self.model_types[i].forward[BATCH](
+                    Self.model_types[i].forward[BATCH, dtype](
                         li_in, li_out, li_p, li_c
                     )
 
@@ -274,7 +274,7 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -302,7 +302,7 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
-            Self.model_types[0].forward[BATCH](in_v, out_v, p_v)
+            Self.model_types[0].forward[BATCH, dtype](in_v, out_v, p_v)
         else:
             var inter_storage = List[Scalar[dtype]](
                 capacity=BATCH * Self._total_inter()
@@ -329,7 +329,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr)
-                    Self.model_types[i].forward[BATCH](li_in, li_out, li_p)
+                    Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p)
                 elif i == Self.N - 1:
                     var li_in = LayoutTensor[
                         dtype,
@@ -341,7 +341,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](output.ptr)
-                    Self.model_types[i].forward[BATCH](li_in, li_out, li_p)
+                    Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p)
                 else:
                     var li_in = LayoutTensor[
                         dtype,
@@ -353,7 +353,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i]())
-                    Self.model_types[i].forward[BATCH](li_in, li_out, li_p)
+                    Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p)
 
     # =========================================================================
     # CPU Backward
@@ -361,7 +361,7 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -405,7 +405,7 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](grads.ptr)
-            Self.model_types[0].backward[BATCH](go_v, gi_v, p_v, c_v, g_v)
+            Self.model_types[0].backward[BATCH, dtype](go_v, gi_v, p_v, c_v, g_v)
         else:
             # Gradient intermediate buffer (same layout as forward inter)
             var grad_inter_storage = List[Scalar[dtype]](
@@ -447,7 +447,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
-                    Self.model_types[i].backward[BATCH](
+                    Self.model_types[i].backward[BATCH, dtype](
                         li_go, li_gi, li_p, li_c, li_g
                     )
                 elif i == 0:
@@ -462,7 +462,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](grad_input.ptr)
-                    Self.model_types[i].backward[BATCH](
+                    Self.model_types[i].backward[BATCH, dtype](
                         li_go, li_gi, li_p, li_c, li_g
                     )
                 else:
@@ -477,7 +477,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
-                    Self.model_types[i].backward[BATCH](
+                    Self.model_types[i].backward[BATCH, dtype](
                         li_go, li_gi, li_p, li_c, li_g
                     )
 
@@ -487,7 +487,7 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -546,7 +546,7 @@ struct Sequential[*LAYERS: Model](Model):
             ](input)
             if perf:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
-            Self.model_types[0].forward_gpu[BATCH](
+            Self.model_types[0].forward_gpu[BATCH, dtype](
                 ctx, out_rb, in_rb, p_v, c_v, workspace
             )
             if perf:
@@ -593,7 +593,7 @@ struct Sequential[*LAYERS: Model](Model):
                             MutAnyOrigin,
                         ]
                     ](input)
-                    Self.model_types[i].forward_gpu[BATCH](
+                    Self.model_types[i].forward_gpu[BATCH, dtype](
                         ctx, inter_out, in_rb, li_p, li_c, li_ws
                     )
                 elif i == Self.N - 1:
@@ -611,7 +611,7 @@ struct Sequential[*LAYERS: Model](Model):
                             MutAnyOrigin,
                         ]
                     ](output)
-                    Self.model_types[i].forward_gpu[BATCH](
+                    Self.model_types[i].forward_gpu[BATCH, dtype](
                         ctx, out_rb, inter_in, li_p, li_c, li_ws
                     )
                 else:
@@ -625,7 +625,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i]())
-                    Self.model_types[i].forward_gpu[BATCH](
+                    Self.model_types[i].forward_gpu[BATCH, dtype](
                         ctx, inter_out, inter_in, li_p, li_c, li_ws
                     )
 
@@ -644,7 +644,7 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -687,7 +687,7 @@ struct Sequential[*LAYERS: Model](Model):
             ](input)
             if perf:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
-            Self.model_types[0].forward_gpu_no_cache[BATCH](
+            Self.model_types[0].forward_gpu_no_cache[BATCH, dtype](
                 ctx, out_rb, in_rb, p_v, workspace
             )
             if perf:
@@ -729,7 +729,7 @@ struct Sequential[*LAYERS: Model](Model):
                             MutAnyOrigin,
                         ]
                     ](input)
-                    Self.model_types[i].forward_gpu_no_cache[BATCH](
+                    Self.model_types[i].forward_gpu_no_cache[BATCH, dtype](
                         ctx, inter_out, in_rb, li_p, li_ws
                     )
                 elif i == Self.N - 1:
@@ -747,7 +747,7 @@ struct Sequential[*LAYERS: Model](Model):
                             MutAnyOrigin,
                         ]
                     ](output)
-                    Self.model_types[i].forward_gpu_no_cache[BATCH](
+                    Self.model_types[i].forward_gpu_no_cache[BATCH, dtype](
                         ctx, out_rb, inter_in, li_p, li_ws
                     )
                 else:
@@ -761,7 +761,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i]())
-                    Self.model_types[i].forward_gpu_no_cache[BATCH](
+                    Self.model_types[i].forward_gpu_no_cache[BATCH, dtype](
                         ctx, inter_out, inter_in, li_p, li_ws
                     )
 
@@ -780,7 +780,7 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -815,7 +815,7 @@ struct Sequential[*LAYERS: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            Self.model_types[0].forward_gpu_no_cache_on_stream[BATCH](
+            Self.model_types[0].forward_gpu_no_cache_on_stream[BATCH, dtype](
                 ctx, stream, out_rb, in_rb, p_v, workspace
             )
         else:
@@ -850,7 +850,7 @@ struct Sequential[*LAYERS: Model](Model):
                             MutAnyOrigin,
                         ]
                     ](input)
-                    Self.model_types[i].forward_gpu_no_cache_on_stream[BATCH](
+                    Self.model_types[i].forward_gpu_no_cache_on_stream[BATCH, dtype](
                         ctx, stream, inter_out, in_rb, li_p, li_ws
                     )
                 elif i == Self.N - 1:
@@ -868,7 +868,7 @@ struct Sequential[*LAYERS: Model](Model):
                             MutAnyOrigin,
                         ]
                     ](output)
-                    Self.model_types[i].forward_gpu_no_cache_on_stream[BATCH](
+                    Self.model_types[i].forward_gpu_no_cache_on_stream[BATCH, dtype](
                         ctx, stream, out_rb, inter_in, li_p, li_ws
                     )
                 else:
@@ -882,7 +882,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i]())
-                    Self.model_types[i].forward_gpu_no_cache_on_stream[BATCH](
+                    Self.model_types[i].forward_gpu_no_cache_on_stream[BATCH, dtype](
                         ctx, stream, inter_out, inter_in, li_p, li_ws
                     )
 
@@ -892,7 +892,7 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -957,7 +957,7 @@ struct Sequential[*LAYERS: Model](Model):
             ](grad_output)
             if perf:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
-            Self.model_types[0].backward_gpu[BATCH](
+            Self.model_types[0].backward_gpu[BATCH, dtype](
                 ctx, gi_rb, go_rb, p_v, c_v, g_v, workspace
             )
             if perf:
@@ -1015,7 +1015,7 @@ struct Sequential[*LAYERS: Model](Model):
                             MutAnyOrigin,
                         ]
                     ](grad_output)
-                    Self.model_types[i].backward_gpu[BATCH](
+                    Self.model_types[i].backward_gpu[BATCH, dtype](
                         ctx, gi, go_rb, li_p, li_c, li_g, li_ws
                     )
                 elif i == 0:
@@ -1032,7 +1032,7 @@ struct Sequential[*LAYERS: Model](Model):
                             MutAnyOrigin,
                         ]
                     ](grad_input)
-                    Self.model_types[i].backward_gpu[BATCH](
+                    Self.model_types[i].backward_gpu[BATCH, dtype](
                         ctx, gi_rb, go, li_p, li_c, li_g, li_ws
                     )
                 else:
@@ -1047,7 +1047,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
-                    Self.model_types[i].backward_gpu[BATCH](
+                    Self.model_types[i].backward_gpu[BATCH, dtype](
                         ctx, gi, go, li_p, li_c, li_g, li_ws
                     )
 

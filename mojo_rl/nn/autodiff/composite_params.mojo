@@ -77,7 +77,9 @@ struct CompositeParams[*MODELS: Model]:
         return total
 
     @staticmethod
-    def assemble(
+    def assemble[
+        dtype: DType = DType.float32
+    ](
         dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *sources: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
@@ -96,7 +98,9 @@ struct CompositeParams[*MODELS: Model]:
                 dst[off + i] = src[i]
 
     @staticmethod
-    def scatter(
+    def scatter[
+        dtype: DType = DType.float32
+    ](
         src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *dsts: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
@@ -109,7 +113,9 @@ struct CompositeParams[*MODELS: Model]:
                 d[i] = src[off + i]
 
     @staticmethod
-    def scatter_add(
+    def scatter_add[
+        dtype: DType = DType.float32
+    ](
         src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *dsts: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
@@ -126,7 +132,9 @@ struct CompositeParams[*MODELS: Model]:
     # =====================================================================
 
     @staticmethod
-    def assemble_gpu(
+    def assemble_gpu[
+        dtype: DType = DType.float32
+    ](
         ctx: DeviceContext,
         dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *sources: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -174,7 +182,9 @@ struct CompositeParams[*MODELS: Model]:
             )
 
     @staticmethod
-    def scatter_add_gpu(
+    def scatter_add_gpu[
+        dtype: DType = DType.float32
+    ](
         ctx: DeviceContext,
         src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
         *dsts: UnsafePointer[Scalar[dtype], MutAnyOrigin],

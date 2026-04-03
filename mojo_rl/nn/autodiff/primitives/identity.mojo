@@ -42,7 +42,7 @@ struct IdentityOp[dim: Int](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -62,7 +62,7 @@ struct IdentityOp[dim: Int](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -85,7 +85,7 @@ struct IdentityOp[dim: Int](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -128,7 +128,7 @@ struct IdentityOp[dim: Int](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[

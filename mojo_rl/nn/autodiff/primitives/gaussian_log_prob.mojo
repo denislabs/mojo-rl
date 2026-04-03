@@ -71,7 +71,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -125,7 +125,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -180,7 +180,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -193,6 +193,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
         ],
     ):
         """One thread per batch element. Loops over action_dim internally."""
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         comptime A = Self.action_dim
         comptime LOG_STD_MIN: Scalar[dtype] = -5.0
         comptime LOG_STD_MAX: Scalar[dtype] = 2.0
@@ -233,7 +234,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -267,7 +268,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, cache)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -284,7 +285,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def vjp_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -322,7 +323,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -365,7 +366,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.vjp_kernel_impl[BATCH](gi, go, c)
+            Self.vjp_kernel_impl[BATCH, dtype](gi, go, c)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input,

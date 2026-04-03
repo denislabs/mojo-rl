@@ -2,7 +2,7 @@
 # Optimizer Trait
 # =============================================================================
 
-from ..constants import dtype
+from ..constants import dtype as default_dtype
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
@@ -27,7 +27,7 @@ trait Optimizer(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def step[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
@@ -58,7 +58,7 @@ trait Optimizer(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def step_gpu[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut params: LayoutTensor[

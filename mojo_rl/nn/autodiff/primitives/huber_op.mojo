@@ -57,7 +57,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -89,7 +89,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -129,7 +129,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
         input: LayoutTensor[dtype, Layout.row_major(BATCH, 2), ImmutAnyOrigin],
@@ -153,7 +153,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
@@ -185,7 +185,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -213,7 +213,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
             i: LayoutTensor[dtype, Layout.row_major(BATCH, 2), ImmutAnyOrigin],
             c: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
         ):
-            Self.eval_kernel_impl[BATCH](o, i, c)
+            Self.eval_kernel_impl[BATCH, dtype](o, i, c)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -225,7 +225,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -259,7 +259,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
             go: LayoutTensor[dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin],
             c: LayoutTensor[dtype, Layout.row_major(BATCH, 1), ImmutAnyOrigin],
         ):
-            Self.backward_kernel_impl[BATCH](gi, go, c)
+            Self.backward_kernel_impl[BATCH, dtype](gi, go, c)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input,

@@ -20,7 +20,7 @@ from std.math import ceildiv
 # GPU kernel: output[i] = relu(output[i] + skip[i])
 def _add_relu_kernel[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType = DType.float32,
 ](
     output: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     skip: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -35,7 +35,7 @@ def _add_relu_kernel[
 # GPU kernel: cache pre-relu, apply relu
 def _fwd_cache_add_relu_kernel[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType = DType.float32,
 ](
     output: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     skip: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -52,7 +52,7 @@ def _fwd_cache_add_relu_kernel[
 # GPU kernel: backward through add+relu
 def _add_relu_backward_kernel[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType = DType.float32,
 ](
     grad_out: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     pre_relu_cache: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -70,7 +70,7 @@ def _add_relu_backward_kernel[
 
 def _add_kernel[
     SIZE: Int,
-    dtype: DType where dtype.is_floating_point(),
+    dtype: DType = DType.float32,
 ](
     a: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
     b: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -123,18 +123,19 @@ struct ResBlockConv2D[
     @staticmethod
     def initialize_params[
         INIT: Initializer,
+        dtype: DType = DType.float32,
     ](
         mut params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
-        Self.Conv1.initialize_params[INIT](p1)
-        Self.Conv2.initialize_params[INIT](p2)
+        Self.Conv1.initialize_params[INIT, dtype](p1)
+        Self.Conv2.initialize_params[INIT, dtype](p2)
 
     # ── CPU Forward (with cache) ───────────────────────────────────
 
     @staticmethod
-    def forward[BATCH: Int](
+    def forward[BATCH: Int, dtype: DType = DType.float32](
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
@@ -149,11 +150,11 @@ struct ResBlockConv2D[
         var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
         var inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward[BATCH](in_rb, inter_t, p1, c1)
+        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1, c1)
 
         var inter_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin]](inter_t)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward[BATCH](inter_rb, out_rb, p2, c2)
+        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2, c2)
 
         # Skip add + ReLU + cache pre-relu
         var pre_off = BATCH * (Self.CONV1_CS + Self.CONV2_CS)
@@ -167,7 +168,7 @@ struct ResBlockConv2D[
     # ── CPU Forward (inference, no cache) ──────────────────────────
 
     @staticmethod
-    def forward[BATCH: Int](
+    def forward[BATCH: Int, dtype: DType = DType.float32](
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
@@ -179,11 +180,11 @@ struct ResBlockConv2D[
         var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
         var inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward[BATCH](in_rb, inter_t, p1)
+        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1)
 
         var inter_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin]](inter_t)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward[BATCH](inter_rb, out_rb, p2)
+        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2)
 
         for i in range(BATCH * Self.DIM):
             var val = output.ptr[i] + input.ptr[i]
@@ -194,7 +195,7 @@ struct ResBlockConv2D[
     # ── CPU Backward ────────────────────────────────────────────────
 
     @staticmethod
-    def backward[BATCH: Int](
+    def backward[BATCH: Int, dtype: DType = DType.float32](
         grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
@@ -208,6 +209,7 @@ struct ResBlockConv2D[
     @staticmethod
     def forward_gpu[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -230,11 +232,11 @@ struct ResBlockConv2D[
         var inter_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
         var inter_out = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter_ptr)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward_gpu[BATCH](ctx, inter_out, in_rb, p1, c1_v, conv_ws)
+        Self.Conv1.forward_gpu[BATCH, dtype](ctx, inter_out, in_rb, p1, c1_v, conv_ws)
 
         var inter_in = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](inter_ptr)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward_gpu[BATCH](ctx, out_rb, inter_in, p2, c2_v, conv_ws)
+        Self.Conv2.forward_gpu[BATCH, dtype](ctx, out_rb, inter_in, p2, c2_v, conv_ws)
 
         comptime TOTAL = BATCH * Self.DIM
         comptime BLOCKS = ceildiv(TOTAL, TPB)
@@ -251,6 +253,7 @@ struct ResBlockConv2D[
     @staticmethod
     def forward_gpu_no_cache[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -270,11 +273,11 @@ struct ResBlockConv2D[
         var inter_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
         var inter_out = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter_ptr)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward_gpu_no_cache[BATCH](ctx, inter_out, in_rb, p1, conv_ws)
+        Self.Conv1.forward_gpu_no_cache[BATCH, dtype](ctx, inter_out, in_rb, p1, conv_ws)
 
         var inter_in = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](inter_ptr)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward_gpu_no_cache[BATCH](ctx, out_rb, inter_in, p2, conv_ws)
+        Self.Conv2.forward_gpu_no_cache[BATCH, dtype](ctx, out_rb, inter_in, p2, conv_ws)
 
         comptime TOTAL = BATCH * Self.DIM
         comptime BLOCKS = ceildiv(TOTAL, TPB)
@@ -288,6 +291,7 @@ struct ResBlockConv2D[
     @staticmethod
     def forward_gpu_no_cache_on_stream[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -297,13 +301,14 @@ struct ResBlockConv2D[
         workspace: DeviceBuffer[dtype],
     ) raises:
         # Default: delegate to forward_gpu_no_cache (default stream)
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     # ── GPU Backward ───────────────────────────────────────────────
 
     @staticmethod
     def backward_gpu[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
@@ -340,7 +345,7 @@ struct ResBlockConv2D[
         var go_c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin](grad_output.ptr)
         var c2_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.CACHE_SIZE), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
         var g2_v = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
-        Self.Conv2.backward_gpu[BATCH](ctx, grad_inter, go_c2, p2, c2_v, g2_v, conv_ws)
+        Self.Conv2.backward_gpu[BATCH, dtype](ctx, grad_inter, go_c2, p2, c2_v, g2_v, conv_ws)
 
         # 3. Conv1 backward: grad_inter → temp_gi (separate workspace region)
         var temp_gi_ptr = workspace.unsafe_ptr() + BATCH * (Self.MAX_CONV_WS + Self.DIM)
@@ -348,7 +353,7 @@ struct ResBlockConv2D[
         var temp_gi = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](temp_gi_ptr)
         var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.CACHE_SIZE), MutAnyOrigin](cache.ptr)
         var g1_v = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
-        Self.Conv1.backward_gpu[BATCH](ctx, temp_gi, go_c1, p1, c1_v, g1_v, conv_ws)
+        Self.Conv1.backward_gpu[BATCH, dtype](ctx, temp_gi, go_c1, p1, c1_v, g1_v, conv_ws)
 
         # 4. Add conv1's grad_input to skip grad
         comptime add_k = _add_kernel[TOTAL, dtype]

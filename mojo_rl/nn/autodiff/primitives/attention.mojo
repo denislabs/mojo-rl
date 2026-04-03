@@ -105,7 +105,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -237,7 +237,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -420,7 +420,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -438,7 +438,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](DiffOp):
         workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         # CPU fallback for now — GPU attention kernel is a future optimization
-        Self.eval[BATCH](input, output, params, cache)
+        Self.eval[BATCH, dtype](input, output, params, cache)
 
     # =========================================================================
     # GPU vjp
@@ -446,7 +446,7 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -467,4 +467,4 @@ struct ScaledDotProductAttention[dim: Int, n_heads: Int, seq_len: Int](DiffOp):
         workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
         # CPU fallback for now — GPU attention kernel is a future optimization
-        Self.vjp[BATCH](grad_output, grad_input, params, cache, grad_params)
+        Self.vjp[BATCH, dtype](grad_output, grad_input, params, cache, grad_params)

@@ -17,7 +17,7 @@ Usage:
     )
 """
 from layout import LayoutTensor, Layout
-from ..constants import dtype
+from ..constants import dtype as default_dtype
 from std.math import sqrt, log, cos, sin, pi
 from std.random.philox import Random as PhiloxRandom
 
@@ -41,7 +41,7 @@ trait Initializer(Copyable & Movable & ImplicitlyCopyable):
 
     @staticmethod
     def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int
+        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         """Initialize parameters.
 
@@ -49,6 +49,7 @@ trait Initializer(Copyable & Movable & ImplicitlyCopyable):
             SIZE: Total number of parameters to initialize.
             FAN_IN: Number of input features (used by some initializers).
             FAN_OUT: Number of output features (used by some initializers).
+            dtype: Data type of the parameters.
 
         Args:
             params: LayoutTensor to initialize.
@@ -75,14 +76,19 @@ struct Xavier[SEED: UInt64 = 0](Initializer):
 
     @staticmethod
     def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int
+        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        var limit = sqrt(6.0 / Scalar[dtype](FAN_IN + FAN_OUT))
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+        var limit = sqrt(Scalar[dtype](6.0) / Scalar[dtype](FAN_IN + FAN_OUT))
         var base = _layer_offset[FAN_IN, FAN_OUT]()
         for i in range(SIZE):
             var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
             var val = rng.step_uniform()
-            params[i] = Scalar[dtype]((val[0] * 2.0 - 1.0) * limit)
+            params[i] = (
+                Scalar[dtype](val[0]) * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+            ) * limit
 
 
 struct Kaiming[SEED: UInt64 = 0](Initializer):
@@ -105,14 +111,19 @@ struct Kaiming[SEED: UInt64 = 0](Initializer):
 
     @staticmethod
     def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int
+        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        var limit = sqrt(6.0 / Scalar[dtype](FAN_IN))
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+        var limit = sqrt(Scalar[dtype](6.0) / Scalar[dtype](FAN_IN))
         var base = _layer_offset[FAN_IN, FAN_OUT]()
         for i in range(SIZE):
             var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
             var val = rng.step_uniform()
-            params[i] = Scalar[dtype]((val[0] * 2.0 - 1.0) * limit)
+            params[i] = (
+                Scalar[dtype](val[0]) * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+            ) * limit
 
 
 struct LeCun[SEED: UInt64 = 0](Initializer):
@@ -135,14 +146,19 @@ struct LeCun[SEED: UInt64 = 0](Initializer):
 
     @staticmethod
     def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int
+        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        var limit = sqrt(3.0 / Scalar[dtype](FAN_IN))
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
+        var limit = sqrt(Scalar[dtype](3.0) / Scalar[dtype](FAN_IN))
         var base = _layer_offset[FAN_IN, FAN_OUT]()
         for i in range(SIZE):
             var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
             var val = rng.step_uniform()
-            params[i] = Scalar[dtype]((val[0] * 2.0 - 1.0) * limit)
+            params[i] = (
+                Scalar[dtype](val[0]) * Scalar[dtype](2.0) - Scalar[dtype](1.0)
+            ) * limit
 
 
 struct Zeros(Initializer):
@@ -159,7 +175,7 @@ struct Zeros(Initializer):
 
     @staticmethod
     def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int
+        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         for i in range(SIZE):
             params[i] = 0
@@ -179,21 +195,21 @@ struct Ones(Initializer):
 
     @staticmethod
     def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int
+        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         for i in range(SIZE):
             params[i] = 1
 
 
-struct Constant[VALUE: Scalar[dtype]](Initializer):
+struct Constant[VALUE: Scalar[default_dtype]](Initializer):
     """Initialize all parameters to a constant value."""
 
     @staticmethod
     def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int
+        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
         for i in range(SIZE):
-            params[i] = Self.VALUE
+            params[i] = Scalar[dtype](Self.VALUE)
 
 
 struct Uniform[LOW: Float64, HIGH: Float64, SEED: UInt64 = 0](Initializer):
@@ -201,15 +217,18 @@ struct Uniform[LOW: Float64, HIGH: Float64, SEED: UInt64 = 0](Initializer):
 
     @staticmethod
     def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int
+        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var range_val = Scalar[dtype](Self.HIGH - Self.LOW)
         var base = _layer_offset[FAN_IN, FAN_OUT]()
         for i in range(SIZE):
             var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
             var val = rng.step_uniform()
-            params[i] = Scalar[dtype](
-                val[0] * range_val + Scalar[dtype](Self.LOW)
+            params[i] = Scalar[dtype](val[0]) * range_val + Scalar[dtype](
+                Self.LOW
             )
 
 
@@ -221,17 +240,18 @@ struct Normal[MEAN: Float64, STD: Float64, SEED: UInt64 = 0](Initializer):
 
     @staticmethod
     def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int
+        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
     ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var base = _layer_offset[FAN_IN, FAN_OUT]()
         # Box-Muller: each pair of uniforms → 2 normals
         var i = 0
         var pair_idx: UInt64 = 0
         while i < SIZE:
             # Two independent uniform streams for each Box-Muller pair
-            var rng1 = PhiloxRandom(
-                seed=Self.SEED, offset=base + pair_idx * 2
-            )
+            var rng1 = PhiloxRandom(seed=Self.SEED, offset=base + pair_idx * 2)
             var rng2 = PhiloxRandom(
                 seed=Self.SEED, offset=base + pair_idx * 2 + 1
             )
@@ -243,16 +263,17 @@ struct Normal[MEAN: Float64, STD: Float64, SEED: UInt64 = 0](Initializer):
             if u1 < 1e-10:
                 u1 = 1e-10
 
-            var z0 = sqrt(-2.0 * log(u1)) * cos(2.0 * pi * u2)
-            params[i] = Scalar[dtype](
-                z0 * Scalar[dtype](Self.STD) + Scalar[dtype](Self.MEAN)
-            )
+            var r = sqrt(-2.0 * log(u1))
+            var z0 = r * cos(2.0 * pi * u2)
+            params[i] = Scalar[dtype](z0) * Scalar[dtype](Self.STD) + Scalar[
+                dtype
+            ](Self.MEAN)
             i += 1
 
             # Use the second value if we have space
             if i < SIZE:
-                var z1 = sqrt(-2.0 * log(u1)) * sin(2.0 * pi * u2)
-                params[i] = Scalar[dtype](
-                    z1 * Scalar[dtype](Self.STD) + Scalar[dtype](Self.MEAN)
-                )
+                var z1 = r * sin(2.0 * pi * u2)
+                params[i] = Scalar[dtype](z1) * Scalar[dtype](
+                    Self.STD
+                ) + Scalar[dtype](Self.MEAN)
                 i += 1

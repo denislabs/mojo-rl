@@ -55,7 +55,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -90,7 +90,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -136,7 +136,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_tiled[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
@@ -214,7 +214,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_dx_kernel_tiled[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
@@ -285,7 +285,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_dW_kernel_tiled[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         dW: LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
@@ -360,7 +360,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_mma[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
@@ -495,7 +495,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_2x2[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
@@ -614,7 +614,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_dx_kernel_mma[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
@@ -736,7 +736,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_dx_kernel_2x2[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
@@ -842,7 +842,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_dW_kernel_mma[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         dW: LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
@@ -963,7 +963,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_dW_kernel_2x2[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         dW: LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
@@ -1072,7 +1072,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -1153,7 +1153,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
                     dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
                 ],
             ):
-                Self.eval_kernel_2x2[BATCH](output, input, W, cache)
+                Self.eval_kernel_2x2[BATCH, dtype](output, input, W, cache)
 
             ctx.enqueue_function[wrapper, wrapper](
                 output,
@@ -1166,7 +1166,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -1218,9 +1218,9 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             ],
         ):
             comptime if is_nvidia_gpu():
-                Self.backward_dx_kernel_mma[BATCH](grad_input, grad_output, W)
+                Self.backward_dx_kernel_mma[BATCH, dtype](grad_input, grad_output, W)
             else:
-                Self.backward_dx_kernel_2x2[BATCH](grad_input, grad_output, W)
+                Self.backward_dx_kernel_2x2[BATCH, dtype](grad_input, grad_output, W)
 
         ctx.enqueue_function[dx_wrapper, dx_wrapper](
             grad_input,
@@ -1247,9 +1247,9 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             ],
         ):
             comptime if is_nvidia_gpu():
-                Self.backward_dW_kernel_mma[BATCH](dW, cache, grad_output)
+                Self.backward_dW_kernel_mma[BATCH, dtype](dW, cache, grad_output)
             else:
-                Self.backward_dW_kernel_2x2[BATCH](dW, cache, grad_output)
+                Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
 
         ctx.enqueue_function[dW_wrapper, dW_wrapper](
             dW,

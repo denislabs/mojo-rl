@@ -38,7 +38,7 @@ struct Mish[dim: Int](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -48,7 +48,7 @@ struct Mish[dim: Int](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -87,7 +87,7 @@ struct Mish[dim: Int](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -115,7 +115,7 @@ struct Mish[dim: Int](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -157,7 +157,7 @@ struct Mish[dim: Int](Model):
     @always_inline
     @staticmethod
     def forward_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -208,7 +208,7 @@ struct Mish[dim: Int](Model):
     @always_inline
     @staticmethod
     def forward_kernel_impl_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -249,7 +249,7 @@ struct Mish[dim: Int](Model):
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -285,7 +285,7 @@ struct Mish[dim: Int](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -327,7 +327,7 @@ struct Mish[dim: Int](Model):
                 dtype, Layout.row_major(BATCH, 2 * Self.dim), MutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl[BATCH](output, input, cache)
+            Self.forward_kernel_impl[BATCH, dtype](output, input, cache)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -339,7 +339,7 @@ struct Mish[dim: Int](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -372,7 +372,7 @@ struct Mish[dim: Int](Model):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl_no_cache[BATCH](output, input)
+            Self.forward_kernel_impl_no_cache[BATCH, dtype](output, input)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -383,7 +383,7 @@ struct Mish[dim: Int](Model):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -399,11 +399,11 @@ struct Mish[dim: Int](Model):
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -448,7 +448,7 @@ struct Mish[dim: Int](Model):
                 dtype, Layout.row_major(BATCH, 2 * Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             grad_input,

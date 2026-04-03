@@ -59,7 +59,7 @@ struct Muon[
 
     @staticmethod
     def step[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
@@ -110,7 +110,7 @@ struct Muon[
 
     @staticmethod
     def _frobenius_norm[
-        ROWS: Int, COLS: Int
+        ROWS: Int, COLS: Int, dtype: DType = DType.float32
     ](
         mat: LayoutTensor[dtype, Layout.row_major(ROWS, COLS), MutAnyOrigin],
     ) -> Scalar[dtype]:
@@ -126,7 +126,7 @@ struct Muon[
     # =========================================================================
 
     def step_2d[
-        ROWS: Int, COLS: Int
+        ROWS: Int, COLS: Int, dtype: DType = DType.float32
     ](
         self,
         mut params: LayoutTensor[
@@ -161,7 +161,7 @@ struct Muon[
         comptime should_transpose = ROWS > COLS
 
         comptime if should_transpose:
-            var norm = Self._frobenius_norm[ROWS, COLS](grads) + eps
+            var norm = Self._frobenius_norm[ROWS, COLS, dtype](grads) + eps
 
             var X = InlineArray[Scalar[dtype], COLS * ROWS](uninitialized=True)
             var X_new = InlineArray[Scalar[dtype], COLS * ROWS](
@@ -219,7 +219,7 @@ struct Muon[
                         - lr * X[j * ROWS + i]
                     )
         else:
-            var norm = Self._frobenius_norm[ROWS, COLS](grads) + eps
+            var norm = Self._frobenius_norm[ROWS, COLS, dtype](grads) + eps
 
             var X = InlineArray[Scalar[dtype], ROWS * COLS](uninitialized=True)
             var X_new = InlineArray[Scalar[dtype], ROWS * COLS](
@@ -284,7 +284,7 @@ struct Muon[
     @always_inline
     @staticmethod
     def step_kernel_impl[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -319,7 +319,7 @@ struct Muon[
 
     @staticmethod
     def step_gpu[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut params: LayoutTensor[
@@ -370,7 +370,7 @@ struct Muon[
             inv_norm: Scalar[dtype],
             scale_factor: Scalar[dtype],
         ):
-            Self.step_kernel_impl[PARAM_SIZE](
+            Self.step_kernel_impl[PARAM_SIZE, dtype](
                 params,
                 grads,
                 state,

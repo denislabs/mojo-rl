@@ -31,7 +31,7 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
 
     @staticmethod
     def step[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
@@ -58,7 +58,7 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
     @always_inline
     @staticmethod
     def step_kernel_impl[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
         grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
@@ -78,7 +78,7 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
 
     @staticmethod
     def step_gpu[
-        PARAM_SIZE: Int
+        PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut params: LayoutTensor[
@@ -107,7 +107,7 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
             ],
             lr: Scalar[dtype],
         ):
-            Self.step_kernel_impl[PARAM_SIZE](params, grads, lr)
+            Self.step_kernel_impl[PARAM_SIZE, dtype](params, grads, lr)
 
         comptime grid_size = (PARAM_SIZE + TPB - 1) // TPB
 

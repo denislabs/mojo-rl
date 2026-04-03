@@ -90,7 +90,8 @@ struct Conv2DBatchNormReLU[
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer,
+        dtype: DType = DType.float32,
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -120,7 +121,8 @@ struct Conv2DBatchNormReLU[
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -210,7 +212,8 @@ struct Conv2DBatchNormReLU[
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -276,7 +279,8 @@ struct Conv2DBatchNormReLU[
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -386,7 +390,7 @@ struct Conv2DBatchNormReLU[
     @always_inline
     @staticmethod
     def bn_relu_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -491,7 +495,7 @@ struct Conv2DBatchNormReLU[
     @always_inline
     @staticmethod
     def bn_relu_kernel_impl_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -580,7 +584,7 @@ struct Conv2DBatchNormReLU[
     @always_inline
     @staticmethod
     def relu_bn_backward_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         grad_pre_bn: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -715,6 +719,7 @@ struct Conv2DBatchNormReLU[
     @staticmethod
     def forward_gpu[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -797,7 +802,7 @@ struct Conv2DBatchNormReLU[
             cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
             params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
         ):
-            Self.bn_relu_kernel_impl[BATCH](output, cache, params)
+            Self.bn_relu_kernel_impl[BATCH, dtype](output, cache, params)
 
         ctx.enqueue_function[bn_relu_wrapper, bn_relu_wrapper](
             output, cache, params,
@@ -808,6 +813,7 @@ struct Conv2DBatchNormReLU[
     @staticmethod
     def forward_gpu_no_cache[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -853,7 +859,7 @@ struct Conv2DBatchNormReLU[
             output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
             params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
         ):
-            Self.bn_relu_kernel_impl_no_cache[BATCH](output, params)
+            Self.bn_relu_kernel_impl_no_cache[BATCH, dtype](output, params)
 
         ctx.enqueue_function[bn_relu_nc_wrapper, bn_relu_nc_wrapper](
             output, params_immut,
@@ -864,6 +870,7 @@ struct Conv2DBatchNormReLU[
     @staticmethod
     def forward_gpu_no_cache_on_stream[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -878,11 +885,12 @@ struct Conv2DBatchNormReLU[
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     @staticmethod
     def backward_gpu[
         BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -938,7 +946,7 @@ struct Conv2DBatchNormReLU[
             cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin],
             grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
         ):
-            Self.relu_bn_backward_kernel_impl[BATCH](grad_pre_bn, grad_output, params, cache, grads)
+            Self.relu_bn_backward_kernel_impl[BATCH, dtype](grad_pre_bn, grad_output, params, cache, grads)
 
         ctx.enqueue_function[relu_bn_bwd_wrapper, relu_bn_bwd_wrapper](
             grad_pre_bn, grad_output_immut, params_immut, cache_immut, grads,

@@ -90,7 +90,7 @@ struct RSampleOp[
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -157,7 +157,7 @@ struct RSampleOp[
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -228,7 +228,7 @@ struct RSampleOp[
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -242,6 +242,7 @@ struct RSampleOp[
         rng_seed: Scalar[DType.uint32],
     ):
         """One thread per batch element. Loops over action_dim internally."""
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         comptime A = Self.action_dim
         var b = Int(block_dim.x * block_idx.x + thread_idx.x)
         if b >= BATCH:
@@ -293,7 +294,7 @@ struct RSampleOp[
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -331,7 +332,7 @@ struct RSampleOp[
             ],
             seed: Scalar[DType.uint32],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, cache, seed)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, cache, seed)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -349,7 +350,7 @@ struct RSampleOp[
     @always_inline
     @staticmethod
     def vjp_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -362,6 +363,7 @@ struct RSampleOp[
         ],
     ):
         """One thread per (batch, action_dim) element."""
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         comptime A = Self.action_dim
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * A:
@@ -401,7 +403,7 @@ struct RSampleOp[
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -444,7 +446,7 @@ struct RSampleOp[
                 ImmutAnyOrigin,
             ],
         ):
-            Self.vjp_kernel_impl[BATCH](gi, go, c)
+            Self.vjp_kernel_impl[BATCH, dtype](gi, go, c)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input,

@@ -46,7 +46,7 @@ struct MaxPool2D[
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -92,7 +92,7 @@ struct MaxPool2D[
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -132,7 +132,7 @@ struct MaxPool2D[
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -176,7 +176,7 @@ struct MaxPool2D[
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -213,7 +213,7 @@ struct MaxPool2D[
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -249,7 +249,7 @@ struct MaxPool2D[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, cache)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -261,7 +261,7 @@ struct MaxPool2D[
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -303,7 +303,7 @@ struct MaxPool2D[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input,
@@ -355,7 +355,7 @@ struct AvgPool2D[
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -394,7 +394,7 @@ struct AvgPool2D[
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -452,7 +452,7 @@ struct AvgPool2D[
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -489,7 +489,7 @@ struct AvgPool2D[
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -532,7 +532,7 @@ struct AvgPool2D[
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -565,7 +565,7 @@ struct AvgPool2D[
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input)
+            Self.eval_kernel_impl[BATCH, dtype](output, input)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -576,7 +576,7 @@ struct AvgPool2D[
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -612,7 +612,7 @@ struct AvgPool2D[
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH](grad_input, grad_output)
+            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input,

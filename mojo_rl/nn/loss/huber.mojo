@@ -37,6 +37,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
     def forward[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -66,6 +67,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
     def backward[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -104,6 +106,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
     def forward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
         predictions: LayoutTensor[
@@ -149,6 +152,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
     def backward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -192,6 +196,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
     def forward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -216,7 +221,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
             ],
             d: Scalar[dtype],
         ):
-            Self.forward_kernel_impl[BATCH, OUT_DIM](
+            Self.forward_kernel_impl[BATCH, OUT_DIM, dtype](
                 loss, predictions, targets, d
             )
 
@@ -233,6 +238,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
     def backward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut grad_output: LayoutTensor[
@@ -261,7 +267,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
             ],
             d: Scalar[dtype],
         ):
-            Self.backward_kernel_impl[BATCH, OUT_DIM](
+            Self.backward_kernel_impl[BATCH, OUT_DIM, dtype](
                 grad_output, predictions, targets, d
             )
 

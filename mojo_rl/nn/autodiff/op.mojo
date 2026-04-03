@@ -1,4 +1,4 @@
-from ..constants import dtype, TILE, TPB
+from ..constants import dtype as default_dtype, TILE, TPB
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
 
@@ -106,7 +106,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
     # --- CPU ---
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -125,7 +125,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -148,7 +148,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
     # --- GPU ---
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -169,7 +169,7 @@ trait DiffOp(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[

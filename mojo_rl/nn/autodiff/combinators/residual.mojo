@@ -18,7 +18,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 # GPU kernel impl: a[i] += b[i]
 @always_inline
 def _add_kernel_impl[
-    BATCH: Int, DIM: Int
+    BATCH: Int, DIM: Int, dtype: DType = DType.float32
 ](
     a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     b: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), ImmutAnyOrigin],
@@ -51,14 +51,14 @@ struct Residual[Inner: Model](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
         """Delegate to Inner model's initialize_params."""
-        Self.Inner.initialize_params[INIT](params)
+        Self.Inner.initialize_params[INIT, dtype](params)
 
     # =========================================================================
     # CPU Forward (with cache)
@@ -66,7 +66,7 @@ struct Residual[Inner: Model](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -81,7 +81,7 @@ struct Residual[Inner: Model](Model):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Inner.forward[BATCH](input, output, params, cache)
+        Self.Inner.forward[BATCH, dtype](input, output, params, cache)
         for i in range(BATCH * Self.IN_DIM):
             output.ptr[i] = output.ptr[i] + input.ptr[i]
 
@@ -91,7 +91,7 @@ struct Residual[Inner: Model](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -103,7 +103,7 @@ struct Residual[Inner: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Inner.forward[BATCH](input, output, params)
+        Self.Inner.forward[BATCH, dtype](input, output, params)
         for i in range(BATCH * Self.IN_DIM):
             output.ptr[i] = output.ptr[i] + input.ptr[i]
 
@@ -113,7 +113,7 @@ struct Residual[Inner: Model](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -131,7 +131,7 @@ struct Residual[Inner: Model](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Inner.backward[BATCH](
+        Self.Inner.backward[BATCH, dtype](
             grad_output, grad_input, params, cache, grads
         )
         for i in range(BATCH * Self.IN_DIM):
@@ -143,7 +143,7 @@ struct Residual[Inner: Model](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -162,7 +162,7 @@ struct Residual[Inner: Model](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        Self.Inner.forward_gpu[BATCH](
+        Self.Inner.forward_gpu[BATCH, dtype](
             ctx, output, input, params, cache, workspace
         )
 
@@ -180,7 +180,7 @@ struct Residual[Inner: Model](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
             ],
         ):
-            _add_kernel_impl[BATCH, Self.IN_DIM](a, b)
+            _add_kernel_impl[BATCH, Self.IN_DIM, dtype](a, b)
 
         ctx.enqueue_function[wrapper, wrapper](
             output, input_immut, grid_dim=(grid_x,), block_dim=(TPB,)
@@ -192,7 +192,7 @@ struct Residual[Inner: Model](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -208,7 +208,7 @@ struct Residual[Inner: Model](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        Self.Inner.forward_gpu_no_cache[BATCH](
+        Self.Inner.forward_gpu_no_cache[BATCH, dtype](
             ctx, output, input, params, workspace
         )
 
@@ -226,7 +226,7 @@ struct Residual[Inner: Model](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
             ],
         ):
-            _add_kernel_impl[BATCH, Self.IN_DIM](a, b)
+            _add_kernel_impl[BATCH, Self.IN_DIM, dtype](a, b)
 
         ctx.enqueue_function[wrapper, wrapper](
             output, input_immut, grid_dim=(grid_x,), block_dim=(TPB,)
@@ -234,7 +234,7 @@ struct Residual[Inner: Model](Model):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -250,7 +250,7 @@ struct Residual[Inner: Model](Model):
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -258,7 +258,7 @@ struct Residual[Inner: Model](Model):
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -280,7 +280,7 @@ struct Residual[Inner: Model](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        Self.Inner.backward_gpu[BATCH](
+        Self.Inner.backward_gpu[BATCH, dtype](
             ctx, grad_input, grad_output, params, cache, grads, workspace
         )
 
@@ -298,7 +298,7 @@ struct Residual[Inner: Model](Model):
                 dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
             ],
         ):
-            _add_kernel_impl[BATCH, Self.IN_DIM](a, b)
+            _add_kernel_impl[BATCH, Self.IN_DIM, dtype](a, b)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input, go_immut, grid_dim=(grid_x,), block_dim=(TPB,)

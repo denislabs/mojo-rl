@@ -38,7 +38,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -80,7 +80,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -119,7 +119,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -132,6 +132,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
         ],
     ):
         """Per-sample softmax. Grid: (BATCH,), Block: (TPB,)."""
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var b = Int(block_idx.x)
         var local_i = Int(thread_idx.x)
 
@@ -172,7 +173,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -216,7 +217,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -249,7 +250,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, cache)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -261,7 +262,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -300,7 +301,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input,

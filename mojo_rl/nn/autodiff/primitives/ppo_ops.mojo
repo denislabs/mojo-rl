@@ -60,7 +60,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -107,7 +107,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -146,7 +146,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -159,6 +159,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
         ],
     ):
         """One thread per batch element."""
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         comptime N = Self.num_actions
         var b = Int(block_dim.x * block_idx.x + thread_idx.x)
         if b >= BATCH:
@@ -190,7 +191,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -226,7 +227,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -260,7 +261,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, cache)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -272,7 +273,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -314,7 +315,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input,
@@ -365,7 +366,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -392,7 +393,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -426,7 +427,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -438,6 +439,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return
@@ -452,7 +454,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -480,7 +482,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -515,7 +517,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, cache)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -527,7 +529,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -570,7 +572,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input,
@@ -626,7 +628,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -682,7 +684,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -715,7 +717,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
     @always_inline
     @staticmethod
     def eval_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -767,7 +769,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -794,7 +796,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -828,7 +830,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
         ):
-            Self.eval_kernel_impl[BATCH](output, input, cache)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
@@ -840,7 +842,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -882,7 +884,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_kernel_impl[BATCH](grad_input, grad_output, cache)
+            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
 
         ctx.enqueue_function[wrapper, wrapper](
             grad_input,

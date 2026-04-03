@@ -45,13 +45,13 @@ struct SkipConcat[Inner: Model](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Inner.initialize_params[INIT](params)
+        Self.Inner.initialize_params[INIT, dtype](params)
 
     # =========================================================================
     # CPU Forward (with cache)
@@ -59,7 +59,7 @@ struct SkipConcat[Inner: Model](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -95,7 +95,7 @@ struct SkipConcat[Inner: Model](Model):
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
         ](inner_buf.unsafe_ptr())
 
-        Self.Inner.forward[BATCH](input, inner_out, params, cache)
+        Self.Inner.forward[BATCH, dtype](input, inner_out, params, cache)
 
         # Copy inner output to second part of output
         for b in range(BATCH):
@@ -110,7 +110,7 @@ struct SkipConcat[Inner: Model](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -138,7 +138,7 @@ struct SkipConcat[Inner: Model](Model):
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
         ](inner_buf.unsafe_ptr())
 
-        Self.Inner.forward[BATCH](input, inner_out, params)
+        Self.Inner.forward[BATCH, dtype](input, inner_out, params)
 
         for b in range(BATCH):
             for i in range(INNER_OUT):
@@ -152,7 +152,7 @@ struct SkipConcat[Inner: Model](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -186,7 +186,7 @@ struct SkipConcat[Inner: Model](Model):
         ](grad_inner_buf.unsafe_ptr())
 
         # Backward through Inner
-        Self.Inner.backward[BATCH](grad_inner, grad_input, params, cache, grads)
+        Self.Inner.backward[BATCH, dtype](grad_inner, grad_input, params, cache, grads)
 
         # Add skip gradient: grad_input += grad_output[:, :IN_DIM]
         for b in range(BATCH):
@@ -202,7 +202,7 @@ struct SkipConcat[Inner: Model](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -239,7 +239,7 @@ struct SkipConcat[Inner: Model](Model):
         ](inner_out_ptr)
 
         # Forward Inner
-        Self.Inner.forward_gpu[BATCH](
+        Self.Inner.forward_gpu[BATCH, dtype](
             ctx, inner_out_t, input, params, cache, child_ws
         )
 
@@ -289,7 +289,7 @@ struct SkipConcat[Inner: Model](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -322,7 +322,7 @@ struct SkipConcat[Inner: Model](Model):
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
         ](inner_out_ptr)
 
-        Self.Inner.forward_gpu_no_cache[BATCH](
+        Self.Inner.forward_gpu_no_cache[BATCH, dtype](
             ctx, inner_out_t, input, params, child_ws
         )
 
@@ -367,7 +367,7 @@ struct SkipConcat[Inner: Model](Model):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -382,7 +382,7 @@ struct SkipConcat[Inner: Model](Model):
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -390,7 +390,7 @@ struct SkipConcat[Inner: Model](Model):
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -461,7 +461,7 @@ struct SkipConcat[Inner: Model](Model):
         )
 
         # Backward through Inner → grad_input
-        Self.Inner.backward_gpu[BATCH](
+        Self.Inner.backward_gpu[BATCH, dtype](
             ctx,
             grad_input,
             grad_inner_t,

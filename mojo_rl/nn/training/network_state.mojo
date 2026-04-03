@@ -25,7 +25,7 @@ Usage:
 from ..model import Model
 from ..optimizer import Optimizer
 from ..initializer import Initializer, Xavier
-from ..constants import dtype
+from ..constants import dtype as default_dtype
 from ..checkpoint import (
     write_checkpoint_header,
     write_float_section_ptr,
@@ -43,7 +43,7 @@ from layout import Layout, LayoutTensor
 from std.memory import alloc, memset
 
 
-struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
+struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype](
     ImplicitlyCopyable, Movable
 ):
     """Consolidated mutable state for a neural network.
@@ -60,14 +60,15 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     Parameters:
         MODEL: The model architecture (implements Model trait).
         OPTIMIZER: The optimizer (implements Optimizer trait).
+        dtype: Data type for all buffers (default: DType.float32).
     """
 
     comptime PARAM_SIZE: Int = Self.MODEL.PARAM_SIZE
     comptime STATE_SIZE: Int = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
 
-    var params: UnsafePointer[Scalar[dtype], MutAnyOrigin]
-    var grads: UnsafePointer[Scalar[dtype], MutAnyOrigin]
-    var optimizer_state: UnsafePointer[Scalar[dtype], MutAnyOrigin]
+    var params: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    var grads: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    var optimizer_state: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
     var step_num: Int
     var lr_scale: Float64
 
@@ -76,13 +77,13 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         self.step_num = 0
         self.lr_scale = 1.0
 
-        self.params = alloc[Scalar[dtype]](Self.PARAM_SIZE)
+        self.params = alloc[Scalar[Self.dtype]](Self.PARAM_SIZE)
         memset(self.params, 0, Self.PARAM_SIZE)
 
-        self.grads = alloc[Scalar[dtype]](Self.PARAM_SIZE)
+        self.grads = alloc[Scalar[Self.dtype]](Self.PARAM_SIZE)
         memset(self.grads, 0, Self.PARAM_SIZE)
 
-        self.optimizer_state = alloc[Scalar[dtype]](Self.STATE_SIZE)
+        self.optimizer_state = alloc[Scalar[Self.dtype]](Self.STATE_SIZE)
         memset(self.optimizer_state, 0, Self.STATE_SIZE)
 
     def __init__(out self, *, copy: Self):
@@ -126,31 +127,31 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
 
     def params_view(
         self,
-    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
+    ) -> LayoutTensor[Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
         """Return a LayoutTensor view over params (zero-copy pointer cast)."""
 
         return LayoutTensor[
-            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.params)
 
     def grads_view(
         self,
-    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
+    ) -> LayoutTensor[Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
         """Return a LayoutTensor view over grads (zero-copy pointer cast)."""
         return LayoutTensor[
-            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.grads)
 
     def state_view(
         self,
     ) -> LayoutTensor[
-        dtype,
+        Self.dtype,
         Layout.row_major(Self.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM),
         MutAnyOrigin,
     ]:
         """Return a LayoutTensor view over optimizer_state (zero-copy)."""
         return LayoutTensor[
-            dtype,
+            Self.dtype,
             Layout.row_major(Self.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM),
             MutAnyOrigin,
         ](self.optimizer_state)
@@ -210,8 +211,8 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             source: The online network state to blend from.
             tau: Interpolation factor (e.g. 0.005).
         """
-        var tau_s = Scalar[dtype](tau)
-        var one_m = Scalar[dtype](1.0 - tau)
+        var tau_s = Scalar[Self.dtype](tau)
+        var one_m = Scalar[Self.dtype](1.0 - tau)
         for i in range(Self.PARAM_SIZE):
             (self.params + i)[] = (
                 tau_s * (source.params + i)[] + one_m * (self.params + i)[]
@@ -259,13 +260,13 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
             content: Full checkpoint file content.
             prefix: Section name prefix used when writing (e.g. "actor_").
         """
-        var loaded_params = read_float_section_list(
+        var loaded_params = read_float_section_list[Self.dtype](
             content, prefix + "params:", Self.PARAM_SIZE
         )
         for i in range(Self.PARAM_SIZE):
             (self.params + i)[] = loaded_params[i]
 
-        var loaded_state = read_float_section_list(
+        var loaded_state = read_float_section_list[Self.dtype](
             content, prefix + "optimizer_state:", Self.STATE_SIZE
         )
         for i in range(Self.STATE_SIZE):
@@ -319,7 +320,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     # Binary Checkpoint Save / Load (~3x smaller files)
     # =========================================================================
 
-    def write_sections_binary(self, mut ckpt: BinaryCheckpoint, prefix: String):
+    def write_sections_binary(self, mut ckpt: BinaryCheckpoint[Self.dtype], prefix: String):
         """Add params and optimizer_state as named sections to a binary checkpoint.
 
         Args:
@@ -334,7 +335,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         )
 
     def read_sections_binary(
-        mut self, ckpt: BinaryCheckpoint, prefix: String
+        mut self, ckpt: BinaryCheckpoint[Self.dtype], prefix: String
     ) raises:
         """Load params and optimizer_state from a binary checkpoint.
 
@@ -362,7 +363,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         Args:
             filepath: Destination path for the binary checkpoint file.
         """
-        var ckpt = BinaryCheckpoint("network_state")
+        var ckpt = BinaryCheckpoint[Self.dtype]("network_state")
         self.write_sections_binary(ckpt, "")
         ckpt.add_metadata("step_num", String(self.step_num))
         ckpt.save(filepath)
@@ -373,7 +374,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         Args:
             filepath: Path to the binary checkpoint file.
         """
-        var ckpt = BinaryCheckpoint.load(filepath)
+        var ckpt = BinaryCheckpoint[Self.dtype].load(filepath)
         self.read_sections_binary(ckpt, "")
 
         var step_str = ckpt.get_metadata_value("step_num")

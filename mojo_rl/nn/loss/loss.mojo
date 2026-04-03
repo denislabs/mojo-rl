@@ -1,4 +1,4 @@
-from ..constants import dtype
+from ..constants import dtype as default_dtype
 from layout import LayoutTensor, Layout
 from std.gpu.host import DeviceContext, DeviceBuffer
 
@@ -19,6 +19,7 @@ trait LossFunction(Movable & ImplicitlyCopyable):
     def forward[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -42,6 +43,7 @@ trait LossFunction(Movable & ImplicitlyCopyable):
     def backward[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -70,6 +72,7 @@ trait LossFunction(Movable & ImplicitlyCopyable):
     def forward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -94,6 +97,7 @@ trait LossFunction(Movable & ImplicitlyCopyable):
     def backward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut grad_output: LayoutTensor[

@@ -20,17 +20,17 @@ trait Activation(Movable & ImplicitlyCopyable):
     comptime FUSED_CONV_OP_ID: Int  # OP_ID for fused conv2d variant (e.g. 110)
 
     @staticmethod
-    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward[dtype: DType = DType.float32](pre_act: Scalar[dtype]) -> Scalar[dtype]:
         """Apply activation function to pre-activation value."""
         ...
 
     @staticmethod
-    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache[dtype: DType = DType.float32](pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         """Return what to cache for backward. Either pre_act or output."""
         ...
 
     @staticmethod
-    def backward(
+    def backward[dtype: DType = DType.float32](
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         """Compute grad_out * activation_derivative from cached value."""
@@ -54,15 +54,15 @@ struct ReLUActivation(Activation):
         pass
 
     @staticmethod
-    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward[dtype: DType = DType.float32](pre_act: Scalar[dtype]) -> Scalar[dtype]:
         return pre_act if pre_act > 0 else 0
 
     @staticmethod
-    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache[dtype: DType = DType.float32](pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         return pre_act
 
     @staticmethod
-    def backward(
+    def backward[dtype: DType = DType.float32](
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         return grad_out if cache_val > 0 else 0
@@ -85,15 +85,16 @@ struct TanhActivation(Activation):
         pass
 
     @staticmethod
-    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward[dtype: DType = DType.float32](pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         return tanh(pre_act)
 
     @staticmethod
-    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache[dtype: DType = DType.float32](pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         return output
 
     @staticmethod
-    def backward(
+    def backward[dtype: DType = DType.float32](
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         return grad_out * (1 - cache_val * cache_val)
@@ -116,15 +117,16 @@ struct SigmoidActivation(Activation):
         pass
 
     @staticmethod
-    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward[dtype: DType = DType.float32](pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         return 1.0 / (1.0 + exp(-pre_act))
 
     @staticmethod
-    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache[dtype: DType = DType.float32](pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         return output
 
     @staticmethod
-    def backward(
+    def backward[dtype: DType = DType.float32](
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
         return grad_out * cache_val * (1 - cache_val)
@@ -148,7 +150,8 @@ struct MishActivation(Activation):
         pass
 
     @staticmethod
-    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward[dtype: DType = DType.float32](pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         # Clamp for numerical stability: tanh(softplus(x)) -> 1 for x>15, -> 0 for x<-15
         if pre_act > Scalar[dtype](15.0):
             return pre_act  # tanh(sp) ≈ 1, so mish(x) ≈ x
@@ -158,13 +161,14 @@ struct MishActivation(Activation):
         return pre_act * tanh(sp)
 
     @staticmethod
-    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache[dtype: DType = DType.float32](pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         return pre_act  # Need input x for backward
 
     @staticmethod
-    def backward(
+    def backward[dtype: DType = DType.float32](
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var x = cache_val
         # Clamp for numerical stability
         if x > Scalar[dtype](15.0):
@@ -196,7 +200,8 @@ struct SwishActivation(Activation):
         pass
 
     @staticmethod
-    def forward(pre_act: Scalar[dtype]) -> Scalar[dtype]:
+    def forward[dtype: DType = DType.float32](pre_act: Scalar[dtype]) -> Scalar[dtype]:
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var one = Scalar[dtype](1.0)
         var sig: Scalar[dtype]
         if pre_act >= Scalar[dtype](0.0):
@@ -207,13 +212,14 @@ struct SwishActivation(Activation):
         return pre_act * sig
 
     @staticmethod
-    def cache(pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
+    def cache[dtype: DType = DType.float32](pre_act: Scalar[dtype], output: Scalar[dtype]) -> Scalar[dtype]:
         return pre_act  # Need input x for backward
 
     @staticmethod
-    def backward(
+    def backward[dtype: DType = DType.float32](
         cache_val: Scalar[dtype], grad_out: Scalar[dtype]
     ) -> Scalar[dtype]:
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var x = cache_val
         var one = Scalar[dtype](1.0)
         var sig: Scalar[dtype]

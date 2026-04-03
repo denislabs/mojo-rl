@@ -87,7 +87,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -204,7 +204,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -265,7 +265,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -312,7 +312,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -392,7 +392,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     @always_inline
     @staticmethod
     def forward_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -491,7 +491,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     @always_inline
     @staticmethod
     def forward_kernel_impl_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -585,7 +585,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     @always_inline
     @staticmethod
     def backward_dx_fused_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -630,7 +630,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     @always_inline
     @staticmethod
     def backward_dW_db_fused_kernel_impl[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         grads: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -919,7 +919,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -983,7 +983,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
                 dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl[BATCH](
+            Self.forward_kernel_impl[BATCH, dtype](
                 output,
                 input,
                 W_mean,
@@ -1005,7 +1005,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -1060,7 +1060,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
                 dtype, Layout.row_major(Self.action_dim), ImmutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl_no_cache[BATCH](
+            Self.forward_kernel_impl_no_cache[BATCH, dtype](
                 output, input, W_mean, b_mean, log_std
             )
 
@@ -1076,7 +1076,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -1092,11 +1092,11 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -1155,7 +1155,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_dx_fused_kernel_impl[BATCH](
+            Self.backward_dx_fused_kernel_impl[BATCH, dtype](
                 grad_input, grad_output, W_mean
             )
 
@@ -1187,7 +1187,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
                 dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
             ],
         ):
-            Self.backward_dW_db_fused_kernel_impl[BATCH](
+            Self.backward_dW_db_fused_kernel_impl[BATCH, dtype](
                 grads, cache, grad_output
             )
 

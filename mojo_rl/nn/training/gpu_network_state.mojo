@@ -27,7 +27,7 @@ Usage:
 
 from ..model import Model
 from ..optimizer import Optimizer
-from ..constants import dtype, TPB
+from ..constants import dtype as default_dtype, TPB
 from .network_state import NetworkState
 
 from layout import Layout, LayoutTensor
@@ -62,7 +62,7 @@ def soft_update_kernel[
     target[i] = tau * src_val + (Scalar[dtype](1.0) - tau) * tgt_val
 
 
-struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
+struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype](
     ImplicitlyCopyable, Movable
 ):
     """GPU-side network state using pre-allocated DeviceBuffers.
@@ -73,20 +73,21 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
     Parameters:
         MODEL: The model architecture (implements Model trait).
         OPTIMIZER: The optimizer (implements Optimizer trait).
+        dtype: Data type for all buffers (default: DType.float32).
     """
 
     comptime PARAM_SIZE: Int = Self.MODEL.PARAM_SIZE
     comptime STATE_SIZE: Int = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
 
-    var params_buf: DeviceBuffer[dtype]  # device: model weights
-    var grads_buf: DeviceBuffer[dtype]  # device: parameter gradients
+    var params_buf: DeviceBuffer[Self.dtype]  # device: model weights
+    var grads_buf: DeviceBuffer[Self.dtype]  # device: parameter gradients
     var state_buf: DeviceBuffer[
-        dtype
+        Self.dtype
     ]  # device: optimizer state (e.g. Adam m/v)
     var params_host: HostBuffer[
-        dtype
+        Self.dtype
     ]  # pinned host mirror — fast DMA for params
-    var state_host: HostBuffer[dtype]  # pinned host mirror — fast DMA for state
+    var state_host: HostBuffer[Self.dtype]  # pinned host mirror — fast DMA for state
     var step_num: Int
     var lr_scale: Float64
 
@@ -98,13 +99,13 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         """
         self.step_num = 0
         self.lr_scale = 1.0
-        self.params_buf = ctx.enqueue_create_buffer[dtype](Self.PARAM_SIZE)
-        self.grads_buf = ctx.enqueue_create_buffer[dtype](Self.PARAM_SIZE)
-        self.state_buf = ctx.enqueue_create_buffer[dtype](Self.STATE_SIZE)
-        self.params_host = ctx.enqueue_create_host_buffer[dtype](
+        self.params_buf = ctx.enqueue_create_buffer[Self.dtype](Self.PARAM_SIZE)
+        self.grads_buf = ctx.enqueue_create_buffer[Self.dtype](Self.PARAM_SIZE)
+        self.state_buf = ctx.enqueue_create_buffer[Self.dtype](Self.STATE_SIZE)
+        self.params_host = ctx.enqueue_create_host_buffer[Self.dtype](
             Self.PARAM_SIZE
         )
-        self.state_host = ctx.enqueue_create_host_buffer[dtype](Self.STATE_SIZE)
+        self.state_host = ctx.enqueue_create_host_buffer[Self.dtype](Self.STATE_SIZE)
         # Zero-initialize device buffers
         ctx.enqueue_memset(self.params_buf, 0)
         ctx.enqueue_memset(self.grads_buf, 0)
@@ -134,30 +135,30 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
 
     def params_view(
         self,
-    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
+    ) -> LayoutTensor[Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
         """LayoutTensor view over device params buffer."""
         return LayoutTensor[
-            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.params_buf.unsafe_ptr())
 
     def grads_view(
         self,
-    ) -> LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
+    ) -> LayoutTensor[Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin]:
         """LayoutTensor view over device grads buffer."""
         return LayoutTensor[
-            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.grads_buf.unsafe_ptr())
 
     def state_view(
         self,
     ) -> LayoutTensor[
-        dtype,
+        Self.dtype,
         Layout.row_major(Self.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM),
         MutAnyOrigin,
     ]:
         """LayoutTensor view over device optimizer state buffer."""
         return LayoutTensor[
-            dtype,
+            Self.dtype,
             Layout.row_major(Self.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM),
             MutAnyOrigin,
         ](self.state_buf.unsafe_ptr())
@@ -178,7 +179,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         """
         self.lr_scale = scale
 
-    def clip_grads(self, ctx: DeviceContext, max_val: Scalar[dtype]) raises:
+    def clip_grads(self, ctx: DeviceContext, max_val: Scalar[Self.dtype]) raises:
         """Clamp all gradient values to [-max_val, max_val] on GPU.
 
         Simple per-element clipping to prevent gradient explosion.
@@ -193,21 +194,21 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         @always_inline
         def _clip_kernel(
             grads: LayoutTensor[
-                dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+                Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
             ],
-            clip_val: Scalar[dtype],
+            clip_val: Scalar[Self.dtype],
         ):
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx >= Self.PARAM_SIZE:
                 return
-            var v = rebind[Scalar[dtype]](grads[idx])
+            var v = rebind[Scalar[Self.dtype]](grads[idx])
             if v > clip_val:
                 grads[idx] = clip_val
             elif v < -clip_val:
                 grads[idx] = -clip_val
             # Also clamp NaN to 0
             elif v != v:
-                grads[idx] = Scalar[dtype](0.0)
+                grads[idx] = Scalar[Self.dtype](0.0)
 
         comptime BLOCKS = (Self.PARAM_SIZE + TPB - 1) // TPB
         ctx.enqueue_function[_clip_kernel, _clip_kernel](
@@ -249,19 +250,19 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
         comptime PARAM_BLOCKS = (PARAM_SIZE + TPB - 1) // TPB
         var target_t = self.params_view()
         var source_t = source.params_view()
-        var tau_s = Scalar[dtype](tau)
+        var tau_s = Scalar[Self.dtype](tau)
 
         @always_inline
         def soft_update_wrapper(
             tgt: LayoutTensor[
-                dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+                Self.dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
             ],
             src: LayoutTensor[
-                dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+                Self.dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
             ],
-            t: Scalar[dtype],
+            t: Scalar[Self.dtype],
         ):
-            soft_update_kernel[dtype, PARAM_SIZE](tgt, src, t)
+            soft_update_kernel[Self.dtype, PARAM_SIZE](tgt, src, t)
 
         ctx.enqueue_function[soft_update_wrapper, soft_update_wrapper](
             target_t,
@@ -277,7 +278,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
 
     def upload_from(
         mut self,
-        cpu: NetworkState[Self.MODEL, Self.OPTIMIZER],
+        cpu: NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
         ctx: DeviceContext,
     ) raises:
         """Upload CPU params and optimizer state to device (async).
@@ -301,7 +302,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer](
 
     def download_to(
         mut self,
-        mut cpu: NetworkState[Self.MODEL, Self.OPTIMIZER],
+        mut cpu: NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
         ctx: DeviceContext,
     ) raises:
         """Download device params and optimizer state to CPU (synchronizes).

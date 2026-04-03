@@ -79,7 +79,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
@@ -89,7 +89,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def op_forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_IN_DIM), MutAnyOrigin
@@ -108,7 +108,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def op_forward_no_cache[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_IN_DIM), MutAnyOrigin
@@ -124,7 +124,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def op_backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_OUT_DIM), MutAnyOrigin
@@ -148,7 +148,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def op_forward_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -169,7 +169,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def op_backward_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -227,17 +227,17 @@ struct GNode[
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Op.initialize_params[INIT](params)
+        Self.Op.initialize_params[INIT, dtype](params)
 
     @staticmethod
     def op_forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_IN_DIM), MutAnyOrigin
@@ -252,11 +252,11 @@ struct GNode[
             dtype, Layout.row_major(BATCH, Self.OP_CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Op.forward[BATCH](input, output, params, cache)
+        Self.Op.forward[BATCH, dtype](input, output, params, cache)
 
     @staticmethod
     def op_forward_no_cache[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_IN_DIM), MutAnyOrigin
@@ -268,11 +268,11 @@ struct GNode[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Op.forward[BATCH](input, output, params)
+        Self.Op.forward[BATCH, dtype](input, output, params)
 
     @staticmethod
     def op_backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_OUT_DIM), MutAnyOrigin
@@ -290,11 +290,11 @@ struct GNode[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Op.backward[BATCH](grad_output, grad_input, params, cache, grads)
+        Self.Op.backward[BATCH, dtype](grad_output, grad_input, params, cache, grads)
 
     @staticmethod
     def op_forward_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -311,11 +311,11 @@ struct GNode[
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.Op.forward_gpu[BATCH](ctx, output, input, params, cache, workspace)
+        Self.Op.forward_gpu[BATCH, dtype](ctx, output, input, params, cache, workspace)
 
     @staticmethod
     def op_backward_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -335,7 +335,7 @@ struct GNode[
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.Op.backward_gpu[BATCH](
+        Self.Op.backward_gpu[BATCH, dtype](
             ctx, grad_input, grad_output, params, cache, grads, workspace
         )
 
@@ -501,7 +501,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -518,7 +518,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     Layout.row_major(Self.node_types[i].OP_PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
-                Self.node_types[i].initialize_params[INIT](np)
+                Self.node_types[i].initialize_params[INIT, dtype](np)
 
     # =========================================================================
     # CPU Forward (with cache)
@@ -526,7 +526,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -573,7 +573,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         Layout.row_major(BATCH, Self.node_types[i].OP_IN_DIM),
                         MutAnyOrigin,
                     ](input.ptr)
-                    Self.node_types[i].op_forward[BATCH](
+                    Self.node_types[i].op_forward[BATCH, dtype](
                         node_in, node_out, node_p, node_c
                     )
                 else:
@@ -587,7 +587,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         cache.ptr
                         + BATCH * Self._source_act_offset_by_name[src0_name]()
                     )
-                    Self.node_types[i].op_forward[BATCH](
+                    Self.node_types[i].op_forward[BATCH, dtype](
                         node_in, node_out, node_p, node_c
                     )
             else:
@@ -641,7 +641,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     MutAnyOrigin,
                 ](concat_buf.unsafe_ptr())
 
-                Self.node_types[i].op_forward[BATCH](
+                Self.node_types[i].op_forward[BATCH, dtype](
                     node_in, node_out, node_p, node_c
                 )
 
@@ -656,7 +656,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -680,7 +680,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](cache_storage.unsafe_ptr())
-        Self.forward[BATCH](input, output, params, cache)
+        Self.forward[BATCH, dtype](input, output, params, cache)
 
     # =========================================================================
     # CPU Backward
@@ -688,7 +688,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -772,7 +772,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             ](gi_buf.unsafe_ptr())
 
             # Run VJP
-            Self.node_types[i].op_backward[BATCH](
+            Self.node_types[i].op_backward[BATCH, dtype](
                 gi_go, gi_t, node_p, node_c, node_g
             )
 
@@ -845,7 +845,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -902,7 +902,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         Layout.row_major(BATCH, Self.node_types[i].OP_IN_DIM),
                         MutAnyOrigin,
                     ](input.ptr)
-                    Self.node_types[i].op_forward_gpu[BATCH](
+                    Self.node_types[i].op_forward_gpu[BATCH, dtype](
                         ctx, act_t, node_in, node_p, node_c, op_ws
                     )
                 else:
@@ -915,7 +915,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         cache.ptr
                         + BATCH * Self._source_act_offset_by_name[src0_name]()
                     )
-                    Self.node_types[i].op_forward_gpu[BATCH](
+                    Self.node_types[i].op_forward_gpu[BATCH, dtype](
                         ctx, act_t, node_in, node_p, node_c, op_ws
                     )
             else:
@@ -1086,7 +1086,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     )
 
                 # Forward through node
-                Self.node_types[i].op_forward_gpu[BATCH](
+                Self.node_types[i].op_forward_gpu[BATCH, dtype](
                     ctx, act_t, concat_t, node_p, node_c, op_ws
                 )
 
@@ -1128,7 +1128,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -1152,11 +1152,11 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](cache_ptr)
-        Self.forward_gpu[BATCH](ctx, output, input, params, cache_t, workspace)
+        Self.forward_gpu[BATCH, dtype](ctx, output, input, params, cache_t, workspace)
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -1172,7 +1172,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default."""
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -1180,7 +1180,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -1347,7 +1347,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             ](gi_scratch_ptr)
 
             # Run VJP on GPU
-            Self.node_types[i].op_backward_gpu[BATCH](
+            Self.node_types[i].op_backward_gpu[BATCH, dtype](
                 ctx, gi_t, gi_go, node_p, node_c, node_g, op_ws
             )
 

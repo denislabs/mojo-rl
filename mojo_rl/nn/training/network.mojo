@@ -43,13 +43,13 @@ Usage:
 from ..model import Model
 from ..model.model import PerfTimerPtr, NULL_PERF
 from ..optimizer import Optimizer
-from ..constants import dtype
+from ..constants import dtype as default_dtype
 
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 
-struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
+struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]:
     """All-static namespace for network forward/backward operations.
 
     CPU and GPU methods are @staticmethod — no stored state.
@@ -58,6 +58,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
     Parameters:
         MODEL: The model architecture (implements Model trait).
         OPTIMIZER: The optimizer (implements Optimizer trait).
+        dtype: Data type for all tensors (default: DType.float32).
     """
 
     comptime IN_DIM: Int = Self.MODEL.IN_DIM
@@ -75,13 +76,13 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
         BATCH: Int
     ](
         input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         mut output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ],
         params: LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
     ):
         """Forward pass without caching (inference / action selection).
@@ -98,16 +99,16 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
         BATCH: Int
     ](
         input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         mut output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ],
         params: LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ],
     ):
         """Forward pass with caching (training — cache needed for backward).
@@ -129,19 +130,19 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
         BATCH: Int
     ](
         grad_output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ],
         mut grad_input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         params: LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ],
         mut grads: LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
     ):
         """Backward pass: accumulate param grads and compute grad_input.
@@ -171,15 +172,15 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
     ](
         ctx: DeviceContext,
         input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         mut output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ],
         params: LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
-        workspace_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[Self.dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
@@ -204,18 +205,18 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
     ](
         ctx: DeviceContext,
         input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         mut output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ],
         params: LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ],
-        workspace_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[Self.dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
@@ -241,21 +242,21 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer]:
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
         ],
         mut grad_input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         params: LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ],
         mut grads: LayoutTensor[
-            dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
-        workspace_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[Self.dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:

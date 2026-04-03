@@ -255,7 +255,7 @@ def _fused_inter_size[*OPS: DiffOp]() -> Int:
 
 
 def _auto_fused_forward[
-    BATCH: Int, *OPS: DiffOp
+    BATCH: Int, *OPS: DiffOp, dtype: DType = DType.float32
 ](
     in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     final_out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -352,7 +352,7 @@ def _auto_fused_forward[
                     start=3,
                     end=Variadic.size(ops),
                 ]
-                _auto_fused_forward[BATCH, *rest](
+                _auto_fused_forward[BATCH, *rest, dtype=dtype](
                     inter_ptr + BATCH * inter_off,
                     final_out_ptr,
                     params_ptr,
@@ -398,7 +398,7 @@ def _auto_fused_forward[
                     start=2,
                     end=Variadic.size(ops),
                 ]
-                _auto_fused_forward[BATCH, *rest](
+                _auto_fused_forward[BATCH, *rest, dtype=dtype](
                     inter_ptr + BATCH * inter_off,
                     final_out_ptr,
                     params_ptr,
@@ -441,7 +441,7 @@ def _auto_fused_forward[
                     start=1,
                     end=Variadic.size(ops),
                 ]
-                _auto_fused_forward[BATCH, *rest](
+                _auto_fused_forward[BATCH, *rest, dtype=dtype](
                     inter_ptr + BATCH * inter_off,
                     final_out_ptr,
                     params_ptr,
@@ -539,7 +539,7 @@ def _auto_fused_forward[
 
 
 def _auto_fused_backward[
-    BATCH: Int, *OPS: DiffOp
+    BATCH: Int, *OPS: DiffOp, dtype: DType = DType.float32
 ](
     grad_in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     grad_chain_out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -617,7 +617,7 @@ def _auto_fused_backward[
                     start=3,
                     end=Variadic.size(ops),
                 ]
-                _auto_fused_backward[BATCH, *rest](
+                _auto_fused_backward[BATCH, *rest, dtype=dtype](
                     out_inter,
                     grad_chain_out_ptr,
                     params_ptr,
@@ -701,7 +701,7 @@ def _auto_fused_backward[
                     start=2,
                     end=Variadic.size(ops),
                 ]
-                _auto_fused_backward[BATCH, *rest](
+                _auto_fused_backward[BATCH, *rest, dtype=dtype](
                     out_inter,
                     grad_chain_out_ptr,
                     params_ptr,
@@ -762,7 +762,7 @@ def _auto_fused_backward[
                     start=1,
                     end=Variadic.size(ops),
                 ]
-                _auto_fused_backward[BATCH, *rest](
+                _auto_fused_backward[BATCH, *rest, dtype=dtype](
                     out_inter,
                     grad_chain_out_ptr,
                     params_ptr,
@@ -882,7 +882,7 @@ def _auto_fused_backward[
 
 
 def _auto_fused_forward_gpu[
-    BATCH: Int, *OPS: DiffOp
+    BATCH: Int, *OPS: DiffOp, dtype: DType = DType.float32
 ](
     ctx: DeviceContext,
     in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -973,7 +973,7 @@ def _auto_fused_forward_gpu[
                 comptime rest = Variadic.slice_types[
                     element_types=ops, start=3, end=Variadic.size(ops)
                 ]
-                _auto_fused_forward_gpu[BATCH, *rest](
+                _auto_fused_forward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
                     ws_ptr + BATCH * inter_off,
                     final_out_ptr,
@@ -1020,7 +1020,7 @@ def _auto_fused_forward_gpu[
                 comptime rest = Variadic.slice_types[
                     element_types=ops, start=2, end=Variadic.size(ops)
                 ]
-                _auto_fused_forward_gpu[BATCH, *rest](
+                _auto_fused_forward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
                     ws_ptr + BATCH * inter_off,
                     final_out_ptr,
@@ -1060,7 +1060,7 @@ def _auto_fused_forward_gpu[
                 comptime rest = Variadic.slice_types[
                     element_types=ops, start=1, end=Variadic.size(ops)
                 ]
-                _auto_fused_forward_gpu[BATCH, *rest](
+                _auto_fused_forward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
                     ws_ptr + BATCH * inter_off,
                     final_out_ptr,
@@ -1152,7 +1152,7 @@ def _auto_fused_forward_gpu[
 
 
 def _auto_fused_forward_gpu_on_stream[
-    BATCH: Int, *OPS: DiffOp
+    BATCH: Int, *OPS: DiffOp, dtype: DType = DType.float32
 ](
     ctx: DeviceContext,
     stream: DeviceStream,
@@ -1201,31 +1201,31 @@ def _auto_fused_forward_gpu_on_stream[
                 comptime if ops[2].OP_ID == OpID.RELU._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, ReLUActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif ops[2].OP_ID == OpID.TANH._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, TanhActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif ops[2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif ops[2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SwishActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 else:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, MishActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
             else:
@@ -1235,37 +1235,37 @@ def _auto_fused_forward_gpu_on_stream[
                 comptime if ops[2].OP_ID == OpID.RELU._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, ReLUActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif ops[2].OP_ID == OpID.TANH._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, TanhActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif ops[2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SigmoidActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif ops[2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, SwishActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 else:
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, MishActivation
-                    ].eval_gpu_on_stream[BATCH](
+                    ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 comptime rest = Variadic.slice_types[
                     element_types=ops, start=3, end=Variadic.size(ops)
                 ]
-                _auto_fused_forward_gpu_on_stream[BATCH, *rest](
+                _auto_fused_forward_gpu_on_stream[BATCH, *rest, dtype=dtype](
                     ctx,
                     stream,
                     ws_ptr + BATCH * inter_off,
@@ -1299,21 +1299,21 @@ def _auto_fused_forward_gpu_on_stream[
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](final_out_ptr)
-                FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH](
+                FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH, dtype](
                     ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                 )
             else:
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](ws_ptr + BATCH * inter_off)
-                FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH](
+                FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH, dtype](
                     ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                 )
                 comptime assert Variadic.size(ops) >= 2
                 comptime rest = Variadic.slice_types[
                     element_types=ops, start=2, end=Variadic.size(ops)
                 ]
-                _auto_fused_forward_gpu_on_stream[BATCH, *rest](
+                _auto_fused_forward_gpu_on_stream[BATCH, *rest, dtype=dtype](
                     ctx,
                     stream,
                     ws_ptr + BATCH * inter_off,
@@ -1355,7 +1355,7 @@ def _auto_fused_forward_gpu_on_stream[
                 comptime rest = Variadic.slice_types[
                     element_types=ops, start=1, end=Variadic.size(ops)
                 ]
-                _auto_fused_forward_gpu_on_stream[BATCH, *rest](
+                _auto_fused_forward_gpu_on_stream[BATCH, *rest, dtype=dtype](
                     ctx,
                     stream,
                     ws_ptr + BATCH * inter_off,
@@ -1390,7 +1390,7 @@ def _auto_fused_forward_gpu_on_stream[
             var out_v = LayoutTensor[
                 dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
             ](final_out_ptr)
-            FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH](
+            FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH, dtype](
                 ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
             )
         else:
@@ -1450,7 +1450,7 @@ def _auto_fused_forward_gpu_on_stream[
 
 
 def _auto_fused_backward_gpu[
-    BATCH: Int, *OPS: DiffOp
+    BATCH: Int, *OPS: DiffOp, dtype: DType = DType.float32
 ](
     ctx: DeviceContext,
     grad_in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -1523,7 +1523,7 @@ def _auto_fused_backward_gpu[
                 comptime rest = Variadic.slice_types[
                     element_types=ops, start=3, end=Variadic.size(ops)
                 ]
-                _auto_fused_backward_gpu[BATCH, *rest](
+                _auto_fused_backward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
                     out_inter,
                     grad_chain_out_ptr,
@@ -1604,7 +1604,7 @@ def _auto_fused_backward_gpu[
                 comptime rest = Variadic.slice_types[
                     element_types=ops, start=2, end=Variadic.size(ops)
                 ]
-                _auto_fused_backward_gpu[BATCH, *rest](
+                _auto_fused_backward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
                     out_inter,
                     grad_chain_out_ptr,
@@ -1663,7 +1663,7 @@ def _auto_fused_backward_gpu[
                 comptime rest = Variadic.slice_types[
                     element_types=ops, start=1, end=Variadic.size(ops)
                 ]
-                _auto_fused_backward_gpu[BATCH, *rest](
+                _auto_fused_backward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
                     out_inter,
                     grad_chain_out_ptr,
@@ -1838,7 +1838,7 @@ struct AutoFused[*OPS: DiffOp](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -1864,7 +1864,7 @@ struct AutoFused[*OPS: DiffOp](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -1886,7 +1886,7 @@ struct AutoFused[*OPS: DiffOp](Model):
         for _ in range(inter_size if inter_size > 0 else 1):
             inter_storage.append(0)
 
-        _auto_fused_forward[BATCH, *Self.OPS](
+        _auto_fused_forward[BATCH, *Self.OPS, dtype=dtype](
             input.ptr,
             output.ptr,
             params.ptr,
@@ -1903,7 +1903,7 @@ struct AutoFused[*OPS: DiffOp](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -1932,7 +1932,7 @@ struct AutoFused[*OPS: DiffOp](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -1957,7 +1957,7 @@ struct AutoFused[*OPS: DiffOp](Model):
         for _ in range(gi_size if gi_size > 0 else 1):
             gi_storage.append(0)
 
-        _auto_fused_backward[BATCH, *Self.OPS](
+        _auto_fused_backward[BATCH, *Self.OPS, dtype=dtype](
             grad_input.ptr,
             grad_output.ptr,
             params.ptr,
@@ -1975,7 +1975,7 @@ struct AutoFused[*OPS: DiffOp](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -1997,7 +1997,7 @@ struct AutoFused[*OPS: DiffOp](Model):
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
             Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
         )
-        _auto_fused_forward_gpu[BATCH, *Self.OPS](
+        _auto_fused_forward_gpu[BATCH, *Self.OPS, dtype=dtype](
             ctx,
             input.ptr,
             output.ptr,
@@ -2016,7 +2016,7 @@ struct AutoFused[*OPS: DiffOp](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -2046,7 +2046,7 @@ struct AutoFused[*OPS: DiffOp](Model):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -2069,7 +2069,7 @@ struct AutoFused[*OPS: DiffOp](Model):
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
             Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
         )
-        _auto_fused_forward_gpu_on_stream[BATCH, *Self.OPS](
+        _auto_fused_forward_gpu_on_stream[BATCH, *Self.OPS, dtype=dtype](
             ctx,
             stream,
             input.ptr,
@@ -2089,7 +2089,7 @@ struct AutoFused[*OPS: DiffOp](Model):
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -2114,7 +2114,7 @@ struct AutoFused[*OPS: DiffOp](Model):
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
             Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
         )
-        _auto_fused_backward_gpu[BATCH, *Self.OPS](
+        _auto_fused_backward_gpu[BATCH, *Self.OPS, dtype=dtype](
             ctx,
             grad_input.ptr,
             grad_output.ptr,

@@ -43,6 +43,7 @@ struct CrossEntropyLoss(LossFunction):
     def forward[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -55,6 +56,7 @@ struct CrossEntropyLoss(LossFunction):
 
         Uses log-sum-exp trick per sample for numerical stability.
         """
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var total_loss: Float64 = 0.0
         for row in range(BATCH):
             var max_val = Float64(rebind[Scalar[dtype]](output[row, 0]))
@@ -84,6 +86,7 @@ struct CrossEntropyLoss(LossFunction):
     def backward[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -97,6 +100,7 @@ struct CrossEntropyLoss(LossFunction):
     ):
         """Gradient of Cross-Entropy: dL/dy = (softmax(output) - target) / BATCH.
         """
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         for row in range(BATCH):
             var max_val = Float64(rebind[Scalar[dtype]](output[row, 0]))
             for col in range(1, OUT_DIM):
@@ -130,6 +134,7 @@ struct CrossEntropyLoss(LossFunction):
     def forward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
         predictions: LayoutTensor[
@@ -144,6 +149,7 @@ struct CrossEntropyLoss(LossFunction):
         Each sample's loss is computed, then summed across batch.
         Must be launched with grid_dim=(1,), block_dim=(TPB,).
         """
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var local_i = thread_idx.x
 
         var my_value: predictions.element_type = 0.0
@@ -188,6 +194,7 @@ struct CrossEntropyLoss(LossFunction):
     def backward_kernel_impl[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
@@ -205,6 +212,7 @@ struct CrossEntropyLoss(LossFunction):
         Grid: (BATCH,)
         Block: (1,)
         """
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var batch_idx = Int(block_idx.x)
         comptime SIZE = BATCH * OUT_DIM
         if batch_idx >= SIZE:
@@ -242,6 +250,7 @@ struct CrossEntropyLoss(LossFunction):
     def forward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -253,6 +262,7 @@ struct CrossEntropyLoss(LossFunction):
         ],
     ) raises:
         """Launch forward pass on GPU to compute Cross-Entropy loss."""
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
 
         @always_inline
         def kernel_wrapper(
@@ -264,7 +274,7 @@ struct CrossEntropyLoss(LossFunction):
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl[BATCH, OUT_DIM](loss, predictions, targets)
+            Self.forward_kernel_impl[BATCH, OUT_DIM, dtype](loss, predictions, targets)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             loss,
@@ -278,6 +288,7 @@ struct CrossEntropyLoss(LossFunction):
     def backward_gpu[
         BATCH: Int,
         OUT_DIM: Int,
+        dtype: DType = DType.float32,
     ](
         ctx: DeviceContext,
         mut grad_output: LayoutTensor[
@@ -291,6 +302,7 @@ struct CrossEntropyLoss(LossFunction):
         ],
     ) raises:
         """Launch backward pass on GPU to compute loss gradient."""
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
 
         @always_inline
         def kernel_wrapper(
@@ -304,7 +316,7 @@ struct CrossEntropyLoss(LossFunction):
                 dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
             ],
         ):
-            Self.backward_kernel_impl[BATCH, OUT_DIM](
+            Self.backward_kernel_impl[BATCH, OUT_DIM, dtype](
                 grad_output, predictions, targets
             )
 

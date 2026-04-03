@@ -68,7 +68,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
 
     @staticmethod
     def eval[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -108,7 +108,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
 
     @staticmethod
     def vjp[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -168,7 +168,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     @always_inline
     @staticmethod
     def eval_kernel_tiled[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
@@ -252,7 +252,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     @always_inline
     @staticmethod
     def backward_kernel_tiled[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
@@ -397,7 +397,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     @always_inline
     @staticmethod
     def eval_kernel_mma[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
@@ -550,7 +550,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     @always_inline
     @staticmethod
     def eval_kernel_2x2[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
@@ -686,7 +686,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     @always_inline
     @staticmethod
     def backward_dx_kernel_mma[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
@@ -814,7 +814,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     @always_inline
     @staticmethod
     def backward_dx_kernel_2x2[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
@@ -933,7 +933,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     @always_inline
     @staticmethod
     def backward_dW_kernel_mma[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         dW: LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
@@ -1053,7 +1053,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     @always_inline
     @staticmethod
     def backward_dW_kernel_2x2[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         dW: LayoutTensor[
             dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
@@ -1169,7 +1169,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
     @always_inline
     @staticmethod
     def backward_db_kernel[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         db: LayoutTensor[dtype, Layout.row_major(Self.out_dim), MutAnyOrigin],
         grad_output: LayoutTensor[
@@ -1199,7 +1199,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
 
     @staticmethod
     def eval_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -1337,7 +1337,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
                     MutAnyOrigin,
                 ],
             ):
-                Self.eval_kernel_2x2[BATCH](output, input, W, b, cache)
+                Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
 
             ctx.enqueue_function[wrapper, wrapper](
                 output,
@@ -1351,7 +1351,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
 
     @staticmethod
     def eval_gpu_on_stream[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -1410,9 +1410,9 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
             ],
         ):
             comptime if is_nvidia_gpu():
-                Self.eval_kernel_mma[BATCH](output, input, W, b, cache)
+                Self.eval_kernel_mma[BATCH, dtype](output, input, W, b, cache)
             else:
-                Self.eval_kernel_2x2[BATCH](output, input, W, b, cache)
+                Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
 
         var compiled = ctx.compile_function[wrapper, wrapper]()
         stream.enqueue_function(
@@ -1428,7 +1428,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
 
     @staticmethod
     def vjp_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         grad_output: LayoutTensor[
@@ -1490,11 +1490,11 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
             ],
         ):
             comptime if is_nvidia_gpu():
-                Self.backward_dx_kernel_mma[BATCH](
+                Self.backward_dx_kernel_mma[BATCH, dtype](
                     grad_input, grad_output, W, cache
                 )
             else:
-                Self.backward_dx_kernel_2x2[BATCH](
+                Self.backward_dx_kernel_2x2[BATCH, dtype](
                     grad_input, grad_output, W, cache
                 )
 
@@ -1526,9 +1526,9 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
             ],
         ):
             comptime if is_nvidia_gpu():
-                Self.backward_dW_kernel_mma[BATCH](dW, cache, grad_output)
+                Self.backward_dW_kernel_mma[BATCH, dtype](dW, cache, grad_output)
             else:
-                Self.backward_dW_kernel_2x2[BATCH](dW, cache, grad_output)
+                Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
 
         ctx.enqueue_function[dW_wrapper, dW_wrapper](
             dW,
@@ -1555,7 +1555,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
                 ImmutAnyOrigin,
             ],
         ):
-            Self.backward_db_kernel[BATCH](db, grad_output, cache)
+            Self.backward_db_kernel[BATCH, dtype](db, grad_output, cache)
 
         ctx.enqueue_function[db_wrapper, db_wrapper](
             db,

@@ -1,4 +1,4 @@
-from ..constants import dtype
+from ..constants import dtype as default_dtype
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
@@ -49,7 +49,7 @@ trait Model(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -69,7 +69,7 @@ trait Model(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -96,7 +96,7 @@ trait Model(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -123,7 +123,7 @@ trait Model(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -163,7 +163,7 @@ trait Model(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -198,7 +198,7 @@ trait Model(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -233,7 +233,7 @@ trait Model(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -261,7 +261,7 @@ trait Model(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[

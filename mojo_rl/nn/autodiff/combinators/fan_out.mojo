@@ -75,7 +75,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
     @staticmethod
     def initialize_params[
-        INIT: Initializer
+        INIT: Initializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
@@ -90,7 +90,7 @@ struct FanOut[Inner: Model, N: Int](Model):
             var pi = LayoutTensor[
                 dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin
             ](params.ptr + Self._param_offset[i]())
-            Self.Inner.initialize_params[INIT](pi)
+            Self.Inner.initialize_params[INIT, dtype](pi)
 
     # =========================================================================
     # CPU Forward (with cache)
@@ -98,7 +98,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -136,7 +136,7 @@ struct FanOut[Inner: Model, N: Int](Model):
             var input_i = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.Inner.IN_DIM), MutAnyOrigin
             ](input.ptr)
-            Self.Inner.forward[BATCH](input_i, i_out, pi, ci)
+            Self.Inner.forward[BATCH, dtype](input_i, i_out, pi, ci)
 
             # Copy into concat output
             for b in range(BATCH):
@@ -151,7 +151,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
     @staticmethod
     def forward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -179,7 +179,7 @@ struct FanOut[Inner: Model, N: Int](Model):
             var input_i = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.Inner.IN_DIM), MutAnyOrigin
             ](input.ptr)
-            Self.Inner.forward[BATCH](input_i, i_out, pi)
+            Self.Inner.forward[BATCH, dtype](input_i, i_out, pi)
 
             for b in range(BATCH):
                 for j in range(I_OUT):
@@ -193,7 +193,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
     @staticmethod
     def backward[
-        BATCH: Int
+        BATCH: Int, dtype: DType = DType.float32
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -248,7 +248,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
             comptime if i == 0:
                 # First copy: write directly to grad_input
-                Self.Inner.backward[BATCH](go_i, grad_input, pi, ci, grads_i)
+                Self.Inner.backward[BATCH, dtype](go_i, grad_input, pi, ci, grads_i)
             else:
                 # Subsequent copies: write to temp, then accumulate
                 var gi_tmp = LayoutTensor[
@@ -256,7 +256,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                     Layout.row_major(BATCH, Self.Inner.IN_DIM),
                     MutAnyOrigin,
                 ](gi_tmp_buf.unsafe_ptr())
-                Self.Inner.backward[BATCH](go_i, gi_tmp, pi, ci, grads_i)
+                Self.Inner.backward[BATCH, dtype](go_i, gi_tmp, pi, ci, grads_i)
                 # Accumulate into grad_input
                 for k in range(BATCH * Self.IN_DIM):
                     grad_input.ptr[k] = grad_input.ptr[k] + gi_tmp_buf[k]
@@ -267,7 +267,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
     @staticmethod
     def forward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -322,7 +322,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                 Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
                 MutAnyOrigin,
             ](cache.ptr + BATCH * Self._cache_offset[i]())
-            Self.Inner.forward_gpu[BATCH](
+            Self.Inner.forward_gpu[BATCH, dtype](
                 ctx, i_out_t, input_i, pi, ci, child_ws
             )
 
@@ -357,7 +357,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
     @staticmethod
     def forward_gpu_no_cache[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut output: LayoutTensor[
@@ -377,7 +377,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         stream: DeviceStream,
@@ -392,11 +392,11 @@ struct FanOut[Inner: Model, N: Int](Model):
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
 
     @staticmethod
     def backward_gpu[
-        BATCH: Int,
+        BATCH: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
         mut grad_input: LayoutTensor[
@@ -492,7 +492,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
             comptime if i == 0:
                 # First copy: backward directly into grad_input
-                Self.Inner.backward_gpu[BATCH](
+                Self.Inner.backward_gpu[BATCH, dtype](
                     ctx, grad_input, go_t, pi, ci, grads_i, child_ws
                 )
             else:
@@ -502,7 +502,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                     Layout.row_major(BATCH, Self.Inner.IN_DIM),
                     MutAnyOrigin,
                 ](gi_ws_ptr)
-                Self.Inner.backward_gpu[BATCH](
+                Self.Inner.backward_gpu[BATCH, dtype](
                     ctx, gi_t, go_t, pi, ci, grads_i, child_ws
                 )
 
