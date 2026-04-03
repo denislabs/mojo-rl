@@ -37,7 +37,7 @@ def main() raises:
     var logger = RemoteLogger(
         server_url=url,
         run_name="AlphaZero Connect Four",
-        buffer_size=64,
+        buffer_size=13,
         api_key=api_key,
     )
 
@@ -60,12 +60,12 @@ def main() raises:
     var ctx = DeviceContext()
     comptime C4 = ConnectFourEnv[DType.float32]
 
-    var agent = GenericAlphaZeroAgent[Config, 64, RemoteLogger]()
+    var agent = GenericAlphaZeroAgent[Config, 512, RemoteLogger]()
 
     _ = agent.train_selfplay_gpu[C4, RandomOpponent, GPUMinimaxConnectFour[5]](
         ctx,
         num_iters=50,
-        steps_per_iter=16000,  # ~500+ games per iter (AlphaZero.jl uses 5000)
+        steps_per_iter=64_000,  # ~3000+ games per iter (AlphaZero.jl uses 5000)
         train_epochs=2,  # Oracle article: 2 epochs optimal for C4
         warmup_iters=1,
         arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)

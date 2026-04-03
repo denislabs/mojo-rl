@@ -223,7 +223,7 @@ struct AlphaZeroConnectFourConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
-    comptime value_target_q_weight: Float64 = 0.5
+    comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[0.25, 1.0]  # alpha=1.0 for C4
     comptime PUCT = AlphaGoPUCT[2.0]
@@ -289,7 +289,7 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
-    comptime value_target_q_weight: Float64 = 0.5
+    comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[
         0.25, 1.0
@@ -399,7 +399,7 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
-    comptime value_target_q_weight: Float64 = 0.5
+    comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[0.25, 1.0]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
@@ -456,7 +456,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
-    comptime value_target_q_weight: Float64 = 0.5
+    comptime value_target_q_weight: Float64 = 0.0
 
     comptime Noise = DirichletNoise[0.25, 1.0]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]

@@ -76,7 +76,7 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | Component              | MuJoCo vs CPU | CPU vs GPU | Notes                                    |
 |------------------------|:-------------:|:----------:|------------------------------------------|
 | Solver Forces          | DONE          | DONE       | Validated via full step (1-step qacc match) |
-| Full Step (contact)    | DONE          | DONE       | 6 configs, static ~1e-5, deep ~4e-3, 5-step ~0.03 |
+| Full Step (contact)    | DONE          | DONE       | 6/6 configs pass, all errors ~1e-6 (float32 rounding) |
 
 ### Stage 4: ImplicitFast integrator
 
@@ -258,11 +258,11 @@ ImplicitFast+PGS has no MuJoCo comparison because MuJoCo only allows Newton solv
 | `test_constraint_params_cpu_vs_gpu.mojo` | Constraint params K, bias, inv_K_imp (float32) | PASS | 4 (low static, low moving, very low, bent) | abs: 1e-2 (actual err ~1e-6) |
 | `test_contacts_cpu_vs_gpu.mojo` | Contact detection pos, normal, dist (float32) | PASS | 6 (high, default, low, very low, bent, tilted) | pos: 1e-3, dist: 1e-3, normal_dot>0.999 |
 | `test_jacobian_cpu_vs_gpu.mojo` | Normal Jacobian J_n rows (float32) | PASS | 4 (low static, low moving, very low, bent) | abs: 1e-3 (actual err ~6e-8) |
-| `test_full_step_contact_cpu_vs_gpu.mojo` | Full step with contacts (float32) | PASS | 6 (static, actions, deep pen, moving, 5-step) | qpos: 3e-2, qvel: 5e-1 (actual static ~1e-5, deep ~4e-3) |
-| `test_implicit_fast_newton_cpu_vs_gpu.mojo` | ImplicitFast+Newton full step (float32) | PASS | 7 (3 no-contact + 4 contact, deep pen skipped) | qpos: 3e-2, qvel: 5e-1 (actual err=0 for most, ~0 for contact) |
-| `test_implicit_fast_pgs_cpu_vs_gpu.mojo` | ImplicitFast+PGS full step (float32) | PASS | 8 (3 no-contact + 5 contact) | qpos: 5e-2, qvel: 1.0 (actual max qvel err 0.33 for deep pen) |
+| `test_full_step_contact_cpu_vs_gpu.mojo` | Full step with contacts (float32) | PASS (6/6) | 6 (static, actions, deep pen, moving, 5-step) | qpos: 5e-2, qvel: 1.0 (actual err ~1e-6, near float32 rounding) |
+| `test_implicit_fast_newton_cpu_vs_gpu.mojo` | ImplicitFast+Newton full step (float32) | 5/7 PASS | 7 (3 no-contact + 4 contact) | 1-step: pass (err ~1e-6). 5-step: 2 fail (accumulated float32 divergence) |
+| `test_implicit_fast_pgs_cpu_vs_gpu.mojo` | ImplicitFast+PGS full step (float32) | 6/8 PASS | 8 (3 no-contact + 5 contact) | 1-step: pass. 5-step: 2 fail (accumulated float32 divergence) |
 | `test_implicit_cpu_vs_gpu.mojo` | Implicit(full)+PGS full step (float32) | PASS | 8 (zero vel, nonzero vel, actions, contact) | qpos: 5e-2, qvel: 1.0 (nonzero vel err ~2.8e-4, contact ~0.01) |
-| `test_pyramidal_cpu_vs_gpu.mojo` | Pyramidal cone Euler+Newton CPU vs GPU (float32) | PASS | 6 (static, actions, deep pen, moving, 5-step) | qpos: 3e-2, qvel: 5e-1 (actual static ~0.08, deep ~0.55, moving ~0.16) |
+| `test_pyramidal_cpu_vs_gpu.mojo` | Pyramidal cone Euler+Newton CPU vs GPU (float32) | PASS (6/6) | 6 (static, actions, deep pen, moving, 5-step) | qpos: 5e-2, qvel: 1.0 (actual err ~1e-6, near float32 rounding) |
 | `test_rk4_cpu_vs_gpu.mojo` | RK4+Newton full step CPU vs GPU (float32) | PASS | 6 (free fall, actions, moving, fast spin, 10-step, ground contact) | qpos: 3e-2, qvel: 5e-1 (actual err ~0, exact match) |
 
 #### Hopper CPU vs GPU Tests
@@ -521,23 +521,61 @@ against MuJoCo's Newton solver with `opt.cone=0` (pyramidal).
 | Bent legs | 1.9e-4 | 5.9e-6 | 9.6e-4 | 4.6e-6 |
 
 **CPU vs GPU (`test_pyramidal_cpu_vs_gpu.mojo`):**
-CPU uses primal Newton solver (exact cone logic), GPU uses coupled PGS (iterative).
-Both use `ConeType.PYRAMIDAL`. 6 configs, all pass.
+CPU uses primal Newton solver (exact cone logic), GPU uses primal Newton (same algorithm).
+Both use `ConeType.PYRAMIDAL`. 6/6 configs pass, errors at float32 rounding level (~1e-6).
 
 | Config | qpos max_abs | qvel max_abs | Notes |
 |--------|-------------|-------------|-------|
-| Ground contact (1 step) | 8.1e-4 | 0.081 | |
-| Ground + actions (1 step) | 6.1e-4 | 0.061 | |
-| Deep penetration (1 step) | 5.5e-3 | 0.55 | 10 contacts |
-| Moving + contacts (1 step) | 1.6e-3 | 0.16 | Fixed by per-edge bias |
-| Ground contact (5 steps) | 2.6e-3 | 0.023 | |
-| Ground + actions (5 steps) | 1.6e-3 | 0.014 | |
+| Ground contact (1 step) | ~1e-8 | ~1e-6 | Near float32 precision |
+| Ground + actions (1 step) | ~1e-8 | ~1e-6 | |
+| Deep penetration (1 step) | ~1e-8 | ~1e-6 | 10 contacts |
+| Moving + contacts (1 step) | ~1e-8 | ~1e-6 | |
+| Ground contact (5 steps) | ~1e-7 | ~1e-5 | |
+| Ground + actions (5 steps) | ~1e-7 | ~1e-5 | |
 
 3. **GPU per-edge bias** (FIXED): GPU friction solver used normal-only bias (`bias_n`) for all
    pyramidal edges. MuJoCo uses per-edge velocity: `v_edge = (J_n ± mu*J_t) * qvel`.
    Fix: `bias_pos = bias_n + mu * B_damp * v_t`, `bias_neg = bias_n - mu * B_damp * v_t`.
    `B_damp * v_t` was already computed in workspace (`bf[d*MC+c]`).
    File: `friction_solver.mojo` lines 664, 724
+
+### Stage 8: GPU body_invweight0 fix + direct R_n computation
+
+**Root cause of all CPU vs GPU contact test failures (3/6 → 6/6):**
+
+The GPU `_compute_invweight0_gpu` kernel produced incorrect **translational** `body_invweight0[2*i]`
+values (~9x off from CPU). Rotational values `body_invweight0[2*i+1]` were correct. This caused
+`diag_n` in the constraint builder to be ~9x too large → `R_n` ~9x too large → `D` (force scaling)
+~9x too small → all constraint forces ~9x weaker than correct.
+
+Both `ModelDef.init_model_gpu` and `ModelDefFromXML.init_model_gpu` called `_compute_invweight0_gpu`
+after already having correct CPU-computed values, overwriting them.
+
+**Fixes:**
+1. **`model_def_from_xml.mojo`**: Removed `_compute_invweight0_gpu` call — CPU `setup_model_and_data`
+   already computes correct `body_invweight0` which is serialized via `copy_invweight0_to_buffer`.
+2. **`model_def.mojo`**: Replaced `_compute_invweight0_gpu` with CPU-side computation using
+   a temporary Model/Data + `finalize()`.
+3. **`constraint_builder_gpu.mojo`**: Extended common normal workspace from `13*MC+2*MC*NV` to
+   `15*MC+2*MC*NV`, adding `imp_n` (slot 13) and `diag_n` (slot 14). Friction builder now computes
+   `R_n = (1-imp)/imp * diag_n` directly instead of lossy `R = 1/inv_K_imp - K`.
+4. **All GPU solvers**: Updated J_n/MinvJn offsets from `13*MC` to `15*MC`, workspace sizes +2*MC.
+   Replaced lossy R_n recovery with direct computation from stored imp/diag_n.
+   Files: `newton_solver.mojo`, `cg_solver.mojo`, `old_newton_solver.mojo`, `pgs_solver.mojo`,
+   `island_pgs_solver.mojo`, `friction_solver.mojo`
+
+**Test results after fix (2026-04-03):**
+
+| Test | Before | After | Notes |
+|------|--------|-------|-------|
+| test_full_step_contact_cpu_vs_gpu (ELLIPTIC) | 3/6 | **6/6** | All single-step errors ~1e-6 |
+| test_pyramidal_cpu_vs_gpu (PYRAMIDAL) | 3/6 | **6/6** | All errors ~1e-6 |
+| test_implicit_fast_newton_cpu_vs_gpu | 3/7 | **5/7** | 1-step contacts now pass; 5-step still diverge |
+| test_implicit_fast_pgs_cpu_vs_gpu | 4/8 | **6/8** | 1-step contacts now pass; 5-step still diverge |
+| test_pyramidal_vs_mujoco | 4/4 | 4/4 | Unchanged |
+| test_full_step_contact_vs_mujoco | 7/7 | 7/7 | Unchanged |
+| test_solver_forces_vs_mujoco | 4/4 | 4/4 | Unchanged |
+| test_ant_full_step_cpu_vs_gpu | PASS | PASS | Unchanged |
 
 ### Stage 7: RK4 integrator
 
@@ -769,3 +807,48 @@ New Coverage Analysis
   12. test_ant_fk_cpu_vs_gpu.mojo — DONE. 5 configs (default init_qpos, raised, nonzero joints, rotated 30°, extreme). Free joint quaternion init. pos/quat tol=1e-4.
   13. test_ant_full_step_cpu_vs_gpu.mojo — DONE. 5 configs (free fall, free fall+actions, default joints raised, moving+actions, free fall 10-steps). All z=2.0 (no contacts).
   14. test_humanoid_fk_cpu_vs_gpu.mojo — DONE. 5 configs (default standing, bent knees, arms extended, rotated 45°, full body pose). pos/quat tol=1e-3 (lwaist quat accumulation).
+
+---
+
+## Full Test Run Results (2026-04-03, Apple Silicon)
+
+### MuJoCo vs CPU Tests
+
+| Test File | Result | Notes |
+|-----------|--------|-------|
+| test_fk_vs_mujoco | 5/5 PASS | |
+| test_mass_matrix_vs_mujoco | 4/4 PASS | |
+| test_contacts_vs_mujoco | 6/6 PASS | |
+| test_pgs_vs_mujoco | 4/4 PASS | |
+| test_constraint_params_vs_mujoco | 4/4 PASS | |
+| test_jacobian_vs_mujoco | 4/4 PASS | |
+| test_full_step_vs_mujoco | 6/6 PASS | |
+| test_full_step_contact_vs_mujoco | 7/7 PASS | |
+| test_solver_forces_vs_mujoco | 4/4 PASS | |
+| test_cg_vs_mujoco | 4/4 PASS | |
+| test_implicit_fast_step_vs_mujoco | 5/5 PASS | |
+| test_implicit_fast_step_contact_vs_mujoco | 4/4 PASS | |
+| test_implicit_step_vs_mujoco | 3/6 (3 fail) | Pre-existing: moving/spinning configs fail |
+| test_rk4_step_vs_mujoco | 6/6 PASS | |
+| test_pyramidal_vs_mujoco | 4/4 PASS | |
+| test_qderiv_vs_mujoco | 3/3 PASS | |
+| test_inertiafromgeom_vs_mujoco | 2/2 PASS | |
+| test_ant_full_step_vs_mujoco | 6/6 PASS | |
+| test_hopper_full_step_vs_mujoco | 6/6 PASS | |
+| test_swimmer_full_step_vs_mujoco | 4/4 PASS | |
+| test_walker2d_full_step_vs_mujoco | 6/6 PASS | |
+| test_inverted_pendulum_full_step_vs_mujoco | 5/5 PASS | |
+| test_humanoid_full_step_vs_mujoco | 6/6 PASS | |
+| test_bias_forces_vs_mujoco | 0/5 (5 fail) | Pre-existing: CPU bias forces diverge |
+| test_qacc0_vs_mujoco | 0/5 (5 fail) | Pre-existing: depends on bias forces |
+| test_hopper_solver_forces_vs_mujoco | 0/4 (4 fail) | Pre-existing: Hopper friction forces diverge |
+
+### CPU vs GPU Tests
+
+| Test File | Result | Notes |
+|-----------|--------|-------|
+| test_full_step_contact_cpu_vs_gpu | **6/6 PASS** | Fixed by invweight0 bug fix (was 3/6) |
+| test_pyramidal_cpu_vs_gpu | **6/6 PASS** | Fixed by invweight0 bug fix (was 3/6) |
+| test_implicit_fast_newton_cpu_vs_gpu | 5/7 (2 fail) | 1-step: all pass. 5-step: accumulated float32 divergence |
+| test_implicit_fast_pgs_cpu_vs_gpu | 6/8 (2 fail) | 1-step: all pass. 5-step: accumulated float32 divergence |
+| test_ant_full_step_cpu_vs_gpu | ALL PASS | |
