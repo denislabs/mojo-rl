@@ -113,6 +113,7 @@ from ..dynamics.jacobian import compute_contact_jacobian_row_gpu
 from ..constraints.constraint_builder_gpu import (
     init_common_normal_workspace_gpu,
     precompute_contact_normal_gpu,
+    precompute_contact_friction_gpu,
     warmstart_normals_gpu,
     apply_solved_normals_gpu,
     detect_and_solve_limits_gpu,
@@ -298,18 +299,22 @@ struct NewtonSolver(ConstraintSolver):
     def solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
         """Newton solver workspace size (primal, qacc-space).
 
-        Layout:
-          Common normal block: 13*MC + 2*MC*NV
-            [lambda_n, K_n, c_dist, c_body, c_body_b, px, py, pz,
-             nx, ny, nz, pos_bias, inv_K_imp | J_n: MC*NV | MinvJn: MC*NV]
-          Primal-specific block: 4*MC*NV + 5*MC + 7*MC = 12*MC + 4*MC*NV
-            [J_t1: MC*NV | J_t2: MC*NV | MinvJt1: MC*NV | MinvJt2: MC*NV |
-             mu: MC | D_n: MC | D_f: MC | bt1: MC | bt2: MC |
-             jar_n: MC | jar_t1: MC | jar_t2: MC | fn: MC | ft1: MC | ft2: MC | cstate: MC]
-        Total = 25*MC + 6*MC*NV
+        Layout (ELLIPTIC):
+          Common normal block: 15*MC + 2*MC*NV
+          Primal block: 4*MC*NV + 12*MC
+            [J_t1, J_t2, MinvJt1, MinvJt2 | mu, D_n, D_f, bt1, bt2 |
+             jar_n, jar_t1, jar_t2, fn, ft1, ft2, cstate]
+
+        Layout (PYRAMIDAL) — reuses same J slots for 4 edge Jacobians:
+          Common normal block: 15*MC + 2*MC*NV
+          Primal block: 4*MC*NV + 20*MC
+            [J_e0, J_e1, J_e2, J_e3 | D_e0..3, bias_e0..3 |
+             jar_e0..3, f_e0..3, cstate_e0..3]
+
+        Total = 35*MC + 6*MC*NV (accommodates both)
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 25 * MC + 6 * MC * NV
+        return 35 * MC + 6 * MC * NV
 
     @no_inline
     @staticmethod
@@ -439,6 +444,9 @@ struct NewtonSolver(ConstraintSolver):
         )
 
         comptime if NEWTON_CPU_DEBUG:
+            print("  [PRIMAL] qacc (initial):")
+            for i in range(NV):
+                print("    qacc[", i, "]=", Float64(qacc[i]))
             print(
                 "  [PRIMAL] num_rows=",
                 num_rows,
@@ -802,11 +810,11 @@ struct NewtonSolver(ConstraintSolver):
         comptime ws_c_nz_idx = solver_ws_idx + 10 * MC
         comptime ws_pos_bias_idx = solver_ws_idx + 11 * MC
         comptime ws_inv_K_imp_idx = solver_ws_idx + 12 * MC
-        comptime ws_J_n_idx = solver_ws_idx + 13 * MC
-        comptime ws_MinvJn_idx = solver_ws_idx + 13 * MC + MC * NV
+        comptime ws_J_n_idx = solver_ws_idx + 15 * MC
+        comptime ws_MinvJn_idx = solver_ws_idx + 15 * MC + MC * NV
 
         # Primal-specific offsets (after common normal block)
-        comptime PRIMAL_START = solver_ws_idx + 13 * MC + 2 * MC * NV
+        comptime PRIMAL_START = solver_ws_idx + 15 * MC + 2 * MC * NV
         comptime ws_Jt1_idx = PRIMAL_START + 0 * MC * NV
         comptime ws_Jt2_idx = PRIMAL_START + 1 * MC * NV
         comptime ws_MinvJt1_idx = PRIMAL_START + 2 * MC * NV
@@ -954,191 +962,21 @@ struct NewtonSolver(ConstraintSolver):
 
         barrier()
 
-        # === PARALLEL PHASE 2: Tangent frame + Jt1/Jt2/bt/D/mu (one contact per thread) ===
-        # Each contact_tid thread independently handles one contact — no write conflicts.
-        # MinvJt1/MinvJt2 removed: they are never read by the primal Newton loop.
-        comptime qvel_off = qvel_offset[NQ, NV]()
-        comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
+        # === PARALLEL PHASE 2: Tangent frame + friction data ===
+        # Uses shared builder — no more duplicated tangent frame code.
+        # For ELLIPTIC: builds J_t1, J_t2, D_n, D_f, mu, bt1, bt2
+        # For PYRAMIDAL: builds 4 edge J, D_edge, bias_edge
         if valid_env and contact_tid < nc:
-            var c = contact_tid
-            if rebind[Scalar[DTYPE]](
-                workspace[env, ws_c_dist_idx + c]
-            ) < Scalar[DTYPE](0):
-                var nx = rebind[Scalar[DTYPE]](workspace[env, ws_c_nx_idx + c])
-                var ny = rebind[Scalar[DTYPE]](workspace[env, ws_c_ny_idx + c])
-                var nz = rebind[Scalar[DTYPE]](workspace[env, ws_c_nz_idx + c])
-
-                var c_off = contacts_off + c * CONTACT_SIZE
-                var hint_x = rebind[Scalar[DTYPE]](
-                    state[env, c_off + CONTACT_IDX_FRAME_T1_X]
-                )
-                var hint_y = rebind[Scalar[DTYPE]](
-                    state[env, c_off + CONTACT_IDX_FRAME_T1_Y]
-                )
-                var hint_z = rebind[Scalar[DTYPE]](
-                    state[env, c_off + CONTACT_IDX_FRAME_T1_Z]
-                )
-                if hint_x * hint_x + hint_y * hint_y + hint_z * hint_z < Scalar[
-                    DTYPE
-                ](0.25):
-                    var abs_nx = abs(nx)
-                    var abs_ny = abs(ny)
-                    var abs_nz = abs(nz)
-                    if abs_nx <= abs_ny and abs_nx <= abs_nz:
-                        hint_x = Scalar[DTYPE](1); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](0)
-                    elif abs_ny <= abs_nz:
-                        hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](1); hint_z = Scalar[DTYPE](0)
-                    else:
-                        hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](1)
-
-                # Gram-Schmidt: orthogonalize hint against normal → T1
-                var dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
-                var t1x = hint_x - dot_nh * nx
-                var t1y = hint_y - dot_nh * ny
-                var t1z = hint_z - dot_nh * nz
-                var t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
-                if t1_mag < Scalar[DTYPE](1e-10):
-                    # Hint parallel to normal — fall back to least-aligned axis
-                    var abs_nx = abs(nx)
-                    var abs_ny = abs(ny)
-                    var abs_nz = abs(nz)
-                    if abs_nx <= abs_ny and abs_nx <= abs_nz:
-                        hint_x = Scalar[DTYPE](1); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](0)
-                    elif abs_ny <= abs_nz:
-                        hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](1); hint_z = Scalar[DTYPE](0)
-                    else:
-                        hint_x = Scalar[DTYPE](0); hint_y = Scalar[DTYPE](0); hint_z = Scalar[DTYPE](1)
-                    dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
-                    t1x = hint_x - dot_nh * nx
-                    t1y = hint_y - dot_nh * ny
-                    t1z = hint_z - dot_nh * nz
-                    t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
-                if t1_mag > Scalar[DTYPE](1e-10):
-                    t1x = t1x / t1_mag
-                    t1y = t1y / t1_mag
-                    t1z = t1z / t1_mag
-
-                # T2 = cross(normal, T1)
-                var t2x = ny * t1z - nz * t1y
-                var t2y = nz * t1x - nx * t1z
-                var t2z = nx * t1y - ny * t1x
-
-                var body_a = Int(
-                    rebind[Scalar[DTYPE]](workspace[env, ws_c_body_idx + c])
-                )
-                var body_b = Int(
-                    rebind[Scalar[DTYPE]](workspace[env, ws_c_body_b_idx + c])
-                )
-                var px = rebind[Scalar[DTYPE]](workspace[env, ws_c_px_idx + c])
-                var py = rebind[Scalar[DTYPE]](workspace[env, ws_c_py_idx + c])
-                var pz = rebind[Scalar[DTYPE]](workspace[env, ws_c_pz_idx + c])
-
-                # Compute J_t1 (MinvJt1 omitted — not used by primal Newton)
-                var J_row = InlineArray[Scalar[DTYPE], V_SIZE](
-                    uninitialized=True
-                )
-                compute_contact_jacobian_row_gpu[
-                    DTYPE,
-                    NQ,
-                    NV,
-                    NBODY,
-                    NJOINT,
-                    MAX_CONTACTS,
-                    STATE_SIZE,
-                    MODEL_SIZE,
-                    V_SIZE,
-                    BATCH,
-                    WS_SIZE,
-                ](
-                    env,
-                    state,
-                    model,
-                    workspace,
-                    body_a,
-                    body_b,
-                    px,
-                    py,
-                    pz,
-                    t1x,
-                    t1y,
-                    t1z,
-                    J_row,
-                )
-                for i in range(NV):
-                    workspace[env, ws_Jt1_idx + c * NV + i] = J_row[i]
-
-                # Compute J_t2 (MinvJt2 omitted — not used by primal Newton)
-                compute_contact_jacobian_row_gpu[
-                    DTYPE,
-                    NQ,
-                    NV,
-                    NBODY,
-                    NJOINT,
-                    MAX_CONTACTS,
-                    STATE_SIZE,
-                    MODEL_SIZE,
-                    V_SIZE,
-                    BATCH,
-                    WS_SIZE,
-                ](
-                    env,
-                    state,
-                    model,
-                    workspace,
-                    body_a,
-                    body_b,
-                    px,
-                    py,
-                    pz,
-                    t2x,
-                    t2y,
-                    t2z,
-                    J_row,
-                )
-                for i in range(NV):
-                    workspace[env, ws_Jt2_idx + c * NV + i] = J_row[i]
-
-                # D_n = 1/R_n, D_f = D_n/impratio
-                var inv_K_imp_c = rebind[Scalar[DTYPE]](
-                    workspace[env, ws_inv_K_imp_idx + c]
-                )
-                var K_n_c = rebind[Scalar[DTYPE]](
-                    workspace[env, ws_K_n_idx + c]
-                )
-                var R_n_c = Scalar[DTYPE](1.0) / inv_K_imp_c - K_n_c
-                if R_n_c < Scalar[DTYPE](1e-14):
-                    R_n_c = Scalar[DTYPE](1e-14)
-                var D_n_c = Scalar[DTYPE](1.0) / R_n_c
-                workspace[env, ws_D_n_idx + c] = D_n_c
-                workspace[env, ws_D_f_idx + c] = D_n_c / impratio
-
-                # Friction coefficient
-                var mu_c = rebind[Scalar[DTYPE]](
-                    state[env, c_off + CONTACT_IDX_FRICTION]
-                )
-                if mu_c <= Scalar[DTYPE](0):
-                    mu_c = Scalar[DTYPE](0.5)
-                workspace[env, ws_mu_idx + c] = mu_c
-
-                # Friction velocity-damping bias: bt = B_damp * J_t * qvel
-                var bt1_c: Scalar[DTYPE] = 0
-                var bt2_c: Scalar[DTYPE] = 0
-                for i in range(NV):
-                    var qv_i = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
-                    bt1_c += (
-                        rebind[Scalar[DTYPE]](
-                            workspace[env, ws_Jt1_idx + c * NV + i]
-                        )
-                        * qv_i
-                    )
-                    bt2_c += (
-                        rebind[Scalar[DTYPE]](
-                            workspace[env, ws_Jt2_idx + c * NV + i]
-                        )
-                        * qv_i
-                    )
-                workspace[env, ws_bt1_idx + c] = B_damp * bt1_c
-                workspace[env, ws_bt2_idx + c] = B_damp * bt2_c
+            precompute_contact_friction_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+                NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            ](
+                env, contact_tid, nc, state, model, workspace,
+                B_damp, impratio, K_spring,
+                ws_Jt1_idx, ws_Jt2_idx, ws_mu_idx,
+                ws_D_n_idx, ws_D_f_idx, ws_bt1_idx, ws_bt2_idx,
+            )
 
         barrier()
 
@@ -1150,7 +988,241 @@ struct NewtonSolver(ConstraintSolver):
         comptime NEWTON_TOL_GPU: Float64 = 1e-4
         comptime LINESEARCH_ITER: Int = 10
         comptime ARMIJO: Float64 = 1e-4
+        comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
 
+        comptime if CONE_TYPE == ConeType.PYRAMIDAL:
+            # =================================================================
+            # PYRAMIDAL Newton: iterate over edge rows (all >= 0 constraints)
+            # 4 edges per contact for condim=3: J_e = J_n ± mu*J_t
+            # No cone coupling — simpler than ELLIPTIC
+            # =================================================================
+            comptime NE = 4  # edges per contact
+            comptime ME = NE * MC  # max total edges
+
+            # Cache edge data from PYRAMIDAL workspace layout
+            # Edge J at ws_Jt1_idx + edge*MC*NV
+            # Scalars at pyr_sc = ws_Jt1_idx + 4*MC*NV:
+            #   D_edge[4*MC] at pyr_sc, bias_edge[4*MC] at pyr_sc+4*MC, mu at pyr_sc+8*MC
+            var pyr_sc = ws_Jt1_idx + 4 * MC * NV
+            var Je = InlineArray[Scalar[DTYPE], ME * V_SIZE](uninitialized=True)
+            var De = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+            var bias_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+            var num_edges = nc * NE
+            for c in range(nc):
+                for e in range(NE):
+                    var idx = c * NE + e
+                    for i in range(NV):
+                        Je[idx * NV + i] = rebind[Scalar[DTYPE]](
+                            workspace[env, ws_Jt1_idx + e * MC * NV + c * NV + i]
+                        )
+                    De[idx] = rebind[Scalar[DTYPE]](
+                        workspace[env, pyr_sc + e * MC + c]
+                    )
+                    bias_e[idx] = rebind[Scalar[DTYPE]](
+                        workspace[env, pyr_sc + 4 * MC + e * MC + c]
+                    )
+
+            # Read normal J for gradient computation
+            comptime ws_J_n_idx = solver_ws_idx + 15 * MC
+
+            # Initialize qacc from workspace (integrator writes warmstart or qacc_smooth)
+            # Matches ELLIPTIC GPU path and CPU Newton logic
+            comptime M_SIZE = _max_one[NV * NV]()
+            var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            comptime M_idx = ws_M_offset[NV, NBODY]()
+            comptime qacc_init_idx = ws_qacc_constrained_offset[NV, NBODY]()
+            for i in range(NV):
+                qacc[i] = rebind[Scalar[DTYPE]](workspace[env, qacc_init_idx + i])
+            for i in range(NV):
+                Ma[i] = Scalar[DTYPE](0)
+                for j in range(NV):
+                    Ma[i] += rebind[Scalar[DTYPE]](
+                        workspace[env, M_idx + i * NV + j]
+                    ) * qacc[j]
+            comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
+            var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            for i in range(NV):
+                f_smooth[i] = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + i])
+
+            # Scale for convergence check
+            var scale: Scalar[DTYPE] = 0
+            for i in range(NV):
+                scale += rebind[Scalar[DTYPE]](workspace[env, M_idx + i * NV + i])
+            if scale > Scalar[DTYPE](1e-10):
+                scale = Scalar[DTYPE](1.0) / scale
+            else:
+                scale = Scalar[DTYPE](1.0)
+
+            # Working arrays
+            var jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+            var force = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+            var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+            var L_chol = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+            var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+            # Initial jar + force + qfrc
+            var qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            for i in range(NV):
+                qfrc[i] = Scalar[DTYPE](0)
+            for e_idx in range(num_edges):
+                jar[e_idx] = bias_e[e_idx]
+                for i in range(NV):
+                    jar[e_idx] += Je[e_idx * NV + i] * qacc[i]
+                if jar[e_idx] >= Scalar[DTYPE](0):
+                    force[e_idx] = Scalar[DTYPE](0)
+                else:
+                    force[e_idx] = -De[e_idx] * jar[e_idx]
+                for i in range(NV):
+                    qfrc[i] += Je[e_idx * NV + i] * force[e_idx]
+
+            # Newton iterations
+            for iter_n in range(NEWTON_ITER_GPU):
+                # Gradient
+                var grad_norm: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    grad[i] = Ma[i] - f_smooth[i] - qfrc[i]
+                    grad_norm += grad[i] * grad[i]
+                if scale * sqrt(grad_norm) < Scalar[DTYPE](NEWTON_TOL_GPU):
+                    break
+
+                # Build Hessian H = M + sum_active(D[e] * Je^T * Je)
+                for i in range(NV):
+                    for j in range(NV):
+                        H[i * NV + j] = rebind[Scalar[DTYPE]](
+                            workspace[env, M_idx + i * NV + j]
+                        )
+                for e_idx in range(num_edges):
+                    if force[e_idx] > Scalar[DTYPE](0):
+                        for i in range(NV):
+                            for j in range(NV):
+                                H[i * NV + j] += (
+                                    De[e_idx]
+                                    * Je[e_idx * NV + i]
+                                    * Je[e_idx * NV + j]
+                                )
+
+                # Cholesky solve
+                var chol_ok = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+                if not chol_ok:
+                    for i in range(NV):
+                        H[i * NV + i] += Scalar[DTYPE](1e-6)
+                    _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+                chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](L_chol, grad, search)
+                for i in range(NV):
+                    search[i] = -search[i]
+
+                # Mv = M * search
+                for i in range(NV):
+                    Mv[i] = Scalar[DTYPE](0)
+                    for j in range(NV):
+                        Mv[i] += rebind[Scalar[DTYPE]](
+                            workspace[env, M_idx + i * NV + j]
+                        ) * search[j]
+
+                # Linesearch: try alpha=1, then halve
+                var alpha = Scalar[DTYPE](1.0)
+                var old_cost: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    old_cost += Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * qacc[i]
+                for e_idx in range(num_edges):
+                    if jar[e_idx] < Scalar[DTYPE](0):
+                        old_cost += Scalar[DTYPE](0.5) * De[e_idx] * jar[e_idx] * jar[e_idx]
+
+                for _ in range(LINESEARCH_ITER):
+                    # Trial qacc
+                    var trial_cost: Scalar[DTYPE] = 0
+                    var trial_Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+                    for i in range(NV):
+                        var qa_trial = qacc[i] + alpha * search[i]
+                        trial_Ma[i] = Ma[i] + alpha * Mv[i]
+                        trial_cost += Scalar[DTYPE](0.5) * (trial_Ma[i] - f_smooth[i]) * qa_trial
+                    for e_idx in range(num_edges):
+                        var trial_jar = bias_e[e_idx]
+                        for i in range(NV):
+                            trial_jar += Je[e_idx * NV + i] * (qacc[i] + alpha * search[i])
+                        if trial_jar < Scalar[DTYPE](0):
+                            trial_cost += Scalar[DTYPE](0.5) * De[e_idx] * trial_jar * trial_jar
+
+                    if trial_cost <= old_cost:
+                        break
+                    alpha *= Scalar[DTYPE](0.5)
+
+                if alpha < Scalar[DTYPE](1e-10):
+                    break
+
+                # Update qacc, Ma
+                for i in range(NV):
+                    qacc[i] += alpha * search[i]
+                    Ma[i] += alpha * Mv[i]
+
+                # Recompute jar, force, qfrc
+                for i in range(NV):
+                    qfrc[i] = Scalar[DTYPE](0)
+                for e_idx in range(num_edges):
+                    jar[e_idx] = bias_e[e_idx]
+                    for i in range(NV):
+                        jar[e_idx] += Je[e_idx * NV + i] * qacc[i]
+                    if jar[e_idx] >= Scalar[DTYPE](0):
+                        force[e_idx] = Scalar[DTYPE](0)
+                    else:
+                        force[e_idx] = -De[e_idx] * jar[e_idx]
+                    for i in range(NV):
+                        qfrc[i] += Je[e_idx * NV + i] * force[e_idx]
+
+                # Rebuild Hessian if state changed
+                # (edges transitioning between SATISFIED↔QUADRATIC)
+
+            # Write qacc back
+            for i in range(NV):
+                workspace[env, qacc_idx + i] = qacc[i]
+
+            # Write forces to state: reconstruct per-contact N/T1/T2
+            for c in range(nc):
+                var fn_c: Scalar[DTYPE] = 0
+                var ft1_c: Scalar[DTYPE] = 0
+                var ft2_c: Scalar[DTYPE] = 0
+                var mu_c = rebind[Scalar[DTYPE]](workspace[env, pyr_sc + 8 * MC + c])
+                var safe_mu = mu_c
+                if safe_mu < Scalar[DTYPE](1e-8):
+                    safe_mu = Scalar[DTYPE](1e-8)
+                # f_n = sum of edge forces / num_tangent_dirs
+                # f_tk = (f_edge_pos - f_edge_neg) * mu
+                var f_e0 = force[c * NE + 0]
+                var f_e1 = force[c * NE + 1]
+                var f_e2 = force[c * NE + 2]
+                var f_e3 = force[c * NE + 3]
+                fn_c = (f_e0 + f_e1 + f_e2 + f_e3) / Scalar[DTYPE](2.0)
+                ft1_c = (f_e0 - f_e1) * safe_mu
+                ft2_c = (f_e2 - f_e3) * safe_mu
+                var c_off = contacts_off + c * CONTACT_SIZE
+                state[env, c_off + CONTACT_IDX_FORCE_N] = fn_c
+                state[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
+                state[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c
+
+            # Joint limits + equality (same as ELLIPTIC path)
+            comptime SOLVER_ITER_GPU: Int = 50
+            detect_and_solve_limits_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, WS_SIZE, BATCH,
+                SOLVER_ITER_GPU, NGEOM, MAX_EQUALITY,
+            ](env, dt, state, model, workspace)
+            build_and_solve_equality_gpu[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                MAX_EQUALITY, NGEOM, STATE_SIZE, MODEL_SIZE,
+                V_SIZE, WS_SIZE, BATCH, SOLVER_ITER_GPU,
+            ](env, state, model, workspace)
+            comptime if MAX_TENDON > 0:
+                build_and_solve_tendon_gpu[
+                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                    MAX_EQUALITY, NGEOM, MAX_TENDON, STATE_SIZE,
+                    MODEL_SIZE, V_SIZE, WS_SIZE, BATCH, SOLVER_ITER_GPU,
+                ](env, state, model, workspace)
+            return  # PYRAMIDAL path complete
+
+        # === ELLIPTIC path (existing code) ===
         # === Cache loop-invariant contact data into local InlineArrays ===
         # Jn, Jt1, Jt2, mu, D_n, D_f, dist, pos_bias, bt1, bt2 never change
         # during Newton iterations — load once to avoid ~1000 workspace reads/iter.

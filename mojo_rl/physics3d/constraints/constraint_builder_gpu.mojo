@@ -16,15 +16,17 @@ Common normal workspace block layout (at solver_idx):
   [8*MC..11*MC)                 c_nx/ny/nz    Contact normal
   [11*MC..12*MC)                pos_bias      Impedance position correction
   [12*MC..13*MC)                inv_K_imp     imp/K ratio
-  [13*MC..13*MC+MC*NV)          J_n           Normal Jacobian
-  [13*MC+MC*NV..13*MC+2*MC*NV)  MinvJn        M_inv @ J_n^T
+  [13*MC..14*MC)                imp_n         Normal impedance (for direct R_n)
+  [14*MC..15*MC)                diag_n        Body invweight0 diagonal (for direct R_n)
+  [15*MC..15*MC+MC*NV)          J_n           Normal Jacobian
+  [15*MC+MC*NV..15*MC+2*MC*NV)  MinvJn        M_inv @ J_n^T
 
-  COMMON_NORMAL_SIZE = 13*MC + 2*MC*NV
+  COMMON_NORMAL_SIZE = 15*MC + 2*MC*NV
 """
 
-from std.math import sqrt, pow
+from std.math import sqrt, pow, abs
 from layout import LayoutTensor, Layout
-from ..types import _max_one, EQ_CONNECT, EQ_WELD
+from ..types import _max_one, ConeType, EQ_CONNECT, EQ_WELD
 from ..joint_types import JNT_HINGE, JNT_SLIDE
 from ..dynamics.jacobian import (
     compute_contact_jacobian_row_gpu,
@@ -56,6 +58,10 @@ from ..gpu.constants import (
     CONTACT_IDX_DIST,
     CONTACT_IDX_INCLUDEMARGIN,
     CONTACT_IDX_FORCE_N,
+    CONTACT_IDX_FRICTION,
+    CONTACT_IDX_FRAME_T1_X,
+    CONTACT_IDX_FRAME_T1_Y,
+    CONTACT_IDX_FRAME_T1_Z,
     META_IDX_NUM_CONTACTS,
     MODEL_META_IDX_SOLREF_LIMIT_0,
     MODEL_META_IDX_SOLREF_LIMIT_1,
@@ -119,7 +125,22 @@ from ..gpu.constants import (
 
 def common_normal_size[MC: Int, NV: Int]() -> Int:
     """Size of the common normal workspace block."""
-    return 13 * MC + 2 * MC * NV
+    return 15 * MC + 2 * MC * NV
+
+
+def friction_workspace_size[MC: Int, NV: Int]() -> Int:
+    """Size of the friction workspace block (after common normal block).
+
+    Layout at FRICTION_BASE:
+      [0*MC*NV .. 1*MC*NV)   J_t1       Tangent 1 Jacobian
+      [1*MC*NV .. 2*MC*NV)   J_t2       Tangent 2 Jacobian
+      [2*MC*NV + 0*MC)       mu         Friction coefficient
+      [2*MC*NV + 1*MC)       D_n        Normal D value (1/R_n)
+      [2*MC*NV + 2*MC)       D_f        Friction D value (D_n/impratio)
+      [2*MC*NV + 3*MC)       bt1        Friction bias tangent 1
+      [2*MC*NV + 4*MC)       bt2        Friction bias tangent 2
+    """
+    return 2 * MC * NV + 5 * MC
 
 
 # =============================================================================
@@ -162,10 +183,12 @@ def init_common_normal_workspace_gpu[
     workspace[env, si + 10 * MC + contact_tid] = 1  # c_nz
     workspace[env, si + 11 * MC + contact_tid] = 0  # pos_bias
     workspace[env, si + 12 * MC + contact_tid] = 0  # inv_K_imp
+    workspace[env, si + 13 * MC + contact_tid] = 0  # imp_n
+    workspace[env, si + 14 * MC + contact_tid] = 0  # diag_n
     # Zero J_n and MinvJn for this slot
     for i in range(NV):
-        workspace[env, si + 13 * MC + contact_tid * NV + i] = 0
-        workspace[env, si + 13 * MC + MC * NV + contact_tid * NV + i] = 0
+        workspace[env, si + 15 * MC + contact_tid * NV + i] = 0
+        workspace[env, si + 15 * MC + MC * NV + contact_tid * NV + i] = 0
 
 
 # =============================================================================
@@ -238,8 +261,10 @@ def precompute_contact_normal_gpu[
     comptime ws_c_nz = si + 10 * MC
     comptime ws_pos_bias = si + 11 * MC
     comptime ws_inv_K_imp = si + 12 * MC
-    comptime ws_J_n = si + 13 * MC
-    comptime ws_MinvJn = si + 13 * MC + MC * NV
+    comptime ws_imp_n = si + 13 * MC
+    comptime ws_diag_n = si + 14 * MC
+    comptime ws_J_n = si + 15 * MC
+    comptime ws_MinvJn = si + 15 * MC + MC * NV
 
     var J_row = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
     for i in range(V_SIZE):
@@ -379,6 +404,10 @@ def precompute_contact_normal_gpu[
             workspace[env, ws_inv_K_imp + c] = Scalar[DTYPE](1.0) / (
                 rebind[Scalar[DTYPE]](k) + R_n
             )
+            # Store imp and diag_n for direct R_n computation in friction builder
+            # (avoids lossy float32 round-trip R = 1/inv_K_imp - K)
+            workspace[env, ws_imp_n + c] = imp
+            workspace[env, ws_diag_n + c] = diag_n
 
             comptime if COMPUTE_RHS:
                 workspace[env, RHS_IDX + c] = a_n + bias
@@ -387,6 +416,285 @@ def precompute_contact_normal_gpu[
             workspace[env, ws_lambda_n + c] = state[
                 env, c_off + CONTACT_IDX_FORCE_N
             ]
+
+
+# =============================================================================
+# 2b. precompute_contact_friction_gpu (SHARED by all GPU solvers)
+# =============================================================================
+
+
+@always_inline
+def precompute_contact_friction_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    V_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+    NGEOM: Int = 0,
+    MAX_EQUALITY: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    MAX_TENDON: Int = 0,
+    NSITE: Int = 0,
+](
+    env: Int,
+    contact_tid: Int,
+    nc: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+    B_damp: Scalar[DTYPE],
+    impratio: Scalar[DTYPE],
+    K_spring: Scalar[DTYPE],
+    # Workspace offsets for friction output (caller provides)
+    ws_Jt1_idx: Int,
+    ws_Jt2_idx: Int,
+    ws_mu_idx: Int,
+    ws_D_n_idx: Int,
+    ws_D_f_idx: Int,
+    ws_bt1_idx: Int,
+    ws_bt2_idx: Int,
+):
+    """Build friction tangent data for one contact (PARALLEL phase).
+
+    Computes tangent frame, J_t1/J_t2, D_n/D_f, mu, and velocity bias.
+    This is the SHARED implementation — replaces duplicated code in
+    Newton, PGS, CG, and other GPU solvers.
+
+    Called with one thread per contact (contact_tid < nc).
+    Reads normal data from common workspace block, tangent hint from state.
+    """
+    comptime si = ws_solver_offset[NV, NBODY]()
+    comptime MC = _max_one[MAX_CONTACTS]()
+    comptime contacts_off = contacts_offset[NQ, NV, NBODY]()
+    comptime qvel_off = qvel_offset[NQ, NV]()
+
+    # Common normal block offsets
+    comptime ws_c_dist = si + 2 * MC
+    comptime ws_c_body = si + 3 * MC
+    comptime ws_c_body_b = si + 4 * MC
+    comptime ws_c_px = si + 5 * MC
+    comptime ws_c_py = si + 6 * MC
+    comptime ws_c_pz = si + 7 * MC
+    comptime ws_c_nx = si + 8 * MC
+    comptime ws_c_ny = si + 9 * MC
+    comptime ws_c_nz = si + 10 * MC
+    comptime ws_inv_K_imp = si + 12 * MC
+    comptime ws_imp_n = si + 13 * MC
+    comptime ws_diag_n = si + 14 * MC
+
+    var c = contact_tid
+
+    # Only process penetrating contacts (c_dist stores dist - includemargin)
+    if rebind[Scalar[DTYPE]](workspace[env, ws_c_dist + c]) >= Scalar[DTYPE](0):
+        # Zero friction outputs for non-active contacts
+        workspace[env, ws_mu_idx + c] = 0
+        workspace[env, ws_D_n_idx + c] = 0
+        workspace[env, ws_D_f_idx + c] = 0
+        workspace[env, ws_bt1_idx + c] = 0
+        workspace[env, ws_bt2_idx + c] = 0
+        for i in range(NV):
+            workspace[env, ws_Jt1_idx + c * NV + i] = 0
+            workspace[env, ws_Jt2_idx + c * NV + i] = 0
+        return
+
+    var nx = rebind[Scalar[DTYPE]](workspace[env, ws_c_nx + c])
+    var ny = rebind[Scalar[DTYPE]](workspace[env, ws_c_ny + c])
+    var nz = rebind[Scalar[DTYPE]](workspace[env, ws_c_nz + c])
+
+    # --- Tangent frame from capsule axis hint (MuJoCo mju_makeFrame) ---
+    var c_off = contacts_off + c * CONTACT_SIZE
+    var hint_x = rebind[Scalar[DTYPE]](
+        state[env, c_off + CONTACT_IDX_FRAME_T1_X]
+    )
+    var hint_y = rebind[Scalar[DTYPE]](
+        state[env, c_off + CONTACT_IDX_FRAME_T1_Y]
+    )
+    var hint_z = rebind[Scalar[DTYPE]](
+        state[env, c_off + CONTACT_IDX_FRAME_T1_Z]
+    )
+
+    # No hint: pick least-aligned basis axis (MuJoCo convention)
+    if hint_x * hint_x + hint_y * hint_y + hint_z * hint_z < Scalar[DTYPE](
+        0.25
+    ):
+        var abs_nx = abs(nx)
+        var abs_ny = abs(ny)
+        var abs_nz = abs(nz)
+        if abs_nx <= abs_ny and abs_nx <= abs_nz:
+            hint_x = Scalar[DTYPE](1)
+            hint_y = Scalar[DTYPE](0)
+            hint_z = Scalar[DTYPE](0)
+        elif abs_ny <= abs_nz:
+            hint_x = Scalar[DTYPE](0)
+            hint_y = Scalar[DTYPE](1)
+            hint_z = Scalar[DTYPE](0)
+        else:
+            hint_x = Scalar[DTYPE](0)
+            hint_y = Scalar[DTYPE](0)
+            hint_z = Scalar[DTYPE](1)
+
+    # Gram-Schmidt: orthogonalize hint against normal → T1
+    var dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
+    var t1x = hint_x - dot_nh * nx
+    var t1y = hint_y - dot_nh * ny
+    var t1z = hint_z - dot_nh * nz
+    var t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
+    if t1_mag < Scalar[DTYPE](1e-10):
+        # Hint parallel to normal — fall back to least-aligned axis
+        var abs_nx = abs(nx)
+        var abs_ny = abs(ny)
+        var abs_nz = abs(nz)
+        if abs_nx <= abs_ny and abs_nx <= abs_nz:
+            hint_x = Scalar[DTYPE](1)
+            hint_y = Scalar[DTYPE](0)
+            hint_z = Scalar[DTYPE](0)
+        elif abs_ny <= abs_nz:
+            hint_x = Scalar[DTYPE](0)
+            hint_y = Scalar[DTYPE](1)
+            hint_z = Scalar[DTYPE](0)
+        else:
+            hint_x = Scalar[DTYPE](0)
+            hint_y = Scalar[DTYPE](0)
+            hint_z = Scalar[DTYPE](1)
+        dot_nh = nx * hint_x + ny * hint_y + nz * hint_z
+        t1x = hint_x - dot_nh * nx
+        t1y = hint_y - dot_nh * ny
+        t1z = hint_z - dot_nh * nz
+        t1_mag = sqrt(t1x * t1x + t1y * t1y + t1z * t1z)
+    if t1_mag > Scalar[DTYPE](1e-10):
+        t1x = t1x / t1_mag
+        t1y = t1y / t1_mag
+        t1z = t1z / t1_mag
+
+    # T2 = cross(normal, T1)
+    var t2x = ny * t1z - nz * t1y
+    var t2y = nz * t1x - nx * t1z
+    var t2z = nx * t1y - ny * t1x
+
+    # --- Contact body and position ---
+    var body_a = Int(rebind[Scalar[DTYPE]](workspace[env, ws_c_body + c]))
+    var body_b = Int(rebind[Scalar[DTYPE]](workspace[env, ws_c_body_b + c]))
+    var px = rebind[Scalar[DTYPE]](workspace[env, ws_c_px + c])
+    var py = rebind[Scalar[DTYPE]](workspace[env, ws_c_py + c])
+    var pz = rebind[Scalar[DTYPE]](workspace[env, ws_c_pz + c])
+
+    # --- Friction coefficient ---
+    var mu_c = rebind[Scalar[DTYPE]](state[env, c_off + CONTACT_IDX_FRICTION])
+    if mu_c <= Scalar[DTYPE](0):
+        mu_c = Scalar[DTYPE](0.5)
+
+    # --- D values from normal precompute ---
+    # Compute R_n directly from stored imp and diag_n (avoids lossy float32
+    # round-trip R = 1/inv_K_imp - K which suffers catastrophic cancellation
+    # when K >> R or K << R in deep penetration contacts)
+    var imp_c = rebind[Scalar[DTYPE]](workspace[env, ws_imp_n + c])
+    var diag_n_c = rebind[Scalar[DTYPE]](workspace[env, ws_diag_n + c])
+    var R_n_c = (Scalar[DTYPE](1.0) - imp_c) / imp_c * diag_n_c
+    if R_n_c < Scalar[DTYPE](1e-14):
+        R_n_c = Scalar[DTYPE](1e-14)
+
+    # --- Compute J_t1, J_t2 (needed by both ELLIPTIC and PYRAMIDAL) ---
+    var J_t1 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var J_t2 = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    compute_contact_jacobian_row_gpu[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+        STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+    ](env, state, model, workspace, body_a, body_b, px, py, pz, t1x, t1y, t1z, J_t1)
+    compute_contact_jacobian_row_gpu[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+        STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
+    ](env, state, model, workspace, body_a, body_b, px, py, pz, t2x, t2y, t2z, J_t2)
+
+    # Read J_n from normal precompute
+    comptime ws_J_n = si + 15 * MC
+
+    comptime if CONE_TYPE == ConeType.PYRAMIDAL:
+        # === PYRAMIDAL: Build 4 edge Jacobians (J_n ± mu*J_t) ===
+        # Workspace layout (PYRAMIDAL scalar base = ws_Jt1_idx + 4*MC*NV):
+        #   Jacobians: 4 * MC * NV at ws_Jt1_idx
+        #   Scalars at PYR_SC:
+        #     [0*MC..4*MC)   D_edge[4*MC]
+        #     [4*MC..8*MC)   bias_edge[4*MC]
+        #     [8*MC..9*MC)   mu[MC]
+        var pyr_sc = ws_Jt1_idx + 4 * MC * NV
+
+        # Use imp and diag_n from normal precompute (already read above)
+        var diag_edge = diag_n_c + mu_c * mu_c * diag_n_c
+
+        # R_edge = 2*mu²*(1-imp)/imp*diag_edge
+        # Since R_n = (1-imp)/imp * diag_n → R_edge = 2*mu² * diag_edge/diag_n * R_n
+        var R_edge = Scalar[DTYPE](2.0) * mu_c * mu_c * (
+            diag_edge / diag_n_c
+        ) * R_n_c
+        if R_edge < Scalar[DTYPE](1e-14):
+            R_edge = Scalar[DTYPE](1e-14)
+        var D_edge_val = Scalar[DTYPE](1.0) / R_edge
+
+        # Use imp directly from normal precompute
+        var imp_n = imp_c
+        var pen = -rebind[Scalar[DTYPE]](workspace[env, ws_c_dist + c])
+
+        comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
+
+        # Store mu
+        workspace[env, pyr_sc + 8 * MC + c] = mu_c
+
+        # Build 4 edges
+        for edge in range(4):
+            var sign = Scalar[DTYPE](1.0) if (edge % 2 == 0) else Scalar[
+                DTYPE
+            ](-1.0)
+            # edge 0,1 use J_t1; edge 2,3 use J_t2
+            var ws_Je = ws_Jt1_idx + edge * MC * NV
+
+            var v_edge: Scalar[DTYPE] = 0
+            for i in range(NV):
+                var jn_i = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_J_n + c * NV + i]
+                )
+                var jt_i = J_t1[i] if edge < 2 else J_t2[i]
+                var je = jn_i + sign * mu_c * jt_i
+                workspace[env, ws_Je + c * NV + i] = je
+                v_edge += je * rebind[Scalar[DTYPE]](
+                    state[env, qvel_off + i]
+                )
+
+            # D_edge (same for all edges of this contact)
+            workspace[env, pyr_sc + edge * MC + c] = D_edge_val
+            # bias_edge = B*v_edge - K_spring*imp*pen
+            var bias_e = B_damp * v_edge - K_spring * imp_n * pen
+            workspace[env, pyr_sc + 4 * MC + edge * MC + c] = bias_e
+
+    else:
+        # === ELLIPTIC: Store separate J_t1, J_t2, D_n, D_f, mu, bias ===
+        for i in range(NV):
+            workspace[env, ws_Jt1_idx + c * NV + i] = J_t1[i]
+            workspace[env, ws_Jt2_idx + c * NV + i] = J_t2[i]
+
+        var D_n_c = Scalar[DTYPE](1.0) / R_n_c
+        workspace[env, ws_D_n_idx + c] = D_n_c
+        workspace[env, ws_D_f_idx + c] = D_n_c / impratio
+        workspace[env, ws_mu_idx + c] = mu_c
+
+        # Friction velocity-damping bias: bt = B_damp * J_t * qvel
+        var bt1_c: Scalar[DTYPE] = 0
+        var bt2_c: Scalar[DTYPE] = 0
+        for i in range(NV):
+            var qv_i = rebind[Scalar[DTYPE]](state[env, qvel_off + i])
+            bt1_c += J_t1[i] * qv_i
+            bt2_c += J_t2[i] * qv_i
+        workspace[env, ws_bt1_idx + c] = B_damp * bt1_c
+        workspace[env, ws_bt2_idx + c] = B_damp * bt2_c
 
 
 # =============================================================================
@@ -416,7 +724,7 @@ def warmstart_normals_gpu[
     comptime MC = _max_one[MAX_CONTACTS]()
     comptime ws_lambda_n = si + 0 * MC
     comptime ws_c_dist = si + 2 * MC
-    comptime ws_MinvJn = si + 13 * MC + MC * NV
+    comptime ws_MinvJn = si + 15 * MC + MC * NV
 
     for c in range(nc):
         if workspace[env, ws_c_dist + c] >= Scalar[DTYPE](0):
@@ -464,7 +772,7 @@ def apply_solved_normals_gpu[
     comptime MC = _max_one[MAX_CONTACTS]()
     comptime ws_lambda_n = si + 0 * MC
     comptime ws_c_dist = si + 2 * MC
-    comptime ws_MinvJn = si + 13 * MC + MC * NV
+    comptime ws_MinvJn = si + 15 * MC + MC * NV
 
     # Remove warm-start impulses
     for c in range(nc):

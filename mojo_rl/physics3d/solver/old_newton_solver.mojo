@@ -299,17 +299,17 @@ struct OldNewtonSolver(ConstraintSolver):
         """Newton solver workspace size (primal, qacc-space).
 
         Layout:
-          Common normal block: 13*MC + 2*MC*NV
+          Common normal block: 15*MC + 2*MC*NV
             [lambda_n, K_n, c_dist, c_body, c_body_b, px, py, pz,
              nx, ny, nz, pos_bias, inv_K_imp | J_n: MC*NV | MinvJn: MC*NV]
           Primal-specific block: 4*MC*NV + 5*MC + 7*MC = 12*MC + 4*MC*NV
             [J_t1: MC*NV | J_t2: MC*NV | MinvJt1: MC*NV | MinvJt2: MC*NV |
              mu: MC | D_n: MC | D_f: MC | bt1: MC | bt2: MC |
              jar_n: MC | jar_t1: MC | jar_t2: MC | fn: MC | ft1: MC | ft2: MC | cstate: MC]
-        Total = 25*MC + 6*MC*NV
+        Total = 27*MC + 6*MC*NV
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 25 * MC + 6 * MC * NV
+        return 27 * MC + 6 * MC * NV
 
     @no_inline
     @staticmethod
@@ -781,11 +781,11 @@ struct OldNewtonSolver(ConstraintSolver):
         comptime ws_c_nz_idx = solver_ws_idx + 10 * MC
         comptime ws_pos_bias_idx = solver_ws_idx + 11 * MC
         comptime ws_inv_K_imp_idx = solver_ws_idx + 12 * MC
-        comptime ws_J_n_idx = solver_ws_idx + 13 * MC
-        comptime ws_MinvJn_idx = solver_ws_idx + 13 * MC + MC * NV
+        comptime ws_J_n_idx = solver_ws_idx + 15 * MC
+        comptime ws_MinvJn_idx = solver_ws_idx + 15 * MC + MC * NV
 
         # Primal-specific offsets (after common normal block)
-        comptime PRIMAL_START = solver_ws_idx + 13 * MC + 2 * MC * NV
+        comptime PRIMAL_START = solver_ws_idx + 15 * MC + 2 * MC * NV
         comptime ws_Jt1_idx = PRIMAL_START + 0 * MC * NV
         comptime ws_Jt2_idx = PRIMAL_START + 1 * MC * NV
         comptime ws_MinvJt1_idx = PRIMAL_START + 2 * MC * NV
@@ -1099,12 +1099,16 @@ struct OldNewtonSolver(ConstraintSolver):
                     )
                 workspace[env, ws_MinvJt2_idx + c * NV + i] = mij
 
-            # D_n = 1/R_n, D_f = D_n/impratio
-            var inv_K_imp_c = rebind[Scalar[DTYPE]](
-                workspace[env, ws_inv_K_imp_idx + c]
+            # D_n = 1/R_n, computed directly from stored imp and diag_n
+            comptime ws_imp_n_on = solver_ws_idx + 13 * MC
+            comptime ws_diag_n_on = solver_ws_idx + 14 * MC
+            var imp_on = rebind[Scalar[DTYPE]](
+                workspace[env, ws_imp_n_on + c]
             )
-            var K_n_c = rebind[Scalar[DTYPE]](workspace[env, ws_K_n_idx + c])
-            var R_n_c = Scalar[DTYPE](1.0) / inv_K_imp_c - K_n_c
+            var diag_on = rebind[Scalar[DTYPE]](
+                workspace[env, ws_diag_n_on + c]
+            )
+            var R_n_c = (Scalar[DTYPE](1.0) - imp_on) / imp_on * diag_on
             if R_n_c < Scalar[DTYPE](1e-14):
                 R_n_c = Scalar[DTYPE](1e-14)
             var D_n_c = Scalar[DTYPE](1.0) / R_n_c

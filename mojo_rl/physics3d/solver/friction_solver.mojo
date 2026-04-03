@@ -141,8 +141,8 @@ def _solve_friction_pgs_gpu[
     comptime ws_c_nz = contact_ws_off + 10 * MC
     comptime ws_pos_bias = contact_ws_off + 11 * MC
     comptime ws_inv_K_imp = contact_ws_off + 12 * MC
-    comptime ws_J_n = contact_ws_off + 13 * MC
-    comptime ws_MinvJn = contact_ws_off + 13 * MC + MC * NV
+    comptime ws_J_n = contact_ws_off + 15 * MC
+    comptime ws_MinvJn = contact_ws_off + 15 * MC + MC * NV
 
     # Friction workspace offsets (relative to fws)
     # lambda_f[d][c] = fws + d*MC + c
@@ -414,13 +414,18 @@ def _solve_friction_pgs_gpu[
         )
         if impratio < Scalar[DTYPE](1e-6):
             impratio = Scalar[DTYPE](1.0)
-        var imp_n = rebind[Scalar[DTYPE]](
-            workspace[env, ws_inv_K_imp + c]
-        ) * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+        # Compute R_base = R_n / impratio directly from stored imp and diag_n
+        # (avoids lossy float32 round-trip through inv_K_imp)
+        comptime ws_imp_n_slot = contact_ws_off + 13 * MC
+        comptime ws_diag_n_slot = contact_ws_off + 14 * MC
+        var imp_n = rebind[Scalar[DTYPE]](workspace[env, ws_imp_n_slot + c])
+        var diag_n_val = rebind[Scalar[DTYPE]](
+            workspace[env, ws_diag_n_slot + c]
+        )
         var R_base = (
             (Scalar[DTYPE](1.0) - imp_n)
             / imp_n
-            * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+            * diag_n_val
             / impratio
         )
         for d in range(num_fric):
@@ -461,10 +466,11 @@ def _solve_friction_pgs_gpu[
 
         # Pyramidal precomputation: cross-term C_nt, K_edge_pos/neg, R_edge
         comptime if CONE_TYPE == ConeType.PYRAMIDAL:
+            # R_n computed directly from stored imp and diag_n
             var R_n_val = (
                 (Scalar[DTYPE](1.0) - imp_n)
                 / imp_n
-                * rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+                * diag_n_val
             )
             for d in range(num_fric):
                 var mu_d = rebind[Scalar[DTYPE]](
@@ -535,9 +541,14 @@ def _solve_friction_pgs_gpu[
                     workspace[env, ws_J_n + c * NV + i]
                     * workspace[env, qacc_idx + i]
                 )
-            var R_n = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](
-                workspace[env, ws_inv_K_imp + c]
-            ) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+            # Compute R_n directly from stored imp and diag_n
+            var imp_c = rebind[Scalar[DTYPE]](
+                workspace[env, ws_imp_n_slot + c]
+            )
+            var diag_c = rebind[Scalar[DTYPE]](
+                workspace[env, ws_diag_n_slot + c]
+            )
+            var R_n = (Scalar[DTYPE](1.0) - imp_c) / imp_c * diag_c
             var residual = (
                 a_n
                 + workspace[env, ws_pos_bias + c]
@@ -796,9 +807,14 @@ def _solve_friction_pgs_gpu[
                 # AR[0,d+1] = AR[d+1,0] = J_n @ MinvJ_f (normal-friction cross)
                 # AR[d1+1,d2+1] = J_f[d1] @ MinvJ_f[d2] + R_f*delta(d1,d2)
                 var AR = InlineArray[Scalar[DTYPE], 36](fill=Scalar[DTYPE](0))
-                var R_n_val = Scalar[DTYPE](1.0) / rebind[Scalar[DTYPE]](
-                    workspace[env, ws_inv_K_imp + c]
-                ) - rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
+                # Compute R_n directly from stored imp and diag_n
+                var imp_c2 = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_imp_n_slot + c]
+                )
+                var diag_c2 = rebind[Scalar[DTYPE]](
+                    workspace[env, ws_diag_n_slot + c]
+                )
+                var R_n_val = (Scalar[DTYPE](1.0) - imp_c2) / imp_c2 * diag_c2
                 AR[0] = (
                     rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c]) + R_n_val
                 )

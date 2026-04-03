@@ -95,13 +95,13 @@ struct PGSSolver(ConstraintSolver):
 
     @staticmethod
     def solver_workspace_size[NV: Int, MAX_CONTACTS: Int]() -> Int:
-        """PGS solver workspace: 79*MC + 12*MC*NV floats.
+        """PGS solver workspace: 81*MC + 12*MC*NV floats.
 
         Layout (offsets relative to solver workspace start):
-          Common normal block (13*MC + 2*MC*NV):
-          [0..13*MC+2*MC*NV)             See constraint_builder_gpu.mojo
+          Common normal block (15*MC + 2*MC*NV):
+          [0..15*MC+2*MC*NV)             See constraint_builder_gpu.mojo
           Friction block (66*MC + 10*MC*NV):
-          [13*MC+2*MC*NV)                lambda_f[5*MC], K_f[5*MC], dir_f[15*MC],
+          [15*MC+2*MC*NV)                lambda_f[5*MC], K_f[5*MC], dir_f[15*MC],
                                          fric_coef[5*MC], condim[MC], R_f[5*MC],
                                          bias_f[5*MC],
                                          J_f[5*MC*NV], MinvJ_f[5*MC*NV],
@@ -110,7 +110,7 @@ struct PGSSolver(ConstraintSolver):
                                          R_edge[5*MC]
         """
         comptime MC = _max_one[MAX_CONTACTS]()
-        return 79 * MC + 12 * MC * NV
+        return 81 * MC + 12 * MC * NV
 
     @staticmethod
     def solve[
@@ -697,11 +697,11 @@ struct PGSSolver(ConstraintSolver):
         comptime ws_c_nz = solver_idx + 10 * MC
         comptime ws_pos_bias = solver_idx + 11 * MC
         comptime ws_inv_K_imp = solver_idx + 12 * MC
-        comptime ws_J_n = solver_idx + 13 * MC
-        comptime ws_MinvJn = solver_idx + 13 * MC + MC * NV
+        comptime ws_J_n = solver_idx + 15 * MC
+        comptime ws_MinvJn = solver_idx + 15 * MC + MC * NV
 
         # Friction workspace offsets (66*MC + 10*MC*NV, same layout as friction_solver.mojo)
-        comptime fws = solver_idx + 13 * MC + 2 * MC * NV
+        comptime fws = solver_idx + 15 * MC + 2 * MC * NV
         comptime ws_lf = fws + 0 * MC  # lambda_f[5*MC]
         comptime ws_kf = fws + 5 * MC  # K_f[5*MC]
         comptime ws_df = fws + 10 * MC  # dir_f[15*MC]
@@ -1549,12 +1549,19 @@ struct PGSSolver(ConstraintSolver):
                         var AR = InlineArray[Scalar[DTYPE], 36](
                             fill=Scalar[DTYPE](0)
                         )
-                        var R_n_val = Scalar[DTYPE](1.0) / rebind[
-                            Scalar[DTYPE]
-                        ](workspace[env, ws_inv_K_imp + c]) - rebind[
-                            Scalar[DTYPE]
-                        ](
-                            workspace[env, ws_K_n + c]
+                        # Compute R_n directly from stored imp and diag_n
+                        comptime ws_imp_n_pgs = solver_idx + 13 * MC
+                        comptime ws_diag_n_pgs = solver_idx + 14 * MC
+                        var imp_pgs = rebind[Scalar[DTYPE]](
+                            workspace[env, ws_imp_n_pgs + c]
+                        )
+                        var diag_pgs = rebind[Scalar[DTYPE]](
+                            workspace[env, ws_diag_n_pgs + c]
+                        )
+                        var R_n_val = (
+                            (Scalar[DTYPE](1.0) - imp_pgs)
+                            / imp_pgs
+                            * diag_pgs
                         )
                         AR[0] = (
                             rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])

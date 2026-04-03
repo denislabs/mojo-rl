@@ -243,11 +243,11 @@ struct IslandPGSSolver(ConstraintSolver):
         comptime ws_c_nz = solver_idx + 10 * MC
         comptime ws_pos_bias = solver_idx + 11 * MC
         comptime ws_inv_K_imp = solver_idx + 12 * MC
-        comptime ws_J_n = solver_idx + 13 * MC
-        comptime ws_MinvJn = solver_idx + 13 * MC + MC * NV
+        comptime ws_J_n = solver_idx + 15 * MC
+        comptime ws_MinvJn = solver_idx + 15 * MC + MC * NV
 
         # Friction workspace offsets
-        comptime fws = solver_idx + 13 * MC + 2 * MC * NV
+        comptime fws = solver_idx + 15 * MC + 2 * MC * NV
         comptime ws_lf = fws + 0 * MC
         comptime ws_kf = fws + 5 * MC
         comptime ws_df = fws + 10 * MC
@@ -1185,12 +1185,19 @@ struct IslandPGSSolver(ConstraintSolver):
                         var AR = InlineArray[Scalar[DTYPE], 36](
                             fill=Scalar[DTYPE](0)
                         )
-                        var R_n_val = Scalar[DTYPE](1.0) / rebind[
-                            Scalar[DTYPE]
-                        ](workspace[env, ws_inv_K_imp + c]) - rebind[
-                            Scalar[DTYPE]
-                        ](
-                            workspace[env, ws_K_n + c]
+                        # Compute R_n directly from stored imp and diag_n
+                        comptime ws_imp_n_ipgs = solver_idx + 13 * MC
+                        comptime ws_diag_n_ipgs = solver_idx + 14 * MC
+                        var imp_ipgs = rebind[Scalar[DTYPE]](
+                            workspace[env, ws_imp_n_ipgs + c]
+                        )
+                        var diag_ipgs = rebind[Scalar[DTYPE]](
+                            workspace[env, ws_diag_n_ipgs + c]
+                        )
+                        var R_n_val = (
+                            (Scalar[DTYPE](1.0) - imp_ipgs)
+                            / imp_ipgs
+                            * diag_ipgs
                         )
                         AR[0] = (
                             rebind[Scalar[DTYPE]](workspace[env, ws_K_n + c])
