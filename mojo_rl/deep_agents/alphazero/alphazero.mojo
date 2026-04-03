@@ -729,6 +729,59 @@ struct GenericAlphaZeroAgent[
                 ]
             gpu.value_host[b] = self.state.buf_value[idx]
 
+        # ── DEBUG: First training step — sample batch inspection ──
+        if self.train_step_count == 0:
+            print("╔══════════════════════════════════════════╗")
+            print("║  DEBUG: Training batch (first step)      ║")
+            print("╚══════════════════════════════════════════╝")
+            # Print 3 samples from batch
+            for _db in range(min(3, BATCH)):
+                var _db_idx = _db
+                print("Sample", _db_idx, ":")
+                # Value target
+                print(
+                    "  value_target:",
+                    Float64(gpu.value_host[_db_idx]),
+                )
+                # Policy target
+                print("  policy_target:", end="")
+                for a in range(ACT):
+                    print(
+                        "",
+                        Int(
+                            Float64(
+                                gpu.policy_host[_db_idx * ACT + a]
+                            )
+                            * 1000.0
+                        )
+                        / 1000.0,
+                        end="",
+                    )
+                print()
+                # Obs summary (plane sums)
+                var _db_p0: Float64 = 0.0
+                var _db_p1: Float64 = 0.0
+                var _db_p2: Float64 = 0.0
+                for i in range(42):
+                    _db_p0 += Float64(
+                        gpu.obs_host[_db_idx * OBS + i]
+                    )
+                    _db_p1 += Float64(
+                        gpu.obs_host[_db_idx * OBS + 42 + i]
+                    )
+                    _db_p2 += Float64(
+                        gpu.obs_host[_db_idx * OBS + 84 + i]
+                    )
+                print(
+                    "  obs planes: my=",
+                    _db_p0,
+                    "opp=",
+                    _db_p1,
+                    "legal=",
+                    _db_p2,
+                )
+            print("─" * 44)
+
         # ── Upload to GPU ────────────────────────────────────────
         ctx.enqueue_copy(gpu.batch_obs, gpu.obs_host)
         ctx.enqueue_copy(gpu.batch_policy, gpu.policy_host)
@@ -2880,6 +2933,17 @@ struct GenericAlphaZeroAgent[
         var _train_graph: Optional[CUDAGraph] = None
         var _mcts_round_graph: Optional[CUDAGraph] = None
 
+        # Debug: fires once on first MCTS step and first completed game
+        var _debug_mcts_done = False
+        var _debug_game_done = False
+        # Host buffers for debug (visit counts + states)
+        var _dbg_vc_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.n_envs * MAX_NODES * ACT
+        )
+        var _dbg_states_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.n_envs * E.STATE_SIZE
+        )
+
         # ══════════════════════════════════════════════════════════
         # Iteration loop (batch-then-train)
         # ══════════════════════════════════════════════════════════
@@ -3193,6 +3257,98 @@ struct GenericAlphaZeroAgent[
                     # Download policies for training data
                     ctx.enqueue_copy(policy_host, gpu_mcts.policies_out)
 
+                    # ── DEBUG: MCTS visit counts + obs + network output (env 0, first step) ──
+                    if not _debug_mcts_done and use_mcts:
+                        _debug_mcts_done = True
+                        ctx.enqueue_copy(_dbg_vc_host, gpu_mcts.visit_count)
+                        ctx.enqueue_copy(_dbg_states_host, states_buf)
+                        ctx.synchronize()
+                        print("╔══════════════════════════════════════════╗")
+                        print("║  DEBUG: MCTS + Obs (env 0, first step)  ║")
+                        print("╚══════════════════════════════════════════╝")
+                        # Board state (raw bytes from ConnectFour state)
+                        print("Board state (col-major, 0=empty 1=P0 2=P1):")
+                        for row in range(5, -1, -1):
+                            var row_str = String("  ")
+                            for col in range(7):
+                                var cell = Int(
+                                    Float64(_dbg_states_host[col * 6 + row])
+                                )
+                                if cell == 0:
+                                    row_str += ". "
+                                elif cell == 1:
+                                    row_str += "X "
+                                else:
+                                    row_str += "O "
+                            print(row_str)
+                        var cur_player = Int(
+                            Float64(_dbg_states_host[42])
+                        )
+                        print("Current player:", cur_player)
+                        # Observation planes
+                        print("Obs plane 0 (my pieces) sum:", end="")
+                        var p0_sum: Float64 = 0.0
+                        for i in range(42):
+                            p0_sum += Float64(obs_host[i])
+                        print("", p0_sum)
+                        print("Obs plane 1 (opp pieces) sum:", end="")
+                        var p1_sum: Float64 = 0.0
+                        for i in range(42, 84):
+                            p1_sum += Float64(obs_host[i])
+                        print("", p1_sum)
+                        print("Obs plane 2 (legal) sum:", end="")
+                        var p2_sum: Float64 = 0.0
+                        for i in range(84, 126):
+                            p2_sum += Float64(obs_host[i])
+                        print("", p2_sum)
+                        # MCTS visit counts for root (env 0)
+                        print("MCTS root visit counts:", end="")
+                        var total_vc: Float64 = 0.0
+                        for a in range(ACT):
+                            var vc_val = Float64(_dbg_vc_host[a])
+                            print("", Int(vc_val), end="")
+                            total_vc += vc_val
+                        print("  (total:", Int(total_vc), ")")
+                        # Policy target (from visit counts)
+                        print("Policy target:", end="")
+                        for a in range(ACT):
+                            var p = Float64(policy_host[a])
+                            print(
+                                "",
+                                Int(p * 1000.0) / 1000.0,
+                                end="",
+                            )
+                        print()
+                        # Network raw output (logits + value)
+                        # pred_output was written during root forward pass
+                        var _dbg_pred_host = ctx.enqueue_create_host_buffer[
+                            dtype
+                        ](Self.n_envs * MCTS_PRED_OUT)
+                        ctx.enqueue_copy(
+                            _dbg_pred_host, gpu_mcts.pred_output
+                        )
+                        ctx.synchronize()
+                        print("Network policy logits:", end="")
+                        for a in range(ACT):
+                            var l = Float64(_dbg_pred_host[a])
+                            print(
+                                "",
+                                Int(l * 1000.0) / 1000.0,
+                                end="",
+                            )
+                        print()
+                        var raw_v = Float64(_dbg_pred_host[ACT])
+                        var tanh_v = (exp(raw_v) - exp(-raw_v)) / (
+                            exp(raw_v) + exp(-raw_v)
+                        )
+                        print(
+                            "Network value: raw=",
+                            Int(raw_v * 1000.0) / 1000.0,
+                            "tanh=",
+                            Int(tanh_v * 1000.0) / 1000.0,
+                        )
+                        print("─" * 44)
+
                     # Compute root Q-value per env for q-value targets
                     # Q = sum(total_value[root,a]) / sum(visit_count[root,a])
                     comptime Q_WEIGHT = Self.Config.value_target_q_weight
@@ -3315,6 +3471,58 @@ struct GenericAlphaZeroAgent[
                                 last_reward > -0.01 and last_reward < 0.01
                             )
 
+                            # ── DEBUG: First completed game (env 0) ──
+                            var _dbg_this_game = (
+                                not _debug_game_done
+                                and e == 0
+                                and use_mcts
+                            )
+                            if _dbg_this_game:
+                                _debug_game_done = True
+                                print(
+                                    "╔═══════════════════════════════"
+                                    "═══════════════╗"
+                                )
+                                print(
+                                    "║  DEBUG: First completed game"
+                                    " (env 0)        ║"
+                                )
+                                print(
+                                    "╚═══════════════════════════════"
+                                    "═══════════════╝"
+                                )
+                                print(
+                                    "last_reward:",
+                                    last_reward,
+                                    "is_draw:",
+                                    is_draw,
+                                    "ep_len:",
+                                    ep_len,
+                                )
+                                # Print board from final state
+                                ctx.enqueue_copy(
+                                    _dbg_states_host, states_buf
+                                )
+                                ctx.synchronize()
+                                print("Final board:")
+                                for row in range(5, -1, -1):
+                                    var row_str = String("  ")
+                                    for col in range(7):
+                                        var cell = Int(
+                                            Float64(
+                                                _dbg_states_host[
+                                                    col * 6 + row
+                                                ]
+                                            )
+                                        )
+                                        if cell == 0:
+                                            row_str += ". "
+                                        elif cell == 1:
+                                            row_str += "X "
+                                        else:
+                                            row_str += "O "
+                                    print(row_str)
+
                             comptime QW = Self.Config.value_target_q_weight
 
                             for t in range(ep_len):
@@ -3334,11 +3542,42 @@ struct GenericAlphaZeroAgent[
                                     var q = env_q_history[e][t]
                                     value_target = (1.0 - QW) * z + QW * q
 
+                                if _dbg_this_game and t < 6:
+                                    # Print first 6 moves' targets
+                                    print(
+                                        "  step",
+                                        t,
+                                        "steps_from_end:",
+                                        steps_from_end,
+                                        "z:",
+                                        Int(z * 100.0) / 100.0,
+                                        "policy:",
+                                        end="",
+                                    )
+                                    for a in range(ACT):
+                                        print(
+                                            "",
+                                            Int(
+                                                Float64(
+                                                    env_policy_history[e][
+                                                        t
+                                                    ][a]
+                                                )
+                                                * 100.0
+                                            )
+                                            / 100.0,
+                                            end="",
+                                        )
+                                    print()
+
                                 self._add_with_augmentation[E](
                                     env_obs_history[e][t],
                                     env_policy_history[e][t],
                                     Scalar[dtype](value_target),
                                 )
+
+                            if _dbg_this_game:
+                                print("─" * 46)
 
                             env_obs_history[e].clear()
                             env_policy_history[e].clear()
