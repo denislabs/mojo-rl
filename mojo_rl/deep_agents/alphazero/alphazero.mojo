@@ -2199,6 +2199,7 @@ struct GenericAlphaZeroAgent[
         ctx: DeviceContext,
         prev_params: UnsafePointer[Scalar[dtype], origin],
         prev_opt_state: UnsafePointer[Scalar[dtype], origin],
+        prev_step_num: Int,
         # Pre-allocated arena param buffers
         mut arena_new_params: DeviceBuffer[dtype],
         mut arena_old_params: DeviceBuffer[dtype],
@@ -2241,6 +2242,7 @@ struct GenericAlphaZeroAgent[
         for i in range(PS):
             arena_params_host[i] = self.state.prediction.params[i]
         ctx.enqueue_copy(arena_new_params, arena_params_host)
+        ctx.synchronize()  # Must complete before overwriting host buffer
 
         # Upload old (previous best) params
         for i in range(PS):
@@ -2310,12 +2312,13 @@ struct GenericAlphaZeroAgent[
             accepted = win_rate >= threshold
 
         if not accepted:
-            # Revert params and optimizer state to previous best
+            # Revert params, optimizer state, and step count to previous best
             for i in range(PS):
                 self.state.prediction.params[i] = prev_params[i]
             comptime OPT_STATE_SIZE = Self.Config.PredModel.PARAM_SIZE * Self.Config.OptType.STATE_PER_PARAM
             for i in range(OPT_STATE_SIZE):
                 self.state.prediction.optimizer_state[i] = prev_opt_state[i]
+            self.state.prediction.step_num = prev_step_num
 
         return (accepted, new_wins, draws, old_wins)
 
@@ -2917,11 +2920,12 @@ struct GenericAlphaZeroAgent[
         var metrics = TrainingMetrics(algorithm_name="AlphaZero")
         var total_steps = 0
 
-        # Save initial params + optimizer state for arena comparison
+        # Save initial params + optimizer state + step count for arena comparison
         comptime PS = Self.Config.PredModel.PARAM_SIZE
         comptime OPT_SS = PS * Self.Config.OptType.STATE_PER_PARAM
         var best_params = alloc[Scalar[dtype]](PS)
         var best_opt_state = alloc[Scalar[dtype]](OPT_SS)
+        var best_step_num = self.state.prediction.step_num
         for i in range(PS):
             best_params[i] = self.state.prediction.params[i]
         for i in range(OPT_SS):
@@ -3775,6 +3779,7 @@ struct GenericAlphaZeroAgent[
                     rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
                         best_opt_state
                     ),
+                    best_step_num,
                     arena_new_params,
                     arena_old_params,
                     arena_params_host,
@@ -3805,6 +3810,7 @@ struct GenericAlphaZeroAgent[
                         best_params[i] = self.state.prediction.params[i]
                     for i in range(OPT_SS):
                         best_opt_state[i] = self.state.prediction.optimizer_state[i]
+                    best_step_num = self.state.prediction.step_num
                     arena_accepts += 1
                     print(
                         "  Arena: ACCEPTED",
