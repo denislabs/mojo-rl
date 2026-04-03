@@ -1756,14 +1756,33 @@ struct GenericAlphaZeroAgent[
         ctx: DeviceContext,
         p0_params: DeviceBuffer[dtype],
         p1_params: DeviceBuffer[dtype],
+        mut gpu_mcts: GPUMCTSState[
+            Self.n_envs,
+            Self.Config.max_nodes,
+            Self.Config.action_dim,
+            Self.Config.obs_dim,
+            1,
+            E.STATE_SIZE,
+        ],
+        mcts_ws: DeviceBuffer[dtype],
+        states_buf: DeviceBuffer[dtype],
+        obs_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        rewards_buf: DeviceBuffer[dtype],
+        dones_buf: DeviceBuffer[dtype],
+        terminated_buf: DeviceBuffer[dtype],
+        legal_masks_buf: DeviceBuffer[dtype],
+        exp_rewards: DeviceBuffer[dtype],
+        exp_dones: DeviceBuffer[dtype],
+        exp_terminated: DeviceBuffer[dtype],
+        exp_obs: DeviceBuffer[dtype],
+        rewards_host: HostBuffer[dtype],
+        dones_host: HostBuffer[dtype],
         rng_offset: Int,
     ) raises -> Tuple[Int, Int, Int]:
         """Play n_envs games on GPU. P0 uses p0_params, P1 uses p1_params.
 
-        On even moves (0, 2, 4, ...) the current player is P0 → p0_params.
-        On odd moves (1, 3, 5, ...) the current player is P1 → p1_params.
-        All envs use the SAME params each move (no split batches needed).
-
+        Uses pre-allocated buffers (no per-call GPU allocation).
         Returns (p0_wins, draws, p1_wins).
         """
         comptime ACT = Self.Config.action_dim
@@ -1778,32 +1797,6 @@ struct GenericAlphaZeroAgent[
         comptime BATCH_SIMS = 8
         comptime NUM_ROUNDS = SIMS // BATCH_SIMS
         comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
-
-        # GPU MCTS + env buffers
-        var gpu_mcts = GPUMCTSState[Self.n_envs, MAX_NODES, ACT, OBS, 1, GS](
-            ctx
-        )
-        comptime WS = Self.Config.PredModel.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_SIZE = Self.n_envs * BATCH_SIMS * WS if WS > 0 else 1
-        var mcts_ws = ctx.enqueue_create_buffer[dtype](WS_SIZE)
-
-        var states_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs * GS)
-        var obs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs * OBS)
-        var actions_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var rewards_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var dones_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var terminated_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var legal_masks_buf = ctx.enqueue_create_buffer[dtype](
-            Self.n_envs * ACT
-        )
-
-        var exp_rewards = ctx.enqueue_create_buffer[dtype](TOTAL_EXPAND)
-        var exp_dones = ctx.enqueue_create_buffer[dtype](TOTAL_EXPAND)
-        var exp_terminated = ctx.enqueue_create_buffer[dtype](TOTAL_EXPAND)
-        var exp_obs = ctx.enqueue_create_buffer[dtype](TOTAL_EXPAND * OBS)
-
-        var rewards_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
-        var dones_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
 
         # Reset envs
         E.reset_kernel_gpu[Self.n_envs, GS](
@@ -2150,51 +2143,105 @@ struct GenericAlphaZeroAgent[
         mut self,
         ctx: DeviceContext,
         prev_params: UnsafePointer[Scalar[dtype], origin],
+        # Pre-allocated arena param buffers
+        arena_new_params: DeviceBuffer[dtype],
+        arena_old_params: DeviceBuffer[dtype],
+        arena_params_host: HostBuffer[dtype],
+        # Pre-allocated shared buffers (reused from self-play)
+        mut gpu_mcts: GPUMCTSState[
+            Self.n_envs,
+            Self.Config.max_nodes,
+            Self.Config.action_dim,
+            Self.Config.obs_dim,
+            1,
+            E.STATE_SIZE,
+        ],
+        mcts_ws: DeviceBuffer[dtype],
+        states_buf: DeviceBuffer[dtype],
+        obs_buf: DeviceBuffer[dtype],
+        actions_buf: DeviceBuffer[dtype],
+        rewards_buf: DeviceBuffer[dtype],
+        dones_buf: DeviceBuffer[dtype],
+        terminated_buf: DeviceBuffer[dtype],
+        legal_masks_buf: DeviceBuffer[dtype],
+        exp_rewards: DeviceBuffer[dtype],
+        exp_dones: DeviceBuffer[dtype],
+        exp_terminated: DeviceBuffer[dtype],
+        exp_obs: DeviceBuffer[dtype],
+        rewards_host: HostBuffer[dtype],
+        dones_host: HostBuffer[dtype],
         num_games: Int = 40,
         threshold: Float64 = 0.55,
     ) raises -> Tuple[Bool, Int, Int, Int]:
         """Compare current (new) model vs previous (old) model on GPU.
 
-        Plays two phases of n_envs games each (total = 2 * n_envs):
-          Phase 1: new=P0, old=P1
-          Phase 2: old=P0, new=P1
-
+        Uses pre-allocated buffers (no per-call GPU allocation).
         Returns (accepted, new_wins, draws, old_wins).
         """
         comptime PS = Self.Config.PredModel.PARAM_SIZE
-        var half = num_games // 2
-
-        # Lightweight param-only buffers (no grads/optimizer state)
-        var new_params_buf = ctx.enqueue_create_buffer[dtype](PS)
-        var old_params_buf = ctx.enqueue_create_buffer[dtype](PS)
-        var params_host = ctx.enqueue_create_host_buffer[dtype](PS)
 
         # Upload new (current) params
         for i in range(PS):
-            params_host[i] = self.state.prediction.params[i]
-        ctx.enqueue_copy(new_params_buf, params_host)
+            arena_params_host[i] = self.state.prediction.params[i]
+        ctx.enqueue_copy(arena_new_params, arena_params_host)
 
         # Upload old (previous best) params
         for i in range(PS):
-            params_host[i] = prev_params[i]
-        ctx.enqueue_copy(old_params_buf, params_host)
+            arena_params_host[i] = prev_params[i]
+        ctx.enqueue_copy(arena_old_params, arena_params_host)
         ctx.synchronize()
 
         # Phase 1: new=P0, old=P1
         var r1 = self._gpu_play_games[E](
-            ctx, new_params_buf, old_params_buf, rng_offset=42
+            ctx,
+            arena_new_params,
+            arena_old_params,
+            gpu_mcts,
+            mcts_ws,
+            states_buf,
+            obs_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            terminated_buf,
+            legal_masks_buf,
+            exp_rewards,
+            exp_dones,
+            exp_terminated,
+            exp_obs,
+            rewards_host,
+            dones_host,
+            rng_offset=42,
         )
-        var new_wins = r1[0]  # P0 wins = new wins
+        var new_wins = r1[0]
         var draws = r1[1]
-        var old_wins = r1[2]  # P1 wins = old wins
+        var old_wins = r1[2]
 
         # Phase 2: old=P0, new=P1
         var r2 = self._gpu_play_games[E](
-            ctx, old_params_buf, new_params_buf, rng_offset=9999
+            ctx,
+            arena_old_params,
+            arena_new_params,
+            gpu_mcts,
+            mcts_ws,
+            states_buf,
+            obs_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            terminated_buf,
+            legal_masks_buf,
+            exp_rewards,
+            exp_dones,
+            exp_terminated,
+            exp_obs,
+            rewards_host,
+            dones_host,
+            rng_offset=9999,
         )
-        new_wins += r2[2]  # P1 wins = new wins
+        new_wins += r2[2]
         draws += r2[1]
-        old_wins += r2[0]  # P0 wins = old wins
+        old_wins += r2[0]
 
         # Acceptance decision (draws excluded from denominator)
         var decisive = new_wins + old_wins
@@ -2223,12 +2270,33 @@ struct GenericAlphaZeroAgent[
         mut self,
         ctx: DeviceContext,
         mut gpu: Self.GPUStateType,
+        mut eval_mcts: GPUMCTSState[
+            Self.n_envs,
+            Self.Config.max_nodes,
+            Self.Config.action_dim,
+            Self.Config.obs_dim,
+            1,
+            E.STATE_SIZE,
+        ],
+        mcts_ws: DeviceBuffer[dtype],
+        eval_states: DeviceBuffer[dtype],
+        eval_obs: DeviceBuffer[dtype],
+        eval_acts: DeviceBuffer[dtype],
+        eval_rews: DeviceBuffer[dtype],
+        eval_dones: DeviceBuffer[dtype],
+        eval_term: DeviceBuffer[dtype],
+        eval_legal: DeviceBuffer[dtype],
+        exp_rewards: DeviceBuffer[dtype],
+        exp_dones: DeviceBuffer[dtype],
+        exp_terminated: DeviceBuffer[dtype],
+        exp_obs: DeviceBuffer[dtype],
+        eval_dones_host: HostBuffer[dtype],
+        eval_rews_host: HostBuffer[dtype],
         rng_offset: Int = 0,
     ) raises -> Tuple[Int, Int, Int]:
         """GPU evaluation: agent (MCTS temp=0) vs GPU evaluator.
 
-        Agent always plays as P0 (even moves use GPU MCTS).
-        Opponent plays as P1 (odd moves use Eval.select_action_gpu).
+        Uses pre-allocated buffers (no per-call GPU allocation).
         Returns (wins, draws, losses).
         """
         comptime ACT = Self.Config.action_dim
@@ -2242,27 +2310,6 @@ struct GenericAlphaZeroAgent[
         comptime BATCH_SIMS = 8
         comptime NUM_ROUNDS = Self.Config.num_simulations // BATCH_SIMS
         comptime TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
-
-        # Workspace for network forward passes
-        comptime WS = Self.Config.PredModel.WORKSPACE_SIZE_PER_SAMPLE
-        comptime WS_SIZE = Self.n_envs * BATCH_SIMS * WS if WS > 0 else 1
-        var mcts_ws = ctx.enqueue_create_buffer[dtype](WS_SIZE)
-
-        # Env buffers
-        var eval_states = ctx.enqueue_create_buffer[dtype](Self.n_envs * GS)
-        var eval_obs = ctx.enqueue_create_buffer[dtype](Self.n_envs * OBS)
-        var eval_acts = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var eval_rews = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var eval_dones = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var eval_term = ctx.enqueue_create_buffer[dtype](Self.n_envs)
-        var eval_legal = ctx.enqueue_create_buffer[dtype](Self.n_envs * ACT)
-        var eval_dones_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
-        var eval_rews_host = ctx.enqueue_create_host_buffer[dtype](Self.n_envs)
-
-        # MCTS state for evaluation
-        var eval_mcts = GPUMCTSState[Self.n_envs, MAX_NODES, ACT, OBS, 1, GS](
-            ctx
-        )
 
         E.reset_kernel_gpu[Self.n_envs, GS](
             ctx, eval_states, rng_seed=UInt64(rng_offset + 9999)
@@ -2414,20 +2461,12 @@ struct GenericAlphaZeroAgent[
                     block_dim=(TPB,),
                 )
 
-                # MCTS simulations
+                # MCTS simulations (reuse pre-allocated expansion buffers)
                 comptime EVAL_TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
-                var ee_rews = ctx.enqueue_create_buffer[dtype](
-                    EVAL_TOTAL_EXPAND
-                )
-                var ee_dones = ctx.enqueue_create_buffer[dtype](
-                    EVAL_TOTAL_EXPAND
-                )
-                var ee_term = ctx.enqueue_create_buffer[dtype](
-                    EVAL_TOTAL_EXPAND
-                )
-                var ee_obs = ctx.enqueue_create_buffer[dtype](
-                    EVAL_TOTAL_EXPAND * OBS
-                )
+                var ee_rews = exp_rewards
+                var ee_dones = exp_dones
+                var ee_term = exp_terminated
+                var ee_obs = exp_obs
 
                 var e_b_pp = LayoutTensor[
                     dtype,
@@ -2769,6 +2808,12 @@ struct GenericAlphaZeroAgent[
         )
         var diag_params_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
         var diag_grads_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
+
+        # Pre-allocated arena param buffers (reused every iteration)
+        comptime _ARENA_PS = Self.Config.PredModel.PARAM_SIZE
+        var arena_new_params = ctx.enqueue_create_buffer[dtype](_ARENA_PS)
+        var arena_old_params = ctx.enqueue_create_buffer[dtype](_ARENA_PS)
+        var arena_params_host = ctx.enqueue_create_host_buffer[dtype](_ARENA_PS)
 
         # Pre-allocated Q-value host buffers (for q-value training targets)
         comptime _Q_WEIGHT = Self.Config.value_target_q_weight
@@ -3386,7 +3431,24 @@ struct GenericAlphaZeroAgent[
                 # Re-upload after training for eval
                 gpu.upload_from(self.state, ctx)
                 var eval_r = self.gpu_eval[E, GPUEval](
-                    ctx, gpu, rng_offset=total_steps
+                    ctx,
+                    gpu,
+                    gpu_mcts,
+                    mcts_ws,
+                    states_buf,
+                    obs_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
+                    legal_masks_buf,
+                    exp_rewards,
+                    exp_dones,
+                    exp_terminated,
+                    exp_obs,
+                    rewards_host,
+                    dones_host,
+                    rng_offset=total_steps,
                 )
                 print(
                     "  Iter",
@@ -3425,7 +3487,24 @@ struct GenericAlphaZeroAgent[
             # ── 4b. Second GPU Evaluation ────────────────────────
             if do_eval2 and use_mcts:
                 var eval_r2 = self.gpu_eval[E, GPUEval2](
-                    ctx, gpu, rng_offset=total_steps + 77777
+                    ctx,
+                    gpu,
+                    gpu_mcts,
+                    mcts_ws,
+                    states_buf,
+                    obs_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
+                    legal_masks_buf,
+                    exp_rewards,
+                    exp_dones,
+                    exp_terminated,
+                    exp_obs,
+                    rewards_host,
+                    dones_host,
+                    rng_offset=total_steps + 77777,
                 )
                 print(
                     "    vs",
@@ -3445,6 +3524,24 @@ struct GenericAlphaZeroAgent[
                     rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
                         best_params
                     ),
+                    arena_new_params,
+                    arena_old_params,
+                    arena_params_host,
+                    gpu_mcts,
+                    mcts_ws,
+                    states_buf,
+                    obs_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
+                    legal_masks_buf,
+                    exp_rewards,
+                    exp_dones,
+                    exp_terminated,
+                    exp_obs,
+                    rewards_host,
+                    dones_host,
                     num_games=40,
                     threshold=arena_threshold,
                 )
