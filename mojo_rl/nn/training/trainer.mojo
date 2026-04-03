@@ -39,6 +39,7 @@ from .gpu_network_state import GPUNetworkState
 
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.sys import has_nvidia_gpu_accelerator
 
 
 struct TrainResult(ImplicitlyCopyable, Movable):
@@ -402,7 +403,7 @@ struct Trainer[
             )
             state.optimizer_step(ctx)
 
-        comptime if USE_CUDA_GRAPH:
+        comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
             from mojo_rl.cuda import CUDAGraph
 
             # Warmup: run one epoch to ensure stream is discoverable

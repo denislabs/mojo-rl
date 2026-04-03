@@ -25,6 +25,7 @@ from ..kernels import (
     uniform_random_actions_kernel,
 )
 from ..utils import print_progress_bar, clear_progress_bar
+from std.sys import has_nvidia_gpu_accelerator
 from mojo_rl.cuda.graph import CUDAGraph
 
 
@@ -460,7 +461,7 @@ def run_mbpo_train_gpu[
         if gpu_state.gpu_buffer_is_ready():
             if synth_buffer.is_ready[SYNTH_BS]():
                 # Mixed sampling: REAL_BS real + SYNTH_BS synthetic
-                comptime if USE_CUDA_GRAPH:
+                comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
                     if not _train_graph:
                         agent._gpu_train_kernels(
                             ctx, gpu_state, synth_buffer,

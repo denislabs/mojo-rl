@@ -67,6 +67,7 @@ from mojo_rl.deep_agents.muzero.evaluators import (
     GPUEvaluator,
     RandomOpponent,
 )
+from std.sys import has_nvidia_gpu_accelerator
 from mojo_rl.cuda.graph import CUDAGraph
 from .configs import AlphaZeroConfig
 from .state import AlphaZeroCPUState, AlphaZeroGPUState
@@ -3147,7 +3148,7 @@ struct GenericAlphaZeroAgent[
                         dtype, Layout.row_major(TOTAL_EXPAND * GS), MutAnyOrigin
                     ](gpu_mcts.expansion_states.unsafe_ptr())
 
-                    comptime if USE_CUDA_GRAPH:
+                    comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
                         if not _mcts_round_graph:
                             # Warmup: run one round without capture
                             self._mcts_round_kernels[E](
@@ -3666,7 +3667,7 @@ struct GenericAlphaZeroAgent[
                 # Upload latest params to GPU for training
                 gpu.upload_from(self.state, ctx)
 
-                comptime if USE_CUDA_GRAPH:
+                comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
                     # Upload replay buffer to GPU (one bulk copy per iteration)
                     gpu.upload_replay(self.state, ctx)
 

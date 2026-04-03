@@ -64,6 +64,7 @@ from mojo_rl.core import (
 )
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import dtype
+from std.sys import has_nvidia_gpu_accelerator
 from mojo_rl.cuda.graph import CUDAGraph
 from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
@@ -549,7 +550,7 @@ def run_offpolicy_continuous_train_gpu[
             )
             E.update_curriculum_gpu(ctx, workspace_buf, curriculum_values)
 
-        comptime if USE_ENV_CUDA_GRAPH:
+        comptime if USE_ENV_CUDA_GRAPH and has_nvidia_gpu_accelerator():
             # ==============================================================
             # ENV CUDA GRAPH PATH: all env kernels captured in one graph
             # ==============================================================
@@ -944,7 +945,7 @@ def run_offpolicy_continuous_train_gpu[
         # Training steps (gradient_steps per env collection iteration)
         # ------------------------------------------------------------------
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
-            comptime if USE_CUDA_GRAPH:
+            comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
                 # Lazy capture: first time, capture pure GPU kernels
                 if not _train_graph:
                     agent._gpu_train_kernels(ctx, gpu_state)
