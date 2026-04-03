@@ -1814,8 +1814,8 @@ struct GenericAlphaZeroAgent[
         )
         ctx.synchronize()
 
-        var game_done = InlineArray[Bool, 64](fill=False)
-        var game_result = InlineArray[Int, 64](fill=0)
+        var game_done = InlineArray[Bool, Self.n_envs](fill=False)
+        var game_result = InlineArray[Int, Self.n_envs](fill=0)
         var move_num = 0
         var all_done = False
 
@@ -2266,8 +2266,8 @@ struct GenericAlphaZeroAgent[
         )
         ctx.synchronize()
 
-        var eval_done = InlineArray[Bool, 64](fill=False)
-        var eval_result = InlineArray[Int, 64](fill=0)
+        var eval_done = InlineArray[Bool, Self.n_envs](fill=False)
+        var eval_result = InlineArray[Int, Self.n_envs](fill=0)
         var eval_move = 0
         var eval_all_done = False
 
