@@ -1754,14 +1754,14 @@ struct GenericAlphaZeroAgent[
     ](
         mut self,
         ctx: DeviceContext,
-        gpu_p0: GPUNetworkState[Self.Config.PredModel, Self.Config.OptType],
-        gpu_p1: GPUNetworkState[Self.Config.PredModel, Self.Config.OptType],
+        p0_params: DeviceBuffer[dtype],
+        p1_params: DeviceBuffer[dtype],
         rng_offset: Int,
     ) raises -> Tuple[Int, Int, Int]:
-        """Play n_envs games on GPU. P0 uses gpu_p0, P1 uses gpu_p1.
+        """Play n_envs games on GPU. P0 uses p0_params, P1 uses p1_params.
 
-        On even moves (0, 2, 4, ...) the current player is P0 → gpu_p0 params.
-        On odd moves (1, 3, 5, ...) the current player is P1 → gpu_p1 params.
+        On even moves (0, 2, 4, ...) the current player is P0 → p0_params.
+        On odd moves (1, 3, 5, ...) the current player is P1 → p1_params.
         All envs use the SAME params each move (no split batches needed).
 
         Returns (p0_wins, draws, p1_wins).
@@ -1824,8 +1824,13 @@ struct GenericAlphaZeroAgent[
             var p0_turn = move_num % 2 == 0
 
             # Pick params: even moves → P0, odd moves → P1
-            var active_params = (
-                gpu_p0.params_view() if p0_turn else gpu_p1.params_view()
+            comptime _PS = Self.Config.PredModel.PARAM_SIZE
+            var active_params = LayoutTensor[
+                dtype, Layout.row_major(_PS), MutAnyOrigin
+            ](
+                p0_params.unsafe_ptr()
+                if p0_turn
+                else p1_params.unsafe_ptr()
             )
 
             # LayoutTensor views over MCTS buffers
@@ -2159,33 +2164,34 @@ struct GenericAlphaZeroAgent[
         comptime PS = Self.Config.PredModel.PARAM_SIZE
         var half = num_games // 2
 
-        # Create GPU states for new and old params
-        var gpu_new = GPUNetworkState[
-            Self.Config.PredModel, Self.Config.OptType
-        ](ctx)
-        var gpu_old = GPUNetworkState[
-            Self.Config.PredModel, Self.Config.OptType
-        ](ctx)
+        # Lightweight param-only buffers (no grads/optimizer state)
+        var new_params_buf = ctx.enqueue_create_buffer[dtype](PS)
+        var old_params_buf = ctx.enqueue_create_buffer[dtype](PS)
+        var params_host = ctx.enqueue_create_host_buffer[dtype](PS)
 
         # Upload new (current) params
         for i in range(PS):
-            gpu_new.params_host[i] = self.state.prediction.params[i]
-        ctx.enqueue_copy(gpu_new.params_buf, gpu_new.params_host)
+            params_host[i] = self.state.prediction.params[i]
+        ctx.enqueue_copy(new_params_buf, params_host)
 
         # Upload old (previous best) params
         for i in range(PS):
-            gpu_old.params_host[i] = prev_params[i]
-        ctx.enqueue_copy(gpu_old.params_buf, gpu_old.params_host)
+            params_host[i] = prev_params[i]
+        ctx.enqueue_copy(old_params_buf, params_host)
         ctx.synchronize()
 
         # Phase 1: new=P0, old=P1
-        var r1 = self._gpu_play_games[E](ctx, gpu_new, gpu_old, rng_offset=42)
+        var r1 = self._gpu_play_games[E](
+            ctx, new_params_buf, old_params_buf, rng_offset=42
+        )
         var new_wins = r1[0]  # P0 wins = new wins
         var draws = r1[1]
         var old_wins = r1[2]  # P1 wins = old wins
 
         # Phase 2: old=P0, new=P1
-        var r2 = self._gpu_play_games[E](ctx, gpu_old, gpu_new, rng_offset=9999)
+        var r2 = self._gpu_play_games[E](
+            ctx, old_params_buf, new_params_buf, rng_offset=9999
+        )
         new_wins += r2[2]  # P1 wins = new wins
         draws += r2[1]
         old_wins += r2[0]  # P0 wins = old wins
