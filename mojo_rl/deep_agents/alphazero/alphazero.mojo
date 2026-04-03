@@ -2940,6 +2940,12 @@ struct GenericAlphaZeroAgent[
         # Debug: fires once on first MCTS step and first completed game
         var _debug_mcts_done = False
         var _debug_game_done = False
+        # Per-iteration MCTS quality stats
+        var _iter_max_prob_sum: Float64 = 0.0
+        var _iter_mcts_steps: Int = 0
+        var _iter_temp1_count: Int = 0
+        var _iter_game_len_sum: Float64 = 0.0
+        var _iter_game_count: Int = 0
         # Host buffers for debug (visit counts + states)
         var _dbg_vc_host = ctx.enqueue_create_host_buffer[dtype](
             Self.n_envs * MAX_NODES * ACT
@@ -2981,6 +2987,13 @@ struct GenericAlphaZeroAgent[
             if iter == warmup_iters:
                 ep_steps_buf.enqueue_fill(Scalar[dtype](0.0))
             ctx.synchronize()
+
+            # Reset per-iteration MCTS stats
+            _iter_max_prob_sum = 0.0
+            _iter_mcts_steps = 0
+            _iter_temp1_count = 0
+            _iter_game_len_sum = 0.0
+            _iter_game_count = 0
 
             # ── 2. Collect self-play data (frozen network) ───────
             var iter_steps = 0
@@ -3470,10 +3483,29 @@ struct GenericAlphaZeroAgent[
                         env_rewards[e].append(Float64(rewards_host[e]))
                         env_q_history[e].append(root_q_host[e])
 
+                        # Accumulate per-iteration MCTS stats (env 0 only for speed)
+                        if e == 0:
+                            var _mp: Float64 = 0.0
+                            var _is_t1 = True
+                            for _a in range(ACT):
+                                var _p = Float64(policy_host[_a])
+                                if _p > _mp:
+                                    _mp = _p
+                                if _p > 0.99:
+                                    _is_t1 = False
+                            _iter_max_prob_sum += _mp
+                            _iter_mcts_steps += 1
+                            if _is_t1:
+                                _iter_temp1_count += 1
+
                         if Float64(dones_host[e]) > 0.5:
                             # Game ended — compute outcome and add all moves
                             var last_reward = Float64(rewards_host[e])
                             var ep_len = len(env_obs_history[e])
+
+                            # Track game length stats
+                            _iter_game_len_sum += Float64(ep_len)
+                            _iter_game_count += 1
 
                             var is_draw = (
                                 last_reward > -0.01 and last_reward < 0.01
@@ -3738,6 +3770,26 @@ struct GenericAlphaZeroAgent[
                     self.state.buf_size,
                     "| Train:",
                     self.train_step_count,
+                )
+
+            # ── MCTS quality stats ──────────────────────────────
+            if use_mcts and _iter_mcts_steps > 0:
+                var _avg_mp = _iter_max_prob_sum / Float64(_iter_mcts_steps)
+                var _t1_frac = Float64(_iter_temp1_count) / Float64(
+                    _iter_mcts_steps
+                )
+                var _avg_gl = (
+                    _iter_game_len_sum / Float64(_iter_game_count)
+                    if _iter_game_count > 0
+                    else 0.0
+                )
+                print(
+                    "    MCTS: avg_max_prob",
+                    Int(_avg_mp * 1000) / 1000.0,
+                    "avg_game_len",
+                    Int(_avg_gl * 10) / 10.0,
+                    "temp1_frac",
+                    Int(_t1_frac * 100) / 100.0,
                 )
 
             # ── 4b. Second GPU Evaluation ────────────────────────
