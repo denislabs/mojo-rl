@@ -106,15 +106,15 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
                 out[i] = obs[i]
             return
         # Horizontal flip: mirror columns (col c → col 6-c)
-        # Board is column-major: cell = col*6 + row
+        # Obs is row-major: cell = row*7 + col (matching Conv2D layout)
         # 3 planes of 42 cells each
         for plane in range(3):
             var plane_off = plane * 42
-            for col in range(7):
-                var mirror_col = 6 - col
-                for row in range(6):
-                    out[plane_off + col * 6 + row] = obs[
-                        plane_off + mirror_col * 6 + row
+            for row in range(6):
+                for col in range(7):
+                    var mirror_col = 6 - col
+                    out[plane_off + row * 7 + col] = obs[
+                        plane_off + row * 7 + mirror_col
                     ]
 
     @staticmethod
@@ -331,24 +331,26 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         var my_mark = Scalar[Self.dtype](player + 1)
         var opp_mark = Scalar[Self.dtype](2 - player)
 
-        # Plane 0: my pieces
-        for i in range(BOARD_SIZE):
-            if self.state[i] == my_mark:
-                obs.append(Scalar[Self.dtype](1.0))
-            else:
-                obs.append(Scalar[Self.dtype](0.0))
+        # Plane 0: my pieces (row-major: row * COLS + col for Conv2D)
+        for row in range(ROWS):
+            for col in range(COLS):
+                if self.state[_cell_idx(col, row)] == my_mark:
+                    obs.append(Scalar[Self.dtype](1.0))
+                else:
+                    obs.append(Scalar[Self.dtype](0.0))
 
-        # Plane 1: opponent pieces
-        for i in range(BOARD_SIZE):
-            if self.state[i] == opp_mark:
-                obs.append(Scalar[Self.dtype](1.0))
-            else:
-                obs.append(Scalar[Self.dtype](0.0))
+        # Plane 1: opponent pieces (row-major)
+        for row in range(ROWS):
+            for col in range(COLS):
+                if self.state[_cell_idx(col, row)] == opp_mark:
+                    obs.append(Scalar[Self.dtype](1.0))
+                else:
+                    obs.append(Scalar[Self.dtype](0.0))
 
         # Plane 2: legal moves (broadcast: all cells in legal columns = 1.0)
-        for col in range(COLS):
-            var col_legal = self.state[_cell_idx(col, ROWS - 1)] == 0.0
-            for _ in range(ROWS):
+        for row in range(ROWS):
+            for col in range(COLS):
+                var col_legal = self.state[_cell_idx(col, ROWS - 1)] == 0.0
                 if col_legal:
                     obs.append(Scalar[Self.dtype](1.0))
                 else:
@@ -750,16 +752,21 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         var game_over = states[i, S_GAME_RESULT] != 0.0
 
         # Plane 0: my pieces, Plane 1: opp pieces
-        for c in range(BOARD_SIZE):
-            var cell = states[i, c]
-            if cell == my_mark:
-                obs[i, c] = 1.0
-            else:
-                obs[i, c] = 0.0
-            if cell == opp_mark:
-                obs[i, BOARD_SIZE + c] = 1.0
-            else:
-                obs[i, BOARD_SIZE + c] = 0.0
+        # Conv2D expects row-major spatial layout: row * COLS + col
+        # State uses column-major: col * ROWS + row
+        for col in range(COLS):
+            for row in range(ROWS):
+                var state_idx = _cell_idx(col, row)  # col*6 + row
+                var obs_idx = row * COLS + col  # row-major for Conv2D
+                var cell = states[i, state_idx]
+                if cell == my_mark:
+                    obs[i, obs_idx] = 1.0
+                else:
+                    obs[i, obs_idx] = 0.0
+                if cell == opp_mark:
+                    obs[i, BOARD_SIZE + obs_idx] = 1.0
+                else:
+                    obs[i, BOARD_SIZE + obs_idx] = 0.0
 
         # Plane 2: legal moves (broadcast by column) + legal_masks
         for col in range(COLS):
@@ -770,7 +777,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
             else:
                 legal_masks[i, col] = 0.0
             for row in range(ROWS):
-                var obs_idx = 2 * BOARD_SIZE + _cell_idx(col, row)
+                var obs_idx = 2 * BOARD_SIZE + row * COLS + col  # row-major
                 if col_legal:
                     obs[i, obs_idx] = 1.0
                 else:

@@ -2976,6 +2976,10 @@ struct GenericAlphaZeroAgent[
             # Reset episode counters for this iteration
             rew_sum_buf.enqueue_fill(Scalar[dtype](0.0))
             ep_count_buf.enqueue_fill(Scalar[dtype](0.0))
+            # Reset ep_steps so warmup step counts don't carry into MCTS
+            # (prevents temp_threshold from being exceeded on first games)
+            if iter == warmup_iters:
+                ep_steps_buf.enqueue_fill(Scalar[dtype](0.0))
             ctx.synchronize()
 
             # ── 2. Collect self-play data (frozen network) ───────
