@@ -1764,20 +1764,20 @@ struct GenericAlphaZeroAgent[
             1,
             E.STATE_SIZE,
         ],
-        mcts_ws: DeviceBuffer[dtype],
-        states_buf: DeviceBuffer[dtype],
-        obs_buf: DeviceBuffer[dtype],
-        actions_buf: DeviceBuffer[dtype],
-        rewards_buf: DeviceBuffer[dtype],
-        dones_buf: DeviceBuffer[dtype],
-        terminated_buf: DeviceBuffer[dtype],
-        legal_masks_buf: DeviceBuffer[dtype],
-        exp_rewards: DeviceBuffer[dtype],
-        exp_dones: DeviceBuffer[dtype],
-        exp_terminated: DeviceBuffer[dtype],
-        exp_obs: DeviceBuffer[dtype],
-        rewards_host: HostBuffer[dtype],
-        dones_host: HostBuffer[dtype],
+        mut mcts_ws: DeviceBuffer[dtype],
+        mut states_buf: DeviceBuffer[dtype],
+        mut obs_buf: DeviceBuffer[dtype],
+        mut actions_buf: DeviceBuffer[dtype],
+        mut rewards_buf: DeviceBuffer[dtype],
+        mut dones_buf: DeviceBuffer[dtype],
+        mut terminated_buf: DeviceBuffer[dtype],
+        mut legal_masks_buf: DeviceBuffer[dtype],
+        mut exp_rewards: DeviceBuffer[dtype],
+        mut exp_dones: DeviceBuffer[dtype],
+        mut exp_terminated: DeviceBuffer[dtype],
+        mut exp_obs: DeviceBuffer[dtype],
+        mut rewards_host: HostBuffer[dtype],
+        mut dones_host: HostBuffer[dtype],
         rng_offset: Int,
     ) raises -> Tuple[Int, Int, Int]:
         """Play n_envs games on GPU. P0 uses p0_params, P1 uses p1_params.
@@ -2144,9 +2144,9 @@ struct GenericAlphaZeroAgent[
         ctx: DeviceContext,
         prev_params: UnsafePointer[Scalar[dtype], origin],
         # Pre-allocated arena param buffers
-        arena_new_params: DeviceBuffer[dtype],
-        arena_old_params: DeviceBuffer[dtype],
-        arena_params_host: HostBuffer[dtype],
+        mut arena_new_params: DeviceBuffer[dtype],
+        mut arena_old_params: DeviceBuffer[dtype],
+        mut arena_params_host: HostBuffer[dtype],
         # Pre-allocated shared buffers (reused from self-play)
         mut gpu_mcts: GPUMCTSState[
             Self.n_envs,
@@ -2156,20 +2156,20 @@ struct GenericAlphaZeroAgent[
             1,
             E.STATE_SIZE,
         ],
-        mcts_ws: DeviceBuffer[dtype],
-        states_buf: DeviceBuffer[dtype],
-        obs_buf: DeviceBuffer[dtype],
-        actions_buf: DeviceBuffer[dtype],
-        rewards_buf: DeviceBuffer[dtype],
-        dones_buf: DeviceBuffer[dtype],
-        terminated_buf: DeviceBuffer[dtype],
-        legal_masks_buf: DeviceBuffer[dtype],
-        exp_rewards: DeviceBuffer[dtype],
-        exp_dones: DeviceBuffer[dtype],
-        exp_terminated: DeviceBuffer[dtype],
-        exp_obs: DeviceBuffer[dtype],
-        rewards_host: HostBuffer[dtype],
-        dones_host: HostBuffer[dtype],
+        mut mcts_ws: DeviceBuffer[dtype],
+        mut states_buf: DeviceBuffer[dtype],
+        mut obs_buf: DeviceBuffer[dtype],
+        mut actions_buf: DeviceBuffer[dtype],
+        mut rewards_buf: DeviceBuffer[dtype],
+        mut dones_buf: DeviceBuffer[dtype],
+        mut terminated_buf: DeviceBuffer[dtype],
+        mut legal_masks_buf: DeviceBuffer[dtype],
+        mut exp_rewards: DeviceBuffer[dtype],
+        mut exp_dones: DeviceBuffer[dtype],
+        mut exp_terminated: DeviceBuffer[dtype],
+        mut exp_obs: DeviceBuffer[dtype],
+        mut rewards_host: HostBuffer[dtype],
+        mut dones_host: HostBuffer[dtype],
         num_games: Int = 40,
         threshold: Float64 = 0.55,
     ) raises -> Tuple[Bool, Int, Int, Int]:
@@ -2278,20 +2278,20 @@ struct GenericAlphaZeroAgent[
             1,
             E.STATE_SIZE,
         ],
-        mcts_ws: DeviceBuffer[dtype],
-        eval_states: DeviceBuffer[dtype],
-        eval_obs: DeviceBuffer[dtype],
-        eval_acts: DeviceBuffer[dtype],
-        eval_rews: DeviceBuffer[dtype],
-        eval_dones: DeviceBuffer[dtype],
-        eval_term: DeviceBuffer[dtype],
-        eval_legal: DeviceBuffer[dtype],
-        exp_rewards: DeviceBuffer[dtype],
-        exp_dones: DeviceBuffer[dtype],
-        exp_terminated: DeviceBuffer[dtype],
-        exp_obs: DeviceBuffer[dtype],
-        eval_dones_host: HostBuffer[dtype],
-        eval_rews_host: HostBuffer[dtype],
+        mut mcts_ws: DeviceBuffer[dtype],
+        mut eval_states: DeviceBuffer[dtype],
+        mut eval_obs: DeviceBuffer[dtype],
+        mut eval_acts: DeviceBuffer[dtype],
+        mut eval_rews: DeviceBuffer[dtype],
+        mut eval_dones: DeviceBuffer[dtype],
+        mut eval_term: DeviceBuffer[dtype],
+        mut eval_legal: DeviceBuffer[dtype],
+        mut exp_rewards: DeviceBuffer[dtype],
+        mut exp_dones: DeviceBuffer[dtype],
+        mut exp_terminated: DeviceBuffer[dtype],
+        mut exp_obs: DeviceBuffer[dtype],
+        mut eval_dones_host: HostBuffer[dtype],
+        mut eval_rews_host: HostBuffer[dtype],
         rng_offset: Int = 0,
     ) raises -> Tuple[Int, Int, Int]:
         """GPU evaluation: agent (MCTS temp=0) vs GPU evaluator.
@@ -2463,10 +2463,6 @@ struct GenericAlphaZeroAgent[
 
                 # MCTS simulations (reuse pre-allocated expansion buffers)
                 comptime EVAL_TOTAL_EXPAND = Self.n_envs * BATCH_SIMS
-                var ee_rews = exp_rewards
-                var ee_dones = exp_dones
-                var ee_term = exp_terminated
-                var ee_obs = exp_obs
 
                 var e_b_pp = LayoutTensor[
                     dtype,
@@ -2533,10 +2529,10 @@ struct GenericAlphaZeroAgent[
                         ctx,
                         eval_mcts.expansion_states,
                         eval_mcts.pending_action,
-                        ee_rews,
-                        ee_dones,
-                        ee_term,
-                        ee_obs,
+                        exp_rewards,
+                        exp_dones,
+                        exp_terminated,
+                        exp_obs,
                         eval_mcts.expansion_legal_masks,
                         rng_seed=UInt64(rng_offset * 100 + eval_move * 10 + _r),
                     )
@@ -2544,7 +2540,7 @@ struct GenericAlphaZeroAgent[
                         dtype,
                         Layout.row_major(EVAL_TOTAL_EXPAND, PRED_IN),
                         MutAnyOrigin,
-                    ](ee_obs.unsafe_ptr())
+                    ](exp_obs.unsafe_ptr())
                     var ep_out = LayoutTensor[
                         dtype,
                         Layout.row_major(EVAL_TOTAL_EXPAND, PRED_OUT_DIM),
@@ -2566,7 +2562,7 @@ struct GenericAlphaZeroAgent[
                         dtype,
                         Layout.row_major(EVAL_TOTAL_EXPAND),
                         MutAnyOrigin,
-                    ](ee_rews.unsafe_ptr())
+                    ](exp_rewards.unsafe_ptr())
                     comptime e_run_exp = gpu_mcts_batched_expand_backup_kernel[
                         Self.n_envs,
                         MAX_NODES,
