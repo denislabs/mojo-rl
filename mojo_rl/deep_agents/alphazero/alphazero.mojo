@@ -1202,13 +1202,20 @@ struct GenericAlphaZeroAgent[
     ) raises:
         """CPU-side diagnostics after CUDA graph training replays.
 
-        Updates train_step_count and logs metrics for the last step only.
+        Increments counters and logs diagnostics for `num_steps` train steps.
+        Loops per step to not miss diag_every boundaries.
         """
-        self.train_step_count += num_steps
+        var should_diag = False
+        for _ in range(num_steps):
+            self.train_step_count += 1
+            if (
+                self.logger
+                and self.diag_every > 0
+                and self.train_step_count % self.diag_every == 0
+            ):
+                should_diag = True
 
-        if not self.logger or (
-            self.diag_every > 0 and self.train_step_count % self.diag_every != 0
-        ):
+        if not should_diag:
             return
 
         comptime BATCH = Self.Config.batch_size

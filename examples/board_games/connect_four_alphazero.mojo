@@ -46,7 +46,7 @@ def main() raises:
     # CNN (Conv+BN+ReLU, matching alpha-zero-general):
     # comptime Config = AlphaZeroConnectFourCNNConfig[]
     # ResNet (closest to original AlphaZero):
-    comptime Config = AlphaZeroConnectFourFusedResNetConfig[]
+    comptime Config = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=20]
     # comptime Config = AlphaZeroConnectFourResNetConfig[]
 
     logger.set_config("agent", "AlphaZero")
@@ -77,7 +77,7 @@ def main() raises:
         checkpoint_every=10,
         checkpoint_path="connect_four_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
-        diag_every=5_000,
+        diag_every=1_000,
     )
 
     logger.close()
