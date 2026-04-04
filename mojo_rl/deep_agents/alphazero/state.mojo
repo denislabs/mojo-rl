@@ -166,8 +166,8 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
-    """GPU state: prediction network + training scratch buffers."""
+struct AlphaZeroGPUState[Config: AlphaZeroConfig, N_ENVS: Int = 512](Movable):
+    """GPU state: prediction network + training scratch buffers + episode staging."""
 
     comptime OBS: Int = Self.Config.obs_dim
     comptime ACT: Int = Self.Config.action_dim
@@ -175,6 +175,7 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
     comptime PredModel = Self.Config.PredModel
     comptime OptType = Self.Config.OptType
     comptime PRED_OUT: Int = Self.Config.action_dim + 1  # policy + value
+    comptime MAX_EP: Int = Self.Config.max_episode_length
 
     # GPU network
     var prediction: GPUNetworkState[Self.PredModel, Self.OptType]
@@ -208,6 +209,13 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
     var replay_policy_host: HostBuffer[dtype]  # [CAP * ACT]
     var replay_value_host: HostBuffer[dtype]  # [CAP]
     var replay_size_host: HostBuffer[DType.int32]  # [1]
+
+    # GPU episode staging (per-env ring buffers for in-progress episodes)
+    var stage_obs: DeviceBuffer[dtype]  # [N_ENVS * MAX_EP * OBS]
+    var stage_policy: DeviceBuffer[dtype]  # [N_ENVS * MAX_EP * ACT]
+    var stage_len: DeviceBuffer[DType.int32]  # [N_ENVS]
+    var replay_write_head: DeviceBuffer[DType.int32]  # [1]
+    var env_rng_counter: DeviceBuffer[DType.uint32]  # [1] graph-safe seed
 
     def __init__(out self, ctx: DeviceContext) raises:
         self.prediction = GPUNetworkState[Self.PredModel, Self.OptType](ctx)
@@ -262,6 +270,20 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
         self.replay_value_host = ctx.enqueue_create_host_buffer[dtype](CAP)
         self.replay_size_host = ctx.enqueue_create_host_buffer[DType.int32](1)
 
+        # Episode staging buffers
+        self.stage_obs = ctx.enqueue_create_buffer[dtype](
+            N_ENVS * Self.MAX_EP * Self.OBS
+        )
+        self.stage_policy = ctx.enqueue_create_buffer[dtype](
+            N_ENVS * Self.MAX_EP * Self.ACT
+        )
+        self.stage_len = ctx.enqueue_create_buffer[DType.int32](N_ENVS)
+        self.replay_write_head = ctx.enqueue_create_buffer[DType.int32](1)
+        self.env_rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
+        ctx.enqueue_memset(self.stage_len, 0)
+        ctx.enqueue_memset(self.replay_write_head, 0)
+        ctx.enqueue_memset(self.env_rng_counter, 0)
+
     def __init__(out self, *, deinit take: Self):
         self.prediction = take.prediction^
         self.batch_obs = take.batch_obs^
@@ -285,6 +307,11 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
         self.replay_policy_host = take.replay_policy_host^
         self.replay_value_host = take.replay_value_host^
         self.replay_size_host = take.replay_size_host^
+        self.stage_obs = take.stage_obs^
+        self.stage_policy = take.stage_policy^
+        self.stage_len = take.stage_len^
+        self.replay_write_head = take.replay_write_head^
+        self.env_rng_counter = take.env_rng_counter^
 
     def upload_from(
         mut self, cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext
@@ -327,3 +354,29 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig](Movable):
         ctx.enqueue_copy(self.replay_policy, self.replay_policy_host)
         ctx.enqueue_copy(self.replay_value, self.replay_value_host)
         ctx.synchronize()
+
+    def download_replay(
+        self, mut cpu: AlphaZeroCPUState[Self.Config], ctx: DeviceContext
+    ) raises:
+        """Download GPU replay buffer to CPU for checkpointing."""
+        ctx.enqueue_copy(self.replay_size_host, self.replay_size)
+        ctx.synchronize()
+        var buf_size = Int(self.replay_size_host[0])
+        if buf_size == 0:
+            return
+
+        comptime OBS = Self.OBS
+        comptime ACT = Self.ACT
+
+        ctx.enqueue_copy(self.replay_obs_host, self.replay_obs)
+        ctx.enqueue_copy(self.replay_policy_host, self.replay_policy)
+        ctx.enqueue_copy(self.replay_value_host, self.replay_value)
+        ctx.synchronize()
+
+        cpu.buf_size = buf_size
+        for i in range(buf_size * OBS):
+            cpu.buf_obs[i] = self.replay_obs_host[i]
+        for i in range(buf_size * ACT):
+            cpu.buf_policy[i] = self.replay_policy_host[i]
+        for i in range(buf_size):
+            cpu.buf_value[i] = self.replay_value_host[i]

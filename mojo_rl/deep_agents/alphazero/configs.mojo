@@ -79,6 +79,13 @@ trait AlphaZeroConfig:
     # 0.0 = pure z (original AlphaZero), 1.0 = pure q, 0.5 = average
     comptime value_target_q_weight: Float64
 
+    # ── GPU episode tracking ────────────────────────────────────────
+    comptime max_episode_length: Int  # Max steps per episode (for GPU staging)
+    comptime board_rows: Int  # Board height (for augmentation kernel)
+    comptime board_cols: Int  # Board width (for augmentation kernel)
+    comptime board_planes: Int  # Obs planes (for augmentation kernel)
+    comptime num_symmetries: Int  # Data augmentation symmetries (1=none, 2=flip)
+
     # ── Strategies (shared with MuZero) ───────────────────────────
     comptime Noise: ExplorationNoise
     comptime PUCT: PUCTFormula
@@ -123,6 +130,11 @@ struct AlphaZeroTicTacToeConfig[
     comptime temp_threshold: Int = 15  # temp=1 first 15 moves, then temp=0
     comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 9  # 3×3 board
+    comptime board_rows: Int = 3
+    comptime board_cols: Int = 3
+    comptime board_planes: Int = 3
+    comptime num_symmetries: Int = 2  # identity + horizontal flip
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
@@ -183,6 +195,11 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime temp_threshold: Int = 15
     comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 9
+    comptime board_rows: Int = 3
+    comptime board_cols: Int = 3
+    comptime board_planes: Int = 3
+    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
@@ -228,6 +245,11 @@ struct AlphaZeroConnectFourConfig[
     comptime temp_threshold: Int = 20
     comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 42  # 6×7 board
+    comptime board_rows: Int = 6
+    comptime board_cols: Int = 7
+    comptime board_planes: Int = 3
+    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[0.25, 1.0]  # alpha=1.0 for C4
     comptime PUCT = AlphaGoPUCT[2.0]
@@ -295,6 +317,11 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime temp_threshold: Int = 20
     comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 42
+    comptime board_rows: Int = 6
+    comptime board_cols: Int = 7
+    comptime board_planes: Int = 3
+    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[
         0.25, 1.0
@@ -406,6 +433,11 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime temp_threshold: Int = 20
     comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 42
+    comptime board_rows: Int = 6
+    comptime board_cols: Int = 7
+    comptime board_planes: Int = 3
+    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[0.25, 1.0]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
@@ -464,6 +496,11 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime temp_threshold: Int = 20
     comptime batch_sims: Int = 4
     comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 42
+    comptime board_rows: Int = 6
+    comptime board_cols: Int = 7
+    comptime board_planes: Int = 3
+    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[0.25, 1.0]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
@@ -519,6 +556,11 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime temp_threshold: Int = 15
     comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 9
+    comptime board_rows: Int = 3
+    comptime board_cols: Int = 3
+    comptime board_planes: Int = 3
+    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
@@ -563,6 +605,11 @@ struct AlphaZeroChessConfig[
     comptime temp_threshold: Int = 30
     comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 512
+    comptime board_rows: Int = 8
+    comptime board_cols: Int = 8
+    comptime board_planes: Int = 14
+    comptime num_symmetries: Int = 1  # No augmentation for chess
 
     comptime Noise = DirichletNoise[
         0.25, 0.03
