@@ -167,7 +167,8 @@ struct AlphaZeroCPUState[Config: AlphaZeroConfig](Movable):
 
 
 struct AlphaZeroGPUState[Config: AlphaZeroConfig, N_ENVS: Int = 512](Movable):
-    """GPU state: prediction network + training scratch buffers + episode staging."""
+    """GPU state: prediction network + training scratch buffers + episode staging.
+    """
 
     comptime OBS: Int = Self.Config.obs_dim
     comptime ACT: Int = Self.Config.action_dim
@@ -272,12 +273,12 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig, N_ENVS: Int = 512](Movable):
 
         # Episode staging buffers
         self.stage_obs = ctx.enqueue_create_buffer[dtype](
-            N_ENVS * Self.MAX_EP * Self.OBS
+            Self.N_ENVS * Self.MAX_EP * Self.OBS
         )
         self.stage_policy = ctx.enqueue_create_buffer[dtype](
-            N_ENVS * Self.MAX_EP * Self.ACT
+            Self.N_ENVS * Self.MAX_EP * Self.ACT
         )
-        self.stage_len = ctx.enqueue_create_buffer[DType.int32](N_ENVS)
+        self.stage_len = ctx.enqueue_create_buffer[DType.int32](Self.N_ENVS)
         self.replay_write_head = ctx.enqueue_create_buffer[DType.int32](1)
         self.env_rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
         ctx.enqueue_memset(self.stage_len, 0)
