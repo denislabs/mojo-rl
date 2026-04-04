@@ -26,7 +26,10 @@ from mojo_rl.envs.board_games.connect_four import ConnectFourEnv
 
 
 def main() raises:
-    print("=== AlphaZero Connect Four — Fused ResNet + CUDA Graph nsys profile ===")
+    print(
+        "=== AlphaZero Connect Four — Fused ResNet + CUDA Graph nsys"
+        " profile ==="
+    )
     print()
 
     comptime Config = AlphaZeroConnectFourFusedResNetConfig[]
@@ -42,21 +45,18 @@ def main() raises:
     var ctx = DeviceContext()
     comptime C4 = ConnectFourEnv[DType.float32]
 
-    var agent = GenericAlphaZeroAgent[Config, 64]()
+    var agent = GenericAlphaZeroAgent[Config, 1024]()
 
     # 2 iters, 3000 steps each — enough to complete games and trigger training.
     _ = agent.train_selfplay_gpu[C4, RandomOpponent, USE_CUDA_GRAPH=True](
         ctx,
         num_iters=2,
-        steps_per_iter=3000,
+        steps_per_iter=4_000,
         train_epochs=2,
         warmup_iters=0,
         arena_threshold=0.52,
-        do_eval=False,
-        do_arena=False,
-        checkpoint_every=0,
-        checkpoint_path="",
-        diag_every=100,
+        do_eval=True,
+        do_arena=True,
     )
 
     print()
