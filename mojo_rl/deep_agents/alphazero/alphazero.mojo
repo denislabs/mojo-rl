@@ -2061,10 +2061,12 @@ struct GenericAlphaZeroAgent[
         mut rewards_host: HostBuffer[dtype],
         mut dones_host: HostBuffer[dtype],
         rng_offset: Int,
+        num_games: Int = 0,
     ) raises -> Tuple[Int, Int, Int]:
         """Play n_envs games on GPU. P0 uses p0_params, P1 uses p1_params.
 
         Uses pre-allocated buffers (no per-call GPU allocation).
+        num_games: number of games to count (0 = use all n_envs).
         Returns (p0_wins, draws, p1_wins).
         """
         comptime ACT = Self.Config.action_dim
@@ -2397,10 +2399,13 @@ struct GenericAlphaZeroAgent[
             move_num += 1
 
         # Tally results
+        var count = num_games if num_games > 0 else Self.n_envs
+        if count > Self.n_envs:
+            count = Self.n_envs
         var p0_wins = 0
         var draws = 0
         var p1_wins = 0
-        for e in range(Self.n_envs):
+        for e in range(count):
             var result = game_result[e]
             if result == 1:
                 p0_wins += 1
@@ -2474,6 +2479,7 @@ struct GenericAlphaZeroAgent[
         ctx.synchronize()
 
         # Phase 1: new=P0, old=P1
+        var games_per_phase = num_games // 2 if num_games > 0 else 0
         var r1 = self._gpu_play_games[E](
             ctx,
             arena_new_params,
@@ -2494,6 +2500,7 @@ struct GenericAlphaZeroAgent[
             rewards_host,
             dones_host,
             rng_offset=42,
+            num_games=games_per_phase,
         )
         var new_wins = r1[0]
         var draws = r1[1]
@@ -2520,6 +2527,7 @@ struct GenericAlphaZeroAgent[
             rewards_host,
             dones_host,
             rng_offset=9999,
+            num_games=games_per_phase,
         )
         new_wins += r2[2]
         draws += r2[1]

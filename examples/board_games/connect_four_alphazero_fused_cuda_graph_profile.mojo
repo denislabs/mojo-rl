@@ -51,14 +51,14 @@ def main() raises:
     _ = agent.train_selfplay_gpu[C4, RandomOpponent, USE_CUDA_GRAPH=True](
         ctx,
         num_iters=2,
-        steps_per_iter=4_000,
+        steps_per_iter=64_000,
         train_epochs=2,
         warmup_iters=0,
         arena_threshold=0.52,
         do_eval=True,
         do_arena=True,
         eval_games=64,
-        arena_games=64,
+        arena_games=100,
     )
 
     print()
