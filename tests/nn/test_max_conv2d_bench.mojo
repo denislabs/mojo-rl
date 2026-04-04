@@ -1,11 +1,13 @@
 """Benchmark: Max Kernels conv2d vs Our Conv2D across multiple configurations.
 
 Tests configurations used by different agents:
-  1. Atari conv1: [4→32, 8×8, s=4, p=0] 84×84  (DQN, Rainbow, PPO CNN, MuZero)
-  2. Atari conv2: [32→64, 4×4, s=2, p=0] 20×20  (DQN, Rainbow, PPO CNN, MuZero)
-  3. Atari conv3: [64→64, 3×3, s=1, p=0] 9×9    (DQN, Rainbow, PPO CNN, MuZero)
-  4. AlphaZero:   [F→F, 3×3, s=1, p=1] 6×7      (AlphaZero ConnectFour ResBlocks)
-  5. AlphaZero:   [3→F, 3×3, s=1, p=1] 3×3      (AlphaZero TicTacToe)
+  1-3. Atari conv layers at B=32 (DQN, Rainbow, PPO CNN, MuZero)
+  4.   AlphaZero ConnectFour ResBlock [128→128, 3×3, s=1, p=1] 6×7 at B=64
+  5.   AlphaZero TicTacToe [64→64, 3×3, s=1, p=1] 3×3 at B=64
+  6.   Atari conv1 at B=128
+  7-12. AlphaZero ConnectFour at B=256/512/1024 (production batch sizes)
+        - Initial conv (3→128), ResBlock conv (128→128), last conv (128→128 p=0)
+        - nsys profiling shows conv kernels take ~50% of GPU time at B=512
 
 Compares:
   A. conv_gpu (Max's auto-dispatching, cuDNN-backed)
@@ -400,14 +402,39 @@ def main() raises:
         # ── Config 3: Atari conv3 ──
         bench_config[32, 64, 64, 3, 1, 0, 9, 9, 200, "Atari conv3"](ctx)
 
-        # ── Config 4: AlphaZero ConnectFour ResBlock (F=128) ──
-        bench_config[64, 128, 128, 3, 1, 1, 6, 7, 200, "AZ ConnectFour"](ctx)
+        # ── Config 4: AlphaZero ConnectFour ResBlock (F=128) B=64 ──
+        bench_config[64, 128, 128, 3, 1, 1, 6, 7, 200, "AZ CF B=64"](ctx)
 
         # ── Config 5: AlphaZero TicTacToe (small) ──
         bench_config[64, 64, 64, 3, 1, 1, 3, 3, 200, "AZ TicTacToe"](ctx)
 
         # ── Config 6: Larger batch Atari conv1 (PPO) ──
         bench_config[128, 4, 32, 8, 4, 0, 84, 84, 200, "Atari conv1 B=128"](ctx)
+
+        # ══════════════════════════════════════════════════════════════
+        # AlphaZero ConnectFour at B=512 (production batch size)
+        # These are the configs that dominate ~50% of GPU time at B=512
+        # ══════════════════════════════════════════════════════════════
+
+        # ── Config 7: AZ CF initial conv (3→128, 3×3, p=1, 6×7) ──
+        bench_config[512, 3, 128, 3, 1, 1, 6, 7, 200, "AZ CF init B=512"](ctx)
+
+        # ── Config 8: AZ CF ResBlock conv (128→128, 3×3, p=1, 6×7) ──
+        bench_config[512, 128, 128, 3, 1, 1, 6, 7, 200, "AZ CF ResBlk B=512"](ctx)
+
+        # ── Config 9: AZ CF last conv (128→128, 3×3, p=0, 6×7 → 4×5) ──
+        bench_config[512, 128, 128, 3, 1, 0, 6, 7, 200, "AZ CF last B=512"](ctx)
+
+        # ── Config 10: AZ CF ResBlock at B=512 sim=16 (effective B=8192) ──
+        # With 16 MCTS sims, each sim evaluates B=512 positions
+        # but network sees batches of 512 at a time
+        bench_config[512, 128, 128, 3, 1, 1, 6, 7, 500, "AZ CF ResBlk B=512 x500"](ctx)
+
+        # ── Config 11: AZ CF at B=256 (intermediate) ──
+        bench_config[256, 128, 128, 3, 1, 1, 6, 7, 200, "AZ CF ResBlk B=256"](ctx)
+
+        # ── Config 12: AZ CF at B=1024 (upper bound) ──
+        bench_config[1024, 128, 128, 3, 1, 1, 6, 7, 200, "AZ CF ResBlk B=1024"](ctx)
 
     print("=" * 70)
     print("Done!")

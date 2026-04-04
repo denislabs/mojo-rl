@@ -25,7 +25,7 @@ from mojo_rl.nn.constants import dtype, TPB, MMA_BLOCK_THREADS
 from mojo_rl.nn.autodiff.primitives.conv2d import Conv2D
 
 # Max conv kernels
-from nn.conv import conv_gpu, conv2d_gpu_naive_nhwc_rscf
+from nn.conv.conv import conv_gpu, conv2d_gpu_naive_nhwc_rscf
 
 
 def main() raises:
