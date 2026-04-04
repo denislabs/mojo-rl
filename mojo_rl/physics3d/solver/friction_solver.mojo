@@ -141,6 +141,8 @@ def _solve_friction_pgs_gpu[
     comptime ws_c_nz = contact_ws_off + 10 * MC
     comptime ws_pos_bias = contact_ws_off + 11 * MC
     comptime ws_inv_K_imp = contact_ws_off + 12 * MC
+    comptime ws_imp_n_slot = contact_ws_off + 13 * MC
+    comptime ws_diag_n_slot = contact_ws_off + 14 * MC
     comptime ws_J_n = contact_ws_off + 15 * MC
     comptime ws_MinvJn = contact_ws_off + 15 * MC + MC * NV
 
@@ -416,8 +418,6 @@ def _solve_friction_pgs_gpu[
             impratio = Scalar[DTYPE](1.0)
         # Compute R_base = R_n / impratio directly from stored imp and diag_n
         # (avoids lossy float32 round-trip through inv_K_imp)
-        comptime ws_imp_n_slot = contact_ws_off + 13 * MC
-        comptime ws_diag_n_slot = contact_ws_off + 14 * MC
         var imp_n = rebind[Scalar[DTYPE]](workspace[env, ws_imp_n_slot + c])
         var diag_n_val = rebind[Scalar[DTYPE]](
             workspace[env, ws_diag_n_slot + c]
