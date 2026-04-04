@@ -494,7 +494,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
     comptime temp_threshold: Int = 20
-    comptime batch_sims: Int = 4
+    comptime batch_sims: Int = 8
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 42
     comptime board_rows: Int = 6
