@@ -57,6 +57,8 @@ def main() raises:
         arena_threshold=0.52,
         do_eval=True,
         do_arena=True,
+        eval_games=64,
+        arena_games=64,
     )
 
     print()
