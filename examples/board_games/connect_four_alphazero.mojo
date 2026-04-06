@@ -76,6 +76,8 @@ def main() raises:
         do_eval=True,
         do_eval2=True,  # Eval vs Minimax depth 5
         do_arena=True,
+        eval_games=64,
+        arena_games=100,
         slow_window_start=4,  # Start with 4 iters of history, grow to full
         slow_window_growth=2,  # Grow by 1 every 2 iterations
         checkpoint_every=10,
