@@ -341,7 +341,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ],
-        mut obs: LayoutTensor[
+        obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
         env: Int,
