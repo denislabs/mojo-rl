@@ -1097,6 +1097,17 @@ struct Phyics3dEnv[
                     gpu_dtype, BATCH_SIZE, STATE_SIZE, OBS_DIM_VAL
                 ](states, obs, env)
 
+            # Clip velocity observations to [-10, 10] (matches Gymnasium convention).
+            # Velocities are the last NV elements of the observation vector.
+            comptime NV = Self.MODEL_DEF.NV
+            comptime QVEL_OBS_START = OBS_DIM_VAL - NV
+            for v_idx in range(NV):
+                var v = rebind[Scalar[gpu_dtype]](obs[env, QVEL_OBS_START + v_idx])
+                if v > Scalar[gpu_dtype](10.0):
+                    obs[env, QVEL_OBS_START + v_idx] = Scalar[gpu_dtype](10.0)
+                elif v < Scalar[gpu_dtype](-10.0):
+                    obs[env, QVEL_OBS_START + v_idx] = Scalar[gpu_dtype](-10.0)
+
             # Compute reward and termination via config (full state access)
             var result = Self.CONFIG.compute_reward_and_done_gpu[
                 gpu_dtype,
