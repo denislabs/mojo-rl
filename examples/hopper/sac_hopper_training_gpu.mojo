@@ -38,7 +38,7 @@ comptime HIDDEN_DIM = 256
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 16
+comptime MAX_N_ENVS = 4
 
 # Training duration
 comptime NUM_STEPS = 1_500_000
@@ -82,6 +82,7 @@ def main() raises:
             auto_alpha=True,
             alpha_lr=0.0003,
             target_entropy=-3.0,
+            max_grad_norm=1.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
         )
