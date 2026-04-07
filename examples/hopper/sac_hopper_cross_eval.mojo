@@ -81,18 +81,18 @@ def main() raises:
 
         for chunk in range(NUM_CHUNKS):
             # Train one chunk on GPU
-            # Overshoot num_steps by n_envs so the sync_every=STEPS_PER_CHUNK
-            # fires before the loop exits (avoids off-by-one in sync check)
             var metrics = agent.train_gpu[
                 Hopper[dtype, TERMINATE_ON_UNHEALTHY=True],
             ](
                 ctx,
-                num_steps=STEPS_PER_CHUNK + MAX_N_ENVS,
+                num_steps=STEPS_PER_CHUNK,
                 warmup_steps=10_000 if chunk == 0 else 0,
                 gradient_steps=4,
                 reward_scale=5.0,
                 print_every=STEPS_PER_CHUNK * 2,
             )
+            # Explicit sync to ensure GPU→CPU weight download completed
+            ctx.synchronize()
             total_steps += STEPS_PER_CHUNK
 
             # Get GPU training reward from metrics
