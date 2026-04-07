@@ -1,60 +1,55 @@
 """SAC Hopper with cross-evaluation: GPU physics, CPU physics, and Gymnasium.
 
-Trains SAC on GPU in chunks, periodically evaluates the same policy on:
-1. Our Hopper (CPU) — tests GPU→CPU policy transfer
-2. Gymnasium Hopper-v5 — tests physics gap
+Manually manages GPU state to ensure proper weight sync between chunks.
 
 Run with:
     pixi run -e nvidia mojo run -I . examples/hopper/sac_hopper_cross_eval.mojo
 """
 
 from std.random import seed
-from std.time import perf_counter_ns
 from std.memory import UnsafePointer
 
 from std.gpu.host import DeviceContext
 
 from mojo_rl.deep_agents.core.agents import DeepSACAgent
+from mojo_rl.deep_agents.core import run_offpolicy_continuous_train_gpu
+from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 from mojo_rl.envs.hopper import Hopper, HopperConfig
 from mojo_rl.envs.gymnasium import make_hopper as make_gym_hopper
+from mojo_rl.core.logger import NoOpLogger
 
 
-comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
-comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
+comptime OBS_DIM = HopperConfig.OBS_DIM
+comptime ACTION_DIM = HopperConfig.ACTION_DIM
 comptime HIDDEN_DIM = 256
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 4
 
 comptime STEPS_PER_CHUNK = 50_000
-comptime NUM_CHUNKS = 30  # 1.5M total
+comptime NUM_CHUNKS = 30
 comptime EVAL_EPISODES = 10
 
 comptime dtype = DType.float32
+
+# Agent type alias for cleaner code
+comptime AgentType = DeepSACAgent[
+    OBS_DIM, ACTION_DIM, HIDDEN_DIM, BUFFER_CAPACITY, BATCH_SIZE,
+    0.0003, 0.0003, 0, NoOpLogger, MAX_N_ENVS,
+]
 
 
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC Hopper — Cross-Evaluation (GPU / CPU / Gymnasium)")
+    print("SAC Hopper — Cross-Evaluation (manual GPU state)")
     print("=" * 70)
-    print()
 
-    # Create CPU eval environments
     var cpu_env = Hopper[DType.float64, TERMINATE_ON_UNHEALTHY=True]()
     var gym_env = make_gym_hopper()
 
     with DeviceContext() as ctx:
-        var agent = DeepSACAgent[
-            obs_dim=OBS_DIM,
-            action_dim=ACTION_DIM,
-            hidden_dim=HIDDEN_DIM,
-            buffer_capacity=BUFFER_CAPACITY,
-            batch_size=BATCH_SIZE,
-            actor_lr=0.0003,
-            critic_lr=0.0003,
-            max_n_envs=MAX_N_ENVS,
-        ](
+        var agent = AgentType(
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
@@ -63,65 +58,60 @@ def main() raises:
             target_entropy=-3.0,
         )
 
+        # Manually create and manage GPU state (persists across chunks)
+        var gpu_state = agent.make_gpu_state(ctx)
+        agent.upload_to_gpu(gpu_state, ctx)
+
+        var timer = PerfTimer[False]()
         var total_steps = 0
 
-        print(
-            "Training " + String(NUM_CHUNKS) + " chunks of "
-            + String(STEPS_PER_CHUNK) + " steps each"
-        )
-        print(
-            "Evaluating after each chunk: "
-            + String(EVAL_EPISODES) + " episodes on CPU + Gymnasium"
-        )
         print("-" * 70)
         print(
-            "Step      | GPU_Reward | CPU_Reward | Gym_Reward | Gap(CPU-Gym)"
+            "Step      | GPU_Reward | CPU_Reward | Gym_Reward | Gap"
         )
         print("-" * 70)
 
         for chunk in range(NUM_CHUNKS):
-            # Train one chunk on GPU
-            var metrics = agent.train_gpu[
+            # Train one chunk — reuses the same gpu_state (keeps replay buffer)
+            var metrics = run_offpolicy_continuous_train_gpu[
                 Hopper[dtype, TERMINATE_ON_UNHEALTHY=True],
+                AgentType,
+                0,  # PROFILE
             ](
+                agent,
                 ctx,
                 num_steps=STEPS_PER_CHUNK,
+                timer=timer,
                 warmup_steps=10_000 if chunk == 0 else 0,
                 gradient_steps=4,
                 reward_scale=5.0,
-                print_every=STEPS_PER_CHUNK * 2,
             )
-            # Explicit sync to ensure GPU→CPU weight download completed
-            ctx.synchronize()
             total_steps += STEPS_PER_CHUNK
 
-            # Get GPU training reward from metrics
+            # Explicit download + sync
+            agent.download_from_gpu(gpu_state, ctx)
+            ctx.synchronize()
+
             var n_ep = metrics.num_episodes()
             var gpu_reward = metrics.mean_reward_last_n(
                 min(100, n_ep) if n_ep > 0 else 1
             )
 
-            # Debug: print first actor weight to verify it's changing
+            # Debug weight
             print(
-                "  [debug] actor w0 = "
-                + String(Float64(agent.state.actor.online.params[0]))[byte=:12]
+                "  [debug] w0="
+                + String(Float64(agent.state.actor.online.params[0]))[byte=:10]
             )
 
-            # Evaluate on CPU physics (weights already synced by train_gpu)
+            # Eval on CPU physics
             var cpu_reward = agent.evaluate(
-                cpu_env,
-                num_episodes=EVAL_EPISODES,
-                max_steps_per_episode=1000,
+                cpu_env, num_episodes=EVAL_EPISODES, max_steps_per_episode=1000
             )
 
-            # Evaluate on Gymnasium Hopper-v5
+            # Eval on Gymnasium
             var gym_reward = agent.evaluate(
-                gym_env,
-                num_episodes=EVAL_EPISODES,
-                max_steps_per_episode=1000,
+                gym_env, num_episodes=EVAL_EPISODES, max_steps_per_episode=1000
             )
-
-            var gap = cpu_reward - gym_reward
 
             print(
                 String(total_steps)[byte=:9]
@@ -132,11 +122,9 @@ def main() raises:
                 + " | "
                 + String(gym_reward)[byte=:10]
                 + " | "
-                + String(gap)[byte=:10]
+                + String(cpu_reward - gym_reward)[byte=:10]
             )
 
         print("-" * 70)
-        print("Done.")
-
     cpu_env.close()
     gym_env.close()
