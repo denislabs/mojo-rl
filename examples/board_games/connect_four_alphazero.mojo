@@ -60,7 +60,7 @@ def main() raises:
     var ctx = DeviceContext()
     comptime C4 = ConnectFourEnv[DType.float32]
 
-    var agent = GenericAlphaZeroAgent[Config, 64, 64, RemoteLogger]()
+    var agent = GenericAlphaZeroAgent[Config, 1024, 64, RemoteLogger]()
 
     _ = agent.train_selfplay_gpu[
         C4,
@@ -69,7 +69,7 @@ def main() raises:
     ](
         ctx,
         num_iters=50,
-        steps_per_iter=16_000,  # ~3000+ games per iter (AlphaZero.jl uses 5000)
+        steps_per_iter=64_000,  # ~3000+ games per iter (AlphaZero.jl uses 5000)
         train_epochs=2,  # Oracle article: 2 epochs optimal for C4
         warmup_iters=1,
         arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
@@ -77,7 +77,7 @@ def main() raises:
         do_eval2=True,  # Eval vs Minimax depth 5
         do_arena=True,
         eval_games=64,
-        arena_games=100,
+        arena_games=128,
         slow_window_start=4,  # Start with 4 iters of history, grow to full
         slow_window_growth=2,  # Grow by 1 every 2 iterations
         checkpoint_every=10,

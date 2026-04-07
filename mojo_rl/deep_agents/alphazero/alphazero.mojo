@@ -2472,31 +2472,16 @@ struct GenericAlphaZeroAgent[
         comptime PS = Self.Config.PredModel.PARAM_SIZE
 
         # Upload new (current) params
-        var new_sum: Float64 = 0.0
         for i in range(PS):
             arena_params_host[i] = self.state.prediction.params[i]
-            if i < 100:
-                new_sum += Float64(arena_params_host[i])
         ctx.enqueue_copy(arena_new_params, arena_params_host)
         ctx.synchronize()  # Must complete before overwriting host buffer
 
         # Upload old (previous best) params
-        var old_sum: Float64 = 0.0
         for i in range(PS):
             arena_params_host[i] = prev_params[i]
-            if i < 100:
-                old_sum += Float64(arena_params_host[i])
         ctx.enqueue_copy(arena_old_params, arena_params_host)
         ctx.synchronize()
-
-        print(
-            "  [arena debug] new_sum=",
-            new_sum,
-            "old_sum=",
-            old_sum,
-            "PS=",
-            PS,
-        )
 
         # Phase 1: new=P0, old=P1
         var games_per_phase = num_games // 2 if num_games > 0 else 0
@@ -3849,45 +3834,24 @@ struct GenericAlphaZeroAgent[
                         diag_grads_host,
                     )
                 else:
+                    # GPU-side sampling + training (no CPU replay needed)
                     for _ in range(num_train_steps):
-                        self.train_step_gpu(
-                            ctx,
-                            gpu,
-                            diag_pred_host,
-                            diag_go_host,
-                            diag_params_host,
-                            diag_grads_host,
-                        )
+                        self._gpu_train_kernels(ctx, gpu)
+                    self._gpu_train_diagnostics(
+                        ctx,
+                        gpu,
+                        num_train_steps,
+                        diag_pred_host,
+                        diag_go_host,
+                        diag_params_host,
+                        diag_grads_host,
+                    )
 
                 # Download trained params back to CPU
                 gpu.download_to(self.state, ctx)
 
-                # Debug: check params after download
-                var _dbg_sum: Float64 = 0.0
-                for _di in range(100):
-                    _dbg_sum += Float64(self.state.prediction.params[_di])
-                print(
-                    "  [debug] after download: param_sum=",
-                    _dbg_sum,
-                )
-
             # ── 4. GPU Evaluation ────────────────────────────────
             if do_eval and use_mcts:
-                # Debug: check GPU params directly
-                ctx.enqueue_copy(
-                    gpu.prediction.params_host, gpu.prediction.params_buf
-                )
-                ctx.synchronize()
-                var _dbg_gpu_sum: Float64 = 0.0
-                for _di in range(100):
-                    _dbg_gpu_sum += Float64(
-                        gpu.prediction.params_host[_di]
-                    )
-                print(
-                    "  [debug] GPU params_buf: param_sum=",
-                    _dbg_gpu_sum,
-                )
-
                 # Re-upload after training for eval
                 gpu.upload_from(self.state, ctx)
                 var eval_r = self.gpu_eval[E, GPUEval, Self.eval_n_envs](
