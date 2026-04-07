@@ -320,16 +320,9 @@ struct Phyics3dEnv[
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
 
         # Apply actions via actuators (config can override for mocap control etc.)
-        # Clamp to ctrlrange from XML (MuJoCo convention: ctrl is clamped before
-        # multiplying by gear).
+        # Per-motor ctrlrange clamping now happens inside apply_actions() itself
+        # (ModelDefFromXML uses per-motor _acd.motor_ctrl_min/max).
         var clamped_action = action.copy()
-        comptime ctrl_lo = Float64(Self.MODEL_DEF.CTRL_MIN)
-        comptime ctrl_hi = Float64(Self.MODEL_DEF.CTRL_MAX)
-        for i in range(Self.MODEL_DEF.ACTION_DIM):
-            if clamped_action.data[i] > ctrl_hi:
-                clamped_action.data[i] = ctrl_hi
-            elif clamped_action.data[i] < ctrl_lo:
-                clamped_action.data[i] = ctrl_lo
         var action_list = clamped_action.to_list()
         var custom_applied = Self.CONFIG.custom_apply_actions_cpu(
             self.data, action_list

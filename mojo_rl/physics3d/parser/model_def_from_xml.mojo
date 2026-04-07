@@ -435,15 +435,21 @@ struct ModelDefFromXML[
         ],
         actions: List[Float64],
     ):
-        """Apply actuator forces to qfrc (gear * action for each motor)."""
+        """Apply actuator forces to qfrc (gear * clamp(action, ctrlrange))."""
         for i in range(Self.nact):
             if i >= len(actions):
                 break
             var dof_adr = Self._acd.motor_dof_adr[i]
             if dof_adr < 0 or dof_adr >= Self.NV:
                 continue
+            # Clamp to per-motor ctrlrange (MuJoCo: per-element overrides default)
+            var ctrl = actions[i]
+            if ctrl > Self._acd.motor_ctrl_max[i]:
+                ctrl = Self._acd.motor_ctrl_max[i]
+            elif ctrl < Self._acd.motor_ctrl_min[i]:
+                ctrl = Self._acd.motor_ctrl_min[i]
             data.qfrc[dof_adr] = Scalar[DTYPE](
-                Self._acd.motor_gears[i] * actions[i]
+                Self._acd.motor_gears[i] * ctrl
             )
 
     # =========================================================================
@@ -946,13 +952,15 @@ struct ModelDefFromXML[
             comptime for act_i in range(Self.nact):
                 comptime gear = Self._acd.motor_gears[act_i]
                 comptime dof = Self._acd.motor_dof_adr[act_i]
+                comptime c_min = Self._acd.motor_ctrl_min[act_i]
+                comptime c_max = Self._acd.motor_ctrl_max[act_i]
 
                 comptime if dof >= 0 and dof < Self.NV:
                     var ctrl = rebind[Scalar[DTYPE]](actions[env, act_i])
-                    if ctrl > Scalar[DTYPE](Self.CTRL_MAX):
-                        ctrl = Scalar[DTYPE](Self.CTRL_MAX)
-                    elif ctrl < Scalar[DTYPE](Self.CTRL_MIN):
-                        ctrl = Scalar[DTYPE](Self.CTRL_MIN)
+                    if ctrl > Scalar[DTYPE](c_max):
+                        ctrl = Scalar[DTYPE](c_max)
+                    elif ctrl < Scalar[DTYPE](c_min):
+                        ctrl = Scalar[DTYPE](c_min)
                     states[env, qfrc_base + dof] = Scalar[DTYPE](gear) * ctrl
 
         ctx.enqueue_function[apply_kernel, apply_kernel](

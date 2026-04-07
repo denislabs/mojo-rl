@@ -1287,6 +1287,8 @@ struct ComptimeActData(Copyable, Movable):
 
     var motor_gears: InlineArray[Float64, 32]
     var motor_dof_adr: InlineArray[Int, 32]
+    var motor_ctrl_min: InlineArray[Float64, 32]
+    var motor_ctrl_max: InlineArray[Float64, 32]
     var joint_is_limited: InlineArray[Bool, 32]
     var joint_qpos_adr: InlineArray[Int, 32]
     var joint_range_min: InlineArray[Float64, 32]
@@ -1305,6 +1307,8 @@ struct ComptimeActData(Copyable, Movable):
         """
         self.motor_gears = InlineArray[Float64, 32](fill=1.0)
         self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
+        self.motor_ctrl_min = InlineArray[Float64, 32](fill=-1.0)
+        self.motor_ctrl_max = InlineArray[Float64, 32](fill=1.0)
         self.joint_is_limited = InlineArray[Bool, 32](fill=False)
         self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
         self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
@@ -1319,6 +1323,8 @@ struct ComptimeActData(Copyable, Movable):
         # InlineArray is not ImplicitlyCopyable; copy element-by-element.
         self.motor_gears = InlineArray[Float64, 32](fill=1.0)
         self.motor_dof_adr = InlineArray[Int, 32](fill=-1)
+        self.motor_ctrl_min = InlineArray[Float64, 32](fill=-1.0)
+        self.motor_ctrl_max = InlineArray[Float64, 32](fill=1.0)
         self.joint_is_limited = InlineArray[Bool, 32](fill=False)
         self.joint_qpos_adr = InlineArray[Int, 32](fill=0)
         self.joint_range_min = InlineArray[Float64, 32](fill=0.0)
@@ -1331,6 +1337,8 @@ struct ComptimeActData(Copyable, Movable):
         for i in range(32):
             self.motor_gears[i] = copy.motor_gears[i]
             self.motor_dof_adr[i] = copy.motor_dof_adr[i]
+            self.motor_ctrl_min[i] = copy.motor_ctrl_min[i]
+            self.motor_ctrl_max[i] = copy.motor_ctrl_max[i]
             self.joint_is_limited[i] = copy.joint_is_limited[i]
             self.joint_qpos_adr[i] = copy.joint_qpos_adr[i]
             self.joint_range_min[i] = copy.joint_range_min[i]
@@ -1341,6 +1349,8 @@ struct ComptimeActData(Copyable, Movable):
     def __init__(out self, *, deinit take: Self):
         self.motor_gears = take.motor_gears^
         self.motor_dof_adr = take.motor_dof_adr^
+        self.motor_ctrl_min = take.motor_ctrl_min^
+        self.motor_ctrl_max = take.motor_ctrl_max^
         self.joint_is_limited = take.joint_is_limited^
         self.joint_qpos_adr = take.joint_qpos_adr^
         self.joint_range_min = take.joint_range_min^
@@ -1467,6 +1477,24 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
         3.141592653589793 / 180.0
     ) if angle_deg else Float64(1.0)
 
+    # ---- Default motor ctrlrange (used as fallback for per-motor values) ------
+    var def_ctrl_min = Float64(-1.0)
+    var def_ctrl_max = Float64(1.0)
+    var def_sec_motor = _extract_section(xml_clean, "default")
+    if len(def_sec_motor) > 0:
+        var mt = def_sec_motor.find("<motor")
+        if mt != -1:
+            var mte = def_sec_motor.find(">", mt)
+            if mte != -1:
+                var mtag = String(def_sec_motor[byte = mt : mte + 1])
+                var mcr = _extract_attr(mtag, "ctrlrange")
+                if len(mcr) > 0:
+                    var mparts = List[String]()
+                    _split_spaces(mcr, mparts)
+                    if len(mparts) >= 2:
+                        def_ctrl_min = _parse_float(mparts[0])
+                        def_ctrl_max = _parse_float(mparts[1])
+
     # ---- Motor data -----------------------------------------------------------
     var act_sec = _extract_section(xml_clean, "actuator")
     var act_pos = 0
@@ -1499,6 +1527,20 @@ def parse_xml_model_data(xml: String) -> ComptimeActData:
                 data.motor_dof_adr[act_count] = _xml_find_joint_dof_adr(
                     xml_clean, jname
                 )
+            # Per-motor ctrlrange (overrides default)
+            var cr = _extract_attr(tag, "ctrlrange")
+            if len(cr) > 0:
+                var parts = List[String]()
+                _split_spaces(cr, parts)
+                if len(parts) >= 2:
+                    data.motor_ctrl_min[act_count] = _parse_float(parts[0])
+                    data.motor_ctrl_max[act_count] = _parse_float(parts[1])
+                else:
+                    data.motor_ctrl_min[act_count] = def_ctrl_min
+                    data.motor_ctrl_max[act_count] = def_ctrl_max
+            else:
+                data.motor_ctrl_min[act_count] = def_ctrl_min
+                data.motor_ctrl_max[act_count] = def_ctrl_max
         act_count += 1
         act_pos = t + 6
 

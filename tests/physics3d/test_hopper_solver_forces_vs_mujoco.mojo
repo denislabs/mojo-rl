@@ -3,7 +3,7 @@
 Compares our NewtonSolver output (qacc, qfrc_constraint) against MuJoCo's
 after mj_forward() for the Hopper model at configurations with ground contacts.
 
-Hopper uses ELLIPTIC cone (default), condim=1 (frictionless).
+Hopper uses PYRAMIDAL cone (ModelDefFromXML default), condim=1 body geoms / condim=3 floor.
 
 Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_hopper_solver_forces_vs_mujoco.mojo
@@ -371,7 +371,7 @@ def compare_solver_forces(
 
     var xml_path = "./references/Gymnasium-main/gymnasium/envs/mujoco/assets/hopper.xml"
     var mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    mj_model.opt.cone = 1  # elliptic (matches HopperModel)
+    mj_model.opt.cone = 0  # pyramidal (matches HopperModel default = PYRAMIDAL)
     mj_model.opt.solver = 2  # Newton
     mj_model.opt.integrator = 0  # Euler
 

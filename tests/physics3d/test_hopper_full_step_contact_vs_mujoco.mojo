@@ -3,7 +3,7 @@
 Tests scenarios where the Hopper makes ground contact, exercising the
 full constraint solver pipeline (contact detection + Jacobians + solver).
 
-Hopper uses ELLIPTIC cone (default) and condim=1 (frictionless contacts).
+Hopper uses PYRAMIDAL cone (ModelDefFromXML default) and condim=1 body geoms / condim=3 floor.
 
 Run with:
     cd mojo-rl && pixi run mojo run physics3d/tests/test_hopper_full_step_contact_vs_mujoco.mojo
