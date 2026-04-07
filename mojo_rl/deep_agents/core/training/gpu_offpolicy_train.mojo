@@ -53,6 +53,7 @@ Usage:
     )
 """
 
+from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
 from ..checkpoint_trait import Checkpointable
 from mojo_rl.core import (
