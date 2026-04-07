@@ -70,7 +70,7 @@ def main() raises:
         ctx,
         num_iters=50,
         steps_per_iter=64_000,  # ~3000+ games per iter (AlphaZero.jl uses 5000)
-        train_epochs=2,  # Oracle article: 2 epochs optimal for C4
+        train_epochs=5,  # ~2M sample-updates/iter (matching AlphaZero.jl's 2000 batches × 1024)
         warmup_iters=1,
         arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
         do_eval=True,

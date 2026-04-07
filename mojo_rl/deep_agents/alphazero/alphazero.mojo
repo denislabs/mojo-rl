@@ -4005,6 +4005,16 @@ struct GenericAlphaZeroAgent[
                         ")",
                     )
                 else:
+                    # Revert to best accepted params (critical for AlphaZero!)
+                    # Without this, self-play uses rejected (worse) weights,
+                    # generating low-quality data → cascading degradation.
+                    for i in range(PS):
+                        self.state.prediction.params[i] = best_params[i]
+                    for i in range(OPT_SS):
+                        self.state.prediction.optimizer_state[
+                            i
+                        ] = best_opt_state[i]
+                    self.state.prediction.step_num = best_step_num
                     arena_rejects += 1
                     print(
                         "  Arena: rejected",

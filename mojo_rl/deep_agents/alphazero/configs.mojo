@@ -454,7 +454,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     NUM_BLOCKS: Int = 5,
     LR: Float64 = 2e-3,
     WD: Float64 = 1e-4,
-    BS: Int = 64,
+    BS: Int = 1024,
     CAP: Int = 400000,
     SIMS: Int = 600,
     NODES: Int = 1024,
@@ -478,9 +478,9 @@ struct AlphaZeroConnectFourFusedResNetConfig[
         ],  # N× independent ResBlocks
         FlattenLayer[Self.FILTERS * 6 * 7],
         LinearBatchNormReLU[Self.FILTERS * 6 * 7, Self.FILTERS * 2],
-        Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        # Dropout[Self.FILTERS * 2, 0.3, 42, True],
         LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
-        Dropout[Self.FILTERS, 0.3, 137, True],
+        # Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 7],
             Linear[Self.FILTERS, 1],
