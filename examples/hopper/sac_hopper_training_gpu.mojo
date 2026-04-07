@@ -81,8 +81,7 @@ def main() raises:
             alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.0003,
-            target_entropy=-2.0,
-            max_grad_norm=0.0,
+            target_entropy=-3.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
         )
@@ -148,7 +147,6 @@ def main() raises:
                 print_every=50_000,
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
-                # gradient_steps=1,
             )
 
             var end_time = perf_counter_ns()
