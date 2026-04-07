@@ -1889,6 +1889,7 @@ struct TDMPC2Agent[
         verbose: Bool = True,
         print_every: Int = 50_000,
         use_mppi: Bool = True,
+        updates_per_step: Int = 1,
     ) raises -> TrainingMetrics:
         """Train TD-MPC2 on GPU with GPU-native continuous action environments.
 
@@ -1907,6 +1908,10 @@ struct TDMPC2Agent[
                 Each env's action is selected by running 536-sample MPPI on GPU.
                 If False (default), uses direct policy sampling (faster but
                 no look-ahead planning).
+            updates_per_step: Number of training updates per data collection
+                step. The reference TD-MPC2 uses 1 update per env step. With
+                n_envs parallel environments, set to n_envs to match the
+                reference's 1:1 update-to-data ratio. Default: 1.
 
         Returns:
             TrainingMetrics with episode rewards and statistics.
@@ -2612,621 +2617,119 @@ struct TDMPC2Agent[
             if not gpu_replay.is_ready[min_ready]():
                 continue
 
-            # Sample BATCH sequences directly on GPU (no CPU round-trip)
-            var _t0_rs = perf_counter_ns()
-            var sample_seed = UInt32(total_steps * 1999999973 + 31)
-            gpu_replay.sample[Self.BATCH, Self.H](
-                ctx,
-                sample_seed,
-                gs.batch_obs_buf,
-                gs.batch_act_buf,
-                gs.batch_rew_buf,
-                gs.batch_done_buf,
-            )
-            t_replay_sample += Int(perf_counter_ns() - _t0_rs)
-
-            # No batch upload needed — data is already on GPU
-            var _t0_bu = perf_counter_ns()
-            t_batch_upload += Int(perf_counter_ns() - _t0_bu)
-
-            # ──────────────────────────────────────────────────────────────
-            # Step 2a: Compute TD targets (stop-gradient)
-            # For each horizon step t:
-            #   encode obs_{t+1} (stop-grad) → z_next
-            #   policy(z_next) → pi_out; tanh(mean) → act_next
-            #   build_za(z_next, act_next) → za_next
-            #   Q_target1..Q5 forward → decode → min_Q_next
-            #   td_target = r + gamma*(1-d)*min_Q_next → two-hot encode
-            # ──────────────────────────────────────────────────────────────
-            var _t0_td = perf_counter_ns()
-            var gamma_scalar = Scalar[dtype](self.gamma)
-            var vmin_scalar = Scalar[dtype](Self.v_min)
-            var vmax_scalar = Scalar[dtype](Self.v_max)
-
-            for t in range(Self.H):
-                # Fused: extract obs_{t+1} + rew/done at step t (2 kernels → 1)
-                ctx.enqueue_function[
-                    tdmpc2_extract_obs_rew_done_kernel[
-                        dtype, Self.BATCH, Self.OBS, Self.H
-                    ],
-                    tdmpc2_extract_obs_rew_done_kernel[
-                        dtype, Self.BATCH, Self.OBS, Self.H
-                    ],
-                ](
-                    batch_obs_flat_tensor,
-                    batch_rew_flat_tensor,
-                    batch_done_flat_tensor,
-                    t,
-                    obs_next_step_tensor,
-                    rew_step_tensor,
-                    done_step_tensor,
-                    grid_dim=(Self.BATCH_BLOCKS,),
-                    block_dim=(TPB,),
+            for _upd in range(updates_per_step):
+                # Sample BATCH sequences directly on GPU (no CPU round-trip)
+                var _t0_rs = perf_counter_ns()
+                var sample_seed = UInt32(
+                    total_steps * 1999999973 + _upd * 1000003 + 31
                 )
-
-                # Encode next obs (stop-grad)
-                Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                gpu_replay.sample[Self.BATCH, Self.H](
                     ctx,
-                    z_next_tensor,
-                    obs_next_step_tensor,
-                    enc_params_tensor,
-                    gs.enc_batch_ws_buf,
+                    sample_seed,
+                    gs.batch_obs_buf,
+                    gs.batch_act_buf,
+                    gs.batch_rew_buf,
+                    gs.batch_done_buf,
                 )
+                t_replay_sample += Int(perf_counter_ns() - _t0_rs)
 
-                # Policy forward (stop-grad) on z_next → pi_out
-                Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx,
-                    pi_out_tensor,
-                    z_next_tensor,
-                    pol_params_tensor,
-                    gs.pol_batch_ws_buf,
-                )
+                # No batch upload needed — data is already on GPU
+                var _t0_bu = perf_counter_ns()
+                t_batch_upload += Int(perf_counter_ns() - _t0_bu)
 
-                # Stochastic: tanh(mean + std*eps) → actions + build za_next
-                var td_reparam_seed = Scalar[DType.uint32](
-                    td_reparam_rng_counter
-                )
-                td_reparam_rng_counter += UInt32(Self.BATCH * Self.ACT + 1)
-                ctx.enqueue_function[
-                    tdmpc2_apply_tanh_build_za_kernel[
-                        dtype, Self.BATCH, Self.ACT, Self.LATENT
-                    ],
-                    tdmpc2_apply_tanh_build_za_kernel[
-                        dtype, Self.BATCH, Self.ACT, Self.LATENT
-                    ],
-                ](
-                    pi_out_tensor,
-                    pi_act_tensor,
-                    z_next_tensor,
-                    za_tensor,
-                    td_reparam_seed,
-                    grid_dim=(Self.BATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
+                # ──────────────────────────────────────────────────────────────
+                # Step 2a: Compute TD targets (stop-gradient)
+                # For each horizon step t:
+                #   encode obs_{t+1} (stop-grad) → z_next
+                #   policy(z_next) → pi_out; tanh(mean) → act_next
+                #   build_za(z_next, act_next) → za_next
+                #   Q_target1..Q5 forward → decode → min_Q_next
+                #   td_target = r + gamma*(1-d)*min_Q_next → two-hot encode
+                # ──────────────────────────────────────────────────────────────
+                var _t0_td = perf_counter_ns()
+                var gamma_scalar = Scalar[dtype](self.gamma)
+                var vmin_scalar = Scalar[dtype](Self.v_min)
+                var vmax_scalar = Scalar[dtype](Self.v_max)
 
-                # Random 2-of-5 target Q subsampling (reference TD-MPC2)
-                var td_rng = PhiloxRandom(seed=td_q_rng_counter, offset=0)
-                td_q_rng_counter += 1
-                var td_rng_vals = td_rng.step_uniform()
-                var td_qi_a = Int(td_rng_vals[0] * 5.0) % 5
-                var td_qi_b = (td_qi_a + 1 + Int(td_rng_vals[1] * 4.0) % 4) % 5
+                for t in range(Self.H):
+                    # Fused: extract obs_{t+1} + rew/done at step t (2 kernels → 1)
+                    ctx.enqueue_function[
+                        tdmpc2_extract_obs_rew_done_kernel[
+                            dtype, Self.BATCH, Self.OBS, Self.H
+                        ],
+                        tdmpc2_extract_obs_rew_done_kernel[
+                            dtype, Self.BATCH, Self.OBS, Self.H
+                        ],
+                    ](
+                        batch_obs_flat_tensor,
+                        batch_rew_flat_tensor,
+                        batch_done_flat_tensor,
+                        t,
+                        obs_next_step_tensor,
+                        rew_step_tensor,
+                        done_step_tensor,
+                        grid_dim=(Self.BATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
 
-                # First target Q → decode → init q_min
-                var qta_p = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](qt_param_ptrs[td_qi_a])
-                Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx,
-                    logits_tensor,
-                    za_tensor,
-                    qta_p,
-                    gs.qt_batch_ws_buf,
-                )
-                ctx.enqueue_function[
-                    tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
-                    tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
-                ](
-                    logits_tensor,
-                    bins_tensor,
-                    q_min_tensor,
-                    grid_dim=(Self.BATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
+                    # Encode next obs (stop-grad)
+                    Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                        ctx,
+                        z_next_tensor,
+                        obs_next_step_tensor,
+                        enc_params_tensor,
+                        gs.enc_batch_ws_buf,
+                    )
 
-                # Second target Q → decode + min-reduce
-                var qtb_p = LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ](qt_param_ptrs[td_qi_b])
-                Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx,
-                    logits_tensor,
-                    za_tensor,
-                    qtb_p,
-                    gs.qt_batch_ws_buf,
-                )
-                ctx.enqueue_function[
-                    tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
-                    tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
-                ](
-                    logits_tensor,
-                    bins_tensor,
-                    q_min_tensor,
-                    grid_dim=(Self.BATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
+                    # Policy forward (stop-grad) on z_next → pi_out
+                    Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                        ctx,
+                        pi_out_tensor,
+                        z_next_tensor,
+                        pol_params_tensor,
+                        gs.pol_batch_ws_buf,
+                    )
 
-                # Compute two-hot TD target and store at step t's offset
-                var tgt_t_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-                ](gs.td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
+                    # Stochastic: tanh(mean + std*eps) → actions + build za_next
+                    var td_reparam_seed = Scalar[DType.uint32](
+                        td_reparam_rng_counter
+                    )
+                    td_reparam_rng_counter += UInt32(Self.BATCH * Self.ACT + 1)
+                    ctx.enqueue_function[
+                        tdmpc2_apply_tanh_build_za_kernel[
+                            dtype, Self.BATCH, Self.ACT, Self.LATENT
+                        ],
+                        tdmpc2_apply_tanh_build_za_kernel[
+                            dtype, Self.BATCH, Self.ACT, Self.LATENT
+                        ],
+                    ](
+                        pi_out_tensor,
+                        pi_act_tensor,
+                        z_next_tensor,
+                        za_tensor,
+                        td_reparam_seed,
+                        grid_dim=(Self.BATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
 
-                ctx.enqueue_function[
-                    tdmpc2_compute_td_targets_kernel[
-                        dtype, Self.BATCH, Self.BINS
-                    ],
-                    tdmpc2_compute_td_targets_kernel[
-                        dtype, Self.BATCH, Self.BINS
-                    ],
-                ](
-                    rew_step_tensor,
-                    done_step_tensor,
-                    q_min_tensor,
-                    tgt_t_tensor,
-                    gamma_scalar,
-                    vmin_scalar,
-                    vmax_scalar,
-                    grid_dim=(Self.BATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
+                    # Random 2-of-5 target Q subsampling (reference TD-MPC2)
+                    var td_rng = PhiloxRandom(seed=td_q_rng_counter, offset=0)
+                    td_q_rng_counter += 1
+                    var td_rng_vals = td_rng.step_uniform()
+                    var td_qi_a = Int(td_rng_vals[0] * 5.0) % 5
+                    var td_qi_b = (td_qi_a + 1 + Int(td_rng_vals[1] * 4.0) % 4) % 5
 
-                # Compute two-hot IMMEDIATE reward target for reward head
-                var rew_tgt_t_tensor = LayoutTensor[
-                    dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
-                ](gs.rew_targets_buf.unsafe_ptr() + t * Self.B_BINS)
-
-                ctx.enqueue_function[
-                    tdmpc2_compute_reward_targets_kernel[
-                        dtype, Self.BATCH, Self.BINS
-                    ],
-                    tdmpc2_compute_reward_targets_kernel[
-                        dtype, Self.BATCH, Self.BINS
-                    ],
-                ](
-                    rew_step_tensor,
-                    rew_tgt_t_tensor,
-                    vmin_scalar,
-                    vmax_scalar,
-                    grid_dim=(Self.BATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-
-            # ──────────────────────────────────────────────────────────────
-            # Step 2b: World model latent rollout + gradient computation
-            # All TD targets and reward targets are pre-computed above.
-            # Now: zero grads → accumulate over H steps → single optimizer step.
-            # ──────────────────────────────────────────────────────────────
-            ctx.synchronize()
-            t_td_targets += Int(perf_counter_ns() - _t0_td)
-
-            var _t0_wm = perf_counter_ns()
-            # Zero all network parameter grad buffers (accumulated across H)
-            gs.enc.zero_grads(ctx)
-            gs.dyn.zero_grads(ctx)
-            gs.rew.zero_grads(ctx)
-            gs.term.zero_grads(ctx)
-            gs.q1.zero_grads(ctx)
-            gs.q2.zero_grads(ctx)
-            gs.q3.zero_grads(ctx)
-            gs.q4.zero_grads(ctx)
-            gs.q5.zero_grads(ctx)
-
-            # Encode obs_0 with cache (encoder backward uses this cache for all H steps)
-            ctx.enqueue_function[
-                tdmpc2_extract_obs_step_kernel[
-                    dtype, Self.BATCH, Self.OBS, Self.H
-                ],
-                tdmpc2_extract_obs_step_kernel[
-                    dtype, Self.BATCH, Self.OBS, Self.H
-                ],
-            ](
-                batch_obs_flat_tensor,
-                0,
-                obs_step_tensor,
-                grid_dim=(Self.BATCH_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            Self.WM.EncoderNet.forward_gpu_with_cache[Self.BATCH](
-                ctx,
-                obs_step_tensor,
-                z_tensor,
-                enc_params_tensor,
-                enc_cache_tensor,
-                gs.enc_batch_ws_buf,
-            )
-
-            self._wm_bptt_gpu[n_envs, ENV.STATE_SIZE](ctx, gs)
-
-            # ── Gradient clipping + optimizer step for all world model networks ──
-            # No sync needed — GPU pipelines BPTT → optimizer naturally
-            ctx.enqueue_function[
-                gradient_norm_kernel[
-                    dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
-                ],
-                gradient_norm_kernel[
-                    dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
-                ],
-            ](
-                enc_grad_ps_tensor,
-                enc_grads_tensor,
-                grid_dim=(Self.ENC_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
-                ],
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
-                ],
-            ](
-                enc_grads_tensor,
-                enc_grad_ps_tensor,
-                grad_norm_max,
-                grid_dim=(Self.ENC_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            gpu_wm_step += 1
-            Adam[LR=Self.WM.ENC_LR].step_gpu[Self.ENC_P](
-                ctx,
-                enc_params_tensor,
-                enc_grads_tensor,
-                enc_state_tensor,
-                gpu_wm_step,
-                1.0,
-            )
-
-            ctx.enqueue_function[
-                gradient_norm_kernel[
-                    dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
-                ],
-                gradient_norm_kernel[
-                    dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
-                ],
-            ](
-                dyn_grad_ps_tensor,
-                dyn_grads_tensor,
-                grid_dim=(Self.DYN_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
-                ],
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
-                ],
-            ](
-                dyn_grads_tensor,
-                dyn_grad_ps_tensor,
-                grad_norm_max,
-                grid_dim=(Self.DYN_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            Adam[LR=Self.WM.WM_LR].step_gpu[Self.DYN_P](
-                ctx,
-                dyn_params_tensor,
-                dyn_grads_tensor,
-                dyn_state_tensor,
-                gpu_wm_step,
-                1.0,
-            )
-
-            ctx.enqueue_function[
-                gradient_norm_kernel[
-                    dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
-                ],
-                gradient_norm_kernel[
-                    dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
-                ],
-            ](
-                rew_grad_ps_tensor,
-                rew_grads_tensor,
-                grid_dim=(Self.REW_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
-                ],
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
-                ],
-            ](
-                rew_grads_tensor,
-                rew_grad_ps_tensor,
-                grad_norm_max,
-                grid_dim=(Self.REW_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            Adam[LR=Self.WM.WM_LR].step_gpu[Self.REW_P](
-                ctx,
-                rew_params_tensor,
-                rew_grads_tensor,
-                rew_state_tensor,
-                gpu_wm_step,
-                1.0,
-            )
-
-            ctx.enqueue_function[
-                gradient_norm_kernel[
-                    dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
-                ],
-                gradient_norm_kernel[
-                    dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
-                ],
-            ](
-                term_grad_ps_tensor,
-                term_grads_tensor,
-                grid_dim=(Self.TERM_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
-                ],
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
-                ],
-            ](
-                term_grads_tensor,
-                term_grad_ps_tensor,
-                grad_norm_max,
-                grid_dim=(Self.TERM_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            Adam[LR=Self.WM.WM_LR].step_gpu[Self.TERM_P](
-                ctx,
-                term_params_tensor,
-                term_grads_tensor,
-                term_state_tensor,
-                gpu_wm_step,
-                1.0,
-            )
-
-            # Q1..Q5 fused grad clip + Adam (15 launches → 3)
-            ctx.enqueue_function[
-                tdmpc2_gradient_norm_5q_kernel[
-                    dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
-                ],
-                tdmpc2_gradient_norm_5q_kernel[
-                    dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
-                ],
-            ](
-                q_grad_ps_tensor,
-                q1_grads_tensor,
-                q2_grads_tensor,
-                q3_grads_tensor,
-                q4_grads_tensor,
-                q5_grads_tensor,
-                grid_dim=(Self.Q_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[
-                tdmpc2_gradient_reduce_apply_5q_kernel[
-                    dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
-                ],
-                tdmpc2_gradient_reduce_apply_5q_kernel[
-                    dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
-                ],
-            ](
-                q1_grads_tensor,
-                q2_grads_tensor,
-                q3_grads_tensor,
-                q4_grads_tensor,
-                q5_grads_tensor,
-                q_grad_ps_tensor,
-                grad_norm_max,
-                grid_dim=(Self.Q_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            # Fused Adam step for all 5 Q networks
-            var wm_lr = Scalar[dtype](Self.WM.WM_LR)
-            var adam_beta1 = Scalar[dtype](0.9)
-            var adam_beta2 = Scalar[dtype](0.999)
-            var adam_eps = Scalar[dtype](1e-8)
-            var adam_bc1 = Scalar[dtype](1.0 - (0.9**gpu_wm_step))
-            var adam_bc2 = Scalar[dtype](1.0 - (0.999**gpu_wm_step))
-
-            @always_inline
-            def adam_5q_wrapper(
-                params1: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                grads1: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                state1: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-                ],
-                params2: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                grads2: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                state2: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-                ],
-                params3: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                grads3: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                state3: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-                ],
-                params4: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                grads4: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                state4: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-                ],
-                params5: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                grads5: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                ],
-                state5: LayoutTensor[
-                    dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
-                ],
-                lr: Scalar[dtype],
-                beta1: Scalar[dtype],
-                beta2: Scalar[dtype],
-                eps: Scalar[dtype],
-                bias_correction1: Scalar[dtype],
-                bias_correction2: Scalar[dtype],
-            ):
-                tdmpc2_adam_step_5q_kernel[dtype, Self.Q_P](
-                    params1,
-                    grads1,
-                    state1,
-                    params2,
-                    grads2,
-                    state2,
-                    params3,
-                    grads3,
-                    state3,
-                    params4,
-                    grads4,
-                    state4,
-                    params5,
-                    grads5,
-                    state5,
-                    lr,
-                    beta1,
-                    beta2,
-                    eps,
-                    bias_correction1,
-                    bias_correction2,
-                )
-
-            ctx.enqueue_function[adam_5q_wrapper, adam_5q_wrapper](
-                q1_params_tensor,
-                q1_grads_tensor,
-                q1_state_tensor,
-                q2_params_tensor,
-                q2_grads_tensor,
-                q2_state_tensor,
-                q3_params_tensor,
-                q3_grads_tensor,
-                q3_state_tensor,
-                q4_params_tensor,
-                q4_grads_tensor,
-                q4_state_tensor,
-                q5_params_tensor,
-                q5_grads_tensor,
-                q5_state_tensor,
-                wm_lr,
-                adam_beta1,
-                adam_beta2,
-                adam_eps,
-                adam_bc1,
-                adam_bc2,
-                grid_dim=(Self.Q_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            # ──────────────────────────────────────────────────────────────
-            # Step 2c: Policy update (maximize Q + entropy)
-            # Policy uses stop-gradient z from encoder (no grad to encoder)
-            # ──────────────────────────────────────────────────────────────
-            # No sync needed — GPU pipelines optimizer → policy update naturally
-            gs.pol.zero_grads(ctx)
-
-            # Encode obs_0 with stop-grad → z_sg (reuse z_buf)
-            Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                ctx,
-                z_tensor,
-                obs_step_tensor,
-                enc_params_tensor,
-                gs.enc_batch_ws_buf,
-            )
-            # obs_step_buf still contains obs_0 from the world model step
-
-            var pol_rho_t = Scalar[dtype](1.0)
-            # Scale entropy by ACTION_DIM to match reference scaled_entropy
-            var entropy_coef_scalar = Scalar[dtype](
-                self.entropy_coef * Float64(Self.ACT)
-            )
-            var scale_scalar = Scalar[dtype](self.running_scale)
-
-            for t in range(Self.H):
-                ctx.enqueue_memset(gs.grad_pi_out_buf, 0)
-
-                # Policy forward with cache → pi_out
-                Self.WM.PolicyNet.forward_gpu_with_cache[Self.BATCH](
-                    ctx,
-                    z_tensor,
-                    pi_out_tensor,
-                    pol_params_tensor,
-                    pol_cache_tensor,
-                    gs.pol_batch_ws_buf,
-                )
-
-                # Stochastic policy: a = tanh(mean + std*eps) via reparameterization
-                var pi_reparam_seed = Scalar[DType.uint32](
-                    pi_reparam_rng_counter
-                )
-                pi_reparam_rng_counter += UInt32(Self.BATCH * Self.ACT + 1)
-                ctx.enqueue_function[
-                    tdmpc2_apply_tanh_build_za_kernel[
-                        dtype, Self.BATCH, Self.ACT, Self.LATENT
-                    ],
-                    tdmpc2_apply_tanh_build_za_kernel[
-                        dtype, Self.BATCH, Self.ACT, Self.LATENT
-                    ],
-                ](
-                    pi_out_tensor,
-                    pi_act_tensor,
-                    z_tensor,
-                    za_tensor,
-                    pi_reparam_seed,
-                    grid_dim=(Self.BATCH_BLOCKS,),
-                    block_dim=(TPB,),
-                )
-
-                # ── Proper DPG: backprop through avg of 2 random Q-nets ──
-                # Reference TD-MPC2: randomly subsample 2 of 5 Q-networks,
-                # average their gradients for the policy update.
-                var pi_rng = PhiloxRandom(seed=pi_q_rng_counter, offset=0)
-                pi_q_rng_counter += 1
-                var rng_vals = pi_rng.step_uniform()
-                var qi_a = Int(rng_vals[0] * 5.0) % 5
-                var qi_b = (qi_a + 1 + Int(rng_vals[1] * 4.0) % 4) % 5
-                var q_rho = pol_rho_t / Scalar[dtype](2.0)
-
-                # ── RunningScale update at first horizon step ──
-                # Decode Q-values from first Q-net to update scale (reference:
-                # 5th-95th percentile range of Q-values, EMA with tau).
-                if t == 0:
-                    var qi_a_p = LayoutTensor[
+                    # First target Q → decode → init q_min
+                    var qta_p = LayoutTensor[
                         dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                    ](q_param_ptrs[qi_a])
-                    # Forward Q to get logits (no cache, just for scale)
+                    ](qt_param_ptrs[td_qi_a])
                     Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                         ctx,
                         logits_tensor,
                         za_tensor,
-                        qi_a_p,
-                        gs.q1_batch_ws_buf,
+                        qta_p,
+                        gs.qt_batch_ws_buf,
                     )
-                    # Decode logits → scalar Q-values into q_min_tensor
                     ctx.enqueue_function[
                         tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
                         tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
@@ -3237,243 +2740,748 @@ struct TDMPC2Agent[
                         grid_dim=(Self.BATCH_BLOCKS,),
                         block_dim=(TPB,),
                     )
-                    # Download Q-values to CPU for percentile computation
-                    ctx.enqueue_copy(gs.q_vals_host, gs.q_min_buf)
-                    ctx.synchronize()
 
-                    # Sort Q-values to compute 5th and 95th percentiles
-                    # Simple insertion sort (BATCH=256, negligible cost)
-                    var sorted_q = List[Float64](capacity=Self.BATCH)
-                    for b in range(Self.BATCH):
-                        sorted_q.append(Float64(gs.q_vals_host[b]))
-                    for i in range(1, Self.BATCH):
-                        var key = sorted_q[i]
-                        var j = i - 1
-                        while j >= 0 and sorted_q[j] > key:
-                            sorted_q[j + 1] = sorted_q[j]
-                            j -= 1
-                        sorted_q[j + 1] = key
-
-                    var idx_5 = Int(0.05 * Float64(Self.BATCH))
-                    var idx_95 = Int(0.95 * Float64(Self.BATCH))
-                    if idx_95 >= Self.BATCH:
-                        idx_95 = Self.BATCH - 1
-                    var pct_range = sorted_q[idx_95] - sorted_q[idx_5]
-                    if pct_range < 1.0:
-                        pct_range = 1.0
-
-                    # EMA update: scale ← (1-tau)*scale + tau*pct_range
-                    self.running_scale = (
-                        1.0 - self.tau
-                    ) * self.running_scale + self.tau * pct_range
-                    scale_scalar = Scalar[dtype](self.running_scale)
-
-                    # Capture Q-value stats for diagnostics (sorted_q is available)
-                    diag_q_min = sorted_q[0]
-                    diag_q_max = sorted_q[Self.BATCH - 1]
-                    var q_sum: Float64 = 0.0
-                    for b in range(Self.BATCH):
-                        q_sum += sorted_q[b]
-                    diag_q_mean = q_sum / Float64(Self.BATCH)
-
-                for qi_iter in range(2):
-                    var qi = qi_a if qi_iter == 0 else qi_b
-                    # Entropy weighted by rho^t (temporal decay), applied once
-                    var ent = (
-                        entropy_coef_scalar * pol_rho_t if qi_iter
-                        == 0 else Scalar[dtype](0.0)
-                    )
-
-                    var qi_p = LayoutTensor[
+                    # Second target Q → decode + min-reduce
+                    var qtb_p = LayoutTensor[
                         dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                    ](q_param_ptrs[qi])
-                    var qi_c = LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.BATCH, Self.Q_C),
-                        MutAnyOrigin,
-                    ](q_cache_ptrs[qi])
-                    var qi_g = LayoutTensor[
-                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                    ](q_grad_ptrs[qi])
-
-                    # Q forward with cache
-                    Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
+                    ](qt_param_ptrs[td_qi_b])
+                    Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                         ctx,
-                        za_tensor,
                         logits_tensor,
-                        qi_p,
-                        qi_c,
-                        gs.q1_batch_ws_buf,
+                        za_tensor,
+                        qtb_p,
+                        gs.qt_batch_ws_buf,
                     )
-
-                    # Decode Q + compute dL/d(logits), normalized by running_scale
                     ctx.enqueue_function[
-                        tdmpc2_q_decode_backward_kernel[
-                            dtype, Self.BATCH, Self.BINS
-                        ],
-                        tdmpc2_q_decode_backward_kernel[
-                            dtype, Self.BATCH, Self.BINS
-                        ],
+                        tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
+                        tdmpc2_decode_and_min_kernel[dtype, Self.BATCH, Self.BINS],
                     ](
                         logits_tensor,
                         bins_tensor,
-                        grad_logits_tensor,
-                        q_rho,
-                        scale_scalar,
+                        q_min_tensor,
                         grid_dim=(Self.BATCH_BLOCKS,),
                         block_dim=(TPB,),
                     )
 
-                    # Q backward: dL/d(logits) → dL/d(za)
-                    Self.WM.QNet.backward_gpu[Self.BATCH](
-                        ctx,
-                        grad_logits_tensor,
-                        grad_za_pi_tensor,
-                        qi_p,
-                        qi_c,
-                        qi_g,
-                        gs.q1_batch_ws_buf,
+                    # Compute two-hot TD target and store at step t's offset
+                    var tgt_t_tensor = LayoutTensor[
+                        dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+                    ](gs.td_targets_buf.unsafe_ptr() + t * Self.B_BINS)
+
+                    ctx.enqueue_function[
+                        tdmpc2_compute_td_targets_kernel[
+                            dtype, Self.BATCH, Self.BINS
+                        ],
+                        tdmpc2_compute_td_targets_kernel[
+                            dtype, Self.BATCH, Self.BINS
+                        ],
+                    ](
+                        rew_step_tensor,
+                        done_step_tensor,
+                        q_min_tensor,
+                        tgt_t_tensor,
+                        gamma_scalar,
+                        vmin_scalar,
+                        vmax_scalar,
+                        grid_dim=(Self.BATCH_BLOCKS,),
+                        block_dim=(TPB,),
                     )
 
-                    # Chain through stochastic tanh + entropy (same seed as forward)
+                    # Compute two-hot IMMEDIATE reward target for reward head
+                    var rew_tgt_t_tensor = LayoutTensor[
+                        dtype, Layout.row_major(Self.BATCH, Self.BINS), MutAnyOrigin
+                    ](gs.rew_targets_buf.unsafe_ptr() + t * Self.B_BINS)
+
                     ctx.enqueue_function[
-                        tdmpc2_action_tanh_chain_kernel[
+                        tdmpc2_compute_reward_targets_kernel[
+                            dtype, Self.BATCH, Self.BINS
+                        ],
+                        tdmpc2_compute_reward_targets_kernel[
+                            dtype, Self.BATCH, Self.BINS
+                        ],
+                    ](
+                        rew_step_tensor,
+                        rew_tgt_t_tensor,
+                        vmin_scalar,
+                        vmax_scalar,
+                        grid_dim=(Self.BATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+
+                # ──────────────────────────────────────────────────────────────
+                # Step 2b: World model latent rollout + gradient computation
+                # All TD targets and reward targets are pre-computed above.
+                # Now: zero grads → accumulate over H steps → single optimizer step.
+                # ──────────────────────────────────────────────────────────────
+                ctx.synchronize()
+                t_td_targets += Int(perf_counter_ns() - _t0_td)
+
+                var _t0_wm = perf_counter_ns()
+                # Zero all network parameter grad buffers (accumulated across H)
+                gs.enc.zero_grads(ctx)
+                gs.dyn.zero_grads(ctx)
+                gs.rew.zero_grads(ctx)
+                gs.term.zero_grads(ctx)
+                gs.q1.zero_grads(ctx)
+                gs.q2.zero_grads(ctx)
+                gs.q3.zero_grads(ctx)
+                gs.q4.zero_grads(ctx)
+                gs.q5.zero_grads(ctx)
+
+                # Encode obs_0 with cache (encoder backward uses this cache for all H steps)
+                ctx.enqueue_function[
+                    tdmpc2_extract_obs_step_kernel[
+                        dtype, Self.BATCH, Self.OBS, Self.H
+                    ],
+                    tdmpc2_extract_obs_step_kernel[
+                        dtype, Self.BATCH, Self.OBS, Self.H
+                    ],
+                ](
+                    batch_obs_flat_tensor,
+                    0,
+                    obs_step_tensor,
+                    grid_dim=(Self.BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                Self.WM.EncoderNet.forward_gpu_with_cache[Self.BATCH](
+                    ctx,
+                    obs_step_tensor,
+                    z_tensor,
+                    enc_params_tensor,
+                    enc_cache_tensor,
+                    gs.enc_batch_ws_buf,
+                )
+
+                self._wm_bptt_gpu[n_envs, ENV.STATE_SIZE](ctx, gs)
+
+                # ── Gradient clipping + optimizer step for all world model networks ──
+                # No sync needed — GPU pipelines BPTT → optimizer naturally
+                ctx.enqueue_function[
+                    gradient_norm_kernel[
+                        dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_norm_kernel[
+                        dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    enc_grad_ps_tensor,
+                    enc_grads_tensor,
+                    grid_dim=(Self.ENC_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.ENC_P, Self.ENC_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    enc_grads_tensor,
+                    enc_grad_ps_tensor,
+                    grad_norm_max,
+                    grid_dim=(Self.ENC_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                gpu_wm_step += 1
+                Adam[LR=Self.WM.ENC_LR].step_gpu[Self.ENC_P](
+                    ctx,
+                    enc_params_tensor,
+                    enc_grads_tensor,
+                    enc_state_tensor,
+                    gpu_wm_step,
+                    1.0,
+                )
+
+                ctx.enqueue_function[
+                    gradient_norm_kernel[
+                        dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_norm_kernel[
+                        dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    dyn_grad_ps_tensor,
+                    dyn_grads_tensor,
+                    grid_dim=(Self.DYN_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.DYN_P, Self.DYN_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    dyn_grads_tensor,
+                    dyn_grad_ps_tensor,
+                    grad_norm_max,
+                    grid_dim=(Self.DYN_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                Adam[LR=Self.WM.WM_LR].step_gpu[Self.DYN_P](
+                    ctx,
+                    dyn_params_tensor,
+                    dyn_grads_tensor,
+                    dyn_state_tensor,
+                    gpu_wm_step,
+                    1.0,
+                )
+
+                ctx.enqueue_function[
+                    gradient_norm_kernel[
+                        dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_norm_kernel[
+                        dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    rew_grad_ps_tensor,
+                    rew_grads_tensor,
+                    grid_dim=(Self.REW_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.REW_P, Self.REW_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    rew_grads_tensor,
+                    rew_grad_ps_tensor,
+                    grad_norm_max,
+                    grid_dim=(Self.REW_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                Adam[LR=Self.WM.WM_LR].step_gpu[Self.REW_P](
+                    ctx,
+                    rew_params_tensor,
+                    rew_grads_tensor,
+                    rew_state_tensor,
+                    gpu_wm_step,
+                    1.0,
+                )
+
+                ctx.enqueue_function[
+                    gradient_norm_kernel[
+                        dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_norm_kernel[
+                        dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    term_grad_ps_tensor,
+                    term_grads_tensor,
+                    grid_dim=(Self.TERM_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.TERM_P, Self.TERM_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    term_grads_tensor,
+                    term_grad_ps_tensor,
+                    grad_norm_max,
+                    grid_dim=(Self.TERM_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                Adam[LR=Self.WM.WM_LR].step_gpu[Self.TERM_P](
+                    ctx,
+                    term_params_tensor,
+                    term_grads_tensor,
+                    term_state_tensor,
+                    gpu_wm_step,
+                    1.0,
+                )
+
+                # Q1..Q5 fused grad clip + Adam (15 launches → 3)
+                ctx.enqueue_function[
+                    tdmpc2_gradient_norm_5q_kernel[
+                        dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
+                    ],
+                    tdmpc2_gradient_norm_5q_kernel[
+                        dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    q_grad_ps_tensor,
+                    q1_grads_tensor,
+                    q2_grads_tensor,
+                    q3_grads_tensor,
+                    q4_grads_tensor,
+                    q5_grads_tensor,
+                    grid_dim=(Self.Q_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[
+                    tdmpc2_gradient_reduce_apply_5q_kernel[
+                        dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
+                    ],
+                    tdmpc2_gradient_reduce_apply_5q_kernel[
+                        dtype, Self.Q_P, Self.Q_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    q1_grads_tensor,
+                    q2_grads_tensor,
+                    q3_grads_tensor,
+                    q4_grads_tensor,
+                    q5_grads_tensor,
+                    q_grad_ps_tensor,
+                    grad_norm_max,
+                    grid_dim=(Self.Q_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+                # Fused Adam step for all 5 Q networks
+                var wm_lr = Scalar[dtype](Self.WM.WM_LR)
+                var adam_beta1 = Scalar[dtype](0.9)
+                var adam_beta2 = Scalar[dtype](0.999)
+                var adam_eps = Scalar[dtype](1e-8)
+                var adam_bc1 = Scalar[dtype](1.0 - (0.9**gpu_wm_step))
+                var adam_bc2 = Scalar[dtype](1.0 - (0.999**gpu_wm_step))
+
+                @always_inline
+                def adam_5q_wrapper(
+                    params1: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    grads1: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    state1: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+                    ],
+                    params2: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    grads2: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    state2: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+                    ],
+                    params3: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    grads3: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    state3: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+                    ],
+                    params4: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    grads4: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    state4: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+                    ],
+                    params5: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    grads5: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                    ],
+                    state5: LayoutTensor[
+                        dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
+                    ],
+                    lr: Scalar[dtype],
+                    beta1: Scalar[dtype],
+                    beta2: Scalar[dtype],
+                    eps: Scalar[dtype],
+                    bias_correction1: Scalar[dtype],
+                    bias_correction2: Scalar[dtype],
+                ):
+                    tdmpc2_adam_step_5q_kernel[dtype, Self.Q_P](
+                        params1,
+                        grads1,
+                        state1,
+                        params2,
+                        grads2,
+                        state2,
+                        params3,
+                        grads3,
+                        state3,
+                        params4,
+                        grads4,
+                        state4,
+                        params5,
+                        grads5,
+                        state5,
+                        lr,
+                        beta1,
+                        beta2,
+                        eps,
+                        bias_correction1,
+                        bias_correction2,
+                    )
+
+                ctx.enqueue_function[adam_5q_wrapper, adam_5q_wrapper](
+                    q1_params_tensor,
+                    q1_grads_tensor,
+                    q1_state_tensor,
+                    q2_params_tensor,
+                    q2_grads_tensor,
+                    q2_state_tensor,
+                    q3_params_tensor,
+                    q3_grads_tensor,
+                    q3_state_tensor,
+                    q4_params_tensor,
+                    q4_grads_tensor,
+                    q4_state_tensor,
+                    q5_params_tensor,
+                    q5_grads_tensor,
+                    q5_state_tensor,
+                    wm_lr,
+                    adam_beta1,
+                    adam_beta2,
+                    adam_eps,
+                    adam_bc1,
+                    adam_bc2,
+                    grid_dim=(Self.Q_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+                # ──────────────────────────────────────────────────────────────
+                # Step 2c: Policy update (maximize Q + entropy)
+                # Policy uses stop-gradient z from encoder (no grad to encoder)
+                # ──────────────────────────────────────────────────────────────
+                # No sync needed — GPU pipelines optimizer → policy update naturally
+                gs.pol.zero_grads(ctx)
+
+                # Encode obs_0 with stop-grad → z_sg (reuse z_buf)
+                Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                    ctx,
+                    z_tensor,
+                    obs_step_tensor,
+                    enc_params_tensor,
+                    gs.enc_batch_ws_buf,
+                )
+                # obs_step_buf still contains obs_0 from the world model step
+
+                var pol_rho_t = Scalar[dtype](1.0)
+                # Scale entropy by ACTION_DIM to match reference scaled_entropy
+                var entropy_coef_scalar = Scalar[dtype](
+                    self.entropy_coef * Float64(Self.ACT)
+                )
+                var scale_scalar = Scalar[dtype](self.running_scale)
+
+                for t in range(Self.H):
+                    ctx.enqueue_memset(gs.grad_pi_out_buf, 0)
+
+                    # Policy forward with cache → pi_out
+                    Self.WM.PolicyNet.forward_gpu_with_cache[Self.BATCH](
+                        ctx,
+                        z_tensor,
+                        pi_out_tensor,
+                        pol_params_tensor,
+                        pol_cache_tensor,
+                        gs.pol_batch_ws_buf,
+                    )
+
+                    # Stochastic policy: a = tanh(mean + std*eps) via reparameterization
+                    var pi_reparam_seed = Scalar[DType.uint32](
+                        pi_reparam_rng_counter
+                    )
+                    pi_reparam_rng_counter += UInt32(Self.BATCH * Self.ACT + 1)
+                    ctx.enqueue_function[
+                        tdmpc2_apply_tanh_build_za_kernel[
                             dtype, Self.BATCH, Self.ACT, Self.LATENT
                         ],
-                        tdmpc2_action_tanh_chain_kernel[
+                        tdmpc2_apply_tanh_build_za_kernel[
                             dtype, Self.BATCH, Self.ACT, Self.LATENT
                         ],
                     ](
-                        grad_za_pi_tensor,
                         pi_out_tensor,
-                        grad_pi_out_tensor,
-                        ent,
+                        pi_act_tensor,
+                        z_tensor,
+                        za_tensor,
                         pi_reparam_seed,
                         grid_dim=(Self.BATCH_BLOCKS,),
                         block_dim=(TPB,),
                     )
 
-                # Policy backward → accumulate pol_grads
-                Self.WM.PolicyNet.backward_gpu[Self.BATCH](
-                    ctx,
-                    grad_pi_out_tensor,
-                    dummy_grad_latent_t,  # grad_input = dummy (z is stop-grad)
-                    pol_params_tensor,
-                    pol_cache_tensor,
+                    # ── Proper DPG: backprop through avg of 2 random Q-nets ──
+                    # Reference TD-MPC2: randomly subsample 2 of 5 Q-networks,
+                    # average their gradients for the policy update.
+                    var pi_rng = PhiloxRandom(seed=pi_q_rng_counter, offset=0)
+                    pi_q_rng_counter += 1
+                    var rng_vals = pi_rng.step_uniform()
+                    var qi_a = Int(rng_vals[0] * 5.0) % 5
+                    var qi_b = (qi_a + 1 + Int(rng_vals[1] * 4.0) % 4) % 5
+                    var q_rho = pol_rho_t / Scalar[dtype](2.0)
+
+                    # ── RunningScale update at first horizon step ──
+                    # Decode Q-values from first Q-net to update scale (reference:
+                    # 5th-95th percentile range of Q-values, EMA with tau).
+                    if t == 0:
+                        var qi_a_p = LayoutTensor[
+                            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                        ](q_param_ptrs[qi_a])
+                        # Forward Q to get logits (no cache, just for scale)
+                        Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            logits_tensor,
+                            za_tensor,
+                            qi_a_p,
+                            gs.q1_batch_ws_buf,
+                        )
+                        # Decode logits → scalar Q-values into q_min_tensor
+                        ctx.enqueue_function[
+                            tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
+                            tdmpc2_q_decode_kernel[dtype, Self.BATCH, Self.BINS],
+                        ](
+                            logits_tensor,
+                            bins_tensor,
+                            q_min_tensor,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        # Download Q-values to CPU for percentile computation
+                        ctx.enqueue_copy(gs.q_vals_host, gs.q_min_buf)
+                        ctx.synchronize()
+
+                        # Sort Q-values to compute 5th and 95th percentiles
+                        # Simple insertion sort (BATCH=256, negligible cost)
+                        var sorted_q = List[Float64](capacity=Self.BATCH)
+                        for b in range(Self.BATCH):
+                            sorted_q.append(Float64(gs.q_vals_host[b]))
+                        for i in range(1, Self.BATCH):
+                            var key = sorted_q[i]
+                            var j = i - 1
+                            while j >= 0 and sorted_q[j] > key:
+                                sorted_q[j + 1] = sorted_q[j]
+                                j -= 1
+                            sorted_q[j + 1] = key
+
+                        var idx_5 = Int(0.05 * Float64(Self.BATCH))
+                        var idx_95 = Int(0.95 * Float64(Self.BATCH))
+                        if idx_95 >= Self.BATCH:
+                            idx_95 = Self.BATCH - 1
+                        var pct_range = sorted_q[idx_95] - sorted_q[idx_5]
+                        if pct_range < 1.0:
+                            pct_range = 1.0
+
+                        # EMA update: scale ← (1-tau)*scale + tau*pct_range
+                        self.running_scale = (
+                            1.0 - self.tau
+                        ) * self.running_scale + self.tau * pct_range
+                        scale_scalar = Scalar[dtype](self.running_scale)
+
+                        # Capture Q-value stats for diagnostics (sorted_q is available)
+                        diag_q_min = sorted_q[0]
+                        diag_q_max = sorted_q[Self.BATCH - 1]
+                        var q_sum: Float64 = 0.0
+                        for b in range(Self.BATCH):
+                            q_sum += sorted_q[b]
+                        diag_q_mean = q_sum / Float64(Self.BATCH)
+
+                    for qi_iter in range(2):
+                        var qi = qi_a if qi_iter == 0 else qi_b
+                        # Entropy weighted by rho^t (temporal decay), applied once
+                        var ent = (
+                            entropy_coef_scalar * pol_rho_t if qi_iter
+                            == 0 else Scalar[dtype](0.0)
+                        )
+
+                        var qi_p = LayoutTensor[
+                            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                        ](q_param_ptrs[qi])
+                        var qi_c = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.BATCH, Self.Q_C),
+                            MutAnyOrigin,
+                        ](q_cache_ptrs[qi])
+                        var qi_g = LayoutTensor[
+                            dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                        ](q_grad_ptrs[qi])
+
+                        # Q forward with cache
+                        Self.WM.QNet.forward_gpu_with_cache[Self.BATCH](
+                            ctx,
+                            za_tensor,
+                            logits_tensor,
+                            qi_p,
+                            qi_c,
+                            gs.q1_batch_ws_buf,
+                        )
+
+                        # Decode Q + compute dL/d(logits), normalized by running_scale
+                        ctx.enqueue_function[
+                            tdmpc2_q_decode_backward_kernel[
+                                dtype, Self.BATCH, Self.BINS
+                            ],
+                            tdmpc2_q_decode_backward_kernel[
+                                dtype, Self.BATCH, Self.BINS
+                            ],
+                        ](
+                            logits_tensor,
+                            bins_tensor,
+                            grad_logits_tensor,
+                            q_rho,
+                            scale_scalar,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+
+                        # Q backward: dL/d(logits) → dL/d(za)
+                        Self.WM.QNet.backward_gpu[Self.BATCH](
+                            ctx,
+                            grad_logits_tensor,
+                            grad_za_pi_tensor,
+                            qi_p,
+                            qi_c,
+                            qi_g,
+                            gs.q1_batch_ws_buf,
+                        )
+
+                        # Chain through stochastic tanh + entropy (same seed as forward)
+                        ctx.enqueue_function[
+                            tdmpc2_action_tanh_chain_kernel[
+                                dtype, Self.BATCH, Self.ACT, Self.LATENT
+                            ],
+                            tdmpc2_action_tanh_chain_kernel[
+                                dtype, Self.BATCH, Self.ACT, Self.LATENT
+                            ],
+                        ](
+                            grad_za_pi_tensor,
+                            pi_out_tensor,
+                            grad_pi_out_tensor,
+                            ent,
+                            pi_reparam_seed,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+
+                    # Policy backward → accumulate pol_grads
+                    Self.WM.PolicyNet.backward_gpu[Self.BATCH](
+                        ctx,
+                        grad_pi_out_tensor,
+                        dummy_grad_latent_t,  # grad_input = dummy (z is stop-grad)
+                        pol_params_tensor,
+                        pol_cache_tensor,
+                        pol_grads_tensor,
+                        gs.pol_batch_ws_buf,
+                    )
+
+                    # Advance z_sg via dynamics (stop-grad)
+                    if t < Self.H - 1:
+                        Self.WM.DynamicsNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            z_pred_tensor,
+                            za_tensor,
+                            dyn_params_tensor,
+                            gs.dyn_batch_ws_buf,
+                        )
+                        ctx.enqueue_function[
+                            copy_buffer_kernel[dtype, Self.B_LATENT],
+                            copy_buffer_kernel[dtype, Self.B_LATENT],
+                        ](
+                            z_flat_tensor,
+                            z_pred_flat_tensor,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+
+                    pol_rho_t = pol_rho_t * Scalar[dtype](self.rho)
+
+                # Policy gradient clip + optimizer step
+                ctx.enqueue_function[
+                    gradient_norm_kernel[
+                        dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_norm_kernel[
+                        dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    pol_grad_ps_tensor,
                     pol_grads_tensor,
-                    gs.pol_batch_ws_buf,
+                    grid_dim=(Self.POL_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
+                    ],
+                    gradient_reduce_apply_fused_kernel[
+                        dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
+                    ],
+                ](
+                    pol_grads_tensor,
+                    pol_grad_ps_tensor,
+                    grad_norm_max,
+                    grid_dim=(Self.POL_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                gpu_pi_step += 1
+                Adam[LR=Self.WM.PI_LR].step_gpu[Self.POL_P](
+                    ctx,
+                    pol_params_tensor,
+                    pol_grads_tensor,
+                    pol_state_tensor,
+                    gpu_pi_step,
+                    1.0,
                 )
 
-                # Advance z_sg via dynamics (stop-grad)
-                if t < Self.H - 1:
-                    Self.WM.DynamicsNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                        ctx,
-                        z_pred_tensor,
-                        za_tensor,
-                        dyn_params_tensor,
-                        gs.dyn_batch_ws_buf,
-                    )
-                    ctx.enqueue_function[
-                        copy_buffer_kernel[dtype, Self.B_LATENT],
-                        copy_buffer_kernel[dtype, Self.B_LATENT],
-                    ](
-                        z_flat_tensor,
-                        z_pred_flat_tensor,
-                        grid_dim=(Self.BATCH_BLOCKS,),
-                        block_dim=(TPB,),
-                    )
+                # ──────────────────────────────────────────────────────────────
+                # Step 2d: Soft update target Q networks
+                # ──────────────────────────────────────────────────────────────
+                # No sync needed — GPU pipelines policy → soft update naturally
+                var tau_scalar = Scalar[dtype](self.tau)
 
-                pol_rho_t = pol_rho_t * Scalar[dtype](self.rho)
+                # Fused: soft update all 5 Q-target networks (5 kernels → 1)
+                ctx.enqueue_function[
+                    tdmpc2_soft_update_5q_kernel[dtype, Self.Q_P],
+                    tdmpc2_soft_update_5q_kernel[dtype, Self.Q_P],
+                ](
+                    q1t_params_tensor,
+                    q1_params_tensor,
+                    q2t_params_tensor,
+                    q2_params_tensor,
+                    q3t_params_tensor,
+                    q3_params_tensor,
+                    q4t_params_tensor,
+                    q4_params_tensor,
+                    q5t_params_tensor,
+                    q5_params_tensor,
+                    tau_scalar,
+                    grid_dim=(Self.Q_GRAD_BLOCKS,),
+                    block_dim=(TPB,),
+                )
 
-            # Policy gradient clip + optimizer step
-            ctx.enqueue_function[
-                gradient_norm_kernel[
-                    dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
-                ],
-                gradient_norm_kernel[
-                    dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
-                ],
-            ](
-                pol_grad_ps_tensor,
-                pol_grads_tensor,
-                grid_dim=(Self.POL_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
-                ],
-                gradient_reduce_apply_fused_kernel[
-                    dtype, Self.POL_P, Self.POL_GRAD_BLOCKS, TPB
-                ],
-            ](
-                pol_grads_tensor,
-                pol_grad_ps_tensor,
-                grad_norm_max,
-                grid_dim=(Self.POL_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            gpu_pi_step += 1
-            Adam[LR=Self.WM.PI_LR].step_gpu[Self.POL_P](
-                ctx,
-                pol_params_tensor,
-                pol_grads_tensor,
-                pol_state_tensor,
-                gpu_pi_step,
-                1.0,
-            )
+                ctx.synchronize()
+                # Single timing for entire training phase (BPTT + optim + policy + soft update)
+                var _t_train_all = Int(perf_counter_ns() - _t0_wm)
+                t_wm_gradient += _t_train_all
+                timing_train_iters += 1
 
-            # ──────────────────────────────────────────────────────────────
-            # Step 2d: Soft update target Q networks
-            # ──────────────────────────────────────────────────────────────
-            # No sync needed — GPU pipelines policy → soft update naturally
-            var tau_scalar = Scalar[dtype](self.tau)
+                self.train_step_count += 1
 
-            # Fused: soft update all 5 Q-target networks (5 kernels → 1)
-            ctx.enqueue_function[
-                tdmpc2_soft_update_5q_kernel[dtype, Self.Q_P],
-                tdmpc2_soft_update_5q_kernel[dtype, Self.Q_P],
-            ](
-                q1t_params_tensor,
-                q1_params_tensor,
-                q2t_params_tensor,
-                q2_params_tensor,
-                q3t_params_tensor,
-                q3_params_tensor,
-                q4t_params_tensor,
-                q4_params_tensor,
-                q5t_params_tensor,
-                q5_params_tensor,
-                tau_scalar,
-                grid_dim=(Self.Q_GRAD_BLOCKS,),
-                block_dim=(TPB,),
-            )
-
-            ctx.synchronize()
-            # Single timing for entire training phase (BPTT + optim + policy + soft update)
-            var _t_train_all = Int(perf_counter_ns() - _t0_wm)
-            t_wm_gradient += _t_train_all
-            timing_train_iters += 1
-
-            self.train_step_count += 1
-
-            # Log training diagnostics periodically
-            if (
-                self.logger
-                and self.diag_every > 0
-                and self.train_step_count % self.diag_every == 0
-            ):
-                try:
-                    var step = self.train_step_count
-                    self.logger[].log_scalar("q_mean", diag_q_mean, step)
-                    self.logger[].log_scalar("q_min", diag_q_min, step)
-                    self.logger[].log_scalar("q_max", diag_q_max, step)
-                    self.logger[].log_scalar(
-                        "pi_scale", self.running_scale, step
-                    )
-                    self.logger[].log_scalar("gamma", self.gamma, step)
-                except:
-                    pass
+                # Log training diagnostics periodically
+                if (
+                    self.logger
+                    and self.diag_every > 0
+                    and self.train_step_count % self.diag_every == 0
+                ):
+                    try:
+                        var step = self.train_step_count
+                        self.logger[].log_scalar("q_mean", diag_q_mean, step)
+                        self.logger[].log_scalar("q_min", diag_q_min, step)
+                        self.logger[].log_scalar("q_max", diag_q_max, step)
+                        self.logger[].log_scalar(
+                            "pi_scale", self.running_scale, step
+                        )
+                        self.logger[].log_scalar("gamma", self.gamma, step)
+                    except:
+                        pass
 
         # =================================================================
         # Print timing summary
