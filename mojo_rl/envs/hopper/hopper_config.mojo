@@ -263,10 +263,23 @@ struct HopperConfig(Phyics3dEnvConfig):
         var y_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
 
         var is_healthy = True
+        # Gymnasium uses strict inequalities for z and angle
         if z_height < min_height:
             is_healthy = False
         if y_angle > max_pitch or y_angle < -max_pitch:
             is_healthy = False
+
+        # healthy_state_range check: all state elements (qpos[2:] + qvel[:])
+        # must be in (-100, 100) — matches Gymnasium Hopper-v5
+        var qvel_off_local = qpos_off + 6  # NQ=6, qvel starts after qpos
+        for k in range(2, 6):  # qpos[2:6] = rooty, thigh, leg, foot
+            var qp = rebind[Scalar[DTYPE]](states[env, qpos_off + k])
+            if qp <= Scalar[DTYPE](-100.0) or qp >= Scalar[DTYPE](100.0):
+                is_healthy = False
+        for k in range(6):  # all qvel
+            var qv = rebind[Scalar[DTYPE]](states[env, qvel_off_local + k])
+            if qv <= Scalar[DTYPE](-100.0) or qv >= Scalar[DTYPE](100.0):
+                is_healthy = False
 
         # Healthy reward
         var healthy_reward = Scalar[DTYPE](1.0)
@@ -315,7 +328,8 @@ struct HopperConfig(Phyics3dEnvConfig):
     ):
         pass
 
-    # === GPU inline: Custom obs extraction (none, use model default) ===
+    # === GPU inline: Custom obs extraction with velocity clipping ===
+    # Gymnasium Hopper-v5 clips qvel to [-10, 10] in observations.
     @always_inline
     @staticmethod
     def custom_extract_obs_gpu[
@@ -327,7 +341,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ],
-        obs: LayoutTensor[
+        mut obs: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ],
         env: Int,
@@ -335,4 +349,17 @@ struct HopperConfig(Phyics3dEnvConfig):
         qvel_off: Int,
         xpos_off: Int,
     ) -> Bool:
-        return False
+        # qpos[1:6] → obs[0:5] (skip rootx)
+        for k in range(5):
+            obs[env, k] = states[env, qpos_off + 1 + k]
+
+        # qvel[0:6] → obs[5:11], clipped to [-10, 10]
+        for k in range(6):
+            var v = rebind[Scalar[DTYPE]](states[env, qvel_off + k])
+            if v > Scalar[DTYPE](10.0):
+                v = Scalar[DTYPE](10.0)
+            elif v < Scalar[DTYPE](-10.0):
+                v = Scalar[DTYPE](-10.0)
+            obs[env, 5 + k] = v
+
+        return True
