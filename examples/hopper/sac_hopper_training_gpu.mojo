@@ -38,7 +38,7 @@ comptime HIDDEN_DIM = 256
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 4
+comptime MAX_N_ENVS = 16
 
 # Training duration
 comptime NUM_STEPS = 1_500_000
@@ -71,12 +71,12 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.001,
+            critic_lr=0.0003,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
-            tau=0.005,
+            tau=0.002,
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,

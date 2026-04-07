@@ -83,18 +83,23 @@ def run_mbpo_train[
     # --- Warmup: fill real buffer with random transitions ---
     var warmup_obs = env.reset_obs_list()
     var warmup_count = 0
+    var warmup_ep_steps = 0
     while warmup_count < warmup_steps:
         var action = agent.random_action[E.dtype]()
         var result = env.step_continuous_vec(action)
         var next_obs = result[0].copy()
         var reward = Float64(result[1])
         var done = result[2]
+        warmup_ep_steps += 1
+        # Store terminated (not done) so Q-targets bootstrap on truncation.
+        var terminated = done and (warmup_ep_steps < max_steps_per_episode)
         agent.store_transition(
-            cpu_state, warmup_obs, action, reward, next_obs, done
+            cpu_state, warmup_obs, action, reward, next_obs, terminated
         )
         warmup_count += 1
         if done:
             warmup_obs = env.reset_obs_list()
+            warmup_ep_steps = 0
         else:
             warmup_obs = next_obs^
 
@@ -128,13 +133,14 @@ def run_mbpo_train[
                 next_obs.append(Float64(result[0][i]))
             var reward = Float64(result[1])
             var done = result[2]
-
+            episode_steps += 1
+            # Store terminated (not done) so Q-targets bootstrap on truncation.
+            var terminated = done and (episode_steps < max_steps_per_episode)
             # Store in real buffer
             agent.store_transition(
-                cpu_state, obs_f64, action, reward, next_obs, done
+                cpu_state, obs_f64, action, reward, next_obs, terminated
             )
             episode_reward += reward
-            episode_steps += 1
             total_env_steps += 1
 
             # Train dynamics model periodically

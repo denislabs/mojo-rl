@@ -536,6 +536,7 @@ def run_offpolicy_discrete_train[
     # --- Warmup: fill buffer with random transitions ---
     var warmup_obs = env.reset_obs_list()
     var warmup_count = 0
+    var warmup_ep_steps = 0
     while warmup_count < warmup_steps:
         var action = agent.random_action_list[E.dtype]()
         var action_int = Int(Float64(action[0]))
@@ -543,10 +544,16 @@ def run_offpolicy_discrete_train[
         var next_obs = result[0].copy()
         var reward = Float64(result[1])
         var done = result[2]
-        agent.store_list_transition(warmup_obs, action, reward, next_obs, done)
+        warmup_ep_steps += 1
+        # Store terminated (not done) so Q-targets bootstrap on truncation.
+        var terminated = done and (warmup_ep_steps < max_steps_per_episode)
+        agent.store_list_transition(
+            warmup_obs, action, reward, next_obs, terminated
+        )
         warmup_count += 1
         if done:
             warmup_obs = env.reset_obs_list()
+            warmup_ep_steps = 0
         else:
             warmup_obs = next_obs^
 
@@ -564,15 +571,18 @@ def run_offpolicy_discrete_train[
             var next_obs = result[0].copy()
             var reward = Float64(result[1])
             var done = result[2]
-
-            agent.store_list_transition(obs, action, reward, next_obs, done)
+            episode_steps += 1
+            # Store terminated (not done) so Q-targets bootstrap on truncation.
+            var terminated = done and (episode_steps < max_steps_per_episode)
+            agent.store_list_transition(
+                obs, action, reward, next_obs, terminated
+            )
 
             if agent.is_ready() and total_steps % train_every == 0:
                 _ = agent.do_train_step()
 
             episode_reward += reward
             total_steps += 1
-            episode_steps += 1
             obs = next_obs^
 
             if done:
@@ -686,18 +696,23 @@ def run_offpolicy_discrete_train[
     # --- Warmup: fill buffer with random transitions ---
     var warmup_obs = env.reset_obs_list()
     var warmup_count = 0
+    var warmup_ep_steps = 0
     while warmup_count < warmup_steps:
         var action = agent.random_action()
         var result = env.step_obs(action)
         var next_obs = result[0].copy()
         var reward = Float64(result[1])
         var done = result[2]
+        warmup_ep_steps += 1
+        # Store terminated (not done) so Q-targets bootstrap on truncation.
+        var terminated = done and (warmup_ep_steps < max_steps_per_episode)
         agent.store_transition[E.dtype](
-            cpu_state, warmup_obs, action, reward, next_obs, done
+            cpu_state, warmup_obs, action, reward, next_obs, terminated
         )
         warmup_count += 1
         if done:
             warmup_obs = env.reset_obs_list()
+            warmup_ep_steps = 0
         else:
             warmup_obs = next_obs^
 
@@ -714,9 +729,11 @@ def run_offpolicy_discrete_train[
             var next_obs = result[0].copy()
             var reward = Float64(result[1])
             var done = result[2]
-
+            episode_steps += 1
+            # Store terminated (not done) so Q-targets bootstrap on truncation.
+            var terminated = done and (episode_steps < max_steps_per_episode)
             agent.store_transition[E.dtype](
-                cpu_state, obs, action, reward, next_obs, done
+                cpu_state, obs, action, reward, next_obs, terminated
             )
 
             if cpu_state.is_ready() and total_steps % train_every == 0:
@@ -724,7 +741,6 @@ def run_offpolicy_discrete_train[
 
             episode_reward += reward
             total_steps += 1
-            episode_steps += 1
             obs = next_obs^
 
             if done:
@@ -835,17 +851,24 @@ def run_offpolicy_continuous_train[
     var warmup_obs = env.reset_obs_list()
 
     var warmup_count = 0
+    var warmup_ep_steps = 0
     while warmup_count < warmup_steps:
         var action = agent.random_action_list[E.dtype]()
         var result = env.step_continuous_vec(action)
         var next_obs = result[0].copy()
         var reward = Float64(result[1])
         var done = result[2]
-        agent.store_list_transition(warmup_obs, action, reward, next_obs, done)
+        warmup_ep_steps += 1
+        # Store terminated (not done) so Q-targets bootstrap on truncation.
+        var terminated = done and (warmup_ep_steps < max_steps_per_episode)
+        agent.store_list_transition(
+            warmup_obs, action, reward, next_obs, terminated
+        )
         warmup_count += 1
         if done:
             var reset_raw = env.reset_obs_list()
             warmup_obs = reset_raw^
+            warmup_ep_steps = 0
         else:
             warmup_obs = next_obs^
 
@@ -868,15 +891,18 @@ def run_offpolicy_continuous_train[
                 next_obs.append(Float64(result[0][i]))
             var reward = Float64(result[1])
             var done = result[2]
-
-            agent.store_list_transition(obs, action, reward, next_obs, done)
+            episode_steps += 1
+            # Store terminated (not done) so Q-targets bootstrap on truncation.
+            var terminated = done and (episode_steps < max_steps_per_episode)
+            agent.store_list_transition(
+                obs, action, reward, next_obs, terminated
+            )
 
             if agent.is_ready() and total_steps % train_every == 0:
                 _ = agent.do_train_step()
 
             episode_reward += reward
             total_steps += 1
-            episode_steps += 1
             obs = next_obs^
 
             if done:
@@ -990,18 +1016,24 @@ def run_offpolicy_continuous_train[
     # --- Warmup: fill buffer with random transitions ---
     var warmup_obs = env.reset_obs_list()
     var warmup_count = 0
+    var warmup_ep_steps = 0
     while warmup_count < warmup_steps:
         var action = agent.random_action[E.dtype]()
         var result = env.step_continuous_vec(action)
         var next_obs = result[0].copy()
         var reward = Float64(result[1])
         var done = result[2]
+        warmup_ep_steps += 1
+        # Store terminated (not done) so Q-targets bootstrap on truncation.
+        # If done at max_steps, it's time-limit truncation — still bootstrap.
+        var terminated = done and (warmup_ep_steps < max_steps_per_episode)
         agent.store_transition(
-            cpu_state, warmup_obs, action, reward, next_obs, done
+            cpu_state, warmup_obs, action, reward, next_obs, terminated
         )
         warmup_count += 1
         if done:
             warmup_obs = env.reset_obs_list()
+            warmup_ep_steps = 0
         else:
             warmup_obs = next_obs^
 
@@ -1024,9 +1056,11 @@ def run_offpolicy_continuous_train[
                 next_obs.append(Float64(result[0][i]))
             var reward = Float64(result[1])
             var done = result[2]
-
+            episode_steps += 1
+            # Store terminated (not done) so Q-targets bootstrap on truncation.
+            var terminated = done and (episode_steps < max_steps_per_episode)
             agent.store_transition(
-                cpu_state, obs, action, reward, next_obs, done
+                cpu_state, obs, action, reward, next_obs, terminated
             )
 
             if cpu_state.is_ready() and total_steps % train_every == 0:
@@ -1034,7 +1068,6 @@ def run_offpolicy_continuous_train[
 
             episode_reward += reward
             total_steps += 1
-            episode_steps += 1
             obs = next_obs^
 
             if done:
