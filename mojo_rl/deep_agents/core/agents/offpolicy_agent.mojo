@@ -2115,6 +2115,7 @@ struct GenericOffPolicyAgent[
         ](),
         diag_every: Int = 0,
         gradient_steps: Int = 0,
+        reward_scale: Float64 = 1.0,
     ) raises -> TrainingMetrics:
         """Train using GPU-accelerated training loop.
 
@@ -2132,6 +2133,9 @@ struct GenericOffPolicyAgent[
             diag_every: Log diagnostics every N train steps (default: 0).
             gradient_steps: Training steps per env collection iteration.
                 0 = n_envs (default, 1:1 ratio).
+            reward_scale: Scale rewards before storing in replay buffer (default: 1.0).
+                Higher values (e.g., 5.0) make Q-values larger, reducing relative
+                impact of entropy term and stabilizing training for some environments.
 
         Returns:
             TrainingMetrics with episode-level statistics.
@@ -2174,6 +2178,7 @@ struct GenericOffPolicyAgent[
             logger=logger,
             target_total_steps=tgt_steps,
             gradient_steps=gradient_steps,
+            reward_scale=reward_scale,
         )
 
         comptime if Self.profile >= 2:

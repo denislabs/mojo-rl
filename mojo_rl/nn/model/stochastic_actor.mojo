@@ -1266,8 +1266,11 @@ def rsample[
                 LOG_2PI + 2.0 * ls + z_normalized * z_normalized
             )
 
-            # Squashing correction: -log(1 - tanh(z)^2 + eps)
-            var squash_correction = log(1.0 - tanh_z * tanh_z + EPS)
+            # Squashing correction (numerically stable form)
+            # log(1 - tanh²(z)) = 2*(log(2) - z - softplus(-2z))
+            var squash_correction = 2.0 * (
+                0.6931471805599453 - z - log(1.0 + exp(-2.0 * z))
+            )
 
             total_log_prob += log_gaussian - squash_correction
 
@@ -1366,8 +1369,11 @@ def compute_log_prob[
                 LOG_2PI + 2.0 * ls + z_normalized * z_normalized
             )
 
-            # Squashing correction
-            var squash_correction = log(1.0 - a * a + EPS)
+            # Squashing correction (numerically stable form)
+            # log(1 - tanh²(z)) = 2*(log(2) - z - softplus(-2z))
+            var squash_correction = 2.0 * (
+                0.6931471805599453 - z - log(1.0 + exp(-2.0 * z))
+            )
 
             total_log_prob += log_gaussian - squash_correction
 
@@ -1543,12 +1549,9 @@ def rsample_backward[
             # d(action)/d(z) = 1 - tanh²(z) = 1 - action²
             var dtanh_dz = 1.0 - a * a
 
-            # Gradient of log_prob w.r.t. z (from squash correction)
-            # d(-log(1 - a² + ε))/dz = d(-log(1 - tanh²(z) + ε))/dz
-            #                        = 2*tanh(z) / (1 - tanh²(z) + ε) * dtanh/dz
-            #                        = 2*a / (1 - a² + ε) * (1 - a²)
-            #                        = 2*a * (1 - a²) / (1 - a² + ε)
-            var dlogprob_dz = 2.0 * a * dtanh_dz / (1.0 - a * a + EPS)
+            # Gradient of log_prob w.r.t. z (stable form)
+            # d/dz[-2*(log(2) - z - softplus(-2z))] = 2*tanh(z) = 2*a
+            var dlogprob_dz = 2.0 * a
 
             # Total gradient of z
             # grad_z = grad_action * d(action)/d(z) + grad_log_prob * d(log_prob)/d(z)
@@ -1620,8 +1623,9 @@ def rsample_backward_kernel_impl[
     # d(action)/d(z) = 1 - action²
     var dtanh_dz = 1.0 - a * a
 
-    # Gradient of log_prob w.r.t. z
-    var dlogprob_dz = 2.0 * a * dtanh_dz / (1.0 - a * a + Scalar[dtype](EPS))
+    # Gradient of log_prob w.r.t. z (stable form)
+    # d/dz[-2*(log(2) - z - softplus(-2z))] = 2*tanh(z) = 2*a
+    var dlogprob_dz = Scalar[dtype](2.0) * a
 
     # Total gradient of z
     var grad_z = ga * dtanh_dz + glp * dlogprob_dz

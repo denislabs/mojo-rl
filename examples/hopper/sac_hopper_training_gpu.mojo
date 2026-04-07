@@ -76,13 +76,13 @@ def main() raises:
             max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
-            tau=0.002,
+            tau=0.005,
             action_scale=1.0,
             alpha=0.2,
-            auto_alpha=True,
+            auto_alpha=False,
             alpha_lr=0.0003,
             target_entropy=-3.0,
-            max_grad_norm=1.0,
+            max_grad_norm=0.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
         )
@@ -149,6 +149,7 @@ def main() raises:
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
                 gradient_steps=4,
+                reward_scale=5.0,
             )
 
             var end_time = perf_counter_ns()

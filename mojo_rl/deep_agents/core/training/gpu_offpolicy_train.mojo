@@ -365,6 +365,7 @@ def run_offpolicy_continuous_train_gpu[
     environment_name: String = "Environment",
     algorithm_name: String = "GPUOffPolicy",
     target_total_steps: Int = 0,
+    reward_scale: Float64 = 1.0,
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for continuous-action off-policy agents.
 
@@ -504,6 +505,20 @@ def run_offpolicy_continuous_train_gpu[
 
     from layout import Layout, LayoutTensor
 
+    # Reward scaling: create a separate buffer for scaled rewards
+    var scaled_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+    var use_reward_scale = reward_scale != 1.0
+
+    @always_inline
+    def _scale_rewards_kernel(
+        dst: LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin],
+        src: LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin],
+        scale: Scalar[dtype],
+    ):
+        var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if i < n_envs:
+            dst.ptr[i] = src.ptr[i] * scale
+
     # Resolve gradient_steps: 0 means n_envs (1:1 replay ratio)
     var grad_steps = gradient_steps
     if grad_steps <= 0:
@@ -583,14 +598,39 @@ def run_offpolicy_continuous_train_gpu[
                     rng_seed=UInt64(step_seed),
                     workspace_ptr=workspace_buf.unsafe_ptr(),
                 )
-                gpu_state.gpu_store[n_envs](
-                    ctx,
-                    prev_obs_buf,
-                    actions_buf,
-                    rewards_buf,
-                    obs_buf,
-                    terminated_buf,
-                )
+                if use_reward_scale:
+                    var sc_t = LayoutTensor[
+                        dtype, Layout.row_major(n_envs), MutAnyOrigin
+                    ](scaled_rewards_buf.unsafe_ptr())
+                    var rw_raw = LayoutTensor[
+                        dtype, Layout.row_major(n_envs), MutAnyOrigin
+                    ](rewards_buf.unsafe_ptr())
+                    ctx.enqueue_function[
+                        _scale_rewards_kernel, _scale_rewards_kernel
+                    ](
+                        sc_t,
+                        rw_raw,
+                        Scalar[dtype](reward_scale),
+                        grid_dim=(env_blocks,),
+                        block_dim=(tpb,),
+                    )
+                    gpu_state.gpu_store[n_envs](
+                        ctx,
+                        prev_obs_buf,
+                        actions_buf,
+                        scaled_rewards_buf,
+                        obs_buf,
+                        terminated_buf,
+                    )
+                else:
+                    gpu_state.gpu_store[n_envs](
+                        ctx,
+                        prev_obs_buf,
+                        actions_buf,
+                        rewards_buf,
+                        obs_buf,
+                        terminated_buf,
+                    )
                 # Episode tracking
                 var er_t = LayoutTensor[
                     dtype, Layout.row_major(n_envs), MutAnyOrigin
@@ -860,20 +900,47 @@ def run_offpolicy_continuous_train_gpu[
             # ------------------------------------------------------------------
             # Store transitions: (prev_obs, action, reward, next_obs, terminated)
             # Use terminated_buf (not dones_buf) so TD targets bootstrap on truncation
+            # Scale rewards before storing so Q-function learns scaled returns
             # ------------------------------------------------------------------
-            gpu_state.gpu_store[n_envs](
-                ctx,
-                prev_obs_buf,
-                actions_buf,
-                rewards_buf,
-                obs_buf,
-                terminated_buf,
-            )
+            if use_reward_scale:
+                var scaled_t = LayoutTensor[
+                    dtype, Layout.row_major(n_envs), MutAnyOrigin
+                ](scaled_rewards_buf.unsafe_ptr())
+                var raw_t = LayoutTensor[
+                    dtype, Layout.row_major(n_envs), MutAnyOrigin
+                ](rewards_buf.unsafe_ptr())
+                ctx.enqueue_function[
+                    _scale_rewards_kernel, _scale_rewards_kernel
+                ](
+                    scaled_t,
+                    raw_t,
+                    Scalar[dtype](reward_scale),
+                    grid_dim=(env_blocks,),
+                    block_dim=(tpb,),
+                )
+                gpu_state.gpu_store[n_envs](
+                    ctx,
+                    prev_obs_buf,
+                    actions_buf,
+                    scaled_rewards_buf,
+                    obs_buf,
+                    terminated_buf,
+                )
+            else:
+                gpu_state.gpu_store[n_envs](
+                    ctx,
+                    prev_obs_buf,
+                    actions_buf,
+                    rewards_buf,
+                    obs_buf,
+                    terminated_buf,
+                )
             comptime if PROFILE >= 1:
                 timer.sync_and_accumulate(3, ctx)
 
             # ------------------------------------------------------------------
             # Accumulate episode rewards/steps + log completed (all on GPU)
+            # Episode tracking uses unscaled rewards for correct reporting
             # ------------------------------------------------------------------
             var episode_rewards_t = LayoutTensor[
                 dtype, Layout.row_major(n_envs), MutAnyOrigin
