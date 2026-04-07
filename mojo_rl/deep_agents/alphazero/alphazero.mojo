@@ -2595,11 +2595,13 @@ struct GenericAlphaZeroAgent[
         mut eval_rews_host: HostBuffer[dtype],
         rng_offset: Int = 0,
         num_games: Int = 0,
+        swap_colors: Bool = False,
     ) raises -> Tuple[Int, Int, Int]:
         """GPU evaluation: agent (MCTS temp=0) vs GPU evaluator.
 
         Uses pre-allocated buffers (no per-call GPU allocation).
         num_games: number of games to count (0 = use all n_envs).
+        swap_colors: if True, agent plays as P1 (odd moves) instead of P0.
         Returns (wins, draws, losses).
         """
         comptime ACT = Self.Config.action_dim
@@ -2631,7 +2633,7 @@ struct GenericAlphaZeroAgent[
         # (TTT=81, C4=49, Chess=~200). Must exceed max game length.
         comptime MAX_EVAL_MOVES = ACT * ACT
         while not eval_all_done and eval_move < MAX_EVAL_MOVES:
-            var agent_turn = eval_move % 2 == 0
+            var agent_turn = (eval_move % 2 == 0) != swap_colors
 
             if agent_turn:
                 # Agent's turn: GPU MCTS (temp=0, no noise)
@@ -3854,7 +3856,8 @@ struct GenericAlphaZeroAgent[
             if do_eval and use_mcts:
                 # Re-upload after training for eval
                 gpu.upload_from(self.state, ctx)
-                var eval_r = self.gpu_eval[E, GPUEval, Self.eval_n_envs](
+                # Phase 1: agent as P0
+                var eval_r_p0 = self.gpu_eval[E, GPUEval, Self.eval_n_envs](
                     ctx,
                     gpu,
                     eval_gpu_mcts,
@@ -3874,6 +3877,34 @@ struct GenericAlphaZeroAgent[
                     eval_dones_host,
                     rng_offset=total_steps,
                     num_games=eval_games,
+                )
+                # Phase 2: agent as P1
+                var eval_r_p1 = self.gpu_eval[E, GPUEval, Self.eval_n_envs](
+                    ctx,
+                    gpu,
+                    eval_gpu_mcts,
+                    eval_mcts_ws,
+                    eval_states_buf,
+                    eval_obs_buf,
+                    eval_actions_buf,
+                    eval_rewards_buf,
+                    eval_dones_buf,
+                    eval_terminated_buf,
+                    eval_legal_masks_buf,
+                    eval_exp_rewards,
+                    eval_exp_dones,
+                    eval_exp_terminated,
+                    eval_exp_obs,
+                    eval_rewards_host,
+                    eval_dones_host,
+                    rng_offset=total_steps + 33333,
+                    num_games=eval_games,
+                    swap_colors=True,
+                )
+                var eval_r = (
+                    eval_r_p0[0] + eval_r_p1[0],
+                    eval_r_p0[1] + eval_r_p1[1],
+                    eval_r_p0[2] + eval_r_p1[2],
                 )
                 print(
                     "  Iter",
@@ -3911,7 +3942,10 @@ struct GenericAlphaZeroAgent[
 
             # ── 4b. Second GPU Evaluation ────────────────────────
             if do_eval2 and use_mcts:
-                var eval_r2 = self.gpu_eval[E, GPUEval2, Self.eval_n_envs](
+                # Phase 1: agent as P0
+                var eval_r2_p0 = self.gpu_eval[
+                    E, GPUEval2, Self.eval_n_envs
+                ](
                     ctx,
                     gpu,
                     eval_gpu_mcts,
@@ -3931,6 +3965,36 @@ struct GenericAlphaZeroAgent[
                     eval_dones_host,
                     rng_offset=total_steps + 77777,
                     num_games=eval_games,
+                )
+                # Phase 2: agent as P1
+                var eval_r2_p1 = self.gpu_eval[
+                    E, GPUEval2, Self.eval_n_envs
+                ](
+                    ctx,
+                    gpu,
+                    eval_gpu_mcts,
+                    eval_mcts_ws,
+                    eval_states_buf,
+                    eval_obs_buf,
+                    eval_actions_buf,
+                    eval_rewards_buf,
+                    eval_dones_buf,
+                    eval_terminated_buf,
+                    eval_legal_masks_buf,
+                    eval_exp_rewards,
+                    eval_exp_dones,
+                    eval_exp_terminated,
+                    eval_exp_obs,
+                    eval_rewards_host,
+                    eval_dones_host,
+                    rng_offset=total_steps + 88888,
+                    num_games=eval_games,
+                    swap_colors=True,
+                )
+                var eval_r2 = (
+                    eval_r2_p0[0] + eval_r2_p1[0],
+                    eval_r2_p0[1] + eval_r2_p1[1],
+                    eval_r2_p0[2] + eval_r2_p1[2],
                 )
                 print(
                     "    vs",

@@ -60,7 +60,7 @@ def main() raises:
     var ctx = DeviceContext()
     comptime C4 = ConnectFourEnv[DType.float32]
 
-    var agent = GenericAlphaZeroAgent[Config, 1024, 64, RemoteLogger]()
+    var agent = GenericAlphaZeroAgent[Config, 128, 64, RemoteLogger]()
 
     _ = agent.train_selfplay_gpu[
         C4,
