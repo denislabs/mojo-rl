@@ -161,6 +161,7 @@ struct SwimmerConfig(Phyics3dEnvConfig):
             MAX_CONTACTS,
             BATCH_SIZE,
             NGEOM,
+            CONE_TYPE=CONE_TYPE,
             STEP_THREADS=NV,
         ](ctx, states_buf, model_buf, workspace_buf)
 

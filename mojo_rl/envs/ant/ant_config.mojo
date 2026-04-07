@@ -197,6 +197,7 @@ struct AntConfig(Phyics3dEnvConfig):
             MAX_CONTACTS,
             BATCH_SIZE,
             NGEOM,
+            CONE_TYPE=CONE_TYPE,
         ](ctx, states_buf, model_buf, workspace_buf)
 
     # === GPU inline: Pre-step hook ===
