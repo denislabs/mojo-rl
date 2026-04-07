@@ -38,7 +38,7 @@ comptime HIDDEN_DIM = 256
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 32
+comptime MAX_N_ENVS = 4
 
 # Training duration
 comptime NUM_STEPS = 1_000_000
@@ -181,9 +181,7 @@ def main() raises:
 
             var final_avg = metrics.mean_reward_last_n(100)
             if final_avg > 4000.0:
-                print(
-                    "EXCELLENT: Walker is running fast! (avg reward > 4000)"
-                )
+                print("EXCELLENT: Walker is running fast! (avg reward > 4000)")
             elif final_avg > 2000.0:
                 print("SUCCESS: Walker learned to walk! (avg reward > 2000)")
             elif final_avg > 500.0:

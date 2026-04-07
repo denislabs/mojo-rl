@@ -70,7 +70,7 @@ def main() raises:
         ctx,
         num_iters=50,
         steps_per_iter=110_000,  # ~5000 games per iter (matching AlphaZero.jl)
-        train_epochs=5,  # ~2M sample-updates/iter (matching AlphaZero.jl's 2000 batches × 1024)
+        train_epochs=2,  # ~2M sample-updates/iter (2 * 1M / 1024 ≈ 1953 batches, matching AlphaZero.jl)
         warmup_iters=1,
         arena_threshold=0.52,  # ~equivalent to avg_reward >= 0.05 (AlphaZero.jl)
         do_eval=True,
