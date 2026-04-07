@@ -4,7 +4,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import RK4Integrator
+from mojo_rl.physics3d.integrator import RK4Integrator, EulerIntegrator
 from mojo_rl.physics3d.solver import NewtonSolver
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
@@ -29,9 +29,10 @@ struct HopperConfig(Phyics3dEnvConfig):
     comptime MIN_HEIGHT: Scalar[DType.float64] = 0.7
     comptime MAX_PITCH: Scalar[DType.float64] = 0.2  # ~11 deg
 
-    comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
-        HopperModel.NQ, HopperModel.NV
-    ]()
+    comptime INTEGRATOR_WS_EXTRA: Int = 0
+    # rk4_extra_workspace_size[
+    #     HopperModel.NQ, HopperModel.NV
+    # ]()
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -72,7 +73,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         ],
         verbose: Bool,
     ):
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
+        EulerIntegrator[SOLVER=NewtonSolver].step(model, data)
 
     # === CPU: Pre-step hook ===
     @staticmethod
@@ -171,7 +172,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+        EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE,
             NQ,
             NV,
