@@ -94,12 +94,15 @@ def az_policy_value_grad_kernel[
         dtype, Layout.row_major(BATCH * ACT), MutAnyOrigin
     ],
     target_value: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    invalid_penalty: Scalar[dtype] = Scalar[dtype](0.0),
 ):
-    """Compute combined policy CE + value MSE gradient.
+    """Compute combined policy CE + value MSE + invalid action penalty gradient.
 
     grad_policy = (softmax(logits) - target_policy) / BATCH
+                + invalid_penalty * softmax(logits) * (1 - legal_mask) / BATCH
     grad_value = 2 * (pred_value - target_value) / BATCH
 
+    Legal actions are inferred from target_policy > 0 (MCTS only visits legal moves).
     One thread per batch sample.
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -121,14 +124,21 @@ def az_policy_value_grad_kernel[
         sum_exp += exp(
             rebind[Scalar[dtype]](pred_out[pred_off + a]) - max_logit
         )
-    # Pure CE gradient: softmax(logits) - target
+    # CE gradient + invalid action penalty
     for a in range(ACT):
         var prob = (
             exp(rebind[Scalar[dtype]](pred_out[pred_off + a]) - max_logit)
             / sum_exp
         )
         var target = rebind[Scalar[dtype]](target_policy[pol_off + a])
-        grad_out[pred_off + a] = (prob - target) * inv_batch
+        var grad = (prob - target) * inv_batch
+        # Penalty: push probability off illegal actions
+        # Legal actions have target > 0 (MCTS assigns non-zero visits)
+        if invalid_penalty > Scalar[dtype](0.0) and target < Scalar[dtype](
+            1e-6
+        ):
+            grad += invalid_penalty * prob * inv_batch
+        grad_out[pred_off + a] = grad
 
     # Value gradient: MSE through tanh activation
     # loss = (tanh(raw) - target)^2
@@ -265,6 +275,7 @@ def az_extract_actions_temp_gpu_rng_kernel[
     ],
     temp_threshold: Int,
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+    temp_min: Scalar[dtype] = Scalar[dtype](0.0),
 ):
     """Graph-compatible extract_actions: reads seed from GPU counter tensor."""
     var seed = rebind[Scalar[DType.uint32]](rng_counter[0])
@@ -276,6 +287,7 @@ def az_extract_actions_temp_gpu_rng_kernel[
         policies_out,
         temp_threshold,
         seed,
+        temp_min,
     )
 
 
@@ -1051,6 +1063,7 @@ struct GenericAlphaZeroAgent[
             pred_1d,
             pol_1d,
             val_1d,
+            Scalar[dtype](Self.Config.invalid_action_penalty),
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1439,6 +1452,7 @@ struct GenericAlphaZeroAgent[
             pred_1d,
             pol_1d,
             val_1d,
+            Scalar[dtype](Self.Config.invalid_action_penalty),
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -3552,6 +3566,7 @@ struct GenericAlphaZeroAgent[
                         pol_out,
                         Self.Config.temp_threshold,
                         _act_rng_t,
+                        Scalar[dtype](Self.Config.temp_min),
                         grid_dim=(ENV_BLOCKS,),
                         block_dim=(TPB,),
                     )

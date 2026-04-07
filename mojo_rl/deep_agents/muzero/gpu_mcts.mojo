@@ -840,12 +840,15 @@ def gpu_mcts_extract_actions_temp_kernel[
     ],
     temp_threshold: Int,
     rng_seed: Scalar[DType.uint32],
+    temp_min: Scalar[dtype] = Scalar[dtype](0.0),
 ):
     """Extract actions with temperature annealing.
 
-    Like alpha-zero-general:
-      - First temp_threshold moves: temp=1, sample proportionally from visit counts
-      - After temp_threshold: temp=0, pick argmax (one-hot policy target)
+    Temperature schedule (matching AlphaZero.jl):
+      - First temp_threshold moves: temp=1, sample proportionally
+      - After temp_threshold: temp=temp_min
+        - temp_min=0.0: greedy argmax (one-hot policy)
+        - temp_min>0.0: sample from N^(1/τ) distribution
 
     One thread per environment.
     """
@@ -873,19 +876,40 @@ def gpu_mcts_extract_actions_temp_kernel[
     if best_action < 0:
         best_action = 0
 
-    if move_count < temp_threshold and total > Scalar[dtype](0.5):
-        # Temperature = 1: proportional policy + sample proportionally
-        # Output proportional policy
+    # Determine temperature
+    var temp: Scalar[dtype]
+    if move_count < temp_threshold:
+        temp = Scalar[dtype](1.0)
+    else:
+        temp = temp_min
+
+    if temp > Scalar[dtype](0.01) and total > Scalar[dtype](0.5):
+        # Positive temperature: apply temp and sample
+        # Policy: π_a ∝ N_a^(1/τ)
+        var inv_temp = Scalar[dtype](1.0) / temp
+        var weighted_total = Scalar[dtype](0.0)
         for a in range(ACT):
             var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
             if legal > Scalar[dtype](0.5):
-                policies_out[e * ACT + a] = (
-                    rebind[Scalar[dtype]](visit_count[root_off + a]) / total
-                )
+                var count = rebind[Scalar[dtype]](visit_count[root_off + a])
+                # N^(1/τ) = exp(ln(N)/τ) — safe for count > 0
+                if count > Scalar[dtype](0.5):
+                    var weighted = exp(log(count) * inv_temp)
+                    policies_out[e * ACT + a] = weighted
+                    weighted_total += weighted
+                else:
+                    policies_out[e * ACT + a] = Scalar[dtype](0.0)
             else:
                 policies_out[e * ACT + a] = Scalar[dtype](0.0)
 
-        # Sample action proportionally using PhiloxRandom
+        # Normalize policy
+        if weighted_total > Scalar[dtype](1e-8):
+            for a in range(ACT):
+                var v = rebind[Scalar[dtype]](policies_out[e * ACT + a])
+                if v > Scalar[dtype](0.0):
+                    policies_out[e * ACT + a] = v / weighted_total
+
+        # Sample action from temperature-adjusted distribution
         var philox = PhiloxRandom(
             seed=UInt64(rng_seed) + UInt64(e * 7919 + move_count * 6271),
             offset=0,
@@ -896,11 +920,9 @@ def gpu_mcts_extract_actions_temp_kernel[
         var cumsum = Scalar[dtype](0.0)
         var sampled = best_action  # Fallback to best
         for a in range(ACT):
-            var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
-            if legal > Scalar[dtype](0.5):
-                cumsum += rebind[Scalar[dtype]](
-                    visit_count[root_off + a]
-                ) / total
+            var p = rebind[Scalar[dtype]](policies_out[e * ACT + a])
+            if p > Scalar[dtype](0.0):
+                cumsum += p
                 if rand < cumsum:
                     sampled = a
                     break
