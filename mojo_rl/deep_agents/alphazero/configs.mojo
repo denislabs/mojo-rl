@@ -467,7 +467,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     LR: Float64 = 2e-3,
     WD: Float64 = 1e-4,
     BS: Int = 1024,
-    CAP: Int = 400000,
+    CAP: Int = 1000000,
     SIMS: Int = 600,
     NODES: Int = 1024,
     C_PUCT: Float64 = 2.0,
