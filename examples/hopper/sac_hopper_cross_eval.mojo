@@ -101,6 +101,12 @@ def main() raises:
                 min(100, n_ep) if n_ep > 0 else 1
             )
 
+            # Debug: print first actor weight to verify it's changing
+            print(
+                "  [debug] actor w0 = "
+                + String(Float64(agent.state.actor.online.params[0]))[byte=:12]
+            )
+
             # Evaluate on CPU physics (weights already synced by train_gpu)
             var cpu_reward = agent.evaluate(
                 cpu_env,
