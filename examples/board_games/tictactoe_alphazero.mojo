@@ -59,7 +59,7 @@ def main() raises:
     var ctx = DeviceContext()
     comptime TTT = TicTacToeEnv[DType.float32]
 
-    var agent = GenericAlphaZeroAgent[Config, 64, RemoteLogger]()
+    var agent = GenericAlphaZeroAgent[Config, 64, 64, RemoteLogger]()
 
     _ = agent.train_selfplay_gpu[TTT, RandomOpponent, GPUMinimaxTicTacToe](
         ctx,
