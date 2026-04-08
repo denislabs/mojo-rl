@@ -107,7 +107,7 @@ struct Lights[*L: LightSpec](LightsLike):
     """
 
     comptime light_types = Variadic.types[T=LightSpec, *Self.L]
-    comptime N: Int = Variadic.size(Self.light_types)
+    comptime N: Int = TypeList[*Self.light_types].size
 
     @staticmethod
     def setup_lights() -> List[Light]:

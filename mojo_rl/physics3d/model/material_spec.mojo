@@ -100,7 +100,7 @@ struct Materials[*M: MaterialSpec](MaterialsLike):
     """
 
     comptime mat_types = Variadic.types[T=MaterialSpec, *Self.M]
-    comptime N: Int = Variadic.size(Self.mat_types)
+    comptime N: Int = TypeList[*Self.mat_types].size
 
 
 @fieldwise_init

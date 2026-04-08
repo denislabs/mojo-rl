@@ -147,7 +147,7 @@ struct Textures[*T: TextureSpec](TexturesLike):
     """
 
     comptime tex_types = Variadic.types[T=TextureSpec, *Self.T]
-    comptime N: Int = Variadic.size(Self.tex_types)
+    comptime N: Int = TypeList[*Self.tex_types].size
 
     @staticmethod
     def get_skybox_colors() -> List[Float64]:

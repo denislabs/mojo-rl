@@ -95,7 +95,9 @@ struct Trainer[
     @staticmethod
     def init_state_gpu[
         INITIALIZER: Initializer = Xavier[]
-    ](ctx: DeviceContext) raises -> GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]:
+    ](ctx: DeviceContext) raises -> GPUNetworkState[
+        Self.MODEL, Self.OPTIMIZER, Self.dtype
+    ]:
         """Create a GPUNetworkState with initialized weights, no persistent CPU state.
 
         Allocates a transient CPU NetworkState, initializes weights, uploads to
@@ -130,7 +132,9 @@ struct Trainer[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         target: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
         ],
         epochs: Int = 100,
         print_every: Int = 0,
@@ -173,16 +177,22 @@ struct Trainer[
 
         # 2D LayoutTensor views (zero-copy, created once from List.unsafe_ptr())
         var output_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
         ](output_data.unsafe_ptr())
         var grad_out_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
         ](grad_out_data.unsafe_ptr())
         var grad_in_t = LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ](grad_in_data.unsafe_ptr())
         var cache_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
         ](cache_data.unsafe_ptr())
 
         # State views — lvalue vars required (params/state are mut in step())
@@ -246,7 +256,9 @@ struct Trainer[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         target: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
         ],
     ) -> Float64:
         """CPU forward pass + loss, no gradient computation.
@@ -270,7 +282,9 @@ struct Trainer[
             output_data.append(Scalar[Self.dtype](0))
 
         var output_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
         ](output_data.unsafe_ptr())
 
         # params is already an lvalue from the caller — pass directly
@@ -295,7 +309,9 @@ struct Trainer[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
         target: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
         ],
         epochs: Int = 100,
         print_every: Int = 0,
@@ -365,30 +381,48 @@ struct Trainer[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ](input_buf.unsafe_ptr())
         var target_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
         ](target_buf.unsafe_ptr())
         var output_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
         ](output_buf.unsafe_ptr())
         var cache_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE),
+            MutAnyOrigin,
         ](cache_buf.unsafe_ptr())
         var grad_out_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
         ](grad_out_buf.unsafe_ptr())
         var grad_in_t = LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ](grad_in_buf.unsafe_ptr())
-        var loss_t = LayoutTensor[Self.dtype, Layout.row_major(1), MutAnyOrigin](
-            loss_buf.unsafe_ptr()
-        )
+        var loss_t = LayoutTensor[
+            Self.dtype, Layout.row_major(1), MutAnyOrigin
+        ](loss_buf.unsafe_ptr())
         var loss_host = ctx.enqueue_create_host_buffer[Self.dtype](1)
 
         var final_loss: Float64 = 0.0
 
         # --- Helper: run one training epoch (pure GPU, no host ops) ---
         @always_inline
-        def _run_one_epoch() raises:
+        def _run_one_epoch() raises unified {
+            read ctx,
+            mut state,
+            read input_t,
+            read target_t,
+            mut output_t,
+            mut cache_t,
+            mut grad_out_t,
+            mut grad_in_t,
+            read ws_buf,
+        }:
             state.zero_grads(ctx)
             var params = state.params_view()
             var grads = state.grads_view()

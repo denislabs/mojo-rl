@@ -111,9 +111,7 @@ comptime THREADS = NewtonSolver.solver_threads[
     NQ, NV, NBODY, NJOINT, MAX_CONTACTS
 ]()
 comptime SOLVER_ENV_TPB = TPB // THREADS
-comptime SOLVER_ENV_BLOCKS = (
-    GPU_BATCH + SOLVER_ENV_TPB - 1
-) // SOLVER_ENV_TPB
+comptime SOLVER_ENV_BLOCKS = (GPU_BATCH + SOLVER_ENV_TPB - 1) // SOLVER_ENV_TPB
 comptime SOLVER_THREADS_BLOCKS = (THREADS + THREADS - 1) // THREADS
 
 # Workspace offsets
@@ -138,19 +136,41 @@ comptime MAX_ROWS = 11 * MAX_CONTACTS + 2 * NJOINT
 # =============================================================================
 
 comptime ModelType = Model[
-    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-    HopperModel.MAX_EQUALITY, HopperModel.CONE_TYPE,
-    HopperModel.MAX_TENDON, HopperModel.NSITE,
+    DTYPE,
+    NQ,
+    NV,
+    NBODY,
+    NJOINT,
+    MAX_CONTACTS,
+    NGEOM,
+    HopperModel.MAX_EQUALITY,
+    HopperModel.CONE_TYPE,
+    HopperModel.MAX_TENDON,
+    HopperModel.NSITE,
 ]
 comptime DataType = Data[
-    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, HopperModel.NSITE,
+    DTYPE,
+    NQ,
+    NV,
+    NBODY,
+    NJOINT,
+    MAX_CONTACTS,
+    HopperModel.NSITE,
 ]
 
 comptime ActorModel = SACConfig[OBS_DIM, ACTION_DIM].ActorModel
 comptime ActorOpt = SACConfig[OBS_DIM, ACTION_DIM].ActorOpt
 comptime AgentType = DeepSACAgent[
-    OBS_DIM, ACTION_DIM, HIDDEN_DIM, BUFFER_CAPACITY, BATCH_SIZE,
-    0.0003, 0.0003, 0, NoOpLogger, MAX_N_ENVS,
+    OBS_DIM,
+    ACTION_DIM,
+    HIDDEN_DIM,
+    BUFFER_CAPACITY,
+    BATCH_SIZE,
+    0.0003,
+    0.0003,
+    0,
+    NoOpLogger,
+    MAX_N_ENVS,
 ]
 
 
@@ -169,8 +189,18 @@ def _cpu_fwd(
 ):
     """Compute unconstrained acceleration."""
     _forward_dynamics[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        HopperModel.MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE, CRB_SIZE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HopperModel.MAX_EQUALITY,
+        V_SIZE,
+        M_SIZE,
+        CDOF_SIZE,
+        CRB_SIZE,
     ](model, data, a, cdof, M_inv, M)
 
 
@@ -186,9 +216,20 @@ def _cpu_solve(
 ):
     """Build and solve constraints, modifying qacc in place."""
     _solve_constraints[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        HopperModel.MAX_EQUALITY, V_SIZE, M_SIZE, CDOF_SIZE,
-        HopperModel.CONE_TYPE, HopperModel.MAX_TENDON, NewtonSolver,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        HopperModel.MAX_EQUALITY,
+        V_SIZE,
+        M_SIZE,
+        CDOF_SIZE,
+        HopperModel.CONE_TYPE,
+        HopperModel.MAX_TENDON,
+        NewtonSolver,
     ](model, data, cdof, M_inv, M, a, dt, is_last)
 
 
@@ -201,7 +242,13 @@ def _cpu_integ_pos(
 ):
     """Integrate position: q_out = q0 + v * dt."""
     _integrate_pos[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
         HopperModel.MAX_EQUALITY,
     ](model, q0, v, dt, q_out)
 
@@ -211,7 +258,9 @@ def _cpu_integ_pos(
 # =============================================================================
 
 
-def _gpu_stage[STAGE: Int](
+def _gpu_stage[
+    STAGE: Int
+](
     ctx: DeviceContext,
     mut state_buf: DeviceBuffer[DTYPE],
     mut model_buf: DeviceBuffer[DTYPE],
@@ -228,12 +277,26 @@ def _gpu_stage[STAGE: Int](
         DTYPE, Layout.row_major(GPU_BATCH, WS_SIZE), MutAnyOrigin
     ](ws_buf)
     comptime kernel = RK4Integrator[SOLVER=NewtonSolver].rk4_stage_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE,
-        GPU_BATCH, WS_SIZE, NGEOM, SOLVER_WS, STAGE,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        GPU_BATCH,
+        WS_SIZE,
+        NGEOM,
+        SOLVER_WS,
+        STAGE,
     ]
     ctx.enqueue_function[kernel, kernel](
-        state_lt, model_lt, ws_lt,
-        grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        state_lt,
+        model_lt,
+        ws_lt,
+        grid_dim=(ENV_BLOCKS,),
+        block_dim=(TPB,),
     )
 
 
@@ -254,12 +317,27 @@ def _gpu_solver(
         DTYPE, Layout.row_major(GPU_BATCH, WS_SIZE), MutAnyOrigin
     ](ws_buf)
     comptime kernel = NewtonSolver.solve_gpu[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE,
-        V_SIZE, GPU_BATCH, WS_SIZE, NGEOM, 0, HopperModel.CONE_TYPE, 0,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        V_SIZE,
+        GPU_BATCH,
+        WS_SIZE,
+        NGEOM,
+        0,
+        HopperModel.CONE_TYPE,
+        0,
         NSITE,
     ]
     ctx.enqueue_function[kernel, kernel](
-        state_lt, model_lt, ws_lt,
+        state_lt,
+        model_lt,
+        ws_lt,
         grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
         block_dim=(SOLVER_ENV_TPB, THREADS),
     )
@@ -282,12 +360,24 @@ def _gpu_combine(
         DTYPE, Layout.row_major(GPU_BATCH, WS_SIZE), MutAnyOrigin
     ](ws_buf)
     comptime kernel = RK4Integrator[SOLVER=NewtonSolver].rk4_combine_kernel[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE,
-        GPU_BATCH, WS_SIZE, SOLVER_WS,
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        STATE_SIZE,
+        MODEL_SIZE,
+        GPU_BATCH,
+        WS_SIZE,
+        SOLVER_WS,
     ]
     ctx.enqueue_function[kernel, kernel](
-        state_lt, model_lt, ws_lt,
-        grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+        state_lt,
+        model_lt,
+        ws_lt,
+        grid_dim=(ENV_BLOCKS,),
+        block_dim=(TPB,),
     )
 
 
@@ -328,23 +418,23 @@ def _print_compare_state(
     var qvel_err: Float64 = 0
     for i in range(NQ):
         var err = abs(
-            Float64(cpu_data.qpos[i])
-            - Float64(gpu_state_host[QPOS_OFF + i])
+            Float64(cpu_data.qpos[i]) - Float64(gpu_state_host[QPOS_OFF + i])
         )
         if err > qpos_err:
             qpos_err = err
     for i in range(NV):
         var err = abs(
-            Float64(cpu_data.qvel[i])
-            - Float64(gpu_state_host[QVEL_OFF + i])
+            Float64(cpu_data.qvel[i]) - Float64(gpu_state_host[QVEL_OFF + i])
         )
         if err > qvel_err:
             qvel_err = err
     var ncon_cpu = Int(cpu_data.num_contacts)
     var ncon_gpu = Int(gpu_state_host[META_OFF + META_IDX_NUM_CONTACTS])
     print(
-        "  intermediate qpos_err=" + String(qpos_err)
-        + " qvel_err=" + String(qvel_err)
+        "  intermediate qpos_err="
+        + String(qpos_err)
+        + " qvel_err="
+        + String(qvel_err)
     )
     print("  ncon: cpu=" + String(ncon_cpu) + " gpu=" + String(ncon_gpu))
 
@@ -364,9 +454,7 @@ def _print_ncon(
 # =============================================================================
 
 
-def _get_greedy_action(
-    agent: AgentType, obs: List[Float64]
-) -> List[Float64]:
+def _get_greedy_action(agent: AgentType, obs: List[Float64]) -> List[Float64]:
     var obs_arr = obs_to_inline[OBS_DIM, DType.float64](obs)
     var obs_f32 = InlineArray[Scalar[nn_dtype], OBS_DIM](uninitialized=True)
     for i in range(OBS_DIM):
@@ -402,7 +490,7 @@ def _advance_to_substep(
 ) raises -> Int:
     """Advance simulation to TARGET_SUBSTEP, return actual substep count."""
     var substep_count = 0
-    for env_step in range(50):
+    for _ in range(50):
         var obs = List[Float64](capacity=OBS_DIM)
         for k in range(1, 6):
             obs.append(Float64(data.qpos[k]))
@@ -425,12 +513,10 @@ def _advance_to_substep(
             data.qfrc[HopperModel._acd.motor_dof_adr[i]] = Scalar[DTYPE](
                 HopperModel._acd.motor_gears[i] * ctrl
             )
-        for sub in range(FRAME_SKIP):
+        for _ in range(FRAME_SKIP):
             if substep_count == TARGET_SUBSTEP:
                 break
-            RK4Integrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](
-                model, data
-            )
+            RK4Integrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](model, data)
             substep_count += 1
         if substep_count == TARGET_SUBSTEP:
             break
@@ -518,10 +604,7 @@ def _analyze_stage1(
     var ncon_gpu = Int(gpu_state_host[META_OFF + META_IDX_NUM_CONTACTS])
     print("  ncon: cpu=" + String(ncon_cpu) + " gpu=" + String(ncon_gpu))
     if ncon_cpu > 0:
-        print(
-            "  CPU contact dist="
-            + String(Float64(data.contacts[0].dist))
-        )
+        print("  CPU contact dist=" + String(Float64(data.contacts[0].dist)))
         print(
             "  GPU contact dist="
             + String(
@@ -548,7 +631,12 @@ def _analyze_stage1(
 
     var constraints_s1 = ConstraintData[DTYPE, MAX_ROWS, NV]()
     build_constraints[CONE_TYPE=HopperModel.CONE_TYPE](
-        model, data, cdof, cpu_M_inv_s1, model.timestep, constraints_s1,
+        model,
+        data,
+        cdof,
+        cpu_M_inv_s1,
+        model.timestep,
+        constraints_s1,
     )
 
     print("\n  --- CPU Stage 1 constraint edge data ---")
@@ -557,16 +645,19 @@ def _analyze_stage1(
         var row = constraints_s1.rows[r]
         var D_r = primal_D(row.inv_K_imp, row.K)
         print(
-            "  edge[" + String(r) + "]: K="
+            "  edge["
+            + String(r)
+            + "]: K="
             + String(Float64(row.K))[byte=:16]
-            + " D=" + String(Float64(D_r))[byte=:16]
-            + " bias=" + String(Float64(row.bias))[byte=:16]
+            + " D="
+            + String(Float64(D_r))[byte=:16]
+            + " bias="
+            + String(Float64(row.bias))[byte=:16]
         )
         print("    J:", end="")
         for i in range(NV):
             print(
-                " "
-                + String(Float64(constraints_s1.J[r * NV + i]))[byte=:14],
+                " " + String(Float64(constraints_s1.J[r * NV + i]))[byte=:14],
                 end="",
             )
         print()
@@ -583,14 +674,16 @@ def _analyze_stage1(
         var D_e = Float64(ws_host[PYR_SC + e * MC + 0])
         var bias_e = Float64(ws_host[PYR_SC + 4 * MC + e * MC + 0])
         print(
-            "  edge[" + String(e) + "]: D=" + String(D_e)[byte=:16]
-            + " bias=" + String(bias_e)[byte=:16]
+            "  edge["
+            + String(e)
+            + "]: D="
+            + String(D_e)[byte=:16]
+            + " bias="
+            + String(bias_e)[byte=:16]
         )
         print("    J:", end="")
         for i in range(NV):
-            var je = Float64(
-                ws_host[PYR_J_BASE + e * MC * NV + 0 * NV + i]
-            )
+            var je = Float64(ws_host[PYR_J_BASE + e * MC * NV + 0 * NV + i])
             print(" " + String(je)[byte=:14], end="")
         print()
 
@@ -655,9 +748,9 @@ def _analyze_stage1(
         var D_e_val = Float64(ws_host[PYR_SC + e * MC + 0])
         var jar_e = Float64(ws_host[PYR_SC + 4 * MC + e * MC + 0])
         for i in range(NV):
-            jar_e += Float64(
-                ws_host[PYR_J_BASE + e * MC * NV + i]
-            ) * Float64(cpu_a1_smooth[i])
+            jar_e += Float64(ws_host[PYR_J_BASE + e * MC * NV + i]) * Float64(
+                cpu_a1_smooth[i]
+            )
         if jar_e < 0:
             for i in range(NV):
                 for j in range(NV):
@@ -700,8 +793,11 @@ def _analyze_stage1(
             H_max_err = err
             H_max_idx = i
     print(
-        "  H cpu-gpu max_err=" + String(H_max_err)
-        + " at [" + String(H_max_idx) + "]"
+        "  H cpu-gpu max_err="
+        + String(H_max_err)
+        + " at ["
+        + String(H_max_idx)
+        + "]"
     )
 
     # --- Search direction: search = -H^{-1} * grad ---
@@ -810,9 +906,7 @@ def _analyze_stage1(
                 search_cpu[i]
             )
         var D_r = Float64(
-            primal_D(
-                constraints_s1.rows[r].inv_K_imp, constraints_s1.rows[r].K
-            )
+            primal_D(constraints_s1.rows[r].inv_K_imp, constraints_s1.rows[r].K)
         )
         if jar_r < 0:
             d1_cpu += D_r * jar_r * Jv_r
@@ -821,11 +915,16 @@ def _analyze_stage1(
         if abs(Jv_r) > 1e-10:
             alpha_cross = -jar_r / Jv_r
         print(
-            "    edge[" + String(r) + "]: jar="
+            "    edge["
+            + String(r)
+            + "]: jar="
             + String(jar_r)[byte=:16]
-            + " Jv=" + String(Jv_r)[byte=:14]
-            + " alpha_cross=" + String(alpha_cross)[byte=:14]
-            + " active=" + String(jar_r < 0)
+            + " Jv="
+            + String(Jv_r)[byte=:14]
+            + " alpha_cross="
+            + String(alpha_cross)[byte=:14]
+            + " active="
+            + String(jar_r < 0)
         )
     print("  CPU d1=" + String(d1_cpu) + " d2=" + String(d2_cpu))
     var alpha1_cpu: Float64 = 0
@@ -852,12 +951,12 @@ def _analyze_stage1(
         var jar_e: Float64 = Float64(ws_host[PYR_SC + 4 * MC + e * MC + 0])
         var Jv_e: Float64 = 0
         for i in range(NV):
-            jar_e += Float64(
-                ws_host[PYR_J_BASE + e * MC * NV + i]
-            ) * Float64(cpu_a1_smooth[i])
-            Jv_e += Float64(
-                ws_host[PYR_J_BASE + e * MC * NV + i]
-            ) * Float64(search_gpu[i])
+            jar_e += Float64(ws_host[PYR_J_BASE + e * MC * NV + i]) * Float64(
+                cpu_a1_smooth[i]
+            )
+            Jv_e += Float64(ws_host[PYR_J_BASE + e * MC * NV + i]) * Float64(
+                search_gpu[i]
+            )
         var D_e_val = Float64(ws_host[PYR_SC + e * MC + 0])
         if jar_e < 0:
             d1_gpu += D_e_val * jar_e * Jv_e
@@ -866,11 +965,16 @@ def _analyze_stage1(
         if abs(Jv_e) > 1e-10:
             alpha_cross = -jar_e / Jv_e
         print(
-            "    edge[" + String(e) + "]: jar="
+            "    edge["
+            + String(e)
+            + "]: jar="
             + String(jar_e)[byte=:16]
-            + " Jv=" + String(Jv_e)[byte=:14]
-            + " alpha_cross=" + String(alpha_cross)[byte=:14]
-            + " active=" + String(jar_e < 0)
+            + " Jv="
+            + String(Jv_e)[byte=:14]
+            + " alpha_cross="
+            + String(alpha_cross)[byte=:14]
+            + " active="
+            + String(jar_e < 0)
         )
     print("  GPU d1=" + String(d1_gpu) + " d2=" + String(d2_gpu))
     var alpha1_gpu: Float64 = 0
@@ -932,9 +1036,7 @@ def debug_rk4_instability() raises:
     var gpu_state_host = create_state_buffer[
         DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, GPU_BATCH
     ](ctx)
-    var gpu_state_buf = ctx.enqueue_create_buffer[DTYPE](
-        GPU_BATCH * STATE_SIZE
-    )
+    var gpu_state_buf = ctx.enqueue_create_buffer[DTYPE](GPU_BATCH * STATE_SIZE)
     var gpu_model_buf = ctx.enqueue_create_buffer[DTYPE](MODEL_SIZE)
     HopperModel.init_model_gpu(ctx, gpu_model_buf)
     var gpu_ws_buf = ctx.enqueue_create_buffer[DTYPE](GPU_BATCH * WS_SIZE)
@@ -1075,9 +1177,18 @@ def debug_rk4_instability() raises:
 
     # Detailed analysis (constraints, Hessian, search, linesearch, solver)
     var a1_max_err = _analyze_stage1(
-        cpu_model, cpu_data, cpu_a1_smooth, M, cdof, a1,
-        ctx, gpu_state_buf, gpu_model_buf, gpu_ws_buf,
-        ws_host, gpu_state_host,
+        cpu_model,
+        cpu_data,
+        cpu_a1_smooth,
+        M,
+        cdof,
+        a1,
+        ctx,
+        gpu_state_buf,
+        gpu_model_buf,
+        gpu_ws_buf,
+        ws_host,
+        gpu_state_host,
     )
 
     # =========================================================================

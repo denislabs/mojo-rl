@@ -23,7 +23,7 @@ from mojo_rl.nn.autodiff import (
     ReLUActivation,
 )
 from layout import Layout, LayoutTensor
-from std.builtin.variadics import Variadic
+from std.builtin.variadics import Variadic, TypeList
 from std.random import seed, random_float64
 
 
@@ -35,13 +35,13 @@ from std.random import seed, random_float64
 def _spike_param_size[*OPS: DiffOp]() -> Int:
     """Recursively compute total PARAM_SIZE of fused groups."""
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         return 0
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -57,7 +57,7 @@ def _spike_param_size[*OPS: DiffOp]() -> Int:
                 return group_ps
             else:
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=3, end=Variadic.size(ops)
+                    element_types=ops, start=3, end=TypeList[*ops].size
                 ]
                 return group_ps + _spike_param_size[*rest]()
         elif (
@@ -69,9 +69,9 @@ def _spike_param_size[*OPS: DiffOp]() -> Int:
             comptime if N == 2:
                 return group_ps
             else:
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=2, end=Variadic.size(ops)
+                    element_types=ops, start=2, end=TypeList[*ops].size
                 ]
                 return group_ps + _spike_param_size[*rest]()
         else:
@@ -79,13 +79,13 @@ def _spike_param_size[*OPS: DiffOp]() -> Int:
             comptime if N == 1:
                 return ops[0].PARAM_SIZE
             else:
-                comptime assert Variadic.size(ops) >= 1
+                comptime assert TypeList[*ops].size >= 1
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=1, end=Variadic.size(ops)
+                    element_types=ops, start=1, end=TypeList[*ops].size
                 ]
                 return ops[0].PARAM_SIZE + _spike_param_size[*rest]()
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -204,13 +204,13 @@ def _spike_forward[
     inter_off: Int,
 ):
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         pass
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -280,7 +280,7 @@ def _spike_forward[
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=3,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 _spike_forward[BATCH, *rest](
                     inter_ptr + BATCH * inter_off,
@@ -322,11 +322,11 @@ def _spike_forward[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](inter_ptr + BATCH * inter_off)
                 FusedMatMulBias[G_IN, G_OUT].eval[BATCH](in_v, out_v, p_v, c_v)
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=2,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 _spike_forward[BATCH, *rest](
                     inter_ptr + BATCH * inter_off,
@@ -342,7 +342,7 @@ def _spike_forward[
             # Unfused passthrough
             pass
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value

@@ -45,6 +45,7 @@ from mojo_rl.nn.constants import (
 )
 
 from linalg.matmul import matmul as max_matmul
+from std.runtime.asyncrt import DeviceContextPtr
 
 
 def main() raises:
@@ -140,14 +141,14 @@ def benchmark_dW[
     )
 
     # ── Warmup ──
-    max_matmul[target="gpu"](c1_tensor, a_tensor, b_tensor, ctx)
+    max_matmul[target="gpu"](c1_tensor, a_tensor, b_tensor, DeviceContextPtr(ctx))
     ctx.synchronize()
 
     # ── Benchmark 1: max_matmul ──
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(N_ITERS):
-        max_matmul[target="gpu"](c1_tensor, a_tensor, b_tensor, ctx)
+        max_matmul[target="gpu"](c1_tensor, a_tensor, b_tensor, DeviceContextPtr(ctx))
     ctx.synchronize()
     var t1 = perf_counter_ns()
     var max_us = Float64(t1 - t0) / 1000.0 / Float64(N_ITERS)

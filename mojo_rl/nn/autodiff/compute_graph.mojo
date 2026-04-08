@@ -361,7 +361,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
     """
 
     comptime node_types = Variadic.types[T=GraphNode, *Self.NODES]
-    comptime N = Variadic.size(Self.node_types)
+    comptime N = TypeList[*Self.node_types].size
 
     # =========================================================================
     # Compile-time dimension inference

@@ -37,7 +37,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     """
 
     comptime op_types = Variadic.types[T=DiffOp, *Self.OPS]
-    comptime N = Variadic.size(Self.op_types)
+    comptime N = TypeList[*Self.op_types].size
 
     comptime IN_DIM: Int = Self.op_types[0].IN_DIM
     comptime OUT_DIM: Int = Self.op_types[Self.N - 1].OUT_DIM

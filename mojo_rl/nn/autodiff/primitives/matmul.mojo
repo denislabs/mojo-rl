@@ -16,6 +16,7 @@ from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
+from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
@@ -1130,7 +1131,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             var W_mm = LayoutTensor[
                 dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
             ](params.ptr)
-            _max_matmul[target="gpu"](lt_to_tt(output), lt_to_tt(input_mm), lt_to_tt(W_mm), ctx)
+            _max_matmul[target="gpu"](lt_to_tt(output), lt_to_tt(input_mm), lt_to_tt(W_mm), DeviceContextPtr(ctx))
         else:
             # Apple: use hand-written 2x2 tiled kernel
             comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N

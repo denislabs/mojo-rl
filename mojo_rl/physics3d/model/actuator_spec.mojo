@@ -361,7 +361,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
     """
 
     comptime act_types = Variadic.types[T=ActuatorSpec, *Self.A]
-    comptime N: Int = Variadic.size(Self.act_types)
+    comptime N: Int = TypeList[*Self.act_types].size
 
     # =========================================================================
     # CPU Operations

@@ -28,6 +28,7 @@ from .activation import Activation
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
+from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
@@ -1223,7 +1224,7 @@ struct FusedConv2DActivation[
                 MutAnyOrigin,
             ](workspace + out_temp_ws_offset)
 
-            max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), ctx)
+            max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), DeviceContextPtr(ctx))
 
             # 5. Transpose output + bias + activation + cache act values
             # out_temp[b*S+s, oc] → output[b, oc*S+s] = act(val + bias[oc])
@@ -1454,7 +1455,7 @@ struct FusedConv2DActivation[
             )
 
             # Zero-alloc dW: dW = masked_grad_reshaped @ col_flat
-            max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), ctx)
+            max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), DeviceContextPtr(ctx))
 
             # ── dx via matmul + col2im gather ──
             # dcol = W.T @ masked_grad_reshaped, then col2im
@@ -1503,7 +1504,7 @@ struct FusedConv2DActivation[
             ](workspace)
 
             # max_matmul: dcol = W.T @ masked_grad_reshaped
-            max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), ctx)
+            max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), DeviceContextPtr(ctx))
 
             # col2im gather: one thread per input element
             var total_dx = BATCH * Self.IN_DIM

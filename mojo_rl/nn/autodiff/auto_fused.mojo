@@ -50,13 +50,13 @@ def _is_act(op_id: Int) -> Bool:
 def _fused_param_size[*OPS: DiffOp]() -> Int:
     """Total PARAM_SIZE across all fused groups."""
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         return 0
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -70,7 +70,7 @@ def _fused_param_size[*OPS: DiffOp]() -> Int:
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=3,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 return gps + _fused_param_size[*rest]()
         elif (
@@ -82,11 +82,11 @@ def _fused_param_size[*OPS: DiffOp]() -> Int:
             comptime if N == 2:
                 return gps
             else:
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=2,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 return gps + _fused_param_size[*rest]()
         else:
@@ -94,15 +94,15 @@ def _fused_param_size[*OPS: DiffOp]() -> Int:
             comptime if N == 1:
                 return ops[0].PARAM_SIZE
             else:
-                comptime assert Variadic.size(ops) >= 1
+                comptime assert TypeList[*ops].size >= 1
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=1,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 return ops[0].PARAM_SIZE + _fused_param_size[*rest]()
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -117,13 +117,13 @@ def _fused_param_size[*OPS: DiffOp]() -> Int:
 def _fused_cache_size[*OPS: DiffOp]() -> Int:
     """Total CACHE_SIZE across all fused groups."""
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         return 0
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -137,7 +137,7 @@ def _fused_cache_size[*OPS: DiffOp]() -> Int:
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=3,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 return gcs + _fused_cache_size[*rest]()
         elif (
@@ -149,11 +149,11 @@ def _fused_cache_size[*OPS: DiffOp]() -> Int:
             comptime if N == 2:
                 return gcs
             else:
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=2,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 return gcs + _fused_cache_size[*rest]()
         else:
@@ -161,15 +161,15 @@ def _fused_cache_size[*OPS: DiffOp]() -> Int:
             comptime if N == 1:
                 return ops[0].CACHE_SIZE
             else:
-                comptime assert Variadic.size(ops) >= 1
+                comptime assert TypeList[*ops].size >= 1
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=1,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 return ops[0].CACHE_SIZE + _fused_cache_size[*rest]()
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -187,13 +187,13 @@ def _fused_inter_size[*OPS: DiffOp]() -> Int:
     Each group (except the last) produces an intermediate of size GROUP_OUT_DIM.
     """
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         return 0
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -206,7 +206,7 @@ def _fused_inter_size[*OPS: DiffOp]() -> Int:
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=3,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 return ops[0].OUT_DIM + _fused_inter_size[*rest]()
         elif (
@@ -216,11 +216,11 @@ def _fused_inter_size[*OPS: DiffOp]() -> Int:
             comptime if N == 2:
                 return 0
             else:
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=2,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 return ops[0].OUT_DIM + _fused_inter_size[*rest]()
         else:
@@ -228,15 +228,15 @@ def _fused_inter_size[*OPS: DiffOp]() -> Int:
             comptime if N == 1:
                 return 0
             else:
-                comptime assert Variadic.size(ops) >= 1
+                comptime assert TypeList[*ops].size >= 1
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=1,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 return ops[0].OUT_DIM + _fused_inter_size[*rest]()
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -269,13 +269,13 @@ def _auto_fused_forward[
     """Recursive forward pass. Each call handles one fused group, then recurses.
     """
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         pass
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -350,7 +350,7 @@ def _auto_fused_forward[
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=3,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 _auto_fused_forward[BATCH, *rest, dtype=dtype](
                     inter_ptr + BATCH * inter_off,
@@ -392,11 +392,11 @@ def _auto_fused_forward[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](inter_ptr + BATCH * inter_off)
                 FusedMatMulBias[G_IN, G_OUT].eval[BATCH](in_v, out_v, p_v, c_v)
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=2,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 _auto_fused_forward[BATCH, *rest, dtype=dtype](
                     inter_ptr + BATCH * inter_off,
@@ -435,11 +435,11 @@ def _auto_fused_forward[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](inter_ptr + BATCH * inter_off)
                 ops[0].eval[BATCH](in_v, out_v, p_v, c_v)
-                comptime assert Variadic.size(ops) >= 1
+                comptime assert TypeList[*ops].size >= 1
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=1,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 _auto_fused_forward[BATCH, *rest, dtype=dtype](
                     inter_ptr + BATCH * inter_off,
@@ -452,7 +452,7 @@ def _auto_fused_forward[
                     inter_off + G_OUT,
                 )
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -554,13 +554,13 @@ def _auto_fused_backward[
     """Recursive backward. Recurses first (reaching last group), then VJPs
     on return — naturally reversing execution order."""
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         pass
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -615,7 +615,7 @@ def _auto_fused_backward[
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=3,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 _auto_fused_backward[BATCH, *rest, dtype=dtype](
                     out_inter,
@@ -695,11 +695,11 @@ def _auto_fused_backward[
                 )
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=2,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 _auto_fused_backward[BATCH, *rest, dtype=dtype](
                     out_inter,
@@ -756,11 +756,11 @@ def _auto_fused_backward[
                 ops[0].vjp[BATCH](go_v, gi_v, p_v, c_v, g_v)
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
-                comptime assert Variadic.size(ops) >= 1
+                comptime assert TypeList[*ops].size >= 1
                 comptime rest = Variadic.slice_types[
                     element_types=ops,
                     start=1,
-                    end=Variadic.size(ops),
+                    end=TypeList[*ops].size,
                 ]
                 _auto_fused_backward[BATCH, *rest, dtype=dtype](
                     out_inter,
@@ -790,7 +790,7 @@ def _auto_fused_backward[
                 ](grads_ptr + param_off)
                 ops[0].vjp[BATCH](go_v, gi_v, p_v, c_v, g_v)
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -896,13 +896,13 @@ def _auto_fused_forward_gpu[
     inter_off: Int,
 ) raises:
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         pass
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -971,7 +971,7 @@ def _auto_fused_forward_gpu[
                         G_IN, G_OUT, MishActivation
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=3, end=Variadic.size(ops)
+                    element_types=ops, start=3, end=TypeList[*ops].size
                 ]
                 _auto_fused_forward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
@@ -1016,9 +1016,9 @@ def _auto_fused_forward_gpu[
                 FusedMatMulBias[G_IN, G_OUT].eval_gpu[BATCH](
                     ctx, out_v, in_v, p_v, c_v, op_ws_ptr
                 )
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=2, end=Variadic.size(ops)
+                    element_types=ops, start=2, end=TypeList[*ops].size
                 ]
                 _auto_fused_forward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
@@ -1056,9 +1056,9 @@ def _auto_fused_forward_gpu[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](ws_ptr + BATCH * inter_off)
                 ops[0].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
-                comptime assert Variadic.size(ops) >= 1
+                comptime assert TypeList[*ops].size >= 1
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=1, end=Variadic.size(ops)
+                    element_types=ops, start=1, end=TypeList[*ops].size
                 ]
                 _auto_fused_forward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
@@ -1073,7 +1073,7 @@ def _auto_fused_forward_gpu[
                     inter_off + G_OUT,
                 )
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -1168,13 +1168,13 @@ def _auto_fused_forward_gpu_on_stream[
 ) raises:
     """Same as _auto_fused_forward_gpu but enqueues on a DeviceStream."""
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         pass
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -1263,7 +1263,7 @@ def _auto_fused_forward_gpu_on_stream[
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=3, end=Variadic.size(ops)
+                    element_types=ops, start=3, end=TypeList[*ops].size
                 ]
                 _auto_fused_forward_gpu_on_stream[BATCH, *rest, dtype=dtype](
                     ctx,
@@ -1309,9 +1309,9 @@ def _auto_fused_forward_gpu_on_stream[
                 FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH, dtype](
                     ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                 )
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=2, end=Variadic.size(ops)
+                    element_types=ops, start=2, end=TypeList[*ops].size
                 ]
                 _auto_fused_forward_gpu_on_stream[BATCH, *rest, dtype=dtype](
                     ctx,
@@ -1351,9 +1351,9 @@ def _auto_fused_forward_gpu_on_stream[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](ws_ptr + BATCH * inter_off)
                 ops[0].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
-                comptime assert Variadic.size(ops) >= 1
+                comptime assert TypeList[*ops].size >= 1
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=1, end=Variadic.size(ops)
+                    element_types=ops, start=1, end=TypeList[*ops].size
                 ]
                 _auto_fused_forward_gpu_on_stream[BATCH, *rest, dtype=dtype](
                     ctx,
@@ -1369,7 +1369,7 @@ def _auto_fused_forward_gpu_on_stream[
                     inter_off + G_OUT,
                 )
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -1465,13 +1465,13 @@ def _auto_fused_backward_gpu[
     inter_off: Int,
 ) raises:
     comptime ops = Variadic.types[T=DiffOp, *OPS]
-    comptime N = Variadic.size(ops)
+    comptime N = TypeList[*ops].size
 
     comptime if N == 0:
         pass
     elif N >= 3:
-        comptime assert Variadic.size(ops) >= 3
-        comptime assert Variadic.size(ops) <= Variadic.size(ops)
+        comptime assert TypeList[*ops].size >= 3
+        comptime assert TypeList[*ops].size <= TypeList[*ops].size
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -1521,7 +1521,7 @@ def _auto_fused_backward_gpu[
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=3, end=Variadic.size(ops)
+                    element_types=ops, start=3, end=TypeList[*ops].size
                 ]
                 _auto_fused_backward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
@@ -1600,9 +1600,9 @@ def _auto_fused_backward_gpu[
                 )
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
-                comptime assert Variadic.size(ops) >= 2
+                comptime assert TypeList[*ops].size >= 2
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=2, end=Variadic.size(ops)
+                    element_types=ops, start=2, end=TypeList[*ops].size
                 ]
                 _auto_fused_backward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
@@ -1659,9 +1659,9 @@ def _auto_fused_backward_gpu[
                 ops[0].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
-                comptime assert Variadic.size(ops) >= 1
+                comptime assert TypeList[*ops].size >= 1
                 comptime rest = Variadic.slice_types[
-                    element_types=ops, start=1, end=Variadic.size(ops)
+                    element_types=ops, start=1, end=TypeList[*ops].size
                 ]
                 _auto_fused_backward_gpu[BATCH, *rest, dtype=dtype](
                     ctx,
@@ -1693,7 +1693,7 @@ def _auto_fused_backward_gpu[
                 ](grads_ptr + param_off)
                 ops[0].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
     elif N == 2:
-        comptime assert Variadic.size(ops) >= 2
+        comptime assert TypeList[*ops].size >= 2
         comptime if (
             ops[0].OP_ID == OpID.MATMUL._value
             and ops[1].OP_ID == OpID.BIAS_ADD._value
@@ -1801,7 +1801,7 @@ struct AutoFused[*OPS: DiffOp](Model):
     """
 
     comptime op_types = Variadic.types[T=DiffOp, *Self.OPS]
-    comptime N = Variadic.size(Self.op_types)
+    comptime N = TypeList[*Self.op_types].size
 
     comptime IN_DIM: Int = Self.op_types[0].IN_DIM
     comptime OUT_DIM: Int = Self.op_types[Self.N - 1].OUT_DIM

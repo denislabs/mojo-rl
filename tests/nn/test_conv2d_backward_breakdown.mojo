@@ -20,6 +20,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 from layout.tile_tensor import lt_to_tt
 from linalg.matmul import matmul as max_matmul
+from std.runtime.asyncrt import DeviceContextPtr
 
 from mojo_rl.nn.constants import dtype, TPB, MMA_BLOCK_THREADS
 from mojo_rl.nn.autodiff.primitives.conv2d import Conv2D
@@ -258,12 +259,12 @@ def bench_backward[
             grad_reshaped, grad_output_immut,
             grid_dim=(grad_blocks,), block_dim=(TPB,),
         )
-        max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), ctx)
+        max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), DeviceContextPtr(ctx))
         ctx.enqueue_function[transpose_w_kernel, transpose_w_kernel](
             w_t_bwd, params_immut,
             grid_dim=(w_blocks,), block_dim=(TPB,),
         )
-        max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), ctx)
+        max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), DeviceContextPtr(ctx))
         ctx.enqueue_function[col2im_kernel, col2im_kernel](
             grad_input_lt, dcol,
             grid_dim=(grid_dx,), block_dim=(TPB,),
@@ -294,7 +295,7 @@ def bench_backward[
     ctx.synchronize()
     var t2 = perf_counter_ns()
     for _ in range(N_ITERS):
-        max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), ctx)
+        max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), DeviceContextPtr(ctx))
     ctx.synchronize()
     var t3 = perf_counter_ns()
     var mm_dw_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)
@@ -315,7 +316,7 @@ def bench_backward[
     ctx.synchronize()
     var t6 = perf_counter_ns()
     for _ in range(N_ITERS):
-        max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), ctx)
+        max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), DeviceContextPtr(ctx))
     ctx.synchronize()
     var t7 = perf_counter_ns()
     var mm_dx_us = Float64(t7 - t6) / 1000.0 / Float64(N_ITERS)
@@ -352,12 +353,12 @@ def bench_backward[
             grad_reshaped, grad_output_immut,
             grid_dim=(grad_blocks,), block_dim=(TPB,),
         )
-        max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), ctx)
+        max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), DeviceContextPtr(ctx))
         ctx.enqueue_function[transpose_w_kernel, transpose_w_kernel](
             w_t_bwd, params_immut,
             grid_dim=(w_blocks,), block_dim=(TPB,),
         )
-        max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), ctx)
+        max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), DeviceContextPtr(ctx))
         ctx.enqueue_function[col2im_kernel, col2im_kernel](
             grad_input_lt, dcol,
             grid_dim=(grid_dx,), block_dim=(TPB,),

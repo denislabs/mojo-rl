@@ -55,7 +55,7 @@ struct CompositeParams[*MODELS: Model]:
     """
 
     comptime model_types = Variadic.types[T=Model, *Self.MODELS]
-    comptime N = Variadic.size(Self.model_types)
+    comptime N = TypeList[*Self.model_types].size
 
     @staticmethod
     def _total() -> Int:

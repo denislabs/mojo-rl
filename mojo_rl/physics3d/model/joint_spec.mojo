@@ -624,7 +624,7 @@ struct Joints[*J: JointSpec](JointsLike):
     """
 
     comptime joint_types = Variadic.types[T=JointSpec, *Self.J]
-    comptime N: Int = Variadic.size(Self.joint_types)
+    comptime N: Int = TypeList[*Self.joint_types].size
 
     # Explicit trait members (required by JointsLike)
     comptime NQ: Int = Self._sum_nq()

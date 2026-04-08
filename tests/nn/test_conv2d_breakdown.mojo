@@ -19,6 +19,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from layout import Layout, LayoutTensor
 from layout.tile_tensor import lt_to_tt
 from linalg.matmul import matmul as max_matmul
+from std.runtime.asyncrt import DeviceContextPtr
 
 from mojo_rl.nn.constants import dtype, TPB, MMA_BLOCK_THREADS
 from mojo_rl.nn.autodiff.primitives.conv2d import Conv2D
@@ -191,7 +192,7 @@ def bench_breakdown[
             cache_lt, input_immut,
             grid_dim=(im2col_blocks,), block_dim=(TPB,),
         )
-        max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), ctx)
+        max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), DeviceContextPtr(ctx))
         ctx.enqueue_function[transpose_bias_kernel, transpose_bias_kernel](
             out_lt, out_temp, bias_lt,
             grid_dim=(out_blocks,), block_dim=(TPB,),
@@ -218,7 +219,7 @@ def bench_breakdown[
     ctx.synchronize()
     var t2 = perf_counter_ns()
     for _ in range(N_ITERS):
-        max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), ctx)
+        max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), DeviceContextPtr(ctx))
     ctx.synchronize()
     var t3 = perf_counter_ns()
     var matmul_us = Float64(t3 - t2) / 1000.0 / Float64(N_ITERS)
@@ -247,7 +248,7 @@ def bench_breakdown[
             cache_lt, input_immut,
             grid_dim=(im2col_blocks,), block_dim=(TPB,),
         )
-        max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), ctx)
+        max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), DeviceContextPtr(ctx))
         ctx.enqueue_function[transpose_bias_kernel, transpose_bias_kernel](
             out_lt, out_temp, bias_lt,
             grid_dim=(out_blocks,), block_dim=(TPB,),

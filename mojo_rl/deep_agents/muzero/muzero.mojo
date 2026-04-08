@@ -3016,6 +3016,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         Parameters:
             E: GPU two-player environment (TicTacToe, Chess, Go, etc.).
             GPUEval: GPU evaluator for opponent evaluation.
+            GPUEval2: GPU evaluator for opponent evaluation.
 
         Args:
             ctx: GPU device context.

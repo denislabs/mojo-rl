@@ -1075,7 +1075,7 @@ struct Geoms[*G: GeomSpec](GeomsLike):
     """
 
     comptime geom_types = Variadic.types[T=GeomSpec, *Self.G]
-    comptime N: Int = Variadic.size(Self.geom_types)
+    comptime N: Int = TypeList[*Self.geom_types].size
 
     @staticmethod
     def _count_static_geoms() -> Int:

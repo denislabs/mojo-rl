@@ -28,6 +28,7 @@ from .activation import Activation
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceStream
+from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
@@ -1264,7 +1265,7 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
             )
 
             # 2. Matmul: output = input @ W
-            max_matmul[target="gpu"](lt_to_tt(output), lt_to_tt(input_immut), lt_to_tt(W), ctx)
+            max_matmul[target="gpu"](lt_to_tt(output), lt_to_tt(input_immut), lt_to_tt(W), DeviceContextPtr(ctx))
 
             # 3. Bias + activation + cache activation state
             comptime act_elems = BATCH * Self.out_dim

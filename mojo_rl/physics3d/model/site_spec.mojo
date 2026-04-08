@@ -226,7 +226,7 @@ struct Sites[*S: SiteSpec](SitesLike):
     """
 
     comptime site_types = Variadic.types[T=SiteSpec, *Self.S]
-    comptime N: Int = Variadic.size(Self.site_types)
+    comptime N: Int = TypeList[*Self.site_types].size
 
     @staticmethod
     def setup_model[

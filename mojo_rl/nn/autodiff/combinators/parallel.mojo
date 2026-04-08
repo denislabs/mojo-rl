@@ -29,7 +29,7 @@ struct Parallel[*BRANCHES: Model](Model):
     """
 
     comptime branch_types = Variadic.types[T=Model, *Self.BRANCHES]
-    comptime N = Variadic.size(Self.branch_types)
+    comptime N = TypeList[*Self.branch_types].size
 
     comptime IN_DIM: Int = Self.branch_types[0].IN_DIM
 

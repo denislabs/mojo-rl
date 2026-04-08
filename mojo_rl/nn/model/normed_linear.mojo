@@ -12,6 +12,7 @@ from ..constants import (
     MMA_NUM_WARPS,
     MMA_BLOCK_THREADS,
 )
+from std.runtime.asyncrt import DeviceContextPtr
 from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
@@ -389,7 +390,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_linear_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -463,7 +465,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_linear_kernel_impl_no_cache[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -532,7 +535,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _bias_add_kernel[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -559,7 +563,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _linear_kernel_no_cache[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -766,7 +771,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _linear_kernel_with_cache[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -999,7 +1005,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_ln_mish_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -1123,7 +1130,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_ln_mish_kernel_impl_no_cache[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -1234,7 +1242,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def backward_mish_ln_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         d_linear_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
@@ -1333,7 +1342,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _backward_dx_kernel[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -1527,7 +1537,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def _backward_dW_kernel[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         dW: LayoutTensor[
             dtype, Layout.row_major(Self.IN_DIM, Self.OUT_DIM), MutAnyOrigin
@@ -1720,7 +1731,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def backward_linear_fused_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
@@ -1949,7 +1961,12 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             )
 
             # Vendor BLAS matmul
-            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), ctx)
+            max_matmul[target="gpu"](
+                lt_to_tt(linear_out_mut),
+                lt_to_tt(input_immut),
+                lt_to_tt(W),
+                DeviceContextPtr(ctx),
+            )
 
             # Bias add
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
@@ -2099,7 +2116,12 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # Kernel 1: Linear matmul (vendor BLAS on NVIDIA, MMA/2x2 fallback)
         comptime if has_nvidia_gpu_accelerator():
             # Use vendor BLAS (cuBLAS) — host-side API, not a GPU kernel
-            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), ctx)
+            max_matmul[target="gpu"](
+                lt_to_tt(linear_out_mut),
+                lt_to_tt(input_immut),
+                lt_to_tt(W),
+                DeviceContextPtr(ctx),
+            )
             # Bias add (separate small kernel)
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
@@ -2147,7 +2169,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
                 ],
             ):
-                Self._linear_kernel_no_cache[BATCH, dtype](linear_out, input, W, b)
+                Self._linear_kernel_no_cache[BATCH, dtype](
+                    linear_out, input, W, b
+                )
 
             ctx.enqueue_function[linear_nc_wrapper, linear_nc_wrapper](
                 linear_out_mut,
@@ -2236,7 +2260,12 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # On NVIDIA, the stream caller (MPPI) will need to synchronize streams
         # before and after this call anyway, so this is functionally correct.
         comptime if has_nvidia_gpu_accelerator():
-            max_matmul[target="gpu"](lt_to_tt(linear_out_mut), lt_to_tt(input_immut), lt_to_tt(W), ctx)
+            max_matmul[target="gpu"](
+                lt_to_tt(linear_out_mut),
+                lt_to_tt(input_immut),
+                lt_to_tt(W),
+                DeviceContextPtr(ctx),
+            )
             comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
             @always_inline
@@ -2283,7 +2312,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     dtype, Layout.row_major(Self.OUT_DIM), ImmutAnyOrigin
                 ],
             ):
-                Self._linear_kernel_no_cache[BATCH, dtype](linear_out, input, W, b)
+                Self._linear_kernel_no_cache[BATCH, dtype](
+                    linear_out, input, W, b
+                )
 
             var compiled_linear = ctx.compile_function[
                 linear_stream_wrapper, linear_stream_wrapper
@@ -2433,7 +2464,10 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         comptime if has_nvidia_gpu_accelerator():
             max_matmul[transpose_b=True, target="gpu"](
-                lt_to_tt(grad_input), lt_to_tt(d_linear_out_immut), lt_to_tt(W), ctx
+                lt_to_tt(grad_input),
+                lt_to_tt(d_linear_out_immut),
+                lt_to_tt(W),
+                DeviceContextPtr(ctx),
             )
         else:
             comptime dx_grid_x = (Self.IN_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
@@ -2455,7 +2489,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                     ImmutAnyOrigin,
                 ],
             ):
-                Self._backward_dx_kernel[BATCH, dtype](grad_input, d_linear_out, W)
+                Self._backward_dx_kernel[BATCH, dtype](
+                    grad_input, d_linear_out, W
+                )
 
             ctx.enqueue_function[dx_wrapper, dx_wrapper](
                 grad_input,

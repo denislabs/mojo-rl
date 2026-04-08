@@ -94,7 +94,7 @@ struct Tendons[*T: TendonSpec]:
     """
 
     comptime tendon_types = Variadic.types[T=TendonSpec, *Self.T]
-    comptime N: Int = Variadic.size(Self.tendon_types)
+    comptime N: Int = TypeList[*Self.tendon_types].size
 
     @staticmethod
     def setup_model[

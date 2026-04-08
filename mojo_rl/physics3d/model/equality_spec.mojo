@@ -152,7 +152,7 @@ struct Equalities[*E: EqualitySpec]:
     """
 
     comptime eq_types = Variadic.types[T=EqualitySpec, *Self.E]
-    comptime N: Int = Variadic.size(Self.eq_types)
+    comptime N: Int = TypeList[*Self.eq_types].size
 
     @staticmethod
     def _sum_rows() -> Int:

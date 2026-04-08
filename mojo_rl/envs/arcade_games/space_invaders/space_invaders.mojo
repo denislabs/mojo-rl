@@ -445,7 +445,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
 
         # Helper to map game Y to screen Y
         @always_inline
-        def gy(game_y: Float64) -> Int:
+        def gy(game_y: Float64) unified {read} -> Int:
             return play_top + Int(game_y / Float64(SCREEN_H) * Float64(play_h))
 
         # -- Draw aliens --
@@ -1028,7 +1028,11 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 ],
             ):
                 Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
-                    states, dones, Scalar[DType.uint32](rebind[Scalar[DType.uint64]](counter[0]))
+                    states,
+                    dones,
+                    Scalar[DType.uint32](
+                        rebind[Scalar[DType.uint64]](counter[0])
+                    ),
                 )
 
             ctx.enqueue_function[

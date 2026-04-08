@@ -113,7 +113,7 @@ struct Cameras[*C: CameraSpec](CamerasLike):
     """
 
     comptime cam_types = Variadic.types[T=CameraSpec, *Self.C]
-    comptime N: Int = Variadic.size(Self.cam_types)
+    comptime N: Int = TypeList[*Self.cam_types].size
 
     @staticmethod
     def setup_cameras(width: Int, height: Int) -> List[Camera3D]:

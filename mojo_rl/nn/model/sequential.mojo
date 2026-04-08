@@ -41,7 +41,7 @@ struct Sequential[*LAYERS: Model](Model):
     """
 
     comptime model_types = Variadic.types[T=Model, *Self.LAYERS]
-    comptime N = Variadic.size(Self.model_types)
+    comptime N = TypeList[*Self.model_types].size
 
     comptime IN_DIM: Int = Self.model_types[0].IN_DIM
     comptime OUT_DIM: Int = Self.model_types[Self.N - 1].OUT_DIM

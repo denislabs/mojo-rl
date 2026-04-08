@@ -451,7 +451,7 @@ struct Bodies[*B: BodySpec](BodiesLike):
     """
 
     comptime body_types = Variadic.types[T=BodySpec, *Self.B]
-    comptime N: Int = Variadic.size(Self.body_types)
+    comptime N: Int = TypeList[*Self.body_types].size
 
     @staticmethod
     def setup_model[
