@@ -2216,10 +2216,13 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     state[env, qvel_off + jnt_dof_adr + 5]
                 )
                 var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
-                state[env, qpos_off + jnt_qpos_adr + 3] = result[0]
-                state[env, qpos_off + jnt_qpos_adr + 4] = result[1]
-                state[env, qpos_off + jnt_qpos_adr + 5] = result[2]
-                state[env, qpos_off + jnt_qpos_adr + 6] = result[3]
+                var norm = quat_normalize(
+                    result[0], result[1], result[2], result[3]
+                )
+                state[env, qpos_off + jnt_qpos_adr + 3] = norm[0]
+                state[env, qpos_off + jnt_qpos_adr + 4] = norm[1]
+                state[env, qpos_off + jnt_qpos_adr + 5] = norm[2]
+                state[env, qpos_off + jnt_qpos_adr + 6] = norm[3]
 
             elif jnt_type == JNT_HINGE or jnt_type == JNT_SLIDE:
                 var qp = rebind[Scalar[DTYPE]](

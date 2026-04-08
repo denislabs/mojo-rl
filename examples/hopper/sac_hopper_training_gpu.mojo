@@ -79,7 +79,7 @@ def main() raises:
             tau=0.005,
             action_scale=1.0,
             alpha=0.2,
-            auto_alpha=False,
+            auto_alpha=True,
             alpha_lr=0.0003,
             target_entropy=-3.0,
             max_grad_norm=0.0,
@@ -148,8 +148,8 @@ def main() raises:
                 print_every=50_000,
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
-                gradient_steps=4,
-                reward_scale=5.0,
+                gradient_steps=1,
+                reward_scale=1.0,
             )
 
             var end_time = perf_counter_ns()

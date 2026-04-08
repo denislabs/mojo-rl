@@ -1,7 +1,7 @@
 """Evaluate SAC Hopper checkpoints on CPU (f64), GPU (f32), and Gymnasium.
 
-Loads saved checkpoints and evaluates the same policy on all three backends
-to measure gaps at different training stages.
+Each backend runs independently with its own observations driving action
+selection. This shows what each backend truly experiences.
 
 Run with:
     pixi run -e apple mojo run -I . examples/hopper/sac_hopper_eval_checkpoints.mojo
@@ -20,12 +20,13 @@ comptime ACTION_DIM = HopperConfig.ACTION_DIM
 comptime HIDDEN_DIM = 256
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 4
+comptime MAX_N_ENVS = 32
 
-comptime EVAL_EPISODES = 20
+comptime EVAL_EPISODES = 64
 comptime MAX_STEPS_PER_EP = 1000
 
 comptime GPU_DTYPE = DType.float32
+comptime TERMINATE_ON_UNHEALTHY = False
 
 comptime AgentType = DeepSACAgent[
     OBS_DIM,
@@ -42,13 +43,17 @@ comptime AgentType = DeepSACAgent[
 
 def main() raises:
     seed(42)
-    print("=" * 80)
+    print("=" * 85)
     print("SAC Hopper — Checkpoint Cross-Evaluation (CPU / GPU / Gymnasium)")
-    print("=" * 80)
+    print("=" * 85)
     print()
 
-    var cpu_env = Hopper[DType.float64, TERMINATE_ON_UNHEALTHY=True]()
-    var gym_env = make_gym_hopper()
+    var cpu_env = Hopper[
+        DType.float64, TERMINATE_ON_UNHEALTHY=TERMINATE_ON_UNHEALTHY
+    ]()
+    var gym_env = make_gym_hopper(
+        terminate_when_unhealthy=TERMINATE_ON_UNHEALTHY
+    )
 
     var ctx = DeviceContext()
 
@@ -72,14 +77,14 @@ def main() raises:
     labels.append("400k")
     labels.append("600k")
     labels.append("800k")
-    labels.append("1000k (peak)")
-    labels.append("1100k (collapsed)")
+    labels.append("1000k")
+    labels.append("1100k")
 
     print(
         "Checkpoint         | CPU_Rew    | GPU_Rew    | Gym_Rew    |"
         " CPU-Gym  | CPU-GPU"
     )
-    print("-" * 80)
+    print("-" * 85)
 
     for i in range(len(checkpoints)):
         try:
@@ -92,7 +97,9 @@ def main() raises:
             )
 
             var gpu_reward = agent.evaluate_gpu[
-                Hopper[GPU_DTYPE, TERMINATE_ON_UNHEALTHY=True],
+                Hopper[
+                    GPU_DTYPE, TERMINATE_ON_UNHEALTHY=TERMINATE_ON_UNHEALTHY
+                ],
                 N_EVAL_ENVS=MAX_N_ENVS,
             ](
                 ctx,
@@ -124,7 +131,7 @@ def main() raises:
         except e:
             print(labels[i] + " | ERROR: " + String(e))
 
-    print("-" * 80)
+    print("-" * 85)
 
     cpu_env.close()
     gym_env.close()

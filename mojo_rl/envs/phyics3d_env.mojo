@@ -12,6 +12,7 @@ no hardcoded assumptions about which qpos indices matter.
 from std.collections import InlineArray
 
 from std.memory import alloc
+from std.random import random_float64
 from mojo_rl.core import (
     BoxContinuousActionEnv,
     GPUContinuousEnv,
@@ -220,8 +221,22 @@ struct Phyics3dEnv[
     # =========================================================================
 
     def _reset_state(mut self):
-        """Reset to initial position."""
+        """Reset to initial position with uniform noise (matching Gymnasium)."""
         Self.MODEL_DEF.reset_data(self.data)
+
+        # Add uniform noise to qpos and qvel (matches Gymnasium's reset)
+        var noise_scale = Self.CONFIG.get_reset_noise()
+        if noise_scale > 0.0:
+            for i in range(Self.MODEL_DEF.NQ):
+                var noise = Scalar[Self.dtype](
+                    (random_float64() * 2.0 - 1.0) * noise_scale
+                )
+                self.data.qpos[i] = self.data.qpos[i] + noise
+            for i in range(Self.MODEL_DEF.NV):
+                var noise = Scalar[Self.dtype](
+                    (random_float64() * 2.0 - 1.0) * noise_scale
+                )
+                self.data.qvel[i] = self.data.qvel[i] + noise
 
         # Custom reset (e.g., set mocap positions, warmup steps)
         Self.CONFIG.custom_reset_cpu(self.model, self.data)

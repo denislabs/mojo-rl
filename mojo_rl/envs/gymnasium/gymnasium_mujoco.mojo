@@ -101,20 +101,38 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     # RenderableEnv state
     var _render_initialized: Bool
 
-    def __init__(out self, env_name: String, render_mode: String = "") raises:
+    def __init__(
+        out self,
+        env_name: String,
+        render_mode: String = "",
+        terminate_when_unhealthy: Bool = True,
+    ) raises:
         """Initialize a MuJoCo environment.
 
         Args:
             env_name: Environment name (e.g., "HalfCheetah-v5", "Ant-v5").
             render_mode: "human" for visual rendering.
+            terminate_when_unhealthy: Whether to terminate on unhealthy state
+                (applies to Hopper, Walker2d, Ant, Humanoid).
         """
         self.gym = Python.import_module("gymnasium")
         self.np = Python.import_module("numpy")
         self.env_name = env_name
 
-        if render_mode == "human":
+        if render_mode == "human" and not terminate_when_unhealthy:
+            self.env = self.gym.make(
+                env_name,
+                render_mode=PythonObject("human"),
+                terminate_when_unhealthy=PythonObject(False),
+            )
+        elif render_mode == "human":
             self.env = self.gym.make(
                 env_name, render_mode=PythonObject("human")
+            )
+        elif not terminate_when_unhealthy:
+            self.env = self.gym.make(
+                env_name,
+                terminate_when_unhealthy=PythonObject(False),
             )
         else:
             self.env = self.gym.make(env_name)
@@ -444,14 +462,19 @@ def make_walker2d(render_mode: String = "") raises -> GymMuJoCoEnv:
     return GymMuJoCoEnv("Walker2d-v5", render_mode)
 
 
-def make_hopper(render_mode: String = "") raises -> GymMuJoCoEnv:
+def make_hopper(
+    render_mode: String = "",
+    terminate_when_unhealthy: Bool = True,
+) raises -> GymMuJoCoEnv:
     """Hopper-v5: 1-legged hopping task.
 
     Obs: 11 (positions and velocities)
     Act: 3 (joint torques)
     Reward: Forward velocity - control cost + survival bonus.
     """
-    return GymMuJoCoEnv("Hopper-v5", render_mode)
+    return GymMuJoCoEnv(
+        "Hopper-v5", render_mode, terminate_when_unhealthy
+    )
 
 
 def make_swimmer(render_mode: String = "") raises -> GymMuJoCoEnv:

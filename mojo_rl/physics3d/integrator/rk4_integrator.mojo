@@ -223,11 +223,14 @@ def _integrate_pos_gpu[
                 workspace[env, vel_idx + dof_adr + 5]
             )
             var result = quat_integrate(qx, qy, qz, qw, wx, wy, wz, dt)
+            var norm = quat_normalize(
+                result[0], result[1], result[2], result[3]
+            )
             # Write back in MuJoCo qpos layout: [qw, qx, qy, qz]
-            state[env, qpos_off + qpos_adr + 3] = result[3]  # qw
-            state[env, qpos_off + qpos_adr + 4] = result[0]  # qx
-            state[env, qpos_off + qpos_adr + 5] = result[1]  # qy
-            state[env, qpos_off + qpos_adr + 6] = result[2]  # qz
+            state[env, qpos_off + qpos_adr + 3] = norm[3]  # qw
+            state[env, qpos_off + qpos_adr + 4] = norm[0]  # qx
+            state[env, qpos_off + qpos_adr + 5] = norm[1]  # qy
+            state[env, qpos_off + qpos_adr + 6] = norm[2]  # qz
 
         elif jnt_type == JNT_HINGE or jnt_type == JNT_SLIDE:
             var q0_val = rebind[Scalar[DTYPE]](
