@@ -413,6 +413,7 @@ def run_offpolicy_continuous_train_gpu[
         environment_name: Name for metrics labeling.
         algorithm_name: Name for metrics labeling.
         target_total_steps: Total steps for curriculum/annealing progress (default: 0 = disabled).
+        reward_scale: Reward scale factor (default: 1.0).
 
     Returns:
         TrainingMetrics with episode-level statistics.

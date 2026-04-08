@@ -488,6 +488,7 @@ struct GenericAlphaZeroAgent[
     Parameters:
         Config: Compile-time config (AlphaZeroTicTacToeConfig, etc.).
         n_envs: Number of parallel environments for GPU training.
+        eval_n_envs: Number of parallel environments for evaluation.
         L: Logger type for diagnostic logging (default: NoOpLogger).
     """
 
@@ -3144,7 +3145,12 @@ struct GenericAlphaZeroAgent[
         # Eval/arena buffers — smaller than self-play for ~8x speedup
         comptime EVAL_N = Self.eval_n_envs
         var eval_gpu_mcts = GPUMCTSState[
-            EVAL_N, MAX_NODES, ACT, OBS, 1, E.STATE_SIZE,
+            EVAL_N,
+            MAX_NODES,
+            ACT,
+            OBS,
+            1,
+            E.STATE_SIZE,
             Self.Config.batch_sims,
         ](ctx)
         comptime EVAL_BATCH_SIMS = Self.Config.batch_sims
@@ -3165,9 +3171,7 @@ struct GenericAlphaZeroAgent[
         var eval_exp_rewards = ctx.enqueue_create_buffer[dtype](
             EVAL_TOTAL_EXPAND
         )
-        var eval_exp_dones = ctx.enqueue_create_buffer[dtype](
-            EVAL_TOTAL_EXPAND
-        )
+        var eval_exp_dones = ctx.enqueue_create_buffer[dtype](EVAL_TOTAL_EXPAND)
         var eval_exp_terminated = ctx.enqueue_create_buffer[dtype](
             EVAL_TOTAL_EXPAND
         )
@@ -3958,9 +3962,7 @@ struct GenericAlphaZeroAgent[
             # ── 4b. Second GPU Evaluation ────────────────────────
             if do_eval2 and use_mcts:
                 # Phase 1: agent as P0
-                var eval_r2_p0 = self.gpu_eval[
-                    E, GPUEval2, Self.eval_n_envs
-                ](
+                var eval_r2_p0 = self.gpu_eval[E, GPUEval2, Self.eval_n_envs](
                     ctx,
                     gpu,
                     eval_gpu_mcts,
@@ -3982,9 +3984,7 @@ struct GenericAlphaZeroAgent[
                     num_games=eval_games,
                 )
                 # Phase 2: agent as P1
-                var eval_r2_p1 = self.gpu_eval[
-                    E, GPUEval2, Self.eval_n_envs
-                ](
+                var eval_r2_p1 = self.gpu_eval[E, GPUEval2, Self.eval_n_envs](
                     ctx,
                     gpu,
                     eval_gpu_mcts,
@@ -4024,9 +4024,7 @@ struct GenericAlphaZeroAgent[
 
             # ── 5. GPU Arena ─────────────────────────────────────
             if do_arena and use_mcts and iter >= warmup_iters:
-                var arena_r = self.arena_compare_gpu[
-                    E, Self.eval_n_envs
-                ](
+                var arena_r = self.arena_compare_gpu[E, Self.eval_n_envs](
                     ctx,
                     rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
                         best_params

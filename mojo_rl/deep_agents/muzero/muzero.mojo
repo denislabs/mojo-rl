@@ -3025,6 +3025,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             warmup_iters: Random play iterations before MCTS starts.
             arena_threshold: Win rate to accept new model (0.5-1.0).
             do_eval: Whether to evaluate vs GPUEval after each iteration.
+            do_eval2: Whether to evaluate vs GPUEval2 after each iteration.
             do_arena: Whether to run arena comparison (new vs best).
             checkpoint_every: Save checkpoint every N iterations (0=off).
             checkpoint_path: Path for checkpoint files.

@@ -984,8 +984,8 @@ struct NewtonSolver(ConstraintSolver):
         if not valid_env or contact_tid != 0:
             return
 
-        comptime NEWTON_ITER_GPU: Int = 20
-        comptime NEWTON_TOL_GPU: Float64 = 1e-4
+        comptime NEWTON_ITER_GPU: Int = 30
+        comptime NEWTON_TOL_GPU: Float64 = 1e-8
         comptime LINESEARCH_ITER: Int = 20
         comptime ARMIJO: Float64 = 1e-4
         comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
@@ -1039,10 +1039,11 @@ struct NewtonSolver(ConstraintSolver):
                     Ma[i] += rebind[Scalar[DTYPE]](
                         workspace[env, M_idx + i * NV + j]
                     ) * qacc[j]
-            comptime fnet_idx = ws_fnet_offset[NV, NBODY]()
+            # f_smooth = M * qacc (matching CPU's qfrc_smooth = M * qacc_smooth)
+            # Using Ma directly avoids LDL round-trip error (f_net ≠ M*M^{-1}*f_net)
             var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
             for i in range(NV):
-                f_smooth[i] = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + i])
+                f_smooth[i] = Ma[i]
 
             # Scale for convergence check
             var scale: Scalar[DTYPE] = 0
@@ -1164,7 +1165,7 @@ struct NewtonSolver(ConstraintSolver):
                     var snorm_sq: Scalar[DTYPE] = 0
                     for i in range(NV):
                         snorm_sq += search[i] * search[i]
-                    var gtol = Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) * scale
+                    var gtol = Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) / scale
                     var gtol_sq = gtol * gtol
 
                     alpha = p1_alpha
@@ -1359,7 +1360,6 @@ struct NewtonSolver(ConstraintSolver):
             var q_i = rebind[Scalar[DTYPE]](workspace[env, qacc_idx + i])
             qacc[i] = q_i
             qacc_sm[i] = q_i
-            qfrc_sm[i] = rebind[Scalar[DTYPE]](workspace[env, fnet_idx + i])
 
         # Ma = M_local * qacc (uses cached M — no workspace reads)
         for i in range(NV):
@@ -1367,6 +1367,11 @@ struct NewtonSolver(ConstraintSolver):
             for j in range(NV):
                 s += M_local[i * NV + j] * qacc[j]
             Ma[i] = s
+
+        # qfrc_sm = M * qacc (matching CPU's qfrc_smooth = M * qacc_smooth)
+        # Using Ma directly avoids LDL round-trip error
+        for i in range(NV):
+            qfrc_sm[i] = Ma[i]
 
         # Scale = 1/trace(M) for convergence check
         var scale: Scalar[DTYPE] = 0
@@ -1638,7 +1643,7 @@ struct NewtonSolver(ConstraintSolver):
                 var snorm_sq: Scalar[DTYPE] = 0
                 for i in range(NV):
                     snorm_sq += search[i] * search[i]
-                var gtol = Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) * scale
+                var gtol = Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) / scale
                 var gtol_sq = gtol * gtol
 
                 # Inline eval at p1_alpha
