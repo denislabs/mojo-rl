@@ -36,7 +36,7 @@ Algorithm:
 Reference: mujoco-main/src/engine/engine_solver.c (mj_solPrimal)
 """
 
-from std.math import sqrt
+from std.math import sqrt, pow
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from ..types import Model, Data, _max_one, ConeType
@@ -106,6 +106,29 @@ from ..gpu.constants import (
     MODEL_META_IDX_SOLIMP_CONTACT_3,
     MODEL_META_IDX_SOLIMP_CONTACT_4,
     MODEL_META_IDX_IMPRATIO,
+    MODEL_META_IDX_SOLREF_LIMIT_0,
+    MODEL_META_IDX_SOLREF_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_0,
+    MODEL_META_IDX_SOLIMP_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_2,
+    MODEL_META_IDX_SOLIMP_LIMIT_3,
+    MODEL_META_IDX_SOLIMP_LIMIT_4,
+    model_body_invweight0_offset,
+    qpos_offset,
+    model_dof_invweight0_offset,
+    model_joint_offset,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_RANGE_MIN,
+    JOINT_IDX_RANGE_MAX,
+    JOINT_IDX_SOLREF_LIMIT_0,
+    JOINT_IDX_SOLREF_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_0,
+    JOINT_IDX_SOLIMP_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_2,
+    JOINT_IDX_SOLIMP_LIMIT_3,
+    JOINT_IDX_SOLIMP_LIMIT_4,
 )
 
 from ..dynamics.jacobian import compute_contact_jacobian_row_gpu
@@ -1029,17 +1052,17 @@ struct NewtonSolver(ConstraintSolver):
             # No cone coupling — simpler than ELLIPTIC
             # =================================================================
             comptime NE = 4  # edges per contact
-            comptime ME = NE * MC  # max total edges
+            comptime MAX_LIM = _max_one[2 * NJOINT]()
+            comptime ME = NE * MC + MAX_LIM  # contact edges + limit edges
 
             # Cache edge data from PYRAMIDAL workspace layout
-            # Edge J at ws_Jt1_idx + edge*MC*NV
-            # Scalars at pyr_sc = ws_Jt1_idx + 4*MC*NV:
-            #   D_edge[4*MC] at pyr_sc, bias_edge[4*MC] at pyr_sc+4*MC, mu at pyr_sc+8*MC
             var pyr_sc = ws_Jt1_idx + 4 * MC * NV
             var Je = InlineArray[Scalar[DTYPE], ME * V_SIZE](uninitialized=True)
             var De = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
             var bias_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
             var num_edges = nc * NE
+
+            # Load contact edges
             for c in range(nc):
                 for e in range(NE):
                     var idx = c * NE + e
@@ -1055,6 +1078,246 @@ struct NewtonSolver(ConstraintSolver):
                     bias_e[idx] = rebind[Scalar[DTYPE]](
                         workspace[env, pyr_sc + 4 * MC + e * MC + c]
                     )
+
+            # Detect and add joint limit edges (unified with contacts)
+            # Matches CPU build_constraints: per-joint solref/solimp with
+            # model-level defaults fallback
+            comptime M_inv_idx = ws_m_inv_offset[NV, NBODY]()
+            comptime qpos_off_lim = qpos_offset[NQ, NV]()
+            comptime qvel_off_lim = qvel_offset[NQ, NV]()
+            # Model-level defaults for fallback
+            var lr_tc_def = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_0]
+            )
+            var lr_dr_def = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLREF_LIMIT_1]
+            )
+            var li_dmin_def = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_0]
+            )
+            var li_dmax_def = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_1]
+            )
+            var li_width_def = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_2]
+            )
+            var li_midpoint_def = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_3]
+            )
+            var li_power_def = rebind[Scalar[DTYPE]](
+                model[0, model_meta_off + MODEL_META_IDX_SOLIMP_LIMIT_4]
+            )
+
+            for j in range(NJOINT):
+                var j_off = model_joint_offset[NBODY](j)
+                var jtype = Int(
+                    rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_TYPE])
+                )
+                if jtype != JNT_HINGE and jtype != JNT_SLIDE:
+                    continue
+                var dof = Int(
+                    rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_DOF_ADR])
+                )
+                var qpos_adr = Int(
+                    rebind[Scalar[DTYPE]](model[0, j_off + JOINT_IDX_QPOS_ADR])
+                )
+                var rmin = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_RANGE_MIN]
+                )
+                var rmax = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_RANGE_MAX]
+                )
+                if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
+                    continue
+                # Per-joint solref/solimp with model-level defaults fallback
+                var lr_tc = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_SOLREF_LIMIT_0]
+                )
+                var lr_dr = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_SOLREF_LIMIT_1]
+                )
+                if lr_tc <= Scalar[DTYPE](0):
+                    lr_tc = lr_tc_def
+                if lr_dr <= Scalar[DTYPE](0):
+                    lr_dr = lr_dr_def
+                var li_dmin = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_SOLIMP_LIMIT_0]
+                )
+                var li_dmax = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_SOLIMP_LIMIT_1]
+                )
+                var li_width = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_SOLIMP_LIMIT_2]
+                )
+                var li_midpoint = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_SOLIMP_LIMIT_3]
+                )
+                var li_power = rebind[Scalar[DTYPE]](
+                    model[0, j_off + JOINT_IDX_SOLIMP_LIMIT_4]
+                )
+                if li_dmax <= Scalar[DTYPE](0) and li_width <= Scalar[DTYPE](0):
+                    li_dmin = li_dmin_def
+                    li_dmax = li_dmax_def
+                    li_width = li_width_def
+                    li_midpoint = li_midpoint_def
+                    li_power = li_power_def
+                if li_width < Scalar[DTYPE](1e-6):
+                    li_width = Scalar[DTYPE](1e-6)
+                if li_dmax < Scalar[DTYPE](1e-4):
+                    li_dmax = Scalar[DTYPE](1e-4)
+                var l_K_spring = Scalar[DTYPE](1.0) / (
+                    li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+                )
+                var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
+
+                var pos = rebind[Scalar[DTYPE]](
+                    state[env, qpos_off_lim + qpos_adr]
+                )
+                # Lower limit: dist_lo = pos - rmin < 0 → violated
+                var dist_lo = pos - rmin
+                if dist_lo < Scalar[DTYPE](0) and num_edges < ME:
+                    var sign = Scalar[DTYPE](1)
+                    var K_lim = rebind[Scalar[DTYPE]](
+                        workspace[env, M_inv_idx + dof * NV + dof]
+                    )
+                    if K_lim < Scalar[DTYPE](1e-10):
+                        K_lim = Scalar[DTYPE](1e-10)
+                    var pen = -dist_lo
+                    var v_lim = sign * rebind[Scalar[DTYPE]](
+                        state[env, qvel_off_lim + dof]
+                    )
+                    # Impedance
+                    var imp_lim: Scalar[DTYPE]
+                    if li_dmin == li_dmax or li_width <= Scalar[DTYPE](0):
+                        imp_lim = Scalar[DTYPE](0.5) * (li_dmin + li_dmax)
+                    else:
+                        var x_l = pen / li_width
+                        if x_l <= Scalar[DTYPE](0):
+                            imp_lim = li_dmin
+                        elif x_l >= Scalar[DTYPE](1):
+                            imp_lim = li_dmax
+                        else:
+                            var y_l: Scalar[DTYPE]
+                            if li_power == Scalar[DTYPE](1):
+                                y_l = x_l
+                            elif x_l <= li_midpoint:
+                                y_l = pow(x_l, li_power) / pow(
+                                    li_midpoint, li_power - Scalar[DTYPE](1)
+                                )
+                            else:
+                                y_l = Scalar[DTYPE](1) - pow(
+                                    Scalar[DTYPE](1) - x_l, li_power
+                                ) / pow(
+                                    Scalar[DTYPE](1) - li_midpoint,
+                                    li_power - Scalar[DTYPE](1),
+                                )
+                            imp_lim = li_dmin + y_l * (li_dmax - li_dmin)
+                    if imp_lim < Scalar[DTYPE](1e-6):
+                        imp_lim = Scalar[DTYPE](1e-6)
+                    comptime dof_iw_off = model_dof_invweight0_offset[
+                        NBODY, NJOINT, NGEOM, MAX_EQUALITY, MAX_TENDON, NSITE
+                    ]()
+                    var diag_lim = rebind[Scalar[DTYPE]](
+                        model[0, dof_iw_off + dof]
+                    )
+                    if diag_lim < Scalar[DTYPE](1e-10):
+                        diag_lim = K_lim
+                    var R_lim = (
+                        (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
+                    )
+                    if R_lim < Scalar[DTYPE](1e-14):
+                        R_lim = Scalar[DTYPE](1e-14)
+                    # Sparse Jacobian: Je[dof] = sign, others 0
+                    for i in range(NV):
+                        Je[num_edges * NV + i] = Scalar[DTYPE](0)
+                    Je[num_edges * NV + dof] = sign
+                    # Match CPU: inv_K = 1/(K+R), D = 1/(1/inv_K - K)
+                    # Same float32 rounding as primal_D(inv_K_imp, K)
+                    var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
+                    var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
+                    if R_recov < Scalar[DTYPE](1e-14):
+                        R_recov = Scalar[DTYPE](1e-14)
+                    De[num_edges] = Scalar[DTYPE](1) / R_recov
+                    bias_e[num_edges] = (
+                        l_B_damp * v_lim - l_K_spring * imp_lim * pen
+                    )
+                    num_edges += 1
+
+                # Upper limit: dist_hi = rmax - pos < 0 → violated
+                var dist_hi = rmax - pos
+                if dist_hi < Scalar[DTYPE](0) and num_edges < ME:
+                    var sign = Scalar[DTYPE](-1)
+                    var K_lim = rebind[Scalar[DTYPE]](
+                        workspace[env, M_inv_idx + dof * NV + dof]
+                    )
+                    if K_lim < Scalar[DTYPE](1e-10):
+                        K_lim = Scalar[DTYPE](1e-10)
+                    var pen = -dist_hi
+                    var v_lim = sign * rebind[Scalar[DTYPE]](
+                        state[env, qvel_off_lim + dof]
+                    )
+                    var imp_lim: Scalar[DTYPE]
+                    if li_dmin == li_dmax or li_width <= Scalar[DTYPE](0):
+                        imp_lim = Scalar[DTYPE](0.5) * (li_dmin + li_dmax)
+                    else:
+                        var x_l = pen / li_width
+                        if x_l <= Scalar[DTYPE](0):
+                            imp_lim = li_dmin
+                        elif x_l >= Scalar[DTYPE](1):
+                            imp_lim = li_dmax
+                        else:
+                            var y_l: Scalar[DTYPE]
+                            if li_power == Scalar[DTYPE](1):
+                                y_l = x_l
+                            elif x_l <= li_midpoint:
+                                y_l = pow(x_l, li_power) / pow(
+                                    li_midpoint, li_power - Scalar[DTYPE](1)
+                                )
+                            else:
+                                y_l = Scalar[DTYPE](1) - pow(
+                                    Scalar[DTYPE](1) - x_l, li_power
+                                ) / pow(
+                                    Scalar[DTYPE](1) - li_midpoint,
+                                    li_power - Scalar[DTYPE](1),
+                                )
+                            imp_lim = li_dmin + y_l * (li_dmax - li_dmin)
+                    if imp_lim < Scalar[DTYPE](1e-6):
+                        imp_lim = Scalar[DTYPE](1e-6)
+                    var diag_lim = rebind[Scalar[DTYPE]](
+                        model[
+                            0,
+                            model_body_invweight0_offset[
+                                NBODY,
+                                NJOINT,
+                                NGEOM,
+                                MAX_EQUALITY,
+                                MAX_TENDON,
+                                NSITE,
+                            ]()
+                            + dof,
+                        ]
+                    )
+                    if diag_lim < Scalar[DTYPE](1e-10):
+                        diag_lim = K_lim
+                    var R_lim = (
+                        (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
+                    )
+                    if R_lim < Scalar[DTYPE](1e-14):
+                        R_lim = Scalar[DTYPE](1e-14)
+                    for i in range(NV):
+                        Je[num_edges * NV + i] = Scalar[DTYPE](0)
+                    Je[num_edges * NV + dof] = sign
+                    # Match CPU: inv_K = 1/(K+R), D = 1/(1/inv_K - K)
+                    # Same float32 rounding as primal_D(inv_K_imp, K)
+                    var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
+                    var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
+                    if R_recov < Scalar[DTYPE](1e-14):
+                        R_recov = Scalar[DTYPE](1e-14)
+                    De[num_edges] = Scalar[DTYPE](1) / R_recov
+                    bias_e[num_edges] = (
+                        l_B_damp * v_lim - l_K_spring * imp_lim * pen
+                    )
+                    num_edges += 1
 
             # Read normal J for gradient computation
             comptime ws_J_n_idx = solver_ws_idx + 15 * MC
@@ -1329,23 +1592,9 @@ struct NewtonSolver(ConstraintSolver):
                 state[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
                 state[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c
 
-            # Joint limits + equality (same as ELLIPTIC path)
+            # Joint limits are now handled as edges in the Newton solver above.
+            # Only equality constraints remain as a separate post-solve step.
             comptime SOLVER_ITER_GPU: Int = 50
-            detect_and_solve_limits_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                WS_SIZE,
-                BATCH,
-                SOLVER_ITER_GPU,
-                NGEOM,
-                MAX_EQUALITY,
-            ](env, dt, state, model, workspace)
             build_and_solve_equality_gpu[
                 DTYPE,
                 NQ,
