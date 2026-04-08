@@ -877,7 +877,7 @@ def detect_and_solve_limits_gpu[
             continue
         var pos = rebind[Scalar[DTYPE]](state[env, qpos_adr])
         var dist_lo = pos - rmin
-        if dist_lo < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
+        if dist_lo < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
             limit_dof[num_limits] = dof
             limit_sign[num_limits] = Scalar[DTYPE](1)
             limit_dist_arr[num_limits] = dist_lo
@@ -888,7 +888,7 @@ def detect_and_solve_limits_gpu[
                 K_limit[num_limits] = Scalar[DTYPE](1e-10)
             num_limits += 1
         var dist_hi = rmax - pos
-        if dist_hi < Scalar[DTYPE](0.01) and num_limits < MAX_LIMITS:
+        if dist_hi < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
             limit_dof[num_limits] = dof
             limit_sign[num_limits] = Scalar[DTYPE](-1)
             limit_dist_arr[num_limits] = dist_hi

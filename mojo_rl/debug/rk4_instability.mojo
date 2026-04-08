@@ -94,9 +94,10 @@ comptime GPU_BATCH = 1
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
 comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
 comptime SOLVER_WS = NewtonSolver.solver_workspace_size[NV, MAX_CONTACTS]()
+comptime DBG_SIZE = 38  # grad(6)+search(6)+H_diag(6)+qacc(6)+L_diag(6)+nc+alpha
 comptime WS_SIZE = integrator_workspace_size[
     NV, NBODY
-]() + NV * NV + SOLVER_WS + rk4_extra_workspace_size[NQ, NV]()
+]() + NV * NV + SOLVER_WS + rk4_extra_workspace_size[NQ, NV]() + DBG_SIZE
 
 comptime V_SIZE = _max_one[NV]()
 comptime M_SIZE = _max_one[NV * NV]()
@@ -125,6 +126,8 @@ comptime QACC_OFF = qacc_offset[NQ, NV]()
 comptime QFRC_OFF = qfrc_offset[NQ, NV]()
 comptime SOL_OFF = ws_solver_offset[NV, NBODY]()
 comptime MC = _max_one[MAX_CONTACTS]()
+# Debug area is at the very end of the workspace (after RK4 extra)
+comptime DBG_WS_OFF = WS_SIZE - DBG_SIZE
 comptime PYR_J_BASE = SOL_OFF + 15 * MC + 2 * MC * NV
 comptime PYR_SC = PYR_J_BASE + 4 * MC * NV
 comptime CONTACTS_OFF = contacts_offset[NQ, NV, NBODY]()
@@ -662,11 +665,42 @@ def _analyze_stage1(
             )
         print()
 
-    # --- Run GPU solver ---
+    # --- Run GPU solver (debug writes to end of workspace) ---
     _gpu_solver(ctx, gpu_state_buf, gpu_model_buf, gpu_ws_buf)
     ctx.synchronize()
     ctx.enqueue_copy(ws_host.unsafe_ptr(), gpu_ws_buf)
     ctx.synchronize()
+
+    # --- GPU solver iteration 0 internals (from workspace debug area) ---
+    print("\n  --- GPU solver iter 0 (from workspace end) ---")
+    print("  GPU grad:  ", end="")
+    for i in range(NV):
+        print(" " + String(Float64(ws_host[DBG_WS_OFF + i]))[byte=:14], end="")
+    print()
+    print("  GPU search:", end="")
+    for i in range(NV):
+        print(" " + String(Float64(ws_host[DBG_WS_OFF + NV + i]))[byte=:14], end="")
+    print()
+    print("  GPU H_diag:", end="")
+    for i in range(NV):
+        print(" " + String(Float64(ws_host[DBG_WS_OFF + 2 * NV + i]))[byte=:14], end="")
+    print()
+    print("  GPU qacc:  ", end="")
+    for i in range(NV):
+        print(" " + String(Float64(ws_host[DBG_WS_OFF + 3 * NV + i]))[byte=:14], end="")
+    print()
+    print("  GPU L_diag:", end="")
+    for i in range(NV):
+        print(" " + String(Float64(ws_host[DBG_WS_OFF + 4 * NV + i]))[byte=:14], end="")
+    print()
+    print("  GPU nc=" + String(Float64(ws_host[DBG_WS_OFF + 5 * NV]))
+        + " alpha=" + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 1])))
+    print("  GPU iter1_scaled_grad=" + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 2]))
+        + " total_iters=" + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 3])))
+    print("  GPU final_qacc:", end="")
+    for i in range(NV):
+        print(" " + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 4 + i]))[byte=:14], end="")
+    print()
 
     # --- GPU edge data ---
     print("\n  --- GPU Stage 1 PYRAMIDAL edge data ---")

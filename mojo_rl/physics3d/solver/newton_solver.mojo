@@ -577,7 +577,9 @@ struct NewtonSolver(ConstraintSolver):
             for i in range(NV):
                 search[i] = -search[i]
                 # NaN/Inf guard: if search direction is invalid, abort iteration
-                if search[i] != search[i] or search[i] * Scalar[DTYPE](0) != Scalar[DTYPE](0):
+                if search[i] != search[i] or search[i] * Scalar[DTYPE](
+                    0
+                ) != Scalar[DTYPE](0):
                     search_ok = False
             if not search_ok:
                 break
@@ -746,6 +748,9 @@ struct NewtonSolver(ConstraintSolver):
         MAX_CONTACTS: Int,
     ]() -> Int:
         return _max_one[MAX_CONTACTS]()
+
+    # Debug buffer: [grad(NV), search(NV), H_diag(NV), qacc(NV), L_diag(NV), alpha, nc, iter]
+    comptime DEBUG_GPU_SIZE: Int = 38
 
     @staticmethod
     @always_inline
@@ -916,7 +921,9 @@ struct NewtonSolver(ConstraintSolver):
                 si_width = Scalar[DTYPE](1e-6)
             if si_dmax < Scalar[DTYPE](1e-4):
                 si_dmax = Scalar[DTYPE](1e-4)
-            K_spring = Scalar[DTYPE](1.0) / (si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr)
+            K_spring = Scalar[DTYPE](1.0) / (
+                si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+            )
             B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
             impratio = rebind[Scalar[DTYPE]](
                 model[0, model_meta_off + MODEL_META_IDX_IMPRATIO]
@@ -968,14 +975,39 @@ struct NewtonSolver(ConstraintSolver):
         # For PYRAMIDAL: builds 4 edge J, D_edge, bias_edge
         if valid_env and contact_tid < nc:
             precompute_contact_friction_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, V_SIZE, BATCH, WS_SIZE,
-                NGEOM, MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                BATCH,
+                WS_SIZE,
+                NGEOM,
+                MAX_EQUALITY,
+                CONE_TYPE,
+                MAX_TENDON,
+                NSITE,
             ](
-                env, contact_tid, nc, state, model, workspace,
-                B_damp, impratio, K_spring,
-                ws_Jt1_idx, ws_Jt2_idx, ws_mu_idx,
-                ws_D_n_idx, ws_D_f_idx, ws_bt1_idx, ws_bt2_idx,
+                env,
+                contact_tid,
+                nc,
+                state,
+                model,
+                workspace,
+                B_damp,
+                impratio,
+                K_spring,
+                ws_Jt1_idx,
+                ws_Jt2_idx,
+                ws_mu_idx,
+                ws_D_n_idx,
+                ws_D_f_idx,
+                ws_bt1_idx,
+                ws_bt2_idx,
             )
 
         barrier()
@@ -985,7 +1017,7 @@ struct NewtonSolver(ConstraintSolver):
             return
 
         comptime NEWTON_ITER_GPU: Int = 30
-        comptime NEWTON_TOL_GPU: Float64 = 1e-8
+        comptime NEWTON_TOL_GPU: Float64 = 1e-4
         comptime LINESEARCH_ITER: Int = 20
         comptime ARMIJO: Float64 = 1e-4
         comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
@@ -1013,7 +1045,9 @@ struct NewtonSolver(ConstraintSolver):
                     var idx = c * NE + e
                     for i in range(NV):
                         Je[idx * NV + i] = rebind[Scalar[DTYPE]](
-                            workspace[env, ws_Jt1_idx + e * MC * NV + c * NV + i]
+                            workspace[
+                                env, ws_Jt1_idx + e * MC * NV + c * NV + i
+                            ]
                         )
                     De[idx] = rebind[Scalar[DTYPE]](
                         workspace[env, pyr_sc + e * MC + c]
@@ -1032,23 +1066,32 @@ struct NewtonSolver(ConstraintSolver):
             comptime M_idx = ws_M_offset[NV, NBODY]()
             comptime qacc_init_idx = ws_qacc_constrained_offset[NV, NBODY]()
             for i in range(NV):
-                qacc[i] = rebind[Scalar[DTYPE]](workspace[env, qacc_init_idx + i])
+                qacc[i] = rebind[Scalar[DTYPE]](
+                    workspace[env, qacc_init_idx + i]
+                )
             for i in range(NV):
                 Ma[i] = Scalar[DTYPE](0)
                 for j in range(NV):
-                    Ma[i] += rebind[Scalar[DTYPE]](
-                        workspace[env, M_idx + i * NV + j]
-                    ) * qacc[j]
+                    Ma[i] += (
+                        rebind[Scalar[DTYPE]](
+                            workspace[env, M_idx + i * NV + j]
+                        )
+                        * qacc[j]
+                    )
             # f_smooth = M * qacc (matching CPU's qfrc_smooth = M * qacc_smooth)
             # Using Ma directly avoids LDL round-trip error (f_net ≠ M*M^{-1}*f_net)
-            var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](
+                uninitialized=True
+            )
             for i in range(NV):
                 f_smooth[i] = Ma[i]
 
             # Scale for convergence check
             var scale: Scalar[DTYPE] = 0
             for i in range(NV):
-                scale += rebind[Scalar[DTYPE]](workspace[env, M_idx + i * NV + i])
+                scale += rebind[Scalar[DTYPE]](
+                    workspace[env, M_idx + i * NV + i]
+                )
             if scale > Scalar[DTYPE](1e-10):
                 scale = Scalar[DTYPE](1.0) / scale
             else:
@@ -1085,6 +1128,7 @@ struct NewtonSolver(ConstraintSolver):
                 for i in range(NV):
                     grad[i] = Ma[i] - f_smooth[i] - qfrc[i]
                     grad_norm += grad[i] * grad[i]
+
                 if scale * sqrt(grad_norm) < Scalar[DTYPE](NEWTON_TOL_GPU):
                     break
 
@@ -1110,7 +1154,9 @@ struct NewtonSolver(ConstraintSolver):
                     for i in range(NV):
                         H[i * NV + i] += Scalar[DTYPE](1e-6)
                     _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
-                chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](L_chol, grad, search)
+                chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](
+                    L_chol, grad, search
+                )
                 for i in range(NV):
                     search[i] = -search[i]
 
@@ -1118,9 +1164,12 @@ struct NewtonSolver(ConstraintSolver):
                 for i in range(NV):
                     Mv[i] = Scalar[DTYPE](0)
                     for j in range(NV):
-                        Mv[i] += rebind[Scalar[DTYPE]](
-                            workspace[env, M_idx + i * NV + j]
-                        ) * search[j]
+                        Mv[i] += (
+                            rebind[Scalar[DTYPE]](
+                                workspace[env, M_idx + i * NV + j]
+                            )
+                            * search[j]
+                        )
 
                 # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
                 # Precompute Jv_e = Je · search for each edge
@@ -1130,7 +1179,7 @@ struct NewtonSolver(ConstraintSolver):
                     for i in range(NV):
                         Jv_e[e_idx] += Je[e_idx * NV + i] * search[i]
 
-                # Gauss coefficients: cost(alpha) = 0.5*ga*alpha^2 + gb*alpha + ...
+                # Analytical Newton linesearch (matching CPU primal_linesearch_with_D)
                 var gauss_a: Scalar[DTYPE] = 0
                 var gauss_b: Scalar[DTYPE] = 0
                 for i in range(NV):
@@ -1149,85 +1198,60 @@ struct NewtonSolver(ConstraintSolver):
 
                 var alpha: Scalar[DTYPE] = 0
                 if p0_d1 < Scalar[DTYPE](0):
-                    # Phase 1: initial Newton step
-                    var p1_alpha = -p0_d1 / p0_d2
-                    # Evaluate at p1_alpha
-                    var p1_d1 = gauss_a * p1_alpha + gauss_b
-                    var p1_d2 = gauss_a
-                    for e_idx in range(num_edges):
-                        var jar_a = jar[e_idx] + p1_alpha * Jv_e[e_idx]
-                        if jar_a < Scalar[DTYPE](0):
-                            p1_d1 += De[e_idx] * jar_a * Jv_e[e_idx]
-                            p1_d2 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
-                    if p1_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                        p1_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-
-                    var snorm_sq: Scalar[DTYPE] = 0
-                    for i in range(NV):
-                        snorm_sq += search[i] * search[i]
-                    var gtol = Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) / scale
-                    var gtol_sq = gtol * gtol
-
-                    alpha = p1_alpha
-                    if p1_d1 * p1_d1 >= gtol_sq:
-                        # Phase 2: one-sided Newton pursuit
-                        var dir_s = Scalar[DTYPE](-1) if p1_d1 > Scalar[DTYPE](0) else Scalar[DTYPE](1)
-                        var p2_alpha: Scalar[DTYPE] = 0
-                        var p2_d1 = p0_d1
-                        var bracket = False
-                        for _ in range(LINESEARCH_ITER):
-                            p2_alpha = p1_alpha
-                            p2_d1 = p1_d1
-                            if p1_d2 > Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                                p1_alpha = p1_alpha - p1_d1 / p1_d2
-                            else:
-                                p1_alpha = p1_alpha + dir_s
-                            # Evaluate at new p1_alpha
-                            p1_d1 = gauss_a * p1_alpha + gauss_b
-                            p1_d2 = gauss_a
-                            for e_idx in range(num_edges):
-                                var jar_a = jar[e_idx] + p1_alpha * Jv_e[e_idx]
-                                if jar_a < Scalar[DTYPE](0):
-                                    p1_d1 += De[e_idx] * jar_a * Jv_e[e_idx]
-                                    p1_d2 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
-                            if p1_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                                p1_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                            if p1_d1 * p1_d1 < gtol_sq:
-                                alpha = p1_alpha
-                                break
-                            if p1_d1 * dir_s > Scalar[DTYPE](0):
-                                bracket = True
-                                break
-                        if bracket:
-                            # Phase 3: bracketed bisection refinement
-                            for _ in range(LINESEARCH_ITER):
-                                var mid = (p1_alpha + p2_alpha) * Scalar[DTYPE](0.5)
-                                var mid_d1 = gauss_a * mid + gauss_b
-                                for e_idx in range(num_edges):
-                                    var jar_a = jar[e_idx] + mid * Jv_e[e_idx]
-                                    if jar_a < Scalar[DTYPE](0):
-                                        mid_d1 += De[e_idx] * jar_a * Jv_e[e_idx]
-                                if mid_d1 * mid_d1 < gtol_sq:
-                                    p1_alpha = mid
-                                    p1_d1 = mid_d1
-                                    break
-                                if mid_d1 * p1_d1 > Scalar[DTYPE](0):
-                                    p1_alpha = mid
-                                    p1_d1 = mid_d1
-                                else:
-                                    p2_alpha = mid
-                                    p2_d1 = mid_d1
-                                if (p1_alpha - p2_alpha) * (p1_alpha - p2_alpha) < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                                    break
-                            if p2_d1 * p2_d1 < p1_d1 * p1_d1:
-                                alpha = p2_alpha
-                            else:
-                                alpha = p1_alpha
-                        elif p1_d1 * p1_d1 >= gtol_sq:
-                            alpha = p1_alpha
+                    alpha = -p0_d1 / p0_d2
 
                 if alpha < Scalar[DTYPE](1e-10):
                     break
+
+                # Save old state for cost revert (matching CPU solver)
+                var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](
+                    uninitialized=True
+                )
+                var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](
+                    uninitialized=True
+                )
+                var old_jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+                var old_force = InlineArray[Scalar[DTYPE], ME](
+                    uninitialized=True
+                )
+                var old_qfrc = InlineArray[Scalar[DTYPE], V_SIZE](
+                    uninitialized=True
+                )
+                for i in range(NV):
+                    old_qacc[i] = qacc[i]
+                    old_Ma[i] = Ma[i]
+                    old_qfrc[i] = qfrc[i]
+                for e_idx in range(num_edges):
+                    old_jar[e_idx] = jar[e_idx]
+                    old_force[e_idx] = force[e_idx]
+
+                # Compute old cost
+                var old_cost: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    old_cost += (
+                        Scalar[DTYPE](0.5)
+                        * (Ma[i] - f_smooth[i])
+                        * (
+                            qacc[i]
+                            - qacc[i]
+                            + qacc[i]
+                            - f_smooth[i] / Ma[i] * qacc[i]
+                        )
+                    )
+                # Simplified: gauss + constraint cost
+                old_cost = Scalar[DTYPE](0)
+                for i in range(NV):
+                    old_cost += (
+                        Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * qacc[i]
+                    )
+                for e_idx in range(num_edges):
+                    if jar[e_idx] < Scalar[DTYPE](0):
+                        old_cost += (
+                            Scalar[DTYPE](0.5)
+                            * De[e_idx]
+                            * jar[e_idx]
+                            * jar[e_idx]
+                        )
 
                 # Update qacc, Ma
                 for i in range(NV):
@@ -1248,8 +1272,33 @@ struct NewtonSolver(ConstraintSolver):
                     for i in range(NV):
                         qfrc[i] += Je[e_idx * NV + i] * force[e_idx]
 
-                # Rebuild Hessian if state changed
-                # (edges transitioning between SATISFIED↔QUADRATIC)
+                # Compute new cost and check improvement
+                var new_cost: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    new_cost += (
+                        Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * qacc[i]
+                    )
+                for e_idx in range(num_edges):
+                    if jar[e_idx] < Scalar[DTYPE](0):
+                        new_cost += (
+                            Scalar[DTYPE](0.5)
+                            * De[e_idx]
+                            * jar[e_idx]
+                            * jar[e_idx]
+                        )
+
+                var improvement = scale * (old_cost - new_cost)
+                if improvement < Scalar[DTYPE](NEWTON_TOL_GPU) and iter_n > 0:
+                    if improvement < Scalar[DTYPE](0):
+                        # Cost increased — revert to old state
+                        for i in range(NV):
+                            qacc[i] = old_qacc[i]
+                            Ma[i] = old_Ma[i]
+                            qfrc[i] = old_qfrc[i]
+                        for e_idx in range(num_edges):
+                            jar[e_idx] = old_jar[e_idx]
+                            force[e_idx] = old_force[e_idx]
+                    break
 
             # Write qacc back
             for i in range(NV):
@@ -1260,7 +1309,9 @@ struct NewtonSolver(ConstraintSolver):
                 var fn_c: Scalar[DTYPE] = 0
                 var ft1_c: Scalar[DTYPE] = 0
                 var ft2_c: Scalar[DTYPE] = 0
-                var mu_c = rebind[Scalar[DTYPE]](workspace[env, pyr_sc + 8 * MC + c])
+                var mu_c = rebind[Scalar[DTYPE]](
+                    workspace[env, pyr_sc + 8 * MC + c]
+                )
                 var safe_mu = mu_c
                 if safe_mu < Scalar[DTYPE](1e-8):
                     safe_mu = Scalar[DTYPE](1e-8)
@@ -1281,20 +1332,53 @@ struct NewtonSolver(ConstraintSolver):
             # Joint limits + equality (same as ELLIPTIC path)
             comptime SOLVER_ITER_GPU: Int = 50
             detect_and_solve_limits_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, WS_SIZE, BATCH,
-                SOLVER_ITER_GPU, NGEOM, MAX_EQUALITY,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                WS_SIZE,
+                BATCH,
+                SOLVER_ITER_GPU,
+                NGEOM,
+                MAX_EQUALITY,
             ](env, dt, state, model, workspace)
             build_and_solve_equality_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                MAX_EQUALITY, NGEOM, STATE_SIZE, MODEL_SIZE,
-                V_SIZE, WS_SIZE, BATCH, SOLVER_ITER_GPU,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                MAX_EQUALITY,
+                NGEOM,
+                STATE_SIZE,
+                MODEL_SIZE,
+                V_SIZE,
+                WS_SIZE,
+                BATCH,
+                SOLVER_ITER_GPU,
             ](env, state, model, workspace)
             comptime if MAX_TENDON > 0:
                 build_and_solve_tendon_gpu[
-                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                    MAX_EQUALITY, NGEOM, MAX_TENDON, STATE_SIZE,
-                    MODEL_SIZE, V_SIZE, WS_SIZE, BATCH, SOLVER_ITER_GPU,
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    MAX_EQUALITY,
+                    NGEOM,
+                    MAX_TENDON,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    V_SIZE,
+                    WS_SIZE,
+                    BATCH,
+                    SOLVER_ITER_GPU,
                 ](env, state, model, workspace)
             return  # PYRAMIDAL path complete
 
@@ -1620,8 +1704,12 @@ struct NewtonSolver(ConstraintSolver):
                     pass  # SATISFIED
                 elif mu * N0 + T0 <= Scalar[DTYPE](0):
                     # QUADRATIC
-                    p0_d1 += D_n * N0 * Js_n[c] + D_f * (T10 * Js_t1[c] + T20 * Js_t2[c])
-                    p0_d2 += D_n * Js_n[c] * Js_n[c] + D_f * (Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c])
+                    p0_d1 += D_n * N0 * Js_n[c] + D_f * (
+                        T10 * Js_t1[c] + T20 * Js_t2[c]
+                    )
+                    p0_d2 += D_n * Js_n[c] * Js_n[c] + D_f * (
+                        Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                    )
                 else:
                     # CONE
                     var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
@@ -1643,7 +1731,9 @@ struct NewtonSolver(ConstraintSolver):
                 var snorm_sq: Scalar[DTYPE] = 0
                 for i in range(NV):
                     snorm_sq += search[i] * search[i]
-                var gtol = Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) / scale
+                var gtol = (
+                    Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) / scale
+                )
                 var gtol_sq = gtol * gtol
 
                 # Inline eval at p1_alpha
@@ -1666,8 +1756,12 @@ struct NewtonSolver(ConstraintSolver):
                     if tN >= Scalar[DTYPE](0) and tN * tN >= mu * mu * tT_sq:
                         pass
                     elif mu * tN + tT <= Scalar[DTYPE](0):
-                        p1_d1 += D_n * tN * Js_n[c] + D_f * (tT1 * Js_t1[c] + tT2 * Js_t2[c])
-                        p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c])
+                        p1_d1 += D_n * tN * Js_n[c] + D_f * (
+                            tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                        )
+                        p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (
+                            Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                        )
                     else:
                         var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
                         var s_v = tN - mu * tT
@@ -1683,7 +1777,9 @@ struct NewtonSolver(ConstraintSolver):
                 alpha = p1_alpha
                 if p1_d1 * p1_d1 >= gtol_sq:
                     # Phase 2: one-sided Newton pursuit
-                    var dir_s = Scalar[DTYPE](-1) if p1_d1 > Scalar[DTYPE](0) else Scalar[DTYPE](1)
+                    var dir_s = Scalar[DTYPE](-1) if p1_d1 > Scalar[DTYPE](
+                        0
+                    ) else Scalar[DTYPE](1)
                     var p2_alpha: Scalar[DTYPE] = 0
                     var p2_d1 = p0_d1
                     var bracket = False
@@ -1711,18 +1807,29 @@ struct NewtonSolver(ConstraintSolver):
                             var tT_s = tT
                             if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                                 tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                            if tN >= Scalar[DTYPE](0) and tN * tN >= mu * mu * tT_sq:
+                            if (
+                                tN >= Scalar[DTYPE](0)
+                                and tN * tN >= mu * mu * tT_sq
+                            ):
                                 pass
                             elif mu * tN + tT <= Scalar[DTYPE](0):
-                                p1_d1 += D_n * tN * Js_n[c] + D_f * (tT1 * Js_t1[c] + tT2 * Js_t2[c])
-                                p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c])
+                                p1_d1 += D_n * tN * Js_n[c] + D_f * (
+                                    tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                                )
+                                p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (
+                                    Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                                )
                             else:
                                 var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
                                 var s_v = tN - mu * tT
-                                var dTda = (tT1 * Js_t1[c] + tT2 * Js_t2[c]) / tT_s
+                                var dTda = (
+                                    tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                                ) / tT_s
                                 var dsda = Js_n[c] - mu * dTda
                                 p1_d1 += Dm * s_v * dsda
-                                var Jvf = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                                var Jvf = (
+                                    Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                                )
                                 var d2s = -mu * (Jvf - dTda * dTda) / tT_s
                                 p1_d2_v += Dm * (dsda * dsda + s_v * d2s)
                         if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
@@ -1752,14 +1859,23 @@ struct NewtonSolver(ConstraintSolver):
                                 var tT_s = tT
                                 if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                                     tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                                if tN >= Scalar[DTYPE](0) and tN * tN >= mu * mu * tT_sq:
+                                if (
+                                    tN >= Scalar[DTYPE](0)
+                                    and tN * tN >= mu * mu * tT_sq
+                                ):
                                     pass
                                 elif mu * tN + tT <= Scalar[DTYPE](0):
-                                    mid_d1 += D_n * tN * Js_n[c] + D_f * (tT1 * Js_t1[c] + tT2 * Js_t2[c])
+                                    mid_d1 += D_n * tN * Js_n[c] + D_f * (
+                                        tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                                    )
                                 else:
-                                    var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+                                    var Dm = D_n / (
+                                        Scalar[DTYPE](1.0) + mu * mu
+                                    )
                                     var s_v = tN - mu * tT
-                                    var dTda = (tT1 * Js_t1[c] + tT2 * Js_t2[c]) / tT_s
+                                    var dTda = (
+                                        tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                                    ) / tT_s
                                     var dsda = Js_n[c] - mu * dTda
                                     mid_d1 += Dm * s_v * dsda
                             if mid_d1 * mid_d1 < gtol_sq:
@@ -1772,7 +1888,9 @@ struct NewtonSolver(ConstraintSolver):
                             else:
                                 p2_alpha = mid
                                 p2_d1 = mid_d1
-                            if (p1_alpha - p2_alpha) * (p1_alpha - p2_alpha) < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                            if (p1_alpha - p2_alpha) * (
+                                p1_alpha - p2_alpha
+                            ) < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
                                 break
                         if p2_d1 * p2_d1 < p1_d1 * p1_d1:
                             alpha = p2_alpha
@@ -1932,7 +2050,9 @@ struct NewtonSolver(ConstraintSolver):
                                         + Jt2_c[c * NV + i] * Jt1_c[c * NV + j]
                                     )
                                 )
-                var chol_ok_gpu2 = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+                var chol_ok_gpu2 = chol_factor_inline[DTYPE, NV, M_SIZE](
+                    H, L_chol
+                )
                 if not chol_ok_gpu2:
                     for i in range(NV):
                         H[i * NV + i] = H[i * NV + i] + Scalar[DTYPE](1e-6)
