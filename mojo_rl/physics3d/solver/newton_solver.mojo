@@ -986,7 +986,7 @@ struct NewtonSolver(ConstraintSolver):
 
         comptime NEWTON_ITER_GPU: Int = 20
         comptime NEWTON_TOL_GPU: Float64 = 1e-4
-        comptime LINESEARCH_ITER: Int = 10
+        comptime LINESEARCH_ITER: Int = 20
         comptime ARMIJO: Float64 = 1e-4
         comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
 
@@ -1025,8 +1025,7 @@ struct NewtonSolver(ConstraintSolver):
             # Read normal J for gradient computation
             comptime ws_J_n_idx = solver_ws_idx + 15 * MC
 
-            # Initialize qacc from workspace (integrator writes warmstart or qacc_smooth)
-            # Matches ELLIPTIC GPU path and CPU Newton logic
+            # Initialize qacc from workspace (qacc_smooth set by stage kernel)
             comptime M_SIZE = _max_one[NV * NV]()
             var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
             var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
@@ -1122,33 +1121,109 @@ struct NewtonSolver(ConstraintSolver):
                             workspace[env, M_idx + i * NV + j]
                         ) * search[j]
 
-                # Linesearch: try alpha=1, then halve
-                var alpha = Scalar[DTYPE](1.0)
-                var old_cost: Scalar[DTYPE] = 0
+                # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
+                # Precompute Jv_e = Je · search for each edge
+                var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+                for e_idx in range(num_edges):
+                    Jv_e[e_idx] = Scalar[DTYPE](0)
+                    for i in range(NV):
+                        Jv_e[e_idx] += Je[e_idx * NV + i] * search[i]
+
+                # Gauss coefficients: cost(alpha) = 0.5*ga*alpha^2 + gb*alpha + ...
+                var gauss_a: Scalar[DTYPE] = 0
+                var gauss_b: Scalar[DTYPE] = 0
                 for i in range(NV):
-                    old_cost += Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * qacc[i]
+                    gauss_a += Mv[i] * search[i]
+                    gauss_b += (Ma[i] - f_smooth[i]) * search[i]
+
+                # Evaluate d1, d2 at alpha=0
+                var p0_d1 = gauss_b
+                var p0_d2 = gauss_a
                 for e_idx in range(num_edges):
                     if jar[e_idx] < Scalar[DTYPE](0):
-                        old_cost += Scalar[DTYPE](0.5) * De[e_idx] * jar[e_idx] * jar[e_idx]
+                        p0_d1 += De[e_idx] * jar[e_idx] * Jv_e[e_idx]
+                        p0_d2 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
+                if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                    p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
-                for _ in range(LINESEARCH_ITER):
-                    # Trial qacc
-                    var trial_cost: Scalar[DTYPE] = 0
-                    var trial_Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
-                    for i in range(NV):
-                        var qa_trial = qacc[i] + alpha * search[i]
-                        trial_Ma[i] = Ma[i] + alpha * Mv[i]
-                        trial_cost += Scalar[DTYPE](0.5) * (trial_Ma[i] - f_smooth[i]) * qa_trial
+                var alpha: Scalar[DTYPE] = 0
+                if p0_d1 < Scalar[DTYPE](0):
+                    # Phase 1: initial Newton step
+                    var p1_alpha = -p0_d1 / p0_d2
+                    # Evaluate at p1_alpha
+                    var p1_d1 = gauss_a * p1_alpha + gauss_b
+                    var p1_d2 = gauss_a
                     for e_idx in range(num_edges):
-                        var trial_jar = bias_e[e_idx]
-                        for i in range(NV):
-                            trial_jar += Je[e_idx * NV + i] * (qacc[i] + alpha * search[i])
-                        if trial_jar < Scalar[DTYPE](0):
-                            trial_cost += Scalar[DTYPE](0.5) * De[e_idx] * trial_jar * trial_jar
+                        var jar_a = jar[e_idx] + p1_alpha * Jv_e[e_idx]
+                        if jar_a < Scalar[DTYPE](0):
+                            p1_d1 += De[e_idx] * jar_a * Jv_e[e_idx]
+                            p1_d2 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
+                    if p1_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                        p1_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
-                    if trial_cost <= old_cost:
-                        break
-                    alpha *= Scalar[DTYPE](0.5)
+                    var snorm_sq: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        snorm_sq += search[i] * search[i]
+                    var gtol = Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) * scale
+                    var gtol_sq = gtol * gtol
+
+                    alpha = p1_alpha
+                    if p1_d1 * p1_d1 >= gtol_sq:
+                        # Phase 2: one-sided Newton pursuit
+                        var dir_s = Scalar[DTYPE](-1) if p1_d1 > Scalar[DTYPE](0) else Scalar[DTYPE](1)
+                        var p2_alpha: Scalar[DTYPE] = 0
+                        var p2_d1 = p0_d1
+                        var bracket = False
+                        for _ in range(LINESEARCH_ITER):
+                            p2_alpha = p1_alpha
+                            p2_d1 = p1_d1
+                            if p1_d2 > Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                                p1_alpha = p1_alpha - p1_d1 / p1_d2
+                            else:
+                                p1_alpha = p1_alpha + dir_s
+                            # Evaluate at new p1_alpha
+                            p1_d1 = gauss_a * p1_alpha + gauss_b
+                            p1_d2 = gauss_a
+                            for e_idx in range(num_edges):
+                                var jar_a = jar[e_idx] + p1_alpha * Jv_e[e_idx]
+                                if jar_a < Scalar[DTYPE](0):
+                                    p1_d1 += De[e_idx] * jar_a * Jv_e[e_idx]
+                                    p1_d2 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
+                            if p1_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                                p1_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                            if p1_d1 * p1_d1 < gtol_sq:
+                                alpha = p1_alpha
+                                break
+                            if p1_d1 * dir_s > Scalar[DTYPE](0):
+                                bracket = True
+                                break
+                        if bracket:
+                            # Phase 3: bracketed bisection refinement
+                            for _ in range(LINESEARCH_ITER):
+                                var mid = (p1_alpha + p2_alpha) * Scalar[DTYPE](0.5)
+                                var mid_d1 = gauss_a * mid + gauss_b
+                                for e_idx in range(num_edges):
+                                    var jar_a = jar[e_idx] + mid * Jv_e[e_idx]
+                                    if jar_a < Scalar[DTYPE](0):
+                                        mid_d1 += De[e_idx] * jar_a * Jv_e[e_idx]
+                                if mid_d1 * mid_d1 < gtol_sq:
+                                    p1_alpha = mid
+                                    p1_d1 = mid_d1
+                                    break
+                                if mid_d1 * p1_d1 > Scalar[DTYPE](0):
+                                    p1_alpha = mid
+                                    p1_d1 = mid_d1
+                                else:
+                                    p2_alpha = mid
+                                    p2_d1 = mid_d1
+                                if (p1_alpha - p2_alpha) * (p1_alpha - p2_alpha) < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                                    break
+                            if p2_d1 * p2_d1 < p1_d1 * p1_d1:
+                                alpha = p2_alpha
+                            else:
+                                alpha = p1_alpha
+                        elif p1_d1 * p1_d1 >= gtol_sq:
+                            alpha = p1_alpha
 
                 if alpha < Scalar[DTYPE](1e-10):
                     break
@@ -1511,87 +1586,195 @@ struct NewtonSolver(ConstraintSolver):
                 Js_t1[c] = js_t1
                 Js_t2[c] = js_t2
 
-            # Current total cost: Gauss + constraint (all InlineArray reads)
-            var gauss_0: Scalar[DTYPE] = 0
-            var g1: Scalar[DTYPE] = 0
-            var g2: Scalar[DTYPE] = 0
-            var gtd: Scalar[DTYPE] = 0
+            # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
+            # Gauss coefficients for derivative: d_gauss/dalpha = ga*alpha + gb
+            var ga: Scalar[DTYPE] = 0
+            var gb: Scalar[DTYPE] = 0
             for i in range(NV):
-                var Ma_diff_i = Ma[i] - qfrc_sm[i]
-                var qa_diff_i = qacc[i] - qacc_sm[i]
-                gauss_0 += Ma_diff_i * qa_diff_i
-                g1 += Ma_diff_i * search[i] + Mv[i] * qa_diff_i
-                g2 += Mv[i] * search[i]
-                gtd += grad[i] * search[i]
-            gauss_0 = Scalar[DTYPE](0.5) * gauss_0
-            g1 = Scalar[DTYPE](0.5) * g1
-            g2 = Scalar[DTYPE](0.5) * g2
+                ga += Mv[i] * search[i]
+                gb += (Ma[i] - qfrc_sm[i]) * search[i]
 
-            # Current constraint cost (InlineArray reads only)
-            var c_cost_0: Scalar[DTYPE] = 0
+            # Evaluate d1, d2 at alpha=0
+            var p0_d1 = gb
+            var p0_d2 = ga
             for c in range(nc):
                 if dist_cache[c] >= Scalar[DTYPE](0):
                     continue
-                var cs = cs_arr[c]
-                var N = jar_n_arr[c]
-                var T1 = jar_t1_arr[c]
-                var T2 = jar_t2_arr[c]
+                var N0 = jar_n_arr[c]
+                var T10 = jar_t1_arr[c]
+                var T20 = jar_t2_arr[c]
                 var mu = mu_cache[c]
                 var D_n = D_n_cache[c]
                 var D_f = D_f_cache[c]
-                if cs == 1:  # QUADRATIC
-                    c_cost_0 += Scalar[DTYPE](0.5) * (
-                        D_n * N * N + D_f * (T1 * T1 + T2 * T2)
-                    )
-                elif cs == 2:  # CONE
-                    var T_s = sqrt(T1 * T1 + T2 * T2)
-                    if T_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                        T_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                    var s = N - mu * T_s
+                var T0_sq = T10 * T10 + T20 * T20
+                var T0 = sqrt(T0_sq)
+                var T0_safe = T0
+                if T0_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                    T0_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                if N0 >= Scalar[DTYPE](0) and N0 * N0 >= mu * mu * T0_sq:
+                    pass  # SATISFIED
+                elif mu * N0 + T0 <= Scalar[DTYPE](0):
+                    # QUADRATIC
+                    p0_d1 += D_n * N0 * Js_n[c] + D_f * (T10 * Js_t1[c] + T20 * Js_t2[c])
+                    p0_d2 += D_n * Js_n[c] * Js_n[c] + D_f * (Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c])
+                else:
+                    # CONE
                     var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
-                    c_cost_0 += Scalar[DTYPE](0.5) * Dm * s * s
+                    var s0 = N0 - mu * T0
+                    var dTda = (T10 * Js_t1[c] + T20 * Js_t2[c]) / T0_safe
+                    var dsda = Js_n[c] - mu * dTda
+                    p0_d1 += Dm * s0 * dsda
+                    var Jv_f_sq = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                    var d2sda2 = -mu * (Jv_f_sq - dTda * dTda) / T0_safe
+                    p0_d2 += Dm * (dsda * dsda + s0 * d2sda2)
+            if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
-            var current_cost = gauss_0 + c_cost_0
+            var alpha: Scalar[DTYPE] = 0
+            if p0_d1 < Scalar[DTYPE](0):
+                # Phase 1: initial Newton step
+                var p1_alpha = -p0_d1 / p0_d2
 
-            # Armijo linesearch (InlineArray reads only — no workspace access)
-            var alpha = Scalar[DTYPE](1.0)
-            var armijo_c = Scalar[DTYPE](ARMIJO)
-            for _ in range(LINESEARCH_ITER):
-                var trial_gauss = gauss_0 + alpha * g1 + alpha * alpha * g2
-                var trial_c_cost: Scalar[DTYPE] = 0
+                var snorm_sq: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    snorm_sq += search[i] * search[i]
+                var gtol = Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) * scale
+                var gtol_sq = gtol * gtol
+
+                # Inline eval at p1_alpha
+                var p1_d1 = ga * p1_alpha + gb
+                var p1_d2_v = ga
                 for c in range(nc):
                     if dist_cache[c] >= Scalar[DTYPE](0):
                         continue
-                    var trial_N = jar_n_arr[c] + alpha * Js_n[c]
-                    var trial_T1 = jar_t1_arr[c] + alpha * Js_t1[c]
-                    var trial_T2 = jar_t2_arr[c] + alpha * Js_t2[c]
+                    var tN = jar_n_arr[c] + p1_alpha * Js_n[c]
+                    var tT1 = jar_t1_arr[c] + p1_alpha * Js_t1[c]
+                    var tT2 = jar_t2_arr[c] + p1_alpha * Js_t2[c]
                     var mu = mu_cache[c]
                     var D_n = D_n_cache[c]
                     var D_f = D_f_cache[c]
-                    var trial_T = sqrt(
-                        trial_T1 * trial_T1 + trial_T2 * trial_T2
-                    )
-                    var trial_T_safe = trial_T
-                    if trial_T_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
-                        trial_T_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
-                    if trial_N >= mu * trial_T_safe:
-                        pass  # satisfied, cost = 0
-                    elif mu * trial_N + trial_T <= Scalar[DTYPE](0):
-                        trial_c_cost += Scalar[DTYPE](0.5) * (
-                            D_n * trial_N * trial_N
-                            + D_f * (trial_T1 * trial_T1 + trial_T2 * trial_T2)
-                        )
+                    var tT_sq = tT1 * tT1 + tT2 * tT2
+                    var tT = sqrt(tT_sq)
+                    var tT_s = tT
+                    if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                        tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                    if tN >= Scalar[DTYPE](0) and tN * tN >= mu * mu * tT_sq:
+                        pass
+                    elif mu * tN + tT <= Scalar[DTYPE](0):
+                        p1_d1 += D_n * tN * Js_n[c] + D_f * (tT1 * Js_t1[c] + tT2 * Js_t2[c])
+                        p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c])
                     else:
-                        var trial_s = trial_N - mu * trial_T_safe
                         var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
-                        trial_c_cost += (
-                            Scalar[DTYPE](0.5) * Dm * trial_s * trial_s
-                        )
+                        var s_v = tN - mu * tT
+                        var dTda = (tT1 * Js_t1[c] + tT2 * Js_t2[c]) / tT_s
+                        var dsda = Js_n[c] - mu * dTda
+                        p1_d1 += Dm * s_v * dsda
+                        var Jvf = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                        var d2s = -mu * (Jvf - dTda * dTda) / tT_s
+                        p1_d2_v += Dm * (dsda * dsda + s_v * d2s)
+                if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                    p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
 
-                var trial_cost = trial_gauss + trial_c_cost
-                if trial_cost <= current_cost + armijo_c * alpha * gtd:
-                    break
-                alpha = alpha * Scalar[DTYPE](0.5)
+                alpha = p1_alpha
+                if p1_d1 * p1_d1 >= gtol_sq:
+                    # Phase 2: one-sided Newton pursuit
+                    var dir_s = Scalar[DTYPE](-1) if p1_d1 > Scalar[DTYPE](0) else Scalar[DTYPE](1)
+                    var p2_alpha: Scalar[DTYPE] = 0
+                    var p2_d1 = p0_d1
+                    var bracket = False
+                    for _ in range(LINESEARCH_ITER):
+                        p2_alpha = p1_alpha
+                        p2_d1 = p1_d1
+                        if p1_d2_v > Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                            p1_alpha = p1_alpha - p1_d1 / p1_d2_v
+                        else:
+                            p1_alpha = p1_alpha + dir_s
+                        # Eval at new p1_alpha
+                        p1_d1 = ga * p1_alpha + gb
+                        p1_d2_v = ga
+                        for c in range(nc):
+                            if dist_cache[c] >= Scalar[DTYPE](0):
+                                continue
+                            var tN = jar_n_arr[c] + p1_alpha * Js_n[c]
+                            var tT1 = jar_t1_arr[c] + p1_alpha * Js_t1[c]
+                            var tT2 = jar_t2_arr[c] + p1_alpha * Js_t2[c]
+                            var mu = mu_cache[c]
+                            var D_n = D_n_cache[c]
+                            var D_f = D_f_cache[c]
+                            var tT_sq = tT1 * tT1 + tT2 * tT2
+                            var tT = sqrt(tT_sq)
+                            var tT_s = tT
+                            if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                                tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                            if tN >= Scalar[DTYPE](0) and tN * tN >= mu * mu * tT_sq:
+                                pass
+                            elif mu * tN + tT <= Scalar[DTYPE](0):
+                                p1_d1 += D_n * tN * Js_n[c] + D_f * (tT1 * Js_t1[c] + tT2 * Js_t2[c])
+                                p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c])
+                            else:
+                                var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+                                var s_v = tN - mu * tT
+                                var dTda = (tT1 * Js_t1[c] + tT2 * Js_t2[c]) / tT_s
+                                var dsda = Js_n[c] - mu * dTda
+                                p1_d1 += Dm * s_v * dsda
+                                var Jvf = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                                var d2s = -mu * (Jvf - dTda * dTda) / tT_s
+                                p1_d2_v += Dm * (dsda * dsda + s_v * d2s)
+                        if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                            p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                        if p1_d1 * p1_d1 < gtol_sq:
+                            alpha = p1_alpha
+                            break
+                        if p1_d1 * dir_s > Scalar[DTYPE](0):
+                            bracket = True
+                            break
+                    if bracket:
+                        # Phase 3: bracketed bisection
+                        for _ in range(LINESEARCH_ITER):
+                            var mid = (p1_alpha + p2_alpha) * Scalar[DTYPE](0.5)
+                            var mid_d1 = ga * mid + gb
+                            for c in range(nc):
+                                if dist_cache[c] >= Scalar[DTYPE](0):
+                                    continue
+                                var tN = jar_n_arr[c] + mid * Js_n[c]
+                                var tT1 = jar_t1_arr[c] + mid * Js_t1[c]
+                                var tT2 = jar_t2_arr[c] + mid * Js_t2[c]
+                                var mu = mu_cache[c]
+                                var D_n = D_n_cache[c]
+                                var D_f = D_f_cache[c]
+                                var tT_sq = tT1 * tT1 + tT2 * tT2
+                                var tT = sqrt(tT_sq)
+                                var tT_s = tT
+                                if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                                    tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                                if tN >= Scalar[DTYPE](0) and tN * tN >= mu * mu * tT_sq:
+                                    pass
+                                elif mu * tN + tT <= Scalar[DTYPE](0):
+                                    mid_d1 += D_n * tN * Js_n[c] + D_f * (tT1 * Js_t1[c] + tT2 * Js_t2[c])
+                                else:
+                                    var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+                                    var s_v = tN - mu * tT
+                                    var dTda = (tT1 * Js_t1[c] + tT2 * Js_t2[c]) / tT_s
+                                    var dsda = Js_n[c] - mu * dTda
+                                    mid_d1 += Dm * s_v * dsda
+                            if mid_d1 * mid_d1 < gtol_sq:
+                                p1_alpha = mid
+                                p1_d1 = mid_d1
+                                break
+                            if mid_d1 * p1_d1 > Scalar[DTYPE](0):
+                                p1_alpha = mid
+                                p1_d1 = mid_d1
+                            else:
+                                p2_alpha = mid
+                                p2_d1 = mid_d1
+                            if (p1_alpha - p2_alpha) * (p1_alpha - p2_alpha) < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                                break
+                        if p2_d1 * p2_d1 < p1_d1 * p1_d1:
+                            alpha = p2_alpha
+                        else:
+                            alpha = p1_alpha
+                    elif p1_d1 * p1_d1 >= gtol_sq:
+                        alpha = p1_alpha
 
             # If alpha is negligible, stop
             if alpha < Scalar[DTYPE](1e-12):

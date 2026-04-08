@@ -1177,12 +1177,6 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
                 workspace[env, qacc_ws_idx + i]
             )
             state[env, qacc_off + i] = qacc_val
-
-        # Write to constrained qacc slot for solver
-        for i in range(NV):
-            var qacc_val = rebind[Scalar[DTYPE]](
-                workspace[env, qacc_ws_idx + i]
-            )
             workspace[env, qacc_constrained_idx + i] = qacc_val
 
     @always_inline

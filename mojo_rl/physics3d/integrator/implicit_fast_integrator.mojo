@@ -1410,7 +1410,6 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
             )
 
         # 10. Initialize qacc_constrained from unconstrained qacc (matching CPU).
-        # No warm-start from previous step — ensures CPU==GPU determinism.
         for i in range(NV):
             workspace[env, qacc_constrained_idx + i] = workspace[
                 env, qacc_ws_idx + i
@@ -1885,8 +1884,7 @@ struct ImplicitFastIntegrator[SOLVER: ConstraintSolver](Integrator):
                     env, workspace
                 )
 
-            # Initialize qacc_constrained from unconstrained qacc (matching CPU).
-            # No warm-start from previous step — ensures CPU==GPU determinism.
+            # Initialize qacc_constrained from unconstrained qacc.
             for i in range(NV):
                 workspace[env, qacc_constrained_idx + i] = workspace[
                     env, qacc_ws_idx + i
