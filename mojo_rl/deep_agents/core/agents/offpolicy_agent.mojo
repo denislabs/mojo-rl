@@ -2093,6 +2093,320 @@ struct GenericOffPolicyAgent[
         )
         return metrics.mean_reward()
 
+    def evaluate_gpu[
+        EnvType: GPUContinuousEnv,
+        N_EVAL_ENVS: Int = 64,
+    ](
+        self,
+        ctx: DeviceContext,
+        num_episodes: Int = 100,
+        max_steps: Int = 1000,
+        verbose: Bool = False,
+        stochastic: Bool = True,
+    ) raises -> Float64:
+        """Evaluate the agent on GPU parallel environments.
+
+        For SAC (stochastic policy), samples from the learned distribution when
+        stochastic=True, or uses the deterministic mean when stochastic=False.
+        For DDPG/TD3 (deterministic policy), always uses the deterministic
+        actor output (no exploration noise).
+
+        Args:
+            ctx: GPU device context.
+            num_episodes: Target number of evaluation episodes (default: 100).
+            max_steps: Maximum steps per episode (default: 1000).
+            verbose: Whether to print progress (default: False).
+            stochastic: If True and SAC, sample from policy; if False or
+                DDPG/TD3, use deterministic output (default: True).
+
+        Returns:
+            Average reward over completed episodes.
+        """
+        comptime ENV_OBS_SIZE = N_EVAL_ENVS * Self.OBS
+        comptime ENV_ACTION_SIZE = N_EVAL_ENVS * Self.ACTIONS
+        comptime ENV_BLOCKS = (N_EVAL_ENVS + TPB - 1) // TPB
+
+        # Environment state buffers
+        var env_states_buf = ctx.enqueue_create_buffer[dtype](
+            N_EVAL_ENVS * EnvType.STATE_SIZE
+        )
+        var obs_buf = ctx.enqueue_create_buffer[dtype](ENV_OBS_SIZE)
+        var rewards_buf = ctx.enqueue_create_buffer[dtype](N_EVAL_ENVS)
+        var dones_buf = ctx.enqueue_create_buffer[dtype](N_EVAL_ENVS)
+        var terminated_buf = ctx.enqueue_create_buffer[dtype](N_EVAL_ENVS)
+
+        # Action buffers
+        var actions_buf = ctx.enqueue_create_buffer[dtype](ENV_ACTION_SIZE)
+        var actor_out_buf = ctx.enqueue_create_buffer[dtype](
+            N_EVAL_ENVS * Self.ACTOR_OUT
+        )
+
+        # Network parameter buffers (copy from CPU)
+        var actor_params_buf = ctx.enqueue_create_buffer[dtype](
+            Self.Config.ActorModel.PARAM_SIZE
+        )
+        ctx.enqueue_copy(actor_params_buf, self.state.actor.online.params)
+
+        # Workspace buffer for forward pass
+        comptime WORKSPACE_PER_SAMPLE = Self.ActorNet.WORKSPACE_SIZE_PER_SAMPLE
+        var actor_workspace_buf = ctx.enqueue_create_buffer[dtype](
+            N_EVAL_ENVS * WORKSPACE_PER_SAMPLE
+        )
+
+        # GPU-side RNG counter for stochastic sampling
+        var eval_rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
+
+        # Tracking arrays (on CPU)
+        var episode_rewards = List[Float64]()
+        var current_rewards = InlineArray[Float64, N_EVAL_ENVS](fill=0.0)
+        var episodes_completed = 0
+
+        # Step workspace
+        comptime EVAL_TOTAL_WS = EnvType.STEP_WS_SHARED + N_EVAL_ENVS * EnvType.STEP_WS_PER_ENV
+        comptime EVAL_WS_ALLOC = EVAL_TOTAL_WS if EVAL_TOTAL_WS > 0 else 1
+        var eval_ws_buf = ctx.enqueue_create_buffer[dtype](EVAL_WS_ALLOC)
+        EnvType.init_step_workspace_gpu[N_EVAL_ENVS](ctx, eval_ws_buf)
+
+        # Initialize environments
+        EnvType.reset_kernel_gpu[N_EVAL_ENVS, EnvType.STATE_SIZE](
+            ctx, env_states_buf
+        )
+        EnvType.extract_obs_kernel_gpu[
+            N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS
+        ](ctx, env_states_buf, obs_buf)
+        ctx.synchronize()
+
+        if verbose:
+            print(
+                "Running GPU evaluation with",
+                N_EVAL_ENVS,
+                "parallel envs...",
+            )
+
+        # Deterministic action extraction kernel (takes mean only, no noise)
+        @always_inline
+        def extract_deterministic_actions(
+            actions: LayoutTensor[
+                dtype,
+                Layout.row_major(N_EVAL_ENVS, Self.ACTIONS),
+                MutAnyOrigin,
+            ],
+            actor_out: LayoutTensor[
+                dtype,
+                Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
+                ImmutAnyOrigin,
+            ],
+            action_scale: Scalar[dtype],
+        ):
+            var idx = Int(block_idx.x) * TPB + Int(thread_idx.x)
+            if idx >= N_EVAL_ENVS:
+                return
+            for j in range(Self.ACTIONS):
+                # For deterministic: raw output scaled
+                # For SAC: first ACTIONS values are mean, apply tanh + scale
+                comptime if Self.Config.Explore.IS_STOCHASTIC:
+                    # SAC mean → tanh → scale
+                    var mean = actor_out[idx, j]
+                    var tanh_a = (
+                        Scalar[dtype](2.0)
+                        / (
+                            Scalar[dtype](1.0)
+                            + exp(Scalar[dtype](-2.0) * mean)
+                        )
+                        - Scalar[dtype](1.0)
+                    )
+                    actions[idx, j] = tanh_a * action_scale
+                else:
+                    actions[idx, j] = actor_out[idx, j] * action_scale
+
+        var step = 0
+        while episodes_completed < num_episodes and step < max_steps:
+            # Forward actor
+            var eval_actor_out_t = LayoutTensor[
+                dtype,
+                Layout.row_major(N_EVAL_ENVS, Self.Config.ActorModel.OUT_DIM),
+                MutAnyOrigin,
+            ](actor_out_buf.unsafe_ptr())
+            var eval_obs_t = LayoutTensor[
+                dtype,
+                Layout.row_major(N_EVAL_ENVS, Self.Config.ActorModel.IN_DIM),
+                MutAnyOrigin,
+            ](obs_buf.unsafe_ptr())
+            var eval_params_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.ActorModel.PARAM_SIZE),
+                MutAnyOrigin,
+            ](actor_params_buf.unsafe_ptr())
+            Self.Config.ActorModel.forward_gpu_no_cache[N_EVAL_ENVS](
+                ctx,
+                eval_actor_out_t,
+                eval_obs_t,
+                eval_params_t,
+                actor_workspace_buf,
+            )
+
+            var act_t = LayoutTensor[
+                dtype,
+                Layout.row_major(N_EVAL_ENVS, Self.ACTIONS),
+                MutAnyOrigin,
+            ](actions_buf.unsafe_ptr())
+
+            comptime if Self.Config.Explore.IS_STOCHASTIC:
+                if stochastic:
+                    # SAC stochastic: sample from policy
+                    var raw_t = LayoutTensor[
+                        dtype,
+                        Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
+                        MutAnyOrigin,
+                    ](actor_out_buf.unsafe_ptr())
+                    var rng_t = LayoutTensor[
+                        DType.uint32, Layout.row_major(1), MutAnyOrigin
+                    ](eval_rng_counter.unsafe_ptr())
+
+                    # Increment RNG counter
+                    comptime incr_k = increment_rng_counter_kernel
+                    ctx.enqueue_function[incr_k, incr_k](
+                        rng_t,
+                        grid_dim=(1,),
+                        block_dim=(1,),
+                    )
+
+                    comptime sac_k = sac_sample_actions_counter_kernel[
+                        dtype, N_EVAL_ENVS, Self.ACTIONS, Self.ACTOR_OUT
+                    ]
+                    ctx.enqueue_function[sac_k, sac_k](
+                        act_t,
+                        raw_t,
+                        Scalar[dtype](self.action_scale),
+                        Scalar[dtype](-5.0),
+                        Scalar[dtype](2.0),
+                        rng_t,
+                        grid_dim=(ENV_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+                else:
+                    # SAC deterministic: use mean → tanh → scale
+                    var actor_out_immut = LayoutTensor[
+                        dtype,
+                        Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
+                        ImmutAnyOrigin,
+                    ](actor_out_buf.unsafe_ptr())
+                    ctx.enqueue_function[
+                        extract_deterministic_actions,
+                        extract_deterministic_actions,
+                    ](
+                        act_t,
+                        actor_out_immut,
+                        Scalar[dtype](self.action_scale),
+                        grid_dim=(ENV_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+            else:
+                # DDPG/TD3: always deterministic during eval (no noise)
+                var actor_out_immut = LayoutTensor[
+                    dtype,
+                    Layout.row_major(N_EVAL_ENVS, Self.ACTOR_OUT),
+                    ImmutAnyOrigin,
+                ](actor_out_buf.unsafe_ptr())
+                ctx.enqueue_function[
+                    extract_deterministic_actions,
+                    extract_deterministic_actions,
+                ](
+                    act_t,
+                    actor_out_immut,
+                    Scalar[dtype](self.action_scale),
+                    grid_dim=(ENV_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+            # Step environments
+            comptime if EVAL_TOTAL_WS > 0:
+                EnvType.step_kernel_gpu[
+                    N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+                ](
+                    ctx,
+                    env_states_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
+                    obs_buf,
+                    UInt64(step),
+                    List[Scalar[dtype]](),
+                    eval_ws_buf.unsafe_ptr(),
+                )
+            else:
+                EnvType.step_kernel_gpu[
+                    N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS, Self.ACTIONS
+                ](
+                    ctx,
+                    env_states_buf,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
+                    obs_buf,
+                    UInt64(step),
+                )
+            ctx.synchronize()
+
+            # Copy rewards and dones to CPU
+            var rewards_host = InlineArray[Scalar[dtype], N_EVAL_ENVS](
+                uninitialized=True
+            )
+            var dones_host = InlineArray[Scalar[dtype], N_EVAL_ENVS](
+                uninitialized=True
+            )
+            ctx.enqueue_copy(rewards_host.unsafe_ptr(), rewards_buf)
+            ctx.enqueue_copy(dones_host.unsafe_ptr(), dones_buf)
+            ctx.synchronize()
+
+            # Track rewards and episode completion
+            for i in range(N_EVAL_ENVS):
+                current_rewards[i] += Float64(rewards_host[i])
+                if dones_host[i] > 0:
+                    episode_rewards.append(current_rewards[i])
+                    current_rewards[i] = 0.0
+                    episodes_completed += 1
+                    if episodes_completed >= num_episodes:
+                        break
+
+            # Auto-reset done environments
+            EnvType.selective_reset_kernel_gpu[
+                N_EVAL_ENVS, EnvType.STATE_SIZE
+            ](
+                ctx,
+                env_states_buf,
+                dones_buf,
+                UInt64(step),
+                workspace_ptr=eval_ws_buf.unsafe_ptr(),
+            )
+            EnvType.extract_obs_kernel_gpu[
+                N_EVAL_ENVS, EnvType.STATE_SIZE, Self.OBS
+            ](ctx, env_states_buf, obs_buf)
+
+            step += 1
+
+        if len(episode_rewards) == 0:
+            if verbose:
+                print("Warning: No episodes completed!")
+            return 0.0
+
+        var total_reward: Float64 = 0.0
+        for i in range(len(episode_rewards)):
+            total_reward += episode_rewards[i]
+        var avg = total_reward / Float64(len(episode_rewards))
+
+        if verbose:
+            print(
+                "GPU Eval:",
+                len(episode_rewards),
+                "episodes | Avg reward:",
+                String(avg)[byte=:10],
+            )
+
+        return avg
+
     # =========================================================================
     # GPU Training
     # =========================================================================

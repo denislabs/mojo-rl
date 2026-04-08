@@ -123,14 +123,25 @@ struct HopperConfig(Phyics3dEnvConfig):
             ctrl_cost += Scalar[DTYPE](actions[i] * actions[i])
         ctrl_cost = Scalar[DTYPE](P.CTRL_COST_WEIGHT) * ctrl_cost
 
-        # Health check
+        # Health check (matches Gymnasium Hopper-v5: strict inequalities)
         var z_height = data.qpos[1]  # rootz
         var y_angle = data.qpos[2]  # rooty
         var min_height = Scalar[DTYPE](P.MIN_HEIGHT)
         var max_pitch = Scalar[DTYPE](P.MAX_PITCH)
-        var is_healthy = z_height >= min_height
-        if y_angle > max_pitch or y_angle < -max_pitch:
+        var is_healthy = z_height > min_height
+        if y_angle >= max_pitch or y_angle <= -max_pitch:
             is_healthy = False
+
+        # healthy_state_range: qpos[2:] and qvel must be in (-100, 100)
+        # (matches Gymnasium Hopper-v5 strict inequalities)
+        for k in range(2, NQ):
+            var qp = data.qpos[k]
+            if qp <= Scalar[DTYPE](-100.0) or qp >= Scalar[DTYPE](100.0):
+                is_healthy = False
+        for k in range(NV):
+            var qv = data.qvel[k]
+            if qv <= Scalar[DTYPE](-100.0) or qv >= Scalar[DTYPE](100.0):
+                is_healthy = False
 
         # Healthy reward
         var healthy_reward = Scalar[DTYPE](0.0)
@@ -141,6 +152,36 @@ struct HopperConfig(Phyics3dEnvConfig):
         var terminated = not is_healthy
 
         return (reward, terminated)
+
+    # === CPU: Observation extraction with velocity clipping ===
+    # Gymnasium Hopper-v5 clips qvel to [-10, 10] in observations.
+    @staticmethod
+    def custom_extract_obs_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NSITE: Int = 0,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        mut obs: List[Scalar[DTYPE]],
+    ) -> Bool:
+        # qpos[1:6] → obs[0:5] (skip rootx)
+        for k in range(1, 6):
+            obs.append(data.qpos[k])
+
+        # qvel[0:6] → obs[5:11], clipped to [-10, 10]
+        for k in range(6):
+            var v = data.qvel[k]
+            if v > Scalar[DTYPE](10.0):
+                v = Scalar[DTYPE](10.0)
+            elif v < Scalar[DTYPE](-10.0):
+                v = Scalar[DTYPE](-10.0)
+            obs.append(v)
+
+        return True
 
     # === CPU: Float getters ===
     @staticmethod
@@ -264,10 +305,10 @@ struct HopperConfig(Phyics3dEnvConfig):
         var y_angle = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
 
         var is_healthy = True
-        # Gymnasium uses strict inequalities for z and angle
-        if z_height < min_height:
+        # Gymnasium uses strict inequalities: z > min_height, -max < angle < max
+        if z_height <= min_height:
             is_healthy = False
-        if y_angle > max_pitch or y_angle < -max_pitch:
+        if y_angle >= max_pitch or y_angle <= -max_pitch:
             is_healthy = False
 
         # healthy_state_range check: all state elements (qpos[2:] + qvel[:])

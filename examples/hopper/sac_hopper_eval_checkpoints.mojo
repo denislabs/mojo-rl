@@ -1,13 +1,14 @@
-"""Evaluate SAC Hopper checkpoints on CPU physics and Gymnasium Hopper-v5.
+"""Evaluate SAC Hopper checkpoints on CPU (f64), GPU (f32), and Gymnasium.
 
-Loads saved checkpoints and evaluates the same policy on both physics engines
-to measure the gap at different training stages (especially before/after collapse).
+Loads saved checkpoints and evaluates the same policy on all three backends
+to measure gaps at different training stages.
 
 Run with:
-    pixi run mojo run -I . examples/hopper/sac_hopper_eval_checkpoints.mojo
+    pixi run -e apple mojo run -I . examples/hopper/sac_hopper_eval_checkpoints.mojo
 """
 
 from std.random import seed
+from std.gpu.host import DeviceContext
 
 from mojo_rl.deep_agents.core.agents import DeepSACAgent
 from mojo_rl.envs.hopper import Hopper, HopperConfig
@@ -22,29 +23,36 @@ comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 4
 
 comptime EVAL_EPISODES = 20
-comptime dtype = DType.float32
+comptime MAX_STEPS_PER_EP = 1000
+
+comptime GPU_DTYPE = DType.float32
+
+comptime AgentType = DeepSACAgent[
+    OBS_DIM,
+    ACTION_DIM,
+    HIDDEN_DIM,
+    BUFFER_CAPACITY,
+    BATCH_SIZE,
+    0.0003,
+    0.0003,
+    0,
+    max_n_envs=MAX_N_ENVS,
+]
 
 
 def main() raises:
     seed(42)
-    print("=" * 70)
-    print("SAC Hopper — Checkpoint Cross-Evaluation")
-    print("=" * 70)
+    print("=" * 80)
+    print("SAC Hopper — Checkpoint Cross-Evaluation (CPU / GPU / Gymnasium)")
+    print("=" * 80)
     print()
 
     var cpu_env = Hopper[DType.float64, TERMINATE_ON_UNHEALTHY=True]()
     var gym_env = make_gym_hopper()
 
-    var agent = DeepSACAgent[
-        obs_dim=OBS_DIM,
-        action_dim=ACTION_DIM,
-        hidden_dim=HIDDEN_DIM,
-        buffer_capacity=BUFFER_CAPACITY,
-        batch_size=BATCH_SIZE,
-        actor_lr=0.0003,
-        critic_lr=0.0003,
-        max_n_envs=MAX_N_ENVS,
-    ](
+    var ctx = DeviceContext()
+
+    var agent = AgentType(
         gamma=0.99,
         tau=0.005,
         action_scale=1.0,
@@ -68,9 +76,10 @@ def main() raises:
     labels.append("1100k (collapsed)")
 
     print(
-        "Checkpoint         | CPU_Reward | Gym_Reward | Gap(CPU-Gym)"
+        "Checkpoint         | CPU_Rew    | GPU_Rew    | Gym_Rew    |"
+        " CPU-Gym  | CPU-GPU"
     )
-    print("-" * 70)
+    print("-" * 80)
 
     for i in range(len(checkpoints)):
         try:
@@ -79,16 +88,24 @@ def main() raises:
             var cpu_reward = agent.evaluate(
                 cpu_env,
                 num_episodes=EVAL_EPISODES,
-                max_steps_per_episode=1000,
+                max_steps_per_episode=MAX_STEPS_PER_EP,
+            )
+
+            var gpu_reward = agent.evaluate_gpu[
+                Hopper[GPU_DTYPE, TERMINATE_ON_UNHEALTHY=True],
+                N_EVAL_ENVS=MAX_N_ENVS,
+            ](
+                ctx,
+                num_episodes=EVAL_EPISODES,
+                max_steps=MAX_STEPS_PER_EP,
+                stochastic=False,
             )
 
             var gym_reward = agent.evaluate(
                 gym_env,
                 num_episodes=EVAL_EPISODES,
-                max_steps_per_episode=1000,
+                max_steps_per_episode=MAX_STEPS_PER_EP,
             )
-
-            var gap = cpu_reward - gym_reward
 
             print(
                 labels[i]
@@ -96,18 +113,18 @@ def main() raises:
                 + "| "
                 + String(cpu_reward)[byte=:10]
                 + " | "
+                + String(gpu_reward)[byte=:10]
+                + " | "
                 + String(gym_reward)[byte=:10]
                 + " | "
-                + String(gap)[byte=:10]
+                + String(cpu_reward - gym_reward)[byte=:8]
+                + " | "
+                + String(cpu_reward - gpu_reward)[byte=:8]
             )
         except e:
             print(labels[i] + " | ERROR: " + String(e))
 
-    print("-" * 70)
-    print()
-    print("If Gap is large → physics difference is the bottleneck.")
-    print("If Gap is small but both are low → policy quality is the issue.")
-    print("If CPU high but Gym low at 1000k → policy exploits our physics.")
+    print("-" * 80)
 
     cpu_env.close()
     gym_env.close()
