@@ -280,6 +280,7 @@ def _gpu_stage[
     var ws_lt = LayoutTensor[
         DTYPE, Layout.row_major(GPU_BATCH, WS_SIZE), MutAnyOrigin
     ](ws_buf)
+    comptime STEP_THREADS = NV  # Match hopper_config.mojo
     comptime kernel = RK4Integrator[SOLVER=NewtonSolver].rk4_stage_kernel[
         DTYPE,
         NQ,
@@ -294,13 +295,18 @@ def _gpu_stage[
         NGEOM,
         SOLVER_WS,
         STAGE,
+        0,      # NM
+        False,  # SPARSE
+        STEP_THREADS,
     ]
+    comptime STEP_ENV_TPB = TPB // STEP_THREADS
+    comptime STEP_ENV_BLOCKS = (GPU_BATCH + STEP_ENV_TPB - 1) // STEP_ENV_TPB
     ctx.enqueue_function[kernel, kernel](
         state_lt,
         model_lt,
         ws_lt,
-        grid_dim=(ENV_BLOCKS,),
-        block_dim=(TPB,),
+        grid_dim=(STEP_ENV_BLOCKS, 1),
+        block_dim=(STEP_ENV_TPB, STEP_THREADS),
     )
 
 
@@ -1325,35 +1331,18 @@ def debug_rk4_instability() raises:
     for i in range(NV):
         cpu_data.qacc_warmstart[i] = Scalar[DTYPE](0)
     _cpu_fwd(cpu_model, cpu_data, a1, cdof, M_inv, M)
-
-    # Save CPU qacc_smooth before solver modifies a1
-    var cpu_a1_smooth = List[Scalar[DTYPE]](capacity=V_SIZE)
-    for i in range(NV):
-        cpu_a1_smooth.append(a1[i])
-
     _cpu_solve(cpu_model, cpu_data, cdof, M_inv, M, a1, dt, False)
 
-    # GPU: stage 1 kernel only (no solver yet — analysis runs solver)
     _gpu_stage[1](ctx, gpu_state_buf, gpu_model_buf, gpu_ws_buf)
+    _gpu_solver(ctx, gpu_state_buf, gpu_model_buf, gpu_ws_buf)
     ctx.synchronize()
     ctx.enqueue_copy(ws_host.unsafe_ptr(), gpu_ws_buf)
     ctx.synchronize()
 
-    # Detailed analysis (constraints, Hessian, search, linesearch, solver)
-    var a1_max_err = _analyze_stage1(
-        cpu_model,
-        cpu_data,
-        cpu_a1_smooth,
-        M,
-        cdof,
-        a1,
-        ctx,
-        gpu_state_buf,
-        gpu_model_buf,
-        gpu_ws_buf,
-        ws_host,
-        gpu_state_host,
-    )
+    var a1_max_err = _print_compare_qacc("A[1]", a1, ws_host)
+    ctx.enqueue_copy(gpu_state_host.unsafe_ptr(), gpu_state_buf)
+    ctx.synchronize()
+    _print_compare_state(cpu_data, gpu_state_host)
 
     # =========================================================================
     # Stage 2: evaluate at (q0 + dt/2*C[1], v0 + dt/2*A[1])
@@ -1410,287 +1399,11 @@ def debug_rk4_instability() raises:
     _cpu_fwd(cpu_model, cpu_data, a3, cdof, M_inv, M)
     _cpu_solve(cpu_model, cpu_data, cdof, M_inv, M, a3, dt, True)
 
-    # GPU: stage 3 kernel ONLY (forward dynamics, no solver yet)
     _gpu_stage[3](ctx, gpu_state_buf, gpu_model_buf, gpu_ws_buf)
-    ctx.synchronize()
-
-    # Read GPU qacc_smooth BEFORE solver
-    ctx.enqueue_copy(ws_host.unsafe_ptr(), gpu_ws_buf)
-    ctx.synchronize()
-
-    # Save CPU qacc_smooth (a3 before _cpu_solve modified it — already saved above)
-    # Actually a3 was already modified by _cpu_solve. Need to save before.
-    # WORKAROUND: compute CPU qacc_smooth from workspace (fnet via LDL solve)
-    # For now just compare GPU qacc_smooth
-    print("  --- Stage 3 qacc_smooth (BEFORE solver) ---")
-    print("  CPU A3_smooth:", end="")
-    # CPU a3 was already modified by _cpu_solve above. Use _cpu_fwd output.
-    # Let's re-run _cpu_fwd to get the unmodified a3_smooth
-    var a3_smooth = List[Scalar[DTYPE]](capacity=V_SIZE)
-    for _ in range(V_SIZE):
-        a3_smooth.append(Scalar[DTYPE](0))
-    # Recompute CPU forward dynamics for Stage 3 (qpos/qvel already set)
-    for i in range(NQ):
-        cpu_data.qpos[i] = q_stage[i]
-    for i in range(NV):
-        cpu_data.qvel[i] = v0[i] + dt * a2[i]
-    _cpu_fwd(cpu_model, cpu_data, a3_smooth, cdof, M_inv, M)
-    for i in range(NV):
-        print(" " + String(Float64(a3_smooth[i]))[byte=:14], end="")
-    print()
-    print("  GPU qacc_sm:", end="")
-    var a3_smooth_err: Float64 = 0
-    for i in range(NV):
-        var gv = Float64(ws_host[QACC_CON_OFF + i])
-        print(" " + String(gv)[byte=:14], end="")
-        var err = abs(Float64(a3_smooth[i]) - gv)
-        if err > a3_smooth_err:
-            a3_smooth_err = err
-    print()
-    print("  qacc_smooth max_err = " + String(a3_smooth_err))
-
-    # Compare M diagonal
-    var m3_err: Float64 = 0
-    for i in range(NV):
-        var err = abs(
-            Float64(M[i * NV + i]) - Float64(ws_host[M_OFF + i * NV + i])
-        )
-        if err > m3_err:
-            m3_err = err
-    print("  M_diag max_err = " + String(m3_err))
-
-    # Contact + limit info
-    ctx.enqueue_copy(gpu_state_host.unsafe_ptr(), gpu_state_buf)
-    ctx.synchronize()
-    var nc3_cpu = Int(cpu_data.num_contacts)
-    var nc3_gpu = Int(gpu_state_host[META_OFF + META_IDX_NUM_CONTACTS])
-    print("  ncon: cpu=" + String(nc3_cpu) + " gpu=" + String(nc3_gpu))
-
-    # Check if foot limit is active at Stage 3 intermediate state
-    print("  CPU qpos at stage 3:", end="")
-    for i in range(NQ):
-        print(" " + String(Float64(cpu_data.qpos[i]))[byte=:12], end="")
-    print()
-
-    # Build CPU constraints at Stage 3 to see how many limits are active
-
-    var cpu_L_s3 = List[Scalar[DTYPE]](capacity=M_SIZE)
-    for _ in range(M_SIZE):
-        cpu_L_s3.append(Scalar[DTYPE](0))
-    var cpu_D_s3 = List[Scalar[DTYPE]](capacity=V_SIZE)
-    for _ in range(V_SIZE):
-        cpu_D_s3.append(Scalar[DTYPE](0))
-    ldl_fac[DTYPE, NV](M, cpu_L_s3, cpu_D_s3)
-    var cpu_M_inv_s3 = List[Scalar[DTYPE]](capacity=M_SIZE)
-    for _ in range(M_SIZE):
-        cpu_M_inv_s3.append(Scalar[DTYPE](0))
-    compute_M_inv_from_ldl[DTYPE, NV](cpu_L_s3, cpu_D_s3, cpu_M_inv_s3)
-
-    comptime MAX_ROWS3 = 11 * MAX_CONTACTS + 2 * NJOINT
-    var constraints_s3 = ConstraintData[DTYPE, MAX_ROWS3, NV]()
-    build_constraints[CONE_TYPE=HopperModel.CONE_TYPE](
-        cpu_model,
-        cpu_data,
-        cdof,
-        cpu_M_inv_s3,
-        cpu_model.timestep,
-        constraints_s3,
-    )
-    print(
-        "  CPU constraints: num_rows="
-        + String(constraints_s3.num_rows)
-        + " normals="
-        + String(constraints_s3.num_normals)
-        + " friction="
-        + String(constraints_s3.num_friction)
-        + " limits="
-        + String(constraints_s3.num_limits)
-    )
-
-    # Print CPU constraint details — especially the limit row
-
-    for r in range(constraints_s3.num_rows):
-        var row = constraints_s3.rows[r]
-        var D_r = primal_D(row.inv_K_imp, row.K)
-        var ctype = "edge"
-        if r >= constraints_s3.num_normals + constraints_s3.num_friction:
-            ctype = "LIMIT"
-        print(
-            "  CPU row["
-            + String(r)
-            + "] ("
-            + ctype
-            + "): K="
-            + String(Float64(row.K))[byte=:16]
-            + " D="
-            + String(Float64(D_r))[byte=:16]
-            + " bias="
-            + String(Float64(row.bias))[byte=:16]
-        )
-        if ctype == "LIMIT":
-            print(
-                "    inv_K_imp="
-                + String(Float64(row.inv_K_imp))
-                + " dof="
-                + String(row.source_dof)
-                + " sign="
-                + String(Float64(row.limit_sign))
-            )
-            print("    J:", end="")
-            for i in range(NV):
-                print(
-                    " "
-                    + String(Float64(constraints_s3.J[r * NV + i]))[byte=:8],
-                    end="",
-                )
-            print()
-
-    # Now run GPU solver
     _gpu_solver(ctx, gpu_state_buf, gpu_model_buf, gpu_ws_buf)
     ctx.synchronize()
     ctx.enqueue_copy(ws_host.unsafe_ptr(), gpu_ws_buf)
     ctx.synchronize()
-
-    # Read GPU PYRAMIDAL edge data at Stage 3 (4 contact + limit edges)
-    print("\n  --- GPU Stage 3 PYRAMIDAL edges (contact + limit) ---")
-    # Contact edges are at the standard PYR offsets
-    for e in range(4):
-        var D_e = Float64(ws_host[PYR_SC + e * MC + 0])
-        var bias_e = Float64(ws_host[PYR_SC + 4 * MC + e * MC + 0])
-        print(
-            "  edge["
-            + String(e)
-            + "]: D="
-            + String(D_e)[byte=:16]
-            + " bias="
-            + String(bias_e)[byte=:16]
-        )
-    # Limit edges are added AFTER contact edges in the InlineArray
-    # but they're NOT in the workspace — they're computed inline in the solver.
-    # We can't read them back directly. But we can compare the solver OUTPUT.
-    # Simulate GPU limit edge computation on CPU to compare with CPU constraint
-    # GPU reads: qpos from state, qvel from state, M_inv from workspace, model joint data
-    # At Stage 3 the CPU and GPU state match (qpos_err=0, qvel_err=2.38e-07)
-    # So we can use CPU data to simulate GPU limit computation
-    print("  --- Simulated GPU limit edge (from CPU state) ---")
-    for j_idx in range(cpu_model.num_joints):
-        var joint = cpu_model.joints[j_idx]
-        if joint.jnt_type != JNT_HINGE and joint.jnt_type != JNT_SLIDE:
-            continue
-        var dof_j = joint.dof_adr
-        var pos_j = cpu_data.qpos[joint.qpos_adr]
-        var rmin_j = joint.range_min
-        var rmax_j = joint.range_max
-        if rmin_j < Scalar[DTYPE](-1e9) or rmax_j > Scalar[DTYPE](1e9):
-            continue
-        # Check upper limit (the one that's active at Stage 3)
-        var dist_hi_j = rmax_j - pos_j
-        if dist_hi_j < Scalar[DTYPE](0):
-            var sign_j = Scalar[DTYPE](-1)
-            var K_j = cpu_M_inv_s3[dof_j * NV + dof_j]
-            var pen_j = -dist_hi_j
-            var v_j = sign_j * cpu_data.qvel[dof_j]
-            var diag_j = cpu_model.dof_invweight0[dof_j]
-            if diag_j < Scalar[DTYPE](1e-10):
-                diag_j = K_j
-            # Use model-level limit solimp (matching what GPU does)
-            var imp_j = Scalar[DTYPE](0.5) * (
-                cpu_model.solimp_limit[0] + cpu_model.solimp_limit[1]
-            )
-            # TODO: full impedance computation (for now just show the values)
-            var R_j = (Scalar[DTYPE](1) - imp_j) / imp_j * diag_j
-            var inv_K_j = Scalar[DTYPE](1) / (K_j + R_j)
-            var R_rec_j = Scalar[DTYPE](1) / inv_K_j - K_j
-            var D_j = Scalar[DTYPE](1) / R_rec_j
-            var B_j = Scalar[DTYPE](2.0) / (
-                cpu_model.solimp_limit[1] * cpu_model.solref_limit[0]
-            )
-            var K_spr_j = Scalar[DTYPE](1.0) / (
-                cpu_model.solimp_limit[1]
-                * cpu_model.solimp_limit[1]
-                * cpu_model.solref_limit[0]
-                * cpu_model.solref_limit[0]
-                * cpu_model.solref_limit[1]
-                * cpu_model.solref_limit[1]
-            )
-            var bias_j = B_j * v_j - K_spr_j * imp_j * pen_j
-            print(
-                "  dof="
-                + String(dof_j)
-                + " pos="
-                + String(Float64(pos_j))
-                + " rmax="
-                + String(Float64(rmax_j))
-                + " dist="
-                + String(Float64(dist_hi_j))
-                + " pen="
-                + String(Float64(pen_j))
-            )
-            print(
-                "  K="
-                + String(Float64(K_j))
-                + " diag="
-                + String(Float64(diag_j))
-                + " imp="
-                + String(Float64(imp_j))
-                + " R="
-                + String(Float64(R_j))
-                + " D="
-                + String(Float64(D_j))
-            )
-            print(
-                "  v_lim="
-                + String(Float64(v_j))
-                + " bias="
-                + String(Float64(bias_j))
-            )
-
-    # Read GPU limit edge debug data
-    print("\n  --- GPU ACTUAL limit edge (from debug area) ---")
-    print(
-        "  D="
-        + String(Float64(ws_host[DBG_WS_OFF + 0]))
-        + " bias="
-        + String(Float64(ws_host[DBG_WS_OFF + 1]))
-    )
-    print(
-        "  K="
-        + String(Float64(ws_host[DBG_WS_OFF + 2]))
-        + " diag="
-        + String(Float64(ws_host[DBG_WS_OFF + 3]))
-        + " imp="
-        + String(Float64(ws_host[DBG_WS_OFF + 4]))
-    )
-    print(
-        "  R="
-        + String(Float64(ws_host[DBG_WS_OFF + 5]))
-        + " inv_K="
-        + String(Float64(ws_host[DBG_WS_OFF + 6]))
-        + " R_recov="
-        + String(Float64(ws_host[DBG_WS_OFF + 7]))
-    )
-    print(
-        "  pen="
-        + String(Float64(ws_host[DBG_WS_OFF + 8]))
-        + " v_lim="
-        + String(Float64(ws_host[DBG_WS_OFF + 9]))
-    )
-    print(
-        "  K_spring="
-        + String(Float64(ws_host[DBG_WS_OFF + 10]))
-        + " B_damp="
-        + String(Float64(ws_host[DBG_WS_OFF + 11]))
-    )
-    print(
-        "  num_edges="
-        + String(Float64(ws_host[DBG_WS_OFF + 12]))
-        + " li_width="
-        + String(Float64(ws_host[DBG_WS_OFF + 13]))
-        + " li_dmin="
-        + String(Float64(ws_host[DBG_WS_OFF + 14]))
-        + " li_dmax="
-        + String(Float64(ws_host[DBG_WS_OFF + 15]))
-    )
 
     var a3_max_err = _print_compare_qacc("A[3]", a3, ws_host)
     ctx.enqueue_copy(gpu_state_host.unsafe_ptr(), gpu_state_buf)

@@ -294,7 +294,8 @@ def main() raises:
         var gpu_z = Float64(gpu_state_host[qpos_offset[NQ, NV]() + 1])
         var gpu_angle = Float64(gpu_state_host[qpos_offset[NQ, NV]() + 2])
 
-        if step % 10 == 0 or qpos_err > 0.01 or qvel_err > 0.1:
+        # or qpos_err > 0.01 or qvel_err > 0.1
+        if step % 10 == 0:
             print(
                 String(step)[byte=:4]
                 + " | "

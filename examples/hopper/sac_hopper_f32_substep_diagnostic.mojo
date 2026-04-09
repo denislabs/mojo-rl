@@ -76,7 +76,7 @@ comptime WS_SIZE = integrator_workspace_size[
 ]() + NV * NV + SOLVER_WS + rk4_extra_workspace_size[NQ, NV]()
 
 # How many env steps to run (each = FRAME_SKIP substeps)
-comptime MAX_ENV_STEPS = 200
+comptime MAX_ENV_STEPS = 500
 
 comptime ActorModel = SACConfig[OBS_DIM, ACTION_DIM].ActorModel
 comptime ActorOpt = SACConfig[OBS_DIM, ACTION_DIM].ActorOpt

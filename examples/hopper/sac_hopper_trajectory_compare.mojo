@@ -60,7 +60,7 @@ comptime NGEOM = HopperModel.NGEOM
 comptime NSITE = HopperModel.NSITE
 comptime FRAME_SKIP = HopperConfig.FRAME_SKIP  # 4
 
-comptime MAX_STEPS = 100
+comptime MAX_STEPS = 500
 
 # GPU constants
 comptime GPU_DTYPE = DType.float32

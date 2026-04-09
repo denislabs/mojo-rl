@@ -1314,13 +1314,18 @@ struct NewtonSolver(ConstraintSolver):
             # Initialize qacc from workspace (qacc_smooth set by stage kernel)
             comptime M_SIZE = _max_one[NV * NV]()
             var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+            var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](
+                uninitialized=True
+            )
             var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
             comptime M_idx = ws_M_offset[NV, NBODY]()
             comptime qacc_init_idx = ws_qacc_constrained_offset[NV, NBODY]()
             for i in range(NV):
-                qacc[i] = rebind[Scalar[DTYPE]](
+                var q_i = rebind[Scalar[DTYPE]](
                     workspace[env, qacc_init_idx + i]
                 )
+                qacc[i] = q_i
+                qacc_smooth[i] = q_i
             for i in range(NV):
                 Ma[i] = Scalar[DTYPE](0)
                 for j in range(NV):
@@ -1454,9 +1459,10 @@ struct NewtonSolver(ConstraintSolver):
                     alpha = -p0_d1 / p0_d2
 
                     # Compute old cost for acceptance check
+                    # Gauss cost = 0.5*(Ma-f_smooth)·(qacc-qacc_smooth)
                     var old_cost: Scalar[DTYPE] = 0
                     for i in range(NV):
-                        old_cost += Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * qacc[i]
+                        old_cost += Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * (qacc[i] - qacc_smooth[i])
                     for e_idx in range(num_edges):
                         if jar[e_idx] < Scalar[DTYPE](0):
                             old_cost += Scalar[DTYPE](0.5) * De[e_idx] * jar[e_idx] * jar[e_idx]
@@ -1467,7 +1473,7 @@ struct NewtonSolver(ConstraintSolver):
                         for i in range(NV):
                             var qa_t = qacc[i] + alpha * search[i]
                             var Ma_t = Ma[i] + alpha * Mv[i]
-                            trial_cost += Scalar[DTYPE](0.5) * (Ma_t - f_smooth[i]) * qa_t
+                            trial_cost += Scalar[DTYPE](0.5) * (Ma_t - f_smooth[i]) * (qa_t - qacc_smooth[i])
                         for e_idx in range(num_edges):
                             var jar_t = jar[e_idx] + alpha * Jv_e[e_idx]
                             if jar_t < Scalar[DTYPE](0):
@@ -1501,24 +1507,13 @@ struct NewtonSolver(ConstraintSolver):
                     old_jar[e_idx] = jar[e_idx]
                     old_force[e_idx] = force[e_idx]
 
-                # Compute old cost
+                # Compute old cost: gauss + constraint
                 var old_cost: Scalar[DTYPE] = 0
                 for i in range(NV):
                     old_cost += (
                         Scalar[DTYPE](0.5)
                         * (Ma[i] - f_smooth[i])
-                        * (
-                            qacc[i]
-                            - qacc[i]
-                            + qacc[i]
-                            - f_smooth[i] / Ma[i] * qacc[i]
-                        )
-                    )
-                # Simplified: gauss + constraint cost
-                old_cost = Scalar[DTYPE](0)
-                for i in range(NV):
-                    old_cost += (
-                        Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * qacc[i]
+                        * (qacc[i] - qacc_smooth[i])
                     )
                 for e_idx in range(num_edges):
                     if jar[e_idx] < Scalar[DTYPE](0):
@@ -1552,7 +1547,9 @@ struct NewtonSolver(ConstraintSolver):
                 var new_cost: Scalar[DTYPE] = 0
                 for i in range(NV):
                     new_cost += (
-                        Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * qacc[i]
+                        Scalar[DTYPE](0.5)
+                        * (Ma[i] - f_smooth[i])
+                        * (qacc[i] - qacc_smooth[i])
                     )
                 for e_idx in range(num_edges):
                     if jar[e_idx] < Scalar[DTYPE](0):
