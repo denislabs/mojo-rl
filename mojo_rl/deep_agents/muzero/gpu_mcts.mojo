@@ -453,6 +453,10 @@ def gpu_mcts_expand_kernel[
     if NUM_VAL_BINS == 1:
         # Scalar value: read raw output, tanh for [-1, 1] bounding
         var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        if raw_v > Scalar[dtype](10.0):
+            raw_v = Scalar[dtype](10.0)
+        elif raw_v < Scalar[dtype](-10.0):
+            raw_v = Scalar[dtype](-10.0)
         var ev_pos = exp(raw_v)
         var ev_neg = exp(-raw_v)
         leaf_values[e] = (ev_pos - ev_neg) / (ev_pos + ev_neg)  # tanh
@@ -679,6 +683,98 @@ def gpu_mcts_apply_legal_mask_kernel[
                     dtype
                 ](0.5):
                     prior[root_off + a] = inv_n
+
+
+def gpu_mcts_apply_legal_mask_with_noise_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    legal_masks: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
+    noise_fraction: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Mask root prior, add Dirichlet noise only to legal actions, renormalize.
+
+    Unlike apply_legal_mask_kernel, this generates Dirichlet noise ONLY for
+    legal actions, ensuring the full noise budget goes to valid moves.
+
+    One thread per environment. Call AFTER init_root (with noise=0), BEFORE simulations.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var root_off = e * MAX_NODES * ACT  # Root is always node 0
+
+    # Step 1: Apply legal mask to prior and renormalize (strip any pre-existing noise)
+    var sum_p = Scalar[dtype](0.0)
+    for a in range(ACT):
+        var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+        if legal < Scalar[dtype](0.5):
+            prior[root_off + a] = Scalar[dtype](0.0)
+        else:
+            sum_p += rebind[Scalar[dtype]](prior[root_off + a])
+
+    if sum_p > Scalar[dtype](1e-8):
+        for a in range(ACT):
+            prior[root_off + a] = (
+                rebind[Scalar[dtype]](prior[root_off + a]) / sum_p
+            )
+    else:
+        var n_legal = Scalar[dtype](0.0)
+        for a in range(ACT):
+            if rebind[Scalar[dtype]](legal_masks[e * ACT + a]) > Scalar[dtype](
+                0.5
+            ):
+                n_legal += Scalar[dtype](1.0)
+        if n_legal > Scalar[dtype](0.5):
+            var inv_n = Scalar[dtype](1.0) / n_legal
+            for a in range(ACT):
+                if rebind[Scalar[dtype]](legal_masks[e * ACT + a]) > Scalar[
+                    dtype
+                ](0.5):
+                    prior[root_off + a] = inv_n
+
+    # Step 2: Generate Dirichlet noise only for legal actions
+    # Use two passes with deterministic PhiloxRandom (same seed = same sequence)
+    if noise_fraction > Scalar[dtype](0.0):
+        # Pass 1: compute noise sum over legal actions only
+        var philox1 = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(e * 137 + 1), offset=0
+        )
+        var noise_sum = Scalar[dtype](0.0)
+        for a in range(ACT):
+            var rand_vals = philox1.step_uniform()
+            var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+            if legal > Scalar[dtype](0.5):
+                noise_sum += -log(
+                    Scalar[dtype](rand_vals[0]) + Scalar[dtype](1e-8)
+                )
+
+        # Pass 2: regenerate same noise, normalize, and blend with prior
+        if noise_sum > Scalar[dtype](1e-8):
+            var philox2 = PhiloxRandom(
+                seed=UInt64(rng_seed) + UInt64(e * 137 + 1), offset=0
+            )
+            for a in range(ACT):
+                var rand_vals = philox2.step_uniform()
+                var legal = rebind[Scalar[dtype]](legal_masks[e * ACT + a])
+                if legal > Scalar[dtype](0.5):
+                    var noise_val = -log(
+                        Scalar[dtype](rand_vals[0]) + Scalar[dtype](1e-8)
+                    ) / noise_sum
+                    prior[root_off + a] = (
+                        (Scalar[dtype](1.0) - noise_fraction)
+                        * rebind[Scalar[dtype]](prior[root_off + a])
+                        + noise_fraction * noise_val
+                    )
 
 
 def gpu_mcts_backup_negated_kernel[
@@ -1140,6 +1236,10 @@ def gpu_mcts_expand_alphazero_kernel[
     else:
         # Non-terminal: use network value prediction
         var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        if raw_v > Scalar[dtype](10.0):
+            raw_v = Scalar[dtype](10.0)
+        elif raw_v < Scalar[dtype](-10.0):
+            raw_v = Scalar[dtype](-10.0)
         var ev_p = exp(raw_v)
         var ev_n = exp(-raw_v)
         leaf_values[e] = (ev_p - ev_n) / (ev_p + ev_n)
@@ -1515,6 +1615,11 @@ def gpu_mcts_batched_expand_backup_kernel[
             leaf_value = -step_rew  # Terminal: negate (reward is parent's perspective)
         else:
             var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+            # Clamp to prevent tanh overflow/saturation
+            if raw_v > Scalar[dtype](10.0):
+                raw_v = Scalar[dtype](10.0)
+            elif raw_v < Scalar[dtype](-10.0):
+                raw_v = Scalar[dtype](-10.0)
             var ev_p = exp(raw_v)
             var ev_n = exp(-raw_v)
             leaf_value = (ev_p - ev_n) / (
@@ -1926,6 +2031,10 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
         var leaf_value: Scalar[dtype]
         if NUM_VAL_BINS == 1:
             var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+            if raw_v > Scalar[dtype](10.0):
+                raw_v = Scalar[dtype](10.0)
+            elif raw_v < Scalar[dtype](-10.0):
+                raw_v = Scalar[dtype](-10.0)
             var ev_p = exp(raw_v)
             var ev_n = exp(-raw_v)
             leaf_value = (ev_p - ev_n) / (ev_p + ev_n)

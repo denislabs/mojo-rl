@@ -54,6 +54,7 @@ from mojo_rl.deep_agents.muzero.gpu_mcts import (
     gpu_mcts_extract_actions_masked_kernel,
     gpu_mcts_extract_actions_temp_kernel,
     gpu_mcts_apply_legal_mask_kernel,
+    gpu_mcts_apply_legal_mask_with_noise_kernel,
     gpu_mcts_copy_root_state_kernel,
     gpu_mcts_batched_select_and_copy_kernel,
     gpu_mcts_batched_expand_backup_kernel,
@@ -144,6 +145,11 @@ def az_policy_value_grad_kernel[
     # loss = (tanh(raw) - target)^2
     # d/draw = 2 * (tanh(raw) - target) * (1 - tanh(raw)^2)
     var raw_v = rebind[Scalar[dtype]](pred_out[pred_off + ACT])
+    # Clamp to prevent tanh saturation (dtanh → 0 kills value gradients)
+    if raw_v > Scalar[dtype](10.0):
+        raw_v = Scalar[dtype](10.0)
+    elif raw_v < Scalar[dtype](-10.0):
+        raw_v = Scalar[dtype](-10.0)
     var target_v = rebind[Scalar[dtype]](target_value[b])
     var ev_p = exp(raw_v)
     var ev_n = exp(-raw_v)
@@ -1089,6 +1095,8 @@ struct GenericAlphaZeroAgent[
             grads,
             gpu.workspace,
         )
+        # Clip gradients to prevent explosion in deep ResNet
+        gpu.prediction.clip_grads(ctx, max_val=Scalar[dtype](1.0))
         # Log param delta across optimizer step (every diag_every steps)
         if (
             self.logger
@@ -3374,21 +3382,26 @@ struct GenericAlphaZeroAgent[
                         po,
                         miq,
                         mxq,
-                        Scalar[dtype](Self.Config.Noise.NOISE_FRACTION),
+                        Scalar[dtype](0.0),  # No noise in init — applied after legal mask
                         _init_rng_t,
                         grid_dim=(ENV_BLOCKS,),
                         block_dim=(TPB,),
                     )
 
-                    # Legal mask on root
+                    # Legal mask + Dirichlet noise (only on legal actions)
                     var lm = LayoutTensor[
                         dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
                     ](legal_masks_buf.unsafe_ptr())
-                    comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
+                    comptime run_mask = gpu_mcts_apply_legal_mask_with_noise_kernel[
                         Self.n_envs, MAX_NODES, ACT, dtype
                     ]
                     ctx.enqueue_function[run_mask, run_mask](
-                        pr, lm, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
+                        pr,
+                        lm,
+                        Scalar[dtype](Self.Config.Noise.NOISE_FRACTION),
+                        Scalar[DType.uint32](UInt32(total_steps + iter_steps)),
+                        grid_dim=(ENV_BLOCKS,),
+                        block_dim=(TPB,),
                     )
 
                     # Copy root game states
