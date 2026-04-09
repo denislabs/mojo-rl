@@ -138,8 +138,8 @@ def main() raises:
         auto_alpha=False,
         target_entropy=-3.0,
     )
-    agent.load_checkpoint("sac_hopper_1000.ckpt")
-    print("Loaded checkpoint: sac_hopper_1000.ckpt")
+    agent.load_checkpoint("sac_hopper_400.ckpt")
+    print("Loaded checkpoint: sac_hopper_400.ckpt")
 
     # === CPU environment (f64) ===
     var env = Hopper[DType.float64, TERMINATE_ON_UNHEALTHY=True]()

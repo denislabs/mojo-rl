@@ -22,11 +22,11 @@ comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
-comptime EVAL_EPISODES = 64
+comptime EVAL_EPISODES = 128
 comptime MAX_STEPS_PER_EP = 1000
 
 comptime GPU_DTYPE = DType.float32
-comptime TERMINATE_ON_UNHEALTHY = False
+comptime TERMINATE_ON_UNHEALTHY = True
 
 comptime AgentType = DeepSACAgent[
     OBS_DIM,
