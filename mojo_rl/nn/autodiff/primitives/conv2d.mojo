@@ -67,9 +67,9 @@ struct Conv2D[
     comptime OUT_DIM: Int = Self.out_channels * Self.out_h * Self.out_w
     comptime PARAM_SIZE: Int = Self.out_channels * Self.col_size + Self.out_channels
     comptime CACHE_SIZE: Int = Self.col_size * Self.spatial_out
-    # Workspace: max(forward out_temp, backward dcol)
+    # Workspace: max(forward out_temp, backward dcol) + w_t
     # Forward: out_temp (OUT_DIM), Backward dx: dcol (CACHE_SIZE = col_size*spatial_out)
-    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.CACHE_SIZE if Self.CACHE_SIZE > Self.OUT_DIM else Self.OUT_DIM
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.CACHE_SIZE + Self.col_size * Self.out_channels
 
     def __init__(out self):
         pass
@@ -1279,11 +1279,47 @@ struct Conv2D[
             # ── dx via matmul + col2im gather ──
             # dcol = W.T @ grad_reshaped, then col2im gather
             # grad_reshaped (OC, K_TOTAL) is still in grad_input.ptr
-            var W_mat_bwd = LayoutTensor[
+
+            # dcol = W.T @ grad_reshaped  →  dcol_t = grad_reshaped.T @ W
+            # grad_reshaped is (OC, K_TOTAL) row-major = (K_TOTAL, OC) col-major
+            # Reinterpret as (K_TOTAL, OC) row-major via transpose_b on W:
+            # dcol_t(K_TOTAL, col_size) = grad_t(K_TOTAL, OC) @ W(OC, col_size)
+            # But we can't reinterpret grad without transpose_a (unsupported).
+            # So we keep the explicit transpose for backward.
+            # TODO: Remove when max_matmul supports transpose_a
+            comptime w_t_bwd_offset = BATCH * Self.CACHE_SIZE
+            comptime w_elems_bwd = Self.out_channels * Self.col_size
+            comptime w_blocks_bwd = (w_elems_bwd + TPB - 1) // TPB
+            var w_t_bwd = LayoutTensor[
                 dtype,
-                Layout.row_major(Self.out_channels, Self.col_size),
+                Layout.row_major(Self.col_size, Self.out_channels),
                 MutAnyOrigin,
-            ](params.ptr)
+            ](workspace + w_t_bwd_offset)
+
+            @always_inline
+            def transpose_w_bwd(
+                dst: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.col_size, Self.out_channels),
+                    MutAnyOrigin,
+                ],
+                src: LayoutTensor[
+                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= w_elems_bwd:
+                    return
+                var k = idx // Self.out_channels
+                var oc = idx % Self.out_channels
+                dst[k, oc] = src[oc * Self.col_size + k]
+
+            ctx.enqueue_function[transpose_w_bwd, transpose_w_bwd](
+                w_t_bwd,
+                params_immut,
+                grid_dim=(w_blocks_bwd,),
+                block_dim=(TPB,),
+            )
 
             var dcol = LayoutTensor[
                 dtype,
@@ -1291,8 +1327,7 @@ struct Conv2D[
                 MutAnyOrigin,
             ](workspace)
 
-            # dcol(col_size, K_TOTAL) = W.T(col_size, OC) @ grad(OC, K_TOTAL)
-            max_matmul[target="gpu", transpose_a=True](lt_to_tt(dcol), lt_to_tt(W_mat_bwd), lt_to_tt(grad_reshaped), DeviceContextPtr(ctx))
+            max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), DeviceContextPtr(ctx))
 
             # col2im gather: one thread per input element
             var total_dx = BATCH * Self.IN_DIM

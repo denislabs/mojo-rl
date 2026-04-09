@@ -87,7 +87,7 @@ def main() raises:
         var dx_mm = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](dx_out_buf.unsafe_ptr())
         # dW: cache.T(IN, BATCH) @ grad_output(BATCH, OUT) → need to reshape
         # Actually: cache(BATCH, IN).T @ grad_output(BATCH, OUT) = (IN, OUT)
-        # max_matmul now supports transpose_a
+        # max_matmul doesn't support transpose_a, so we'd need transpose
         # Instead: dW.T = grad_output.T @ cache → (OUT, BATCH) @ (BATCH, IN) = (OUT, IN)
         # Then transpose. Or just benchmark dx part.
         var cache_mm = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](cache_buf.unsafe_ptr())
