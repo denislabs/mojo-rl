@@ -70,10 +70,10 @@ struct FusedConv2DActivation[
     comptime CONV_CACHE: Int = Self.col_size * Self.spatial_out
     comptime CACHE_SIZE: Int = Self.CONV_CACHE + Self.OUT_DIM
     comptime FUSED_COUNT: Int = 2
-    # Forward: col_flat (CONV_CACHE) + out_temp (OUT_DIM) + w_t (col_size*OC)
+    # Forward: col_flat (CONV_CACHE) + out_temp (OUT_DIM)
     # Backward dW: col_flat (CONV_CACHE)
     # Max of forward and backward per sample:
-    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.CONV_CACHE + Self.OUT_DIM + Self.col_size * Self.out_channels
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.CONV_CACHE + Self.OUT_DIM
 
     def __init__(out self):
         pass
@@ -1460,41 +1460,11 @@ struct FusedConv2DActivation[
             # ── dx via matmul + col2im gather ──
             # dcol = W.T @ masked_grad_reshaped, then col2im
             # masked_grad (OC, K_TOTAL) still in grad_input.ptr from dW step
-
-            # W.T in workspace (same region as forward)
-            comptime w_t_bwd_offset = BATCH * (Self.CONV_CACHE + Self.OUT_DIM)
-            comptime w_elems_bwd = Self.out_channels * Self.col_size
-            comptime w_blocks_bwd = (w_elems_bwd + TPB - 1) // TPB
-            var w_t_bwd = LayoutTensor[
+            var W_mat_bwd = LayoutTensor[
                 dtype,
-                Layout.row_major(Self.col_size, Self.out_channels),
+                Layout.row_major(Self.out_channels, Self.col_size),
                 MutAnyOrigin,
-            ](workspace + w_t_bwd_offset)
-
-            @always_inline
-            def transpose_w_bwd(
-                dst: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.col_size, Self.out_channels),
-                    MutAnyOrigin,
-                ],
-                src: LayoutTensor[
-                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
-                ],
-            ):
-                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if idx >= w_elems_bwd:
-                    return
-                var k = idx // Self.out_channels
-                var oc = idx % Self.out_channels
-                dst[k, oc] = src[oc * Self.col_size + k]
-
-            ctx.enqueue_function[transpose_w_bwd, transpose_w_bwd](
-                w_t_bwd,
-                params_immut,
-                grid_dim=(w_blocks_bwd,),
-                block_dim=(TPB,),
-            )
+            ](params.ptr)
 
             # dcol at workspace offset 0 (reuses col_flat region)
             var dcol = LayoutTensor[
@@ -1503,8 +1473,8 @@ struct FusedConv2DActivation[
                 MutAnyOrigin,
             ](workspace)
 
-            # max_matmul: dcol = W.T @ masked_grad_reshaped
-            max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), DeviceContextPtr(ctx))
+            # dcol(col_size, K_TOTAL) = W.T(col_size, OC) @ masked_grad(OC, K_TOTAL)
+            max_matmul[target="gpu", transpose_a=True](lt_to_tt(dcol), lt_to_tt(W_mat_bwd), lt_to_tt(grad_reshaped), DeviceContextPtr(ctx))
 
             # col2im gather: one thread per input element
             var total_dx = BATCH * Self.IN_DIM
