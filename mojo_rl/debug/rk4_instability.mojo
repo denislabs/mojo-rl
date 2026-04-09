@@ -105,7 +105,7 @@ comptime M_SIZE = _max_one[NV * NV]()
 comptime CDOF_SIZE = _max_one[NV * 6]()
 comptime CRB_SIZE = _max_one[NBODY * 10]()
 
-comptime TARGET_SUBSTEP = 173
+comptime TARGET_SUBSTEP = 530
 
 # Grid configuration
 comptime ENV_BLOCKS = (GPU_BATCH + TPB - 1) // TPB
@@ -494,7 +494,7 @@ def _advance_to_substep(
 ) raises -> Int:
     """Advance simulation to TARGET_SUBSTEP, return actual substep count."""
     var substep_count = 0
-    for _ in range(50):
+    for _ in range(200):
         var obs = List[Float64](capacity=OBS_DIM)
         for k in range(1, 6):
             obs.append(Float64(data.qpos[k]))
@@ -680,47 +680,76 @@ def _analyze_stage1(
     print()
     print("  GPU search:", end="")
     for i in range(NV):
-        print(" " + String(Float64(ws_host[DBG_WS_OFF + NV + i]))[byte=:14], end="")
+        print(
+            " " + String(Float64(ws_host[DBG_WS_OFF + NV + i]))[byte=:14],
+            end="",
+        )
     print()
     print("  GPU H_diag:", end="")
     for i in range(NV):
-        print(" " + String(Float64(ws_host[DBG_WS_OFF + 2 * NV + i]))[byte=:14], end="")
+        print(
+            " " + String(Float64(ws_host[DBG_WS_OFF + 2 * NV + i]))[byte=:14],
+            end="",
+        )
     print()
     print("  GPU qacc:  ", end="")
     for i in range(NV):
-        print(" " + String(Float64(ws_host[DBG_WS_OFF + 3 * NV + i]))[byte=:14], end="")
+        print(
+            " " + String(Float64(ws_host[DBG_WS_OFF + 3 * NV + i]))[byte=:14],
+            end="",
+        )
     print()
     print("  GPU L_diag:", end="")
     for i in range(NV):
-        print(" " + String(Float64(ws_host[DBG_WS_OFF + 4 * NV + i]))[byte=:14], end="")
+        print(
+            " " + String(Float64(ws_host[DBG_WS_OFF + 4 * NV + i]))[byte=:14],
+            end="",
+        )
     print()
-    print("  GPU nc=" + String(Float64(ws_host[DBG_WS_OFF + 5 * NV]))
-        + " alpha=" + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 1])))
-    print("  GPU iter1_scaled_grad=" + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 2]))
-        + " total_iters=" + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 3])))
+    print(
+        "  GPU nc="
+        + String(Float64(ws_host[DBG_WS_OFF + 5 * NV]))
+        + " alpha="
+        + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 1]))
+    )
+    print(
+        "  GPU iter1_scaled_grad="
+        + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 2]))
+        + " total_iters="
+        + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 3]))
+    )
     print("  GPU final_qacc:", end="")
     for i in range(NV):
-        print(" " + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 4 + i]))[byte=:14], end="")
+        print(
+            " "
+            + String(Float64(ws_host[DBG_WS_OFF + 5 * NV + 4 + i]))[byte=:14],
+            end="",
+        )
     print()
 
     # --- GPU edge data ---
     print("\n  --- GPU Stage 1 PYRAMIDAL edge data ---")
-    for e in range(4):
-        var D_e = Float64(ws_host[PYR_SC + e * MC + 0])
-        var bias_e = Float64(ws_host[PYR_SC + 4 * MC + e * MC + 0])
-        print(
-            "  edge["
-            + String(e)
-            + "]: D="
-            + String(D_e)[byte=:16]
-            + " bias="
-            + String(bias_e)[byte=:16]
-        )
-        print("    J:", end="")
-        for i in range(NV):
-            var je = Float64(ws_host[PYR_J_BASE + e * MC * NV + 0 * NV + i])
-            print(" " + String(je)[byte=:14], end="")
-        print()
+    var gpu_nc_s1 = Int(gpu_state_host[META_OFF + META_IDX_NUM_CONTACTS])
+    for c in range(gpu_nc_s1):
+        for e in range(4):
+            var idx = c * 4 + e
+            var D_e = Float64(ws_host[PYR_SC + e * MC + c])
+            var bias_e = Float64(ws_host[PYR_SC + 4 * MC + e * MC + c])
+            print(
+                "  edge["
+                + String(idx)
+                + "] (c="
+                + String(c)
+                + "): D="
+                + String(D_e)[byte=:16]
+                + " bias="
+                + String(bias_e)[byte=:16]
+            )
+            print("    J:", end="")
+            for i in range(NV):
+                var je = Float64(ws_host[PYR_J_BASE + e * MC * NV + c * NV + i])
+                print(" " + String(je)[byte=:14], end="")
+            print()
 
     # --- Hessian & Cholesky analysis ---
     print("\n  --- Hessian conditioning at Stage 1 ---")
@@ -779,19 +808,24 @@ def _analyze_stage1(
         H_gpu.append(Scalar[DTYPE](0))
     for i in range(NV * NV):
         H_gpu[i] = M[i]
-    for e in range(4):
-        var D_e_val = Float64(ws_host[PYR_SC + e * MC + 0])
-        var jar_e = Float64(ws_host[PYR_SC + 4 * MC + e * MC + 0])
-        for i in range(NV):
-            jar_e += Float64(ws_host[PYR_J_BASE + e * MC * NV + i]) * Float64(
-                cpu_a1_smooth[i]
-            )
-        if jar_e < 0:
+    for c_h in range(gpu_nc_s1):
+        for e in range(4):
+            var D_e_val = Float64(ws_host[PYR_SC + e * MC + c_h])
+            var jar_e = Float64(ws_host[PYR_SC + 4 * MC + e * MC + c_h])
             for i in range(NV):
-                for j in range(NV):
-                    var ji = Float64(ws_host[PYR_J_BASE + e * MC * NV + i])
-                    var jj = Float64(ws_host[PYR_J_BASE + e * MC * NV + j])
-                    H_gpu[i * NV + j] += Scalar[DTYPE](D_e_val * ji * jj)
+                jar_e += Float64(
+                    ws_host[PYR_J_BASE + e * MC * NV + c_h * NV + i]
+                ) * Float64(cpu_a1_smooth[i])
+            if jar_e < 0:
+                for i in range(NV):
+                    for j in range(NV):
+                        var ji = Float64(
+                            ws_host[PYR_J_BASE + e * MC * NV + c_h * NV + i]
+                        )
+                        var jj = Float64(
+                            ws_host[PYR_J_BASE + e * MC * NV + c_h * NV + j]
+                        )
+                        H_gpu[i * NV + j] += Scalar[DTYPE](D_e_val * ji * jj)
 
     var L_gpu_h = List[Scalar[DTYPE]](capacity=M_SIZE)
     for _ in range(M_SIZE):
@@ -1154,31 +1188,126 @@ def debug_rk4_instability() raises:
     print("Stage 0: evaluate at (q0, v0)")
     print("=" * 70)
 
+    # CPU: forward dynamics + save qacc_smooth before solver
     _cpu_fwd(cpu_model, cpu_data, a0, cdof, M_inv, M)
+    var a0_smooth = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for i in range(NV):
+        a0_smooth.append(a0[i])
     _cpu_solve(cpu_model, cpu_data, cdof, M_inv, M, a0, dt, False)
 
+    # GPU: stage 0 kernel ONLY (forward dynamics, no solver yet)
     _gpu_stage[0](ctx, gpu_state_buf, gpu_model_buf, gpu_ws_buf)
+    ctx.synchronize()
+    ctx.enqueue_copy(ws_host.unsafe_ptr(), gpu_ws_buf)
+    ctx.synchronize()
+
+    # Compare qacc_smooth BEFORE solver
+    print("  --- Stage 0 qacc_smooth (BEFORE solver) ---")
+    var a0_smooth_err: Float64 = 0
+    print("  CPU qacc_sm:", end="")
+    for i in range(NV):
+        print(" " + String(Float64(a0_smooth[i]))[byte=:14], end="")
+    print()
+    print("  GPU qacc_sm:", end="")
+    for i in range(NV):
+        var gv = Float64(ws_host[QACC_CON_OFF + i])
+        print(" " + String(gv)[byte=:14], end="")
+        var err = abs(Float64(a0_smooth[i]) - gv)
+        if err > a0_smooth_err:
+            a0_smooth_err = err
+    print()
+    print("  qacc_smooth max_err = " + String(a0_smooth_err))
+
+    # M_diag comparison
+    var fnet_err: Float64 = 0
+    for i in range(NV):
+        var err = abs(
+            Float64(M[i * NV + i]) - Float64(ws_host[M_OFF + i * NV + i])
+        )
+        if err > fnet_err:
+            fnet_err = err
+    print("  M_diag max_err = " + String(fnet_err))
+
+    # Contact info
+    ctx.enqueue_copy(gpu_state_host.unsafe_ptr(), gpu_state_buf)
+    ctx.synchronize()
+    _print_ncon(cpu_data, gpu_state_host)
+    var gpu_nc_s0 = Int(gpu_state_host[META_OFF + META_IDX_NUM_CONTACTS])
+
+    # Build CPU constraints at Stage 0
+
+    var cpu_L_s0 = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        cpu_L_s0.append(Scalar[DTYPE](0))
+    var cpu_D_s0 = List[Scalar[DTYPE]](capacity=V_SIZE)
+    for _ in range(V_SIZE):
+        cpu_D_s0.append(Scalar[DTYPE](0))
+    ldl_fac[DTYPE, NV](M, cpu_L_s0, cpu_D_s0)
+    var cpu_M_inv_s0 = List[Scalar[DTYPE]](capacity=M_SIZE)
+    for _ in range(M_SIZE):
+        cpu_M_inv_s0.append(Scalar[DTYPE](0))
+    compute_M_inv_from_ldl[DTYPE, NV](cpu_L_s0, cpu_D_s0, cpu_M_inv_s0)
+    comptime MAX_ROWS0 = 11 * MAX_CONTACTS + 2 * NJOINT
+    var constraints_s0 = ConstraintData[DTYPE, MAX_ROWS0, NV]()
+    build_constraints[CONE_TYPE=HopperModel.CONE_TYPE](
+        cpu_model,
+        cpu_data,
+        cdof,
+        cpu_M_inv_s0,
+        cpu_model.timestep,
+        constraints_s0,
+    )
+    print(
+        "  CPU constraints: num_rows="
+        + String(constraints_s0.num_rows)
+        + " normals="
+        + String(constraints_s0.num_normals)
+        + " limits="
+        + String(constraints_s0.num_limits)
+    )
+    for r in range(constraints_s0.num_rows):
+        var row = constraints_s0.rows[r]
+        var D_r = primal_D(row.inv_K_imp, row.K)
+        var ctype = "edge"
+        if r >= constraints_s0.num_normals + constraints_s0.num_friction:
+            ctype = "LIMIT"
+        print(
+            "  CPU row["
+            + String(r)
+            + "] ("
+            + ctype
+            + "): D="
+            + String(Float64(D_r))[byte=:16]
+            + " bias="
+            + String(Float64(row.bias))[byte=:16]
+        )
+
+    # Now run GPU solver
     _gpu_solver(ctx, gpu_state_buf, gpu_model_buf, gpu_ws_buf)
     ctx.synchronize()
     ctx.enqueue_copy(ws_host.unsafe_ptr(), gpu_ws_buf)
     ctx.synchronize()
 
+    # GPU edge data for all contacts
+    print("\n  --- GPU Stage 0 PYRAMIDAL edge data ---")
+    for c in range(gpu_nc_s0):
+        for e in range(4):
+            var idx = c * 4 + e
+            var D_e = Float64(ws_host[PYR_SC + e * MC + c])
+            var bias_e = Float64(ws_host[PYR_SC + 4 * MC + e * MC + c])
+            print(
+                "  edge["
+                + String(idx)
+                + "] (c="
+                + String(c)
+                + "): D="
+                + String(D_e)[byte=:16]
+                + " bias="
+                + String(bias_e)[byte=:16]
+            )
+
     var a0_max_err = _print_compare_qacc("A[0]", a0, ws_host)
-
-    # M_diag comparison
-    print("  f_net max_err:", end="")
-    var fnet_err: Float64 = 0
-    for i in range(NV):
-        var cpu_fnet = Float64(M[i * NV + i])
-        var gpu_fnet = Float64(ws_host[M_OFF + i * NV + i])
-        var err = abs(cpu_fnet - gpu_fnet)
-        if err > fnet_err:
-            fnet_err = err
-    print(" M_diag_err=" + String(fnet_err))
-
-    ctx.enqueue_copy(gpu_state_host.unsafe_ptr(), gpu_state_buf)
-    ctx.synchronize()
-    _print_ncon(cpu_data, gpu_state_host)
+    print("  f_net max_err: M_diag_err=" + String(fnet_err))
 
     # =========================================================================
     # Stage 1: evaluate at (q0 + dt/2*v0, v0 + dt/2*A[0])
@@ -1323,7 +1452,9 @@ def debug_rk4_instability() raises:
     # Compare M diagonal
     var m3_err: Float64 = 0
     for i in range(NV):
-        var err = abs(Float64(M[i * NV + i]) - Float64(ws_host[M_OFF + i * NV + i]))
+        var err = abs(
+            Float64(M[i * NV + i]) - Float64(ws_host[M_OFF + i * NV + i])
+        )
         if err > m3_err:
             m3_err = err
     print("  M_diag max_err = " + String(m3_err))
@@ -1342,53 +1473,76 @@ def debug_rk4_instability() raises:
     print()
 
     # Build CPU constraints at Stage 3 to see how many limits are active
-    from mojo_rl.physics3d.dynamics.mass_matrix import (
-        compute_M_inv_from_ldl,
-        ldl_factor as ldl_fac3,
-    )
+
     var cpu_L_s3 = List[Scalar[DTYPE]](capacity=M_SIZE)
     for _ in range(M_SIZE):
         cpu_L_s3.append(Scalar[DTYPE](0))
     var cpu_D_s3 = List[Scalar[DTYPE]](capacity=V_SIZE)
     for _ in range(V_SIZE):
         cpu_D_s3.append(Scalar[DTYPE](0))
-    ldl_fac3[DTYPE, NV](M, cpu_L_s3, cpu_D_s3)
+    ldl_fac[DTYPE, NV](M, cpu_L_s3, cpu_D_s3)
     var cpu_M_inv_s3 = List[Scalar[DTYPE]](capacity=M_SIZE)
     for _ in range(M_SIZE):
         cpu_M_inv_s3.append(Scalar[DTYPE](0))
     compute_M_inv_from_ldl[DTYPE, NV](cpu_L_s3, cpu_D_s3, cpu_M_inv_s3)
 
-    from mojo_rl.physics3d.constraints.constraint_data import ConstraintData
-    from mojo_rl.physics3d.constraints.constraint_builder import build_constraints
     comptime MAX_ROWS3 = 11 * MAX_CONTACTS + 2 * NJOINT
     var constraints_s3 = ConstraintData[DTYPE, MAX_ROWS3, NV]()
     build_constraints[CONE_TYPE=HopperModel.CONE_TYPE](
-        cpu_model, cpu_data, cdof, cpu_M_inv_s3, cpu_model.timestep, constraints_s3
+        cpu_model,
+        cpu_data,
+        cdof,
+        cpu_M_inv_s3,
+        cpu_model.timestep,
+        constraints_s3,
     )
-    print("  CPU constraints: num_rows=" + String(constraints_s3.num_rows)
-        + " normals=" + String(constraints_s3.num_normals)
-        + " friction=" + String(constraints_s3.num_friction)
-        + " limits=" + String(constraints_s3.num_limits))
+    print(
+        "  CPU constraints: num_rows="
+        + String(constraints_s3.num_rows)
+        + " normals="
+        + String(constraints_s3.num_normals)
+        + " friction="
+        + String(constraints_s3.num_friction)
+        + " limits="
+        + String(constraints_s3.num_limits)
+    )
 
     # Print CPU constraint details — especially the limit row
-    from mojo_rl.physics3d.solver.primal_common import primal_D
+
     for r in range(constraints_s3.num_rows):
         var row = constraints_s3.rows[r]
         var D_r = primal_D(row.inv_K_imp, row.K)
         var ctype = "edge"
         if r >= constraints_s3.num_normals + constraints_s3.num_friction:
             ctype = "LIMIT"
-        print("  CPU row[" + String(r) + "] (" + ctype + "): K=" +
-            String(Float64(row.K))[byte=:16] + " D=" +
-            String(Float64(D_r))[byte=:16] + " bias=" +
-            String(Float64(row.bias))[byte=:16])
+        print(
+            "  CPU row["
+            + String(r)
+            + "] ("
+            + ctype
+            + "): K="
+            + String(Float64(row.K))[byte=:16]
+            + " D="
+            + String(Float64(D_r))[byte=:16]
+            + " bias="
+            + String(Float64(row.bias))[byte=:16]
+        )
         if ctype == "LIMIT":
-            print("    inv_K_imp=" + String(Float64(row.inv_K_imp))
-                + " dof=" + String(row.source_dof)
-                + " sign=" + String(Float64(row.limit_sign)))
+            print(
+                "    inv_K_imp="
+                + String(Float64(row.inv_K_imp))
+                + " dof="
+                + String(row.source_dof)
+                + " sign="
+                + String(Float64(row.limit_sign))
+            )
             print("    J:", end="")
             for i in range(NV):
-                print(" " + String(Float64(constraints_s3.J[r * NV + i]))[byte=:8], end="")
+                print(
+                    " "
+                    + String(Float64(constraints_s3.J[r * NV + i]))[byte=:8],
+                    end="",
+                )
             print()
 
     # Now run GPU solver
@@ -1403,8 +1557,14 @@ def debug_rk4_instability() raises:
     for e in range(4):
         var D_e = Float64(ws_host[PYR_SC + e * MC + 0])
         var bias_e = Float64(ws_host[PYR_SC + 4 * MC + e * MC + 0])
-        print("  edge[" + String(e) + "]: D=" + String(D_e)[byte=:16]
-            + " bias=" + String(bias_e)[byte=:16])
+        print(
+            "  edge["
+            + String(e)
+            + "]: D="
+            + String(D_e)[byte=:16]
+            + " bias="
+            + String(bias_e)[byte=:16]
+        )
     # Limit edges are added AFTER contact edges in the InlineArray
     # but they're NOT in the workspace — they're computed inline in the solver.
     # We can't read them back directly. But we can compare the solver OUTPUT.
@@ -1434,46 +1594,103 @@ def debug_rk4_instability() raises:
             if diag_j < Scalar[DTYPE](1e-10):
                 diag_j = K_j
             # Use model-level limit solimp (matching what GPU does)
-            var imp_j = Scalar[DTYPE](0.5) * (cpu_model.solimp_limit[0] + cpu_model.solimp_limit[1])
+            var imp_j = Scalar[DTYPE](0.5) * (
+                cpu_model.solimp_limit[0] + cpu_model.solimp_limit[1]
+            )
             # TODO: full impedance computation (for now just show the values)
             var R_j = (Scalar[DTYPE](1) - imp_j) / imp_j * diag_j
             var inv_K_j = Scalar[DTYPE](1) / (K_j + R_j)
             var R_rec_j = Scalar[DTYPE](1) / inv_K_j - K_j
             var D_j = Scalar[DTYPE](1) / R_rec_j
-            var B_j = Scalar[DTYPE](2.0) / (cpu_model.solimp_limit[1] * cpu_model.solref_limit[0])
-            var K_spr_j = Scalar[DTYPE](1.0) / (cpu_model.solimp_limit[1] * cpu_model.solimp_limit[1] * cpu_model.solref_limit[0] * cpu_model.solref_limit[0] * cpu_model.solref_limit[1] * cpu_model.solref_limit[1])
+            var B_j = Scalar[DTYPE](2.0) / (
+                cpu_model.solimp_limit[1] * cpu_model.solref_limit[0]
+            )
+            var K_spr_j = Scalar[DTYPE](1.0) / (
+                cpu_model.solimp_limit[1]
+                * cpu_model.solimp_limit[1]
+                * cpu_model.solref_limit[0]
+                * cpu_model.solref_limit[0]
+                * cpu_model.solref_limit[1]
+                * cpu_model.solref_limit[1]
+            )
             var bias_j = B_j * v_j - K_spr_j * imp_j * pen_j
-            print("  dof=" + String(dof_j)
-                + " pos=" + String(Float64(pos_j))
-                + " rmax=" + String(Float64(rmax_j))
-                + " dist=" + String(Float64(dist_hi_j))
-                + " pen=" + String(Float64(pen_j)))
-            print("  K=" + String(Float64(K_j))
-                + " diag=" + String(Float64(diag_j))
-                + " imp=" + String(Float64(imp_j))
-                + " R=" + String(Float64(R_j))
-                + " D=" + String(Float64(D_j)))
-            print("  v_lim=" + String(Float64(v_j))
-                + " bias=" + String(Float64(bias_j)))
+            print(
+                "  dof="
+                + String(dof_j)
+                + " pos="
+                + String(Float64(pos_j))
+                + " rmax="
+                + String(Float64(rmax_j))
+                + " dist="
+                + String(Float64(dist_hi_j))
+                + " pen="
+                + String(Float64(pen_j))
+            )
+            print(
+                "  K="
+                + String(Float64(K_j))
+                + " diag="
+                + String(Float64(diag_j))
+                + " imp="
+                + String(Float64(imp_j))
+                + " R="
+                + String(Float64(R_j))
+                + " D="
+                + String(Float64(D_j))
+            )
+            print(
+                "  v_lim="
+                + String(Float64(v_j))
+                + " bias="
+                + String(Float64(bias_j))
+            )
 
     # Read GPU limit edge debug data
     print("\n  --- GPU ACTUAL limit edge (from debug area) ---")
-    print("  D=" + String(Float64(ws_host[DBG_WS_OFF + 0]))
-        + " bias=" + String(Float64(ws_host[DBG_WS_OFF + 1])))
-    print("  K=" + String(Float64(ws_host[DBG_WS_OFF + 2]))
-        + " diag=" + String(Float64(ws_host[DBG_WS_OFF + 3]))
-        + " imp=" + String(Float64(ws_host[DBG_WS_OFF + 4])))
-    print("  R=" + String(Float64(ws_host[DBG_WS_OFF + 5]))
-        + " inv_K=" + String(Float64(ws_host[DBG_WS_OFF + 6]))
-        + " R_recov=" + String(Float64(ws_host[DBG_WS_OFF + 7])))
-    print("  pen=" + String(Float64(ws_host[DBG_WS_OFF + 8]))
-        + " v_lim=" + String(Float64(ws_host[DBG_WS_OFF + 9])))
-    print("  K_spring=" + String(Float64(ws_host[DBG_WS_OFF + 10]))
-        + " B_damp=" + String(Float64(ws_host[DBG_WS_OFF + 11])))
-    print("  num_edges=" + String(Float64(ws_host[DBG_WS_OFF + 12]))
-        + " li_width=" + String(Float64(ws_host[DBG_WS_OFF + 13]))
-        + " li_dmin=" + String(Float64(ws_host[DBG_WS_OFF + 14]))
-        + " li_dmax=" + String(Float64(ws_host[DBG_WS_OFF + 15])))
+    print(
+        "  D="
+        + String(Float64(ws_host[DBG_WS_OFF + 0]))
+        + " bias="
+        + String(Float64(ws_host[DBG_WS_OFF + 1]))
+    )
+    print(
+        "  K="
+        + String(Float64(ws_host[DBG_WS_OFF + 2]))
+        + " diag="
+        + String(Float64(ws_host[DBG_WS_OFF + 3]))
+        + " imp="
+        + String(Float64(ws_host[DBG_WS_OFF + 4]))
+    )
+    print(
+        "  R="
+        + String(Float64(ws_host[DBG_WS_OFF + 5]))
+        + " inv_K="
+        + String(Float64(ws_host[DBG_WS_OFF + 6]))
+        + " R_recov="
+        + String(Float64(ws_host[DBG_WS_OFF + 7]))
+    )
+    print(
+        "  pen="
+        + String(Float64(ws_host[DBG_WS_OFF + 8]))
+        + " v_lim="
+        + String(Float64(ws_host[DBG_WS_OFF + 9]))
+    )
+    print(
+        "  K_spring="
+        + String(Float64(ws_host[DBG_WS_OFF + 10]))
+        + " B_damp="
+        + String(Float64(ws_host[DBG_WS_OFF + 11]))
+    )
+    print(
+        "  num_edges="
+        + String(Float64(ws_host[DBG_WS_OFF + 12]))
+        + " li_width="
+        + String(Float64(ws_host[DBG_WS_OFF + 13]))
+        + " li_dmin="
+        + String(Float64(ws_host[DBG_WS_OFF + 14]))
+        + " li_dmax="
+        + String(Float64(ws_host[DBG_WS_OFF + 15]))
+    )
 
     var a3_max_err = _print_compare_qacc("A[3]", a3, ws_host)
     ctx.enqueue_copy(gpu_state_host.unsafe_ptr(), gpu_state_buf)

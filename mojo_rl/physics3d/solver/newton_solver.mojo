@@ -772,9 +772,6 @@ struct NewtonSolver(ConstraintSolver):
     ]() -> Int:
         return _max_one[MAX_CONTACTS]()
 
-    # Debug buffer: [grad(NV), search(NV), H_diag(NV), qacc(NV), L_diag(NV), alpha, nc, iter]
-    comptime DEBUG_GPU_SIZE: Int = 38
-
     @staticmethod
     @always_inline
     def solve_gpu[
@@ -1039,8 +1036,8 @@ struct NewtonSolver(ConstraintSolver):
         if not valid_env or contact_tid != 0:
             return
 
-        comptime NEWTON_ITER_GPU: Int = 30
-        comptime NEWTON_TOL_GPU: Float64 = 1e-4
+        comptime NEWTON_ITER_GPU: Int = 200
+        comptime NEWTON_TOL_GPU: Float64 = 1e-8
         comptime LINESEARCH_ITER: Int = 20
         comptime ARMIJO: Float64 = 1e-4
         comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
@@ -1453,7 +1450,31 @@ struct NewtonSolver(ConstraintSolver):
 
                 var alpha: Scalar[DTYPE] = 0
                 if p0_d1 < Scalar[DTYPE](0):
+                    # Analytical initial alpha, then cost-based halving
                     alpha = -p0_d1 / p0_d2
+
+                    # Compute old cost for acceptance check
+                    var old_cost: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        old_cost += Scalar[DTYPE](0.5) * (Ma[i] - f_smooth[i]) * qacc[i]
+                    for e_idx in range(num_edges):
+                        if jar[e_idx] < Scalar[DTYPE](0):
+                            old_cost += Scalar[DTYPE](0.5) * De[e_idx] * jar[e_idx] * jar[e_idx]
+
+                    # Try alpha, halve if cost doesn't decrease
+                    for _ in range(LINESEARCH_ITER):
+                        var trial_cost: Scalar[DTYPE] = 0
+                        for i in range(NV):
+                            var qa_t = qacc[i] + alpha * search[i]
+                            var Ma_t = Ma[i] + alpha * Mv[i]
+                            trial_cost += Scalar[DTYPE](0.5) * (Ma_t - f_smooth[i]) * qa_t
+                        for e_idx in range(num_edges):
+                            var jar_t = jar[e_idx] + alpha * Jv_e[e_idx]
+                            if jar_t < Scalar[DTYPE](0):
+                                trial_cost += Scalar[DTYPE](0.5) * De[e_idx] * jar_t * jar_t
+                        if trial_cost <= old_cost:
+                            break
+                        alpha *= Scalar[DTYPE](0.5)
 
                 if alpha < Scalar[DTYPE](1e-10):
                     break
