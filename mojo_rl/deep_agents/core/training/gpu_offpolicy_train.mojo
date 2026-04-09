@@ -1113,10 +1113,33 @@ def run_offpolicy_continuous_train_gpu[
                     "train_steps", Float64(total_train_steps), total_steps
                 )
 
+            # Curriculum logging
+            comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+                var cur_progress = Float64(0.0)
+                if target_total_steps > 0:
+                    cur_progress = Float64(total_steps) / Float64(
+                        target_total_steps
+                    )
+                if cur_progress > 1.0:
+                    cur_progress = 1.0
+                if logger:
+                    logger[].log_scalar(
+                        "curriculum_progress", cur_progress, total_steps
+                    )
+                    var cur_params = CurriculumType.get_params[dtype](
+                        Scalar[dtype](cur_progress)
+                    )
+                    for i in range(len(cur_params)):
+                        logger[].log_scalar(
+                            "curriculum_param_" + String(i),
+                            Float64(cur_params[i]),
+                            total_steps,
+                        )
+
             # Clear progress bar, then full stats line
             if verbose:
                 clear_progress_bar()
-                print(
+                var status_line = (
                     algorithm_name
                     + " | Step "
                     + String(total_steps)
@@ -1129,6 +1152,20 @@ def run_offpolicy_continuous_train_gpu[
                     + " | Train: "
                     + String(total_train_steps)
                 )
+                comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+                    var cp = Float64(0.0)
+                    if target_total_steps > 0:
+                        cp = Float64(total_steps) / Float64(
+                            target_total_steps
+                        )
+                    if cp > 1.0:
+                        cp = 1.0
+                    var stage = CurriculumType.get_stage_name[dtype](
+                        Scalar[dtype](cp)
+                    )
+                    if len(stage) > 0:
+                        status_line += " | " + stage
+                print(status_line)
             next_print += print_every
 
     # Final sync: download episode stats + params
@@ -1562,9 +1599,32 @@ def run_offpolicy_discrete_train_gpu[
                     "train_steps", Float64(total_train_steps), total_steps
                 )
 
+            # Curriculum logging
+            comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+                var cur_progress = Float64(0.0)
+                if target_total_steps > 0:
+                    cur_progress = Float64(total_steps) / Float64(
+                        target_total_steps
+                    )
+                if cur_progress > 1.0:
+                    cur_progress = 1.0
+                if logger:
+                    logger[].log_scalar(
+                        "curriculum_progress", cur_progress, total_steps
+                    )
+                    var cur_params = CurriculumType.get_params[dtype](
+                        Scalar[dtype](cur_progress)
+                    )
+                    for i in range(len(cur_params)):
+                        logger[].log_scalar(
+                            "curriculum_param_" + String(i),
+                            Float64(cur_params[i]),
+                            total_steps,
+                        )
+
             if verbose:
                 clear_progress_bar()
-                print(
+                var status_line = (
                     algorithm_name
                     + " | Step "
                     + String(total_steps)
@@ -1577,6 +1637,20 @@ def run_offpolicy_discrete_train_gpu[
                     + " | Train: "
                     + String(total_train_steps)
                 )
+                comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+                    var cp = Float64(0.0)
+                    if target_total_steps > 0:
+                        cp = Float64(total_steps) / Float64(
+                            target_total_steps
+                        )
+                    if cp > 1.0:
+                        cp = 1.0
+                    var stage = CurriculumType.get_stage_name[dtype](
+                        Scalar[dtype](cp)
+                    )
+                    if len(stage) > 0:
+                        status_line += " | " + stage
+                print(status_line)
 
             next_print += print_every
 
