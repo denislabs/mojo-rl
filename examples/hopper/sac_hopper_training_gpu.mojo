@@ -36,7 +36,7 @@ comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
 comptime HIDDEN_DIM = 256
 
 # Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 2_000_000
+comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 4
 
@@ -148,7 +148,7 @@ def main() raises:
                 print_every=50_000,
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
-                gradient_steps=4,
+                gradient_steps=2,
                 reward_scale=1.0,
             )
 
