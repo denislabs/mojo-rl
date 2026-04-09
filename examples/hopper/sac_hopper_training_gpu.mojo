@@ -21,7 +21,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.core.agents import DeepSACAgent
-from mojo_rl.envs.hopper import Hopper, HopperConfig
+from mojo_rl.envs.hopper import Hopper, HopperConfig, HopperCurriculum
 
 
 # =============================================================================
@@ -139,7 +139,7 @@ def main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                Hopper[dtype, TERMINATE_ON_UNHEALTHY=False],
+                Hopper[dtype, TERMINATE_ON_UNHEALTHY=True], HopperCurriculum
             ](
                 ctx,
                 num_steps=NUM_STEPS,
@@ -148,7 +148,7 @@ def main() raises:
                 print_every=50_000,
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
-                gradient_steps=2,
+                # gradient_steps=4,
                 reward_scale=1.0,
             )
 
