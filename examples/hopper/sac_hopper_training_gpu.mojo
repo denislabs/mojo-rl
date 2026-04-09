@@ -148,7 +148,7 @@ def main() raises:
                 print_every=50_000,
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
-                gradient_steps=1,
+                gradient_steps=4,
                 reward_scale=1.0,
             )
 
