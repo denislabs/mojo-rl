@@ -45,7 +45,7 @@ def main() raises:
     var ctx = DeviceContext()
     comptime C4 = ConnectFourEnv[DType.float32]
 
-    var agent = GenericAlphaZeroAgent[Config, 512]()
+    var agent = GenericAlphaZeroAgent[Config, 128]()
 
     # 2 iters, 3000 steps each — enough to complete games and trigger training.
     _ = agent.train_selfplay_gpu[C4, RandomOpponent, USE_CUDA_GRAPH=True](
