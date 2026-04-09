@@ -1283,19 +1283,11 @@ struct NewtonSolver(ConstraintSolver):
                             imp_lim = li_dmin + y_l * (li_dmax - li_dmin)
                     if imp_lim < Scalar[DTYPE](1e-6):
                         imp_lim = Scalar[DTYPE](1e-6)
+                    comptime dof_iw_off = model_dof_invweight0_offset[
+                        NBODY, NJOINT, NGEOM, MAX_EQUALITY, MAX_TENDON, NSITE
+                    ]()
                     var diag_lim = rebind[Scalar[DTYPE]](
-                        model[
-                            0,
-                            model_body_invweight0_offset[
-                                NBODY,
-                                NJOINT,
-                                NGEOM,
-                                MAX_EQUALITY,
-                                MAX_TENDON,
-                                NSITE,
-                            ]()
-                            + dof,
-                        ]
+                        model[0, dof_iw_off + dof]
                     )
                     if diag_lim < Scalar[DTYPE](1e-10):
                         diag_lim = K_lim
