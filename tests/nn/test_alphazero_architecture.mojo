@@ -582,12 +582,35 @@ def main() raises:
     ]
     test_forward_only[SingleHead](ctx, "Sequential[Conv1x1+BN+ReLU, Flatten, Linear]")
 
+    # C2. ValueHead Sequential alone (4 layers with LinearReLU)
+    comptime ValueHead = Sequential[
+        Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
+        FlattenLayer[32 * 6 * 7],
+        LinearReLU[32 * 6 * 7, 128],
+        Linear[128, 1],
+    ]
+    test_forward_only[ValueHead](ctx, "ValueHead Sequential alone")
+
     # D. Parallel with two simple heads (no conv, from trunk output dim)
     comptime SimplePar = Parallel[Linear[5376, 7], Linear[5376, 1]]
     test_forward_only[SimplePar](ctx, "Parallel[Linear, Linear] from 5376-dim")
 
-    # E. Parallel with conv heads
-    comptime ConvPar = Parallel[
+    # E1. Parallel with ONLY policy head (1 branch)
+    comptime PolicyOnly = Parallel[
+        Sequential[
+            Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
+            FlattenLayer[32 * 6 * 7],
+            Linear[32 * 6 * 7, 7],
+        ],
+    ]
+    test_forward_only[PolicyOnly](ctx, "Parallel[PolicyHead only]")
+
+    # E2. Parallel with ONLY value head (1 branch)
+    comptime ValueOnly = Parallel[ValueHead]
+    test_forward_only[ValueOnly](ctx, "Parallel[ValueHead only]")
+
+    # E3. Parallel with two IDENTICAL policy heads (both 3-layer)
+    comptime TwoPolicyPar = Parallel[
         Sequential[
             Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
             FlattenLayer[32 * 6 * 7],
@@ -596,16 +619,21 @@ def main() raises:
         Sequential[
             Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
             FlattenLayer[32 * 6 * 7],
-            LinearReLU[32 * 6 * 7, 128],
-            Linear[128, 1],
+            Linear[32 * 6 * 7, 7],
         ],
     ]
-    test_forward_only[ConvPar](ctx, "Parallel[Conv1x1 heads] (the dual-head)")
+    test_forward_only[TwoPolicyPar](ctx, "Parallel[PolicyHead, PolicyHead] (identical branches)")
 
-    # F. Full model (trunk + heads)
-    test_forward_only[
-        AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=1].PredModel
-    ](ctx, "Full FusedResNet 1-block")
+    # E. Parallel with conv heads (policy + value)
+    comptime ConvPar = Parallel[
+        Sequential[
+            Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
+            FlattenLayer[32 * 6 * 7],
+            Linear[32 * 6 * 7, 7],
+        ],
+        ValueHead,
+    ]
+    test_forward_only[ConvPar](ctx, "Parallel[PolicyHead, ValueHead] (the dual-head)")
 
     print("\n--- Full tests ---")
 
