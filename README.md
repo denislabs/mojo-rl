@@ -259,16 +259,27 @@ def main():
 
 ```mojo
 from std.gpu.host import DeviceContext
-from mojo_rl.deep_agents.core.agents import DeepPPOContinuousAgent
-from mojo_rl.envs.half_cheetah import HalfCheetahEnv
+from mojo_rl.deep_agents.core.agents import DeepSACAgent
+from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 def main() raises:
-    var agent = DeepPPOContinuousAgent[
-        obs_dim=17, action_dim=6, hidden_dim=64,
-    ]()
-    var ctx = DeviceContext()
-    var metrics = agent.train_gpu[HalfCheetahEnv](ctx, num_updates=1000)
+    comptime OBS_DIM = HalfCheetahConfig.OBS_DIM    # 17
+    comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
+
+    with DeviceContext() as ctx:
+        var agent = DeepSACAgent[
+            obs_dim=OBS_DIM, action_dim=ACTION_DIM, hidden_dim=256,
+            buffer_capacity=1_000_000, batch_size=256,
+            actor_lr=0.0003, critic_lr=0.001,
+        ](gamma=0.99, tau=0.005, action_scale=1.0, alpha=0.2, auto_alpha=True)
+
+        var metrics = agent.train_gpu[HalfCheetah[DType.float32]](
+            ctx, num_steps=600_000, warmup_steps=10_000, verbose=True,
+        )
+        print("Avg reward:", metrics.mean_reward_last_n(100))
 ```
+
+See [`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`](examples/half_cheetah/sac_half_cheetah_training_gpu.mojo) for the full training script, and [`examples/half_cheetah/sac_half_cheetah_eval_cpu.mojo`](examples/half_cheetah/sac_half_cheetah_eval_cpu.mojo) for CPU evaluation with rendering.
 
 ### Neural Network GPU Training
 
