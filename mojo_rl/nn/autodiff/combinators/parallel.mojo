@@ -53,10 +53,11 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def _sum_cache_size() -> Int:
+        """Aligned sum of cache sizes for NVIDIA cuBLAS compatibility."""
         var total = 0
 
         comptime for i in range(Self.N):
-            total += Self.branch_types[i].CACHE_SIZE
+            total = Self._align4(total + Self.branch_types[i].CACHE_SIZE)
         return total
 
     @staticmethod
@@ -135,7 +136,7 @@ struct Parallel[*BRANCHES: Model](Model):
         var total = 0
 
         comptime for j in range(idx):
-            total += Self.branch_types[j].CACHE_SIZE
+            total = Self._align4(total + Self.branch_types[j].CACHE_SIZE)
         return total
 
     @staticmethod
