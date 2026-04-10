@@ -72,18 +72,45 @@ struct Parallel[*BRANCHES: Model](Model):
     comptime CACHE_SIZE: Int = Self._sum_cache_size()
     # Own scratch: N * IN_DIM for per-branch grad_input buffers in backward
     comptime _OWN_WS: Int = Self.N * Self.IN_DIM
-    # Workspace: own scratch + branch output buffers + per-branch workspace
-    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._OWN_WS + Self._sum_out_dim() + Self._sum_ws()
+
+    @staticmethod
+    def _aligned_out_dim_sum() -> Int:
+        """Sum of OUT_DIM with 4-element alignment padding between branches."""
+        var total = 0
+
+        comptime for i in range(Self.N):
+            total = Self._align4(total + Self.branch_types[i].OUT_DIM)
+        return total
+
+    @staticmethod
+    def _aligned_ws_sum() -> Int:
+        """Sum of workspace sizes with 4-element alignment padding."""
+        var total = 0
+
+        comptime for i in range(Self.N):
+            total = Self._align4(
+                total + Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            )
+        return total
+
+    # Workspace: own scratch + aligned branch output buffers + aligned per-branch workspace
+    comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._OWN_WS + Self._aligned_out_dim_sum() + Self._aligned_ws_sum()
+
+    # --- Alignment helper (16-byte = 4 float32 elements for GPU matmul) ---
+
+    @staticmethod
+    def _align4(x: Int) -> Int:
+        return (x + 3) & ~3
 
     # --- Offset helpers ---
 
     @staticmethod
     def _out_offset[idx: Int]() -> Int:
-        """Sum of OUT_DIM for branches 0..idx-1."""
+        """Aligned sum of OUT_DIM for branches 0..idx-1."""
         var total = 0
 
         comptime for j in range(idx):
-            total += Self.branch_types[j].OUT_DIM
+            total = Self._align4(total + Self.branch_types[j].OUT_DIM)
         return total
 
     @staticmethod
@@ -104,12 +131,13 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def _ws_branch_offset[idx: Int]() -> Int:
-        """Workspace offset for branch idx, after own scratch + output buffers.
-        """
-        var total = Self._OWN_WS + Self._sum_out_dim()
+        """Aligned workspace offset for branch idx."""
+        var total = Self._OWN_WS + Self._aligned_out_dim_sum()
 
         comptime for j in range(idx):
-            total += Self.branch_types[j].WORKSPACE_SIZE_PER_SAMPLE
+            total = Self._align4(
+                total + Self.branch_types[j].WORKSPACE_SIZE_PER_SAMPLE
+            )
         return total
 
     # =========================================================================
