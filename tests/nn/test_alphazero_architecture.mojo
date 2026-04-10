@@ -40,11 +40,9 @@ def test_forward_backward[Config: AlphaZeroConfig](
     var gpu = GPUNetworkState[M, Config.OptType, dtype](ctx)
     gpu.upload_from(cpu_state, ctx)
 
-    # Workspace (padded for NVIDIA cuBLAS alignment)
+    # Workspace
     comptime WS = M.WORKSPACE_SIZE_PER_SAMPLE
-    comptime WS_PADDED = BS * WS + BS * 8192  # Extra padding for NVIDIA
-    var workspace = ctx.enqueue_create_buffer[dtype](WS_PADDED if WS > 0 else 1)
-    print("  WORKSPACE_SIZE_PER_SAMPLE:", WS, "total:", WS_PADDED)
+    var workspace = ctx.enqueue_create_buffer[dtype](BS * WS if WS > 0 else 1)
 
     # Input: random-ish values in [0, 1]
     var input_host = ctx.enqueue_create_host_buffer[dtype](BS * IN)
