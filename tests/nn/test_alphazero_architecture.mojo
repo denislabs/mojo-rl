@@ -509,8 +509,52 @@ def test_gradcheck_model[
 from mojo_rl.deep_agents.alphazero.configs import AlphaZeroConfig
 from mojo_rl.nn.model import (
     Model, Sequential, Parallel, Linear, LinearReLU,
-    FlattenLayer, Conv2DReLU,
+    FlattenLayer, Conv2DReLU, Conv2DBatchNormReLU, ReLU,
 )
+
+
+def test_forward_only[M: Model, BS: Int = 4](
+    ctx: DeviceContext, name: String
+) raises:
+    """Minimal forward-only test to isolate crash location."""
+    comptime IN = M.IN_DIM
+    comptime OUT = M.OUT_DIM
+    comptime PS = M.PARAM_SIZE
+    comptime CS = M.CACHE_SIZE
+    comptime WS = M.WORKSPACE_SIZE_PER_SAMPLE
+
+    print("Forward-only:", name, "(IN=", IN, "OUT=", OUT, "PS=", PS, "WS=", WS, ")")
+
+    var cpu_state = NetworkState[M, Adam[]]()
+    cpu_state.initialize[Kaiming[]]()
+    var gpu = GPUNetworkState[M, Adam[], dtype](ctx)
+    gpu.upload_from(cpu_state, ctx)
+
+    var workspace = ctx.enqueue_create_buffer[dtype](BS * WS if WS > 0 else 1)
+    var input_host = ctx.enqueue_create_host_buffer[dtype](BS * IN)
+    for i in range(BS * IN):
+        input_host[i] = Scalar[dtype](Float64(i % 7) / 7.0)
+    var input_buf = ctx.enqueue_create_buffer[dtype](BS * IN)
+    ctx.enqueue_copy(input_buf, input_host)
+
+    var output_buf = ctx.enqueue_create_buffer[dtype](BS * OUT)
+    var cache_buf = ctx.enqueue_create_buffer[dtype](BS * CS if CS > 0 else 1)
+
+    var input_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        input_buf.unsafe_ptr()
+    )
+    var output_t = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        output_buf.unsafe_ptr()
+    )
+    var cache_t = LayoutTensor[dtype, Layout.row_major(BS, CS), MutAnyOrigin](
+        cache_buf.unsafe_ptr()
+    )
+
+    M.forward_gpu[BS](
+        ctx, output_t, input_t, gpu.params_view(), cache_t, workspace
+    )
+    ctx.synchronize()
+    print("  [PASS]")
 
 
 def main() raises:
@@ -518,6 +562,52 @@ def main() raises:
     print()
 
     var ctx = DeviceContext()
+
+    # ── Isolation tests: find exactly what crashes on NVIDIA ──
+    print("--- Isolation tests ---")
+
+    # A. Conv2DBatchNormReLU 3x3 (known to work)
+    comptime Conv3x3 = Conv2DBatchNormReLU[3, 128, 3, 1, 1, 6, 7]
+    test_forward_only[Conv3x3](ctx, "Conv2DBatchNormReLU 3x3 (3->128)")
+
+    # B. Conv2DBatchNormReLU 1x1 ALONE (the new layer)
+    comptime Conv1x1 = Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7]
+    test_forward_only[Conv1x1](ctx, "Conv2DBatchNormReLU 1x1 (128->32)")
+
+    # C. Sequential with 1x1 conv + flatten + linear (single head, no Parallel)
+    comptime SingleHead = Sequential[
+        Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
+        FlattenLayer[32 * 6 * 7],
+        Linear[32 * 6 * 7, 7],
+    ]
+    test_forward_only[SingleHead](ctx, "Sequential[Conv1x1+BN+ReLU, Flatten, Linear]")
+
+    # D. Parallel with two simple heads (no conv, from trunk output dim)
+    comptime SimplePar = Parallel[Linear[5376, 7], Linear[5376, 1]]
+    test_forward_only[SimplePar](ctx, "Parallel[Linear, Linear] from 5376-dim")
+
+    # E. Parallel with conv heads
+    comptime ConvPar = Parallel[
+        Sequential[
+            Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
+            FlattenLayer[32 * 6 * 7],
+            Linear[32 * 6 * 7, 7],
+        ],
+        Sequential[
+            Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
+            FlattenLayer[32 * 6 * 7],
+            LinearReLU[32 * 6 * 7, 128],
+            Linear[128, 1],
+        ],
+    ]
+    test_forward_only[ConvPar](ctx, "Parallel[Conv1x1 heads] (the dual-head)")
+
+    # F. Full model (trunk + heads)
+    test_forward_only[
+        AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=1].PredModel
+    ](ctx, "Full FusedResNet 1-block")
+
+    print("\n--- Full tests ---")
 
     # ── Sanity tests (fast) ──────────────────────────────────
     test_forward_backward[AlphaZeroTicTacToeConfig[]](ctx, "TicTacToe MLP")
