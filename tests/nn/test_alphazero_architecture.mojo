@@ -624,6 +624,24 @@ def main() raises:
     ]
     test_forward_only[TwoPolicyPar](ctx, "Parallel[PolicyHead, PolicyHead] (identical branches)")
 
+    # E_FC. Parallel with different FC Sequential branches (no Conv at all)
+    comptime FC_DualHead = Parallel[
+        Sequential[LinearReLU[5376, 256], Linear[256, 7]],
+        Sequential[LinearReLU[5376, 128], LinearReLU[128, 64], Linear[64, 1]],
+    ]
+    test_forward_only[FC_DualHead](ctx, "Parallel[FC 2-layer, FC 3-layer] (different FC branches)")
+
+    # E_Mix. Parallel with one Conv branch + one FC branch
+    comptime MixedPar = Parallel[
+        Sequential[
+            Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
+            FlattenLayer[32 * 6 * 7],
+            Linear[32 * 6 * 7, 7],
+        ],
+        Sequential[LinearReLU[5376, 128], Linear[128, 1]],
+    ]
+    test_forward_only[MixedPar](ctx, "Parallel[Conv branch, FC branch] (mixed)")
+
     # E4. Parallel with padded value head (OUT_DIM=8 instead of 1)
     comptime ValueHeadPadded = Sequential[
         Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
