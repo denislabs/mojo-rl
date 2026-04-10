@@ -624,7 +624,24 @@ def main() raises:
     ]
     test_forward_only[TwoPolicyPar](ctx, "Parallel[PolicyHead, PolicyHead] (identical branches)")
 
-    # E. Parallel with conv heads (policy + value)
+    # E4. Parallel with padded value head (OUT_DIM=8 instead of 1)
+    comptime ValueHeadPadded = Sequential[
+        Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
+        FlattenLayer[32 * 6 * 7],
+        LinearReLU[32 * 6 * 7, 128],
+        Linear[128, 8],  # Padded from 1 to 8
+    ]
+    comptime ConvParPadded = Parallel[
+        Sequential[
+            Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
+            FlattenLayer[32 * 6 * 7],
+            Linear[32 * 6 * 7, 7],
+        ],
+        ValueHeadPadded,
+    ]
+    test_forward_only[ConvParPadded](ctx, "Parallel[PolicyHead, ValueHead(padded to 8)] — tests BS*8 theory")
+
+    # E. Parallel with conv heads (policy + value, original)
     comptime ConvPar = Parallel[
         Sequential[
             Conv2DBatchNormReLU[128, 32, 1, 1, 0, 6, 7],
