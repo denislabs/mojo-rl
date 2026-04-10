@@ -470,6 +470,7 @@ struct AlphaZeroConnectFourResNetConfig[
 struct AlphaZeroConnectFourFusedResNetConfig[
     FILTERS: Int = 128,
     NUM_BLOCKS: Int = 5,
+    HEAD_FILTERS: Int = 32,
     LR: Float64 = 2e-3,
     WD: Float64 = 1e-4,
     BS: Int = 1024,
@@ -478,30 +479,40 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     NODES: Int = 1024,
     C_PUCT: Float64 = 2.0,
 ](AlphaZeroConfig):
-    """AlphaZero for ConnectFour — Fused ResNet with ResBlockConv2DBN.
+    """AlphaZero for ConnectFour — Fused ResNet matching AlphaZero.jl architecture.
 
-    Same architecture as AlphaZeroConnectFourResNetConfig but uses
-    fused ResBlockConv2DBN which merges BN2+skip+ReLU into one kernel.
-    Fewer kernel launches per training step and smaller workspace.
+    Separate policy/value heads with 1x1 conv (matching AlphaZero.jl ResNetHP):
+      Policy: Conv1x1(F→HF)+BN+ReLU → Flatten → Dense(HF*42 → 7)
+      Value:  Conv1x1(F→HF)+BN+ReLU → Flatten → Dense(HF*42 → F)+ReLU → Dense(F → 1)
     """
 
     comptime NAME: String = "AlphaZero-ConnectFour-FusedResNet"
     comptime obs_dim: Int = 126
     comptime action_dim: Int = 7
 
+    # Head intermediate dim: HEAD_FILTERS * board_size
+    comptime HEAD_DIM: Int = Self.HEAD_FILTERS * 6 * 7
+
     comptime PredModel = Sequential[
         Conv2DBatchNormReLU[3, Self.FILTERS, 3, 1, 1, 6, 7],  # Initial: 3ch→F
         Repeat[
             Self.NUM_BLOCKS, ResBlockBNFused6x7[Self.FILTERS], shared=False
         ],  # N× independent ResBlocks
-        FlattenLayer[Self.FILTERS * 6 * 7],
-        LinearBatchNormReLU[Self.FILTERS * 6 * 7, Self.FILTERS * 2],
-        # Dropout[Self.FILTERS * 2, 0.3, 42, True],
-        LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
-        # Dropout[Self.FILTERS, 0.3, 137, True],
+        # Separate conv heads (matching AlphaZero.jl / DeepMind AlphaZero)
         Parallel[
-            Linear[Self.FILTERS, 7],
-            Linear[Self.FILTERS, 1],
+            # Policy head: Conv1x1+BN+ReLU → Flatten → FC → logits
+            Sequential[
+                Conv2DBatchNormReLU[Self.FILTERS, Self.HEAD_FILTERS, 1, 1, 0, 6, 7],
+                FlattenLayer[Self.HEAD_DIM],
+                Linear[Self.HEAD_DIM, 7],
+            ],
+            # Value head: Conv1x1+BN+ReLU → Flatten → FC+ReLU → FC → scalar
+            Sequential[
+                Conv2DBatchNormReLU[Self.FILTERS, Self.HEAD_FILTERS, 1, 1, 0, 6, 7],
+                FlattenLayer[Self.HEAD_DIM],
+                LinearReLU[Self.HEAD_DIM, Self.FILTERS],
+                Linear[Self.FILTERS, 1],
+            ],
         ],
     ]
     comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=Self.WD]
