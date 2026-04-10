@@ -69,7 +69,17 @@ struct Parallel[*BRANCHES: Model](Model):
         return total
 
     comptime OUT_DIM: Int = Self._sum_out_dim()
-    comptime PARAM_SIZE: Int = Self._sum_param_size()
+
+    @staticmethod
+    def _aligned_param_size() -> Int:
+        """Aligned sum of param sizes for NVIDIA cuBLAS compatibility."""
+        var total = 0
+
+        comptime for i in range(Self.N):
+            total = Self._align4(total + Self.branch_types[i].PARAM_SIZE)
+        return total
+
+    comptime PARAM_SIZE: Int = Self._aligned_param_size()
     comptime CACHE_SIZE: Int = Self._sum_cache_size()
     # Own scratch: N * IN_DIM for per-branch grad_input buffers in backward
     comptime _OWN_WS: Int = Self.N * Self.IN_DIM
@@ -128,7 +138,7 @@ struct Parallel[*BRANCHES: Model](Model):
         var total = 0
 
         comptime for j in range(idx):
-            total += Self.branch_types[j].PARAM_SIZE
+            total = Self._align4(total + Self.branch_types[j].PARAM_SIZE)
         return total
 
     @staticmethod
