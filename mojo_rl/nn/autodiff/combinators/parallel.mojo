@@ -75,7 +75,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def _aligned_out_dim_sum() -> Int:
-        """Sum of OUT_DIM with 4-element alignment padding between branches."""
+        """Sum of OUT_DIM with 4-element alignment padding for workspace layout."""
         var total = 0
 
         comptime for i in range(Self.N):
@@ -106,7 +106,16 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def _out_offset[idx: Int]() -> Int:
-        """Aligned sum of OUT_DIM for branches 0..idx-1."""
+        """Exact sum of OUT_DIM for branches 0..idx-1 (for final output interleave)."""
+        var total = 0
+
+        comptime for j in range(idx):
+            total += Self.branch_types[j].OUT_DIM
+        return total
+
+    @staticmethod
+    def _ws_out_offset[idx: Int]() -> Int:
+        """Aligned sum of OUT_DIM for branches 0..idx-1 (for workspace layout)."""
         var total = 0
 
         comptime for j in range(idx):
@@ -408,7 +417,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
             var pi = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
@@ -451,7 +460,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 ImmutAnyOrigin,
-            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
 
             @always_inline
             def copy_branch_fwd(
@@ -510,7 +519,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
             var pi = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
@@ -547,7 +556,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 ImmutAnyOrigin,
-            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
 
             @always_inline
             def copy_branch_fwd_nc(
@@ -641,7 +650,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
 
             @always_inline
             def split_branch(
@@ -680,7 +689,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
                 MutAnyOrigin,
-            ](ws_ptr + BATCH * (Self._OWN_WS + Self._out_offset[i]()))
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
             var gi_i = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.IN_DIM),
