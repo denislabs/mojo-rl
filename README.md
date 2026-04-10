@@ -270,20 +270,42 @@ def main() raises:
     var metrics = agent.train_gpu[HalfCheetahEnv](ctx, num_updates=1000)
 ```
 
-### Neural Network Training
+### Neural Network GPU Training
 
 ```mojo
-from mojo_rl.nn import Sequential, Linear, ReLU, Adam, MSELoss, Kaiming, Trainer
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model.linear import Linear
+from mojo_rl.nn.model.relu import ReLU
+from mojo_rl.nn.model.sequential import Sequential
+from mojo_rl.nn.loss.mse import MSELoss
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.training.trainer import Trainer
+from mojo_rl.nn.initializer.initializers import Kaiming
 
 def main() raises:
-    # Define model at compile time: 2 -> 16 (ReLU) -> 1
-    comptime MLP = Sequential[Linear[2, 16], ReLU[16], Linear[16, 1]]
+    # Define model at compile time: 4 -> 64 (ReLU) -> 64 (ReLU) -> 1
+    comptime MLP = Sequential[
+        Linear[4, 64], ReLU[64], Linear[64, 64], ReLU[64], Linear[64, 1],
+    ]
+    comptime BATCH = 128
+    comptime TRAINER = Trainer[MLP, Adam[], MSELoss]
 
-    var trainer = Trainer[MLP, Adam, MSELoss, Kaiming](
-        MLP(), Adam(lr=0.001), MSELoss(), Kaiming(), epochs=1000,
+    # Prepare data as LayoutTensors
+    var input_t = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](...)
+    var target_t = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](...)
+
+    # Train on GPU
+    var ctx = DeviceContext()
+    var state = TRAINER.init_state_gpu[Kaiming[]](ctx)
+    var result = TRAINER.train_gpu[BATCH](
+        state, ctx, input_t, target_t, epochs=500, print_every=100,
     )
-    var result = trainer.train[4](input, target)
+    print("Final loss:", result.final_loss)
 ```
+
+See [`examples/nn_gpu_training.mojo`](examples/nn_gpu_training.mojo) for the full working example.
 
 ## Extending the Framework
 

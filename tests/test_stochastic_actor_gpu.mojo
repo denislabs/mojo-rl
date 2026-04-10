@@ -66,7 +66,7 @@ def test_stochastic_actor_gpu_training() raises:
     print("  BATCH: " + String(BATCH))
     print("  EPOCHS: " + String(EPOCHS))
 
-    comptime TRAINER = Trainer[MODEL, Adam, MSELoss]
+    comptime TRAINER = Trainer[MODEL, Adam[], MSELoss]
 
     # Generate data
     var input_data = InlineArray[Scalar[dtype], BATCH * IN_DIM](
@@ -97,7 +97,7 @@ def test_stochastic_actor_gpu_training() raises:
     var ctx = DeviceContext()
 
     var start = perf_counter_ns()
-    var state = TRAINER.init_state_gpu[Kaiming](ctx)
+    var state = TRAINER.init_state_gpu[Kaiming[]](ctx)
     var result = TRAINER.train_gpu[BATCH](state, ctx, input_t, target_t)
     var end = perf_counter_ns()
 
@@ -108,7 +108,9 @@ def test_stochastic_actor_gpu_training() raises:
     print("  Final loss: " + String(result.final_loss))
     print("  Epochs: " + String(result.epochs_trained))
     print("  Time: " + String(time_ms)[byte=:8] + " ms")
-    print("  Avg per epoch: " + String(time_ms / Float64(EPOCHS))[byte=:6] + " ms")
+    print(
+        "  Avg per epoch: " + String(time_ms / Float64(EPOCHS))[byte=:6] + " ms"
+    )
 
     if result.final_loss < 0.05:
         print("\n  PASS: StochasticActor GPU training converged")
@@ -151,7 +153,7 @@ def test_backbone_with_stochastic_actor() raises:
     print("  BATCH: " + String(BATCH))
     print("  EPOCHS: " + String(EPOCHS))
 
-    comptime TRAINER = Trainer[MODEL, Adam[LR=0.005], MSELoss]
+    comptime TRAINER = Trainer[MODEL, Adam[], MSELoss]
 
     # Generate data with pattern
     var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](
@@ -189,7 +191,7 @@ def test_backbone_with_stochastic_actor() raises:
     var ctx = DeviceContext()
 
     var start = perf_counter_ns()
-    var state = TRAINER.init_state_gpu[Kaiming](ctx)
+    var state = TRAINER.init_state_gpu[Kaiming[]](ctx)
     var result = TRAINER.train_gpu[BATCH](
         state,
         ctx,
@@ -247,7 +249,7 @@ def test_larger_action_space() raises:
     print("  BATCH: " + String(BATCH))
     print("  Total PARAM_SIZE: " + String(MODEL.PARAM_SIZE))
 
-    comptime TRAINER = Trainer[MODEL, Adam, MSELoss]
+    comptime TRAINER = Trainer[MODEL, Adam[], MSELoss]
 
     # Generate data
     var input_data = InlineArray[Scalar[dtype], BATCH * OBS_DIM](
@@ -281,7 +283,7 @@ def test_larger_action_space() raises:
     var ctx = DeviceContext()
 
     var start = perf_counter_ns()
-    var state = TRAINER.init_state_gpu[Kaiming](ctx)
+    var state = TRAINER.init_state_gpu[Kaiming[]](ctx)
     var result = TRAINER.train_gpu[BATCH](
         state,
         ctx,
@@ -297,7 +299,9 @@ def test_larger_action_space() raises:
     print("  Final loss: " + String(result.final_loss))
     print("  Epochs: " + String(result.epochs_trained))
     print("  Time: " + String(time_ms)[byte=:8] + " ms")
-    print("  Avg per epoch: " + String(time_ms / Float64(EPOCHS))[byte=:6] + " ms")
+    print(
+        "  Avg per epoch: " + String(time_ms / Float64(EPOCHS))[byte=:6] + " ms"
+    )
 
     if result.final_loss < 0.15:
         print("\n  PASS: Large action space training succeeded")
