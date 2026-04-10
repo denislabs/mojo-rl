@@ -74,6 +74,7 @@ trait AlphaZeroConfig:
     comptime temp_min: Float64  # Min temperature after threshold (0.0=greedy, 0.3=AlphaZero.jl)
     comptime batch_sims: Int  # Parallel MCTS sims per round (8, 16, or 32)
     comptime invalid_action_penalty: Float64  # Penalty for prob mass on illegal moves (1.0=AlphaZero.jl)
+    comptime max_grad_norm: Float64  # Max gradient norm for clipping (0.0=disabled)
 
     # ── Value target ─────────────────────────────────────────────
     # Blend between game outcome (z) and MCTS root Q-value (q):
@@ -133,6 +134,7 @@ struct AlphaZeroTicTacToeConfig[
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 9  # 3×3 board
     comptime board_rows: Int = 3
@@ -181,9 +183,9 @@ struct AlphaZeroTicTacToeCNNConfig[
         FlattenLayer[Self.FILTERS],
         # FC: Fused Linear+BN+ReLU → Dropout (matching alpha-zero-general)
         LinearBatchNormReLU[Self.FILTERS, Self.FILTERS * 2],
-        Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        # Dropout[Self.FILTERS * 2, 0.3, 42, True],
         LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
-        Dropout[Self.FILTERS, 0.3, 137, True],
+        # Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 9],  # Policy (softmax applied in loss kernel)
             Linear[Self.FILTERS, 1],  # Value (tanh applied in loss kernel)
@@ -200,6 +202,7 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 9
     comptime board_rows: Int = 3
@@ -252,6 +255,7 @@ struct AlphaZeroConnectFourConfig[
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 42  # 6×7 board
     comptime board_rows: Int = 6
@@ -326,6 +330,7 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 42
     comptime board_rows: Int = 6
@@ -444,6 +449,7 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 1.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 42
     comptime board_rows: Int = 6
@@ -509,6 +515,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime temp_min: Float64 = 0.3  # AlphaZero.jl: temp=0.3 after move 20
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 1.0  # AlphaZero.jl: nonvalidity_penalty=1.0
+    comptime max_grad_norm: Float64 = 1.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 42
     comptime board_rows: Int = 6
@@ -552,9 +559,9 @@ struct AlphaZeroTicTacToeResNetConfig[
         ],  # Reduce: 3×3→1×1
         FlattenLayer[Self.FILTERS],
         LinearBatchNormReLU[Self.FILTERS, Self.FILTERS * 2],
-        Dropout[Self.FILTERS * 2, 0.3, 42, True],
+        # Dropout[Self.FILTERS * 2, 0.3, 42, True],
         LinearBatchNormReLU[Self.FILTERS * 2, Self.FILTERS],
-        Dropout[Self.FILTERS, 0.3, 137, True],
+        # Dropout[Self.FILTERS, 0.3, 137, True],
         Parallel[
             Linear[Self.FILTERS, 9],
             Linear[Self.FILTERS, 1],
@@ -571,6 +578,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 9
     comptime board_rows: Int = 3
@@ -622,6 +630,7 @@ struct AlphaZeroChessConfig[
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 512
     comptime board_rows: Int = 8

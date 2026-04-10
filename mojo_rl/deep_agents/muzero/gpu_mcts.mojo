@@ -1665,6 +1665,248 @@ def gpu_mcts_batched_expand_backup_kernel[
                 max_q[e] = mean_q
 
 
+def gpu_mcts_batched_expand_backup_masked_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    BATCH_SIMS: Int,
+    PRED_OUT: Int,
+    STATE_SIZE: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    # Node storage
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    prior: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward_buf: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
+    node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    min_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    max_q: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    # Game states
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    expansion_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * STATE_SIZE), MutAnyOrigin
+    ],
+    # Pending expansions [N_ENVS * BATCH_SIMS]
+    pending_parents: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    pending_actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    # Prediction output [N_ENVS * BATCH_SIMS * PRED_OUT]
+    pred_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * PRED_OUT), MutAnyOrigin
+    ],
+    # Rewards from env.step [N_ENVS * BATCH_SIMS]
+    step_rewards: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    # Search paths [N_ENVS * BATCH_SIMS * MAX_DEPTH]
+    search_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    action_paths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
+    ],
+    path_lengths: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
+    # Legal masks for expanded child positions [N_ENVS * BATCH_SIMS * ACT]
+    expansion_legal_masks: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS * ACT), MutAnyOrigin
+    ],
+):
+    """Fused expand + negated backup + remove virtual losses — with child prior masking.
+
+    Like gpu_mcts_batched_expand_backup_kernel but masks child priors with
+    legal action masks (matching AlphaZero.jl / alpha-zero-general which mask
+    priors at ALL nodes, not just root).
+
+    One thread per env. Processes all BATCH_SIMS expansions sequentially.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var tree_off = e * MAX_NODES * ACT
+    var tv_off = e * MAX_NODES
+
+    comptime VIRTUAL_LOSS: Int = 3
+
+    for s in range(BATCH_SIMS):
+        var sim_off = e * BATCH_SIMS + s
+        var parent = Int(rebind[Scalar[dtype]](pending_parents[sim_off]))
+        var action = Int(rebind[Scalar[dtype]](pending_actions[sim_off]))
+        var child_node_idx = Int(rebind[Scalar[dtype]](node_count[e]))
+
+        if child_node_idx >= MAX_NODES:
+            visit_count[tree_off + parent * ACT + action] = rebind[
+                Scalar[dtype]
+            ](visit_count[tree_off + parent * ACT + action]) - Scalar[dtype](
+                VIRTUAL_LOSS
+            )
+            total_visits[tv_off + parent] = rebind[Scalar[dtype]](
+                total_visits[tv_off + parent]
+            ) - Scalar[dtype](VIRTUAL_LOSS)
+            continue
+
+        # ── Store child game state ──────────────────────────
+        var exp_gs_off = sim_off * STATE_SIZE
+        var child_gs_off = (
+            e * MAX_NODES * STATE_SIZE + child_node_idx * STATE_SIZE
+        )
+        for i in range(STATE_SIZE):
+            game_states[child_gs_off + i] = expansion_states[exp_gs_off + i]
+
+        # ── Set parent reward from env.step ─────────────────
+        reward_buf[tree_off + parent * ACT + action] = step_rewards[sim_off]
+
+        # ── Set child prior from MASKED softmax ─────────────
+        # Only legal actions get prior > 0 (matches AlphaZero.jl/alpha-zero-general)
+        var pred_off = sim_off * PRED_OUT
+        var mask_off = sim_off * ACT
+        var child_off = tree_off + child_node_idx * ACT
+
+        # Masked softmax: find max over legal actions only
+        var p_max = Scalar[dtype](-1e18)
+        for a in range(ACT):
+            var legal = rebind[Scalar[dtype]](
+                expansion_legal_masks[mask_off + a]
+            )
+            if legal > Scalar[dtype](0.5):
+                var v = rebind[Scalar[dtype]](pred_output[pred_off + a])
+                if v > p_max:
+                    p_max = v
+
+        # Fallback if no legal actions (terminal position)
+        if p_max < Scalar[dtype](-1e17):
+            p_max = rebind[Scalar[dtype]](pred_output[pred_off])
+            for a in range(1, ACT):
+                var v = rebind[Scalar[dtype]](pred_output[pred_off + a])
+                if v > p_max:
+                    p_max = v
+
+        # Compute masked softmax + renormalize
+        var p_sum = Scalar[dtype](0.0)
+        for a in range(ACT):
+            var legal = rebind[Scalar[dtype]](
+                expansion_legal_masks[mask_off + a]
+            )
+            if legal > Scalar[dtype](0.5):
+                var v = exp(
+                    rebind[Scalar[dtype]](pred_output[pred_off + a]) - p_max
+                )
+                prior[child_off + a] = v
+                p_sum += v
+            else:
+                prior[child_off + a] = Scalar[dtype](0.0)
+
+        if p_sum > Scalar[dtype](1e-8):
+            for a in range(ACT):
+                prior[child_off + a] = (
+                    rebind[Scalar[dtype]](prior[child_off + a]) / p_sum
+                )
+        else:
+            # All masked — uniform over legal (fallback)
+            var n_legal = Scalar[dtype](0.0)
+            for a in range(ACT):
+                if rebind[Scalar[dtype]](
+                    expansion_legal_masks[mask_off + a]
+                ) > Scalar[dtype](0.5):
+                    n_legal += Scalar[dtype](1.0)
+            if n_legal > Scalar[dtype](0.5):
+                var inv_n = Scalar[dtype](1.0) / n_legal
+                for a in range(ACT):
+                    if rebind[Scalar[dtype]](
+                        expansion_legal_masks[mask_off + a]
+                    ) > Scalar[dtype](0.5):
+                        prior[child_off + a] = inv_n
+
+        for a in range(ACT):
+            visit_count[child_off + a] = Scalar[dtype](0.0)
+            total_value[child_off + a] = Scalar[dtype](0.0)
+            reward_buf[child_off + a] = Scalar[dtype](0.0)
+            child_idx[child_off + a] = Scalar[dtype](-1.0)
+        total_visits[tv_off + child_node_idx] = Scalar[dtype](0.0)
+
+        # ── Link parent → child ─────────────────────────────
+        child_idx[tree_off + parent * ACT + action] = Scalar[dtype](
+            child_node_idx
+        )
+        node_count[e] = Scalar[dtype](child_node_idx + 1)
+
+        # ── Decode leaf value ───────────────────────────────
+        var step_rew = rebind[Scalar[dtype]](step_rewards[sim_off])
+        var abs_rew = step_rew if step_rew >= Scalar[dtype](0.0) else -step_rew
+        var leaf_value: Scalar[dtype]
+        if abs_rew > Scalar[dtype](0.5):
+            leaf_value = -step_rew  # Terminal: negate
+        else:
+            var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+            if raw_v > Scalar[dtype](10.0):
+                raw_v = Scalar[dtype](10.0)
+            elif raw_v < Scalar[dtype](-10.0):
+                raw_v = Scalar[dtype](-10.0)
+            var ev_p = exp(raw_v)
+            var ev_n = exp(-raw_v)
+            leaf_value = (ev_p - ev_n) / (ev_p + ev_n)
+
+        # ── Remove virtual loss ─────────────────────────────
+        visit_count[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
+            visit_count[tree_off + parent * ACT + action]
+        ) - Scalar[dtype](VIRTUAL_LOSS)
+        total_visits[tv_off + parent] = rebind[Scalar[dtype]](
+            total_visits[tv_off + parent]
+        ) - Scalar[dtype](VIRTUAL_LOSS)
+
+        # ── Negated backup ──────────────────────────────────
+        var value = leaf_value
+        var path_off = sim_off * MAX_DEPTH
+        var path_len = Int(rebind[Scalar[dtype]](path_lengths[sim_off]))
+
+        for i in range(path_len):
+            var idx = path_len - 1 - i
+            var node = Int(rebind[Scalar[dtype]](search_paths[path_off + idx]))
+            var act = Int(rebind[Scalar[dtype]](action_paths[path_off + idx]))
+
+            value = -value
+
+            var na_off = tree_off + node * ACT + act
+            visit_count[na_off] = rebind[Scalar[dtype]](
+                visit_count[na_off]
+            ) + Scalar[dtype](1.0)
+            total_value[na_off] = (
+                rebind[Scalar[dtype]](total_value[na_off]) + value
+            )
+            total_visits[tv_off + node] = rebind[Scalar[dtype]](
+                total_visits[tv_off + node]
+            ) + Scalar[dtype](1.0)
+
+            var n_a = rebind[Scalar[dtype]](visit_count[na_off])
+            var mean_q = rebind[Scalar[dtype]](total_value[na_off]) / n_a
+            if mean_q < rebind[Scalar[dtype]](min_q[e]):
+                min_q[e] = mean_q
+            if mean_q > rebind[Scalar[dtype]](max_q[e]):
+                max_q[e] = mean_q
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # MuZero Batched Fused Kernels (hidden states + dynamics network)
 # ═══════════════════════════════════════════════════════════════════════════

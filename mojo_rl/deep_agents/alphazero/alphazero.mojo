@@ -58,6 +58,7 @@ from mojo_rl.deep_agents.muzero.gpu_mcts import (
     gpu_mcts_copy_root_state_kernel,
     gpu_mcts_batched_select_and_copy_kernel,
     gpu_mcts_batched_expand_backup_kernel,
+    gpu_mcts_batched_expand_backup_masked_kernel,
     TPB,
     MAX_DEPTH,
 )
@@ -1095,8 +1096,10 @@ struct GenericAlphaZeroAgent[
             grads,
             gpu.workspace,
         )
-        # Clip gradients to prevent explosion in deep ResNet
-        gpu.prediction.clip_grads(ctx, max_val=Scalar[dtype](1.0))
+        # Clip gradients (0.0 = disabled, > 0 = per-element clip)
+        comptime _MAX_GRAD = Self.Config.max_grad_norm
+        if _MAX_GRAD > 0.0:
+            gpu.prediction.clip_grads(ctx, max_val=Scalar[dtype](_MAX_GRAD))
         # Log param delta across optimizer step (every diag_every steps)
         if (
             self.logger
@@ -1855,6 +1858,8 @@ struct GenericAlphaZeroAgent[
         )
 
         # 4. Fused expand + backup + remove virtual losses
+        #    Uses masked version: child priors are masked by legal actions
+        #    (matching AlphaZero.jl / alpha-zero-general)
         var b_po = LayoutTensor[
             dtype,
             Layout.row_major(TOTAL_EXPAND * MCTS_PRED_OUT),
@@ -1863,7 +1868,10 @@ struct GenericAlphaZeroAgent[
         var b_rew = LayoutTensor[
             dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
         ](exp_rewards.unsafe_ptr())
-        comptime run_exp_bk = gpu_mcts_batched_expand_backup_kernel[
+        var b_lm = LayoutTensor[
+            dtype, Layout.row_major(TOTAL_EXPAND * ACT), MutAnyOrigin
+        ](gpu_mcts.expansion_legal_masks.unsafe_ptr())
+        comptime run_exp_bk = gpu_mcts_batched_expand_backup_masked_kernel[
             Self.n_envs,
             MAX_NODES,
             ACT,
@@ -1891,6 +1899,7 @@ struct GenericAlphaZeroAgent[
             b_sp,
             b_ap,
             b_pl,
+            b_lm,
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -2317,7 +2326,10 @@ struct GenericAlphaZeroAgent[
                 var b_rew = LayoutTensor[
                     dtype, Layout.row_major(TOTAL_EXPAND), MutAnyOrigin
                 ](exp_rewards.unsafe_ptr())
-                comptime run_exp = gpu_mcts_batched_expand_backup_kernel[
+                var b_lm = LayoutTensor[
+                    dtype, Layout.row_major(TOTAL_EXPAND * ACT), MutAnyOrigin
+                ](gpu_mcts.expansion_legal_masks.unsafe_ptr())
+                comptime run_exp = gpu_mcts_batched_expand_backup_masked_kernel[
                     N_ENVS,
                     MAX_NODES,
                     ACT,
@@ -2345,6 +2357,7 @@ struct GenericAlphaZeroAgent[
                     b_sp,
                     b_ap,
                     b_pl,
+                    b_lm,
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
@@ -2891,7 +2904,12 @@ struct GenericAlphaZeroAgent[
                         Layout.row_major(EVAL_TOTAL_EXPAND),
                         MutAnyOrigin,
                     ](exp_rewards.unsafe_ptr())
-                    comptime e_run_exp = gpu_mcts_batched_expand_backup_kernel[
+                    var e_b_lm = LayoutTensor[
+                        dtype,
+                        Layout.row_major(EVAL_TOTAL_EXPAND * ACT),
+                        MutAnyOrigin,
+                    ](eval_mcts.expansion_legal_masks.unsafe_ptr())
+                    comptime e_run_exp = gpu_mcts_batched_expand_backup_masked_kernel[
                         N_ENVS,
                         MAX_NODES,
                         ACT,
@@ -2919,6 +2937,7 @@ struct GenericAlphaZeroAgent[
                         e_b_sp,
                         e_b_ap,
                         e_b_pl,
+                        e_b_lm,
                         grid_dim=(ENV_BLOCKS,),
                         block_dim=(TPB,),
                     )
@@ -3382,26 +3401,21 @@ struct GenericAlphaZeroAgent[
                         po,
                         miq,
                         mxq,
-                        Scalar[dtype](0.0),  # No noise in init — applied after legal mask
+                        Scalar[dtype](Self.Config.Noise.NOISE_FRACTION),
                         _init_rng_t,
                         grid_dim=(ENV_BLOCKS,),
                         block_dim=(TPB,),
                     )
 
-                    # Legal mask + Dirichlet noise (only on legal actions)
+                    # Apply legal mask on root prior
                     var lm = LayoutTensor[
                         dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
                     ](legal_masks_buf.unsafe_ptr())
-                    comptime run_mask = gpu_mcts_apply_legal_mask_with_noise_kernel[
+                    comptime run_mask = gpu_mcts_apply_legal_mask_kernel[
                         Self.n_envs, MAX_NODES, ACT, dtype
                     ]
                     ctx.enqueue_function[run_mask, run_mask](
-                        pr,
-                        lm,
-                        Scalar[dtype](Self.Config.Noise.NOISE_FRACTION),
-                        Scalar[DType.uint32](UInt32(total_steps + iter_steps)),
-                        grid_dim=(ENV_BLOCKS,),
-                        block_dim=(TPB,),
+                        pr, lm, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,)
                     )
 
                     # Copy root game states

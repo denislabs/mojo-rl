@@ -37,7 +37,7 @@ def main() raises:
     var logger = RemoteLogger(
         server_url=url,
         run_name="AlphaZero TicTacToe",
-        buffer_size=64,
+        buffer_size=13,
         api_key=api_key,
     )
 
@@ -74,7 +74,7 @@ def main() raises:
         checkpoint_every=10,
         checkpoint_path="tictactoe_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
-        diag_every=10_000,
+        diag_every=100,
     )
 
     logger.close()
