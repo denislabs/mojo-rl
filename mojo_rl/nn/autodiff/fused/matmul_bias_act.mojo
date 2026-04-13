@@ -1531,15 +1531,19 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
             )
 
             # Step 3: dW = input^T @ masked_dy (transpose input, then matmul)
+            # Input is stored in cache[:, :in_dim] but cache stride per row
+            # is (in_dim + out_dim), not in_dim. Use the full cache tensor
+            # and read with correct 2D indexing.
             var cache_T_buf = ctx.enqueue_create_buffer[dtype](
                 BATCH * Self.in_dim
             )
             var cache_T = LayoutTensor[
                 dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
             ](cache_T_buf.unsafe_ptr())
-            # Input is stored in cache[:, :in_dim]
-            var input_src = LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+            var cache_for_T = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.in_dim + Self.out_dim),
+                MutAnyOrigin,
             ](cache.ptr)
 
             @always_inline
@@ -1548,19 +1552,21 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
                     dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
                 ],
                 src: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(BATCH, Self.in_dim + Self.out_dim),
+                    MutAnyOrigin,
                 ],
             ):
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-                var row = idx // Self.in_dim
-                var col = idx % Self.in_dim
-                if row < BATCH:
-                    dst[col, row] = src[row, col]
+                var b = idx // Self.in_dim
+                var j = idx % Self.in_dim
+                if b < BATCH:
+                    dst[j, b] = src[b, j]  # reads cache[b, j] with correct stride
 
             comptime T_GRID = (BATCH * Self.in_dim + TPB - 1) // TPB
             ctx.enqueue_function[_transpose_input, _transpose_input](
                 cache_T,
-                input_src,
+                cache_for_T,
                 grid_dim=(T_GRID,),
                 block_dim=(TPB,),
             )
