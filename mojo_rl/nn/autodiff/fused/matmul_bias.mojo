@@ -476,19 +476,19 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             var c1 = c0 + 1
 
             if r0 < BATCH and c0 < Self.out_dim:
-                output[r0, c0] = rebind[Scalar[dtype]](acc[0]) + rebind[
+                output[r0, c0] = acc[0].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](b[c0])
             if r0 < BATCH and c1 < Self.out_dim:
-                output[r0, c1] = rebind[Scalar[dtype]](acc[1]) + rebind[
+                output[r0, c1] = acc[1].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](b[c1])
             if r1 < BATCH and c0 < Self.out_dim:
-                output[r1, c0] = rebind[Scalar[dtype]](acc[2]) + rebind[
+                output[r1, c0] = acc[2].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](b[c0])
             if r1 < BATCH and c1 < Self.out_dim:
-                output[r1, c1] = rebind[Scalar[dtype]](acc[3]) + rebind[
+                output[r1, c1] = acc[3].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](b[c1])
 
@@ -713,13 +713,13 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             var c1 = c0 + 1
 
             if r0 < BATCH and c0 < Self.in_dim:
-                grad_input[r0, c0] = rebind[Scalar[dtype]](acc[0])
+                grad_input[r0, c0] = acc[0].cast[dtype]()
             if r0 < BATCH and c1 < Self.in_dim:
-                grad_input[r0, c1] = rebind[Scalar[dtype]](acc[1])
+                grad_input[r0, c1] = acc[1].cast[dtype]()
             if r1 < BATCH and c0 < Self.in_dim:
-                grad_input[r1, c0] = rebind[Scalar[dtype]](acc[2])
+                grad_input[r1, c0] = acc[2].cast[dtype]()
             if r1 < BATCH and c1 < Self.in_dim:
-                grad_input[r1, c1] = rebind[Scalar[dtype]](acc[3])
+                grad_input[r1, c1] = acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod
@@ -921,13 +921,13 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             var c1 = c0 + 1
 
             if r0 < Self.in_dim and c0 < Self.out_dim:
-                dW[r0, c0] = rebind[Scalar[dtype]](acc[0])
+                dW[r0, c0] = acc[0].cast[dtype]()
             if r0 < Self.in_dim and c1 < Self.out_dim:
-                dW[r0, c1] = rebind[Scalar[dtype]](acc[1])
+                dW[r0, c1] = acc[1].cast[dtype]()
             if r1 < Self.in_dim and c0 < Self.out_dim:
-                dW[r1, c0] = rebind[Scalar[dtype]](acc[2])
+                dW[r1, c0] = acc[2].cast[dtype]()
             if r1 < Self.in_dim and c1 < Self.out_dim:
-                dW[r1, c1] = rebind[Scalar[dtype]](acc[3])
+                dW[r1, c1] = acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod

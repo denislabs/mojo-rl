@@ -702,7 +702,7 @@ struct FusedConv2DActivation[
             var c1 = c0 + 1
 
             if r0 < Self.out_channels and c0 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[0]) + rebind[
+                var pre_act = acc[0].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](params[W_SIZE + r0])
                 var act_out = Self.ACT.forward(pre_act)
@@ -712,7 +712,7 @@ struct FusedConv2DActivation[
                     pre_act, act_out
                 )
             if r0 < Self.out_channels and c1 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[1]) + rebind[
+                var pre_act = acc[1].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](params[W_SIZE + r0])
                 var act_out = Self.ACT.forward(pre_act)
@@ -722,7 +722,7 @@ struct FusedConv2DActivation[
                     pre_act, act_out
                 )
             if r1 < Self.out_channels and c0 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[2]) + rebind[
+                var pre_act = acc[2].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](params[W_SIZE + r1])
                 var act_out = Self.ACT.forward(pre_act)
@@ -732,7 +732,7 @@ struct FusedConv2DActivation[
                     pre_act, act_out
                 )
             if r1 < Self.out_channels and c1 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[3]) + rebind[
+                var pre_act = acc[3].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](params[W_SIZE + r1])
                 var act_out = Self.ACT.forward(pre_act)
@@ -1011,13 +1011,13 @@ struct FusedConv2DActivation[
             var c1 = c0 + 1
 
             if r0 < Self.out_channels and c0 < Self.col_size:
-                dW[r0, c0] = rebind[Scalar[dtype]](acc[0])
+                dW[r0, c0] = acc[0].cast[dtype]()
             if r0 < Self.out_channels and c1 < Self.col_size:
-                dW[r0, c1] = rebind[Scalar[dtype]](acc[1])
+                dW[r0, c1] = acc[1].cast[dtype]()
             if r1 < Self.out_channels and c0 < Self.col_size:
-                dW[r1, c0] = rebind[Scalar[dtype]](acc[2])
+                dW[r1, c0] = acc[2].cast[dtype]()
             if r1 < Self.out_channels and c1 < Self.col_size:
-                dW[r1, c1] = rebind[Scalar[dtype]](acc[3])
+                dW[r1, c1] = acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod
