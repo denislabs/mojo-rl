@@ -75,12 +75,17 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def _total_inter() -> Int:
-        """Per-sample intermediate buffer size (sum of OUT_DIM for layers 0..N-2).
+        """Per-sample intermediate buffer size (sum of padded OUT_DIM for layers 0..N-2).
+
+        Each slot is padded to at least 8 elements to prevent NVIDIA cuBLAS
+        max_matmul from overwriting adjacent inter-layer buffers.
         """
         var total = 0
 
         comptime for i in range(Self.N - 1):
-            total += Self.model_types[i].OUT_DIM
+            var d = Self.model_types[i].OUT_DIM
+            var padded = d if d >= 8 else 8
+            total += _seq_align4(padded)
         return total
 
     @staticmethod
@@ -119,11 +124,13 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def _inter_offset[idx: Int]() -> Int:
-        """Offset of intermediate slot idx (per sample)."""
+        """Offset of intermediate slot idx (per sample), with padding."""
         var total = 0
 
         comptime for j in range(idx):
-            total += Self.model_types[j].OUT_DIM
+            var d = Self.model_types[j].OUT_DIM
+            var padded = d if d >= 8 else 8
+            total += _seq_align4(padded)
         return total
 
     @staticmethod
@@ -133,7 +140,8 @@ struct Sequential[*LAYERS: Model](Model):
         var total = Self._total_inter()
 
         comptime for j in range(idx):
-            total += Self.model_types[j].WORKSPACE_SIZE_PER_SAMPLE
+            var ws = Self.model_types[j].WORKSPACE_SIZE_PER_SAMPLE
+            total += _seq_align4(ws) if ws > 0 else 0
         return total
 
     @staticmethod

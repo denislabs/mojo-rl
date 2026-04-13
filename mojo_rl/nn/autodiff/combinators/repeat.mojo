@@ -556,6 +556,23 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                 owning=False,
             )
 
+            # For shared weights, Inner.backward_gpu may overwrite (not
+            # accumulate) grads. Use a temp buffer per iteration + manual
+            # accumulation into the main grads to guarantee correctness.
+            comptime TEMP_PS = Self.Inner.PARAM_SIZE if Self.shared and Self.Inner.PARAM_SIZE > 0 else 1
+            var temp_grads_buf = ctx.enqueue_create_buffer[dtype](TEMP_PS)
+
+            # Accumulate kernel: dst[i] += src[i]
+            @always_inline
+            def _accum_kernel(
+                dst: LayoutTensor[dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin],
+                src: LayoutTensor[dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= Self.Inner.PARAM_SIZE:
+                    return
+                dst[idx] = dst[idx] + src[idx]
+
             # Reverse iteration
             comptime for _ri in range(Self.n):
                 comptime i = Self.n - 1 - _ri
@@ -570,11 +587,18 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                     Layout.row_major(Self.Inner.PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+
+                # For shared weights: zero temp, backward into temp
+                # For independent weights: backward into main grads directly
+                var gp_base = grads.ptr + Self._param_offset[i]()
+                comptime if Self.shared:
+                    ctx.enqueue_memset(temp_grads_buf, 0)
+                    gp_base = temp_grads_buf.unsafe_ptr()
                 var gp = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.Inner.PARAM_SIZE),
                     MutAnyOrigin,
-                ](grads.ptr + Self._param_offset[i]())
+                ](gp_base)
 
                 comptime if i == Self.n - 1:
                     var gi = LayoutTensor[
@@ -621,4 +645,22 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                     ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.Inner.backward_gpu[BATCH, dtype](
                         ctx, gi, go, pi, ci, gp, inner_ws
+                    )
+
+                # Accumulate temp grads into main grads for shared weights
+                comptime if Self.shared and Self.Inner.PARAM_SIZE > 0:
+                    var main_grads_v = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.Inner.PARAM_SIZE),
+                        MutAnyOrigin,
+                    ](grads.ptr)
+                    var temp_grads_v = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.Inner.PARAM_SIZE),
+                        MutAnyOrigin,
+                    ](temp_grads_buf.unsafe_ptr())
+                    comptime ACCUM_GRID = (Self.Inner.PARAM_SIZE + TPB - 1) // TPB
+                    ctx.enqueue_function[_accum_kernel, _accum_kernel](
+                        main_grads_v, temp_grads_v,
+                        grid_dim=(ACCUM_GRID,), block_dim=(TPB,),
                     )
