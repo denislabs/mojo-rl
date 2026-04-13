@@ -237,4 +237,41 @@ def main() raises:
         ]
     ](ctx, "TicTacToe MLP architecture")
 
+    # Level 7: BN-free Parallel with larger FC branches (was 154/304 fail in old test)
+    gradcheck[
+        Sequential[
+            LinearReLU[126, 64],
+            Parallel[
+                Sequential[LinearReLU[64, 32], Linear[32, 7]],
+                Sequential[LinearReLU[64, 32], LinearReLU[32, 16], Linear[16, 1]],
+            ],
+        ]
+    ](ctx, "BN-free Parallel[Seq, Seq] dual-head (larger)")
+
+    # Level 8: Conv2D heads (was crashing / 84/321 fail in old test)
+    from mojo_rl.nn.model import Conv2DReLU, FlattenLayer
+    gradcheck[
+        Sequential[
+            Conv2DReLU[3, 16, 3, 1, 1, 6, 7],
+            Parallel[
+                Sequential[
+                    Conv2DReLU[16, 4, 1, 1, 0, 6, 7],
+                    FlattenLayer[4 * 6 * 7],
+                    Linear[4 * 6 * 7, 7],
+                ],
+                Sequential[
+                    Conv2DReLU[16, 4, 1, 1, 0, 6, 7],
+                    FlattenLayer[4 * 6 * 7],
+                    LinearReLU[4 * 6 * 7, 16],
+                    Linear[16, 1],
+                ],
+            ],
+        ]
+    ](ctx, "Conv+Parallel dual-head (no BN)")
+
+    # Level 9: Full AlphaZero FusedResNet 1-block (was 197/201 fail in old test)
+    from mojo_rl.deep_agents.alphazero import AlphaZeroConnectFourFusedResNetConfig
+    comptime FusedResNet1 = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=1].PredModel
+    gradcheck[FusedResNet1, 4](ctx, "FusedResNet 1-block (full architecture)")
+
     print("=== Done ===")
