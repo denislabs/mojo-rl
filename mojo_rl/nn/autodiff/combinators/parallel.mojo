@@ -11,7 +11,7 @@ Backward: grad_input = sum_i(B_i.backward(grad_i))
           where grad_i = grad_output[:, out_offset[i]:out_offset[i+1]]
 """
 
-from ...constants import dtype, TPB
+from ...constants import dtype, TPB, gpu_align
 from ...model.model import Model, PerfTimerPtr, NULL_PERF
 from ...initializer import Initializer
 from layout import LayoutTensor, Layout
@@ -110,11 +110,11 @@ struct Parallel[*BRANCHES: Model](Model):
     # Workspace: own scratch + aligned branch output buffers + aligned per-branch workspace
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._OWN_WS + Self._aligned_out_dim_sum() + Self._aligned_ws_sum()
 
-    # --- Alignment helper (16-byte = 4 float32 elements, matching Sequential) ---
+    # --- Alignment helper (16-byte aligned for any dtype, matching Sequential) ---
 
     @staticmethod
     def _align4(x: Int) -> Int:
-        return (x + 3) & ~3
+        return gpu_align(x)
 
     @staticmethod
     def _pad_out(x: Int) -> Int:

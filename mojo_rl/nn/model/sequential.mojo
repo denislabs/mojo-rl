@@ -1,4 +1,4 @@
-from ..constants import dtype
+from ..constants import dtype, gpu_align
 from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
@@ -8,11 +8,10 @@ from std.builtin.variadics import Variadic
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 
-# GPU matmul requires 16-byte alignment = 4 float32 elements
 @always_inline
 def _seq_align4(x: Int) -> Int:
-    """Round up to next multiple of 4 for GPU alignment."""
-    return (x + 3) & ~3
+    """GPU-aligned element count (16-byte aligned for any dtype)."""
+    return gpu_align(x)
 
 
 # =============================================================================

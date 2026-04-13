@@ -16,3 +16,21 @@ comptime MMA_WARPS_M = 2
 comptime MMA_WARPS_N = 4
 comptime MMA_NUM_WARPS = 8
 comptime MMA_BLOCK_THREADS = MMA_NUM_WARPS * 32  # 256
+
+# ─── GPU buffer alignment ───────────────────────────────────────────────
+# TMA (Tensor Memory Accelerator) on SM100+ requires 16-byte alignment.
+# For float32 (4 bytes), 4-element alignment = 16 bytes → OK.
+# For bfloat16 (2 bytes), 4-element alignment = 8 bytes → misaligned!
+# We align to max(4, 16 // sizeof(dtype)) elements so all dtypes get
+# 16-byte alignment.  For float32 this is still 4 (no PARAM_SIZE change).
+
+
+def gpu_align(x: Int) -> Int:
+    """Round up element count for 16-byte GPU alignment with any dtype.
+
+    Uses 8-element alignment which guarantees:
+      float32  → 8 * 4 = 32 bytes (over-aligned, harmless)
+      bfloat16 → 8 * 2 = 16 bytes (exact TMA requirement)
+      float16  → 8 * 2 = 16 bytes (exact TMA requirement)
+    """
+    return (x + 7) & ~7

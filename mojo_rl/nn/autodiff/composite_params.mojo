@@ -25,7 +25,7 @@ The alignment padding between models matches Sequential/DualPath conventions
 (4-element = 16-byte boundary for GPU matmul safety).
 """
 
-from ..constants import dtype
+from ..constants import dtype, gpu_align
 from ..model.model import Model
 from layout import LayoutTensor, Layout
 from std.builtin.variadics import Variadic
@@ -36,8 +36,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 # GPU matmul requires 16-byte alignment = 4 float32 elements
 @always_inline
 def _cp_align4(x: Int) -> Int:
-    """Round up to next multiple of 4 for GPU alignment."""
-    return (x + 3) & ~3
+    """GPU-aligned element count (16-byte aligned for any dtype)."""
+    return gpu_align(x)
 
 
 struct CompositeParams[*MODELS: Model]:
