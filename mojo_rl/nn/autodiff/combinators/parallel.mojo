@@ -86,11 +86,14 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def _aligned_out_dim_sum() -> Int:
-        """Sum of OUT_DIM with 4-element alignment padding for workspace layout."""
+        """Sum of padded OUT_DIM for workspace layout.
+
+        Each branch gets at least 8 elements to prevent NVIDIA cuBLAS overflow.
+        """
         var total = 0
 
         comptime for i in range(Self.N):
-            total = Self._align4(total + Self.branch_types[i].OUT_DIM)
+            total += Self._pad_out(Self.branch_types[i].OUT_DIM)
         return total
 
     @staticmethod
@@ -113,6 +116,17 @@ struct Parallel[*BRANCHES: Model](Model):
     def _align4(x: Int) -> Int:
         return (x + 3) & ~3
 
+    @staticmethod
+    def _pad_out(x: Int) -> Int:
+        """Pad branch OUT_DIM for workspace allocation.
+
+        NVIDIA cuBLAS max_matmul can overflow small output buffers.
+        Ensure at least 8 elements per branch output slot to prevent
+        corruption of adjacent workspace regions.
+        """
+        var padded = x if x >= 8 else 8
+        return (padded + 3) & ~3  # also 4-align
+
     # --- Offset helpers ---
 
     @staticmethod
@@ -126,11 +140,14 @@ struct Parallel[*BRANCHES: Model](Model):
 
     @staticmethod
     def _ws_out_offset[idx: Int]() -> Int:
-        """Aligned sum of OUT_DIM for branches 0..idx-1 (for workspace layout)."""
+        """Padded sum of OUT_DIM for branches 0..idx-1 (for workspace layout).
+
+        Each branch gets at least 8 elements to prevent NVIDIA cuBLAS overflow.
+        """
         var total = 0
 
         comptime for j in range(idx):
-            total = Self._align4(total + Self.branch_types[j].OUT_DIM)
+            total += Self._pad_out(Self.branch_types[j].OUT_DIM)
         return total
 
     @staticmethod
