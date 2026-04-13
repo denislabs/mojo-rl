@@ -274,4 +274,128 @@ def main() raises:
     comptime FusedResNet1 = AlphaZeroConnectFourFusedResNetConfig[NUM_BLOCKS=1].PredModel
     gradcheck[FusedResNet1, 4](ctx, "FusedResNet 1-block (full architecture)")
 
+    # ── CPU vs GPU comparison ─────────────────────────────────
+    print("--- CPU vs GPU forward comparison ---")
+    cpu_vs_gpu_forward[
+        Sequential[
+            LinearReLU[126, 64],
+            Parallel[
+                Sequential[LinearReLU[64, 32], Linear[32, 7]],
+                Sequential[LinearReLU[64, 32], LinearReLU[32, 16], Linear[16, 1]],
+            ],
+        ]
+    ](ctx, "BN-free dual-head")
+
+    cpu_vs_gpu_forward[
+        Sequential[
+            LinearReLU[27, 128],
+            LinearReLU[128, 128],
+            Parallel[Linear[128, 9], Linear[128, 1]],
+        ]
+    ](ctx, "TicTacToe MLP")
+
     print("=== Done ===")
+
+
+def cpu_vs_gpu_forward[M: Model, BS: Int = 4](
+    ctx: DeviceContext, name: String
+) raises:
+    """Compare CPU and GPU forward pass outputs for the same params/input."""
+    comptime IN = M.IN_DIM
+    comptime OUT = M.OUT_DIM
+    comptime PS = M.PARAM_SIZE
+    comptime CS = M.CACHE_SIZE
+    comptime WS = M.WORKSPACE_SIZE_PER_SAMPLE
+
+    print("CPU vs GPU:", name, "(IN=", IN, "OUT=", OUT, ")")
+
+    # Initialize on CPU
+    var cpu_state = NetworkState[M, Adam[]]()
+    cpu_state.initialize[Xavier[]]()
+
+    # Create input
+    var input_arr = List[Scalar[dtype]](capacity=BS * IN)
+    for i in range(BS * IN):
+        input_arr.append(Scalar[dtype](0.1 + Float64(i % 13) / 13.0 * 0.8))
+
+    # CPU forward
+    var cpu_out = List[Scalar[dtype]](capacity=BS * OUT)
+    for i in range(BS * OUT):
+        cpu_out.append(Scalar[dtype](0.0))
+    var cpu_cache = List[Scalar[dtype]](capacity=BS * CS + 1)
+    for i in range(BS * CS + 1):
+        cpu_cache.append(Scalar[dtype](0.0))
+
+    var input_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        input_arr.unsafe_ptr()
+    )
+    var cpu_out_t = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        cpu_out.unsafe_ptr()
+    )
+    var cpu_cache_t = LayoutTensor[dtype, Layout.row_major(BS, CS), MutAnyOrigin](
+        cpu_cache.unsafe_ptr()
+    )
+
+    M.forward[BS](input_t, cpu_out_t, cpu_state.params_view(), cpu_cache_t)
+
+    # GPU forward with same params
+    var gpu = GPUNetworkState[M, Adam[], dtype](ctx)
+    gpu.upload_from(cpu_state, ctx)
+
+    var workspace = ctx.enqueue_create_buffer[dtype](BS * WS if WS > 0 else 1)
+    var input_host = ctx.enqueue_create_host_buffer[dtype](BS * IN)
+    for i in range(BS * IN):
+        input_host[i] = input_arr[i]
+    var input_buf = ctx.enqueue_create_buffer[dtype](BS * IN)
+    ctx.enqueue_copy(input_buf, input_host)
+
+    var output_buf = ctx.enqueue_create_buffer[dtype](BS * OUT)
+    var cache_buf = ctx.enqueue_create_buffer[dtype](BS * CS if CS > 0 else 1)
+
+    var gpu_input_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        input_buf.unsafe_ptr()
+    )
+    var gpu_out_t = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        output_buf.unsafe_ptr()
+    )
+    var gpu_cache_t = LayoutTensor[dtype, Layout.row_major(BS, CS), MutAnyOrigin](
+        cache_buf.unsafe_ptr()
+    )
+
+    M.forward_gpu[BS](
+        ctx, gpu_out_t, gpu_input_t, gpu.params_view(), gpu_cache_t, workspace
+    )
+
+    var gpu_out_host = ctx.enqueue_create_host_buffer[dtype](BS * OUT)
+    ctx.enqueue_copy(gpu_out_host, output_buf)
+    ctx.synchronize()
+
+    # Compare
+    var max_abs: Float64 = 0.0
+    var max_rel: Float64 = 0.0
+    var n_mismatch = 0
+    for i in range(BS * OUT):
+        var c = Float64(cpu_out[i])
+        var g = Float64(gpu_out_host[i])
+        var err = abs(c - g)
+        var denom = abs(c) + abs(g)
+        var rel: Float64 = 0.0
+        if denom > 1e-8:
+            rel = err / denom
+        if err > max_abs:
+            max_abs = err
+        if rel > max_rel:
+            max_rel = rel
+        if rel > 0.01:
+            n_mismatch += 1
+            if n_mismatch <= 3:
+                print(
+                    "    OUT[", i, "]: cpu=", c, "gpu=", g,
+                    "rel=", rel,
+                )
+
+    if n_mismatch == 0:
+        print("  [PASS] max_rel=", max_rel, "max_abs=", max_abs)
+    else:
+        print("  [FAIL]", n_mismatch, "/", BS * OUT, "max_rel=", max_rel)
+    print()
