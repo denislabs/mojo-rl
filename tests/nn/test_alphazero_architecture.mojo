@@ -299,11 +299,12 @@ def gpu_finite_diff_check[
     for p_idx in range(0, PS, step):
         var orig = params_host[p_idx]
 
-        # f(p + eps)
+        # f(p + eps) — sync after write to flush GPU cache before cuBLAS reads
         ctx.enqueue_function[_write_one_param, _write_one_param](
             params_t, Scalar[dtype](Float64(orig) + eps), p_idx,
             grid_dim=(1,), block_dim=(1,),
         )
+        ctx.synchronize()
         var out_plus_t = LayoutTensor[
             dtype, Layout.row_major(BS, OUT), MutAnyOrigin
         ](out_plus_buf.unsafe_ptr())
@@ -320,6 +321,7 @@ def gpu_finite_diff_check[
             params_t, Scalar[dtype](Float64(orig) - eps), p_idx,
             grid_dim=(1,), block_dim=(1,),
         )
+        ctx.synchronize()
         var out_minus_t = LayoutTensor[
             dtype, Layout.row_major(BS, OUT), MutAnyOrigin
         ](out_minus_buf.unsafe_ptr())
@@ -331,7 +333,7 @@ def gpu_finite_diff_check[
         )
         ctx.enqueue_copy(out_minus_host, out_minus_buf)
 
-        # Restore
+        # Restore + sync
         ctx.enqueue_function[_write_one_param, _write_one_param](
             params_t, orig, p_idx,
             grid_dim=(1,), block_dim=(1,),
