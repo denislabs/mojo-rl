@@ -26,11 +26,11 @@ comptime MMA_BLOCK_THREADS = MMA_NUM_WARPS * 32  # 256
 
 
 def gpu_align(x: Int) -> Int:
-    """Round up element count for 16-byte GPU alignment with any dtype.
+    """Round up element count for GPU buffer alignment.
 
-    Uses 8-element alignment which guarantees:
-      float32  → 8 * 4 = 32 bytes (over-aligned, harmless)
-      bfloat16 → 8 * 2 = 16 bytes (exact TMA requirement)
-      float16  → 8 * 2 = 16 bytes (exact TMA requirement)
+    Uses 4-element alignment (16 bytes for float32).
+    NOTE: bf16/fp16 need 8-element alignment for TMA on SM100.
+    This will be increased when switching forward to eval_kernel_mma
+    (which has bounds checking and doesn't require TMA alignment).
     """
-    return (x + 7) & ~7
+    return (x + 3) & ~3
