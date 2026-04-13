@@ -1117,7 +1117,12 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             )
 
             # 2. Matmul: output = input @ W
-            max_matmul[target="gpu"](lt_to_tt(output), lt_to_tt(input_immut), lt_to_tt(W), DeviceContextPtr(ctx))
+            max_matmul[target="gpu"](
+                lt_to_tt(output),
+                lt_to_tt(input_immut),
+                lt_to_tt(W),
+                DeviceContextPtr(ctx),
+            )
 
             # 3. Bias add
             comptime bias_elems = BATCH * Self.out_dim
@@ -1317,9 +1322,13 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             ],
         ):
             comptime if is_nvidia_gpu():
-                Self.backward_dx_kernel_mma[BATCH, dtype](grad_input, grad_output, W)
+                Self.backward_dx_kernel_mma[BATCH, dtype](
+                    grad_input, grad_output, W
+                )
             else:
-                Self.backward_dx_kernel_2x2[BATCH, dtype](grad_input, grad_output, W)
+                Self.backward_dx_kernel_2x2[BATCH, dtype](
+                    grad_input, grad_output, W
+                )
 
         ctx.enqueue_function[dx_wrapper, dx_wrapper](
             grad_input,
@@ -1346,9 +1355,13 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             ],
         ):
             comptime if is_nvidia_gpu():
-                Self.backward_dW_kernel_mma[BATCH, dtype](dW, cache, grad_output)
+                Self.backward_dW_kernel_mma[BATCH, dtype](
+                    dW, cache, grad_output
+                )
             else:
-                Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
+                Self.backward_dW_kernel_2x2[BATCH, dtype](
+                    dW, cache, grad_output
+                )
 
         ctx.enqueue_function[dW_wrapper, dW_wrapper](
             dW,
