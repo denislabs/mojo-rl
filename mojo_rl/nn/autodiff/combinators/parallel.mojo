@@ -107,11 +107,11 @@ struct Parallel[*BRANCHES: Model](Model):
     # Workspace: own scratch + aligned branch output buffers + aligned per-branch workspace
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._OWN_WS + Self._aligned_out_dim_sum() + Self._aligned_ws_sum()
 
-    # --- Alignment helper (256-byte = 64 float32 elements for NVIDIA cuBLAS) ---
+    # --- Alignment helper (16-byte = 4 float32 elements, matching Sequential) ---
 
     @staticmethod
     def _align4(x: Int) -> Int:
-        return (x + 63) & ~63
+        return (x + 3) & ~3
 
     # --- Offset helpers ---
 
