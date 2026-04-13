@@ -1518,27 +1518,26 @@ struct FusedMatMulBiasActivation[in_dim: Int, out_dim: Int, ACT: Activation](
                 dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
             ],
             cache: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.in_dim + Self.out_dim),
-                    ImmutAnyOrigin,
-                ],
-                grad_output: LayoutTensor[
-                    dtype,
-                    Layout.row_major(BATCH, Self.out_dim),
-                    ImmutAnyOrigin,
-                ],
-            ):
-                Self.backward_dW_kernel_2x2[BATCH, dtype](
-                    dW, cache, grad_output
-                )
+                dtype,
+                Layout.row_major(BATCH, Self.in_dim + Self.out_dim),
+                ImmutAnyOrigin,
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
+            ],
+        ):
+            comptime if is_nvidia_gpu():
+                Self.backward_dW_kernel_mma[BATCH, dtype](dW, cache, grad_output)
+            else:
+                Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
 
-            ctx.enqueue_function[dW_wrapper, dW_wrapper](
-                dW,
-                cache_immut,
-                grad_output_immut,
-                grid_dim=(dW_grid_x, dW_grid_y),
-                block_dim=(MMA_BLOCK_THREADS, 1),
-            )
+        ctx.enqueue_function[dW_wrapper, dW_wrapper](
+            dW,
+            cache_immut,
+            grad_output_immut,
+            grid_dim=(dW_grid_x, dW_grid_y),
+            block_dim=(MMA_BLOCK_THREADS, 1),
+        )
 
         # Kernel 3: db = sum(masked_dy, axis=0)
         comptime db_grid_x = (Self.out_dim + TPB - 1) // TPB
