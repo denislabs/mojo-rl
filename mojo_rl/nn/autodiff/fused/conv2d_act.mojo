@@ -1759,18 +1759,19 @@ struct FusedConv2DActivation[
         ](grad_params.ptr)
 
         comptime if has_nvidia_gpu_accelerator():
-            # ── dW FIRST (before dx) so we can reuse grad_input as workspace ──
+            # ── dW FIRST (before dx) ──
             # dW = masked_grad_reshaped @ col_reshaped
             # masked_grad: (OC, BATCH*S) with ACT.backward applied
             # col_reshaped: (BATCH*S, col_size)
             comptime K_TOTAL = BATCH * Self.spatial_out
 
-            # Reuse grad_input as workspace for grad_reshaped
+            # Workspace: [col_flat: CONV_CACHE*BATCH | grad_reshaped: OUT_DIM*BATCH | ...]
+            comptime grad_reshaped_offset = K_TOTAL * Self.col_size
             var grad_reshaped = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.out_channels, K_TOTAL),
                 MutAnyOrigin,
-            ](grad_input.ptr)
+            ](workspace + grad_reshaped_offset)
 
             # Cache is (batch, s*col_size+k | act_cache), but CACHE_SIZE
             # includes activation cache so we can't reinterpret directly.

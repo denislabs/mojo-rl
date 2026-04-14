@@ -64,10 +64,11 @@ struct Conv2D[
     comptime OUT_DIM: Int = Self.out_channels * Self.out_h * Self.out_w
     comptime PARAM_SIZE: Int = Self.out_channels * Self.col_size + Self.out_channels
     comptime CACHE_SIZE: Int = Self.col_size * Self.spatial_out
-    # Workspace: max(forward out_temp, backward dcol)
-    # Forward: out_temp (OUT_DIM), Backward dx: dcol (CACHE_SIZE = col_size*spatial_out)
+    # Workspace layout:
+    #   Forward:  out_temp (OUT_DIM per sample)
+    #   Backward: grad_reshaped (OUT_DIM) + dcol (CACHE_SIZE) — non-overlapping
     # Custom MMA handles W transpose in-kernel, no extra w_t workspace needed
-    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.CACHE_SIZE if Self.CACHE_SIZE >= Self.OUT_DIM else Self.OUT_DIM
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.OUT_DIM + Self.CACHE_SIZE
 
     def __init__(out self):
         pass
@@ -1643,19 +1644,18 @@ struct Conv2D[
         ](grad_params.ptr)
 
         comptime if has_nvidia_gpu_accelerator():
-            # ── dW FIRST (before dx) so we can reuse grad_input as workspace ──
+            # ── dW FIRST (before dx) ──
             # dW = grad_reshaped @ col_reshaped
             # grad_output (BATCH, OC*S) → grad_reshaped (OC, BATCH*S)
             # cache (BATCH, col_size*S) → col_reshaped (BATCH*S, col_size)
             comptime K_TOTAL = BATCH * Self.spatial_out
 
-            # Reuse grad_input as workspace for grad_reshaped
-            # (BATCH * IN_DIM >= OC * K_TOTAL always holds for conv layers)
+            # Workspace layout: [grad_reshaped: OC*K_TOTAL | dcol: col_size*K_TOTAL]
             var grad_reshaped = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.out_channels, K_TOTAL),
                 MutAnyOrigin,
-            ](grad_input.ptr)
+            ](workspace)
 
             # Cache is now (batch, s*col_size+k) — flattens to (K_TOTAL, col_size)
             var col_flat = LayoutTensor[
@@ -1742,11 +1742,13 @@ struct Conv2D[
                 MutAnyOrigin,
             ](params.ptr)
 
+            # dcol follows grad_reshaped in workspace
+            comptime dcol_offset = Self.out_channels * K_TOTAL
             var dcol = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.col_size, K_TOTAL),
                 MutAnyOrigin,
-            ](workspace)
+            ](workspace + dcol_offset)
 
             comptime dx_grid_x_nv = (K_TOTAL + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime dx_grid_y_nv = (Self.col_size + MMA_BLOCK_M - 1) // MMA_BLOCK_M
