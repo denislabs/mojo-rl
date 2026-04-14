@@ -1016,12 +1016,15 @@ def run_offpolicy_continuous_train_gpu[
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
             comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
                 # Lazy capture: first time, capture pure GPU kernels
+                # Include soft update in the graph so targets update every step
                 if not _train_graph:
                     agent._gpu_train_kernels(ctx, gpu_state)
+                    agent.soft_update_targets_gpu(ctx, gpu_state)
                     ctx.synchronize()
                     var graph = CUDAGraph(ctx)
                     graph.begin_capture()
                     agent._gpu_train_kernels(ctx, gpu_state)
+                    agent.soft_update_targets_gpu(ctx, gpu_state)
                     graph.end_capture()
                     if verbose:
                         print(
@@ -1040,7 +1043,7 @@ def run_offpolicy_continuous_train_gpu[
             else:
                 for _ in range(grad_steps):
                     agent.do_gpu_train_step(ctx, gpu_state)
-            agent.soft_update_targets_gpu(ctx, gpu_state)
+                    agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)
@@ -1534,7 +1537,7 @@ def run_offpolicy_discrete_train_gpu[
         if total_steps >= warmup_steps and gpu_state.gpu_buffer_is_ready():
             for _ in range(grad_steps):
                 agent.do_gpu_train_step(ctx, gpu_state)
-            agent.soft_update_targets_gpu(ctx, gpu_state)
+                agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += grad_steps
         comptime if PROFILE >= 1:
             timer.sync_and_accumulate(6, ctx)
