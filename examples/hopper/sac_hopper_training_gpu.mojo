@@ -38,7 +38,7 @@ comptime HIDDEN_DIM = 256
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 4
+comptime MAX_N_ENVS = 32
 
 # Training duration
 comptime NUM_STEPS = 2_000_000
@@ -98,7 +98,7 @@ def main() raises:
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
         print("    - Critic LR: 1e-3")
-        print("    - Alpha LR: 3e-4")
+        print("    - Alpha LR: 1e-3")
         print("    - Tau (soft update): 0.005")
         print("    - Initial alpha: 0.2 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))
@@ -123,8 +123,8 @@ def main() raises:
         logger.set_config("env", "Hopper")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("actor_lr", "3e-4")
-        logger.set_config("critic_lr", "5e-4")
-        logger.set_config("alpha_lr", "3e-4")
+        logger.set_config("critic_lr", "1e-3")
+        logger.set_config("alpha_lr", "1e-3")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
 
