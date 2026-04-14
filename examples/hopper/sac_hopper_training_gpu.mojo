@@ -71,7 +71,7 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.001,
+            critic_lr=0.0003,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
@@ -80,7 +80,7 @@ def main() raises:
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.001,
+            alpha_lr=0.0003,
             target_entropy=-3.0,
             max_grad_norm=0.0,
             checkpoint_every=100_000,
@@ -97,8 +97,8 @@ def main() raises:
         print("  Max parallel envs: " + String(MAX_N_ENVS))
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 1e-3")
-        print("    - Alpha LR: 1e-3")
+        print("    - Critic LR: 3e-4")
+        print("    - Alpha LR: 3e-4")
         print("    - Tau (soft update): 0.005")
         print("    - Initial alpha: 0.2 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))
