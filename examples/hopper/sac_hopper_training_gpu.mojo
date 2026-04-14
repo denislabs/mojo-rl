@@ -71,7 +71,7 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
-            critic_lr=0.0003,
+            critic_lr=0.001,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
@@ -80,7 +80,7 @@ def main() raises:
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.0003,
+            alpha_lr=0.001,
             target_entropy=-3.0,
             max_grad_norm=0.0,
             checkpoint_every=100_000,
