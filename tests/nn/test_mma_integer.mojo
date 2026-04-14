@@ -700,11 +700,40 @@ def main() raises:
     print("(Small integers → exact TF32/FP32 → any diff = kernel bug)\n")
 
     print("--- Conv2D full pipeline (CPU vs GPU) ---")
-    # Small conv (lots of zero-padding in MMA tiles)
+
+    # Small conv (heavy zero-padding in MMA tiles, OC > IC)
     test_conv2d_pipeline[2, 4, 3, 1, 1, 5, 5, 2](ctx)
     print()
-    # Larger conv (better tile utilization)
+
+    # Medium conv (better tile utilization)
     test_conv2d_pipeline[4, 8, 3, 1, 1, 8, 8, 4](ctx)
+    print()
+
+    # NatureDQN conv1: IC=4, OC=32, K=8, stride=4, 84x84 input
+    # col_size=256, spatial_out=20*20=400, K_TOTAL=BATCH*400
+    test_conv2d_pipeline[4, 32, 8, 4, 0, 84, 84, 4](ctx)
+    print()
+
+    # NatureDQN conv2: IC=32, OC=64, K=4, stride=2, 20x20 input
+    # col_size=512, spatial_out=9*9=81, K_TOTAL=BATCH*81
+    test_conv2d_pipeline[32, 64, 4, 2, 0, 20, 20, 4](ctx)
+    print()
+
+    # NatureDQN conv3: IC=64, OC=64, K=3, stride=1, 9x9 input
+    # col_size=576, spatial_out=7*7=49, K_TOTAL=BATCH*49
+    test_conv2d_pipeline[64, 64, 3, 1, 0, 9, 9, 4](ctx)
+    print()
+
+    # ResBlock-style: same IC/OC, 3x3, padding=1
+    test_conv2d_pipeline[16, 16, 3, 1, 1, 8, 8, 8](ctx)
+    print()
+
+    # Wide conv: very large OC (stress test OC >> IC)
+    test_conv2d_pipeline[3, 32, 3, 1, 1, 8, 8, 4](ctx)
+    print()
+
+    # Large batch (stress K_TOTAL dimension)
+    test_conv2d_pipeline[4, 8, 3, 1, 1, 8, 8, 16](ctx)
     print()
 
     print("--- Linear pipeline (CPU vs GPU) ---")
@@ -712,17 +741,35 @@ def main() raises:
     print()
     test_linear_pipeline[16, 8, 4](ctx)
     print()
+    # Larger linear (NatureDQN FC)
+    test_linear_pipeline[64, 512, 4](ctx)
+    print()
 
     comptime if has_nvidia_gpu_accelerator():
         print("--- Isolated MMA kernels (NVIDIA only) ---")
-        # Small dims (heavy zero-padding in MMA tiles)
+        # Small dims (heavy zero-padding)
         test_isolated_mma_fwd[2, 4, 3, 1, 1, 5, 5, 2](ctx)
         test_isolated_mma_dW[2, 4, 3, 1, 1, 5, 5, 2](ctx)
         test_isolated_mma_dx[2, 4, 3, 1, 1, 5, 5, 2](ctx)
         print()
-        # Larger dims
+        # Medium dims
         test_isolated_mma_fwd[4, 8, 3, 1, 1, 8, 8, 4](ctx)
         test_isolated_mma_dW[4, 8, 3, 1, 1, 8, 8, 4](ctx)
         test_isolated_mma_dx[4, 8, 3, 1, 1, 8, 8, 4](ctx)
+        print()
+        # NatureDQN conv1 (large col_size=256, large K_TOTAL=1600)
+        test_isolated_mma_fwd[4, 32, 8, 4, 0, 84, 84, 4](ctx)
+        test_isolated_mma_dW[4, 32, 8, 4, 0, 84, 84, 4](ctx)
+        test_isolated_mma_dx[4, 32, 8, 4, 0, 84, 84, 4](ctx)
+        print()
+        # NatureDQN conv2 (large col_size=512)
+        test_isolated_mma_fwd[32, 64, 4, 2, 0, 20, 20, 4](ctx)
+        test_isolated_mma_dW[32, 64, 4, 2, 0, 20, 20, 4](ctx)
+        test_isolated_mma_dx[32, 64, 4, 2, 0, 20, 20, 4](ctx)
+        print()
+        # NatureDQN conv3 (col_size=576, OC=IC=64)
+        test_isolated_mma_fwd[64, 64, 3, 1, 0, 9, 9, 4](ctx)
+        test_isolated_mma_dW[64, 64, 3, 1, 0, 9, 9, 4](ctx)
+        test_isolated_mma_dx[64, 64, 3, 1, 0, 9, 9, 4](ctx)
 
     print("\n=== Done ===")
