@@ -1676,7 +1676,7 @@ struct AutodiffMaxEntLoss[
             src: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
         ):
             if Int(thread_idx.x) == 0 and Int(block_idx.x) == 0:
-                dst.ptr[0] = rebind[Scalar[dtype]](src.ptr[0])
+                dst.ptr[0] = bitcast[dtype](src.ptr[0])
 
         ctx.enqueue_function[copy_rng_to_ws_k, copy_rng_to_ws_k](
             seed_dst,
