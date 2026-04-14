@@ -258,7 +258,7 @@ struct RSampleOp[
             return
 
         # Read RNG seed from workspace buffer (not a scalar — CUDA graph safe)
-        var rng_seed = UInt64(bitcast[DType.uint32](ws.ptr[0]))
+        var rng_seed = UInt64(Int(ws.ptr[0]))
 
         var total_log_prob = Scalar[dtype](0.0)
 
