@@ -391,7 +391,75 @@ struct ResBlockConv2DBN[
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
         mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
     ):
-        pass  # CPU forward not needed — use GPU
+        """CPU forward: Conv1BNReLU → Conv2 → BN2 + skip + ReLU."""
+        from std.memory import alloc
+        from std.math import sqrt as msqrt
+
+        var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
+        var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+        var c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
+        var c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
+        var bn2c = cache.ptr + BATCH * Self.BN2_CACHE_OFF
+
+        # 1. Conv1BNReLU → inter
+        var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
+        var inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter)
+        var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
+        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1, c1)
+
+        # 2. Conv2 → output (holds conv2 output pre-BN)
+        var inter_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin]](inter_t)
+        var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
+        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2, c2)
+
+        # 3. BN2 + skip + ReLU + cache
+        var eps = Scalar[dtype](Self.BN_EPSILON)
+        var mom = Scalar[dtype](Self.BN_MOMENTUM)
+        var one_m = Scalar[dtype](1.0) - mom
+        comptime C = Self.channels
+        comptime S = Self.spatial
+        comptime N_ELEM = BATCH * S
+
+        for c in range(C):
+            var gamma = params.ptr[Self.BN2_OFF + Self.BN2_GAMMA_OFF + c]
+            var beta = params.ptr[Self.BN2_OFF + Self.BN2_BETA_OFF + c]
+
+            # Mean
+            var mean = Scalar[dtype](0.0)
+            for b in range(BATCH):
+                for s in range(S):
+                    mean += output.ptr[b * Self.DIM + c * S + s]
+            mean = mean / Scalar[dtype](N_ELEM)
+
+            # Variance
+            var var_ = Scalar[dtype](0.0)
+            for b in range(BATCH):
+                for s in range(S):
+                    var diff = output.ptr[b * Self.DIM + c * S + s] - mean
+                    var_ += diff * diff
+            var_ = var_ / Scalar[dtype](N_ELEM)
+            var inv_std = Scalar[dtype](1.0 / msqrt(Float64(var_ + eps)))
+
+            # Normalize + skip + ReLU + cache
+            for b in range(BATCH):
+                (bn2c + b * Self.BN2_CS + Self.BN2_INVSTD_OFF + c)[] = inv_std
+                for s in range(S):
+                    var idx = b * Self.DIM + c * S + s
+                    var x = output.ptr[idx]
+                    var x_hat = (x - mean) * inv_std
+                    (bn2c + b * Self.BN2_CS + Self.BN2_XHAT_OFF + c * S + s)[] = x_hat
+                    var bn_out = gamma * x_hat + beta
+                    var val = bn_out + input.ptr[idx]
+                    (bn2c + b * Self.BN2_CS + Self.BN2_INVSTD_OFF + C + c * S + s)[] = val
+                    output.ptr[idx] = val if Float64(val) > 0.0 else Scalar[dtype](0.0)
+
+            # Update running stats
+            var rm = params.ptr[Self.BN2_OFF + Self.BN2_RMEAN_OFF + c]
+            var rv = params.ptr[Self.BN2_OFF + Self.BN2_RVAR_OFF + c]
+            params.ptr[Self.BN2_OFF + Self.BN2_RMEAN_OFF + c] = one_m * rm + mom * mean
+            params.ptr[Self.BN2_OFF + Self.BN2_RVAR_OFF + c] = one_m * rv + mom * var_
+
+        inter.free()
 
     @staticmethod
     def forward[BATCH: Int, dtype: DType = DType.float32](
@@ -399,7 +467,15 @@ struct ResBlockConv2DBN[
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
-        pass  # CPU inference not needed — use GPU
+        """CPU inference forward (allocates temporary cache)."""
+        from std.memory import alloc, memset
+
+        comptime CAP = BATCH * Self.CACHE_SIZE
+        var dummy = alloc[Scalar[dtype]](CAP if CAP > 0 else 1)
+        memset(dummy, 0, CAP if CAP > 0 else 1)
+        var c = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](dummy)
+        Self.forward[BATCH, dtype](input, output, params, c)
+        dummy.free()
 
     @staticmethod
     def backward[BATCH: Int, dtype: DType = DType.float32](
@@ -409,7 +485,89 @@ struct ResBlockConv2DBN[
         cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
         mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
-        pass  # CPU backward not needed — use GPU
+        """CPU backward: ReLU+BN2 backward → Conv2 backward → Conv1 backward.
+
+        Mirrors the GPU backward_gpu logic step by step.
+        """
+        from std.memory import alloc, memset
+
+        var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
+        var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+        var c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
+        var c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
+        var g1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
+        var g2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
+        var bn2c = cache.ptr + BATCH * Self.BN2_CACHE_OFF
+
+        comptime C = Self.channels
+        comptime S = Self.spatial
+        comptime N_ELEM = BATCH * S
+
+        # 1. Fused ReLU + BN2 backward per channel → grad_conv2 + skip grad
+        var grad_conv2 = alloc[Scalar[dtype]](BATCH * Self.DIM)
+        memset(grad_conv2, 0, BATCH * Self.DIM)
+
+        for c in range(C):
+            var gamma = params.ptr[Self.BN2_OFF + Self.BN2_GAMMA_OFF + c]
+            var inv_std = (bn2c + 0 * Self.BN2_CS + Self.BN2_INVSTD_OFF + c)[]
+            var n_f = Scalar[dtype](N_ELEM)
+
+            # Pass 1: accumulate BN partials + skip grad
+            var d_gamma = Scalar[dtype](0.0)
+            var d_beta = Scalar[dtype](0.0)
+            var sum_dy_g = Scalar[dtype](0.0)
+            var sum_dy_g_xh = Scalar[dtype](0.0)
+
+            for b in range(BATCH):
+                for s in range(S):
+                    var pre_relu = (bn2c + b * Self.BN2_CS + Self.BN2_INVSTD_OFF + C + c * S + s)[]
+                    var go = grad_output.ptr[b * Self.DIM + c * S + s]
+                    var dy = go if Float64(pre_relu) > 0.0 else Scalar[dtype](0.0)
+                    grad_input.ptr[b * Self.DIM + c * S + s] = dy  # skip path
+
+                    var x_hat = (bn2c + b * Self.BN2_CS + Self.BN2_XHAT_OFF + c * S + s)[]
+                    d_gamma += dy * x_hat
+                    d_beta += dy
+                    sum_dy_g += dy * gamma
+                    sum_dy_g_xh += dy * gamma * x_hat
+
+            # Accumulate BN2 param grads
+            var g_off = Self.CONV1_PS + Self.CONV2_PS
+            grads.ptr[g_off + Self.BN2_GAMMA_OFF + c] = grads.ptr[g_off + Self.BN2_GAMMA_OFF + c] + d_gamma
+            grads.ptr[g_off + Self.BN2_BETA_OFF + c] = grads.ptr[g_off + Self.BN2_BETA_OFF + c] + d_beta
+
+            # Pass 2: grad w.r.t. conv2 output
+            for b in range(BATCH):
+                for s in range(S):
+                    var pre_relu = (bn2c + b * Self.BN2_CS + Self.BN2_INVSTD_OFF + C + c * S + s)[]
+                    var go = grad_output.ptr[b * Self.DIM + c * S + s]
+                    var dy = go if Float64(pre_relu) > 0.0 else Scalar[dtype](0.0)
+                    var x_hat = (bn2c + b * Self.BN2_CS + Self.BN2_XHAT_OFF + c * S + s)[]
+                    (grad_conv2 + b * Self.DIM + c * S + s)[] = inv_std * (
+                        dy * gamma - sum_dy_g / n_f - x_hat * sum_dy_g_xh / n_f
+                    )
+
+        # 2. Conv2 backward: grad_conv2 → grad_inter
+        var grad_inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
+        memset(grad_inter, 0, BATCH * Self.DIM)
+        var grad_conv2_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin](grad_conv2)
+        var grad_inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](grad_inter)
+        Self.Conv2.backward[BATCH, dtype](grad_conv2_t, grad_inter_t, p2, c2, g2)
+
+        # 3. Conv1BNReLU backward: grad_inter → temp_gi
+        var temp_gi = alloc[Scalar[dtype]](BATCH * Self.DIM)
+        memset(temp_gi, 0, BATCH * Self.DIM)
+        var go_c1 = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin]](grad_inter_t)
+        var temp_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](temp_gi)
+        Self.Conv1.backward[BATCH, dtype](go_c1, temp_gi_t, p1, c1, g1)
+
+        # 4. grad_input += conv1's grad_input
+        for i in range(BATCH * Self.DIM):
+            grad_input.ptr[i] = grad_input.ptr[i] + (temp_gi + i)[]
+
+        grad_conv2.free()
+        grad_inter.free()
+        temp_gi.free()
 
     # ── GPU Forward (with cache) ─────────────────────────────────
 

@@ -402,6 +402,39 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             )
             grad_input[batch_idx, i] = dx
 
+    @always_inline
+    @staticmethod
+    def backward_param_kernel_impl[
+        BATCH: Int, dtype: DType = DType.float32,
+    ](
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim + 2), ImmutAnyOrigin
+        ],
+        grads: LayoutTensor[
+            dtype, Layout.row_major(2 * Self.dim), MutAnyOrigin
+        ],
+    ):
+        """Accumulate param gradients (dgamma, dbeta) across batch.
+
+        Runs as a single thread to avoid race conditions across samples.
+        Grid: (1,)
+        Block: (1,)
+        """
+        if thread_idx.x != 0 or block_idx.x != 0:
+            return
+
+        for batch in range(BATCH):
+            for i in range(Self.dim):
+                var normalized = cache[batch, i]
+                var dy = grad_output[batch, i]
+                # dgamma[i] += dy * normalized
+                grads[i] = grads[i] + dy * normalized
+                # dbeta[i] += dy
+                grads[Self.dim + i] = grads[Self.dim + i] + dy
+
     # =========================================================================
     # GPU Launchers
     # =========================================================================
@@ -599,5 +632,30 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             cache_immut,
             grads,
             grid_dim=(BATCH,),
+            block_dim=(1,),
+        )
+
+        # Param gradients: dgamma, dbeta accumulated over batch (single thread)
+        @always_inline
+        def param_kernel_wrapper(
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim + 2), ImmutAnyOrigin
+            ],
+            grads: LayoutTensor[
+                dtype, Layout.row_major(2 * Self.dim), MutAnyOrigin
+            ],
+        ):
+            Self.backward_param_kernel_impl[BATCH, dtype](
+                grad_output, cache, grads
+            )
+
+        ctx.enqueue_function[param_kernel_wrapper, param_kernel_wrapper](
+            grad_output_immut,
+            cache_immut,
+            grads,
+            grid_dim=(1,),
             block_dim=(1,),
         )

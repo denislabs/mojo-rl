@@ -485,13 +485,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             var c1 = c0 + 1
 
             if r0 < BATCH and c0 < Self.out_dim:
-                output[r0, c0] = rebind[Scalar[dtype]](acc[0])
+                output[r0, c0] = acc[0].cast[dtype]()
             if r0 < BATCH and c1 < Self.out_dim:
-                output[r0, c1] = rebind[Scalar[dtype]](acc[1])
+                output[r0, c1] = acc[1].cast[dtype]()
             if r1 < BATCH and c0 < Self.out_dim:
-                output[r1, c0] = rebind[Scalar[dtype]](acc[2])
+                output[r1, c0] = acc[2].cast[dtype]()
             if r1 < BATCH and c1 < Self.out_dim:
-                output[r1, c1] = rebind[Scalar[dtype]](acc[3])
+                output[r1, c1] = acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod
@@ -726,13 +726,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             var c1 = c0 + 1
 
             if r0 < BATCH and c0 < Self.in_dim:
-                grad_input[r0, c0] = rebind[Scalar[dtype]](acc[0])
+                grad_input[r0, c0] = acc[0].cast[dtype]()
             if r0 < BATCH and c1 < Self.in_dim:
-                grad_input[r0, c1] = rebind[Scalar[dtype]](acc[1])
+                grad_input[r0, c1] = acc[1].cast[dtype]()
             if r1 < BATCH and c0 < Self.in_dim:
-                grad_input[r1, c0] = rebind[Scalar[dtype]](acc[2])
+                grad_input[r1, c0] = acc[2].cast[dtype]()
             if r1 < BATCH and c1 < Self.in_dim:
-                grad_input[r1, c1] = rebind[Scalar[dtype]](acc[3])
+                grad_input[r1, c1] = acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod
@@ -953,13 +953,13 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             var c1 = c0 + 1
 
             if r0 < Self.in_dim and c0 < Self.out_dim:
-                dW[r0, c0] = rebind[Scalar[dtype]](acc[0])
+                dW[r0, c0] = acc[0].cast[dtype]()
             if r0 < Self.in_dim and c1 < Self.out_dim:
-                dW[r0, c1] = rebind[Scalar[dtype]](acc[1])
+                dW[r0, c1] = acc[1].cast[dtype]()
             if r1 < Self.in_dim and c0 < Self.out_dim:
-                dW[r1, c0] = rebind[Scalar[dtype]](acc[2])
+                dW[r1, c0] = acc[2].cast[dtype]()
             if r1 < Self.in_dim and c1 < Self.out_dim:
-                dW[r1, c1] = rebind[Scalar[dtype]](acc[3])
+                dW[r1, c1] = acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod
@@ -1097,73 +1097,39 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
         ](input.ptr)
 
-        comptime if has_nvidia_gpu_accelerator():
-            # NVIDIA: use max_matmul (optimized GEMM from linalg)
-            # Cache input for backward (separate kernel since max_matmul
-            # doesn't have access to the cache buffer)
-            comptime cache_elems = BATCH * Self.in_dim
-            comptime cache_blocks = (cache_elems + TPB - 1) // TPB
+        comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
-            @always_inline
-            def cache_input_wrapper(
-                cache: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-                ],
-                input: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-                ],
-            ):
-                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if idx < cache_elems:
-                    cache.ptr[idx] = input.ptr[idx]
-
-            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
-                cache,
-                input_immut,
-                grid_dim=(cache_blocks,),
-                block_dim=(TPB,),
-            )
-
-            # output = input @ W via max_matmul
-            var input_mm = LayoutTensor[
+        @always_inline
+        def wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+            ],
+            W: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, Self.out_dim),
+                ImmutAnyOrigin,
+            ],
+            cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-            ](input.ptr)
-            var W_mm = LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
-            ](params.ptr)
-            _max_matmul[target="gpu"](lt_to_tt(output), lt_to_tt(input_mm), lt_to_tt(W_mm), DeviceContextPtr(ctx))
-        else:
-            # Apple: use hand-written 2x2 tiled kernel
-            comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
-
-            @always_inline
-            def wrapper(
-                output: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
-                ],
-                input: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-                ],
-                W: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.in_dim, Self.out_dim),
-                    ImmutAnyOrigin,
-                ],
-                cache: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-                ],
-            ):
+            ],
+        ):
+            comptime if is_nvidia_gpu():
+                Self.eval_kernel_mma[BATCH, dtype](output, input, W, cache)
+            else:
                 Self.eval_kernel_2x2[BATCH, dtype](output, input, W, cache)
 
-            ctx.enqueue_function[wrapper, wrapper](
-                output,
-                input_immut,
-                W,
-                cache,
-                grid_dim=(grid_x, grid_y),
-                block_dim=(MMA_BLOCK_THREADS, 1),
-            )
+        ctx.enqueue_function[wrapper, wrapper](
+            output,
+            input_immut,
+            W,
+            cache,
+            grid_dim=(grid_x, grid_y),
+            block_dim=(MMA_BLOCK_THREADS, 1),
+        )
 
     @staticmethod
     def vjp_gpu[

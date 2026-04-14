@@ -449,7 +449,7 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
-    comptime max_grad_norm: Float64 = 1.0
+    comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 42
     comptime board_rows: Int = 6
@@ -502,13 +502,17 @@ struct AlphaZeroConnectFourFusedResNetConfig[
         Parallel[
             # Policy head: Conv1x1+BN+ReLU → Flatten → FC → logits
             Sequential[
-                Conv2DBatchNormReLU[Self.FILTERS, Self.HEAD_FILTERS, 1, 1, 0, 6, 7],
+                Conv2DBatchNormReLU[
+                    Self.FILTERS, Self.HEAD_FILTERS, 1, 1, 0, 6, 7
+                ],
                 FlattenLayer[Self.HEAD_DIM],
                 Linear[Self.HEAD_DIM, 7],
             ],
             # Value head: Conv1x1+BN+ReLU → Flatten → FC+ReLU → FC → scalar
             Sequential[
-                Conv2DBatchNormReLU[Self.FILTERS, Self.HEAD_FILTERS, 1, 1, 0, 6, 7],
+                Conv2DBatchNormReLU[
+                    Self.FILTERS, Self.HEAD_FILTERS, 1, 1, 0, 6, 7
+                ],
                 FlattenLayer[Self.HEAD_DIM],
                 LinearReLU[Self.HEAD_DIM, Self.FILTERS],
                 Linear[Self.FILTERS, 1],
@@ -526,7 +530,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime temp_min: Float64 = 0.3  # AlphaZero.jl: temp=0.3 after move 20
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 1.0  # AlphaZero.jl: nonvalidity_penalty=1.0
-    comptime max_grad_norm: Float64 = 1.0
+    comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
     comptime max_episode_length: Int = 42
     comptime board_rows: Int = 6

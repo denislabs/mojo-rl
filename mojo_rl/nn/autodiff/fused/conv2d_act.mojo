@@ -28,13 +28,10 @@ from .activation import Activation
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
-from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.gpu.compute.mma import mma
-from linalg.matmul import matmul as max_matmul
-from layout.tile_tensor import lt_to_tt
 
 
 struct FusedConv2DActivation[
@@ -70,10 +67,10 @@ struct FusedConv2DActivation[
     comptime CONV_CACHE: Int = Self.col_size * Self.spatial_out
     comptime CACHE_SIZE: Int = Self.CONV_CACHE + Self.OUT_DIM
     comptime FUSED_COUNT: Int = 2
-    # Forward: col_flat (CONV_CACHE) + out_temp (OUT_DIM) + w_t (col_size*OC)
+    # Forward: col_flat (CONV_CACHE) + out_temp (OUT_DIM)
     # Backward dW: col_flat (CONV_CACHE)
-    # Max of forward and backward per sample:
-    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.CONV_CACHE + Self.OUT_DIM + Self.col_size * Self.out_channels
+    # Custom MMA handles W transpose in-kernel, no extra w_t workspace needed
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = Self.CONV_CACHE + Self.OUT_DIM
 
     def __init__(out self):
         pass
@@ -702,7 +699,7 @@ struct FusedConv2DActivation[
             var c1 = c0 + 1
 
             if r0 < Self.out_channels and c0 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[0]) + rebind[
+                var pre_act = acc[0].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](params[W_SIZE + r0])
                 var act_out = Self.ACT.forward(pre_act)
@@ -712,7 +709,7 @@ struct FusedConv2DActivation[
                     pre_act, act_out
                 )
             if r0 < Self.out_channels and c1 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[1]) + rebind[
+                var pre_act = acc[1].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](params[W_SIZE + r0])
                 var act_out = Self.ACT.forward(pre_act)
@@ -722,7 +719,7 @@ struct FusedConv2DActivation[
                     pre_act, act_out
                 )
             if r1 < Self.out_channels and c0 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[2]) + rebind[
+                var pre_act = acc[2].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](params[W_SIZE + r1])
                 var act_out = Self.ACT.forward(pre_act)
@@ -732,7 +729,7 @@ struct FusedConv2DActivation[
                     pre_act, act_out
                 )
             if r1 < Self.out_channels and c1 < Self.spatial_out:
-                var pre_act = rebind[Scalar[dtype]](acc[3]) + rebind[
+                var pre_act = acc[3].cast[dtype]() + rebind[
                     Scalar[dtype]
                 ](params[W_SIZE + r1])
                 var act_out = Self.ACT.forward(pre_act)
@@ -1011,13 +1008,13 @@ struct FusedConv2DActivation[
             var c1 = c0 + 1
 
             if r0 < Self.out_channels and c0 < Self.col_size:
-                dW[r0, c0] = rebind[Scalar[dtype]](acc[0])
+                dW[r0, c0] = acc[0].cast[dtype]()
             if r0 < Self.out_channels and c1 < Self.col_size:
-                dW[r0, c1] = rebind[Scalar[dtype]](acc[1])
+                dW[r0, c1] = acc[1].cast[dtype]()
             if r1 < Self.out_channels and c0 < Self.col_size:
-                dW[r1, c0] = rebind[Scalar[dtype]](acc[2])
+                dW[r1, c0] = acc[2].cast[dtype]()
             if r1 < Self.out_channels and c1 < Self.col_size:
-                dW[r1, c1] = rebind[Scalar[dtype]](acc[3])
+                dW[r1, c1] = acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod
@@ -1082,6 +1079,385 @@ struct FusedConv2DActivation[
             db[oc] = smem[0]
 
     # =========================================================================
+    # GPU kernels — MMA matmul (NVIDIA, replaces max_matmul)
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    def conv_matmul_fwd_mma[
+        K_TOTAL: Int, dtype: DType = DType.float32
+    ](
+        out_temp: LayoutTensor[
+            dtype,
+            Layout.row_major(K_TOTAL, Self.out_channels),
+            MutAnyOrigin,
+        ],
+        col_flat: LayoutTensor[
+            dtype,
+            Layout.row_major(K_TOTAL, Self.col_size),
+            MutAnyOrigin,
+        ],
+        W: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
+        ],
+    ):
+        """MMA forward: out_temp = col_flat @ W.T (transpose_b)."""
+        comptime if is_nvidia_gpu():
+            var tid = Int(thread_idx.x)
+            var warp_id = tid // 32
+            var warp_m = warp_id // MMA_WARPS_N
+            var warp_n = warp_id % MMA_WARPS_N
+
+            var block_row = Int(block_idx.y) * MMA_BLOCK_M
+            var block_col = Int(block_idx.x) * MMA_BLOCK_N
+
+            var a_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var b_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+
+            var acc = SIMD[DType.float32, 4](0)
+            var lid = lane_id()
+            var group_id = lid >> 2
+            var group_lane = lid % 4
+
+            comptime num_k_tiles = (Self.col_size + MMA_K - 1) // MMA_K
+
+            for k_tile in range(num_k_tiles):
+                var k_off = k_tile * MMA_K
+
+                var a_r = tid // MMA_K
+                var a_c = tid % MMA_K
+                var ga_r = block_row + a_r
+                var ga_c = k_off + a_c
+                if ga_r < K_TOTAL and ga_c < Self.col_size:
+                    a_smem[a_r, a_c] = col_flat[ga_r, ga_c]
+                else:
+                    a_smem[a_r, a_c] = 0
+
+                var br = tid // MMA_BLOCK_N
+                var bc = tid % MMA_BLOCK_N
+                var gb_k = k_off + br
+                var gb_n = block_col + bc
+                if gb_n < Self.out_channels and gb_k < Self.col_size:
+                    b_smem[br, bc] = W[gb_n, gb_k]
+                else:
+                    b_smem[br, bc] = 0
+
+                barrier()
+
+                var warp_row = warp_m * MMA_M
+                var a_frag = SIMD[DType.float32, 4](
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane)
+                        ]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id), Int(group_lane) + 4
+                        ]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8,
+                            Int(group_lane) + 4,
+                        ]
+                    ),
+                )
+                var warp_col = warp_n * MMA_N
+                var b_frag = SIMD[DType.float32, 2](
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[
+                            Int(group_lane) + 4, warp_col + Int(group_id)
+                        ]
+                    ),
+                )
+
+                mma(acc, a_frag, b_frag, acc)
+                barrier()
+
+            var r0 = block_row + warp_m * MMA_M + Int(group_id)
+            var r1 = r0 + 8
+            var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
+            var c1 = c0 + 1
+
+            if r0 < K_TOTAL and c0 < Self.out_channels:
+                out_temp[r0, c0] = acc[0].cast[dtype]()
+            if r0 < K_TOTAL and c1 < Self.out_channels:
+                out_temp[r0, c1] = acc[1].cast[dtype]()
+            if r1 < K_TOTAL and c0 < Self.out_channels:
+                out_temp[r1, c0] = acc[2].cast[dtype]()
+            if r1 < K_TOTAL and c1 < Self.out_channels:
+                out_temp[r1, c1] = acc[3].cast[dtype]()
+
+    @always_inline
+    @staticmethod
+    def conv_matmul_dW_mma[
+        K_TOTAL: Int, dtype: DType = DType.float32
+    ](
+        dW: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
+        ],
+        grad_reshaped: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.out_channels, K_TOTAL),
+            MutAnyOrigin,
+        ],
+        col_flat: LayoutTensor[
+            dtype,
+            Layout.row_major(K_TOTAL, Self.col_size),
+            MutAnyOrigin,
+        ],
+    ):
+        """MMA backward: dW = grad_reshaped @ col_flat."""
+        comptime if is_nvidia_gpu():
+            var tid = Int(thread_idx.x)
+            var warp_id = tid // 32
+            var warp_m = warp_id // MMA_WARPS_N
+            var warp_n = warp_id % MMA_WARPS_N
+
+            var block_row = Int(block_idx.y) * MMA_BLOCK_M
+            var block_col = Int(block_idx.x) * MMA_BLOCK_N
+
+            var a_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var b_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+
+            var acc = SIMD[DType.float32, 4](0)
+            var lid = lane_id()
+            var group_id = lid >> 2
+            var group_lane = lid % 4
+
+            comptime num_k_tiles = (K_TOTAL + MMA_K - 1) // MMA_K
+
+            for k_tile in range(num_k_tiles):
+                var k_off = k_tile * MMA_K
+
+                var a_r = tid // MMA_K
+                var a_c = tid % MMA_K
+                var ga_r = block_row + a_r
+                var ga_c = k_off + a_c
+                if ga_r < Self.out_channels and ga_c < K_TOTAL:
+                    a_smem[a_r, a_c] = grad_reshaped[ga_r, ga_c]
+                else:
+                    a_smem[a_r, a_c] = 0
+
+                var br = tid // MMA_BLOCK_N
+                var bc = tid % MMA_BLOCK_N
+                var gb_r = k_off + br
+                var gb_c = block_col + bc
+                if gb_r < K_TOTAL and gb_c < Self.col_size:
+                    b_smem[br, bc] = col_flat[gb_r, gb_c]
+                else:
+                    b_smem[br, bc] = 0
+
+                barrier()
+
+                var warp_row = warp_m * MMA_M
+                var a_frag = SIMD[DType.float32, 4](
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane)
+                        ]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id), Int(group_lane) + 4
+                        ]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8,
+                            Int(group_lane) + 4,
+                        ]
+                    ),
+                )
+                var warp_col = warp_n * MMA_N
+                var b_frag = SIMD[DType.float32, 2](
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[
+                            Int(group_lane) + 4, warp_col + Int(group_id)
+                        ]
+                    ),
+                )
+
+                mma(acc, a_frag, b_frag, acc)
+                barrier()
+
+            var r0 = block_row + warp_m * MMA_M + Int(group_id)
+            var r1 = r0 + 8
+            var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
+            var c1 = c0 + 1
+
+            if r0 < Self.out_channels and c0 < Self.col_size:
+                dW[r0, c0] = acc[0].cast[dtype]()
+            if r0 < Self.out_channels and c1 < Self.col_size:
+                dW[r0, c1] = acc[1].cast[dtype]()
+            if r1 < Self.out_channels and c0 < Self.col_size:
+                dW[r1, c0] = acc[2].cast[dtype]()
+            if r1 < Self.out_channels and c1 < Self.col_size:
+                dW[r1, c1] = acc[3].cast[dtype]()
+
+    @always_inline
+    @staticmethod
+    def conv_matmul_dx_mma[
+        K_TOTAL: Int, dtype: DType = DType.float32
+    ](
+        dcol: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.col_size, K_TOTAL),
+            MutAnyOrigin,
+        ],
+        W: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
+        ],
+        grad_reshaped: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.out_channels, K_TOTAL),
+            MutAnyOrigin,
+        ],
+    ):
+        """MMA backward: dcol = W.T @ grad_reshaped (transpose_a on W)."""
+        comptime if is_nvidia_gpu():
+            var tid = Int(thread_idx.x)
+            var warp_id = tid // 32
+            var warp_m = warp_id // MMA_WARPS_N
+            var warp_n = warp_id % MMA_WARPS_N
+
+            var block_row = Int(block_idx.y) * MMA_BLOCK_M
+            var block_col = Int(block_idx.x) * MMA_BLOCK_N
+
+            var a_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_BLOCK_M, MMA_K),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+            var b_smem = LayoutTensor[
+                dtype,
+                Layout.row_major(MMA_K, MMA_BLOCK_N),
+                MutAnyOrigin,
+                address_space=AddressSpace.SHARED,
+            ].stack_allocation()
+
+            var acc = SIMD[DType.float32, 4](0)
+            var lid = lane_id()
+            var group_id = lid >> 2
+            var group_lane = lid % 4
+
+            comptime num_k_tiles = (Self.out_channels + MMA_K - 1) // MMA_K
+
+            for k_tile in range(num_k_tiles):
+                var k_off = k_tile * MMA_K
+
+                var a_r = tid // MMA_K
+                var a_c = tid % MMA_K
+                var ga_m = block_row + a_r
+                var ga_k = k_off + a_c
+                if ga_m < Self.col_size and ga_k < Self.out_channels:
+                    a_smem[a_r, a_c] = W[ga_k, ga_m]
+                else:
+                    a_smem[a_r, a_c] = 0
+
+                var br = tid // MMA_BLOCK_N
+                var bc = tid % MMA_BLOCK_N
+                var gb_r = k_off + br
+                var gb_c = block_col + bc
+                if gb_r < Self.out_channels and gb_c < K_TOTAL:
+                    b_smem[br, bc] = grad_reshaped[gb_r, gb_c]
+                else:
+                    b_smem[br, bc] = 0
+
+                barrier()
+
+                var warp_row = warp_m * MMA_M
+                var a_frag = SIMD[DType.float32, 4](
+                    rebind[Scalar[DType.float32]](
+                        a_smem[warp_row + Int(group_id), Int(group_lane)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8, Int(group_lane)
+                        ]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id), Int(group_lane) + 4
+                        ]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        a_smem[
+                            warp_row + Int(group_id) + 8,
+                            Int(group_lane) + 4,
+                        ]
+                    ),
+                )
+                var warp_col = warp_n * MMA_N
+                var b_frag = SIMD[DType.float32, 2](
+                    rebind[Scalar[DType.float32]](
+                        b_smem[Int(group_lane), warp_col + Int(group_id)]
+                    ),
+                    rebind[Scalar[DType.float32]](
+                        b_smem[
+                            Int(group_lane) + 4, warp_col + Int(group_id)
+                        ]
+                    ),
+                )
+
+                mma(acc, a_frag, b_frag, acc)
+                barrier()
+
+            var r0 = block_row + warp_m * MMA_M + Int(group_id)
+            var r1 = r0 + 8
+            var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
+            var c1 = c0 + 1
+
+            if r0 < Self.col_size and c0 < K_TOTAL:
+                dcol[r0, c0] = acc[0].cast[dtype]()
+            if r0 < Self.col_size and c1 < K_TOTAL:
+                dcol[r0, c1] = acc[1].cast[dtype]()
+            if r1 < Self.col_size and c0 < K_TOTAL:
+                dcol[r1, c0] = acc[2].cast[dtype]()
+            if r1 < Self.col_size and c1 < K_TOTAL:
+                dcol[r1, c1] = acc[3].cast[dtype]()
+
+    # =========================================================================
     # GPU launchers (tiled forward + tiled dW/db + naive dx)
     # =========================================================================
 
@@ -1112,7 +1488,7 @@ struct FusedConv2DActivation[
         ](params.ptr)
 
         comptime if has_nvidia_gpu_accelerator():
-            # NVIDIA: im2col → max_matmul → transpose + bias + activation
+            # NVIDIA: im2col → MMA matmul → transpose + bias + activation
             comptime K_TOTAL = BATCH * Self.spatial_out
             comptime KS2 = Self.kernel_size * Self.kernel_size
             comptime W_SIZE = Self.out_channels * Self.col_size
@@ -1210,7 +1586,7 @@ struct FusedConv2DActivation[
                 block_dim=(TPB,),
             )
 
-            # 3. max_matmul with transpose_b: out = col_flat @ W.T
+            # 3. Custom MMA matmul with transpose_b: out = col_flat @ W.T
             var W_mat = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.out_channels, Self.col_size),
@@ -1224,7 +1600,38 @@ struct FusedConv2DActivation[
                 MutAnyOrigin,
             ](workspace + out_temp_ws_offset)
 
-            max_matmul[target="gpu", transpose_b=True](lt_to_tt(out_temp), lt_to_tt(col_flat), lt_to_tt(W_mat), DeviceContextPtr(ctx))
+            comptime fwd_grid_x = (Self.out_channels + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime fwd_grid_y = (K_TOTAL + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+            @always_inline
+            def fwd_mm_wrapper(
+                out_temp: LayoutTensor[
+                    dtype,
+                    Layout.row_major(K_TOTAL, Self.out_channels),
+                    MutAnyOrigin,
+                ],
+                col_flat: LayoutTensor[
+                    dtype,
+                    Layout.row_major(K_TOTAL, Self.col_size),
+                    MutAnyOrigin,
+                ],
+                W_mat: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.col_size),
+                    MutAnyOrigin,
+                ],
+            ):
+                Self.conv_matmul_fwd_mma[K_TOTAL, dtype](
+                    out_temp, col_flat, W_mat
+                )
+
+            ctx.enqueue_function[fwd_mm_wrapper, fwd_mm_wrapper](
+                out_temp,
+                col_flat,
+                W_mat,
+                grid_dim=(fwd_grid_x, fwd_grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
             # 5. Transpose output + bias + activation + cache act values
             # out_temp[b*S+s, oc] → output[b, oc*S+s] = act(val + bias[oc])
@@ -1352,18 +1759,19 @@ struct FusedConv2DActivation[
         ](grad_params.ptr)
 
         comptime if has_nvidia_gpu_accelerator():
-            # ── dW FIRST (before dx) so we can reuse grad_input as workspace ──
+            # ── dW FIRST (before dx) ──
             # dW = masked_grad_reshaped @ col_reshaped
             # masked_grad: (OC, BATCH*S) with ACT.backward applied
             # col_reshaped: (BATCH*S, col_size)
             comptime K_TOTAL = BATCH * Self.spatial_out
 
-            # Reuse grad_input as workspace for grad_reshaped
+            # Workspace: [col_flat: CONV_CACHE*BATCH | grad_reshaped: OUT_DIM*BATCH | ...]
+            comptime grad_reshaped_offset = K_TOTAL * Self.col_size
             var grad_reshaped = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.out_channels, K_TOTAL),
                 MutAnyOrigin,
-            ](grad_input.ptr)
+            ](workspace + grad_reshaped_offset)
 
             # Cache is (batch, s*col_size+k | act_cache), but CACHE_SIZE
             # includes activation cache so we can't reinterpret directly.
@@ -1454,57 +1862,87 @@ struct FusedConv2DActivation[
                 block_dim=(TPB,),
             )
 
-            # Zero-alloc dW: dW = masked_grad_reshaped @ col_flat
-            max_matmul[target="gpu"](lt_to_tt(dW), lt_to_tt(grad_reshaped), lt_to_tt(col_flat), DeviceContextPtr(ctx))
-
-            # ── dx via matmul + col2im gather ──
-            # dcol = W.T @ masked_grad_reshaped, then col2im
-            # masked_grad (OC, K_TOTAL) still in grad_input.ptr from dW step
-
-            # W.T in workspace (same region as forward)
-            comptime w_t_bwd_offset = BATCH * (Self.CONV_CACHE + Self.OUT_DIM)
-            comptime w_elems_bwd = Self.out_channels * Self.col_size
-            comptime w_blocks_bwd = (w_elems_bwd + TPB - 1) // TPB
-            var w_t_bwd = LayoutTensor[
-                dtype,
-                Layout.row_major(Self.col_size, Self.out_channels),
-                MutAnyOrigin,
-            ](workspace + w_t_bwd_offset)
+            # Custom MMA dW: dW = masked_grad_reshaped @ col_flat
+            comptime dW_grid_x_nv = (Self.col_size + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime dW_grid_y_nv = (Self.out_channels + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
             @always_inline
-            def transpose_w_bwd(
-                dst: LayoutTensor[
+            def dW_mm_wrapper(
+                dW: LayoutTensor[
                     dtype,
-                    Layout.row_major(Self.col_size, Self.out_channels),
+                    Layout.row_major(Self.out_channels, Self.col_size),
                     MutAnyOrigin,
                 ],
-                src: LayoutTensor[
-                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+                grad_reshaped: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+                col_flat: LayoutTensor[
+                    dtype,
+                    Layout.row_major(K_TOTAL, Self.col_size),
+                    MutAnyOrigin,
                 ],
             ):
-                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if idx >= w_elems_bwd:
-                    return
-                var k = idx // Self.out_channels
-                var oc = idx % Self.out_channels
-                dst[k, oc] = src[oc * Self.col_size + k]
+                Self.conv_matmul_dW_mma[K_TOTAL, dtype](
+                    dW, grad_reshaped, col_flat
+                )
 
-            ctx.enqueue_function[transpose_w_bwd, transpose_w_bwd](
-                w_t_bwd,
-                params_immut,
-                grid_dim=(w_blocks_bwd,),
-                block_dim=(TPB,),
+            ctx.enqueue_function[dW_mm_wrapper, dW_mm_wrapper](
+                dW,
+                grad_reshaped,
+                col_flat,
+                grid_dim=(dW_grid_x_nv, dW_grid_y_nv),
+                block_dim=(MMA_BLOCK_THREADS, 1),
             )
 
-            # dcol at workspace offset 0 (reuses col_flat region)
+            # ── dx via custom MMA + col2im gather ──
+            # dcol = W.T @ masked_grad_reshaped (transpose_a on W)
+            # Custom MMA handles transpose directly — no explicit W transpose needed
+            var W_bwd = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.out_channels, Self.col_size),
+                MutAnyOrigin,
+            ](params.ptr)
+
             var dcol = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.col_size, K_TOTAL),
                 MutAnyOrigin,
             ](workspace)
 
-            # max_matmul: dcol = W.T @ masked_grad_reshaped
-            max_matmul[target="gpu"](lt_to_tt(dcol), lt_to_tt(w_t_bwd), lt_to_tt(grad_reshaped), DeviceContextPtr(ctx))
+            comptime dx_grid_x_nv = (K_TOTAL + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime dx_grid_y_nv = (Self.col_size + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+            @always_inline
+            def dx_mm_wrapper(
+                dcol: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.col_size, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+                W: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.col_size),
+                    MutAnyOrigin,
+                ],
+                grad_reshaped: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+            ):
+                Self.conv_matmul_dx_mma[K_TOTAL, dtype](
+                    dcol, W, grad_reshaped
+                )
+
+            ctx.enqueue_function[dx_mm_wrapper, dx_mm_wrapper](
+                dcol,
+                W_bwd,
+                grad_reshaped,
+                grid_dim=(dx_grid_x_nv, dx_grid_y_nv),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
             # col2im gather: one thread per input element
             var total_dx = BATCH * Self.IN_DIM

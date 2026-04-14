@@ -1,4 +1,4 @@
-from ..constants import dtype
+from ..constants import dtype, gpu_align
 from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
@@ -8,11 +8,10 @@ from std.builtin.variadics import Variadic
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 
-# GPU matmul requires 16-byte alignment = 4 float32 elements
 @always_inline
 def _seq_align4(x: Int) -> Int:
-    """Round up to next multiple of 4 for GPU alignment."""
-    return (x + 3) & ~3
+    """GPU-aligned element count (16-byte aligned for any dtype)."""
+    return gpu_align(x)
 
 
 # =============================================================================
@@ -75,12 +74,17 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def _total_inter() -> Int:
-        """Per-sample intermediate buffer size (sum of OUT_DIM for layers 0..N-2).
+        """Per-sample intermediate buffer size (sum of padded OUT_DIM for layers 0..N-2).
+
+        Each slot is padded to at least 8 elements to prevent NVIDIA cuBLAS
+        max_matmul from overwriting adjacent inter-layer buffers.
         """
         var total = 0
 
         comptime for i in range(Self.N - 1):
-            total += Self.model_types[i].OUT_DIM
+            var d = Self.model_types[i].OUT_DIM
+            var padded = d if d >= 8 else 8
+            total += _seq_align4(padded)
         return total
 
     @staticmethod
@@ -119,11 +123,13 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def _inter_offset[idx: Int]() -> Int:
-        """Offset of intermediate slot idx (per sample)."""
+        """Offset of intermediate slot idx (per sample), with padding."""
         var total = 0
 
         comptime for j in range(idx):
-            total += Self.model_types[j].OUT_DIM
+            var d = Self.model_types[j].OUT_DIM
+            var padded = d if d >= 8 else 8
+            total += _seq_align4(padded)
         return total
 
     @staticmethod
@@ -133,7 +139,8 @@ struct Sequential[*LAYERS: Model](Model):
         var total = Self._total_inter()
 
         comptime for j in range(idx):
-            total += Self.model_types[j].WORKSPACE_SIZE_PER_SAMPLE
+            var ws = Self.model_types[j].WORKSPACE_SIZE_PER_SAMPLE
+            total += _seq_align4(ws) if ws > 0 else 0
         return total
 
     @staticmethod

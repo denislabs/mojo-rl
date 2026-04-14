@@ -202,7 +202,64 @@ struct ResBlockConv2D[
         cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
         mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
-        pass  # CPU backward not implemented — use GPU backward
+        """CPU backward: mirrors GPU backward_gpu logic.
+
+        Steps:
+        1. ReLU backward using cached pre_relu → masked grad + skip grad
+        2. Conv2.backward: masked grad → grad_inter + Conv2 param grads
+        3. Conv1.backward: grad_inter → temp_gi + Conv1 param grads
+        4. grad_input = skip_grad + temp_gi
+        """
+        from std.memory import alloc
+
+        var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
+        var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+        var c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
+        var c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
+        var g1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
+        var g2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
+        var pre_off = BATCH * (Self.CONV1_CS + Self.CONV2_CS)
+
+        # 1. ReLU backward + skip gradient
+        var grad_masked = alloc[Scalar[dtype]](BATCH * Self.DIM)
+        for i in range(BATCH * Self.DIM):
+            var pre = (cache.ptr + pre_off + i)[]
+            var go = grad_output.ptr[i]
+            var masked = go if Float64(pre) > 0.0 else Scalar[dtype](0.0)
+            (grad_masked + i)[] = masked
+            grad_input.ptr[i] = masked  # skip path
+
+        # 2. Conv2 backward
+        var grad_inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
+        for i in range(BATCH * Self.DIM):
+            (grad_inter + i)[] = Scalar[dtype](0.0)
+        var grad_masked_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin
+        ](grad_masked)
+        var grad_inter_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin
+        ](grad_inter)
+        Self.Conv2.backward[BATCH, dtype](grad_masked_t, grad_inter_t, p2, c2, g2)
+
+        # 3. Conv1 backward
+        var temp_gi = alloc[Scalar[dtype]](BATCH * Self.DIM)
+        for i in range(BATCH * Self.DIM):
+            (temp_gi + i)[] = Scalar[dtype](0.0)
+        var go_c1 = rebind[LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin
+        ]](grad_inter_t)
+        var temp_gi_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin
+        ](temp_gi)
+        Self.Conv1.backward[BATCH, dtype](go_c1, temp_gi_t, p1, c1, g1)
+
+        # 4. grad_input += conv1's grad_input
+        for i in range(BATCH * Self.DIM):
+            grad_input.ptr[i] = grad_input.ptr[i] + (temp_gi + i)[]
+
+        grad_masked.free()
+        grad_inter.free()
+        temp_gi.free()
 
     # ── GPU Forward (with cache) ─────────────────────────────────
 
