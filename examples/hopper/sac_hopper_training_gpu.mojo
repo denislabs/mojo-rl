@@ -33,12 +33,12 @@ comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
 comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
 
 # Network architecture
-comptime HIDDEN_DIM = 256
+comptime HIDDEN_DIM = 512
 
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
-comptime BATCH_SIZE = 256  # CleanRL default
-comptime MAX_N_ENVS = 1  # Match CleanRL single-env baseline
+comptime BATCH_SIZE = 512
+comptime MAX_N_ENVS = 4
 
 # Training duration
 comptime NUM_STEPS = 2_000_000
