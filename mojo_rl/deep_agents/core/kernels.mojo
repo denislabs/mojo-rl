@@ -988,16 +988,9 @@ def td_target_continuous_kernel[
     if q != q:
         q = Scalar[dtype](0.0)
     var tgt = rewards.ptr[i] + gamma * q * (one - dones.ptr[i])
-    # Guard NaN (NaN comparisons are always false, so clamp alone won't catch it)
+    # Guard NaN (NaN comparisons are always false)
     if tgt != tgt:
         tgt = Scalar[dtype](0.0)
-    # Clamp targets to prevent Q-value divergence
-    var lo = Scalar[dtype](-10000.0)
-    var hi = Scalar[dtype](10000.0)
-    if tgt < lo:
-        tgt = lo
-    elif tgt > hi:
-        tgt = hi
     td_targets.ptr[i] = tgt
 
 
@@ -1063,16 +1056,9 @@ def td_target_min_twin_kernel[
             rewards.ptr[i] + gamma * q_min * (one - dones.ptr[i])
         )
 
-    # Guard NaN (NaN comparisons are always false, so clamp alone won't catch it)
+    # Guard NaN (NaN comparisons are always false)
     if tgt != tgt:
         tgt = Scalar[dtype](0.0)
-    # Clamp targets to prevent Q-value divergence
-    var lo = Scalar[dtype](-10000.0)
-    var hi = Scalar[dtype](10000.0)
-    if tgt < lo:
-        tgt = lo
-    elif tgt > hi:
-        tgt = hi
     td_targets.ptr[i] = tgt
 
 
