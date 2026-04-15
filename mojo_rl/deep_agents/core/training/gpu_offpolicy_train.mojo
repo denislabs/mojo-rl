@@ -733,14 +733,36 @@ def run_offpolicy_continuous_train_gpu[
                         workspace_ptr=workspace_buf.unsafe_ptr(),
                         rng_counter_ptr=env_rng_counter.unsafe_ptr(),
                     )
-                    gpu_state.gpu_store_graph[n_envs](
-                        ctx,
-                        prev_obs_buf,
-                        actions_buf,
-                        rewards_buf,
-                        obs_buf,
-                        terminated_buf,
-                    )
+                    if use_reward_scale:
+                        var sc_g = LayoutTensor[
+                            dtype, Layout.row_major(n_envs), MutAnyOrigin
+                        ](scaled_rewards_buf.unsafe_ptr())
+                        ctx.enqueue_function[
+                            _scale_rewards_kernel, _scale_rewards_kernel
+                        ](
+                            sc_g,
+                            rw_g,
+                            Scalar[dtype](reward_scale),
+                            grid_dim=(env_blocks,),
+                            block_dim=(tpb,),
+                        )
+                        gpu_state.gpu_store_graph[n_envs](
+                            ctx,
+                            prev_obs_buf,
+                            actions_buf,
+                            scaled_rewards_buf,
+                            obs_buf,
+                            terminated_buf,
+                        )
+                    else:
+                        gpu_state.gpu_store_graph[n_envs](
+                            ctx,
+                            prev_obs_buf,
+                            actions_buf,
+                            rewards_buf,
+                            obs_buf,
+                            terminated_buf,
+                        )
                     ctx.enqueue_function[
                         accum_rewards_wrapper, accum_rewards_wrapper
                     ](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
@@ -790,14 +812,39 @@ def run_offpolicy_continuous_train_gpu[
                         workspace_ptr=workspace_buf.unsafe_ptr(),
                         rng_counter_ptr=env_rng_counter.unsafe_ptr(),
                     )
-                    gpu_state.gpu_store_graph[n_envs](
-                        ctx,
-                        prev_obs_buf,
-                        actions_buf,
-                        rewards_buf,
-                        obs_buf,
-                        terminated_buf,
-                    )
+                    if use_reward_scale:
+                        var sc_g2 = LayoutTensor[
+                            dtype, Layout.row_major(n_envs), MutAnyOrigin
+                        ](scaled_rewards_buf.unsafe_ptr())
+                        var rw_g2 = LayoutTensor[
+                            dtype, Layout.row_major(n_envs), MutAnyOrigin
+                        ](rewards_buf.unsafe_ptr())
+                        ctx.enqueue_function[
+                            _scale_rewards_kernel, _scale_rewards_kernel
+                        ](
+                            sc_g2,
+                            rw_g2,
+                            Scalar[dtype](reward_scale),
+                            grid_dim=(env_blocks,),
+                            block_dim=(tpb,),
+                        )
+                        gpu_state.gpu_store_graph[n_envs](
+                            ctx,
+                            prev_obs_buf,
+                            actions_buf,
+                            scaled_rewards_buf,
+                            obs_buf,
+                            terminated_buf,
+                        )
+                    else:
+                        gpu_state.gpu_store_graph[n_envs](
+                            ctx,
+                            prev_obs_buf,
+                            actions_buf,
+                            rewards_buf,
+                            obs_buf,
+                            terminated_buf,
+                        )
                     ctx.enqueue_function[
                         accum_rewards_wrapper, accum_rewards_wrapper
                     ](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
