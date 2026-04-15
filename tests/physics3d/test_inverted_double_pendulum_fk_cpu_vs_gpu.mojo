@@ -60,7 +60,6 @@ comptime MODEL_SIZE = model_size_with_invweight[
     NEQUALITY=InvertedDoublePendulumModel.MAX_EQUALITY,
     NTENDON=InvertedDoublePendulumModel.MAX_TENDON,
     NSITE=InvertedDoublePendulumModel.NSITE,
-    NEXCLUDE=InvertedDoublePendulumModel.nexclude,
 ]()
 
 # float32 tolerance
