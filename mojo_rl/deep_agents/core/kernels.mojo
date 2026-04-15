@@ -1945,16 +1945,16 @@ def sac_rsample_with_cache_kernel[
         actions[b, a] = act
 
         # Log-prob contribution from this dimension
-        var one_minus_tanh2 = one - act * act
-        if one_minus_tanh2 < Scalar[dtype](1e-6):
-            one_minus_tanh2 = Scalar[dtype](1e-6)
-
-        lp += (
-            -Scalar[dtype](0.5) * eps * eps
-            - half_log_2pi
-            - ls
-            - log(one_minus_tanh2)
+        # Gaussian log-prob
+        var log_gaussian = -Scalar[dtype](0.5) * eps * eps - half_log_2pi - ls
+        # Squashing correction (numerically stable form matching RSampleOp):
+        # log(1 - tanh²(z)) = 2*(log(2) - z - softplus(-2z))
+        var squash_corr = Scalar[dtype](2.0) * (
+            Scalar[dtype](0.6931471805599453)
+            - z
+            - log(one + exp(Scalar[dtype](-2.0) * z))
         )
+        lp += log_gaussian - squash_corr
 
     log_probs[b] = lp
 
