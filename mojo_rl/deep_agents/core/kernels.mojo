@@ -992,8 +992,8 @@ def td_target_continuous_kernel[
     if tgt != tgt:
         tgt = Scalar[dtype](0.0)
     # Clamp targets to prevent Q-value divergence
-    var lo = Scalar[dtype](-100000.0)
-    var hi = Scalar[dtype](100000.0)
+    var lo = Scalar[dtype](-10000.0)
+    var hi = Scalar[dtype](10000.0)
     if tgt < lo:
         tgt = lo
     elif tgt > hi:
@@ -1067,8 +1067,8 @@ def td_target_min_twin_kernel[
     if tgt != tgt:
         tgt = Scalar[dtype](0.0)
     # Clamp targets to prevent Q-value divergence
-    var lo = Scalar[dtype](-100000.0)
-    var hi = Scalar[dtype](100000.0)
+    var lo = Scalar[dtype](-10000.0)
+    var hi = Scalar[dtype](10000.0)
     if tgt < lo:
         tgt = lo
     elif tgt > hi:
@@ -1956,6 +1956,11 @@ def sac_rsample_with_cache_kernel[
         )
         lp += log_gaussian - squash_corr
 
+    # Clamp total log_prob to prevent entropy term from destabilizing Q-values
+    if lp > Scalar[dtype](2.0):
+        lp = Scalar[dtype](2.0)
+    elif lp < Scalar[dtype](-20.0):
+        lp = Scalar[dtype](-20.0)
     log_probs[b] = lp
 
 
