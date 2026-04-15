@@ -565,7 +565,9 @@ def alpha_adam_update_kernel[
     var v_hat = adam_v / b2_corr
     log_alpha -= lr * m_hat / (sqrt(v_hat) + eps)
 
-    # 5. Clamp log_alpha
+    # 5. Clamp log_alpha (NaN guard first — NaN comparisons are always false)
+    if log_alpha != log_alpha:
+        log_alpha = Scalar[dtype](0.0)
     if log_alpha > Scalar[dtype](2.0):
         log_alpha = Scalar[dtype](2.0)
     elif log_alpha < Scalar[dtype](-10.0):
@@ -986,9 +988,12 @@ def td_target_continuous_kernel[
     if q != q:
         q = Scalar[dtype](0.0)
     var tgt = rewards.ptr[i] + gamma * q * (one - dones.ptr[i])
+    # Guard NaN (NaN comparisons are always false, so clamp alone won't catch it)
+    if tgt != tgt:
+        tgt = Scalar[dtype](0.0)
     # Clamp targets to prevent Q-value divergence
-    var lo = Scalar[dtype](-1000.0)
-    var hi = Scalar[dtype](1000.0)
+    var lo = Scalar[dtype](-100000.0)
+    var hi = Scalar[dtype](100000.0)
     if tgt < lo:
         tgt = lo
     elif tgt > hi:
@@ -1058,9 +1063,12 @@ def td_target_min_twin_kernel[
             rewards.ptr[i] + gamma * q_min * (one - dones.ptr[i])
         )
 
+    # Guard NaN (NaN comparisons are always false, so clamp alone won't catch it)
+    if tgt != tgt:
+        tgt = Scalar[dtype](0.0)
     # Clamp targets to prevent Q-value divergence
-    var lo = Scalar[dtype](-1000.0)
-    var hi = Scalar[dtype](1000.0)
+    var lo = Scalar[dtype](-100000.0)
+    var hi = Scalar[dtype](100000.0)
     if tgt < lo:
         tgt = lo
     elif tgt > hi:
