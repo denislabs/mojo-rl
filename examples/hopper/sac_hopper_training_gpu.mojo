@@ -37,8 +37,8 @@ comptime HIDDEN_DIM = 256
 
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
-comptime BATCH_SIZE = 512
-comptime MAX_N_ENVS = 4
+comptime BATCH_SIZE = 256  # CleanRL default
+comptime MAX_N_ENVS = 1  # Match CleanRL single-env baseline
 
 # Training duration
 comptime NUM_STEPS = 2_000_000
@@ -70,8 +70,8 @@ def main() raises:
             hidden_dim=HIDDEN_DIM,
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
-            actor_lr=0.0003,
-            critic_lr=0.0003,
+            actor_lr=0.0003,  # CleanRL: policy_lr=3e-4
+            critic_lr=0.001,  # CleanRL: q_lr=1e-3 (3.3x higher than actor)
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
@@ -80,8 +80,8 @@ def main() raises:
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.0003,
-            target_entropy=-3.0,
+            alpha_lr=0.001,  # CleanRL: uses q_lr for alpha too
+            target_entropy=-3.0,  # -ACTION_DIM
             max_grad_norm=0.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
@@ -97,8 +97,8 @@ def main() raises:
         print("  Max parallel envs: " + String(MAX_N_ENVS))
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 3e-4")
-        print("    - Alpha LR: 3e-4")
+        print("    - Critic LR: 1e-3 (CleanRL default)")
+        print("    - Alpha LR: 1e-3 (CleanRL default)")
         print("    - Tau (soft update): 0.005")
         print("    - Initial alpha: 0.2 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))
