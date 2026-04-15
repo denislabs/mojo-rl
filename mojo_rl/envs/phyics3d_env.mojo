@@ -125,7 +125,6 @@ struct Phyics3dEnv[
         NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
         NTENDON=Self.MODEL_DEF.MAX_TENDON,
         NSITE=Self.MODEL_DEF.NSITE,
-        NEXCLUDE=Self.MODEL_DEF.nexclude,
     ]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
@@ -480,7 +479,6 @@ struct Phyics3dEnv[
             NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
             NTENDON=Self.MODEL_DEF.MAX_TENDON,
             NSITE=Self.MODEL_DEF.NSITE,
-            NEXCLUDE=Self.MODEL_DEF.nexclude,
         ]()
         comptime WS_SIZE = integrator_workspace_size[
             Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
@@ -608,7 +606,6 @@ struct Phyics3dEnv[
             NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
             NTENDON=Self.MODEL_DEF.MAX_TENDON,
             NSITE=Self.MODEL_DEF.NSITE,
-            NEXCLUDE=Self.MODEL_DEF.nexclude,
         ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
@@ -689,7 +686,6 @@ struct Phyics3dEnv[
             NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
             NTENDON=Self.MODEL_DEF.MAX_TENDON,
             NSITE=Self.MODEL_DEF.NSITE,
-            NEXCLUDE=Self.MODEL_DEF.nexclude,
         ]()
 
         # Reuse model from pre-allocated workspace if available,
@@ -891,7 +887,6 @@ struct Phyics3dEnv[
             NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
             NTENDON=Self.MODEL_DEF.MAX_TENDON,
             NSITE=Self.MODEL_DEF.NSITE,
-            NEXCLUDE=Self.MODEL_DEF.nexclude,
         ]()
         var model_view = DeviceBuffer[gpu_dtype](
             ctx,
@@ -933,7 +928,6 @@ struct Phyics3dEnv[
             NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
             NTENDON=Self.MODEL_DEF.MAX_TENDON,
             NSITE=Self.MODEL_DEF.NSITE,
-            NEXCLUDE=Self.MODEL_DEF.nexclude,
         ]()
 
         # Use the base pointer of workspace_buf (= start of model section).
