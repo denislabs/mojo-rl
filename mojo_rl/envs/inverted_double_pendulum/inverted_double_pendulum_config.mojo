@@ -25,7 +25,7 @@ comptime _POLE_LEN = 0.6
 
 struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     # === Physics ===
-    comptime FRAME_SKIP: Int = 2
+    comptime FRAME_SKIP: Int = 5
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
         InvertedDoublePendulumModel.NQ, InvertedDoublePendulumModel.NV
@@ -135,7 +135,8 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
             Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
         )
 
-        var reward = Scalar[DTYPE](10.0) - dist_penalty - vel_penalty
+        var alive_bonus = Scalar[DTYPE](0.0) if terminated else Scalar[DTYPE](10.0)
+        var reward = alive_bonus - dist_penalty - vel_penalty
 
         return (reward, terminated)
 
@@ -265,7 +266,8 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
             Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
         )
 
-        var reward = Scalar[DTYPE](10.0) - dist_penalty - vel_penalty
+        var alive_bonus = Scalar[DTYPE](0.0) if terminated else Scalar[DTYPE](10.0)
+        var reward = alive_bonus - dist_penalty - vel_penalty
 
         return (reward, terminated)
 
