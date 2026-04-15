@@ -137,12 +137,9 @@ struct RSampleOp[
                 # Gaussian log probability
                 var log_gaussian = -0.5 * (LOG_2PI + 2.0 * ls + noise * noise)
 
-                # Squashing correction (numerically stable form)
-                # log(1 - tanh²(z)) = 2*(log(2) - z - softplus(-2z))
-                var squash_correction = 2.0 * (
-                    LOG_2 - z - log(1.0 + exp(-2.0 * z))
-                )
-                total_log_prob += log_gaussian - squash_correction
+                # Squashing correction: -log(1 - tanh²(z) + eps) (SB3 formula)
+                var one_minus_a2 = 1.0 - action * action + EPS
+                total_log_prob += log_gaussian - log(one_minus_a2)
 
                 # Write output
                 output[b, j] = Scalar[dtype](action)
@@ -208,9 +205,9 @@ struct RSampleOp[
                 # d(action)/d(z) = 1 - tanh²(z) = 1 - action²
                 var dtanh_dz = 1.0 - a * a
 
-                # d(log_prob)/d(z) from squash correction (stable form)
-                # d/dz[-2*(log(2) - z - softplus(-2z))] = 2*tanh(z) = 2*a
-                var dlogprob_dz = 2.0 * a
+                # d(log_prob)/d(z) from squash correction (SB3 formula)
+                # d/dz[-log(1 - a² + eps)] = 2a*(1-a²) / (1-a² + eps)
+                var dlogprob_dz = 2.0 * a * dtanh_dz / (dtanh_dz + EPS)
 
                 # Total gradient w.r.t. z
                 var grad_z = ga * dtanh_dz + glp * dlogprob_dz
@@ -292,18 +289,13 @@ struct RSampleOp[
             var z = mean + std * noise
             var action = tanh(z)
 
-            # Log probability
+            # Log probability (SB3 formula)
             var log_gaussian = Scalar[dtype](-0.5) * (
                 Scalar[dtype](LOG_2PI) + Scalar[dtype](2.0) * ls + noise * noise
             )
-            # Squashing correction (numerically stable form)
-            # log(1 - tanh²(z)) = 2*(log(2) - z - softplus(-2z))
-            var squash_corr = Scalar[dtype](2.0) * (
-                Scalar[dtype](LOG_2) - z - log(
-                    Scalar[dtype](1.0) + exp(Scalar[dtype](-2.0) * z)
-                )
-            )
-            total_log_prob += log_gaussian - squash_corr
+            # Squashing correction: -log(1 - tanh²(z) + eps)
+            var one_minus_a2 = Scalar[dtype](1.0) - action * action + Scalar[dtype](EPS)
+            total_log_prob += log_gaussian - log(one_minus_a2)
 
             output[b, j] = action
             cache[b, j] = action
@@ -411,9 +403,9 @@ struct RSampleOp[
         # d(action)/d(z) = 1 - action²
         var dtanh_dz = one - a * a
 
-        # d(log_prob)/d(z) from squash correction (stable form)
-        # d/dz[-2*(log(2) - z - softplus(-2z))] = 2*tanh(z) = 2*a
-        var dlogprob_dz = Scalar[dtype](2.0) * a
+        # d(log_prob)/d(z) from squash correction (SB3 formula)
+        # d/dz[-log(1 - a² + eps)] = 2a*(1-a²) / (1-a² + eps)
+        var dlogprob_dz = Scalar[dtype](2.0) * a * dtanh_dz / (dtanh_dz + Scalar[dtype](EPS))
 
         var grad_z = ga * dtanh_dz + glp * dlogprob_dz
 

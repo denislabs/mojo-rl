@@ -1944,17 +1944,13 @@ def sac_rsample_with_cache_kernel[
         var act = tanh(z)
         actions[b, a] = act
 
-        # Log-prob contribution from this dimension
+        # Log-prob contribution from this dimension (SB3 formula)
         # Gaussian log-prob
         var log_gaussian = -Scalar[dtype](0.5) * eps * eps - half_log_2pi - ls
-        # Squashing correction (numerically stable form matching RSampleOp):
-        # log(1 - tanh²(z)) = 2*(log(2) - z - softplus(-2z))
-        var squash_corr = Scalar[dtype](2.0) * (
-            Scalar[dtype](0.6931471805599453)
-            - z
-            - log(one + exp(Scalar[dtype](-2.0) * z))
-        )
-        lp += log_gaussian - squash_corr
+        # Squashing correction: -log(1 - tanh²(z) + eps)
+        # Matches Stable-Baselines3 / CleanRL epsilon approach
+        var one_minus_a2 = one - act * act + Scalar[dtype](1e-6)
+        lp += log_gaussian - log(one_minus_a2)
 
     # Clamp total log_prob to prevent entropy term from destabilizing Q-values
     if lp > Scalar[dtype](2.0):
