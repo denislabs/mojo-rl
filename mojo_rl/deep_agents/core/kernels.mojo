@@ -1953,11 +1953,6 @@ def sac_rsample_with_cache_kernel[
         var one_minus_a2 = one - act * act + Scalar[dtype](1e-6)
         lp += log_gaussian - log(one_minus_a2)
 
-    # Clamp total log_prob to prevent entropy term from destabilizing Q-values
-    if lp > Scalar[dtype](2.0):
-        lp = Scalar[dtype](2.0)
-    elif lp < Scalar[dtype](-20.0):
-        lp = Scalar[dtype](-20.0)
     log_probs[b] = lp
 
 

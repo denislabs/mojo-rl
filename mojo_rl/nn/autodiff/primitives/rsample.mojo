@@ -149,11 +149,6 @@ struct RSampleOp[
                 cache[b, A + j] = Scalar[dtype](noise)  # noise
                 cache[b, 2 * A + j] = Scalar[dtype](ls)  # rescaled log_std
 
-            # Clamp total log_prob for training stability
-            if total_log_prob > 2.0:
-                total_log_prob = 2.0
-            elif total_log_prob < -20.0:
-                total_log_prob = -20.0
             output[b, A] = Scalar[dtype](total_log_prob)
 
     # =========================================================================
@@ -302,11 +297,6 @@ struct RSampleOp[
             cache[b, A + j] = noise
             cache[b, 2 * A + j] = ls
 
-        # Clamp total log_prob for training stability
-        if total_log_prob > Scalar[dtype](2.0):
-            total_log_prob = Scalar[dtype](2.0)
-        elif total_log_prob < Scalar[dtype](-20.0):
-            total_log_prob = Scalar[dtype](-20.0)
         output[b, A] = total_log_prob
 
     @staticmethod
