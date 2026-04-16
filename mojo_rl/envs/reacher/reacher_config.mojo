@@ -168,6 +168,7 @@ struct ReacherConfig(Phyics3dEnvConfig):
         NQ: Int, NV: Int, NBODY: Int, NJOINT: Int,
         MAX_CONTACTS: Int, NGEOM: Int, MAX_EQUALITY: Int, CONE_TYPE: Int,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[DTYPE],
@@ -176,6 +177,7 @@ struct ReacherConfig(Phyics3dEnvConfig):
     ) raises:
         RK4Integrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH_SIZE, NGEOM,
+            NSITE=NSITE,
             STEP_THREADS=NV,
         ](ctx, states_buf, model_buf, workspace_buf)
 

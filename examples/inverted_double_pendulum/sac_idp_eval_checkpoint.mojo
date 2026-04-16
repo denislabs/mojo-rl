@@ -18,7 +18,7 @@ comptime ACTION_DIM = 1
 comptime HIDDEN_DIM = 128
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 1
+comptime MAX_N_ENVS = 4
 
 comptime EVAL_EPISODES = 128
 comptime MAX_STEPS_PER_EP = 1000
@@ -79,6 +79,8 @@ def main() raises:
 
     # === GPU evaluation ===
     print("Running GPU evaluation (" + String(EVAL_EPISODES) + " episodes)...")
+    # Note: max_steps is the TOTAL step budget (not per-episode).
+    # Must be large enough to complete all episodes.
     var gpu_reward = agent.evaluate_gpu[
         InvertedDoublePendulum[
             GPU_DTYPE, TERMINATE_ON_UNHEALTHY=TERMINATE_ON_UNHEALTHY
@@ -87,7 +89,7 @@ def main() raises:
     ](
         ctx,
         num_episodes=EVAL_EPISODES,
-        max_steps=MAX_STEPS_PER_EP,
+        max_steps=EVAL_EPISODES * MAX_STEPS_PER_EP,
         stochastic=False,
     )
     print("  GPU avg reward: " + String(gpu_reward)[byte=:10])
