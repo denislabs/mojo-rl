@@ -991,10 +991,6 @@ def td_target_continuous_kernel[
     # Guard NaN (NaN comparisons are always false)
     if tgt != tgt:
         tgt = Scalar[dtype](0.0)
-    if tgt > Scalar[dtype](50000.0):
-        tgt = Scalar[dtype](50000.0)
-    elif tgt < Scalar[dtype](-50000.0):
-        tgt = Scalar[dtype](-50000.0)
     td_targets.ptr[i] = tgt
 
 
@@ -1049,12 +1045,7 @@ def td_target_min_twin_kernel[
     comptime if use_entropy:
         # SAC: entropy bonus in target — read alpha from GPU memory
         var alpha = alpha_buf.ptr[0]
-        # Clamp log_prob here as second defense (in case upstream clamp missed)
         var lp = log_probs.ptr[i]
-        if lp < Scalar[dtype](-20.0):
-            lp = Scalar[dtype](-20.0)
-        elif lp > Scalar[dtype](2.0):
-            lp = Scalar[dtype](2.0)
         tgt = Scalar[dtype](
             rewards.ptr[i] + gamma * (q_min - alpha * lp) * (
                 one - dones.ptr[i]
@@ -1069,11 +1060,6 @@ def td_target_min_twin_kernel[
     # Guard NaN (NaN comparisons are always false)
     if tgt != tgt:
         tgt = Scalar[dtype](0.0)
-    # Safety clamp — generous enough for legitimate Q-values but prevents runaway
-    if tgt > Scalar[dtype](50000.0):
-        tgt = Scalar[dtype](50000.0)
-    elif tgt < Scalar[dtype](-50000.0):
-        tgt = Scalar[dtype](-50000.0)
     td_targets.ptr[i] = tgt
 
 
