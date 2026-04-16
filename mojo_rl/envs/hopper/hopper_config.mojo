@@ -206,6 +206,7 @@ struct HopperConfig(Phyics3dEnvConfig):
         MAX_EQUALITY: Int,
         CONE_TYPE: Int,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[DTYPE],
@@ -222,6 +223,7 @@ struct HopperConfig(Phyics3dEnvConfig):
             BATCH_SIZE,
             NGEOM,
             CONE_TYPE=CONE_TYPE,
+            NSITE=NSITE,
             STEP_THREADS=NV,
         ](ctx, states_buf, model_buf, workspace_buf)
 

@@ -345,6 +345,7 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
         MAX_EQUALITY: Int,
         CONE_TYPE: Int,
         MAX_TENDON: Int = 0,
+        NSITE: Int = 0,
     ](
         ctx: DeviceContext,
         mut states_buf: DeviceBuffer[DTYPE],

@@ -533,6 +533,7 @@ struct Phyics3dEnv[
                 Self.MODEL_DEF.MAX_EQUALITY,
                 Self.MODEL_DEF.CONE_TYPE,
                 Self.MAX_TENDON,
+                Self.MODEL_DEF.NSITE,
             ](ctx, states_buf, model_buf, workspace_buf)
 
         # Compute post-substep derived quantities: cfrc_ext, cvel
