@@ -75,6 +75,37 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     ):
         RK4Integrator[SOLVER=NewtonSolver].step(model, data)
 
+    # === CPU: Custom obs extraction (9D with sin/cos encoding) ===
+    @staticmethod
+    def custom_extract_obs_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NSITE: Int = 0,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        mut obs: List[Scalar[DTYPE]],
+    ) -> Bool:
+        # OBS_DIM=9: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2),
+        #              clip(qvel[0:3], -10, 10), 0.0]
+        obs.append(data.qpos[0])
+        obs.append(Scalar[DTYPE](sin(Float64(data.qpos[1]))))
+        obs.append(Scalar[DTYPE](sin(Float64(data.qpos[2]))))
+        obs.append(Scalar[DTYPE](cos(Float64(data.qpos[1]))))
+        obs.append(Scalar[DTYPE](cos(Float64(data.qpos[2]))))
+        for i in range(3):
+            var v = data.qvel[i]
+            if v > Scalar[DTYPE](10.0):
+                v = Scalar[DTYPE](10.0)
+            elif v < Scalar[DTYPE](-10.0):
+                v = Scalar[DTYPE](-10.0)
+            obs.append(v)
+        obs.append(Scalar[DTYPE](0.0))  # qfrc_constraint placeholder
+        return True
+
     # === CPU: Pre-step hook ===
     @staticmethod
     def pre_step_cpu[

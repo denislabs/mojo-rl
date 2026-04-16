@@ -818,10 +818,62 @@ struct Phyics3dEnv[
         states_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
-        """Extract observations from state buffer."""
-        Self.MODEL_DEF.extract_obs_kernel_gpu[
-            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
-        ](ctx, states_buf, obs_buf)
+        """Extract observations from state buffer.
+
+        Uses CONFIG's custom extraction if available (e.g., sin/cos encoding),
+        otherwise falls back to MODEL_DEF's default qpos[skip:]+qvel extraction.
+        """
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+            MutAnyOrigin,
+        ](obs_buf.unsafe_ptr())
+
+        comptime QPOS_OFF = qpos_offset[
+            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV
+        ]()
+        comptime QVEL_OFF = qvel_offset[
+            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV
+        ]()
+        comptime XPOS_OFF = xpos_offset[
+            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
+        ]()
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        def custom_obs_kernel(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            obs: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            if not Self.CONFIG.custom_extract_obs_gpu[
+                gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
+            ](states, obs, env, QPOS_OFF, QVEL_OFF, XPOS_OFF):
+                Self.MODEL_DEF.extract_obs_gpu[
+                    gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
+                ](states, obs, env)
+
+        ctx.enqueue_function[custom_obs_kernel, custom_obs_kernel](
+            states,
+            obs,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
 
     @staticmethod
     def is_terminal_obs_gpu[
