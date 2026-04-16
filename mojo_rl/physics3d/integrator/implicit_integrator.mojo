@@ -1774,7 +1774,8 @@ struct ImplicitIntegrator[SOLVER: ConstraintSolver](Integrator):
         """Perform one full implicit physics step on GPU."""
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
-            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY,
+            NTENDON=MAX_TENDON, NSITE=NSITE,
         ]()
         # Workspace = integrator_temps + M_inv + solver_ws + implicit_extra
         comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[

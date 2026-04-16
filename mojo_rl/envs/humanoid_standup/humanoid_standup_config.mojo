@@ -160,6 +160,7 @@ struct HumanoidStandupConfig(Phyics3dEnvConfig):
             BATCH_SIZE,
             NGEOM,
             CONE_TYPE=CONE_TYPE,
+            MAX_TENDON=MAX_TENDON,
             NSITE=NSITE,
             STEP_THREADS=NV,
         ](ctx, states_buf, model_buf, workspace_buf)

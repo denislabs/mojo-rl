@@ -18,7 +18,7 @@ comptime ACTION_DIM = 1
 comptime HIDDEN_DIM = 128
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 4
+comptime MAX_N_ENVS = 32
 
 comptime EVAL_EPISODES = 128
 comptime MAX_STEPS_PER_EP = 1000

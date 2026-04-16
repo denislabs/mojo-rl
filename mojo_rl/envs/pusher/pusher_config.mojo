@@ -207,6 +207,8 @@ struct PusherConfig(Phyics3dEnvConfig):
     ) raises:
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
             DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH_SIZE, NGEOM,
+            CONE_TYPE=CONE_TYPE,
+            MAX_TENDON=MAX_TENDON,
             NSITE=NSITE,
             STEP_THREADS=NV,
         ](ctx, states_buf, model_buf, workspace_buf)
