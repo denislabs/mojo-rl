@@ -317,9 +317,11 @@ struct Phyics3dEnv[
         # Take step
         var result = self.step(act, verbose=verbose)
 
-        # Build observation list
+        # Build observation list (use custom extraction if available)
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.MODEL_DEF.OBS_DIM)
-        Self.MODEL_DEF.extract_obs(self.data, obs_list)
+        var custom = Self.CONFIG.custom_extract_obs_cpu(self.data, obs_list)
+        if not custom:
+            Self.MODEL_DEF.extract_obs(self.data, obs_list)
         var obs = List[Scalar[DTYPE2]](capacity=Self.MODEL_DEF.OBS_DIM)
         for i in range(Self.MODEL_DEF.OBS_DIM):
             obs.append(Scalar[DTYPE2](obs_list[i]))
