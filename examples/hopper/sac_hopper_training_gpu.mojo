@@ -33,7 +33,7 @@ comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
 comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
 
 # Network architecture
-comptime HIDDEN_DIM = 512
+comptime HIDDEN_DIM = 256
 
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000

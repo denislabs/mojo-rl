@@ -18,7 +18,7 @@ comptime ACTION_DIM = 1
 comptime HIDDEN_DIM = 128
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 32
+comptime MAX_N_ENVS = 1
 
 comptime EVAL_EPISODES = 128
 comptime MAX_STEPS_PER_EP = 1000
@@ -69,9 +69,7 @@ def main() raises:
     print()
 
     # === CPU evaluation ===
-    print(
-        "Running CPU evaluation (" + String(EVAL_EPISODES) + " episodes)..."
-    )
+    print("Running CPU evaluation (" + String(EVAL_EPISODES) + " episodes)...")
     var cpu_reward = agent.evaluate(
         cpu_env,
         num_episodes=EVAL_EPISODES,
@@ -80,9 +78,7 @@ def main() raises:
     print("  CPU avg reward: " + String(cpu_reward)[byte=:10])
 
     # === GPU evaluation ===
-    print(
-        "Running GPU evaluation (" + String(EVAL_EPISODES) + " episodes)..."
-    )
+    print("Running GPU evaluation (" + String(EVAL_EPISODES) + " episodes)...")
     var gpu_reward = agent.evaluate_gpu[
         InvertedDoublePendulum[
             GPU_DTYPE, TERMINATE_ON_UNHEALTHY=TERMINATE_ON_UNHEALTHY
