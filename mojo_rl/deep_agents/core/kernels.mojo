@@ -565,7 +565,9 @@ def alpha_adam_update_kernel[
     var v_hat = adam_v / b2_corr
     log_alpha -= lr * m_hat / (sqrt(v_hat) + eps)
 
-    # 5. Clamp log_alpha
+    # 5. Clamp log_alpha (NaN guard first — NaN comparisons are always false)
+    if log_alpha != log_alpha:
+        log_alpha = Scalar[dtype](0.0)
     if log_alpha > Scalar[dtype](2.0):
         log_alpha = Scalar[dtype](2.0)
     elif log_alpha < Scalar[dtype](-10.0):
@@ -986,13 +988,9 @@ def td_target_continuous_kernel[
     if q != q:
         q = Scalar[dtype](0.0)
     var tgt = rewards.ptr[i] + gamma * q * (one - dones.ptr[i])
-    # Clamp targets to prevent Q-value divergence
-    var lo = Scalar[dtype](-1000.0)
-    var hi = Scalar[dtype](1000.0)
-    if tgt < lo:
-        tgt = lo
-    elif tgt > hi:
-        tgt = hi
+    # Guard NaN (NaN comparisons are always false)
+    if tgt != tgt:
+        tgt = Scalar[dtype](0.0)
     td_targets.ptr[i] = tgt
 
 
@@ -1047,8 +1045,9 @@ def td_target_min_twin_kernel[
     comptime if use_entropy:
         # SAC: entropy bonus in target — read alpha from GPU memory
         var alpha = alpha_buf.ptr[0]
+        var lp = log_probs.ptr[i]
         tgt = Scalar[dtype](
-            rewards.ptr[i] + gamma * (q_min - alpha * log_probs.ptr[i]) * (
+            rewards.ptr[i] + gamma * (q_min - alpha * lp) * (
                 one - dones.ptr[i]
             )
         )
@@ -1058,13 +1057,9 @@ def td_target_min_twin_kernel[
             rewards.ptr[i] + gamma * q_min * (one - dones.ptr[i])
         )
 
-    # Clamp targets to prevent Q-value divergence
-    var lo = Scalar[dtype](-1000.0)
-    var hi = Scalar[dtype](1000.0)
-    if tgt < lo:
-        tgt = lo
-    elif tgt > hi:
-        tgt = hi
+    # Guard NaN (NaN comparisons are always false)
+    if tgt != tgt:
+        tgt = Scalar[dtype](0.0)
     td_targets.ptr[i] = tgt
 
 
@@ -1936,17 +1931,13 @@ def sac_rsample_with_cache_kernel[
         var act = tanh(z)
         actions[b, a] = act
 
-        # Log-prob contribution from this dimension
-        var one_minus_tanh2 = one - act * act
-        if one_minus_tanh2 < Scalar[dtype](1e-6):
-            one_minus_tanh2 = Scalar[dtype](1e-6)
-
-        lp += (
-            -Scalar[dtype](0.5) * eps * eps
-            - half_log_2pi
-            - ls
-            - log(one_minus_tanh2)
-        )
+        # Log-prob contribution from this dimension (SB3 formula)
+        # Gaussian log-prob
+        var log_gaussian = -Scalar[dtype](0.5) * eps * eps - half_log_2pi - ls
+        # Squashing correction: -log(1 - tanh²(z) + eps)
+        # Matches Stable-Baselines3 / CleanRL epsilon approach
+        var one_minus_a2 = one - act * act + Scalar[dtype](1e-6)
+        lp += log_gaussian - log(one_minus_a2)
 
     log_probs[b] = lp
 

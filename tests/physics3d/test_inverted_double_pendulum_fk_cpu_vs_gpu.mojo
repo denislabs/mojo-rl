@@ -52,7 +52,15 @@ comptime NSITE = InvertedDoublePendulumModel.NSITE  # 1 ("tip")
 comptime BATCH = 1
 
 comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
-comptime MODEL_SIZE = model_size_with_invweight[NBODY, NJOINT, NV, NGEOM]()
+comptime MODEL_SIZE = model_size_with_invweight[
+    NBODY,
+    NJOINT,
+    NV,
+    NGEOM,
+    NEQUALITY=InvertedDoublePendulumModel.MAX_EQUALITY,
+    NTENDON=InvertedDoublePendulumModel.MAX_TENDON,
+    NSITE=InvertedDoublePendulumModel.NSITE,
+]()
 
 # float32 tolerance
 comptime POS_TOL: Float64 = 1e-4
@@ -167,7 +175,7 @@ def compare_fk(
         MODEL_SIZE,
         BATCH,
     ]
-    ctx.enqueue_function[kernel_fn, kernel_fn](
+    ctx.enqueue_function[kernel_def, kernel_def](
         state_tensor,
         model_tensor,
         grid_dim=(BATCH,),

@@ -344,8 +344,8 @@ struct ReparamTarget(TargetAction):
 
     @staticmethod
     def ws_size[BATCH: Int, ACTIONS: Int, ACTOR_OUT: Int]() -> Int:
-        """Extra workspace for raw actor output (2*ACTIONS)."""
-        return BATCH * ACTOR_OUT
+        """Extra workspace for raw actor output + eps_cache for rsample kernel."""
+        return BATCH * ACTOR_OUT + BATCH * ACTIONS
 
     @staticmethod
     def compute_cpu[

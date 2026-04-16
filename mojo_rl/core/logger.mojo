@@ -313,6 +313,8 @@ struct RemoteLogger(Logger):
         self._total_logged = take._total_logged
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
+        if len(self.server_url) == 0:
+            return
         if isnan(value) or isinf(value):
             return
         var elapsed_ns = perf_counter_ns() - self._start_ns
@@ -325,6 +327,8 @@ struct RemoteLogger(Logger):
     def log_scalars(
         mut self, names: List[String], values: List[Float64], step: Int
     ) raises:
+        if len(self.server_url) == 0:
+            return
         var elapsed_ns = perf_counter_ns() - self._start_ns
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
         var n = min(len(names), len(values))
@@ -339,7 +343,7 @@ struct RemoteLogger(Logger):
             self.flush()
 
     def flush(mut self) raises:
-        if len(self.entries) == 0:
+        if len(self.server_url) == 0 or len(self.entries) == 0:
             return
         from std.python import Python
 
@@ -380,7 +384,7 @@ struct RemoteLogger(Logger):
         self._config_vals.append(value)
 
     def is_active(self) -> Bool:
-        return True
+        return len(self.server_url) > 0
 
     def _register_run(
         mut self,

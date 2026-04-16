@@ -1649,6 +1649,43 @@ struct AutodiffMaxEntLoss[
         )
 
         # =================================================================
+        # 2b. Write RNG seed into RSampleOp's op_workspace slot
+        #     (CUDA graph safe: reads from rng_counter buffer, not scalar)
+        # =================================================================
+        # Compute comptime offset of RSampleOp's workspace within SACGraph ws.
+        # Path: SACGraph → ActorSkip → SkipConcat child → ActorRSample → RSample → AutoDiffChain op_ws
+        comptime RSample_chain = RSample[ACTIONS]
+        comptime RSAMPLE_WS_PER_SAMPLE = (
+            SACGraph._ws_layer_offset[0]()       # outer Sequential: ActorSkip ws start
+            + ActorRSample.OUT_DIM               # SkipConcat: child_ws after inner_out
+            + ActorRSample._ws_layer_offset[1]() # inner Sequential: RSample ws start
+            + RSample_chain.INTER_SIZE_PER_SAMPLE + RSample_chain.CACHE_SIZE  # AutoDiffChain: op_ws
+        )
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](rng_counter.unsafe_ptr())
+        # Single-thread kernel: copy rng_counter[0] → workspace[RSAMPLE_WS_PER_SAMPLE * BATCH]
+        # Stored as dtype for compatibility with the workspace buffer type.
+        var seed_dst = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](ws_ptr + W_WORKSPACE + BATCH * RSAMPLE_WS_PER_SAMPLE)
+
+        @always_inline
+        def copy_rng_to_ws_k(
+            dst: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+            src: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+        ):
+            if Int(thread_idx.x) == 0 and Int(block_idx.x) == 0:
+                dst.ptr[0] = Scalar[dtype](src.ptr[0])
+
+        ctx.enqueue_function[copy_rng_to_ws_k, copy_rng_to_ws_k](
+            seed_dst,
+            rng_t,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
+
+        # =================================================================
         # 3. Forward: obs → [min_Q, log_prob]
         # =================================================================
         var graph_params = LayoutTensor[

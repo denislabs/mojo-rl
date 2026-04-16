@@ -25,7 +25,7 @@ comptime _POLE_LEN = 0.6
 
 struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     # === Physics ===
-    comptime FRAME_SKIP: Int = 2
+    comptime FRAME_SKIP: Int = 5
     comptime MAX_STEPS: Int = 1000
     comptime INTEGRATOR_WS_EXTRA: Int = rk4_extra_workspace_size[
         InvertedDoublePendulumModel.NQ, InvertedDoublePendulumModel.NV
@@ -74,6 +74,37 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         verbose: Bool,
     ):
         RK4Integrator[SOLVER=NewtonSolver].step(model, data)
+
+    # === CPU: Custom obs extraction (9D with sin/cos encoding) ===
+    @staticmethod
+    def custom_extract_obs_cpu[
+        DTYPE: DType where DTYPE.is_floating_point(),
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NSITE: Int = 0,
+    ](
+        data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
+        mut obs: List[Scalar[DTYPE]],
+    ) -> Bool:
+        # OBS_DIM=9: [cart_x, sin(q1), sin(q2), cos(q1), cos(q2),
+        #              clip(qvel[0:3], -10, 10), 0.0]
+        obs.append(data.qpos[0])
+        obs.append(Scalar[DTYPE](sin(Float64(data.qpos[1]))))
+        obs.append(Scalar[DTYPE](sin(Float64(data.qpos[2]))))
+        obs.append(Scalar[DTYPE](cos(Float64(data.qpos[1]))))
+        obs.append(Scalar[DTYPE](cos(Float64(data.qpos[2]))))
+        for i in range(3):
+            var v = data.qvel[i]
+            if v > Scalar[DTYPE](10.0):
+                v = Scalar[DTYPE](10.0)
+            elif v < Scalar[DTYPE](-10.0):
+                v = Scalar[DTYPE](-10.0)
+            obs.append(v)
+        obs.append(Scalar[DTYPE](0.0))  # qfrc_constraint placeholder
+        return True
 
     # === CPU: Pre-step hook ===
     @staticmethod
@@ -135,7 +166,8 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
             Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
         )
 
-        var reward = Scalar[DTYPE](10.0) - dist_penalty - vel_penalty
+        var alive_bonus = Scalar[DTYPE](0.0) if terminated else Scalar[DTYPE](10.0)
+        var reward = alive_bonus - dist_penalty - vel_penalty
 
         return (reward, terminated)
 
@@ -265,7 +297,8 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
             Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
         )
 
-        var reward = Scalar[DTYPE](10.0) - dist_penalty - vel_penalty
+        var alive_bonus = Scalar[DTYPE](0.0) if terminated else Scalar[DTYPE](10.0)
+        var reward = alive_bonus - dist_penalty - vel_penalty
 
         return (reward, terminated)
 

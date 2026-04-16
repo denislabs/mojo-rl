@@ -122,6 +122,9 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.NJOINT,
         Self.MODEL_DEF.NV,
         Self.MODEL_DEF.NGEOM,
+        NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
+        NTENDON=Self.MODEL_DEF.MAX_TENDON,
+        NSITE=Self.MODEL_DEF.NSITE,
     ]()
     comptime STEP_WS_PER_ENV: Int = integrator_workspace_size[
         Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
@@ -314,9 +317,11 @@ struct Phyics3dEnv[
         # Take step
         var result = self.step(act, verbose=verbose)
 
-        # Build observation list
+        # Build observation list (use custom extraction if available)
         var obs_list = List[Scalar[Self.DTYPE]](capacity=Self.MODEL_DEF.OBS_DIM)
-        Self.MODEL_DEF.extract_obs(self.data, obs_list)
+        var custom = Self.CONFIG.custom_extract_obs_cpu(self.data, obs_list)
+        if not custom:
+            Self.MODEL_DEF.extract_obs(self.data, obs_list)
         var obs = List[Scalar[DTYPE2]](capacity=Self.MODEL_DEF.OBS_DIM)
         for i in range(Self.MODEL_DEF.OBS_DIM):
             obs.append(Scalar[DTYPE2](obs_list[i]))
@@ -473,6 +478,9 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NJOINT,
             Self.MODEL_DEF.NV,
             Self.MODEL_DEF.NGEOM,
+            NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
+            NTENDON=Self.MODEL_DEF.MAX_TENDON,
+            NSITE=Self.MODEL_DEF.NSITE,
         ]()
         comptime WS_SIZE = integrator_workspace_size[
             Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
@@ -597,6 +605,9 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NJOINT,
             Self.MODEL_DEF.NV,
             Self.MODEL_DEF.NGEOM,
+            NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
+            NTENDON=Self.MODEL_DEF.MAX_TENDON,
+            NSITE=Self.MODEL_DEF.NSITE,
         ]()
         var model_buf = ctx.enqueue_create_buffer[gpu_dtype](MODEL_SIZE)
         Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
@@ -674,6 +685,9 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NJOINT,
             Self.MODEL_DEF.NV,
             Self.MODEL_DEF.NGEOM,
+            NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
+            NTENDON=Self.MODEL_DEF.MAX_TENDON,
+            NSITE=Self.MODEL_DEF.NSITE,
         ]()
 
         # Reuse model from pre-allocated workspace if available,
@@ -806,10 +820,62 @@ struct Phyics3dEnv[
         states_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
-        """Extract observations from state buffer."""
-        Self.MODEL_DEF.extract_obs_kernel_gpu[
-            gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
-        ](ctx, states_buf, obs_buf)
+        """Extract observations from state buffer.
+
+        Uses CONFIG's custom extraction if available (e.g., sin/cos encoding),
+        otherwise falls back to MODEL_DEF's default qpos[skip:]+qvel extraction.
+        """
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+            MutAnyOrigin,
+        ](obs_buf.unsafe_ptr())
+
+        comptime QPOS_OFF = qpos_offset[
+            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV
+        ]()
+        comptime QVEL_OFF = qvel_offset[
+            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV
+        ]()
+        comptime XPOS_OFF = xpos_offset[
+            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
+        ]()
+        comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
+
+        @always_inline
+        def custom_obs_kernel(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
+                MutAnyOrigin,
+            ],
+            obs: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
+                MutAnyOrigin,
+            ],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            if not Self.CONFIG.custom_extract_obs_gpu[
+                gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
+            ](states, obs, env, QPOS_OFF, QVEL_OFF, XPOS_OFF):
+                Self.MODEL_DEF.extract_obs_gpu[
+                    gpu_dtype, BATCH_SIZE, STATE_SIZE_VAL, OBS_DIM_VAL
+                ](states, obs, env)
+
+        ctx.enqueue_function[custom_obs_kernel, custom_obs_kernel](
+            states,
+            obs,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB,),
+        )
 
     @staticmethod
     def is_terminal_obs_gpu[
@@ -872,6 +938,9 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NJOINT,
             Self.MODEL_DEF.NV,
             Self.MODEL_DEF.NGEOM,
+            NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
+            NTENDON=Self.MODEL_DEF.MAX_TENDON,
+            NSITE=Self.MODEL_DEF.NSITE,
         ]()
         var model_view = DeviceBuffer[gpu_dtype](
             ctx,
@@ -910,6 +979,9 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NJOINT,
             Self.MODEL_DEF.NV,
             Self.MODEL_DEF.NGEOM,
+            NEQUALITY=Self.MODEL_DEF.MAX_EQUALITY,
+            NTENDON=Self.MODEL_DEF.MAX_TENDON,
+            NSITE=Self.MODEL_DEF.NSITE,
         ]()
 
         # Use the base pointer of workspace_buf (= start of model section).

@@ -71,7 +71,7 @@ struct RSampleOp[
     comptime OUT_DIM: Int = Self.action_dim + 1
     comptime PARAM_SIZE: Int = 0
     comptime CACHE_SIZE: Int = 3 * Self.action_dim
-    comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = 1  # RNG seed slot (read from GPU buffer for CUDA graph safety)
 
     # Derivative of the affine rescaling: d(log_std)/d(tanh_val)
     comptime AFFINE_DERIV: Float64 = 0.5 * (Self.log_std_max - Self.log_std_min)
@@ -137,12 +137,9 @@ struct RSampleOp[
                 # Gaussian log probability
                 var log_gaussian = -0.5 * (LOG_2PI + 2.0 * ls + noise * noise)
 
-                # Squashing correction (numerically stable form)
-                # log(1 - tanh²(z)) = 2*(log(2) - z - softplus(-2z))
-                var squash_correction = 2.0 * (
-                    LOG_2 - z - log(1.0 + exp(-2.0 * z))
-                )
-                total_log_prob += log_gaussian - squash_correction
+                # Squashing correction: -log(1 - tanh²(z) + eps) (SB3 formula)
+                var one_minus_a2 = 1.0 - action * action + EPS
+                total_log_prob += log_gaussian - log(one_minus_a2)
 
                 # Write output
                 output[b, j] = Scalar[dtype](action)
@@ -152,7 +149,6 @@ struct RSampleOp[
                 cache[b, A + j] = Scalar[dtype](noise)  # noise
                 cache[b, 2 * A + j] = Scalar[dtype](ls)  # rescaled log_std
 
-            # Log prob is summed over action dimensions (scalar per sample)
             output[b, A] = Scalar[dtype](total_log_prob)
 
     # =========================================================================
@@ -204,9 +200,9 @@ struct RSampleOp[
                 # d(action)/d(z) = 1 - tanh²(z) = 1 - action²
                 var dtanh_dz = 1.0 - a * a
 
-                # d(log_prob)/d(z) from squash correction (stable form)
-                # d/dz[-2*(log(2) - z - softplus(-2z))] = 2*tanh(z) = 2*a
-                var dlogprob_dz = 2.0 * a
+                # d(log_prob)/d(z) from squash correction (SB3 formula)
+                # d/dz[-log(1 - a² + eps)] = 2a*(1-a²) / (1-a² + eps)
+                var dlogprob_dz = 2.0 * a * dtanh_dz / (dtanh_dz + EPS)
 
                 # Total gradient w.r.t. z
                 var grad_z = ga * dtanh_dz + glp * dlogprob_dz
@@ -244,14 +240,21 @@ struct RSampleOp[
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
-        rng_seed: Scalar[DType.uint32],
+        ws: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     ):
-        """One thread per batch element. Loops over action_dim internally."""
+        """One thread per batch element. Loops over action_dim internally.
+
+        RNG seed is read from ws[0] (GPU buffer, CUDA graph safe — value
+        changes between graph replays unlike a baked scalar arg).
+        """
         comptime assert dtype.is_floating_point(), "dtype must be floating point"
         comptime A = Self.action_dim
         var b = Int(block_dim.x * block_idx.x + thread_idx.x)
         if b >= BATCH:
             return
+
+        # Read RNG seed from workspace buffer (not a scalar — CUDA graph safe)
+        var rng_seed = UInt64(Int(ws.ptr[0]))
 
         var total_log_prob = Scalar[dtype](0.0)
 
@@ -266,7 +269,7 @@ struct RSampleOp[
 
             # PhiloxRandom Box-Muller for Gaussian noise (GPU-safe, no Float64)
             var philox = PhiloxRandom(
-                seed=UInt64(rng_seed) + UInt64(b) * UInt64(A) + UInt64(j),
+                seed=rng_seed + UInt64(b) * UInt64(A) + UInt64(j),
                 offset=0,
             )
             var rand_vals = philox.step_uniform()
@@ -281,18 +284,13 @@ struct RSampleOp[
             var z = mean + std * noise
             var action = tanh(z)
 
-            # Log probability
+            # Log probability (SB3 formula)
             var log_gaussian = Scalar[dtype](-0.5) * (
                 Scalar[dtype](LOG_2PI) + Scalar[dtype](2.0) * ls + noise * noise
             )
-            # Squashing correction (numerically stable form)
-            # log(1 - tanh²(z)) = 2*(log(2) - z - softplus(-2z))
-            var squash_corr = Scalar[dtype](2.0) * (
-                Scalar[dtype](LOG_2) - z - log(
-                    Scalar[dtype](1.0) + exp(Scalar[dtype](-2.0) * z)
-                )
-            )
-            total_log_prob += log_gaussian - squash_corr
+            # Squashing correction: -log(1 - tanh²(z) + eps)
+            var one_minus_a2 = Scalar[dtype](1.0) - action * action + Scalar[dtype](EPS)
+            total_log_prob += log_gaussian - log(one_minus_a2)
 
             output[b, j] = action
             cache[b, j] = action
@@ -324,9 +322,11 @@ struct RSampleOp[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
         ](input.ptr)
         var grid_x = (BATCH + TPB - 1) // TPB
-        # Use workspace pointer address as seed (will be overridden by caller
-        # in practice — this is a fallback)
-        var rng_seed = Scalar[DType.uint32](42)
+        # Workspace[0] contains the RNG seed (written by caller before forward).
+        # Using a buffer instead of a scalar makes this CUDA graph safe.
+        var ws_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](workspace)
 
         @always_inline
         def wrapper(
@@ -339,15 +339,15 @@ struct RSampleOp[
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
-            seed: Scalar[DType.uint32],
+            ws: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         ):
-            Self.eval_kernel_impl[BATCH, dtype](output, input, cache, seed)
+            Self.eval_kernel_impl[BATCH, dtype](output, input, cache, ws)
 
         ctx.enqueue_function[wrapper, wrapper](
             output,
             input_immut,
             cache,
-            rng_seed,
+            ws_t,
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )
@@ -393,9 +393,9 @@ struct RSampleOp[
         # d(action)/d(z) = 1 - action²
         var dtanh_dz = one - a * a
 
-        # d(log_prob)/d(z) from squash correction (stable form)
-        # d/dz[-2*(log(2) - z - softplus(-2z))] = 2*tanh(z) = 2*a
-        var dlogprob_dz = Scalar[dtype](2.0) * a
+        # d(log_prob)/d(z) from squash correction (SB3 formula)
+        # d/dz[-log(1 - a² + eps)] = 2a*(1-a²) / (1-a² + eps)
+        var dlogprob_dz = Scalar[dtype](2.0) * a * dtanh_dz / (dtanh_dz + Scalar[dtype](EPS))
 
         var grad_z = ga * dtanh_dz + glp * dlogprob_dz
 
