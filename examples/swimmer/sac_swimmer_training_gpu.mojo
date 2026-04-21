@@ -80,13 +80,13 @@ def main() raises:
             tau=0.005,
             action_scale=1.0,
             alpha=0.2,
-            auto_alpha=False,
+            auto_alpha=True,
             alpha_lr=0.001,
             target_entropy=-2.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_swimmer.ckpt",
             use_ere=True,
-            ere_eta=Float32(0.996),
+            ere_eta=0.996,
         )
 
         print("Environment: Swimmer Continuous (GPU)")
