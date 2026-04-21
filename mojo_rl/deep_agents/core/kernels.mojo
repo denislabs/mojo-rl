@@ -3335,24 +3335,59 @@ def gaussian_nll_grad_kernel[
     var b = idx // PRED_DIM
     var d = idx % PRED_DIM
 
-    var mean_val = model_output[b, d]
-    var raw_lv = model_output[b, PRED_DIM + d]
-    var lv = raw_lv
-    if lv < min_logvar:
-        lv = min_logvar
-    if lv > max_logvar:
-        lv = max_logvar
+    var mean_val = rebind[Scalar[dtype]](model_output[b, d])
+    var raw_lv = rebind[Scalar[dtype]](model_output[b, PRED_DIM + d])
+
+    # Soft clamp via double softplus (MBPO reference bnn.py:556-557):
+    #   lv_inter = max - softplus(max - raw)   -> lv_inter ≤ max, differentiable
+    #   lv       = min + softplus(lv_inter - min) -> lv ≥ min, differentiable
+    # Hard `if > max: lv = max` would zero the gradient outside the bounds;
+    # soft clamp always has nonzero gradient so the network can learn to
+    # output logvar within the intended range.
+    var a1 = max_logvar - raw_lv
+    var s1 = Scalar[dtype](0.0)
+    if a1 > Scalar[dtype](20.0):
+        s1 = a1
+    elif a1 > Scalar[dtype](-20.0):
+        s1 = log(Scalar[dtype](1.0) + exp(a1))
+    var lv_inter = max_logvar - s1
+
+    var a2 = lv_inter - min_logvar
+    var s2 = Scalar[dtype](0.0)
+    if a2 > Scalar[dtype](20.0):
+        s2 = a2
+    elif a2 > Scalar[dtype](-20.0):
+        s2 = log(Scalar[dtype](1.0) + exp(a2))
+    var lv = min_logvar + s2
+
     var var_val = exp(lv)
-    var tgt = target[b, d]
+    var tgt = rebind[Scalar[dtype]](target[b, d])
     var diff = tgt - mean_val
     var diff_sq = diff * diff
     var inv_batch = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
+
+    # Gradient chain through softplus:
+    #   d lv / d raw = sigmoid(lv_inter - min) * sigmoid(max - raw)
+    # (from the two softplus nestings). Existing kernel multiplied by 1 always,
+    # which leaked gradient past a hard clamp; here we scale correctly.
+    var g1 = Scalar[dtype](0.0)
+    if a1 > Scalar[dtype](20.0):
+        g1 = Scalar[dtype](1.0)
+    elif a1 > Scalar[dtype](-20.0):
+        g1 = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-a1))
+    var g2 = Scalar[dtype](0.0)
+    if a2 > Scalar[dtype](20.0):
+        g2 = Scalar[dtype](1.0)
+    elif a2 > Scalar[dtype](-20.0):
+        g2 = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-a2))
+    var chain = g1 * g2
 
     # Gradients
     grad_output[b, d] = (mean_val - tgt) / var_val * inv_batch
     grad_output[b, PRED_DIM + d] = (
         Scalar[dtype](0.5)
         * (Scalar[dtype](1.0) - diff_sq / var_val)
+        * chain
         * inv_batch
     )
 
@@ -3516,13 +3551,25 @@ def dynamics_sample_kernel[
             Scalar[dtype](6.283185307) * u2
         )
 
-        var mean_val = model_output[b, d]
-        var raw_lv = model_output[b, PRED_DIM + d]
-        var lv = raw_lv
-        if lv < min_logvar:
-            lv = min_logvar
-        if lv > max_logvar:
-            lv = max_logvar
+        var mean_val = rebind[Scalar[dtype]](model_output[b, d])
+        var raw_lv = rebind[Scalar[dtype]](model_output[b, PRED_DIM + d])
+        # Soft clamp logvar to match training-time behavior (bnn.py:556-557).
+        # Inference must use the same clamp as training or variance predictions
+        # will not match what the network was trained to produce.
+        var a1 = max_logvar - raw_lv
+        var s1 = Scalar[dtype](0.0)
+        if a1 > Scalar[dtype](20.0):
+            s1 = a1
+        elif a1 > Scalar[dtype](-20.0):
+            s1 = log(Scalar[dtype](1.0) + exp(a1))
+        var lv_inter = max_logvar - s1
+        var a2 = lv_inter - min_logvar
+        var s2 = Scalar[dtype](0.0)
+        if a2 > Scalar[dtype](20.0):
+            s2 = a2
+        elif a2 > Scalar[dtype](-20.0):
+            s2 = log(Scalar[dtype](1.0) + exp(a2))
+        var lv = min_logvar + s2
         var std = sqrt(exp(lv))
         var sample = mean_val + std * z
 
