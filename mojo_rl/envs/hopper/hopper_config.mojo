@@ -190,7 +190,7 @@ struct HopperConfig(Phyics3dEnvConfig):
 
     @staticmethod
     def get_reset_noise() -> Float64:
-        return 0.005
+        return 0.05
 
     # === GPU: Integrator step ===
     @staticmethod

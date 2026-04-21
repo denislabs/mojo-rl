@@ -84,6 +84,8 @@ def main() raises:
             target_entropy=-1.0,
             checkpoint_every=500_000,
             checkpoint_path="sac_ant.ckpt",
+            use_ere=True,
+            ere_eta=0.996,
         )
 
         print("Environment: Ant Continuous (GPU)")
