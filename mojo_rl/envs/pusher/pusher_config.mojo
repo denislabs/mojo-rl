@@ -27,9 +27,9 @@ from ..phyics3d_env_config import Phyics3dEnvConfig
 
 
 # Body indices (depth-first traversal of XML body tree)
-comptime TIPS_ARM_BODY_IDX: Int = 10   # End effector (fingertip)
-comptime OBJECT_BODY_IDX: Int = 11     # Pushable cylinder
-comptime GOAL_BODY_IDX: Int = 12       # Target position
+comptime TIPS_ARM_BODY_IDX: Int = 10  # End effector (fingertip)
+comptime OBJECT_BODY_IDX: Int = 11  # Pushable cylinder
+comptime GOAL_BODY_IDX: Int = 12  # Target position
 
 # Number of arm joints (first 7 joints are the arm)
 comptime NUM_ARM_JOINTS: Int = 7
@@ -42,9 +42,9 @@ struct PusherConfig(Phyics3dEnvConfig):
     comptime INTEGRATOR_WS_EXTRA: Int = 0  # EulerIntegrator needs no extra workspace
 
     # Reward weights (Gymnasium v5 defaults)
-    comptime REWARD_DIST_WEIGHT = 1.0   # ||object - goal||
-    comptime REWARD_CTRL_WEIGHT = 0.1   # sum(action^2)
-    comptime REWARD_NEAR_WEIGHT = 0.5   # ||fingertip - object||
+    comptime REWARD_DIST_WEIGHT = 1.0  # ||object - goal||
+    comptime REWARD_CTRL_WEIGHT = 0.1  # sum(action^2)
+    comptime REWARD_NEAR_WEIGHT = 0.5  # ||fingertip - object||
 
     # === CPU: Integrator step ===
     @staticmethod
@@ -62,8 +62,17 @@ struct PusherConfig(Phyics3dEnvConfig):
         NSITE: Int = 0,
     ](
         mut model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool,
@@ -74,7 +83,11 @@ struct PusherConfig(Phyics3dEnvConfig):
     @staticmethod
     def pre_step_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
@@ -86,11 +99,13 @@ struct PusherConfig(Phyics3dEnvConfig):
     @staticmethod
     def custom_reset_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
         NSITE: Int = 0,
-    ](
-        mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
-    ):
+    ](mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],):
         # Fix goal position: set goal slide joints to 0 (stays at XML body pos)
         # Goal joints are at indices 9 and 10 (goal_slidey, goal_slidex)
         data.qpos[9] = Scalar[DTYPE](0)
@@ -106,13 +121,18 @@ struct PusherConfig(Phyics3dEnvConfig):
     @staticmethod
     def custom_extract_obs_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
-        """Gymnasium Pusher-v5 observation: qpos[:7] + qvel[:7] + 3 body positions."""
+        """Gymnasium Pusher-v5 observation: qpos[:7] + qvel[:7] + 3 body positions.
+        """
         # Arm joint positions [7]
         for i in range(NUM_ARM_JOINTS):
             obs.append(data.qpos[i])
@@ -137,7 +157,11 @@ struct PusherConfig(Phyics3dEnvConfig):
     @staticmethod
     def compute_reward_and_done_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
@@ -195,8 +219,14 @@ struct PusherConfig(Phyics3dEnvConfig):
     def physics_substep_gpu[
         DTYPE: DType where DTYPE.is_floating_point(),
         BATCH_SIZE: Int,
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int,
-        MAX_CONTACTS: Int, NGEOM: Int, MAX_EQUALITY: Int, CONE_TYPE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
     ](
@@ -206,7 +236,14 @@ struct PusherConfig(Phyics3dEnvConfig):
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
         EulerIntegrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH_SIZE, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH_SIZE,
+            NGEOM,
             CONE_TYPE=CONE_TYPE,
             MAX_TENDON=MAX_TENDON,
             NSITE=NSITE,
@@ -217,7 +254,9 @@ struct PusherConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def pre_step_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -231,8 +270,11 @@ struct PusherConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def compute_reward_and_done_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int,
-        ACTION_DIM: Int, MODEL_SIZE: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+        MODEL_SIZE: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -277,9 +319,7 @@ struct PusherConfig(Phyics3dEnvConfig):
         var d2x = obj_x - goal_x
         var d2y = obj_y - goal_y
         var d2z = obj_z - goal_z
-        var dist_obj_goal = Scalar[DTYPE](
-            sqrt(Float64(d2x * d2x + d2y * d2y + d2z * d2z))
-        )
+        var dist_obj_goal = sqrt(d2x * d2x + d2y * d2y + d2z * d2z)
 
         # Fingertip - Object distance
         var tip_x = rebind[Scalar[DTYPE]](
@@ -294,11 +334,11 @@ struct PusherConfig(Phyics3dEnvConfig):
         var d1x = obj_x - tip_x
         var d1y = obj_y - tip_y
         var d1z = obj_z - tip_z
-        var dist_tip_obj = Scalar[DTYPE](
-            sqrt(Float64(d1x * d1x + d1y * d1y + d1z * d1z))
-        )
+        var dist_tip_obj = sqrt(d1x * d1x + d1y * d1y + d1z * d1z)
 
-        var reward_dist = -dist_obj_goal * Scalar[DTYPE](Self.REWARD_DIST_WEIGHT)
+        var reward_dist = -dist_obj_goal * Scalar[DTYPE](
+            Self.REWARD_DIST_WEIGHT
+        )
         var reward_near = -dist_tip_obj * Scalar[DTYPE](Self.REWARD_NEAR_WEIGHT)
 
         # Control cost
@@ -317,7 +357,9 @@ struct PusherConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def init_qpos_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -333,7 +375,10 @@ struct PusherConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def custom_extract_obs_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int, OBS_DIM: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
