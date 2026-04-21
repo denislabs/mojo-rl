@@ -36,7 +36,7 @@ comptime ACTION_DIM = 2  # 2 rotational motors
 comptime HIDDEN_DIM = 128
 
 # Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 600_000
+comptime BUFFER_CAPACITY = 400_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
