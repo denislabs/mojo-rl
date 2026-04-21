@@ -89,7 +89,7 @@ def main() raises:
 
     var env = Hopper[
         DType.float64,
-        False,
+        TERMINATE_ON_UNHEALTHY=True,
     ]()
 
     print("Running CPU evaluation...")

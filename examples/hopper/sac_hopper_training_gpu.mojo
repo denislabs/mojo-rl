@@ -42,7 +42,7 @@ comptime MAX_N_ENVS = 4
 
 # Training duration
 comptime NUM_STEPS = 2_000_000
-comptime WARMUP_STEPS = 10_000
+comptime WARMUP_STEPS = 25_000
 
 comptime dtype = DType.float32
 
@@ -81,10 +81,12 @@ def main() raises:
             alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.001,  # CleanRL: uses q_lr for alpha too
-            target_entropy=-3.0,  # -ACTION_DIM
+            target_entropy=-1.0,  # -ACTION_DIM
             max_grad_norm=0.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
+            use_ere=True,
+            ere_eta=0.996,
         )
 
         print("Environment: Hopper Continuous (GPU)")
@@ -149,7 +151,7 @@ def main() raises:
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
                 # gradient_steps=4,
-                reward_scale=1.0,
+                reward_scale=5.0,
             )
 
             var end_time = perf_counter_ns()

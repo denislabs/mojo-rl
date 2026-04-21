@@ -232,8 +232,12 @@ comptime DeepSACAgent[
     profile: Int = 0,
     L: Logger = NoOpLogger,
     max_n_envs: Int = 64,
+    action_scale: Float64 = 1.0,
 ] = GenericOffPolicyAgent[
-    SACConfig[obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size, actor_lr, critic_lr],
+    SACConfig[
+        obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size,
+        actor_lr, critic_lr, action_scale,
+    ],
     profile,
     L,
     max_n_envs,
@@ -328,10 +332,12 @@ comptime MBPOSACAgent[
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.0003,
     model_lr: Float64 = 0.001,
+    action_scale: Float64 = 1.0,
 ] = MBPOAgent[
     DefaultMBPOConfig[
         obs_dim, action_dim, hidden_dim, buffer_capacity, synth_capacity,
         batch_size, num_ensemble, num_elites, dyn_hidden,
         actor_lr, critic_lr, model_lr,
+        TFn=NeverTerminate, action_scale=action_scale,
     ],
 ]

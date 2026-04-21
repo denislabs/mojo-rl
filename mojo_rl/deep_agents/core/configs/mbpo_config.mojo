@@ -76,6 +76,7 @@ struct DefaultMBPOConfig[
     critic_lr: Float64 = 0.0003,
     model_lr: Float64 = 0.001,
     TFn: TerminationFn = NeverTerminate,
+    action_scale: Float64 = 1.0,
 ](MBPOConfig):
     """Default MBPO config: SAC policy + 4-layer Swish dynamics ensemble.
 
@@ -119,7 +120,7 @@ struct DefaultMBPOConfig[
     comptime Schedule = DelayedActorOnly
     comptime TargetAction = ReparamTarget
     comptime TargetValue = EntropicTwinQTarget
-    comptime ActorLoss = AutodiffMaxEntLoss[]
+    comptime ActorLoss = AutodiffMaxEntLoss[action_scale=Self.action_scale]
 
     # =========================================================================
     # Dynamics model configuration

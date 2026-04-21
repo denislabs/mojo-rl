@@ -1026,12 +1026,16 @@ struct MaxEntLoss[
             ],
             lsmin: Scalar[dtype],
             lsmax: Scalar[dtype],
+            ascale: Scalar[dtype],
             rng: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
         ):
             sac_rsample_with_cache_kernel[dtype, BATCH, ACTIONS](
-                acts, lp, eps, ao, lsmin, lsmax, rng
+                acts, lp, eps, ao, lsmin, lsmax, ascale, rng
             )
 
+        # Legacy MaxEntLoss does not plumb action_scale through the trait;
+        # pass 1.0 here (use AutodiffMaxEntLoss for action_scale != 1.0).
+        var action_scale_s = Scalar[dtype](1.0)
         ctx.enqueue_function[curr_rsample, curr_rsample](
             curr_act_t,
             curr_lp_t,
@@ -1039,6 +1043,7 @@ struct MaxEntLoss[
             actor_out_t,
             log_std_min_s,
             log_std_max_s,
+            action_scale_s,
             rng_t,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
@@ -1221,11 +1226,14 @@ struct MaxEntLoss[
             ],
             lsmin: Scalar[dtype],
             lsmax: Scalar[dtype],
+            ascale: Scalar[dtype],
         ):
             sac_rsample_bwd_kernel[dtype, BATCH, ACTIONS](
-                agrad, ga, ab, ca, eps, ao, lsmin, lsmax
+                agrad, ga, ab, ca, eps, ao, lsmin, lsmax, ascale
             )
 
+        # Legacy MaxEntLoss forward used action_scale=1.0, so backward matches.
+        var bwd_action_scale = Scalar[dtype](1.0)
         ctx.enqueue_function[rsample_bwd, rsample_bwd](
             actor_grad_t,
             grad_act_t,
@@ -1235,6 +1243,7 @@ struct MaxEntLoss[
             actor_out_t,
             log_std_min_s,
             log_std_max_s,
+            bwd_action_scale,
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1283,6 +1292,7 @@ def _align4(x: Int) -> Int:
 
 struct AutodiffMaxEntLoss[
     log_std_scale: Float64 = 3.5,
+    action_scale: Float64 = 1.0,
 ](ActorLoss):
     """Max-entropy actor loss using composed autodiff graph.
 
@@ -1295,6 +1305,10 @@ struct AutodiffMaxEntLoss[
 
     The backward pass is fully automatic — no manual gradient stitching.
     Produces identical gradients to MaxEntLoss but with ~30 lines of code.
+
+    action_scale: Output scale for the action (a = action_scale * tanh(z)).
+      Must match the agent's runtime action_scale so the critic sees actions
+      on the same scale as the replay buffer (which stores scaled actions).
     """
 
     comptime HAS_ALPHA: Bool = True
@@ -1318,7 +1332,7 @@ struct AutodiffMaxEntLoss[
     ]() -> Int:
         # Build the exact same graph as update_actor_gpu and read its sizes.
         comptime OBS = ActorModel.IN_DIM
-        comptime ActorRSample = Sequential[ActorModel, RSample[ACTIONS]]
+        comptime ActorRSample = Sequential[ActorModel, RSample[ACTIONS, action_scale=Self.action_scale]]
         comptime ActorSkip = SkipConcat[ActorRSample]
         comptime TwinCriticMin = Sequential[
             DualPath[CriticModel, CriticModel], Min[1]
@@ -1387,7 +1401,7 @@ struct AutodiffMaxEntLoss[
         # =====================================================================
         # Build the composed SAC graph type
         # =====================================================================
-        comptime ActorRSample = Sequential[ActorModel, RSample[ACTIONS]]
+        comptime ActorRSample = Sequential[ActorModel, RSample[ACTIONS, action_scale=Self.action_scale]]
         comptime ActorSkip = SkipConcat[ActorRSample]
         # ActorSkip: IN=OBS, OUT=OBS+ACTIONS+1
 
@@ -1550,7 +1564,7 @@ struct AutodiffMaxEntLoss[
         # =================================================================
         # Build the composed SAC graph type (same as CPU)
         # =================================================================
-        comptime ActorRSample = Sequential[ActorModel, RSample[ACTIONS]]
+        comptime ActorRSample = Sequential[ActorModel, RSample[ACTIONS, action_scale=Self.action_scale]]
         comptime ActorSkip = SkipConcat[ActorRSample]
         comptime TwinCriticMin = Sequential[
             DualPath[CriticModel, CriticModel], Min[1]
@@ -1654,7 +1668,7 @@ struct AutodiffMaxEntLoss[
         # =================================================================
         # Compute comptime offset of RSampleOp's workspace within SACGraph ws.
         # Path: SACGraph → ActorSkip → SkipConcat child → ActorRSample → RSample → AutoDiffChain op_ws
-        comptime RSample_chain = RSample[ACTIONS]
+        comptime RSample_chain = RSample[ACTIONS, action_scale=Self.action_scale]
         comptime RSAMPLE_WS_PER_SAMPLE = (
             SACGraph._ws_layer_offset[0]()       # outer Sequential: ActorSkip ws start
             + ActorRSample.OUT_DIM               # SkipConcat: child_ws after inner_out

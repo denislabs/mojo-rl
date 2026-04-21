@@ -620,6 +620,106 @@ def sample_indices_kernel[
     indices[i] = Scalar[DType.int32](idx)
 
 
+# =============================================================================
+# ERE (Emphasizing Recent Experience) — Wang & Ross 2019
+# =============================================================================
+# Sampler biases toward the most recent c_k transitions, where c_k decays each
+# gradient step within a K_MAX-cycle. Reduces to uniform sampling when c_k
+# reaches full buffer size.
+# =============================================================================
+
+
+@always_inline
+def ere_update_kernel[
+    dtype: DType,
+    K_MAX: Int,
+    C_MIN: Int,
+](
+    ere_state: LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin],
+    buffer_size: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    ere_c: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    eta: Scalar[dtype],
+):
+    """Update ERE state and compute current c_k. Launch with grid=(1,), block=(1,).
+
+    ere_state layout: [k (float counter), eta_pow_k].
+    Each call:
+      1. c_k = max(C_MIN, int(buffer_size * eta_pow_k))
+      2. k += 1; eta_pow_k *= eta; wrap at K_MAX.
+    Writes c_k to `ere_c` which the sampler reads.
+    """
+    if Int(thread_idx.x) != 0:
+        return
+
+    var k = ere_state.ptr[0]
+    var eta_pow_k = ere_state.ptr[1]
+    var buf_sz = Scalar[dtype](buffer_size.ptr[0])
+
+    # Compute c_k = max(C_MIN, floor(buf_sz * eta_pow_k))
+    var c_val = Int(buf_sz * eta_pow_k)
+    if c_val < C_MIN:
+        c_val = C_MIN
+    if c_val > Int(buf_sz):
+        c_val = Int(buf_sz)
+    ere_c.ptr[0] = Scalar[DType.int32](c_val)
+
+    # Advance k; wrap at K_MAX (reset eta_pow_k to 1).
+    k += Scalar[dtype](1.0)
+    eta_pow_k *= eta
+    if k >= Scalar[dtype](K_MAX):
+        k = Scalar[dtype](0.0)
+        eta_pow_k = Scalar[dtype](1.0)
+    ere_state.ptr[0] = k
+    ere_state.ptr[1] = eta_pow_k
+
+
+@always_inline
+def sample_indices_ere_kernel[
+    dtype: DType,
+    SAMPLE_SIZE: Int,
+    CAPACITY: Int,
+](
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    buffer_size: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    write_idx: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    ere_c: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+):
+    """ERE sampler: sample uniformly from the most recent min(c_k, buf_size) transitions.
+
+    For each thread:
+        c     = min(ere_c, buffer_size)
+        off   = floor(u * c)                # u ~ Uniform[0, 1)
+        idx   = (write_idx - c + off + CAPACITY) % CAPACITY
+
+    When c == buffer_size, the distribution is identical to uniform over the
+    whole buffer (just rotated), so this kernel is safe to use when ERE is
+    effectively off (c_k == buf_size).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SAMPLE_SIZE:
+        return
+
+    var rng_seed = UInt64(rng_counter.ptr[0])
+    var buf_sz = buffer_size.ptr[0]
+    var c = ere_c.ptr[0]
+    if c > buf_sz:
+        c = buf_sz
+    var w_idx = write_idx.ptr[0]
+
+    var philox = PhiloxRandom(
+        seed=rng_seed + UInt64(i),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var u: Scalar[dtype] = Scalar[dtype](rand_vals[0])
+    var offset = Int(u * Scalar[dtype](c))
+    var idx = (Int(w_idx) - Int(c) + offset + CAPACITY) % CAPACITY
+    indices[i] = Scalar[DType.int32](idx)
+
+
 @always_inline
 def gather_batch_kernel[
     dtype: DType,
@@ -1864,12 +1964,16 @@ def sac_rsample_with_cache_kernel[
     ],
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
+    action_scale: Scalar[dtype],
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
 ):
     """SAC training forward: reparameterize, compute log_prob, save eps for backward.
 
-    Actions are in [-1, 1] (NOT scaled by action_scale) — the scale is
-    factored out during actor gradient computation.
+    Actions are scaled by action_scale so the critic sees the same action
+    distribution as what's stored in the replay buffer (which also writes
+    scaled actions via sac_sample_actions_counter_kernel). log_prob is
+    computed over the UNSCALED tanh(z); the additive -A*log(action_scale)
+    constant is absorbed into target_entropy calibration.
 
     eps_cache[b, a] saves the noise epsilon used to sample action a for batch b.
     It is needed by sac_rsample_bwd_kernel to backpropagate through log_std.
@@ -1878,20 +1982,22 @@ def sac_rsample_with_cache_kernel[
         ε ~ N(0, 1)
         σ = exp(clamp(log_std))
         z = mean + σ * ε
-        a = tanh(z)
-        log π(a|s) = Σ_j [-0.5*ε_j² - 0.5*log(2π) - ls_j - log(1 - a_j²)]
+        a = action_scale * tanh(z)
+        log π(a|s) = Σ_j [-0.5*ε_j² - 0.5*log(2π) - ls_j - log(1 - tanh²(z_j))]
 
     Uses PhiloxRandom for GPU-safe noise generation.
     Reads seed from GPU-side rng_counter (CUDA graph compatible).
     One thread per batch sample.
 
     Args:
-        actions:    Output actions in (-1, 1) [BATCH, ACTION_DIM].
+        actions:    Output SCALED actions in [-action_scale, action_scale]
+                    [BATCH, ACTION_DIM].
         log_probs:  Output log-probabilities (summed over action dims) [BATCH].
         eps_cache:  Output saved noise ε [BATCH, ACTION_DIM] (for backward).
         actor_out:  Actor network output [BATCH, 2*ACTION_DIM] (mean || log_std).
         log_std_min: Minimum log_std clamp value.
         log_std_max: Maximum log_std clamp value.
+        action_scale: Output scale for the action (a = action_scale * tanh(z)).
         rng_counter: GPU-side RNG counter [1] (read, not modified).
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1926,18 +2032,22 @@ def sac_rsample_with_cache_kernel[
         # Save eps for backward pass
         eps_cache[b, a] = eps
 
-        # Reparameterize: z = mean + σ * ε, a = tanh(z)
+        # Reparameterize: z = mean + σ * ε, a = action_scale * tanh(z)
         var z = actor_out[b, a] + std_val * eps
-        var act = tanh(z)
+        var act = tanh(z) * action_scale
         actions[b, a] = act
 
-        # Log-prob contribution from this dimension (SB3 formula)
+        # Log-prob contribution from this dimension
         # Gaussian log-prob
         var log_gaussian = -Scalar[dtype](0.5) * eps * eps - half_log_2pi - ls
-        # Squashing correction: -log(1 - tanh²(z) + eps)
-        # Matches Stable-Baselines3 / CleanRL epsilon approach
-        var one_minus_a2 = one - act * act + Scalar[dtype](1e-6)
-        lp += log_gaussian - log(one_minus_a2)
+        # Squashing correction (numerically stable form)
+        # log(1 - tanh²(z)) = 2·(log(2) - |z| - log(1 + exp(-2|z|)))
+        var abs_z = z if z >= Scalar[dtype](0.0) else -z
+        var squash_correction = Scalar[dtype](2.0) * (
+            Scalar[dtype](0.6931471805599453) - abs_z
+            - log(one + exp(Scalar[dtype](-2.0) * abs_z))
+        )
+        lp += log_gaussian - squash_correction
 
     log_probs[b] = lp
 
@@ -1967,21 +2077,23 @@ def sac_rsample_bwd_kernel[
     ],
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
+    action_scale: Scalar[dtype],
 ):
     """SAC backward through the reparameterization trick.
 
     Computes the full actor gradient actor_grad[BATCH, 2*ACTION_DIM] from:
-      - grad_act[b, j]: ∂(-mean(Q))/∂a_j from critic backward with dq=-1/BATCH
+      - grad_act[b, j]: ∂(-mean(Q))/∂(scaled_a_j) from critic backward (dq=-1/BATCH)
       - alpha_per_sample = alpha/BATCH: entropy coefficient per sample
 
     Derivation for each (b, j):
-        a      = curr_act[b, j]             (tanh-squashed action from forward)
-        ls     = clamp(actor_out[b, ACTION_DIM+j])
-        σ      = exp(ls)
-        ε      = eps_cache[b, j]            (noise saved during forward)
+        a_scaled = curr_act[b, j]           (SCALED action from forward)
+        tanh_z   = a_scaled / action_scale  (UNSCALED tanh output)
+        ls       = clamp(actor_out[b, ACTION_DIM+j])
+        σ        = exp(ls)
+        ε        = eps_cache[b, j]          (noise saved during forward)
 
-        d_z    = grad_act[b,j] * (1 - a²)  # backward through tanh
-               + alpha_per_sample * 2*a    # entropy term: d(-log(1-tanh²))/da * (1-a²)
+        d_z = grad_act * action_scale * (1 - tanh_z²)  # chain rule through scale+tanh
+            + alpha_per_sample * 2 * tanh_z            # entropy (scale-independent)
 
         actor_grad[b, j]            = d_z                           # grad wrt mean
         actor_grad[b, ACTION_DIM+j] = d_z * σ * ε - alpha_per_sample  # grad wrt log_std
@@ -1990,13 +2102,14 @@ def sac_rsample_bwd_kernel[
 
     Args:
         actor_grad:        Output gradient [BATCH, 2*ACTION_DIM] for network backward.
-        grad_act:          ∂(-mean(Q))/∂a from critic backward [BATCH, ACTION_DIM].
+        grad_act:          ∂(-mean(Q))/∂(scaled_a) from critic backward [BATCH, ACTION_DIM].
         alpha_buf:         Alpha / BATCH (entropy coefficient, scalar).
-        curr_act:          Tanh-squashed actions from forward pass [BATCH, ACTION_DIM].
+        curr_act:          SCALED actions from forward pass [BATCH, ACTION_DIM].
         eps_cache:         Saved noise ε from forward pass [BATCH, ACTION_DIM].
         actor_out:         Raw actor network output [BATCH, 2*ACTION_DIM] (mean || log_std).
         log_std_min:       Lower clamp for log_std (same as forward).
         log_std_max:       Upper clamp for log_std (same as forward).
+        action_scale:      Output scale used in forward (a = action_scale * tanh(z)).
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -2007,9 +2120,11 @@ def sac_rsample_bwd_kernel[
     var two = Scalar[dtype](2.0)
     var half = Scalar[dtype](0.5)
     var ls_range = log_std_max - log_std_min
+    var inv_scale = one / action_scale
 
     for a in range(ACTION_DIM):
-        var act_val = curr_act[b, a]
+        # curr_act is SCALED; recover tanh(z) = scaled / action_scale
+        var tanh_z = curr_act[b, a] * inv_scale
         # Affine rescale: tanh already applied by LinearTanh head
         var tanh_out = actor_out[b, ACTION_DIM + a]
         var ls = log_std_min + half * ls_range * (tanh_out + one)
@@ -2017,10 +2132,11 @@ def sac_rsample_bwd_kernel[
         var sigma = exp(ls)
         var eps = eps_cache[b, a]
 
-        # d_z: gradient through tanh(z) from critic + entropy contribution
-        var one_minus_a2 = one - act_val * act_val
+        # d_z: chain-rule through action_scale and tanh, plus entropy term
+        var one_minus_tanh2 = one - tanh_z * tanh_z
         var d_z = (
-            grad_act[b, a] * one_minus_a2 + alpha_per_sample * two * act_val
+            grad_act[b, a] * action_scale * one_minus_tanh2
+            + alpha_per_sample * two * tanh_z
         )
 
         # Grad wrt mean: z = mean + σ*ε, so ∂z/∂mean = 1

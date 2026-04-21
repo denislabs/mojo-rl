@@ -56,6 +56,7 @@ trait TargetAction:
             dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
         ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        action_scale: Float64,
     ):
         ...
 
@@ -82,6 +83,7 @@ trait TargetAction:
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
+        action_scale: Scalar[dtype],
     ) raises:
         ...
 
@@ -123,6 +125,7 @@ struct DeterministicTarget(TargetAction):
             dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
         ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        action_scale: Float64,  # unused by DDPG (actor outputs tanh; caller scales if needed)
     ):
         """Forward target actor on next_obs -> next_actions."""
         # Rebind out_actions to ActorModel.OUT_DIM (== ACTIONS for DDPG)
@@ -156,6 +159,7 @@ struct DeterministicTarget(TargetAction):
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
+        action_scale: Scalar[dtype],  # unused by DDPG
     ) raises:
         """GPU forward target actor on next_obs -> next_actions."""
         var out_act = LayoutTensor[
@@ -210,6 +214,7 @@ struct SmoothedTarget[
             dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
         ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        action_scale: Float64,  # unused by TD3 (noise added in unit-range)
     ):
         """Forward target actor, then add clipped Gaussian noise."""
 
@@ -260,6 +265,7 @@ struct SmoothedTarget[
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
+        action_scale: Scalar[dtype],  # unused by TD3
     ) raises:
         """GPU forward target actor, then add clipped Gaussian noise.
 
@@ -365,8 +371,12 @@ struct ReparamTarget(TargetAction):
             dtype, Layout.row_major(ActorModel.PARAM_SIZE), MutAnyOrigin
         ],
         ws: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        action_scale: Float64,
     ):
         """Forward current actor -> rsample -> actions + log_probs.
+
+        Output actions are scaled by action_scale so the critic sees the same
+        distribution as the replay buffer (which stores scaled actions).
 
         Workspace layout: [BATCH * ActorModel.OUT_DIM] raw actor output.
         """
@@ -417,6 +427,14 @@ struct ReparamTarget(TargetAction):
             out_lp,
         )
 
+        # Scale actions (rsample writes unscaled tanh(z) in [-1, 1]).
+        # Buffer stores SCALED actions, so target critic must see scaled too.
+        if action_scale != 1.0:
+            var scale_s = Scalar[dtype](action_scale)
+            for b in range(BATCH):
+                for a in range(ACTIONS):
+                    out_actions[b, a] = out_actions[b, a] * scale_s
+
         # Guard NaN in log_probs
         for b in range(BATCH):
             var lp = Float64(out_log_probs[b])
@@ -446,8 +464,12 @@ struct ReparamTarget(TargetAction):
         actor_ws: DeviceBuffer[dtype],
         strat_ws: DeviceBuffer[dtype],
         rng_counter: DeviceBuffer[DType.uint32],
+        action_scale: Scalar[dtype],
     ) raises:
         """GPU forward current actor -> rsample -> actions + log_probs.
+
+        Output actions are scaled by action_scale so the critic sees the same
+        distribution as the replay buffer (which stores scaled actions).
 
         strat_ws layout: [BATCH * ACTOR_OUT] raw actor output.
         The rsample kernel reads raw_out and writes actions + log_probs.
@@ -491,12 +513,13 @@ struct ReparamTarget(TargetAction):
             ],
             lsmin: Scalar[dtype],
             lsmax: Scalar[dtype],
+            ascale: Scalar[dtype],
             rng: LayoutTensor[
                 DType.uint32, Layout.row_major(1), MutAnyOrigin
             ],
         ):
             sac_rsample_with_cache_kernel[dtype, BATCH, ACTIONS](
-                acts, lp, eps, ao, lsmin, lsmax, rng
+                acts, lp, eps, ao, lsmin, lsmax, ascale, rng
             )
 
         ctx.enqueue_function[rsample_wrapper, rsample_wrapper](
@@ -506,6 +529,7 @@ struct ReparamTarget(TargetAction):
             raw_out,
             log_std_min_s,
             log_std_max_s,
+            action_scale,
             rng_t,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),

@@ -778,6 +778,11 @@ struct GenericOffPolicyAgent[
     var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
+    # ERE (Emphasizing Recent Experience) config — applied to GPU buffer at
+    # make_gpu_state time. When use_ere is False, sampling is standard uniform.
+    var use_ere: Bool
+    var ere_eta: Float32
+
     def __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -797,6 +802,8 @@ struct GenericOffPolicyAgent[
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
         target_total_steps: Int = 0,
+        use_ere: Bool = False,
+        ere_eta: Float32 = Float32(0.996),
     ):
         self.state = Self.CPUStateType()
         self.gamma = gamma
@@ -853,6 +860,10 @@ struct GenericOffPolicyAgent[
         # Logging
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
+
+        # ERE config
+        self.use_ere = use_ere
+        self.ere_eta = ere_eta
 
     # =========================================================================
     # OffPolicyContinuousAgent trait
@@ -1013,6 +1024,7 @@ struct GenericOffPolicyAgent[
                 ws.next_lp().ptr,
                 cpu_state.actor.target.params_view(),
                 ws.strat_ws_ptr(),
+                self.action_scale,
             )
         else:
             Self.Config.TargetAction.compute_cpu[
@@ -1026,6 +1038,7 @@ struct GenericOffPolicyAgent[
                 ws.next_lp().ptr,
                 cpu_state.actor.online.params_view(),
                 ws.strat_ws_ptr(),
+                self.action_scale,
             )
 
         # Phase 2b: Concat next_obs + next_act -> next_ci
@@ -1302,6 +1315,10 @@ struct GenericOffPolicyAgent[
         gpu_state.actor.upload_from(self.state.actor, ctx)
         gpu_state.critics.upload_from(self.state.critics, ctx)
 
+        # Apply ERE config to replay buffer (idempotent; called once before CUDA graph capture).
+        if self.use_ere:
+            gpu_state.buffer.enable_ere(self.ere_eta)
+
         # Upload alpha state to GPU scalars
         var scalars_host = ctx.enqueue_create_host_buffer[dtype](
             Self.GPUStateType.GPU_SCALARS_SIZE
@@ -1498,6 +1515,7 @@ struct GenericOffPolicyAgent[
                 gpu_state.actor_ws,
                 gpu_state.target_strat_ws,
                 gpu_state.rng_counter,
+                Scalar[dtype](self.action_scale),
             )
         else:
             Self.Config.TargetAction.compute_gpu[
@@ -1514,6 +1532,7 @@ struct GenericOffPolicyAgent[
                 gpu_state.actor_ws,
                 gpu_state.target_strat_ws,
                 gpu_state.rng_counter,
+                Scalar[dtype](self.action_scale),
             )
 
         # Phase 2b: Concat next_obs + next_act → next_ci, forward target critics

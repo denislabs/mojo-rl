@@ -2263,7 +2263,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
-            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY,
+            NTENDON=MAX_TENDON, NSITE=NSITE,
         ]()
         comptime WS_SIZE = integrator_workspace_size[
             NV, NBODY
@@ -2491,7 +2492,8 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
-            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY
+            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY,
+            NTENDON=MAX_TENDON, NSITE=NSITE,
         ]()
         comptime WS_SIZE = integrator_workspace_size[
             NV, NBODY
