@@ -68,6 +68,9 @@ from mojo_rl.deep_agents.core.kernels import (
     reduce_mean_loss_kernel,
     mask_dead_rollouts_kernel,
     update_alive_mask_kernel,
+    compute_scaler_mean_kernel,
+    compute_scaler_std_kernel,
+    normalize_input_kernel,
 )
 from mojo_rl.cuda.graph import CUDAGraph
 from mojo_rl.core import (
@@ -596,6 +599,14 @@ struct GPUDynamicsEnsemble[
     # GPU-side RNG counter for dynamics training
     var rng_counter: DeviceBuffer[DType.uint32]
 
+    # Input scaler state (MBPO TensorStandardScaler equivalent).
+    # Per-dim mean/std over concatenated [obs, act] inputs. Re-fit at the
+    # start of each train_on_buffer() call over the populated real buffer,
+    # then applied on every dynamics forward (training + rollouts). Without
+    # this, dims of very different scale make logvar bounds meaningless.
+    var input_mean: DeviceBuffer[dtype]  # [DYN_IN]
+    var input_std: DeviceBuffer[dtype]  # [DYN_IN]
+
     def __init__(out self, ctx: DeviceContext) raises:
         # Initialize ensemble members on GPU
         self.members = List[GPUNetworkState[Self.DynModel, Self.DynOpt]](
@@ -655,6 +666,12 @@ struct GPUDynamicsEnsemble[
         self.rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
         self.rng_counter.enqueue_fill(UInt32(0))
 
+        # Scaler state: identity (mean=0, std=1) until first fit_scaler_gpu.
+        self.input_mean = ctx.enqueue_create_buffer[dtype](Self.DYN_IN)
+        self.input_std = ctx.enqueue_create_buffer[dtype](Self.DYN_IN)
+        self.input_mean.enqueue_fill(Scalar[dtype](0.0))
+        self.input_std.enqueue_fill(Scalar[dtype](1.0))
+
     def __init__(out self, *, deinit take: Self):
         self.members = take.members^
         self.elite_indices = take.elite_indices^
@@ -686,6 +703,8 @@ struct GPUDynamicsEnsemble[
         self.s_done = take.s_done^
         self.s_idx = take.s_idx^
         self.rng_counter = take.rng_counter^
+        self.input_mean = take.input_mean^
+        self.input_std = take.input_std^
 
     def upload_from(
         mut self,
@@ -705,6 +724,77 @@ struct GPUDynamicsEnsemble[
         self.elite_indices.clear()
         for i in range(len(cpu_ensemble.elite_indices)):
             self.elite_indices.append(cpu_ensemble.elite_indices[i])
+
+    def fit_scaler_gpu[
+        BUF_CAP: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        buffer: GPUReplayBuffer[BUF_CAP, Self.obs_dim, Self.action_dim],
+    ) raises:
+        """Fit per-dim mean/std of [obs || act] over the populated buffer.
+
+        Matches `TensorStandardScaler.fit` in the MBPO reference
+        (bnn.py:335, utils.py:48-50). Called once per train_on_buffer so
+        every gradient step this round uses the same scaler. Cheap: only
+        runs every `model_train_freq` env steps, and serial reductions are
+        fast at realistic buffer sizes (~1M elements per dim).
+        """
+        var n = buffer.size
+        if n < 1:
+            return
+
+        var mean_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.obs_dim), MutAnyOrigin
+        ](self.input_mean.unsafe_ptr())
+        var mean_act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
+        ](self.input_mean.unsafe_ptr() + Self.obs_dim)
+        var std_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.obs_dim), MutAnyOrigin
+        ](self.input_std.unsafe_ptr())
+        var std_act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
+        ](self.input_std.unsafe_ptr() + Self.obs_dim)
+        var obs_data_t = LayoutTensor[
+            dtype, Layout.row_major(BUF_CAP, Self.obs_dim), MutAnyOrigin
+        ](buffer.states_buf.unsafe_ptr())
+        var act_data_t = LayoutTensor[
+            dtype, Layout.row_major(BUF_CAP, Self.action_dim), MutAnyOrigin
+        ](buffer.actions_buf.unsafe_ptr())
+
+        # Pass 1: means
+        comptime obs_mean_k = compute_scaler_mean_kernel[
+            dtype, BUF_CAP, Self.obs_dim
+        ]
+        comptime act_mean_k = compute_scaler_mean_kernel[
+            dtype, BUF_CAP, Self.action_dim
+        ]
+        ctx.enqueue_function[obs_mean_k, obs_mean_k](
+            mean_obs_t, obs_data_t, n,
+            grid_dim=(Self.obs_dim,), block_dim=(1,),
+        )
+        ctx.enqueue_function[act_mean_k, act_mean_k](
+            mean_act_t, act_data_t, n,
+            grid_dim=(Self.action_dim,), block_dim=(1,),
+        )
+
+        # Pass 2: stds (need means first, so these enqueue after by stream order)
+        var min_std = Scalar[dtype](1e-12)
+        comptime obs_std_k = compute_scaler_std_kernel[
+            dtype, BUF_CAP, Self.obs_dim
+        ]
+        comptime act_std_k = compute_scaler_std_kernel[
+            dtype, BUF_CAP, Self.action_dim
+        ]
+        ctx.enqueue_function[obs_std_k, obs_std_k](
+            std_obs_t, obs_data_t, mean_obs_t, n, min_std,
+            grid_dim=(Self.obs_dim,), block_dim=(1,),
+        )
+        ctx.enqueue_function[act_std_k, act_std_k](
+            std_act_t, act_data_t, mean_act_t, n, min_std,
+            grid_dim=(Self.action_dim,), block_dim=(1,),
+        )
 
     def _enqueue_train_batch[
         BUF_CAP: Int,
@@ -758,6 +848,18 @@ struct GPUDynamicsEnsemble[
         ](self.t_input.unsafe_ptr())
         ctx.enqueue_function[cat_k, cat_k](
             input_t, obs_t, act_t,
+            grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
+        )
+        # Normalize concatenated input in-place using fitted scaler.
+        var mean_full_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+        ](self.input_mean.unsafe_ptr())
+        var std_full_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+        ](self.input_std.unsafe_ptr())
+        comptime norm_k = normalize_input_kernel[dtype, TB, Self.DYN_IN]
+        ctx.enqueue_function[norm_k, norm_k](
+            input_t, mean_full_t, std_full_t,
             grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
         )
         var nobs_t = LayoutTensor[
@@ -838,6 +940,11 @@ struct GPUDynamicsEnsemble[
         var n_batches_per_epoch = n_data // TB
         if n_batches_per_epoch < 1:
             n_batches_per_epoch = 1
+
+        # Re-fit input scaler over the populated real buffer before training
+        # this round (matches MBPO reference: bnn.py:335). Subsequent forward
+        # passes (training + rollouts) use these mean/std until next call.
+        self.fit_scaler_gpu[BUF_CAP](ctx, buffer)
 
         var min_lv = Scalar[dtype](self.min_logvar)
         var max_lv = Scalar[dtype](self.max_logvar)
@@ -929,6 +1036,21 @@ struct GPUDynamicsEnsemble[
                         h_input_t,
                         h_obs_t,
                         h_act_t,
+                        grid_dim=(DYN_IN_BLOCKS,),
+                        block_dim=(TPB_VAL,),
+                    )
+                    # Normalize holdout inputs with the same fitted scaler.
+                    var h_mean_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+                    ](self.input_mean.unsafe_ptr())
+                    var h_std_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+                    ](self.input_std.unsafe_ptr())
+                    comptime h_norm_k = normalize_input_kernel[
+                        dtype, TB, Self.DYN_IN
+                    ]
+                    ctx.enqueue_function[h_norm_k, h_norm_k](
+                        h_input_t, h_mean_t, h_std_t,
                         grid_dim=(DYN_IN_BLOCKS,),
                         block_dim=(TPB_VAL,),
                     )
@@ -2078,6 +2200,19 @@ struct MBPOAgent[
                 r_dyn_in_t,
                 r_obs_t,
                 r_act_t,
+                grid_dim=(DYN_IN_BLOCKS,),
+                block_dim=(TPB_VAL,),
+            )
+            # Normalize using the scaler fitted at last train_on_buffer call.
+            var r_mean_t = LayoutTensor[
+                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+            ](gpu_dynamics.input_mean.unsafe_ptr())
+            var r_std_t = LayoutTensor[
+                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+            ](gpu_dynamics.input_std.unsafe_ptr())
+            comptime r_norm_k = normalize_input_kernel[dtype, RB, DYN_IN]
+            ctx.enqueue_function[r_norm_k, r_norm_k](
+                r_dyn_in_t, r_mean_t, r_std_t,
                 grid_dim=(DYN_IN_BLOCKS,),
                 block_dim=(TPB_VAL,),
             )

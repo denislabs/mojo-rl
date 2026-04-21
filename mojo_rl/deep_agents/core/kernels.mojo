@@ -3531,3 +3531,104 @@ def dynamics_sample_kernel[
         else:
             # Residual prediction: next_obs = obs + delta
             next_obs[b, d - 1] = obs[b, d - 1] + sample
+
+
+# =============================================================================
+# Dynamics input scaler (MBPO TensorStandardScaler equivalent)
+#
+# Reference: mbpo-master/mbpo/models/bnn.py:335, 548 and utils.py:48-50.
+# Per-dim mean/std fit once per dynamics train() call on the populated portion
+# of the real buffer; applied to every dynamics forward pass (training +
+# rollouts). Without this, HalfCheetah dims with very different scales (joint
+# angles vs velocities) make the ensemble's predictions and logvar bounds
+# useless in the raw input space.
+# =============================================================================
+
+
+@always_inline
+def compute_scaler_mean_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    CAP: Int,
+    D: Int,
+](
+    out_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+    data: LayoutTensor[dtype, Layout.row_major(CAP, D), MutAnyOrigin],
+    n_samples: Int,
+):
+    """Per-column mean over first `n_samples` rows of `data`. One block per dim.
+
+    Grid: (D,), Block: (1,). Single-thread serial sum per dim. Cheap because
+    it only runs every model_train_freq env steps and N is at most the real
+    buffer size (~1M for HalfCheetah).
+    """
+    var d = Int(block_idx.x)
+    if d >= D:
+        return
+    if Int(thread_idx.x) != 0:
+        return
+    if n_samples <= 0:
+        out_mean.ptr[d] = Scalar[dtype](0.0)
+        return
+    var total = Scalar[dtype](0.0)
+    for i in range(n_samples):
+        total += data.ptr[i * D + d]
+    out_mean.ptr[d] = total / Scalar[dtype](n_samples)
+
+
+@always_inline
+def compute_scaler_std_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    CAP: Int,
+    D: Int,
+](
+    out_std: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+    data: LayoutTensor[dtype, Layout.row_major(CAP, D), MutAnyOrigin],
+    in_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+    n_samples: Int,
+    min_std: Scalar[dtype],
+):
+    """Per-column std over first `n_samples` rows. Must be called after mean.
+
+    Matches reference utils.py:49 behavior: `sigma[sigma < 1e-12] = 1.0` — if
+    a dim has near-zero variance (constant), fall back to std=1.0 so
+    normalization leaves it approximately unchanged instead of dividing by 0.
+    """
+    var d = Int(block_idx.x)
+    if d >= D:
+        return
+    if Int(thread_idx.x) != 0:
+        return
+    if n_samples <= 0:
+        out_std.ptr[d] = Scalar[dtype](1.0)
+        return
+    var mu = in_mean.ptr[d]
+    var total = Scalar[dtype](0.0)
+    for i in range(n_samples):
+        var diff = data.ptr[i * D + d] - mu
+        total += diff * diff
+    var var_val = total / Scalar[dtype](n_samples)
+    var s = sqrt(var_val)
+    if s < min_std:
+        s = Scalar[dtype](1.0)
+    out_std.ptr[d] = s
+
+
+@always_inline
+def normalize_input_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    D: Int,
+](
+    data: LayoutTensor[dtype, Layout.row_major(BATCH, D), MutAnyOrigin],
+    in_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+    in_std: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+):
+    """In-place z-score per element: data[b, d] = (data[b, d] - mean[d]) / std[d].
+
+    Grid: ceil(BATCH * D / TPB), Block: TPB.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH * D:
+        return
+    var d = i % D
+    data.ptr[i] = (data.ptr[i] - in_mean.ptr[d]) / in_std.ptr[d]
