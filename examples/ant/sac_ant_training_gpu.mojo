@@ -81,7 +81,7 @@ def main() raises:
             alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.001,
-            target_entropy=-4.0,
+            target_entropy=-8.0,
             checkpoint_every=500_000,
             checkpoint_path="sac_ant.ckpt",
             use_ere=True,
