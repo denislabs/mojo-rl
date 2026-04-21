@@ -10,7 +10,7 @@ Differs from standard off-policy training:
 
 from std.random import random_float64
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from mojo_rl.core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import dtype
@@ -333,6 +333,14 @@ def run_mbpo_train_gpu[
     scalars_host[GPUStateT.GPU_ALPHA_LR] = Scalar[dtype](agent.alpha_lr)
     ctx.enqueue_copy(gpu_state.gpu_scalars, scalars_host)
 
+    # Pre-allocated host buffer for alpha/scalars D2H (reused by diagnostics
+    # and print-boundary downloads to avoid per-call host allocations).
+    # Sized to GPU_SCALARS_SIZE so the print-boundary path can read both
+    # alpha (index 0) and log_alpha (index 1).
+    var alpha_host = ctx.enqueue_create_host_buffer[dtype](
+        GPUStateT.GPU_SCALARS_SIZE
+    )
+
     # Synthetic replay buffer (separate from real buffer in gpu_state)
     var synth_buffer = GPUReplayBuffer[
         Config.SYNTH_CAPACITY, Config.obs_dim, Config.action_dim
@@ -516,13 +524,13 @@ def run_mbpo_train_gpu[
                         _train_graph.value().replay_async()
                     _train_graph.value().sync()
                     agent._gpu_train_diagnostics(
-                        ctx, gpu_state, agent.sac_updates_per_step
+                        ctx, gpu_state, agent.sac_updates_per_step, alpha_host
                     )
                 else:
                     for _ in range(agent.sac_updates_per_step):
                         agent.do_gpu_train_step(
                             ctx, gpu_state, synth_buffer,
-                            s_real_idx, s_synth_idx,
+                            s_real_idx, s_synth_idx, alpha_host,
                         )
                         agent.soft_update_targets_gpu(ctx, gpu_state)
             else:
@@ -572,12 +580,10 @@ def run_mbpo_train_gpu[
         if (
             verbose or (logger and logger[].is_active())
         ) and total_steps >= next_print:
-            # Download GPU-side episode stats + alpha for logging
+            # Download GPU-side episode stats + alpha for logging (reuses
+            # the hoisted alpha_host buffer allocated at loop start).
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
-            var alpha_host = ctx.enqueue_create_host_buffer[dtype](
-                GPUStateT.GPU_SCALARS_SIZE
-            )
             ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
             ctx.synchronize()
             agent.alpha = Float64(alpha_host[GPUStateT.GPU_ALPHA])

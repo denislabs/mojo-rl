@@ -2637,8 +2637,13 @@ struct MBPOAgent[
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
         steps: Int,
+        alpha_host: HostBuffer[dtype],
     ) raises:
-        """CPU-side bookkeeping + diagnostics. Call outside graph."""
+        """CPU-side bookkeeping + diagnostics. Call outside graph.
+
+        `alpha_host` is a size-1 host buffer pre-allocated by the training
+        loop and reused across diagnostic calls (avoids per-call allocs).
+        """
         self.train_step_count += steps
         self.update_count += steps
 
@@ -2699,7 +2704,17 @@ struct MBPOAgent[
                 self.logger[].log_scalar("mean_next_q", mean_nq, step)
                 self.logger[].log_scalar("mean_done", mean_done, step)
                 self.logger[].log_scalar("mean_abs_action", mean_abs_act, step)
-                self.logger[].log_scalar("alpha", self.alpha, step)
+                # Read alpha from GPU (not self.alpha — that's only synced at
+                # print boundaries by the training loop). Uses caller-supplied
+                # pre-allocated alpha_host to avoid per-diag allocation.
+                comptime if Self.Config.ActorLoss.HAS_ALPHA:
+                    ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
+                    ctx.synchronize()
+                    self.logger[].log_scalar(
+                        "alpha", Float64(alpha_host[0]), step
+                    )
+                else:
+                    self.logger[].log_scalar("alpha", self.alpha, step)
             except:
                 pass
 
@@ -2748,17 +2763,20 @@ struct MBPOAgent[
         ],
         s_real_idx: DeviceBuffer[DType.int32],
         s_synth_idx: DeviceBuffer[DType.int32],
+        alpha_host: HostBuffer[dtype],
     ) raises:
         """GPU SAC training step with CPU bookkeeping + diagnostics.
 
         For CUDA graph capture, use _gpu_train_kernels() instead (pure GPU,
         no CPU counters or D2H copies). Call _gpu_train_diagnostics()
         periodically outside the graph for metrics logging.
+
+        `alpha_host` is a size-1 host buffer reused by the diagnostics.
         """
         self._gpu_train_kernels(
             ctx, gpu_state, synth_buffer, s_real_idx, s_synth_idx
         )
-        self._gpu_train_diagnostics(ctx, gpu_state, 1)
+        self._gpu_train_diagnostics(ctx, gpu_state, 1, alpha_host)
 
     def soft_update_targets_gpu(
         mut self,
