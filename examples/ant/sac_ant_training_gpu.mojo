@@ -38,7 +38,7 @@ comptime HIDDEN_DIM = 256
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 32
+comptime MAX_N_ENVS = 4
 
 # Training duration (Ant needs more steps due to high-dim action space)
 comptime NUM_STEPS = 3_000_000
@@ -81,7 +81,7 @@ def main() raises:
             alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.001,
-            target_entropy=-1.0,
+            target_entropy=-4.0,
             checkpoint_every=500_000,
             checkpoint_path="sac_ant.ckpt",
             use_ere=True,
