@@ -33,7 +33,7 @@ comptime OBS_DIM = 8  # qpos[2:5] + qvel[0:5]
 comptime ACTION_DIM = 2  # 2 rotational motors
 
 # Network architecture (smaller for simple env)
-comptime HIDDEN_DIM = 128
+comptime HIDDEN_DIM = 256
 
 # Off-policy GPU training parameters
 # ERE test: use smaller buffer (where we know divergence hits at 2×CAPACITY without ERE)
@@ -76,13 +76,13 @@ def main() raises:
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
-            gamma=0.99,
-            tau=0.005,
+            gamma=0.9999,
+            tau=0.001,
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.001,
-            target_entropy=-2.0,
+            target_entropy=-1.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_swimmer.ckpt",
             use_ere=True,
@@ -101,10 +101,11 @@ def main() raises:
         print("    - Actor LR: 3e-4")
         print("    - Critic LR: 1e-3")
         print("    - Alpha LR: 1e-3")
-        print("    - Tau (soft update): 0.005")
-        print("    - Alpha: 0.2 (FIXED — sanity test)")
+        print("    - Gamma: 0.9999 (long-horizon credit assignment)")
+        print("    - Tau (soft update): 0.001")
+        print("    - Alpha: auto-tuned")
         print("    - ERE: enabled (eta=0.996)")
-        print("    - Target entropy: -" + String(ACTION_DIM))
+        print("    - Target entropy: -1.0")
         print("    - Warmup steps: " + String(WARMUP_STEPS))
         print()
 
