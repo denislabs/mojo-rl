@@ -36,7 +36,7 @@ comptime ACTION_DIM = 2  # 2 rotational motors
 comptime HIDDEN_DIM = 128
 
 # Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 300_000
+comptime BUFFER_CAPACITY = 600_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
@@ -79,7 +79,7 @@ def main() raises:
             tau=0.005,
             action_scale=1.0,
             alpha=0.2,
-            auto_alpha=False,
+            auto_alpha=True,
             alpha_lr=0.001,
             target_entropy=-2.0,
             checkpoint_every=100_000,
