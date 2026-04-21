@@ -232,8 +232,12 @@ comptime DeepSACAgent[
     profile: Int = 0,
     L: Logger = NoOpLogger,
     max_n_envs: Int = 64,
+    action_scale: Float64 = 1.0,
 ] = GenericOffPolicyAgent[
-    SACConfig[obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size, actor_lr, critic_lr],
+    SACConfig[
+        obs_dim, action_dim, hidden_dim, buffer_capacity, batch_size,
+        actor_lr, critic_lr, action_scale,
+    ],
     profile,
     L,
     max_n_envs,

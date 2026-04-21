@@ -1964,12 +1964,16 @@ def sac_rsample_with_cache_kernel[
     ],
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
+    action_scale: Scalar[dtype],
     rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
 ):
     """SAC training forward: reparameterize, compute log_prob, save eps for backward.
 
-    Actions are in [-1, 1] (NOT scaled by action_scale) — the scale is
-    factored out during actor gradient computation.
+    Actions are scaled by action_scale so the critic sees the same action
+    distribution as what's stored in the replay buffer (which also writes
+    scaled actions via sac_sample_actions_counter_kernel). log_prob is
+    computed over the UNSCALED tanh(z); the additive -A*log(action_scale)
+    constant is absorbed into target_entropy calibration.
 
     eps_cache[b, a] saves the noise epsilon used to sample action a for batch b.
     It is needed by sac_rsample_bwd_kernel to backpropagate through log_std.
@@ -1978,20 +1982,22 @@ def sac_rsample_with_cache_kernel[
         ε ~ N(0, 1)
         σ = exp(clamp(log_std))
         z = mean + σ * ε
-        a = tanh(z)
-        log π(a|s) = Σ_j [-0.5*ε_j² - 0.5*log(2π) - ls_j - log(1 - a_j²)]
+        a = action_scale * tanh(z)
+        log π(a|s) = Σ_j [-0.5*ε_j² - 0.5*log(2π) - ls_j - log(1 - tanh²(z_j))]
 
     Uses PhiloxRandom for GPU-safe noise generation.
     Reads seed from GPU-side rng_counter (CUDA graph compatible).
     One thread per batch sample.
 
     Args:
-        actions:    Output actions in (-1, 1) [BATCH, ACTION_DIM].
+        actions:    Output SCALED actions in [-action_scale, action_scale]
+                    [BATCH, ACTION_DIM].
         log_probs:  Output log-probabilities (summed over action dims) [BATCH].
         eps_cache:  Output saved noise ε [BATCH, ACTION_DIM] (for backward).
         actor_out:  Actor network output [BATCH, 2*ACTION_DIM] (mean || log_std).
         log_std_min: Minimum log_std clamp value.
         log_std_max: Maximum log_std clamp value.
+        action_scale: Output scale for the action (a = action_scale * tanh(z)).
         rng_counter: GPU-side RNG counter [1] (read, not modified).
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -2026,9 +2032,9 @@ def sac_rsample_with_cache_kernel[
         # Save eps for backward pass
         eps_cache[b, a] = eps
 
-        # Reparameterize: z = mean + σ * ε, a = tanh(z)
+        # Reparameterize: z = mean + σ * ε, a = action_scale * tanh(z)
         var z = actor_out[b, a] + std_val * eps
-        var act = tanh(z)
+        var act = tanh(z) * action_scale
         actions[b, a] = act
 
         # Log-prob contribution from this dimension
@@ -2071,21 +2077,23 @@ def sac_rsample_bwd_kernel[
     ],
     log_std_min: Scalar[dtype],
     log_std_max: Scalar[dtype],
+    action_scale: Scalar[dtype],
 ):
     """SAC backward through the reparameterization trick.
 
     Computes the full actor gradient actor_grad[BATCH, 2*ACTION_DIM] from:
-      - grad_act[b, j]: ∂(-mean(Q))/∂a_j from critic backward with dq=-1/BATCH
+      - grad_act[b, j]: ∂(-mean(Q))/∂(scaled_a_j) from critic backward (dq=-1/BATCH)
       - alpha_per_sample = alpha/BATCH: entropy coefficient per sample
 
     Derivation for each (b, j):
-        a      = curr_act[b, j]             (tanh-squashed action from forward)
-        ls     = clamp(actor_out[b, ACTION_DIM+j])
-        σ      = exp(ls)
-        ε      = eps_cache[b, j]            (noise saved during forward)
+        a_scaled = curr_act[b, j]           (SCALED action from forward)
+        tanh_z   = a_scaled / action_scale  (UNSCALED tanh output)
+        ls       = clamp(actor_out[b, ACTION_DIM+j])
+        σ        = exp(ls)
+        ε        = eps_cache[b, j]          (noise saved during forward)
 
-        d_z    = grad_act[b,j] * (1 - a²)  # backward through tanh
-               + alpha_per_sample * 2*a    # entropy term: d(-log(1-tanh²))/da * (1-a²)
+        d_z = grad_act * action_scale * (1 - tanh_z²)  # chain rule through scale+tanh
+            + alpha_per_sample * 2 * tanh_z            # entropy (scale-independent)
 
         actor_grad[b, j]            = d_z                           # grad wrt mean
         actor_grad[b, ACTION_DIM+j] = d_z * σ * ε - alpha_per_sample  # grad wrt log_std
@@ -2094,13 +2102,14 @@ def sac_rsample_bwd_kernel[
 
     Args:
         actor_grad:        Output gradient [BATCH, 2*ACTION_DIM] for network backward.
-        grad_act:          ∂(-mean(Q))/∂a from critic backward [BATCH, ACTION_DIM].
+        grad_act:          ∂(-mean(Q))/∂(scaled_a) from critic backward [BATCH, ACTION_DIM].
         alpha_buf:         Alpha / BATCH (entropy coefficient, scalar).
-        curr_act:          Tanh-squashed actions from forward pass [BATCH, ACTION_DIM].
+        curr_act:          SCALED actions from forward pass [BATCH, ACTION_DIM].
         eps_cache:         Saved noise ε from forward pass [BATCH, ACTION_DIM].
         actor_out:         Raw actor network output [BATCH, 2*ACTION_DIM] (mean || log_std).
         log_std_min:       Lower clamp for log_std (same as forward).
         log_std_max:       Upper clamp for log_std (same as forward).
+        action_scale:      Output scale used in forward (a = action_scale * tanh(z)).
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -2111,9 +2120,11 @@ def sac_rsample_bwd_kernel[
     var two = Scalar[dtype](2.0)
     var half = Scalar[dtype](0.5)
     var ls_range = log_std_max - log_std_min
+    var inv_scale = one / action_scale
 
     for a in range(ACTION_DIM):
-        var act_val = curr_act[b, a]
+        # curr_act is SCALED; recover tanh(z) = scaled / action_scale
+        var tanh_z = curr_act[b, a] * inv_scale
         # Affine rescale: tanh already applied by LinearTanh head
         var tanh_out = actor_out[b, ACTION_DIM + a]
         var ls = log_std_min + half * ls_range * (tanh_out + one)
@@ -2121,10 +2132,11 @@ def sac_rsample_bwd_kernel[
         var sigma = exp(ls)
         var eps = eps_cache[b, a]
 
-        # d_z: gradient through tanh(z) from critic + entropy contribution
-        var one_minus_a2 = one - act_val * act_val
+        # d_z: chain-rule through action_scale and tanh, plus entropy term
+        var one_minus_tanh2 = one - tanh_z * tanh_z
         var d_z = (
-            grad_act[b, a] * one_minus_a2 + alpha_per_sample * two * act_val
+            grad_act[b, a] * action_scale * one_minus_tanh2
+            + alpha_per_sample * two * tanh_z
         )
 
         # Grad wrt mean: z = mean + σ*ε, so ∂z/∂mean = 1

@@ -1024,6 +1024,7 @@ struct GenericOffPolicyAgent[
                 ws.next_lp().ptr,
                 cpu_state.actor.target.params_view(),
                 ws.strat_ws_ptr(),
+                self.action_scale,
             )
         else:
             Self.Config.TargetAction.compute_cpu[
@@ -1037,6 +1038,7 @@ struct GenericOffPolicyAgent[
                 ws.next_lp().ptr,
                 cpu_state.actor.online.params_view(),
                 ws.strat_ws_ptr(),
+                self.action_scale,
             )
 
         # Phase 2b: Concat next_obs + next_act -> next_ci
@@ -1513,6 +1515,7 @@ struct GenericOffPolicyAgent[
                 gpu_state.actor_ws,
                 gpu_state.target_strat_ws,
                 gpu_state.rng_counter,
+                Scalar[dtype](self.action_scale),
             )
         else:
             Self.Config.TargetAction.compute_gpu[
@@ -1529,6 +1532,7 @@ struct GenericOffPolicyAgent[
                 gpu_state.actor_ws,
                 gpu_state.target_strat_ws,
                 gpu_state.rng_counter,
+                Scalar[dtype](self.action_scale),
             )
 
         # Phase 2b: Concat next_obs + next_act → next_ci, forward target critics

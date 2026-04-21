@@ -75,6 +75,7 @@ def main() raises:
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,
             critic_lr=0.001,
+            action_scale=0.4,
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](

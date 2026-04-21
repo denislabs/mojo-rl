@@ -186,8 +186,15 @@ struct SACConfig[
     BS: Int = 64,
     actor_lr: Float64 = 0.0003,
     critic_lr: Float64 = 0.0003,
+    action_scale: Float64 = 1.0,
 ](OffPolicyConfig):
-    """SAC: stochastic actor (Parallel mean+log_std), twin critics, no target actor."""
+    """SAC: stochastic actor (Parallel mean+log_std), twin critics, no target actor.
+
+    action_scale: Comptime output scale for the actor (a = action_scale * tanh(z)).
+      Must match the runtime action_scale passed to agent __init__. Baked into
+      the autodiff graph (AutodiffMaxEntLoss → RSample) so the critic sees
+      actions on the same scale as the replay buffer.
+    """
 
     comptime NAME: String = "SAC"
     comptime obs_dim: Int = Self.OBS
@@ -220,7 +227,7 @@ struct SACConfig[
     comptime Schedule = DelayedActorOnly
     comptime TargetAction = ReparamTarget
     comptime TargetValue = EntropicTwinQTarget
-    comptime ActorLoss = AutodiffMaxEntLoss[]
+    comptime ActorLoss = AutodiffMaxEntLoss[action_scale=Self.action_scale]
 
 
 # AutodiffSACConfig is now just an alias for SACConfig (which uses autodiff by default)

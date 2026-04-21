@@ -2,7 +2,7 @@
 
 Implements the reparameterization trick used in SAC:
     z = mean + exp(log_std) * noise
-    action = tanh(z)
+    action = tanh(z) * action_scale
     log_prob = sum_j(gaussian_log_prob_j - squash_correction_j)
 
 This replaces ~100 lines of manual backward code in actor_loss.mojo by
@@ -15,13 +15,21 @@ Input layout:  [BATCH, 2 * action_dim] = [mean || tanh(raw_log_std)]
 Output layout: [BATCH, action_dim + 1] = [action || log_prob]
   (log_prob is the summed log probability per sample, scalar per row)
 
-Cache layout:  [BATCH, 3 * action_dim] = [action || noise || log_std_rescaled]
+Cache layout:  [BATCH, 3 * action_dim] = [tanh_z || noise || log_std_rescaled]
+  (tanh_z is the UNSCALED tanh(z), not action_scale * tanh(z), so that the
+   backward can reuse it directly for the entropy term 2*tanh_z and the
+   squash Jacobian 1 - tanh_z²)
 
 The affine rescaling of log_std is handled internally:
     log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (tanh_val + 1)
 
 On backward, the chain rule through this rescaling is automatic — no manual
 AFFINE_SCALE needed by the caller.
+
+action_scale: Output scale for the action (action = action_scale * tanh(z)).
+  Default 1.0 matches the original behavior. When != 1.0, the backward
+  chain-rules an extra action_scale factor through the tanh so the critic
+  sees a consistent action distribution.
 """
 
 from ...constants import dtype, TPB
@@ -53,6 +61,7 @@ struct RSampleOp[
     action_dim: Int,
     log_std_min: Float64 = -5.0,
     log_std_max: Float64 = 2.0,
+    action_scale: Float64 = 1.0,
 ](DiffOp):
     """Reparameterized sampling with tanh squashing.
 
@@ -63,7 +72,7 @@ struct RSampleOp[
     IN_DIM = 2 * action_dim  (mean || tanh(raw_log_std))
     OUT_DIM = action_dim + 1 (action || log_prob)
     PARAM_SIZE = 0           (no learnable parameters)
-    CACHE_SIZE = 3 * action_dim (action, noise, rescaled log_std)
+    CACHE_SIZE = 3 * action_dim (unscaled tanh_z, noise, rescaled log_std)
     """
 
     comptime OP_ID: Int = OpID.USER_DEFINED._value + 1
@@ -129,10 +138,10 @@ struct RSampleOp[
                 var std = exp(ls)
                 var z = mean + std * noise
 
-                # Tanh squashing
+                # Tanh squashing (unscaled tanh(z), used for backward + log_prob)
                 var exp_z = exp(z)
                 var exp_neg_z = exp(-z)
-                var action = (exp_z - exp_neg_z) / (exp_z + exp_neg_z)
+                var tanh_z = (exp_z - exp_neg_z) / (exp_z + exp_neg_z)
 
                 # Gaussian log probability
                 var log_gaussian = -0.5 * (LOG_2PI + 2.0 * ls + noise * noise)
@@ -145,11 +154,11 @@ struct RSampleOp[
                 )
                 total_log_prob += log_gaussian - squash_correction
 
-                # Write output
-                output[b, j] = Scalar[dtype](action)
+                # Write output (SCALED action)
+                output[b, j] = Scalar[dtype](tanh_z * Self.action_scale)
 
-                # Cache for backward
-                cache[b, j] = Scalar[dtype](action)  # action
+                # Cache UNSCALED tanh_z for backward (entropy + squash Jacobian)
+                cache[b, j] = Scalar[dtype](tanh_z)
                 cache[b, A + j] = Scalar[dtype](noise)  # noise
                 cache[b, 2 * A + j] = Scalar[dtype](ls)  # rescaled log_std
 
@@ -195,17 +204,20 @@ struct RSampleOp[
 
             for j in range(A):
                 var ga = Float64(rebind[Scalar[dtype]](grad_output[b, j]))
+                # Cache stores UNSCALED tanh_z; downstream ops receive
+                # action = action_scale * tanh_z, so chain-rule ga through
+                # the scale (ga is dL/d(scaled_action)).
                 var a = Float64(rebind[Scalar[dtype]](cache[b, j]))
                 var noise = Float64(rebind[Scalar[dtype]](cache[b, A + j]))
                 var ls = Float64(rebind[Scalar[dtype]](cache[b, 2 * A + j]))
 
                 var std = exp(ls)
 
-                # d(action)/d(z) = 1 - tanh²(z) = 1 - action²
-                var dtanh_dz = 1.0 - a * a
+                # d(scaled_action)/d(z) = action_scale * (1 - tanh²(z))
+                var dtanh_dz = (1.0 - a * a) * Self.action_scale
 
                 # d(log_prob)/d(z) from stable squash correction
-                # d/dz[-log(1 - tanh²(z))] = 2·tanh(z) = 2·a
+                # d/dz[-log(1 - tanh²(z))] = 2·tanh(z) = 2·a  (scale-independent)
                 var dlogprob_dz = 2.0 * a
 
                 # Total gradient w.r.t. z
@@ -286,7 +298,7 @@ struct RSampleOp[
 
             var std = exp(ls)
             var z = mean + std * noise
-            var action = tanh(z)
+            var tanh_z = tanh(z)
 
             # Log probability
             var log_gaussian = Scalar[dtype](-0.5) * (
@@ -301,8 +313,9 @@ struct RSampleOp[
             )
             total_log_prob += log_gaussian - squash_correction
 
-            output[b, j] = action
-            cache[b, j] = action
+            # Output SCALED action; cache UNSCALED tanh_z for backward
+            output[b, j] = tanh_z * Scalar[dtype](Self.action_scale)
+            cache[b, j] = tanh_z
             cache[b, A + j] = noise
             cache[b, 2 * A + j] = ls
 
@@ -392,6 +405,9 @@ struct RSampleOp[
 
         var ga = rebind[Scalar[dtype]](grad_output[b, j])
         var glp = rebind[Scalar[dtype]](grad_output[b, A])
+        # Cache stores UNSCALED tanh_z; ga is dL/d(scaled_action) where
+        # scaled_action = action_scale * tanh_z, so we chain-rule action_scale
+        # through the tanh derivative below.
         var a = rebind[Scalar[dtype]](cache[b, j])
         var noise = rebind[Scalar[dtype]](cache[b, A + j])
         var ls = rebind[Scalar[dtype]](cache[b, 2 * A + j])
@@ -399,11 +415,11 @@ struct RSampleOp[
         var std = exp(ls)
         var one = Scalar[dtype](1.0)
 
-        # d(action)/d(z) = 1 - action²
-        var dtanh_dz = one - a * a
+        # d(scaled_action)/d(z) = action_scale * (1 - tanh_z²)
+        var dtanh_dz = (one - a * a) * Scalar[dtype](Self.action_scale)
 
         # d(log_prob)/d(z) from stable squash correction
-        # d/dz[-log(1 - tanh²(z))] = 2·tanh(z) = 2·a
+        # d/dz[-log(1 - tanh²(z))] = 2·tanh(z) = 2·a (scale-independent)
         var dlogprob_dz = Scalar[dtype](2.0) * a
 
         var grad_z = ga * dtanh_dz + glp * dlogprob_dz

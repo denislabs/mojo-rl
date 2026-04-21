@@ -35,7 +35,10 @@ comptime RSample[
     action_dim: Int,
     log_std_min: Float64 = -5.0,
     log_std_max: Float64 = 2.0,
-] = AutoDiffChain[RSampleOp[action_dim, log_std_min, log_std_max]]
+    action_scale: Float64 = 1.0,
+] = AutoDiffChain[
+    RSampleOp[action_dim, log_std_min, log_std_max, action_scale]
+]
 
 comptime Min[dim: Int] = AutoDiffChain[MinOp[dim]]
 
