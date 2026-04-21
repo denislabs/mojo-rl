@@ -78,8 +78,8 @@ def main() raises:
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
-            alpha=0.1,
-            auto_alpha=True,
+            alpha=0.2,
+            auto_alpha=False,
             alpha_lr=0.001,
             target_entropy=-2.0,
             checkpoint_every=100_000,
@@ -99,7 +99,7 @@ def main() raises:
         print("    - Critic LR: 1e-3")
         print("    - Alpha LR: 1e-3")
         print("    - Tau (soft update): 0.005")
-        print("    - Initial alpha: 0.1 (auto-tuned)")
+        print("    - Alpha: 0.2 (FIXED — sanity test)")
         print("    - Target entropy: -" + String(ACTION_DIM))
         print("    - Warmup steps: " + String(WARMUP_STEPS))
         print()
