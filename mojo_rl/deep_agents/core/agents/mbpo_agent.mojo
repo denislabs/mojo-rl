@@ -151,7 +151,13 @@ struct DynamicsEnsemble[
         for i in range(Self.num_elites):
             self.elite_indices.append(i)
 
-        self.max_logvar = 0.5
+        # Diagnostic tightening: reference inits max=+0.5 but learns it down to
+        # roughly [-1, -2] via L2 reg. We don't yet implement learnable bounds
+        # + L2 reg, so approximate the converged value with a tighter fixed
+        # start. max=-2 → max std ≈ 0.37 in raw delta_obs space (reasonable
+        # for HalfCheetah where per-step deltas are small). 0.5 → std ≈ 1.28
+        # was too loose and let synthetic rollouts drift far out of dist.
+        self.max_logvar = -2.0
         self.min_logvar = -10.0
 
     def __init__(out self, *, deinit take: Self):
@@ -621,7 +627,13 @@ struct GPUDynamicsEnsemble[
         for i in range(Self.num_elites):
             self.elite_indices.append(i)
 
-        self.max_logvar = 0.5
+        # Diagnostic tightening: reference inits max=+0.5 but learns it down to
+        # roughly [-1, -2] via L2 reg. We don't yet implement learnable bounds
+        # + L2 reg, so approximate the converged value with a tighter fixed
+        # start. max=-2 → max std ≈ 0.37 in raw delta_obs space (reasonable
+        # for HalfCheetah where per-step deltas are small). 0.5 → std ≈ 1.28
+        # was too loose and let synthetic rollouts drift far out of dist.
+        self.max_logvar = -2.0
         self.min_logvar = -10.0
 
         # Training buffers
@@ -914,7 +926,7 @@ struct GPUDynamicsEnsemble[
         max_epochs: Int = 100,
         max_epochs_since_update: Int = 5,
         holdout_check_every: Int = 5,
-    ) raises:
+    ) raises -> Float64:
         """Train all ensemble members on data from GPU replay buffer.
 
         For each member:
@@ -935,7 +947,7 @@ struct GPUDynamicsEnsemble[
 
         var n_data = buffer.size
         if n_data < TB:
-            return
+            return 0.0
 
         var n_batches_per_epoch = n_data // TB
         if n_batches_per_epoch < 1:
@@ -1155,6 +1167,12 @@ struct GPUDynamicsEnsemble[
         self.elite_indices.clear()
         for i in range(Self.num_elites):
             self.elite_indices.append(sorted_indices[i])
+
+        # Return mean holdout loss across elites for diagnostic logging.
+        var elite_holdout_sum: Float64 = 0.0
+        for i in range(Self.num_elites):
+            elite_holdout_sum += holdout_losses[self.elite_indices[i]]
+        return elite_holdout_sum / Float64(Self.num_elites)
 
 
 # =============================================================================

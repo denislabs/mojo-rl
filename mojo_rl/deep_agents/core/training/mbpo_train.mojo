@@ -546,9 +546,13 @@ def run_mbpo_train_gpu[
 
         if total_steps >= next_model_train and total_steps >= warmup_steps:
             # GPU dynamics training on REAL data only (paper design)
-            gpu_dynamics.train_on_buffer[MBPOAgent[Config, L].GPU_BUF_CAP](
-                ctx, gpu_state.buffer,
-            )
+            var mean_holdout = gpu_dynamics.train_on_buffer[
+                MBPOAgent[Config, L].GPU_BUF_CAP
+            ](ctx, gpu_state.buffer)
+            if logger:
+                logger[].log_scalar(
+                    "dyn_holdout_loss", mean_holdout, total_steps
+                )
             agent.update_rollout_length(epoch)
             epoch += 1
 
