@@ -76,13 +76,13 @@ def main() raises:
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
-            gamma=0.9999,
+            gamma=0.999,
             tau=0.001,
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
             alpha_lr=0.001,
-            target_entropy=-1.0,
+            target_entropy=-2.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_swimmer.ckpt",
             use_ere=True,
@@ -101,11 +101,12 @@ def main() raises:
         print("    - Actor LR: 3e-4")
         print("    - Critic LR: 1e-3")
         print("    - Alpha LR: 1e-3")
-        print("    - Gamma: 0.9999 (long-horizon credit assignment)")
+        print("    - Gamma: 0.999 (matches 1000-step episode horizon)")
         print("    - Tau (soft update): 0.001")
         print("    - Alpha: auto-tuned")
         print("    - ERE: enabled (eta=0.996)")
-        print("    - Target entropy: -1.0")
+        print("    - Target entropy: -2.0")
+        print("    - Reward scale: 5.0")
         print("    - Warmup steps: " + String(WARMUP_STEPS))
         print()
 
@@ -152,6 +153,7 @@ def main() raises:
                 print_every=50_000,
                 logger=UnsafePointer(to=logger),
                 diag_every=1_000,
+                reward_scale=5.0,
             )
 
             var end_time = perf_counter_ns()
