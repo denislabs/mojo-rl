@@ -85,6 +85,8 @@ def main() raises:
             max_grad_norm=0.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_hopper.ckpt",
+            use_ere=True,
+            ere_eta=0.996,
         )
 
         print("Environment: Hopper Continuous (GPU)")
