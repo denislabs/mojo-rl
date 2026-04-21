@@ -464,6 +464,9 @@ def run_mbpo_train_gpu[
         )
 
         # GPU SAC gradient steps
+        # Soft target update must run per gradient step (matches SAC GPU loop).
+        # Calling it once per env iteration makes targets update at 1/sac_updates_per_step
+        # the intended rate and causes Q-value divergence with synthetic data.
         if gpu_state.gpu_buffer_is_ready():
             if synth_buffer.is_ready[SYNTH_BS]():
                 # Mixed sampling: REAL_BS real + SYNTH_BS synthetic
@@ -473,6 +476,7 @@ def run_mbpo_train_gpu[
                             ctx, gpu_state, synth_buffer,
                             s_real_idx, s_synth_idx,
                         )
+                        agent.soft_update_targets_gpu(ctx, gpu_state)
                         ctx.synchronize()
                         var graph = CUDAGraph(ctx)
                         graph.begin_capture()
@@ -480,6 +484,7 @@ def run_mbpo_train_gpu[
                             ctx, gpu_state, synth_buffer,
                             s_real_idx, s_synth_idx,
                         )
+                        agent.soft_update_targets_gpu(ctx, gpu_state)
                         graph.end_capture()
                         if verbose:
                             print(
@@ -500,11 +505,12 @@ def run_mbpo_train_gpu[
                             ctx, gpu_state, synth_buffer,
                             s_real_idx, s_synth_idx,
                         )
+                        agent.soft_update_targets_gpu(ctx, gpu_state)
             else:
                 # No synthetic data yet: train on 100% real (like CPU path)
                 for _ in range(agent.sac_updates_per_step):
                     agent.do_gpu_train_step_real_only(ctx, gpu_state)
-            agent.soft_update_targets_gpu(ctx, gpu_state)
+                    agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += agent.sac_updates_per_step
 
         # Periodic dynamics training
