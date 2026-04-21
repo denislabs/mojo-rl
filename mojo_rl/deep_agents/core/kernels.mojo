@@ -1931,13 +1931,17 @@ def sac_rsample_with_cache_kernel[
         var act = tanh(z)
         actions[b, a] = act
 
-        # Log-prob contribution from this dimension (SB3 formula)
+        # Log-prob contribution from this dimension
         # Gaussian log-prob
         var log_gaussian = -Scalar[dtype](0.5) * eps * eps - half_log_2pi - ls
-        # Squashing correction: -log(1 - tanh²(z) + eps)
-        # Matches Stable-Baselines3 / CleanRL epsilon approach
-        var one_minus_a2 = one - act * act + Scalar[dtype](1e-6)
-        lp += log_gaussian - log(one_minus_a2)
+        # Squashing correction (numerically stable form)
+        # log(1 - tanh²(z)) = 2·(log(2) - |z| - log(1 + exp(-2|z|)))
+        var abs_z = z if z >= Scalar[dtype](0.0) else -z
+        var squash_correction = Scalar[dtype](2.0) * (
+            Scalar[dtype](0.6931471805599453) - abs_z
+            - log(one + exp(Scalar[dtype](-2.0) * abs_z))
+        )
+        lp += log_gaussian - squash_correction
 
     log_probs[b] = lp
 
