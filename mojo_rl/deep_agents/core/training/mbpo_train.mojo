@@ -314,6 +314,25 @@ def run_mbpo_train_gpu[
     gpu_state.actor.upload_from(cpu_state.actor, ctx)
     gpu_state.critics.upload_from(cpu_state.critics, ctx)
 
+    # Upload SAC alpha state to GPU scalars (matches SAC's upload_to_gpu).
+    # Without this, gpu_scalars is zero-filled: GPU_ALPHA=0 → alpha kernel
+    # sets alpha=exp(log_alpha)=exp(0)=1.0 (not the intended 0.2), and
+    # GPU_ALPHA_LR=0 freezes alpha there. With saturated tanh actions,
+    # log_pi → -∞ and TD target = r + γ*(min_Q - α*log_pi) → +∞,
+    # blowing Q-values to 10^30.
+    comptime GPUStateT = MBPOAgent[Config, L].GPUStateType
+    var scalars_host = ctx.enqueue_create_host_buffer[dtype](
+        GPUStateT.GPU_SCALARS_SIZE
+    )
+    scalars_host[GPUStateT.GPU_ALPHA] = Scalar[dtype](agent.alpha)
+    scalars_host[GPUStateT.GPU_LOG_ALPHA] = Scalar[dtype](agent.log_alpha)
+    scalars_host[GPUStateT.GPU_ADAM_M] = Scalar[dtype](agent.alpha_adam_m)
+    scalars_host[GPUStateT.GPU_ADAM_V] = Scalar[dtype](agent.alpha_adam_v)
+    scalars_host[GPUStateT.GPU_ADAM_T] = Scalar[dtype](agent.alpha_adam_t)
+    scalars_host[GPUStateT.GPU_TARGET_ENT] = Scalar[dtype](agent.target_entropy)
+    scalars_host[GPUStateT.GPU_ALPHA_LR] = Scalar[dtype](agent.alpha_lr)
+    ctx.enqueue_copy(gpu_state.gpu_scalars, scalars_host)
+
     # Synthetic replay buffer (separate from real buffer in gpu_state)
     var synth_buffer = GPUReplayBuffer[
         Config.SYNTH_CAPACITY, Config.obs_dim, Config.action_dim
@@ -553,10 +572,16 @@ def run_mbpo_train_gpu[
         if (
             verbose or (logger and logger[].is_active())
         ) and total_steps >= next_print:
-            # Download GPU-side episode stats
+            # Download GPU-side episode stats + alpha for logging
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+            var alpha_host = ctx.enqueue_create_host_buffer[dtype](
+                GPUStateT.GPU_SCALARS_SIZE
+            )
+            ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
             ctx.synchronize()
+            agent.alpha = Float64(alpha_host[GPUStateT.GPU_ALPHA])
+            agent.log_alpha = Float64(alpha_host[GPUStateT.GPU_LOG_ALPHA])
 
             var raw_count = Float64(host_episode_count[0])
             var recent_count = Int(raw_count) if raw_count > 0.0 and raw_count == raw_count else 0
