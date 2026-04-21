@@ -36,7 +36,8 @@ comptime ACTION_DIM = 2  # 2 rotational motors
 comptime HIDDEN_DIM = 128
 
 # Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 400_000
+# ERE test: use smaller buffer (where we know divergence hits at 2×CAPACITY without ERE)
+comptime BUFFER_CAPACITY = 300_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
 
@@ -79,11 +80,13 @@ def main() raises:
             tau=0.005,
             action_scale=1.0,
             alpha=0.2,
-            auto_alpha=True,
+            auto_alpha=False,
             alpha_lr=0.001,
             target_entropy=-2.0,
             checkpoint_every=100_000,
             checkpoint_path="sac_swimmer.ckpt",
+            use_ere=True,
+            ere_eta=Float32(0.996),
         )
 
         print("Environment: Swimmer Continuous (GPU)")
@@ -100,6 +103,7 @@ def main() raises:
         print("    - Alpha LR: 1e-3")
         print("    - Tau (soft update): 0.005")
         print("    - Alpha: 0.2 (FIXED — sanity test)")
+        print("    - ERE: enabled (eta=0.996)")
         print("    - Target entropy: -" + String(ACTION_DIM))
         print("    - Warmup steps: " + String(WARMUP_STEPS))
         print()

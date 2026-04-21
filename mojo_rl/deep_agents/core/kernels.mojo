@@ -620,6 +620,106 @@ def sample_indices_kernel[
     indices[i] = Scalar[DType.int32](idx)
 
 
+# =============================================================================
+# ERE (Emphasizing Recent Experience) — Wang & Ross 2019
+# =============================================================================
+# Sampler biases toward the most recent c_k transitions, where c_k decays each
+# gradient step within a K_MAX-cycle. Reduces to uniform sampling when c_k
+# reaches full buffer size.
+# =============================================================================
+
+
+@always_inline
+def ere_update_kernel[
+    dtype: DType,
+    K_MAX: Int,
+    C_MIN: Int,
+](
+    ere_state: LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin],
+    buffer_size: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    ere_c: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    eta: Scalar[dtype],
+):
+    """Update ERE state and compute current c_k. Launch with grid=(1,), block=(1,).
+
+    ere_state layout: [k (float counter), eta_pow_k].
+    Each call:
+      1. c_k = max(C_MIN, int(buffer_size * eta_pow_k))
+      2. k += 1; eta_pow_k *= eta; wrap at K_MAX.
+    Writes c_k to `ere_c` which the sampler reads.
+    """
+    if Int(thread_idx.x) != 0:
+        return
+
+    var k = ere_state.ptr[0]
+    var eta_pow_k = ere_state.ptr[1]
+    var buf_sz = Scalar[dtype](buffer_size.ptr[0])
+
+    # Compute c_k = max(C_MIN, floor(buf_sz * eta_pow_k))
+    var c_val = Int(buf_sz * eta_pow_k)
+    if c_val < C_MIN:
+        c_val = C_MIN
+    if c_val > Int(buf_sz):
+        c_val = Int(buf_sz)
+    ere_c.ptr[0] = Scalar[DType.int32](c_val)
+
+    # Advance k; wrap at K_MAX (reset eta_pow_k to 1).
+    k += Scalar[dtype](1.0)
+    eta_pow_k *= eta
+    if k >= Scalar[dtype](K_MAX):
+        k = Scalar[dtype](0.0)
+        eta_pow_k = Scalar[dtype](1.0)
+    ere_state.ptr[0] = k
+    ere_state.ptr[1] = eta_pow_k
+
+
+@always_inline
+def sample_indices_ere_kernel[
+    dtype: DType,
+    SAMPLE_SIZE: Int,
+    CAPACITY: Int,
+](
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(SAMPLE_SIZE), MutAnyOrigin
+    ],
+    buffer_size: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    write_idx: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    ere_c: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+):
+    """ERE sampler: sample uniformly from the most recent min(c_k, buf_size) transitions.
+
+    For each thread:
+        c     = min(ere_c, buffer_size)
+        off   = floor(u * c)                # u ~ Uniform[0, 1)
+        idx   = (write_idx - c + off + CAPACITY) % CAPACITY
+
+    When c == buffer_size, the distribution is identical to uniform over the
+    whole buffer (just rotated), so this kernel is safe to use when ERE is
+    effectively off (c_k == buf_size).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SAMPLE_SIZE:
+        return
+
+    var rng_seed = UInt64(rng_counter.ptr[0])
+    var buf_sz = buffer_size.ptr[0]
+    var c = ere_c.ptr[0]
+    if c > buf_sz:
+        c = buf_sz
+    var w_idx = write_idx.ptr[0]
+
+    var philox = PhiloxRandom(
+        seed=rng_seed + UInt64(i),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var u: Scalar[dtype] = Scalar[dtype](rand_vals[0])
+    var offset = Int(u * Scalar[dtype](c))
+    var idx = (Int(w_idx) - Int(c) + offset + CAPACITY) % CAPACITY
+    indices[i] = Scalar[DType.int32](idx)
+
+
 @always_inline
 def gather_batch_kernel[
     dtype: DType,
