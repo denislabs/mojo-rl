@@ -87,6 +87,8 @@ def main() raises:
             target_entropy=-1.0,
             checkpoint_every=500_000,
             checkpoint_path="sac_humanoid.ckpt",
+            use_ere=True,
+            ere_eta=0.996,
         )
 
         print("Environment: Humanoid Continuous (GPU)")
@@ -185,13 +187,9 @@ def main() raises:
 
             var final_avg = metrics.mean_reward_last_n(100)
             if final_avg > 5000.0:
-                print(
-                    "EXCELLENT: Humanoid is running! (avg reward > 5000)"
-                )
+                print("EXCELLENT: Humanoid is running! (avg reward > 5000)")
             elif final_avg > 2000.0:
-                print(
-                    "SUCCESS: Humanoid learned to walk! (avg reward > 2000)"
-                )
+                print("SUCCESS: Humanoid learned to walk! (avg reward > 2000)")
             elif final_avg > 500.0:
                 print(
                     "GOOD PROGRESS: Humanoid is learning locomotion"
