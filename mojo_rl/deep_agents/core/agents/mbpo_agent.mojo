@@ -1644,6 +1644,16 @@ struct MBPOAgent[
     # spikes in the TD target (from tanh saturation) drive Q-values to 10^7+.
     var max_grad_norm: Float64
 
+    # ERE (Emphasizing Recent Experience) — biases sampling toward the most
+    # recent transitions. Not in the MBPO paper, but empirically fixes the
+    # Q-explosion pattern that triggers when a high-UTD SAC loop trains
+    # against a rapidly-cycling replay buffer. Applied to BOTH the real
+    # buffer (inside gpu_state) and the synthetic buffer. Disabled by
+    # default to stay paper-faithful; enable for low-env-count runs
+    # (TRAIN_N_ENVS ≤ 8) where UTD is high.
+    var use_ere: Bool
+    var ere_eta: Float32
+
     # Checkpointing
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -1670,6 +1680,8 @@ struct MBPOAgent[
         real_ratio: Float64 = 0.05,
         sac_updates_per_step: Int = 20,
         max_grad_norm: Float64 = 0.0,  # Opt-in; reference MBPO uses no clipping
+        use_ere: Bool = False,
+        ere_eta: Float32 = Float32(0.996),
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
@@ -1723,6 +1735,8 @@ struct MBPOAgent[
         self.real_ratio = rr_from_comptime
         self.sac_updates_per_step = sac_updates_per_step
         self.max_grad_norm = max_grad_norm
+        self.use_ere = use_ere
+        self.ere_eta = ere_eta
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path

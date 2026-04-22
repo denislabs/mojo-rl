@@ -353,6 +353,17 @@ def run_mbpo_train_gpu[
     var synth_buffer = GPUReplayBuffer[
         Config.SYNTH_CAPACITY, Config.obs_dim, Config.action_dim
     ](ctx)
+
+    # ERE (Emphasizing Recent Experience): opt-in via MBPOAgent(use_ere=True).
+    # Applied to BOTH real and synth buffers. Reference MBPO doesn't use ERE,
+    # but it empirically closes the Q-explosion failure mode we hit at high
+    # UTD (low TRAIN_N_ENVS) where SAC over-fits to a rapidly-cycling
+    # synthetic buffer. Enable idempotently BEFORE the CUDA graph captures
+    # the sampling kernel — once captured, the ere-vs-uniform branch in
+    # buffer.sample is baked into the graph.
+    if agent.use_ere:
+        gpu_state.buffer.enable_ere(agent.ere_eta)
+        synth_buffer.enable_ere(agent.ere_eta)
     # Scratch index buffers for mixed sampling
     comptime REAL_BS = MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT].REAL_BS
     comptime SYNTH_BS = MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT].SYNTH_BS

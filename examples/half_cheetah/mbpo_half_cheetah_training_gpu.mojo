@@ -112,6 +112,11 @@ def main() raises:
             num_rollouts_per_step=100_000,  # Reference: 100K per dynamics training
             real_ratio=0.05,
             sac_updates_per_step=40,  # Reference: n_train_repeat=40
+            # ERE (Emphasizing Recent Experience) on both real + synth buffers.
+            # Not paper-faithful, but closes the Q-explosion gap at high UTD
+            # (low TRAIN_N_ENVS). Safe to keep on at TRAIN_N_ENVS=32 too.
+            use_ere=True,
+            ere_eta=Float32(0.996),
             checkpoint_every=50_000,
             checkpoint_path="mbpo_half_cheetah",
         )
