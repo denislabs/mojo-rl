@@ -71,7 +71,7 @@ comptime MBPOHalfCheetahConfig = DefaultMBPOConfig[
     NUM_ELITES,
     DYN_HIDDEN,
     0.0003,  # actor_lr
-    0.001,  # critic_lr (CleanRL default)
+    0.0003,  # critic_lr (MBPO paper; 1e-3 over-shoots at high UTD)
     0.001,  # model_lr
     NeverTerminate,  # HalfCheetah has no termination
 ]
@@ -95,14 +95,14 @@ def main() raises:
 
     with DeviceContext() as ctx:
         var agent = MBPOAgent[
-            MBPOHalfCheetahConfig, RemoteLogger, TRAIN_N_ENVS=16
+            MBPOHalfCheetahConfig, RemoteLogger, TRAIN_N_ENVS=4
         ](
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.001,
+            alpha_lr=0.0003,
             target_entropy=-3.0,  # Reference uses -3 (not -ACTION_DIM)
             model_train_freq=250,
             rollout_min_length=1,
@@ -134,9 +134,9 @@ def main() raises:
         )
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 1e-3")
+        print("    - Critic LR: 3e-4")
         print("    - Model LR: 1e-3")
-        print("    - Alpha LR: 1e-3 (auto-tuned)")
+        print("    - Alpha LR: 3e-4 (auto-tuned)")
         print("    - Tau: 0.005")
         print("    - Model train freq: 250 steps")
         print("    - Rollout length: 1 (HalfCheetah)")
@@ -166,7 +166,7 @@ def main() raises:
         logger.set_config("dyn_hidden", String(DYN_HIDDEN))
         logger.set_config("ensemble_size", String(NUM_ENSEMBLE))
         logger.set_config("actor_lr", "3e-4")
-        logger.set_config("critic_lr", "1e-3")
+        logger.set_config("critic_lr", "3e-4")
         logger.set_config("model_lr", "1e-3")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("model_train_freq", "250")
