@@ -1858,6 +1858,25 @@ struct AutoFused[*OPS: DiffOp](Model):
                     Self.op_types[i].OUT_DIM,
                 ](op_params)
 
+    @staticmethod
+    def zero_biases[dtype: DType = DType.float32](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Opt-in bias zero-init (matches Keras/TF `bias_initializer='zeros'`).
+
+        Called AFTER `initialize_params` to overwrite BiasAdd op slots with
+        zeros while leaving weight slots untouched. Not invoked by default;
+        callers opt in (currently MBPO only — other agents keep whatever
+        non-zero bias their chosen initializer produces).
+        """
+        comptime for i in range(Self.N):
+            comptime if Self.op_types[i].OP_ID == OpID.BIAS_ADD._value:
+                var base = Self._param_offset_raw[i]()
+                for j in range(Self.op_types[i].PARAM_SIZE):
+                    params.ptr[base + j] = Scalar[dtype](0.0)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
