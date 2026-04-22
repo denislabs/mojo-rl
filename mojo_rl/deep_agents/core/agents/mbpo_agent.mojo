@@ -1462,7 +1462,11 @@ struct MBPOCPUState[
             Self.Config.CriticOpt,
             Self.Config.NUM_CRITICS,
         ]()
-        self.critics.initialize[Kaiming[]]()
+        # Match reference MBPO: Keras `Dense` default → Xavier uniform for
+        # both actor and critic. Kaiming (which we used previously) has ~1.4×
+        # wider init and leads to 2–3× larger initial Q-magnitudes, which
+        # exacerbates the high-UTD Q-explosion failure mode.
+        self.critics.initialize[Xavier[]]()
         self.real_buffer = HeapReplayBuffer[
             Self.Config.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
         ]()

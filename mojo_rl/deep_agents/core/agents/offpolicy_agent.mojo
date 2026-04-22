@@ -154,7 +154,7 @@ struct GenericCPUState[
         self.critics = CriticGroup[
             Self.CriticModel, Self.CriticOpt, Self.num_critics
         ]()
-        self.critics.initialize[Kaiming[]]()
+        self.critics.initialize[Xavier[]]()
         self.buffer = HeapReplayBuffer[
             Self.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
         ]()
@@ -2235,14 +2235,9 @@ struct GenericOffPolicyAgent[
                 comptime if Self.Config.Explore.IS_STOCHASTIC:
                     # SAC mean → tanh → scale
                     var mean = actor_out[idx, j]
-                    var tanh_a = (
-                        Scalar[dtype](2.0)
-                        / (
-                            Scalar[dtype](1.0)
-                            + exp(Scalar[dtype](-2.0) * mean)
-                        )
-                        - Scalar[dtype](1.0)
-                    )
+                    var tanh_a = Scalar[dtype](2.0) / (
+                        Scalar[dtype](1.0) + exp(Scalar[dtype](-2.0) * mean)
+                    ) - Scalar[dtype](1.0)
                     actions[idx, j] = tanh_a * action_scale
                 else:
                     actions[idx, j] = actor_out[idx, j] * action_scale
@@ -2400,9 +2395,7 @@ struct GenericOffPolicyAgent[
                         break
 
             # Auto-reset done environments
-            EnvType.selective_reset_kernel_gpu[
-                N_EVAL_ENVS, EnvType.STATE_SIZE
-            ](
+            EnvType.selective_reset_kernel_gpu[N_EVAL_ENVS, EnvType.STATE_SIZE](
                 ctx,
                 env_states_buf,
                 dones_buf,

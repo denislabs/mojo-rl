@@ -115,8 +115,8 @@ def main() raises:
             # ERE (Emphasizing Recent Experience) on both real + synth buffers.
             # Not paper-faithful, but closes the Q-explosion gap at high UTD
             # (low TRAIN_N_ENVS). Safe to keep on at TRAIN_N_ENVS=32 too.
-            use_ere=True,
-            ere_eta=Float32(0.996),
+            # use_ere=True,
+            # ere_eta=0.996,
             checkpoint_every=50_000,
             checkpoint_path="mbpo_half_cheetah",
         )
