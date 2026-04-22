@@ -3871,6 +3871,151 @@ def dynamics_sample_learnable_kernel[
             next_obs[b, d - 1] = obs[b, d - 1] + sample
 
 
+@always_inline
+def sample_elite_assignment_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    NUM_ELITES: Int,
+](
+    out_slot: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+):
+    """Per-sample random elite-slot assignment for MBPO rollouts.
+
+    Matches softlearning fake_env.py:54 (`model_inds = np.random.choice(
+    elite_inds, size=batch_size)`): every batch element picks its own
+    uniform random elite, with replacement. Without this, consecutive
+    synthetic rollouts come from the same elite's biased predictions,
+    which drives critic Q-value oscillations.
+
+    Grid: ceil(BATCH / TPB), block: TPB. One thread per batch element.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var rng_seed = UInt64(rng_counter.ptr[0])
+    var philox = PhiloxRandom(
+        seed=UInt64(rng_seed) + UInt64(b),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var u = Scalar[DType.float32](rand_vals[0])
+    # floor(u * NUM_ELITES) lands in [0, NUM_ELITES).
+    var slot = Int32(u * Float32(NUM_ELITES))
+    if slot < Int32(0):
+        slot = Int32(0)
+    if slot >= Int32(NUM_ELITES):
+        slot = Int32(NUM_ELITES - 1)
+    out_slot[b] = slot
+
+
+@always_inline
+def dynamics_sample_ensemble_learnable_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    OBS_DIM: Int,
+    NUM_ELITES: Int,
+    NUM_ENSEMBLE: Int,
+    PRED_DIM: Int = 1 + OBS_DIM,
+    OUT_DIM: Int = 2 * PRED_DIM,
+](
+    next_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ],
+    sampled_rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    model_output_all: LayoutTensor[
+        dtype, Layout.row_major(NUM_ELITES, BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
+    elite_idx_per_sample: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    elite_member_map: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ELITES), MutAnyOrigin
+    ],
+    max_lv_buf: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENSEMBLE * PRED_DIM), MutAnyOrigin
+    ],
+    min_lv_buf: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENSEMBLE * PRED_DIM), MutAnyOrigin
+    ],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Per-sample random-elite dynamics sampling (matches fake_env.py:54-58).
+
+    For each batch element b:
+      elite_slot  = elite_idx_per_sample[b]   # uniform random in [0, NUM_ELITES)
+      member_idx  = elite_member_map[elite_slot]
+      (mean, raw_logvar) = model_output_all[elite_slot, b, :]
+      (max_lv, min_lv)   = bounds[member_idx * PRED_DIM + d]
+      apply soft clamp + gaussian noise + residual prediction.
+
+    One thread per batch element.
+    Grid: ceil(BATCH / TPB), block: TPB.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var elite_slot = Int(elite_idx_per_sample[b])
+    if elite_slot < 0:
+        elite_slot = 0
+    if elite_slot >= NUM_ELITES:
+        elite_slot = NUM_ELITES - 1
+    var member_idx = Int(elite_member_map[elite_slot])
+    if member_idx < 0 or member_idx >= NUM_ENSEMBLE:
+        member_idx = 0
+
+    for d in range(PRED_DIM):
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(b * PRED_DIM + d),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = rand_vals[0].cast[dtype]()
+        var u2 = rand_vals[1].cast[dtype]()
+        var eps = Scalar[dtype](1e-7)
+        var z = sqrt(Scalar[dtype](-2.0) * log(u1 + eps)) * cos(
+            Scalar[dtype](6.283185307) * u2
+        )
+
+        var mean_val = rebind[Scalar[dtype]](
+            model_output_all[elite_slot, b, d]
+        )
+        var raw_lv = rebind[Scalar[dtype]](
+            model_output_all[elite_slot, b, PRED_DIM + d]
+        )
+        var max_d = rebind[Scalar[dtype]](
+            max_lv_buf[member_idx * PRED_DIM + d]
+        )
+        var min_d = rebind[Scalar[dtype]](
+            min_lv_buf[member_idx * PRED_DIM + d]
+        )
+
+        var a1 = max_d - raw_lv
+        var s1 = Scalar[dtype](0.0)
+        if a1 > Scalar[dtype](20.0):
+            s1 = a1
+        elif a1 > Scalar[dtype](-20.0):
+            s1 = log(Scalar[dtype](1.0) + exp(a1))
+        var lv_inter = max_d - s1
+        var a2 = lv_inter - min_d
+        var s2 = Scalar[dtype](0.0)
+        if a2 > Scalar[dtype](20.0):
+            s2 = a2
+        elif a2 > Scalar[dtype](-20.0):
+            s2 = log(Scalar[dtype](1.0) + exp(a2))
+        var lv = min_d + s2
+        var std = sqrt(exp(lv))
+        var sample = mean_val + std * z
+
+        if d == 0:
+            sampled_rewards[b] = sample
+        else:
+            next_obs[b, d - 1] = obs[b, d - 1] + sample
+
+
 # =============================================================================
 # Dynamics input scaler (MBPO TensorStandardScaler equivalent)
 #

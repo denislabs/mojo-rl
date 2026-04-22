@@ -64,6 +64,8 @@ from mojo_rl.deep_agents.core.kernels import (
     reduce_bounds_grad_l2_adam_kernel,
     dynamics_sample_kernel,
     dynamics_sample_learnable_kernel,
+    dynamics_sample_ensemble_learnable_kernel,
+    sample_elite_assignment_kernel,
     clamp_rewards_kernel,
     sample_indices_kernel,
     increment_rng_counter_kernel,
@@ -613,6 +615,22 @@ struct GPUDynamicsEnsemble[
     var r_alive: DeviceBuffer[dtype]  # [rollout_batch] alive mask for multi-step
     var r_dyn_input: DeviceBuffer[dtype]  # [rollout_batch * DYN_IN]
     var r_dyn_output: DeviceBuffer[dtype]  # [rollout_batch * DYN_OUT]
+    # Stacked outputs of all elite forward passes for one rollout step.
+    # Layout: [num_elites, rollout_batch, DYN_OUT]. Each slot i gets filled
+    # by forwarding elite member `elite_indices[i]` on r_dyn_input.
+    # Enables per-sample random elite selection (matches fake_env.py:54).
+    var r_dyn_output_all: DeviceBuffer[dtype]
+    # Per-batch random elite-slot index in [0, num_elites). Filled by
+    # sample_elite_assignment_kernel each rollout step.
+    var r_elite_idx_per_sample: DeviceBuffer[DType.int32]
+    # Map elite-slot → ensemble-member index. Used by the sample kernel to
+    # look up per-member logvar bounds. Re-uploaded from self.elite_indices
+    # after every train_on_buffer call.
+    var elite_member_buf: DeviceBuffer[DType.int32]
+    var elite_member_host: HostBuffer[DType.int32]
+    # GPU-side RNG counter for rollout elite-slot assignment (independent
+    # from training rng to avoid coupling rollout randomness with training).
+    var r_elite_rng: DeviceBuffer[DType.uint32]
     var r_ws: DeviceBuffer[dtype]  # workspace for rollout forward
 
     # Scratch buffers for sampling from replay buffer
@@ -708,6 +726,25 @@ struct GPUDynamicsEnsemble[
         self.r_alive = ctx.enqueue_create_buffer[dtype](RB)
         self.r_dyn_input = ctx.enqueue_create_buffer[dtype](RB * Self.DYN_IN)
         self.r_dyn_output = ctx.enqueue_create_buffer[dtype](RB * Self.DYN_OUT)
+        self.r_dyn_output_all = ctx.enqueue_create_buffer[dtype](
+            Self.num_elites * RB * Self.DYN_OUT
+        )
+        self.r_elite_idx_per_sample = ctx.enqueue_create_buffer[DType.int32](
+            RB
+        )
+        self.elite_member_buf = ctx.enqueue_create_buffer[DType.int32](
+            Self.num_elites
+        )
+        self.elite_member_host = ctx.enqueue_create_host_buffer[DType.int32](
+            Self.num_elites
+        )
+        # Default elite-slot → member mapping is [0, 1, ..., num_elites-1]
+        # until train_on_buffer reshuffles it.
+        for i in range(Self.num_elites):
+            self.elite_member_host[i] = Int32(i)
+        ctx.enqueue_copy(self.elite_member_buf, self.elite_member_host)
+        self.r_elite_rng = ctx.enqueue_create_buffer[DType.uint32](1)
+        self.r_elite_rng.enqueue_fill(UInt32(0xC0FFEE))
         self.r_ws = ctx.enqueue_create_buffer[dtype](RWS_SIZE)
 
         # Sampling scratch buffers (sized for max of train_batch and rollout_batch)
@@ -767,6 +804,11 @@ struct GPUDynamicsEnsemble[
         self.r_alive = take.r_alive^
         self.r_dyn_input = take.r_dyn_input^
         self.r_dyn_output = take.r_dyn_output^
+        self.r_dyn_output_all = take.r_dyn_output_all^
+        self.r_elite_idx_per_sample = take.r_elite_idx_per_sample^
+        self.elite_member_buf = take.elite_member_buf^
+        self.elite_member_host = take.elite_member_host^
+        self.r_elite_rng = take.r_elite_rng^
         self.r_ws = take.r_ws^
         self.s_obs = take.s_obs^
         self.s_act = take.s_act^
@@ -796,6 +838,7 @@ struct GPUDynamicsEnsemble[
         self.elite_indices.clear()
         for i in range(len(cpu_ensemble.elite_indices)):
             self.elite_indices.append(cpu_ensemble.elite_indices[i])
+        self.sync_elite_member_buf(ctx)
 
     def fit_scaler_gpu[
         BUF_CAP: Int,
@@ -1048,6 +1091,17 @@ struct GPUDynamicsEnsemble[
             grid_dim=(Self.DYN_PRED,),
             block_dim=(1,),
         )
+
+    def sync_elite_member_buf(mut self, ctx: DeviceContext) raises:
+        """Copy self.elite_indices (CPU List) to elite_member_buf (GPU buffer).
+
+        Called after train_on_buffer re-ranks elites. The rollout sample kernel
+        reads elite_member_buf to map elite-slot → ensemble-member-index for
+        per-member logvar bounds lookup.
+        """
+        for i in range(Self.num_elites):
+            self.elite_member_host[i] = Int32(self.elite_indices[i])
+        ctx.enqueue_copy(self.elite_member_buf, self.elite_member_host)
 
     def train_on_buffer[
         BUF_CAP: Int,
@@ -1314,6 +1368,9 @@ struct GPUDynamicsEnsemble[
         self.elite_indices.clear()
         for i in range(Self.num_elites):
             self.elite_indices.append(sorted_indices[i])
+        # Sync elite→member map to GPU so the rollout sample kernel picks up
+        # the new ranking on the next do_model_rollouts_gpu call.
+        self.sync_elite_member_buf(ctx)
 
         # Return mean holdout loss across elites for diagnostic logging.
         var elite_holdout_sum: Float64 = 0.0
@@ -1601,7 +1658,7 @@ struct MBPOAgent[
         num_rollouts_per_step: Int = 400,
         real_ratio: Float64 = 0.05,
         sac_updates_per_step: Int = 20,
-        max_grad_norm: Float64 = 40.0,
+        max_grad_norm: Float64 = 0.0,  # Opt-in; reference MBPO uses no clipping
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
@@ -2273,11 +2330,11 @@ struct MBPOAgent[
         1. Sample rollout_batch start obs from GPU buffer
         2. Forward actor → actions
         3. Concat [obs, action] → dynamics input
-        4. Forward one elite model → [mean, logvar]
-        5. dynamics_sample_kernel → next_obs, reward
-        6. Store transitions in GPU buffer
-        7. Copy next_obs → obs for next step
-        Round-robins through elite models across steps.
+        4. Forward EACH elite model → r_dyn_output_all[slot_i, b, :]
+        5. Pick per-sample random elite slot (matches fake_env.py:54)
+        6. dynamics_sample_ensemble_learnable_kernel → next_obs, reward
+        7. Store transitions in GPU buffer
+        8. Copy next_obs → obs for next step
         """
         comptime RB = gpu_dynamics.rollout_batch
         comptime TPB_VAL = 256
@@ -2285,13 +2342,24 @@ struct MBPOAgent[
         comptime DYN_IN = gpu_dynamics.DYN_IN
         comptime DYN_OUT = gpu_dynamics.DYN_OUT
         comptime DYN_PRED = gpu_dynamics.DYN_PRED
+        comptime NUM_ELITES_C = Self.Config.ELITE_SIZE
+        comptime NUM_ENSEMBLE_C = Self.Config.ENSEMBLE_SIZE
         comptime DYN_IN_BLOCKS = (RB * DYN_IN + TPB_VAL - 1) // TPB_VAL
 
         comptime concat_k = concat_obs_action_kernel[
             dtype, RB, Self.Config.obs_dim, Self.Config.action_dim, DYN_IN
         ]
-        comptime sample_k = dynamics_sample_learnable_kernel[
-            dtype, RB, Self.Config.obs_dim, DYN_PRED, DYN_OUT
+        comptime sample_k = dynamics_sample_ensemble_learnable_kernel[
+            dtype,
+            RB,
+            Self.Config.obs_dim,
+            NUM_ELITES_C,
+            NUM_ENSEMBLE_C,
+            DYN_PRED,
+            DYN_OUT,
+        ]
+        comptime elite_assign_k = sample_elite_assignment_kernel[
+            dtype, RB, NUM_ELITES_C
         ]
 
         var num_elites = len(gpu_dynamics.elite_indices)
@@ -2325,9 +2393,6 @@ struct MBPOAgent[
         gpu_dynamics.r_alive.enqueue_fill(Scalar[dtype](1.0))
 
         for step in range(self.rollout_length):
-            # Select elite model (round-robin)
-            var elite_idx = gpu_dynamics.elite_indices[step % num_elites]
-
             # Forward actor → actions
             # Use Self.OBS (= Config.ActorModel.IN_DIM) for actor LayoutTensors
             var r_obs_t = LayoutTensor[
@@ -2401,25 +2466,60 @@ struct MBPOAgent[
                 block_dim=(TPB_VAL,),
             )
 
-            # Forward dynamics model
+            # Forward dynamics model — run ALL elites so the sample kernel
+            # can pick a per-sample random elite (matches fake_env.py:43
+            # with factored=True, then elite-restricted random selection).
+            # Each elite writes to its own slot in r_dyn_output_all.
             comptime DynNet = Network[
                 Self.Config.DynamicsModel, Self.Config.DynOpt
             ]
-            var r_dyn_out_t = LayoutTensor[
-                dtype,
-                Layout.row_major(RB, Self.Config.DynamicsModel.OUT_DIM),
-                MutAnyOrigin,
-            ](gpu_dynamics.r_dyn_output.unsafe_ptr())
-            var p_dyn = gpu_dynamics.members[elite_idx].params_view()
-            DynNet.forward_gpu[RB](
-                ctx,
-                r_dyn_in_t,
-                r_dyn_out_t,
-                p_dyn,
-                gpu_dynamics.r_ws,
+            for i in range(NUM_ELITES_C):
+                var elite_member_idx = gpu_dynamics.elite_indices[i]
+                var r_dyn_out_slot_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(RB, Self.Config.DynamicsModel.OUT_DIM),
+                    MutAnyOrigin,
+                ](
+                    gpu_dynamics.r_dyn_output_all.unsafe_ptr()
+                    + i * RB * DYN_OUT
+                )
+                var p_dyn = gpu_dynamics.members[
+                    elite_member_idx
+                ].params_view()
+                # r_ws is shared across elites — safe because enqueue is FIFO
+                # on the stream and each forward finishes before the next
+                # starts (both use r_ws, so hardware serializes them).
+                DynNet.forward_gpu[RB](
+                    ctx,
+                    r_dyn_in_t,
+                    r_dyn_out_slot_t,
+                    p_dyn,
+                    gpu_dynamics.r_ws,
+                )
+
+            # Per-batch random elite slot assignment. Fresh RNG counter per
+            # rollout step so consecutive steps in the same batch don't reuse
+            # the same elite pattern.
+            var elite_rng_t = LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ](gpu_dynamics.r_elite_rng.unsafe_ptr())
+            ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
+                elite_rng_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+            var elite_slot_t = LayoutTensor[
+                DType.int32, Layout.row_major(RB), MutAnyOrigin
+            ](gpu_dynamics.r_elite_idx_per_sample.unsafe_ptr())
+            ctx.enqueue_function[elite_assign_k, elite_assign_k](
+                elite_slot_t,
+                elite_rng_t,
+                grid_dim=(RB_BLOCKS,),
+                block_dim=(TPB_VAL,),
             )
 
-            # Sample next_obs and reward from Gaussian
+            # Sample next_obs and reward — per-sample random elite (matches
+            # softlearning fake_env.py:54-58).
             var r_next_t = LayoutTensor[
                 dtype,
                 Layout.row_major(RB, Self.OBS),
@@ -2428,20 +2528,35 @@ struct MBPOAgent[
             var r_rew_t = LayoutTensor[
                 dtype, Layout.row_major(RB), MutAnyOrigin
             ](gpu_dynamics.r_rewards.unsafe_ptr())
-            # Per-member bounds view for this elite (pointer offset).
-            var r_max_lv_t = LayoutTensor[
-                dtype, Layout.row_major(DYN_PRED), MutAnyOrigin
-            ](gpu_dynamics.max_lv_buf.unsafe_ptr() + elite_idx * DYN_PRED)
-            var r_min_lv_t = LayoutTensor[
-                dtype, Layout.row_major(DYN_PRED), MutAnyOrigin
-            ](gpu_dynamics.min_lv_buf.unsafe_ptr() + elite_idx * DYN_PRED)
+            var r_dyn_out_all_t = LayoutTensor[
+                dtype,
+                Layout.row_major(
+                    NUM_ELITES_C, RB, Self.Config.DynamicsModel.OUT_DIM
+                ),
+                MutAnyOrigin,
+            ](gpu_dynamics.r_dyn_output_all.unsafe_ptr())
+            var r_elite_map_t = LayoutTensor[
+                DType.int32, Layout.row_major(NUM_ELITES_C), MutAnyOrigin
+            ](gpu_dynamics.elite_member_buf.unsafe_ptr())
+            var r_max_lv_all_t = LayoutTensor[
+                dtype,
+                Layout.row_major(NUM_ENSEMBLE_C * DYN_PRED),
+                MutAnyOrigin,
+            ](gpu_dynamics.max_lv_buf.unsafe_ptr())
+            var r_min_lv_all_t = LayoutTensor[
+                dtype,
+                Layout.row_major(NUM_ENSEMBLE_C * DYN_PRED),
+                MutAnyOrigin,
+            ](gpu_dynamics.min_lv_buf.unsafe_ptr())
             ctx.enqueue_function[sample_k, sample_k](
                 r_next_t,
                 r_rew_t,
-                r_dyn_out_t,
+                r_dyn_out_all_t,
                 r_obs_t,
-                r_max_lv_t,
-                r_min_lv_t,
+                elite_slot_t,
+                r_elite_map_t,
+                r_max_lv_all_t,
+                r_min_lv_all_t,
                 Scalar[DType.uint32](UInt32(self.total_steps * 100 + step)),
                 grid_dim=(RB_BLOCKS,),
                 block_dim=(TPB_VAL,),
