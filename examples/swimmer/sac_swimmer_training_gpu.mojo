@@ -39,7 +39,7 @@ comptime HIDDEN_DIM = 256
 # ERE test: use smaller buffer (where we know divergence hits at 2×CAPACITY without ERE)
 comptime BUFFER_CAPACITY = 300_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 32
+comptime MAX_N_ENVS = 4
 
 # Training duration (Swimmer needs longer due to symmetric dynamics)
 comptime NUM_STEPS = 1_500_000
