@@ -1571,6 +1571,11 @@ struct MBPOAgent[
     var real_ratio: Float64
     var sac_updates_per_step: Int
 
+    # Global gradient-norm clip for actor + both critics. Critical at high UTD
+    # + synthetic-batch mix: un-clipped critic grads let transient α·log_π
+    # spikes in the TD target (from tanh saturation) drive Q-values to 10^7+.
+    var max_grad_norm: Float64
+
     # Checkpointing
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -1596,6 +1601,7 @@ struct MBPOAgent[
         num_rollouts_per_step: Int = 400,
         real_ratio: Float64 = 0.05,
         sac_updates_per_step: Int = 20,
+        max_grad_norm: Float64 = 40.0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
@@ -1631,6 +1637,7 @@ struct MBPOAgent[
         self.num_rollouts_per_step = num_rollouts_per_step
         self.real_ratio = real_ratio
         self.sac_updates_per_step = sac_updates_per_step
+        self.max_grad_norm = max_grad_norm
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
@@ -2821,6 +2828,33 @@ struct MBPOAgent[
             g_critic,
             gpu_state.critic_ws,
         )
+        # Clip critic1 gradients. Without this, a single transient target
+        # spike (from α·log_π blowing up under tanh saturation) sends the
+        # critic weights to ±∞ and Q-values never recover.
+        if self.max_grad_norm > 0.0:
+            comptime C_PS = Self.Config.CriticModel.PARAM_SIZE
+            comptime C_BLOCKS = (C_PS + TPB - 1) // TPB
+            comptime c_norm_k = gradient_norm_kernel[dtype, C_PS, C_BLOCKS, TPB]
+            comptime c_clip_k = gradient_reduce_apply_fused_kernel[
+                dtype, C_PS, C_BLOCKS, TPB
+            ]
+            var c_ps_t = LayoutTensor[
+                dtype, Layout.row_major(C_BLOCKS), MutAnyOrigin
+            ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+            ctx.enqueue_function[c_norm_k, c_norm_k](
+                c_ps_t,
+                g_critic,
+                grid_dim=(C_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[c_clip_k, c_clip_k](
+                g_critic,
+                c_ps_t,
+                Scalar[dtype](self.max_grad_norm),
+                grid_dim=(C_BLOCKS,),
+                block_dim=(TPB,),
+            )
         gpu_state.critics.pairs[0].online.optimizer_step(ctx)
 
         # Critic2 update (twin critics)
@@ -2854,6 +2888,33 @@ struct MBPOAgent[
                 g_c2,
                 gpu_state.critic2_ws,
             )
+            # Clip critic2 gradients
+            if self.max_grad_norm > 0.0:
+                comptime C_PS2 = Self.Config.CriticModel.PARAM_SIZE
+                comptime C_BLOCKS2 = (C_PS2 + TPB - 1) // TPB
+                comptime c2_norm_k = gradient_norm_kernel[
+                    dtype, C_PS2, C_BLOCKS2, TPB
+                ]
+                comptime c2_clip_k = gradient_reduce_apply_fused_kernel[
+                    dtype, C_PS2, C_BLOCKS2, TPB
+                ]
+                var c2_ps_t = LayoutTensor[
+                    dtype, Layout.row_major(C_BLOCKS2), MutAnyOrigin
+                ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+                ctx.enqueue_function[c2_norm_k, c2_norm_k](
+                    c2_ps_t,
+                    g_c2,
+                    grid_dim=(C_BLOCKS2,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[c2_clip_k, c2_clip_k](
+                    g_c2,
+                    c2_ps_t,
+                    Scalar[dtype](self.max_grad_norm),
+                    grid_dim=(C_BLOCKS2,),
+                    block_dim=(TPB,),
+                )
             gpu_state.critics.pairs[1].online.optimizer_step(ctx)
 
         # Phase 4: Actor update (always runs for SAC/EveryStep schedule)
@@ -2900,6 +2961,34 @@ struct MBPOAgent[
                 gpu_state.gpu_scalars,
                 gpu_state.rng_counter,
             )
+
+            # Clip actor gradients
+            if self.max_grad_norm > 0.0:
+                comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
+                comptime A_BLOCKS = (A_PS + TPB - 1) // TPB
+                comptime a_norm_k = gradient_norm_kernel[
+                    dtype, A_PS, A_BLOCKS, TPB
+                ]
+                comptime a_clip_k = gradient_reduce_apply_fused_kernel[
+                    dtype, A_PS, A_BLOCKS, TPB
+                ]
+                var a_ps_t = LayoutTensor[
+                    dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
+                ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+                ctx.enqueue_function[a_norm_k, a_norm_k](
+                    a_ps_t,
+                    a_grads,
+                    grid_dim=(A_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[a_clip_k, a_clip_k](
+                    a_grads,
+                    a_ps_t,
+                    Scalar[dtype](self.max_grad_norm),
+                    grid_dim=(A_BLOCKS,),
+                    block_dim=(TPB,),
+                )
             gpu_state.actor.online.optimizer_step(ctx)
 
             # Alpha auto-tuning (GPU-side Adam — no D2H or sync)
