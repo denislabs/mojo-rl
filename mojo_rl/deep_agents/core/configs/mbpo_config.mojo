@@ -18,9 +18,9 @@ from mojo_rl.nn.model import (
     LinearSwish,
     Sequential,
     Parallel,
+    LayerNorm,
+    ReLU,
 )
-from mojo_rl.nn.autodiff import AutoFused, MatMul, BiasAdd, ReLUOp
-from mojo_rl.nn.autodiff.primitives.layer_norm import LayerNormOp
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 
 from .offpolicy_config import OffPolicyConfig
@@ -108,23 +108,18 @@ struct DefaultMBPOConfig[
         ],
     ]
     # Critic with pre-activation LayerNorm (REDQ/SR-SAC stability fix).
-    # Each hidden stage = AutoFused[MatMul + BiasAdd + LayerNormOp + ReLUOp],
-    # keeping memory locality and using DiffOp kernels with block-parallel
-    # reductions (block_dim=TPB). The Model-based LayerNorm has a slow
-    # grid=(BATCH,)/block=(1,) kernel — avoided by using LayerNormOp directly.
+    # Pattern: Linear → LayerNorm → ReLU, repeated. Bounds activation
+    # magnitudes so the critic can't drift to arbitrarily large Q values
+    # under high-UTD synthetic-batch pressure. Not paper-faithful (reference
+    # MBPO uses plain Linear+ReLU), but addresses the mechanism of the
+    # Q-explosion pathology we observe at TRAIN_N_ENVS ≤ 8.
     comptime CriticModel = Sequential[
-        AutoFused[
-            MatMul[Self.OBS + Self.ACT, Self.HIDDEN],
-            BiasAdd[Self.HIDDEN],
-            LayerNormOp[Self.HIDDEN],
-            ReLUOp[Self.HIDDEN],
-        ],
-        AutoFused[
-            MatMul[Self.HIDDEN, Self.HIDDEN],
-            BiasAdd[Self.HIDDEN],
-            LayerNormOp[Self.HIDDEN],
-            ReLUOp[Self.HIDDEN],
-        ],
+        Linear[Self.OBS + Self.ACT, Self.HIDDEN],
+        LayerNorm[Self.HIDDEN],
+        ReLU[Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.HIDDEN],
+        LayerNorm[Self.HIDDEN],
+        ReLU[Self.HIDDEN],
         Linear[Self.HIDDEN, 1],
     ]
     comptime ActorOpt = Adam[Self.actor_lr]

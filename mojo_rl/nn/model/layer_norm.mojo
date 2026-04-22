@@ -4,6 +4,7 @@ from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
+from std.gpu.primitives import block
 from std.math import sqrt
 from ..constants import TPB
 
@@ -252,47 +253,59 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     ):
         """Forward pass kernel with caching.
 
-        Grid: (batch_size,)
-        Block: (1,)
+        Grid: (BATCH,), Block: (TPB,). One block per sample, tree-reduces
+        the per-dim sums across threads. Each thread handles a stride of
+        TPB feature indices via `idx += TPB` (so `dim > TPB` is fine).
         """
-        var batch_idx = Int(block_idx.x)
-        if batch_idx >= BATCH:
+        var b = Int(block_idx.x)
+        var local_i = Int(thread_idx.x)
+
+        if b >= BATCH:
             return
 
-        if thread_idx.x != 0:
-            return
+        var inv_dim = Scalar[dtype](1.0 / Float64(Self.dim))
 
-        var n = Scalar[dtype](Self.dim)
+        # Phase 1: compute mean (block-parallel reduction + broadcast)
+        var my_sum = Scalar[dtype](0)
+        var idx = local_i
+        while idx < Self.dim:
+            my_sum += rebind[Scalar[dtype]](input[b, idx])
+            idx += TPB
+        var mean_val = (
+            block.sum[block_size=TPB, broadcast=True](val=my_sum) * inv_dim
+        )
 
-        # Compute mean
-        var mean: output.element_type = 0.0
-        for i in range(Self.dim):
-            var val = input[batch_idx, i]
-            mean = mean + val
-        mean = mean / n
+        # Phase 2: compute variance (block-parallel)
+        var my_var = Scalar[dtype](0)
+        idx = local_i
+        while idx < Self.dim:
+            var diff = (
+                rebind[Scalar[dtype]](input[b, idx]) - mean_val
+            )
+            my_var += diff * diff
+            idx += TPB
+        var var_val = (
+            block.sum[block_size=TPB, broadcast=True](val=my_var) * inv_dim
+        )
 
-        # Compute variance
-        var var_: output.element_type = 0.0
-        for i in range(Self.dim):
-            var val = input[batch_idx, i]
-            var diff = val - mean
-            var_ = var_ + diff * diff
-        var_ = var_ / n
+        var inv_std = Scalar[dtype](1.0) / sqrt(var_val + eps)
 
-        # Compute inv_std
-        var inv_std: output.element_type = 1.0 / sqrt(var_ + eps)
+        # Thread 0 writes inv_std and mean to cache
+        if local_i == 0:
+            cache[b, Self.dim] = inv_std
+            cache[b, Self.dim + 1] = mean_val
 
-        # Normalize and apply affine transform
-        for i in range(Self.dim):
-            var val = input[batch_idx, i]
-            var normalized = (val - mean) * inv_std
-            cache[batch_idx, i] = normalized
-            var gamma = params[i]
-            var beta = params[Self.dim + i]
-            output[batch_idx, i] = gamma * normalized + beta
-
-        cache[batch_idx, Self.dim] = inv_std
-        cache[batch_idx, Self.dim + 1] = mean
+        # Phase 3: normalize, scale, shift (parallel across features)
+        idx = local_i
+        while idx < Self.dim:
+            var x_hat = (
+                rebind[Scalar[dtype]](input[b, idx]) - mean_val
+            ) * inv_std
+            cache[b, idx] = x_hat
+            output[b, idx] = rebind[Scalar[dtype]](
+                params[idx]
+            ) * x_hat + rebind[Scalar[dtype]](params[Self.dim + idx])
+            idx += TPB
 
     @always_inline
     @staticmethod
@@ -312,43 +325,49 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     ):
         """Forward pass kernel without caching.
 
-        Grid: (batch_size,)
-        Block: (1,)
+        Grid: (BATCH,), Block: (TPB,). Same block-parallel pattern as
+        forward_kernel_impl but skips the cache writes.
         """
-        var batch_idx = Int(block_idx.x)
-        if batch_idx >= BATCH:
+        var b = Int(block_idx.x)
+        var local_i = Int(thread_idx.x)
+
+        if b >= BATCH:
             return
 
-        if thread_idx.x != 0:
-            return
+        var inv_dim = Scalar[dtype](1.0 / Float64(Self.dim))
 
-        var n = Scalar[dtype](Self.dim)
+        var my_sum = Scalar[dtype](0)
+        var idx = local_i
+        while idx < Self.dim:
+            my_sum += rebind[Scalar[dtype]](input[b, idx])
+            idx += TPB
+        var mean_val = (
+            block.sum[block_size=TPB, broadcast=True](val=my_sum) * inv_dim
+        )
 
-        # Compute mean
-        var mean: output.element_type = 0.0
-        for i in range(Self.dim):
-            var val = input[batch_idx, i]
-            mean = mean + val
-        mean = mean / n
+        var my_var = Scalar[dtype](0)
+        idx = local_i
+        while idx < Self.dim:
+            var diff = (
+                rebind[Scalar[dtype]](input[b, idx]) - mean_val
+            )
+            my_var += diff * diff
+            idx += TPB
+        var var_val = (
+            block.sum[block_size=TPB, broadcast=True](val=my_var) * inv_dim
+        )
 
-        # Compute variance
-        var var_: output.element_type = 0.0
-        for i in range(Self.dim):
-            var val = input[batch_idx, i]
-            var diff = val - mean
-            var_ = var_ + diff * diff
-        var_ = var_ / n
+        var inv_std = Scalar[dtype](1.0) / sqrt(var_val + eps)
 
-        # Compute inv_std
-        var inv_std: output.element_type = 1.0 / sqrt(var_ + eps)
-
-        # Normalize and apply affine transform
-        for i in range(Self.dim):
-            var val = input[batch_idx, i]
-            var normalized = (val - mean) * inv_std
-            var gamma = params[i]
-            var beta = params[Self.dim + i]
-            output[batch_idx, i] = gamma * normalized + beta
+        idx = local_i
+        while idx < Self.dim:
+            var x_hat = (
+                rebind[Scalar[dtype]](input[b, idx]) - mean_val
+            ) * inv_std
+            output[b, idx] = rebind[Scalar[dtype]](
+                params[idx]
+            ) * x_hat + rebind[Scalar[dtype]](params[Self.dim + idx])
+            idx += TPB
 
     @always_inline
     @staticmethod
@@ -371,47 +390,54 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(2 * Self.dim), MutAnyOrigin
         ],
     ):
-        """Backward pass kernel.
+        """Per-sample input-gradient kernel.
 
-        Note: Parameter gradients need atomic adds across batch samples,
-        which is complex on GPU. This simple version processes sequentially.
-
-        Grid: (batch_size,)
-        Block: (1,)
+        Grid: (BATCH,), Block: (TPB,). Block-parallel reduction over the
+        feature dim to compute `mean(dxhat)` and `mean(dxhat * xhat)`,
+        then per-feature `dx` emission. Param grads are accumulated by a
+        separate kernel (see backward_param_kernel_impl).
         """
-        var batch_idx = Int(block_idx.x)
-        if batch_idx >= BATCH:
+        var b = Int(block_idx.x)
+        var local_i = Int(thread_idx.x)
+
+        if b >= BATCH:
             return
 
-        if thread_idx.x != 0:
-            return
+        var inv_dim = Scalar[dtype](1.0 / Float64(Self.dim))
+        var inv_std = rebind[Scalar[dtype]](cache[b, Self.dim])
 
-        var inv_std = cache[batch_idx, Self.dim]
-        var n = Scalar[dtype](Self.dim)
+        # Phase 1: compute mean(dx_hat) and mean(dx_hat * x_hat)
+        var my_dxhat = Scalar[dtype](0)
+        var my_dxhat_xhat = Scalar[dtype](0)
+        var idx = local_i
+        while idx < Self.dim:
+            var g = rebind[Scalar[dtype]](grad_output[b, idx])
+            var gamma = rebind[Scalar[dtype]](params[idx])
+            var x_hat = rebind[Scalar[dtype]](cache[b, idx])
+            var dx_hat = g * gamma
+            my_dxhat += dx_hat
+            my_dxhat_xhat += dx_hat * x_hat
+            idx += TPB
 
-        # Compute intermediate sums
-        var sum_dy_gamma: grad_output.element_type = 0.0
-        var sum_dy_gamma_norm: grad_output.element_type = 0.0
+        var mean_dxhat = (
+            block.sum[block_size=TPB, broadcast=True](val=my_dxhat) * inv_dim
+        )
+        var mean_dxhat_xhat = (
+            block.sum[block_size=TPB, broadcast=True](val=my_dxhat_xhat)
+            * inv_dim
+        )
 
-        for i in range(Self.dim):
-            var gamma = params[i]
-            var dy = grad_output[batch_idx, i]
-            var normalized = cache[batch_idx, i]
-            sum_dy_gamma = sum_dy_gamma + dy * gamma
-            sum_dy_gamma_norm = sum_dy_gamma_norm + dy * gamma * normalized
-
-        # Compute input gradients
-        for i in range(Self.dim):
-            var gamma = params[i]
-            var dy = grad_output[batch_idx, i]
-            var normalized = cache[batch_idx, i]
-
-            var dx = inv_std * (
-                dy * gamma
-                - sum_dy_gamma / n
-                - normalized * sum_dy_gamma_norm / n
+        # Phase 2: compute dx (parallel per feature)
+        idx = local_i
+        while idx < Self.dim:
+            var g = rebind[Scalar[dtype]](grad_output[b, idx])
+            var gamma = rebind[Scalar[dtype]](params[idx])
+            var x_hat = rebind[Scalar[dtype]](cache[b, idx])
+            var dx_hat = g * gamma
+            grad_input[b, idx] = inv_std * (
+                dx_hat - mean_dxhat - x_hat * mean_dxhat_xhat
             )
-            grad_input[batch_idx, i] = dx
+            idx += TPB
 
     @always_inline
     @staticmethod
@@ -428,23 +454,37 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(2 * Self.dim), MutAnyOrigin
         ],
     ):
-        """Accumulate param gradients (dgamma, dbeta) across batch.
+        """dgamma/dbeta reduction across batch.
 
-        Runs as a single thread to avoid race conditions across samples.
-        Grid: (1,)
-        Block: (1,)
+        Grid: (dim,), Block: (TPB,). One block per output feature column,
+        block-parallel sum over the BATCH rows. Replaces the previous
+        single-thread serial kernel (grid=(1,), block=(1,)).
         """
-        if thread_idx.x != 0 or block_idx.x != 0:
+        var col = Int(block_idx.x)
+        var local_i = Int(thread_idx.x)
+
+        if col >= Self.dim:
             return
 
-        for batch in range(BATCH):
-            for i in range(Self.dim):
-                var normalized = cache[batch, i]
-                var dy = grad_output[batch, i]
-                # dgamma[i] += dy * normalized
-                grads[i] = grads[i] + dy * normalized
-                # dbeta[i] += dy
-                grads[Self.dim + i] = grads[Self.dim + i] + dy
+        var my_dgamma = Scalar[dtype](0)
+        var my_dbeta = Scalar[dtype](0)
+        var batch_idx = local_i
+        while batch_idx < BATCH:
+            var g = rebind[Scalar[dtype]](grad_output[batch_idx, col])
+            var x_hat = rebind[Scalar[dtype]](cache[batch_idx, col])
+            my_dgamma += g * x_hat
+            my_dbeta += g
+            batch_idx += TPB
+
+        var total_dgamma = block.sum[block_size=TPB, broadcast=False](
+            val=my_dgamma
+        )
+        var total_dbeta = block.sum[block_size=TPB, broadcast=False](
+            val=my_dbeta
+        )
+        if local_i == 0:
+            grads[col] = grads[col] + total_dgamma[0]
+            grads[Self.dim + col] = grads[Self.dim + col] + total_dbeta[0]
 
     # =========================================================================
     # GPU Launchers
@@ -505,7 +545,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             cache,
             eps_scalar,
             grid_dim=(BATCH,),
-            block_dim=(1,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
@@ -556,7 +596,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             params_immut,
             eps_scalar,
             grid_dim=(BATCH,),
-            block_dim=(1,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
@@ -643,7 +683,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             cache_immut,
             grads,
             grid_dim=(BATCH,),
-            block_dim=(1,),
+            block_dim=(TPB,),
         )
 
         # Param gradients: dgamma, dbeta accumulated over batch (single thread)
@@ -667,6 +707,6 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             grad_output_immut,
             cache_immut,
             grads,
-            grid_dim=(1,),
-            block_dim=(1,),
+            grid_dim=(Self.dim,),
+            block_dim=(TPB,),
         )
