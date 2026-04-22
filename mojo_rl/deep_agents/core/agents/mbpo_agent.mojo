@@ -2347,7 +2347,7 @@ struct MBPOAgent[
         ],
     ) raises:
         """Train dynamics ensemble on GPU using data from GPU replay buffer."""
-        gpu_dynamics.train_on_buffer[Self.GPU_BUF_CAP](
+        _ = gpu_dynamics.train_on_buffer[Self.GPU_BUF_CAP](
             ctx,
             gpu_buffer,
         )
