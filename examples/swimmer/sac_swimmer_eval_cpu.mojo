@@ -20,7 +20,7 @@ from mojo_rl.envs.swimmer import Swimmer
 
 comptime OBS_DIM = 8  # qpos[2:5] + qvel[0:5]
 comptime ACTION_DIM = 2  # 2 rotational motors
-comptime HIDDEN_DIM = 128
+comptime HIDDEN_DIM = 256
 comptime BUFFER_CAPACITY = 300_000
 comptime BATCH_SIZE = 256
 comptime MAX_N_ENVS = 32
@@ -112,7 +112,7 @@ def main() raises:
         max_steps_per_episode=MAX_STEPS,
         verbose=True,
         render=True,
-        frame_delay_ms=100,
+        frame_delay_ms=32,
     )
 
     var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000
