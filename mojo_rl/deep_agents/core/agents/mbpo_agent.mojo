@@ -149,6 +149,11 @@ struct DynamicsEnsemble[
         for _ in range(Self.num_ensemble):
             var ns = NetworkState[Self.DynModel, Self.DynOpt]()
             ns.initialize[Xavier[]]()
+            # Reference BNN zeros biases (fc.py:137-141:
+            # `tf.constant_initializer(0.0)`). Our AutoFused init applies the
+            # same initializer to MatMul and BiasAdd; overwrite biases with 0.
+            var dyn_p = ns.params_view()
+            Self.DynModel.zero_biases[dtype](dyn_p)
             self.members.append(ns^)
 
         # Initially all members are elite
@@ -1467,6 +1472,23 @@ struct MBPOCPUState[
         # wider init and leads to 2–3× larger initial Q-magnitudes, which
         # exacerbates the high-UTD Q-explosion failure mode.
         self.critics.initialize[Xavier[]]()
+
+        # Zero-init all biases (matches Keras `Dense(bias_initializer='zeros')`,
+        # which reference MBPO inherits). AutoFused's default init loop applies
+        # the provided initializer uniformly to MatMul + BiasAdd, giving biases
+        # a non-zero Xavier distribution. Overwrite with zeros post-init.
+        # Opt-in and MBPO-only: other agents (SAC/TD3/DDPG) keep their
+        # default non-zero biases via PyTorch/Kaiming conventions.
+        var actor_p = self.actor.online.params_view()
+        Self.Config.ActorModel.zero_biases[dtype](actor_p)
+        # Re-sync target to pick up the zeroed biases.
+        self.actor.target.copy_params_from(self.actor.online)
+        for i in range(Self.Config.NUM_CRITICS):
+            var critic_p = self.critics.pairs[i].online.params_view()
+            Self.Config.CriticModel.zero_biases[dtype](critic_p)
+            self.critics.pairs[i].target.copy_params_from(
+                self.critics.pairs[i].online
+            )
         self.real_buffer = HeapReplayBuffer[
             Self.Config.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
         ]()

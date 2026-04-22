@@ -63,6 +63,23 @@ trait Model(Movable & ImplicitlyCopyable):
         """
         ...
 
+    @staticmethod
+    def zero_biases[dtype: DType = DType.float32](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Opt-in bias zero-init — overwrite BiasAdd slots with zeros.
+
+        Default = no-op (for activations, normalizations, and any Model that
+        doesn't expose a MatMul+BiasAdd pattern). Composites (Sequential,
+        Parallel, AutoFused) override to recurse or zero their BiasAdd slots.
+        Intended for use AFTER `initialize_params` to match Keras/TF
+        `bias_initializer='zeros'` convention. Currently invoked only by
+        MBPO — other agents keep their default non-zero biases.
+        """
+        pass
+
     # =========================================================================
     # Forward passes
     # =========================================================================

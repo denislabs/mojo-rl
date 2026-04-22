@@ -199,6 +199,22 @@ struct Parallel[*BRANCHES: Model](Model):
                 ](params.ptr + Self._param_offset[i]())
                 Self.branch_types[i].initialize_params[INIT, dtype](branch_params)
 
+    @staticmethod
+    def zero_biases[dtype: DType = DType.float32](
+        mut params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Opt-in bias zero-init, recursive. See AutoFused.zero_biases."""
+        comptime for i in range(Self.N):
+            comptime if Self.branch_types[i].PARAM_SIZE > 0:
+                var branch_params = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.branch_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                Self.branch_types[i].zero_biases[dtype](branch_params)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
