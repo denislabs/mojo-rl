@@ -1530,6 +1530,12 @@ struct MBPOAgent[
     Config: MBPOConfig,
     L: Logger = NoOpLogger,
     TRAIN_N_ENVS: Int = 1,
+    # Fraction of SAC batch drawn from the real buffer (remainder from synth).
+    # Reference MBPO uses 0.05 (5%). Must be comptime because it sizes REAL_BS
+    # and SYNTH_BS, which are compile-time parameters of the sampling kernels.
+    # Pass as an integer basis-points-percent (e.g. 5 for 5%, 25 for 25%) so
+    # the batch split is exact and the comptime arithmetic is integer-only.
+    REAL_RATIO_PCT: Int = 5,
 ](OffPolicyContinuousAgent & Checkpointable):
     """MBPO agent: SAC + dynamics ensemble + Dyna-style data augmentation.
 
@@ -1566,8 +1572,13 @@ struct MBPOAgent[
     # GPU buffer: real-only capacity (synthetic buffer is separate)
     comptime GPU_BUF_CAP: Int = Self.Config.buffer_capacity
 
-    # Mixed sampling: 5% real, 95% synthetic (MBPO paper default)
-    comptime REAL_BS: Int = max(1, Self.Config.batch_size * 5 // 100)
+    # Mixed sampling: REAL_RATIO_PCT% real, (100 - REAL_RATIO_PCT)% synthetic.
+    # Derived from the comptime REAL_RATIO_PCT struct parameter — this is what
+    # actually controls the batch split on the GPU path (the runtime
+    # `real_ratio` constructor arg is CPU-path only and should match).
+    comptime REAL_BS: Int = max(
+        1, Self.Config.batch_size * Self.REAL_RATIO_PCT // 100
+    )
     comptime SYNTH_BS: Int = Self.Config.batch_size - Self.REAL_BS
 
     # GPU state type — reuses GenericGPUState with real buffer capacity.
@@ -1692,7 +1703,24 @@ struct MBPOAgent[
         self.rollout_min_epoch = rollout_min_epoch
         self.rollout_max_epoch = rollout_max_epoch
         self.num_rollouts_per_step = num_rollouts_per_step
-        self.real_ratio = real_ratio
+        # GPU batch sizes are fixed by the comptime REAL_RATIO_PCT struct
+        # parameter (see REAL_BS / SYNTH_BS above). Override the runtime
+        # `real_ratio` value to match so CPU and GPU paths can't disagree.
+        # If the caller passed a different value, emit a one-line warning.
+        var rr_from_comptime = Float64(Self.REAL_RATIO_PCT) / 100.0
+        if (
+            real_ratio > rr_from_comptime + 1e-9
+            or real_ratio < rr_from_comptime - 1e-9
+        ):
+            print(
+                "[MBPO WARN] real_ratio=",
+                real_ratio,
+                " differs from REAL_RATIO_PCT (",
+                rr_from_comptime,
+                "); using the comptime value. Set MBPOAgent[...,"
+                " REAL_RATIO_PCT=N] to change the GPU batch split.",
+            )
+        self.real_ratio = rr_from_comptime
         self.sac_updates_per_step = sac_updates_per_step
         self.max_grad_norm = max_grad_norm
 
@@ -2168,7 +2196,7 @@ struct MBPOAgent[
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
         var metrics = run_mbpo_train[
-            E, Self.Config, Self.L, Self.TRAIN_N_ENVS
+            E, Self.Config, Self.L, Self.TRAIN_N_ENVS, Self.REAL_RATIO_PCT
         ](
             self,
             cpu_state,
@@ -3363,7 +3391,12 @@ struct MBPOAgent[
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
         var metrics = run_mbpo_train_gpu[
-            E, Self.Config, Self.L, USE_CUDA_GRAPH, Self.TRAIN_N_ENVS
+            E,
+            Self.Config,
+            Self.L,
+            USE_CUDA_GRAPH,
+            Self.TRAIN_N_ENVS,
+            Self.REAL_RATIO_PCT,
         ](
             self,
             cpu_state,
