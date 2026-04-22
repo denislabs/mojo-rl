@@ -39,7 +39,18 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        INIT.init[Self.PARAM_SIZE, Self.IN_DIM, Self.OUT_DIM](params)
+        """Standard LayerNorm init: gamma = 1, beta = 0 (INIT is ignored).
+
+        Previously called INIT on the whole parameter buffer, which gave
+        gamma a random distribution (wrong — breaks the layer's identity
+        behavior at init: `y = γ·x̂ + β` only reduces to `x̂` when `γ=1, β=0`).
+        """
+        # gamma [0:dim] = 1.0
+        for i in range(Self.dim):
+            params.ptr[i] = Scalar[dtype](1.0)
+        # beta [dim:2*dim] = 0.0
+        for i in range(Self.dim):
+            params.ptr[Self.dim + i] = Scalar[dtype](0.0)
 
     @staticmethod
     def forward[

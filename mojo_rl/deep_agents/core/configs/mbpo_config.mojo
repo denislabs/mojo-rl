@@ -18,6 +18,8 @@ from mojo_rl.nn.model import (
     LinearSwish,
     Sequential,
     Parallel,
+    LayerNorm,
+    ReLU,
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 
@@ -105,9 +107,19 @@ struct DefaultMBPOConfig[
             LinearTanh[Self.HIDDEN, Self.ACT],   # log_std head (tanh-clamped)
         ],
     ]
+    # Critic with pre-activation LayerNorm (REDQ/SR-SAC stability fix).
+    # Pattern: Linear → LayerNorm → ReLU, repeated. Bounds activation
+    # magnitudes so the critic can't drift to arbitrarily large Q values
+    # under high-UTD synthetic-batch pressure. Not paper-faithful (reference
+    # MBPO uses plain Linear+ReLU), but addresses the mechanism of the
+    # Q-explosion pathology we observe at TRAIN_N_ENVS ≤ 8.
     comptime CriticModel = Sequential[
-        LinearReLU[Self.OBS + Self.ACT, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.OBS + Self.ACT, Self.HIDDEN],
+        LayerNorm[Self.HIDDEN],
+        ReLU[Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.HIDDEN],
+        LayerNorm[Self.HIDDEN],
+        ReLU[Self.HIDDEN],
         Linear[Self.HIDDEN, 1],
     ]
     comptime ActorOpt = Adam[Self.actor_lr]
