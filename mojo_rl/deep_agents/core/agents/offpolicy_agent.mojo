@@ -1808,12 +1808,21 @@ struct GenericOffPolicyAgent[
                 def alpha_wrapper(
                     sc: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
                     lp: LayoutTensor[dtype, Layout.row_major(BS), MutAnyOrigin],
+                    la_max: Scalar[dtype],
+                    la_min: Scalar[dtype],
+                    lp_clip: Scalar[dtype],
                 ):
-                    alpha_k(sc, lp)
+                    alpha_k(sc, lp, la_max, la_min, lp_clip)
 
+                # Classic SAC clamp: log_alpha in [-10, +2] (alpha in
+                # [4.5e-5, 7.4]). Kept wide here for plain off-policy SAC
+                # compatibility; MBPO tightens the upper bound at its call site.
                 ctx.enqueue_function[alpha_wrapper, alpha_wrapper](
                     scalars_t,
                     src_lp,
+                    Scalar[dtype](2.0),
+                    Scalar[dtype](-10.0),
+                    Scalar[dtype](50.0),
                     grid_dim=(1,),
                     block_dim=(1,),
                 )

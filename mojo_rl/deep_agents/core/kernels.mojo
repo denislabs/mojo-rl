@@ -511,6 +511,9 @@ def alpha_adam_update_kernel[
 ](
     gpu_scalars: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
     log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    log_alpha_max: Scalar[dtype],
+    log_alpha_min: Scalar[dtype],
+    lp_clip: Scalar[dtype],
 ):
     """GPU-side SAC alpha auto-tuning. Launch with grid=(1,), block=(1,).
 
@@ -521,17 +524,32 @@ def alpha_adam_update_kernel[
     Args:
         gpu_scalars: Workspace buffer containing alpha, log_alpha, adam_m/v/t.
         log_probs: Current policy log-probabilities [BATCH].
+        log_alpha_max: Upper clamp on log_alpha. Classic SAC uses +2 (alpha≤7.4);
+            MBPO benefits from tighter (e.g. +0.5 → alpha≤1.6) because transient
+            Q-spikes can drive log_alpha into the ceiling, and Adam momentum
+            then pins it there even after the gradient flips sign.
+        log_alpha_min: Lower clamp on log_alpha (typically -10).
+        lp_clip: Per-sample |log_prob| clip used *only* for the alpha gradient
+            (does not affect policy loss). Stops transient tanh-saturation
+            spikes from poisoning Adam's moments. Set to a large value (e.g.
+            50) to effectively disable.
     """
     if Int(thread_idx.x) != 0:
         return
 
-    # 1. Reduce log_probs to mean
+    # 1. Reduce log_probs to mean (with per-sample clip for robustness)
     var sum_lp = Scalar[dtype](0.0)
     for b in range(BATCH):
-        sum_lp += log_probs.ptr[b]
+        var lp = log_probs.ptr[b]
+        if lp != lp:
+            lp = Scalar[dtype](0.0)
+        elif lp > lp_clip:
+            lp = lp_clip
+        elif lp < -lp_clip:
+            lp = -lp_clip
+        sum_lp += lp
     var mean_lp = sum_lp / Scalar[dtype](BATCH)
 
-    # Guard against NaN
     if mean_lp != mean_lp:
         mean_lp = Scalar[dtype](0.0)
 
@@ -565,13 +583,21 @@ def alpha_adam_update_kernel[
     var v_hat = adam_v / b2_corr
     log_alpha -= lr * m_hat / (sqrt(v_hat) + eps)
 
-    # 5. Clamp log_alpha (NaN guard first — NaN comparisons are always false)
+    # 5. Clamp log_alpha (NaN guard first — NaN comparisons are always false).
+    # If we saturate either clamp, reset Adam moments so momentum can't pin
+    # log_alpha against the wall across many subsequent updates.
     if log_alpha != log_alpha:
         log_alpha = Scalar[dtype](0.0)
-    if log_alpha > Scalar[dtype](2.0):
-        log_alpha = Scalar[dtype](2.0)
-    elif log_alpha < Scalar[dtype](-10.0):
-        log_alpha = Scalar[dtype](-10.0)
+        adam_m = Scalar[dtype](0.0)
+        adam_v = Scalar[dtype](0.0)
+    if log_alpha > log_alpha_max:
+        log_alpha = log_alpha_max
+        adam_m = Scalar[dtype](0.0)
+        adam_v = Scalar[dtype](0.0)
+    elif log_alpha < log_alpha_min:
+        log_alpha = log_alpha_min
+        adam_m = Scalar[dtype](0.0)
+        adam_v = Scalar[dtype](0.0)
 
     # 6. Write back
     gpu_scalars.ptr[ALPHA_OFF] = exp(log_alpha)

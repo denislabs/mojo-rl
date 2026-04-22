@@ -2939,14 +2939,27 @@ struct MBPOAgent[
                         lp: LayoutTensor[
                             dtype, Layout.row_major(BS), MutAnyOrigin
                         ],
+                        la_max: Scalar[dtype],
+                        la_min: Scalar[dtype],
+                        lp_clip: Scalar[dtype],
                     ):
-                        mbpo_alpha_k(sc, lp)
+                        mbpo_alpha_k(sc, lp, la_max, la_min, lp_clip)
 
+                    # Tight log_alpha ceiling for MBPO: +0.5 → alpha <= 1.65.
+                    # Prevents transient Q-spikes (common at high UTD with
+                    # synthetic rollouts) from pinning alpha against the
+                    # classic SAC cap of exp(2) = 7.4, where the policy
+                    # collapses to max-entropy and never recovers.
+                    # lp_clip=50 bounds per-sample log_pi so a single
+                    # tanh-saturated batch element can't poison Adam's moments.
                     ctx.enqueue_function[
                         mbpo_alpha_wrapper, mbpo_alpha_wrapper
                     ](
                         scalars_t,
                         src_lp,
+                        Scalar[dtype](0.5),
+                        Scalar[dtype](-10.0),
+                        Scalar[dtype](50.0),
                         grid_dim=(1,),
                         block_dim=(1,),
                     )
