@@ -19,7 +19,7 @@ from mojo_rl.nn.model import (
     Sequential,
     Parallel,
 )
-from mojo_rl.nn.optimizer import Optimizer, Adam
+from mojo_rl.nn.optimizer import Optimizer, Adam, AdamW
 
 from .offpolicy_config import OffPolicyConfig
 from ..strategies.exploration import Explore, StochasticSample
@@ -77,6 +77,7 @@ struct DefaultMBPOConfig[
     model_lr: Float64 = 0.001,
     TFn: TerminationFn = NeverTerminate,
     action_scale: Float64 = 1.0,
+    dyn_weight_decay: Float64 = 0.00005,
 ](MBPOConfig):
     """Default MBPO config: SAC policy + 4-layer Swish dynamics ensemble.
 
@@ -138,7 +139,13 @@ struct DefaultMBPOConfig[
         LinearSwish[Self.DYN_HIDDEN, Self.DYN_HIDDEN],
         Linear[Self.DYN_HIDDEN, Self.DYN_OUT],
     ]
-    comptime DynOpt = Adam[Self.model_lr]
+    # AdamW with decoupled weight decay (MBPO reference uses per-weight L2 inside
+    # the training loss; AdamW approximates that with decoupled decay applied
+    # uniformly to params including biases — a small fidelity gap for ~1e-5 decay).
+    comptime DynOpt = AdamW[
+        Self.model_lr,
+        WEIGHT_DECAY=Self.dyn_weight_decay,
+    ]
 
     # Ensemble size constants
     comptime ENSEMBLE_SIZE: Int = Self.NUM_ENSEMBLE

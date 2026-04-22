@@ -3406,6 +3406,200 @@ def gaussian_nll_grad_kernel[
 
 
 @always_inline
+def gaussian_nll_grad_learnable_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    PRED_DIM: Int,
+    OUT_DIM: Int = 2 * PRED_DIM,
+](
+    grad_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    model_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    target: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    loss_per_sample: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    max_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_lv_grad_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    min_lv_grad_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+):
+    """Gaussian NLL gradient with learnable per-dim logvar bounds.
+
+    Matches `gaussian_nll_grad_kernel` but reads per-dim bounds from device
+    buffers and writes per-(b, d) gradient contributions for max_lv and
+    min_lv into scratch buffers. A follow-up reduce kernel sums over batch
+    and Adam-updates the bounds.
+
+    Gradient chain through double softplus clamp (ref bnn.py:556-557):
+      lv_inter = max - softplus(max - raw),  a1 = max - raw, g1 = sigmoid(a1)
+      lv       = min + softplus(lv_inter - min), a2 = lv_inter - min, g2 = sigmoid(a2)
+
+      d lv / d raw          = g1 * g2          (existing chain — flows to network)
+      d lv / d max_logvar   = g2 * (1 - g1)    (new — flows to max_lv)
+      d lv / d min_logvar   = 1 - g2           (new — flows to min_lv)
+
+    Per-element contribution to loss is d NLL / d lv = 0.5 * (1 - diff²/var) / BATCH.
+
+    Grid: ceil(BATCH * PRED_DIM / TPB), block: TPB. One thread per (b, d).
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * PRED_DIM:
+        return
+    var b = idx // PRED_DIM
+    var d = idx % PRED_DIM
+
+    var mean_val = rebind[Scalar[dtype]](model_output[b, d])
+    var raw_lv = rebind[Scalar[dtype]](model_output[b, PRED_DIM + d])
+    var max_d = rebind[Scalar[dtype]](max_lv[d])
+    var min_d = rebind[Scalar[dtype]](min_lv[d])
+
+    # Soft double-softplus clamp (matches gaussian_nll_grad_kernel).
+    var a1 = max_d - raw_lv
+    var s1 = Scalar[dtype](0.0)
+    if a1 > Scalar[dtype](20.0):
+        s1 = a1
+    elif a1 > Scalar[dtype](-20.0):
+        s1 = log(Scalar[dtype](1.0) + exp(a1))
+    var lv_inter = max_d - s1
+
+    var a2 = lv_inter - min_d
+    var s2 = Scalar[dtype](0.0)
+    if a2 > Scalar[dtype](20.0):
+        s2 = a2
+    elif a2 > Scalar[dtype](-20.0):
+        s2 = log(Scalar[dtype](1.0) + exp(a2))
+    var lv = min_d + s2
+
+    var var_val = exp(lv)
+    var tgt = rebind[Scalar[dtype]](target[b, d])
+    var diff = tgt - mean_val
+    var diff_sq = diff * diff
+    var inv_batch = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
+
+    var g1 = Scalar[dtype](0.0)
+    if a1 > Scalar[dtype](20.0):
+        g1 = Scalar[dtype](1.0)
+    elif a1 > Scalar[dtype](-20.0):
+        g1 = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-a1))
+    var g2 = Scalar[dtype](0.0)
+    if a2 > Scalar[dtype](20.0):
+        g2 = Scalar[dtype](1.0)
+    elif a2 > Scalar[dtype](-20.0):
+        g2 = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-a2))
+
+    var grad_lv = (
+        Scalar[dtype](0.5)
+        * (Scalar[dtype](1.0) - diff_sq / var_val)
+        * inv_batch
+    )
+
+    # Existing grads wrt network output (mean + raw logvar).
+    grad_output[b, d] = (mean_val - tgt) / var_val * inv_batch
+    grad_output[b, PRED_DIM + d] = grad_lv * g1 * g2
+
+    # New: per-element grad contributions for bounds (reduced over batch next).
+    max_lv_grad_scratch[b, d] = grad_lv * g2 * (Scalar[dtype](1.0) - g1)
+    min_lv_grad_scratch[b, d] = grad_lv * (Scalar[dtype](1.0) - g2)
+
+    var sample_loss = (
+        Scalar[dtype](0.5) * diff_sq / var_val + Scalar[dtype](0.5) * lv
+    )
+    if d == 0:
+        loss_per_sample[b] = sample_loss
+    else:
+        loss_per_sample[b] = loss_per_sample[b] + sample_loss
+
+
+@always_inline
+def reduce_bounds_grad_l2_adam_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    PRED_DIM: Int,
+](
+    max_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_lv_m: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_lv_v: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv_m: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv_v: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_lv_grad_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    min_lv_grad_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    l2_coef: Scalar[dtype],
+    lr: Scalar[dtype],
+    beta1: Scalar[dtype],
+    beta2: Scalar[dtype],
+    eps: Scalar[dtype],
+    bias_correction1: Scalar[dtype],
+    bias_correction2: Scalar[dtype],
+):
+    """Reduce per-batch bounds grads, add L2, and Adam-update bounds.
+
+    Reference (bnn.py:192): train_loss += 0.01 * sum(max_lv) - 0.01 * sum(min_lv).
+    So d loss / d max_lv[d] += +l2_coef and d loss / d min_lv[d] += -l2_coef
+    for every dim.
+
+    One thread per PRED_DIM (grid=(PRED_DIM,), block=(1,)). Each thread:
+      1. Sums scratch[0..BATCH, d] for both max_lv and min_lv grads.
+      2. Adds the L2 contribution.
+      3. Applies one Adam step in place.
+    PRED_DIM is small (~18) so the serial BATCH sum per thread is fine.
+    """
+    var d = Int(block_idx.x)
+    if d >= PRED_DIM:
+        return
+    if Int(thread_idx.x) != 0:
+        return
+
+    var g_max = Scalar[dtype](0.0)
+    var g_min = Scalar[dtype](0.0)
+    for b in range(BATCH):
+        g_max += rebind[Scalar[dtype]](max_lv_grad_scratch[b, d])
+        g_min += rebind[Scalar[dtype]](min_lv_grad_scratch[b, d])
+
+    # L2: +l2 pulls max down, -l2 pushes min up (toward each other).
+    g_max += l2_coef
+    g_min -= l2_coef
+
+    var one = Scalar[dtype](1.0)
+
+    # Adam update on max_lv[d]
+    var m_max = rebind[Scalar[dtype]](max_lv_m[d])
+    var v_max = rebind[Scalar[dtype]](max_lv_v[d])
+    var m_max_new = beta1 * m_max + (one - beta1) * g_max
+    var v_max_new = beta2 * v_max + (one - beta2) * g_max * g_max
+    max_lv_m[d] = m_max_new
+    max_lv_v[d] = v_max_new
+    var m_max_hat = m_max_new / bias_correction1
+    var v_max_hat = v_max_new / bias_correction2
+    var cur_max = rebind[Scalar[dtype]](max_lv[d])
+    max_lv[d] = cur_max - lr * m_max_hat / (sqrt(v_max_hat) + eps)
+
+    # Adam update on min_lv[d]
+    var m_min = rebind[Scalar[dtype]](min_lv_m[d])
+    var v_min = rebind[Scalar[dtype]](min_lv_v[d])
+    var m_min_new = beta1 * m_min + (one - beta1) * g_min
+    var v_min_new = beta2 * v_min + (one - beta2) * g_min * g_min
+    min_lv_m[d] = m_min_new
+    min_lv_v[d] = v_min_new
+    var m_min_hat = m_min_new / bias_correction1
+    var v_min_hat = v_min_new / bias_correction2
+    var cur_min = rebind[Scalar[dtype]](min_lv[d])
+    min_lv[d] = cur_min - lr * m_min_hat / (sqrt(v_min_hat) + eps)
+
+
+@always_inline
 def reduce_mean_loss_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
@@ -3577,6 +3771,77 @@ def dynamics_sample_kernel[
             sampled_rewards[b] = sample
         else:
             # Residual prediction: next_obs = obs + delta
+            next_obs[b, d - 1] = obs[b, d - 1] + sample
+
+
+@always_inline
+def dynamics_sample_learnable_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    OBS_DIM: Int,
+    PRED_DIM: Int = 1 + OBS_DIM,
+    OUT_DIM: Int = 2 * PRED_DIM,
+](
+    next_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ],
+    sampled_rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    model_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
+    max_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Sample next_obs and reward from dynamics output with per-dim bounds.
+
+    Mirror of `dynamics_sample_kernel` but reads logvar bounds from per-dim
+    device buffers (learnable bounds for one ensemble member — caller offsets
+    the pointer by `member_idx * PRED_DIM`).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    for d in range(PRED_DIM):
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(b * PRED_DIM + d),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = rand_vals[0].cast[dtype]()
+        var u2 = rand_vals[1].cast[dtype]()
+        var eps = Scalar[dtype](1e-7)
+        var z = sqrt(Scalar[dtype](-2.0) * log(u1 + eps)) * cos(
+            Scalar[dtype](6.283185307) * u2
+        )
+
+        var mean_val = rebind[Scalar[dtype]](model_output[b, d])
+        var raw_lv = rebind[Scalar[dtype]](model_output[b, PRED_DIM + d])
+        var max_d = rebind[Scalar[dtype]](max_lv[d])
+        var min_d = rebind[Scalar[dtype]](min_lv[d])
+
+        var a1 = max_d - raw_lv
+        var s1 = Scalar[dtype](0.0)
+        if a1 > Scalar[dtype](20.0):
+            s1 = a1
+        elif a1 > Scalar[dtype](-20.0):
+            s1 = log(Scalar[dtype](1.0) + exp(a1))
+        var lv_inter = max_d - s1
+        var a2 = lv_inter - min_d
+        var s2 = Scalar[dtype](0.0)
+        if a2 > Scalar[dtype](20.0):
+            s2 = a2
+        elif a2 > Scalar[dtype](-20.0):
+            s2 = log(Scalar[dtype](1.0) + exp(a2))
+        var lv = min_d + s2
+        var std = sqrt(exp(lv))
+        var sample = mean_val + std * z
+
+        if d == 0:
+            sampled_rewards[b] = sample
+        else:
             next_obs[b, d - 1] = obs[b, d - 1] + sample
 
 
