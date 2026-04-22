@@ -33,9 +33,10 @@ def run_mbpo_train[
     E: BoxContinuousActionEnv,
     Config: MBPOConfig,
     L: Logger = NoOpLogger,
+    TRAIN_N_ENVS: Int = 1,
 ](
-    mut agent: MBPOAgent[Config, L],
-    mut cpu_state: MBPOAgent[Config, L].CPUStateType,
+    mut agent: MBPOAgent[Config, L, TRAIN_N_ENVS],
+    mut cpu_state: MBPOAgent[Config, L, TRAIN_N_ENVS].CPUStateType,
     mut env: E,
     num_epochs: Int,
     steps_per_epoch: Int = 1000,
@@ -252,9 +253,10 @@ def run_mbpo_train_gpu[
     Config: MBPOConfig,
     L: Logger = NoOpLogger,
     USE_CUDA_GRAPH: Bool = False,
+    TRAIN_N_ENVS: Int = 1,
 ](
-    mut agent: MBPOAgent[Config, L],
-    mut cpu_state: MBPOAgent[Config, L].CPUStateType,
+    mut agent: MBPOAgent[Config, L, TRAIN_N_ENVS],
+    mut cpu_state: MBPOAgent[Config, L, TRAIN_N_ENVS].CPUStateType,
     ctx: DeviceContext,
     num_steps: Int,
     warmup_steps: Int = 5000,
@@ -291,14 +293,14 @@ def run_mbpo_train_gpu[
     Returns:
         TrainingMetrics with episode-level statistics.
     """
-    comptime n_envs = MBPOAgent[Config, L].GPU_N_ENVS
+    comptime n_envs = MBPOAgent[Config, L, TRAIN_N_ENVS].GPU_N_ENVS
 
     var metrics = TrainingMetrics(
         algorithm_name="MBPO-GPU",
         environment_name=environment_name,
     )
 
-    comptime GPUState = MBPOAgent[Config, L].GPUStateType
+    comptime GPUState = MBPOAgent[Config, L, TRAIN_N_ENVS].GPUStateType
     var gpu_state = GPUState(ctx)
 
     var gpu_dynamics = GPUDynamicsEnsemble[
@@ -320,7 +322,7 @@ def run_mbpo_train_gpu[
     # GPU_ALPHA_LR=0 freezes alpha there. With saturated tanh actions,
     # log_pi → -∞ and TD target = r + γ*(min_Q - α*log_pi) → +∞,
     # blowing Q-values to 10^30.
-    comptime GPUStateT = MBPOAgent[Config, L].GPUStateType
+    comptime GPUStateT = MBPOAgent[Config, L, TRAIN_N_ENVS].GPUStateType
     var scalars_host = ctx.enqueue_create_host_buffer[dtype](
         GPUStateT.GPU_SCALARS_SIZE
     )
@@ -346,8 +348,8 @@ def run_mbpo_train_gpu[
         Config.SYNTH_CAPACITY, Config.obs_dim, Config.action_dim
     ](ctx)
     # Scratch index buffers for mixed sampling
-    comptime REAL_BS = MBPOAgent[Config, L].REAL_BS
-    comptime SYNTH_BS = MBPOAgent[Config, L].SYNTH_BS
+    comptime REAL_BS = MBPOAgent[Config, L, TRAIN_N_ENVS].REAL_BS
+    comptime SYNTH_BS = MBPOAgent[Config, L, TRAIN_N_ENVS].SYNTH_BS
     var s_real_idx = ctx.enqueue_create_buffer[DType.int32](REAL_BS)
     var s_synth_idx = ctx.enqueue_create_buffer[DType.int32](SYNTH_BS)
 
@@ -547,7 +549,7 @@ def run_mbpo_train_gpu[
         if total_steps >= next_model_train and total_steps >= warmup_steps:
             # GPU dynamics training on REAL data only (paper design)
             var mean_holdout = gpu_dynamics.train_on_buffer[
-                MBPOAgent[Config, L].GPU_BUF_CAP
+                MBPOAgent[Config, L, TRAIN_N_ENVS].GPU_BUF_CAP
             ](ctx, gpu_state.buffer)
             if logger:
                 logger[].log_scalar(

@@ -190,7 +190,7 @@ def main() raises:
                 num_steps=NUM_STEPS,
                 warmup_steps=WARMUP_STEPS,
                 verbose=True,
-                print_every=50_000,
+                print_every=10_000,
                 environment_name="HalfCheetah",
                 logger=UnsafePointer(to=logger),
                 diag_every=500,

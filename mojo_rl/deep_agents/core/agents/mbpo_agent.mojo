@@ -1325,8 +1325,18 @@ struct MBPOCPUState[
 struct MBPOAgent[
     Config: MBPOConfig,
     L: Logger = NoOpLogger,
+    TRAIN_N_ENVS: Int = 1,
 ](OffPolicyContinuousAgent & Checkpointable):
-    """MBPO agent: SAC + dynamics ensemble + Dyna-style data augmentation."""
+    """MBPO agent: SAC + dynamics ensemble + Dyna-style data augmentation.
+
+    `TRAIN_N_ENVS` is the number of parallel GPU envs stepped per training
+    iteration. Reference MBPO uses 1; higher values add env-stepping
+    throughput but delay episode feedback (each logged `AvgR` covers
+    fewer completed episodes) and shift the paper's updates-per-env-step
+    schedule (with `sac_updates_per_step=40` and `TRAIN_N_ENVS=N`, the
+    effective updates-per-env-step = 40/N, so N=32 gives only 1.25
+    updates/step — far from the paper's 40). Default 1 matches the paper.
+    """
 
     # Dimension aliases — OBS must match ActorModel.IN_DIM for LayoutTensor
     # compatibility with Network.forward / strategy calls.
@@ -1356,8 +1366,11 @@ struct MBPOAgent[
     comptime REAL_BS: Int = max(1, Self.Config.batch_size * 5 // 100)
     comptime SYNTH_BS: Int = Self.Config.batch_size - Self.REAL_BS
 
-    # GPU state type — reuses GenericGPUState with real buffer capacity
-    comptime GPU_N_ENVS: Int = 32
+    # GPU state type — reuses GenericGPUState with real buffer capacity.
+    # GPU_N_ENVS is set from the MBPOAgent TRAIN_N_ENVS parameter (default
+    # 1, matching reference). Higher values trade episode-feedback latency
+    # for env-stepping throughput.
+    comptime GPU_N_ENVS: Int = Self.TRAIN_N_ENVS
     comptime GPUStateType = GenericGPUState[
         Self.Config.ActorModel,
         Self.Config.ActorOpt,
@@ -1943,7 +1956,9 @@ struct MBPOAgent[
         self.logger = logger
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
-        var metrics = run_mbpo_train[E, Self.Config, Self.L](
+        var metrics = run_mbpo_train[
+            E, Self.Config, Self.L, Self.TRAIN_N_ENVS
+        ](
             self,
             cpu_state,
             env,
@@ -2979,7 +2994,9 @@ struct MBPOAgent[
         self.logger = logger
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
-        var metrics = run_mbpo_train_gpu[E, Self.Config, Self.L, USE_CUDA_GRAPH](
+        var metrics = run_mbpo_train_gpu[
+            E, Self.Config, Self.L, USE_CUDA_GRAPH, Self.TRAIN_N_ENVS
+        ](
             self,
             cpu_state,
             ctx,
