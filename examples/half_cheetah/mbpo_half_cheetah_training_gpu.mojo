@@ -46,7 +46,7 @@ comptime HIDDEN_DIM = 256
 # Buffer sizes
 comptime BUFFER_CAPACITY = 1_000_000  # Real buffer (match SAC)
 comptime SYNTH_CAPACITY = 400_000  # Synthetic buffer
-comptime BATCH_SIZE = 512
+comptime BATCH_SIZE = 128
 
 # Dynamics ensemble
 comptime NUM_ENSEMBLE = 7
