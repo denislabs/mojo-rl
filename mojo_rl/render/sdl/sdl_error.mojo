@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Error
+"""Error.
 
 Simple error message routines for SDL.
 
@@ -61,7 +61,7 @@ def out_of_memory() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_OutOfMemory.
     """
 
-    return _get_dylib_function[lib, "SDL_OutOfMemory", def() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_OutOfMemory", def() thin -> Bool]()()
 
 
 def get_error() raises -> Ptr[c_char, ImmutAnyOrigin]:
@@ -100,7 +100,7 @@ def get_error() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetError", def() -> Ptr[c_char, ImmutAnyOrigin]
+        lib, "SDL_GetError", def() thin -> Ptr[c_char, ImmutAnyOrigin]
     ]()()
 
 
@@ -116,4 +116,4 @@ def clear_error() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearError.
     """
 
-    return _get_dylib_function[lib, "SDL_ClearError", def() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_ClearError", def() thin -> Bool]()()

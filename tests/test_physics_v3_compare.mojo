@@ -20,7 +20,7 @@ def abs_f32(x: Float32) -> Float32:
 def format_float(val: Float32, width: Int = 10) -> String:
     var s = String(val)
     if s.byte_length() > width:
-        return String(s[:width])
+        return String(s[byte= :width])
     return s
 
 

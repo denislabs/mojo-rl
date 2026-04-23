@@ -43,7 +43,7 @@ def format_float(val: Float32, width: Int = 10) -> String:
     """Format float to fixed width string."""
     var s = String(val)
     if s.byte_length() > width:
-        return String(s[:width])
+        return String(s[byte= :width])
     return s
 
 

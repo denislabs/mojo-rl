@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Power
+"""Power.
 
 SDL power management routines.
 
@@ -120,5 +120,5 @@ def get_power_info(
         def(
             seconds: Ptr[c_int, MutAnyOrigin],
             percent: Ptr[c_int, MutAnyOrigin],
-        ) -> PowerState,
+        ) thin -> PowerState,
     ]()(seconds, percent)

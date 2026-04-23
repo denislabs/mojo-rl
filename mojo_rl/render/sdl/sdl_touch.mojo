@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Touch
+"""Touch.
 
 SDL offers touch input, on platforms that support it. It can manage
 multiple touch devices and track multiple fingers on those devices.
@@ -170,7 +170,7 @@ def get_touch_devices(
     ret = _get_dylib_function[
         lib,
         "SDL_GetTouchDevices",
-        def(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[TouchID, MutAnyOrigin],
+        def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[TouchID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -194,7 +194,7 @@ def get_touch_device_name(
     ret = _get_dylib_function[
         lib,
         "SDL_GetTouchDeviceName",
-        def(touch_id: TouchID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(touch_id: TouchID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(touch_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -213,7 +213,7 @@ def get_touch_device_type(touch_id: TouchID) raises -> TouchDeviceType:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetTouchDeviceType", def(touch_id: TouchID) -> TouchDeviceType
+        lib, "SDL_GetTouchDeviceType", def(touch_id: TouchID) thin -> TouchDeviceType
     ]()(touch_id)
 
 
@@ -243,7 +243,7 @@ def get_touch_fingers(
         "SDL_GetTouchFingers",
         def(
             touch_id: TouchID, count: Ptr[c_int, MutAnyOrigin]
-        ) -> Ptr[Ptr[Finger, MutAnyOrigin], MutAnyOrigin],
+        ) thin -> Ptr[Ptr[Finger, MutAnyOrigin], MutAnyOrigin],
     ]()(touch_id, count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

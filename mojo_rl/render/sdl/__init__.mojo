@@ -2,7 +2,7 @@
 # | SDL3 Bindings in Mojo
 # +--------------------------------------------------------------------------+ #
 
-"""SDL3 Bindings in Mojo"""
+"""SDL3 Bindings in Mojo."""
 from std.memory import UnsafePointer
 from .sdl_audio import *
 from .sdl_blendmode import *

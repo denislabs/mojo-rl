@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Version
+"""Version.
 
 Functionality to query the current SDL version, both as headers the app was
 compiled against, and a library the app is linked to.
@@ -44,7 +44,7 @@ def get_version() raises -> c_int:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetVersion.
     """
 
-    return _get_dylib_function[lib, "SDL_GetVersion", def() -> c_int]()()
+    return _get_dylib_function[lib, "SDL_GetVersion", def() thin -> c_int]()()
 
 
 def get_revision() raises -> Ptr[c_char, ImmutAnyOrigin]:
@@ -72,5 +72,5 @@ def get_revision() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetRevision", def() -> Ptr[c_char, ImmutAnyOrigin]
+        lib, "SDL_GetRevision", def() thin -> Ptr[c_char, ImmutAnyOrigin]
     ]()()

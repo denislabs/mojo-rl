@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Blendmode
+"""Blendmode.
 
 Blend modes decide how two colors will mix together. There are both
 standard modes for basic needs and a means to create custom modes,
@@ -262,7 +262,7 @@ def compose_custom_blend_mode(
             src_alpha_factor: BlendFactor,
             dst_alpha_factor: BlendFactor,
             alpha_operation: BlendOperation,
-        ) -> BlendMode,
+        ) thin -> BlendMode,
     ]()(
         src_color_factor,
         dst_color_factor,

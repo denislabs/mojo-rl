@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Surface
+"""Surface.
 
 SDL surfaces are buffers of pixels in system RAM. These are useful for
 passing around and manipulating images that are not stored in GPU memory.
@@ -211,7 +211,7 @@ def create_surface(
         "SDL_CreateSurface",
         def(
             width: c_int, height: c_int, format: PixelFormat
-        ) -> Ptr[Surface, MutAnyOrigin],
+        ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(width, height, format)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -263,7 +263,7 @@ def create_surface_from(
             format: PixelFormat,
             pixels: Ptr[NoneType, MutAnyOrigin],
             pitch: c_int,
-        ) -> Ptr[Surface, MutAnyOrigin],
+        ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(width, height, format, pixels, pitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -286,7 +286,7 @@ def destroy_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroySurface",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> None,
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> None,
     ]()(surface)
 
 
@@ -332,7 +332,7 @@ def get_surface_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfaceProperties",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> PropertiesID,
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> PropertiesID,
     ]()(surface)
 
 
@@ -364,7 +364,7 @@ def set_surface_colorspace(
         "SDL_SetSurfaceColorspace",
         def(
             surface: Ptr[Surface, MutAnyOrigin], colorspace: Colorspace
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, colorspace)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -395,7 +395,7 @@ def get_surface_colorspace(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfaceColorspace",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> Colorspace,
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Colorspace,
     ]()(surface)
 
 
@@ -435,7 +435,9 @@ def create_surface_palette(
     return _get_dylib_function[
         lib,
         "SDL_CreateSurfacePalette",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Palette, MutAnyOrigin],
+        def(
+            surface: Ptr[Surface, MutAnyOrigin]
+        ) thin -> Ptr[Palette, MutAnyOrigin],
     ]()(surface)
 
 
@@ -467,7 +469,7 @@ def set_surface_palette(
         def(
             surface: Ptr[Surface, MutAnyOrigin],
             palette: Ptr[Palette, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, palette)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -494,7 +496,7 @@ def get_surface_palette(
     return _get_dylib_function[
         lib,
         "SDL_GetSurfacePalette",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Palette, MutAnyOrigin],
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Ptr[Palette, MutAnyOrigin],
     ]()(surface)
 
 
@@ -532,7 +534,7 @@ def add_surface_alternate_image(
         def(
             surface: Ptr[Surface, MutAnyOrigin],
             image: Ptr[Surface, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, image)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -558,7 +560,7 @@ def surface_has_alternate_images(
     return _get_dylib_function[
         lib,
         "SDL_SurfaceHasAlternateImages",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Bool,
     ]()(surface)
 
 
@@ -596,7 +598,7 @@ def get_surface_images(
         def(
             surface: Ptr[Surface, MutAnyOrigin],
             count: Ptr[c_int, MutAnyOrigin],
-        ) -> Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin],
+        ) thin -> Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin],
     ]()(surface, count)
 
 
@@ -620,7 +622,7 @@ def remove_surface_alternate_images(
     return _get_dylib_function[
         lib,
         "SDL_RemoveSurfaceAlternateImages",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> None,
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> None,
     ]()(surface)
 
 
@@ -654,7 +656,7 @@ def lock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LockSurface",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Bool,
     ]()(surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -677,7 +679,7 @@ def unlock_surface(surface: Ptr[Surface, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_UnlockSurface",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> None,
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> None,
     ]()(surface)
 
 
@@ -711,7 +713,7 @@ def load_bmp_io(
         "SDL_LoadBMP_IO",
         def(
             src: Ptr[IOStream, MutAnyOrigin], closeio: Bool
-        ) -> Ptr[Surface, MutAnyOrigin],
+        ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(src, closeio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -739,7 +741,7 @@ def load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LoadBMP",
-        def(file: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
+        def(file: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -781,7 +783,7 @@ def save_bmp_io(
             surface: Ptr[Surface, MutAnyOrigin],
             dst: Ptr[IOStream, MutAnyOrigin],
             closeio: Bool,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, dst, closeio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -816,7 +818,7 @@ def save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
         def(
             surface: Ptr[Surface, MutAnyOrigin],
             file: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, file.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -845,7 +847,7 @@ def set_surface_rle(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceRLE",
-        def(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], enabled: Bool) thin -> Bool,
     ]()(surface, enabled)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -871,7 +873,7 @@ def surface_has_rle(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_SurfaceHasRLE",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Bool,
     ]()(surface)
 
 
@@ -907,7 +909,7 @@ def set_surface_color_key(
         "SDL_SetSurfaceColorKey",
         def(
             surface: Ptr[Surface, MutAnyOrigin], enabled: Bool, key: UInt32
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, enabled, key)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -933,7 +935,7 @@ def surface_has_color_key(surface: Ptr[Surface, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_SurfaceHasColorKey",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Bool,
     ]()(surface)
 
 
@@ -967,7 +969,7 @@ def get_surface_color_key(
         def(
             surface: Ptr[Surface, MutAnyOrigin],
             key: Ptr[UInt32, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, key)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1005,7 +1007,7 @@ def set_surface_color_mod(
         "SDL_SetSurfaceColorMod",
         def(
             surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, r, g, b)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1043,7 +1045,7 @@ def get_surface_color_mod(
             r: Ptr[UInt8, MutAnyOrigin],
             g: Ptr[UInt8, MutAnyOrigin],
             b: Ptr[UInt8, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, r, g, b)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1076,7 +1078,7 @@ def set_surface_alpha_mod(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceAlphaMod",
-        def(surface: Ptr[Surface, MutAnyOrigin], alpha: UInt8) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], alpha: UInt8) thin -> Bool,
     ]()(surface, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1107,7 +1109,7 @@ def get_surface_alpha_mod(
         def(
             surface: Ptr[Surface, MutAnyOrigin],
             alpha: Ptr[UInt8, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1139,7 +1141,7 @@ def set_surface_blend_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_SetSurfaceBlendMode",
-        def(surface: Ptr[Surface, MutAnyOrigin], blend_mode: BlendMode) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], blend_mode: BlendMode) thin -> Bool,
     ]()(surface, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1171,7 +1173,7 @@ def get_surface_blend_mode(
         def(
             surface: Ptr[Surface, MutAnyOrigin],
             blend_mode: Ptr[BlendMode, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1209,7 +1211,7 @@ def set_surface_clip_rect(
         def(
             surface: Ptr[Surface, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, rect)
 
 
@@ -1243,7 +1245,7 @@ def get_surface_clip_rect(
         def(
             surface: Ptr[Surface, MutAnyOrigin],
             rect: Ptr[Rect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1269,7 +1271,7 @@ def flip_surface(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_FlipSurface",
-        def(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], flip: FlipMode) thin -> Bool,
     ]()(surface, flip)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1302,7 +1304,7 @@ def duplicate_surface(
     ret = _get_dylib_function[
         lib,
         "SDL_DuplicateSurface",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Surface, MutAnyOrigin],
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1344,7 +1346,7 @@ def scale_surface(
             width: c_int,
             height: c_int,
             scale_mode: ScaleMode,
-        ) -> Ptr[Surface, MutAnyOrigin],
+        ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, width, height, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1387,7 +1389,7 @@ def convert_surface(
         "SDL_ConvertSurface",
         def(
             surface: Ptr[Surface, MutAnyOrigin], format: PixelFormat
-        ) -> Ptr[Surface, MutAnyOrigin],
+        ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, format)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1437,7 +1439,7 @@ def convert_surface_and_colorspace(
             palette: Ptr[Palette, MutAnyOrigin],
             colorspace: Colorspace,
             props: PropertiesID,
-        ) -> Ptr[Surface, MutAnyOrigin],
+        ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(surface, format, palette, colorspace, props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1489,7 +1491,7 @@ def convert_pixels(
             dst_format: PixelFormat,
             dst: Ptr[NoneType, MutAnyOrigin],
             dst_pitch: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(width, height, src_format, src, src_pitch, dst_format, dst, dst_pitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1558,7 +1560,7 @@ def convert_pixels_and_colorspace(
             dst_properties: PropertiesID,
             dst: Ptr[NoneType, MutAnyOrigin],
             dst_pitch: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         width,
         height,
@@ -1629,7 +1631,7 @@ def premultiply_alpha(
             dst: Ptr[NoneType, MutAnyOrigin],
             dst_pitch: c_int,
             linear: Bool,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         width,
         height,
@@ -1670,7 +1672,7 @@ def premultiply_surface_alpha(
     ret = _get_dylib_function[
         lib,
         "SDL_PremultiplySurfaceAlpha",
-        def(surface: Ptr[Surface, MutAnyOrigin], linear: Bool) -> Bool,
+        def(surface: Ptr[Surface, MutAnyOrigin], linear: Bool) thin -> Bool,
     ]()(surface, linear)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1716,7 +1718,7 @@ def clear_surface(
             g: c_float,
             b: c_float,
             a: c_float,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1761,7 +1763,7 @@ def fill_surface_rect(
             dst: Ptr[Surface, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
             color: UInt32,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(dst, rect, color)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1808,7 +1810,7 @@ def fill_surface_rects(
             rects: Ptr[Rect, ImmutAnyOrigin],
             count: c_int,
             color: UInt32,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(dst, rects, count, color)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1901,7 +1903,7 @@ def blit_surface(
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             dst: Ptr[Surface, MutAnyOrigin],
             dstrect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, srcrect, dst, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1945,7 +1947,7 @@ def blit_surface_unchecked(
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             dst: Ptr[Surface, MutAnyOrigin],
             dstrect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, srcrect, dst, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1991,7 +1993,7 @@ def blit_surface_scaled(
             dst: Ptr[Surface, MutAnyOrigin],
             dstrect: Ptr[Rect, ImmutAnyOrigin],
             scale_mode: ScaleMode,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, srcrect, dst, dstrect, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2038,7 +2040,7 @@ def blit_surface_unchecked_scaled(
             dst: Ptr[Surface, MutAnyOrigin],
             dstrect: Ptr[Rect, ImmutAnyOrigin],
             scale_mode: ScaleMode,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, srcrect, dst, dstrect, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2083,7 +2085,7 @@ def stretch_surface(
             dst: Ptr[Surface, MutAnyOrigin],
             dstrect: Ptr[Rect, ImmutAnyOrigin],
             scale_mode: ScaleMode,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, srcrect, dst, dstrect, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2128,7 +2130,7 @@ def blit_surface_tiled(
             srcrect: Ptr[Rect, ImmutAnyOrigin],
             dst: Ptr[Surface, MutAnyOrigin],
             dstrect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, srcrect, dst, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2181,7 +2183,7 @@ def blit_surface_tiled_with_scale(
             scale_mode: ScaleMode,
             dst: Ptr[Surface, MutAnyOrigin],
             dstrect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, srcrect, scale, scale_mode, dst, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2249,7 +2251,7 @@ def blit_surface_9grid(
             scale_mode: ScaleMode,
             dst: Ptr[Surface, MutAnyOrigin],
             dstrect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         src,
         srcrect,
@@ -2306,7 +2308,7 @@ def map_surface_rgb(
         "SDL_MapSurfaceRGB",
         def(
             surface: Ptr[Surface, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
-        ) -> UInt32,
+        ) thin -> UInt32,
     ]()(surface, r, g, b)
 
 
@@ -2359,7 +2361,7 @@ def map_surface_rgba(
             g: UInt8,
             b: UInt8,
             a: UInt8,
-        ) -> UInt32,
+        ) thin -> UInt32,
     ]()(surface, r, g, b, a)
 
 
@@ -2414,7 +2416,7 @@ def read_surface_pixel(
             g: Ptr[UInt8, MutAnyOrigin],
             b: Ptr[UInt8, MutAnyOrigin],
             a: Ptr[UInt8, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, x, y, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2468,7 +2470,7 @@ def read_surface_pixel_float(
             g: Ptr[c_float, MutAnyOrigin],
             b: Ptr[c_float, MutAnyOrigin],
             a: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, x, y, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2521,7 +2523,7 @@ def write_surface_pixel(
             g: UInt8,
             b: UInt8,
             a: UInt8,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, x, y, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2571,7 +2573,7 @@ def write_surface_pixel_float(
             g: c_float,
             b: c_float,
             a: c_float,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(surface, x, y, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Rect
+"""Rect.
 
 Some helper functions for managing rectangles and 2D points, in both
 integer and floating point versions.
@@ -101,7 +101,7 @@ def has_rect_intersection(
     return _get_dylib_function[
         lib,
         "SDL_HasRectIntersection",
-        def(a: Ptr[Rect, ImmutAnyOrigin], b: Ptr[Rect, ImmutAnyOrigin]) -> Bool,
+        def(a: Ptr[Rect, ImmutAnyOrigin], b: Ptr[Rect, ImmutAnyOrigin]) thin -> Bool,
     ]()(a, b)
 
 
@@ -133,7 +133,7 @@ def get_rect_intersection(
             a: Ptr[Rect, ImmutAnyOrigin],
             b: Ptr[Rect, ImmutAnyOrigin],
             result: Ptr[Rect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(a, b, result)
 
 
@@ -164,7 +164,7 @@ def get_rect_union(
             a: Ptr[Rect, ImmutAnyOrigin],
             b: Ptr[Rect, ImmutAnyOrigin],
             result: Ptr[Rect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(a, b, result)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -204,7 +204,7 @@ def get_rect_enclosing_points(
             count: c_int,
             clip: Ptr[Rect, ImmutAnyOrigin],
             result: Ptr[Rect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(points, count, clip, result)
 
 
@@ -245,7 +245,7 @@ def get_rect_and_line_intersection(
             y1: Ptr[c_int, MutAnyOrigin],
             x2: Ptr[c_int, MutAnyOrigin],
             y2: Ptr[c_int, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(rect, x1, y1, x2, y2)
 
 
@@ -271,7 +271,7 @@ def has_rect_intersection_float(
         "SDL_HasRectIntersectionFloat",
         def(
             a: Ptr[FRect, ImmutAnyOrigin], b: Ptr[FRect, ImmutAnyOrigin]
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(a, b)
 
 
@@ -303,7 +303,7 @@ def get_rect_intersection_float(
             a: Ptr[FRect, ImmutAnyOrigin],
             b: Ptr[FRect, ImmutAnyOrigin],
             result: Ptr[FRect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(a, b, result)
 
 
@@ -334,7 +334,7 @@ def get_rect_union_float(
             a: Ptr[FRect, ImmutAnyOrigin],
             b: Ptr[FRect, ImmutAnyOrigin],
             result: Ptr[FRect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(a, b, result)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -375,7 +375,7 @@ def get_rect_enclosing_points_float(
             count: c_int,
             clip: Ptr[FRect, ImmutAnyOrigin],
             result: Ptr[FRect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(points, count, clip, result)
 
 
@@ -417,5 +417,5 @@ def get_rect_and_line_intersection_float(
             y1: Ptr[c_float, MutAnyOrigin],
             x2: Ptr[c_float, MutAnyOrigin],
             y2: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(rect, x1, y1, x2, y2)

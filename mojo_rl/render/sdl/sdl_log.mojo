@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Log
+"""Log.
 
 Simple log messages with priorities and categories. A message's
 SDL_LogPriority signifies how important the message is. A message's
@@ -177,7 +177,7 @@ def set_log_priorities(priority: LogPriority) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_SetLogPriorities", def(priority: LogPriority) -> None
+        lib, "SDL_SetLogPriorities", def(priority: LogPriority) thin -> None
     ]()(priority)
 
 
@@ -197,7 +197,7 @@ def set_log_priority(category: c_int, priority: LogPriority) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_SetLogPriority",
-        def(category: c_int, priority: LogPriority) -> None,
+        def(category: c_int, priority: LogPriority) thin -> None,
     ]()(category, priority)
 
 
@@ -217,7 +217,7 @@ def get_log_priority(category: c_int) raises -> LogPriority:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetLogPriority", def(category: c_int) -> LogPriority
+        lib, "SDL_GetLogPriority", def(category: c_int) thin -> LogPriority
     ]()(category)
 
 
@@ -232,7 +232,9 @@ def reset_log_priorities() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ResetLogPriorities.
     """
 
-    return _get_dylib_function[lib, "SDL_ResetLogPriorities", def() -> None]()()
+    return _get_dylib_function[
+        lib, "SDL_ResetLogPriorities", def() thin -> None
+    ]()()
 
 
 def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
@@ -260,7 +262,10 @@ def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetLogPriorityPrefix",
-        def(priority: LogPriority, prefix: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(
+            priority: LogPriority,
+            prefix: Ptr[c_char, ImmutAnyOrigin],
+        ) thin -> Bool,
     ]()(priority, prefix.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -271,7 +276,7 @@ comptime LogOutputFunction = def(
     category: c_int,
     priority: LogPriority,
     message: Ptr[c_char, ImmutAnyOrigin],
-) -> None
+) thin -> None
 """The prototype for the log output callback function.
     
     This function is called by SDL when there is new text to be logged. A mutex
@@ -302,7 +307,7 @@ def get_default_log_output_function() raises -> LogOutputFunction:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetDefaultLogOutputFunction", def() -> LogOutputFunction
+        lib, "SDL_GetDefaultLogOutputFunction", def() thin -> LogOutputFunction
     ]()()
 
 
@@ -330,7 +335,7 @@ def get_log_output_function(
         def(
             callback: Ptr[LogOutputFunction, MutAnyOrigin],
             userdata: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
-        ) -> None,
+        ) thin -> None,
     ]()(callback, userdata)
 
 
@@ -355,5 +360,5 @@ def set_log_output_function(
         def(
             callback: LogOutputFunction,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> None,
+        ) thin -> None,
     ]()(callback, userdata)

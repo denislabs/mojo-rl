@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Pixels
+"""Pixels.
 
 SDL offers facilities for pixel management.
 
@@ -943,7 +943,7 @@ def get_pixel_format_name(
     return _get_dylib_function[
         lib,
         "SDL_GetPixelFormatName",
-        def(format: PixelFormat) -> Ptr[c_char, ImmutAnyOrigin],
+        def(format: PixelFormat) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(format)
 
 
@@ -985,7 +985,7 @@ def get_masks_for_pixel_format(
             gmask: Ptr[UInt32, MutAnyOrigin],
             bmask: Ptr[UInt32, MutAnyOrigin],
             amask: Ptr[UInt32, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(format, bpp, rmask, gmask, bmask, amask)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1025,7 +1025,7 @@ def get_pixel_format_for_masks(
             gmask: UInt32,
             bmask: UInt32,
             amask: UInt32,
-        ) -> PixelFormat,
+        ) thin -> PixelFormat,
     ]()(bpp, rmask, gmask, bmask, amask)
 
 
@@ -1054,7 +1054,7 @@ def get_pixel_format_details(
     return _get_dylib_function[
         lib,
         "SDL_GetPixelFormatDetails",
-        def(format: PixelFormat) -> Ptr[PixelFormatDetails, ImmutAnyOrigin],
+        def(format: PixelFormat) thin -> Ptr[PixelFormatDetails, ImmutAnyOrigin],
     ]()(format)
 
 
@@ -1080,7 +1080,7 @@ def create_palette(ncolors: c_int) raises -> Ptr[Palette, MutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_CreatePalette",
-        def(ncolors: c_int) -> Ptr[Palette, MutAnyOrigin],
+        def(ncolors: c_int) thin -> Ptr[Palette, MutAnyOrigin],
     ]()(ncolors)
 
 
@@ -1117,7 +1117,7 @@ def set_palette_colors(
             colors: Ptr[Color, ImmutAnyOrigin],
             firstcolor: c_int,
             ncolors: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(palette, colors, firstcolor, ncolors)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1139,7 +1139,7 @@ def destroy_palette(palette: Ptr[Palette, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyPalette",
-        def(palette: Ptr[Palette, MutAnyOrigin]) -> None,
+        def(palette: Ptr[Palette, MutAnyOrigin]) thin -> None,
     ]()(palette)
 
 
@@ -1194,7 +1194,7 @@ def map_rgb(
             r: UInt8,
             g: UInt8,
             b: UInt8,
-        ) -> UInt32,
+        ) thin -> UInt32,
     ]()(format, palette, r, g, b)
 
 
@@ -1252,7 +1252,7 @@ def map_rgba(
             g: UInt8,
             b: UInt8,
             a: UInt8,
-        ) -> UInt32,
+        ) thin -> UInt32,
     ]()(format, palette, r, g, b, a)
 
 
@@ -1297,7 +1297,7 @@ def get_rgb(
             r: Ptr[UInt8, MutAnyOrigin],
             g: Ptr[UInt8, MutAnyOrigin],
             b: Ptr[UInt8, MutAnyOrigin],
-        ) -> None,
+        ) thin -> None,
     ]()(pixel, format, palette, r, g, b)
 
 
@@ -1348,5 +1348,5 @@ def get_rgba(
             g: Ptr[UInt8, MutAnyOrigin],
             b: Ptr[UInt8, MutAnyOrigin],
             a: Ptr[UInt8, MutAnyOrigin],
-        ) -> None,
+        ) thin -> None,
     ]()(pixel, format, palette, r, g, b, a)

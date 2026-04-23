@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Audio
+"""Audio.
 
 Audio functionality for the SDL library.
 
@@ -272,7 +272,7 @@ def get_num_audio_drivers() raises -> c_int:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetNumAudioDrivers", def() -> c_int
+        lib, "SDL_GetNumAudioDrivers", def() thin -> c_int
     ]()()
 
 
@@ -304,7 +304,7 @@ def get_audio_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetAudioDriver",
-        def(index: c_int) -> Ptr[c_char, ImmutAnyOrigin],
+        def(index: c_int) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(index)
 
 
@@ -326,7 +326,7 @@ def get_current_audio_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetCurrentAudioDriver", def() -> Ptr[c_char, ImmutAnyOrigin]
+        lib, "SDL_GetCurrentAudioDriver", def() thin -> Ptr[c_char, ImmutAnyOrigin]
     ]()()
 
 
@@ -366,7 +366,7 @@ def get_audio_playback_devices(
         "SDL_GetAudioPlaybackDevices",
         def(
             count: Ptr[c_int, MutAnyOrigin]
-        ) -> Ptr[AudioDeviceID, MutAnyOrigin],
+        ) thin -> Ptr[AudioDeviceID, MutAnyOrigin],
     ]()(count)
 
 
@@ -407,7 +407,7 @@ def get_audio_recording_devices(
         "SDL_GetAudioRecordingDevices",
         def(
             count: Ptr[c_int, MutAnyOrigin]
-        ) -> Ptr[AudioDeviceID, MutAnyOrigin],
+        ) thin -> Ptr[AudioDeviceID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -434,7 +434,7 @@ def get_audio_device_name(
     ret = _get_dylib_function[
         lib,
         "SDL_GetAudioDeviceName",
-        def(devid: AudioDeviceID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(devid: AudioDeviceID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(devid)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -489,7 +489,7 @@ def get_audio_device_format(
             devid: AudioDeviceID,
             spec: Ptr[AudioSpec, MutAnyOrigin],
             sample_frames: Ptr[c_int, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(devid, spec, sample_frames)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -526,7 +526,7 @@ def get_audio_device_channel_map(
         "SDL_GetAudioDeviceChannelMap",
         def(
             devid: AudioDeviceID, count: Ptr[c_int, MutAnyOrigin]
-        ) -> Ptr[c_int, MutAnyOrigin],
+        ) thin -> Ptr[c_int, MutAnyOrigin],
     ]()(devid, count)
 
 
@@ -613,7 +613,7 @@ def open_audio_device(
         "SDL_OpenAudioDevice",
         def(
             devid: AudioDeviceID, spec: Ptr[AudioSpec, ImmutAnyOrigin]
-        ) -> AudioDeviceID,
+        ) thin -> AudioDeviceID,
     ]()(devid, spec)
 
 
@@ -646,7 +646,7 @@ def is_audio_device_physical(devid: AudioDeviceID) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_IsAudioDevicePhysical", def(devid: AudioDeviceID) -> Bool
+        lib, "SDL_IsAudioDevicePhysical", def(devid: AudioDeviceID) thin -> Bool
     ]()(devid)
 
 
@@ -668,7 +668,7 @@ def is_audio_device_playback(devid: AudioDeviceID) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_IsAudioDevicePlayback", def(devid: AudioDeviceID) -> Bool
+        lib, "SDL_IsAudioDevicePlayback", def(devid: AudioDeviceID) thin -> Bool
     ]()(devid)
 
 
@@ -704,7 +704,7 @@ def pause_audio_device(devid: AudioDeviceID) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_PauseAudioDevice", def(devid: AudioDeviceID) -> Bool
+        lib, "SDL_PauseAudioDevice", def(devid: AudioDeviceID) thin -> Bool
     ]()(devid)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -739,7 +739,7 @@ def resume_audio_device(devid: AudioDeviceID) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_ResumeAudioDevice", def(devid: AudioDeviceID) -> Bool
+        lib, "SDL_ResumeAudioDevice", def(devid: AudioDeviceID) thin -> Bool
     ]()(devid)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -768,7 +768,7 @@ def audio_device_paused(devid: AudioDeviceID) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_AudioDevicePaused", def(devid: AudioDeviceID) -> Bool
+        lib, "SDL_AudioDevicePaused", def(devid: AudioDeviceID) thin -> Bool
     ]()(devid)
 
 
@@ -797,7 +797,7 @@ def get_audio_device_gain(devid: AudioDeviceID) raises -> c_float:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetAudioDeviceGain", def(devid: AudioDeviceID) -> c_float
+        lib, "SDL_GetAudioDeviceGain", def(devid: AudioDeviceID) thin -> c_float
     ]()(devid)
 
 
@@ -840,7 +840,7 @@ def set_audio_device_gain(devid: AudioDeviceID, gain: c_float) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetAudioDeviceGain",
-        def(devid: AudioDeviceID, gain: c_float) -> Bool,
+        def(devid: AudioDeviceID, gain: c_float) thin -> Bool,
     ]()(devid, gain)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -867,7 +867,7 @@ def close_audio_device(devid: AudioDeviceID) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_CloseAudioDevice", def(devid: AudioDeviceID) -> None
+        lib, "SDL_CloseAudioDevice", def(devid: AudioDeviceID) thin -> None
     ]()(devid)
 
 
@@ -921,7 +921,7 @@ def bind_audio_streams(
             devid: AudioDeviceID,
             streams: Ptr[AudioStream, MutAnyOrigin],
             num_streams: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(devid, streams, num_streams)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -954,7 +954,7 @@ def bind_audio_stream(
         "SDL_BindAudioStream",
         def(
             devid: AudioDeviceID, stream: Ptr[AudioStream, MutAnyOrigin]
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(devid, stream)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -987,7 +987,7 @@ def unbind_audio_streams(
         "SDL_UnbindAudioStreams",
         def(
             streams: Ptr[AudioStream, MutAnyOrigin], num_streams: c_int
-        ) -> None,
+        ) thin -> None,
     ]()(streams, num_streams)
 
 
@@ -1009,7 +1009,7 @@ def unbind_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_UnbindAudioStream",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> None,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> None,
     ]()(stream)
 
 
@@ -1038,7 +1038,7 @@ def get_audio_stream_device(
     return _get_dylib_function[
         lib,
         "SDL_GetAudioStreamDevice",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> AudioDeviceID,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> AudioDeviceID,
     ]()(stream)
 
 
@@ -1069,7 +1069,7 @@ def create_audio_stream(
         def(
             src_spec: Ptr[AudioSpec, ImmutAnyOrigin],
             dst_spec: Ptr[AudioSpec, ImmutAnyOrigin],
-        ) -> Ptr[AudioStream, MutAnyOrigin],
+        ) thin -> Ptr[AudioStream, MutAnyOrigin],
     ]()(src_spec, dst_spec)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1096,7 +1096,7 @@ def get_audio_stream_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetAudioStreamProperties",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> PropertiesID,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> PropertiesID,
     ]()(stream)
 
 
@@ -1130,7 +1130,7 @@ def get_audio_stream_format(
             stream: Ptr[AudioStream, MutAnyOrigin],
             src_spec: Ptr[AudioSpec, MutAnyOrigin],
             dst_spec: Ptr[AudioSpec, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(stream, src_spec, dst_spec)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1184,7 +1184,7 @@ def set_audio_stream_format(
             stream: Ptr[AudioStream, MutAnyOrigin],
             src_spec: Ptr[AudioSpec, ImmutAnyOrigin],
             dst_spec: Ptr[AudioSpec, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(stream, src_spec, dst_spec)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1212,7 +1212,7 @@ def get_audio_stream_frequency_ratio(
     return _get_dylib_function[
         lib,
         "SDL_GetAudioStreamFrequencyRatio",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> c_float,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> c_float,
     ]()(stream)
 
 
@@ -1249,7 +1249,7 @@ def set_audio_stream_frequency_ratio(
     ret = _get_dylib_function[
         lib,
         "SDL_SetAudioStreamFrequencyRatio",
-        def(stream: Ptr[AudioStream, MutAnyOrigin], ratio: c_float) -> Bool,
+        def(stream: Ptr[AudioStream, MutAnyOrigin], ratio: c_float) thin -> Bool,
     ]()(stream, ratio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1282,7 +1282,7 @@ def get_audio_stream_gain(
     return _get_dylib_function[
         lib,
         "SDL_GetAudioStreamGain",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> c_float,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> c_float,
     ]()(stream)
 
 
@@ -1317,7 +1317,7 @@ def set_audio_stream_gain(
     ret = _get_dylib_function[
         lib,
         "SDL_SetAudioStreamGain",
-        def(stream: Ptr[AudioStream, MutAnyOrigin], gain: c_float) -> Bool,
+        def(stream: Ptr[AudioStream, MutAnyOrigin], gain: c_float) thin -> Bool,
     ]()(stream, gain)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1357,7 +1357,7 @@ def get_audio_stream_input_channel_map(
         def(
             stream: Ptr[AudioStream, MutAnyOrigin],
             count: Ptr[c_int, MutAnyOrigin],
-        ) -> Ptr[c_int, MutAnyOrigin],
+        ) thin -> Ptr[c_int, MutAnyOrigin],
     ]()(stream, count)
 
 
@@ -1395,7 +1395,7 @@ def get_audio_stream_output_channel_map(
         def(
             stream: Ptr[AudioStream, MutAnyOrigin],
             count: Ptr[c_int, MutAnyOrigin],
-        ) -> Ptr[c_int, MutAnyOrigin],
+        ) thin -> Ptr[c_int, MutAnyOrigin],
     ]()(stream, count)
 
 
@@ -1471,7 +1471,7 @@ def set_audio_stream_input_channel_map(
             stream: Ptr[AudioStream, MutAnyOrigin],
             chmap: Ptr[c_int, ImmutAnyOrigin],
             count: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(stream, chmap, count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1547,7 +1547,7 @@ def set_audio_stream_output_channel_map(
             stream: Ptr[AudioStream, MutAnyOrigin],
             chmap: Ptr[c_int, ImmutAnyOrigin],
             count: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(stream, chmap, count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1592,7 +1592,7 @@ def put_audio_stream_data(
             stream: Ptr[AudioStream, MutAnyOrigin],
             buf: Ptr[NoneType, ImmutAnyOrigin],
             len: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(stream, buf, len)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1638,7 +1638,7 @@ def get_audio_stream_data(
             stream: Ptr[AudioStream, MutAnyOrigin],
             buf: Ptr[NoneType, MutAnyOrigin],
             len: c_int,
-        ) -> c_int,
+        ) thin -> c_int,
     ]()(stream, buf, len)
 
 
@@ -1673,7 +1673,7 @@ def get_audio_stream_available(
     return _get_dylib_function[
         lib,
         "SDL_GetAudioStreamAvailable",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> c_int,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> c_int,
     ]()(stream)
 
 
@@ -1720,7 +1720,7 @@ def get_audio_stream_queued(
     return _get_dylib_function[
         lib,
         "SDL_GetAudioStreamQueued",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> c_int,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> c_int,
     ]()(stream)
 
 
@@ -1748,7 +1748,7 @@ def flush_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_FlushAudioStream",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> Bool,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
     ]()(stream)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1776,7 +1776,7 @@ def clear_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_ClearAudioStream",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> Bool,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
     ]()(stream)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1810,7 +1810,7 @@ def pause_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_PauseAudioStreamDevice",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> Bool,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
     ]()(stream)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1843,7 +1843,7 @@ def resume_audio_stream_device(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_ResumeAudioStreamDevice",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> Bool,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
     ]()(stream)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1873,7 +1873,7 @@ def audio_stream_device_paused(
     return _get_dylib_function[
         lib,
         "SDL_AudioStreamDevicePaused",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> Bool,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
     ]()(stream)
 
 
@@ -1909,7 +1909,7 @@ def lock_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LockAudioStream",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> Bool,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
     ]()(stream)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1937,7 +1937,7 @@ def unlock_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_UnlockAudioStream",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> Bool,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> Bool,
     ]()(stream)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1948,7 +1948,7 @@ comptime AudioStreamCallback = def(
     stream: Ptr[AudioStream, MutAnyOrigin],
     additional_amount: c_int,
     total_amount: c_int,
-) -> None
+) thin -> None
 """A callback that fires when data passes through an SDL_AudioStream.
     
     Apps can (optionally) register a callback with an audio stream that is
@@ -2047,7 +2047,7 @@ def set_audio_stream_get_callback(
             stream: Ptr[AudioStream, MutAnyOrigin],
             callback: AudioStreamCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(stream, callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2114,7 +2114,7 @@ def set_audio_stream_put_callback(
             stream: Ptr[AudioStream, MutAnyOrigin],
             callback: AudioStreamCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(stream, callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2143,7 +2143,7 @@ def destroy_audio_stream(stream: Ptr[AudioStream, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyAudioStream",
-        def(stream: Ptr[AudioStream, MutAnyOrigin]) -> None,
+        def(stream: Ptr[AudioStream, MutAnyOrigin]) thin -> None,
     ]()(stream)
 
 
@@ -2223,7 +2223,7 @@ def open_audio_device_stream(
             spec: Ptr[AudioSpec, ImmutAnyOrigin],
             callback: AudioStreamCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> Ptr[AudioStream, MutAnyOrigin],
+        ) thin -> Ptr[AudioStream, MutAnyOrigin],
     ]()(devid, spec, callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2234,7 +2234,7 @@ comptime AudioPostmixCallback = def(
     spec: Ptr[AudioSpec, ImmutAnyOrigin],
     buffer: Ptr[c_float, MutAnyOrigin],
     buflen: c_int,
-) -> None
+) thin -> None
 """A callback that fires when data is about to be fed to an audio device.
     
     This is useful for accessing the final mix, perhaps for writing a
@@ -2339,7 +2339,7 @@ def set_audio_postmix_callback(
             devid: AudioDeviceID,
             callback: AudioPostmixCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(devid, callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2440,7 +2440,7 @@ def load_wav_io(
             spec: Ptr[AudioSpec, MutAnyOrigin],
             audio_buf: Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
             audio_len: Ptr[UInt32, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, closeio, spec, audio_buf, audio_len)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2495,7 +2495,7 @@ def load_wav(
             spec: Ptr[AudioSpec, MutAnyOrigin],
             audio_buf: Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
             audio_len: Ptr[UInt32, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr(), spec, audio_buf, audio_len)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2555,7 +2555,7 @@ def mix_audio(
             format: AudioFormat,
             len: UInt32,
             volume: c_float,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(dst, src, format, len, volume)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2611,7 +2611,7 @@ def convert_audio_samples(
             dst_spec: Ptr[AudioSpec, ImmutAnyOrigin],
             dst_data: Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
             dst_len: Ptr[c_int, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src_spec, src_data, src_len, dst_spec, dst_data, dst_len)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2638,7 +2638,7 @@ def get_audio_format_name(
     return _get_dylib_function[
         lib,
         "SDL_GetAudioFormatName",
-        def(format: AudioFormat) -> Ptr[c_char, ImmutAnyOrigin],
+        def(format: AudioFormat) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(format)
 
 
@@ -2662,5 +2662,5 @@ def get_silence_value_for_format(format: AudioFormat) raises -> c_int:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetSilenceValueForFormat", def(format: AudioFormat) -> c_int
+        lib, "SDL_GetSilenceValueForFormat", def(format: AudioFormat) thin -> c_int
     ]()(format)

@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""GUID
+"""GUID.
 
 A GUID is a 128-bit value that represents something that is uniquely
 identifiable by this value: "globally unique."
@@ -73,7 +73,7 @@ def guid_to_string(
         "SDL_GUIDToString",
         def(
             guid: GUID, psz_guid: Ptr[c_char, MutAnyOrigin], cb_guid: c_int
-        ) -> None,
+        ) thin -> None,
     ]()(guid, psz_guid, cb_guid)
 
 
@@ -99,5 +99,5 @@ def string_to_guid(var pch_guid: String) raises -> GUID:
     return _get_dylib_function[
         lib,
         "SDL_StringToGUID",
-        def(pch_guid: Ptr[c_char, ImmutAnyOrigin]) -> GUID,
+        def(pch_guid: Ptr[c_char, ImmutAnyOrigin]) thin -> GUID,
     ]()(pch_guid.as_c_string_slice().unsafe_ptr())

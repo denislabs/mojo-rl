@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Clipboard
+"""Clipboard.
 
 SDL provides access to the system clipboard, both for reading information
 from other processes and publishing information of its own.
@@ -94,7 +94,7 @@ def set_clipboard_text(var text: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetClipboardText",
-        def(text: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(text: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
     ]()(text.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -118,7 +118,7 @@ def get_clipboard_text(out ret: Ptr[c_char, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_GetClipboardText", def() -> Ptr[c_char, MutAnyOrigin]
+        lib, "SDL_GetClipboardText", def() thin -> Ptr[c_char, MutAnyOrigin]
     ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -136,7 +136,7 @@ def has_clipboard_text() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HasClipboardText.
     """
 
-    return _get_dylib_function[lib, "SDL_HasClipboardText", def() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_HasClipboardText", def() thin -> Bool]()()
 
 
 def set_primary_selection_text(var text: String) raises:
@@ -158,7 +158,7 @@ def set_primary_selection_text(var text: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetPrimarySelectionText",
-        def(text: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(text: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
     ]()(text.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -182,7 +182,7 @@ def get_primary_selection_text() raises -> Ptr[c_char, MutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetPrimarySelectionText", def() -> Ptr[c_char, MutAnyOrigin]
+        lib, "SDL_GetPrimarySelectionText", def() thin -> Ptr[c_char, MutAnyOrigin]
     ]()()
 
 
@@ -200,7 +200,7 @@ def has_primary_selection_text() raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_HasPrimarySelectionText", def() -> Bool
+        lib, "SDL_HasPrimarySelectionText", def() thin -> Bool
     ]()()
 
 
@@ -209,7 +209,7 @@ comptime ClipboardDataCallback = Ptr[
         userdata: Ptr[NoneType, MutAnyOrigin],
         mime_type: Ptr[c_char, ImmutAnyOrigin],
         size: Ptr[c_size_t, MutAnyOrigin],
-    ) -> None, MutAnyOrigin
+    ) thin -> None, MutAnyOrigin
 ]
 """Callback function that will be called when data for the specified mime-type
     is requested by the OS.
@@ -236,7 +236,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_ClipboardDataCallback.
 
 comptime ClipboardCleanupCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin]
-) -> None
+) thin -> None
 """Callback function that will be called when the clipboard is cleared, or when new
     data is set.
     
@@ -293,7 +293,7 @@ def set_clipboard_data(
             userdata: Ptr[NoneType, MutAnyOrigin],
             mime_types: Ptr[Ptr[c_char, ImmutAnyOrigin], ImmutAnyOrigin],
             num_mime_types: c_size_t,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(callback, cleanup, userdata, mime_types, num_mime_types)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -312,7 +312,7 @@ def clear_clipboard_data() raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ClearClipboardData.
     """
 
-    ret = _get_dylib_function[lib, "SDL_ClearClipboardData", def() -> Bool]()()
+    ret = _get_dylib_function[lib, "SDL_ClearClipboardData", def() thin -> Bool]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -348,7 +348,7 @@ def get_clipboard_data(
         def(
             mime_type: Ptr[c_char, ImmutAnyOrigin],
             size: Ptr[c_size_t, MutAnyOrigin],
-        ) -> Ptr[NoneType, MutAnyOrigin],
+        ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(mime_type.as_c_string_slice().unsafe_ptr(), size)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -373,7 +373,7 @@ def has_clipboard_data(var mime_type: String) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_HasClipboardData",
-        def(mime_type: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(mime_type: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
     ]()(mime_type.as_c_string_slice().unsafe_ptr())
 
 
@@ -402,5 +402,5 @@ def get_clipboard_mime_types(
         "SDL_GetClipboardMimeTypes",
         def(
             num_mime_types: Ptr[c_size_t, MutAnyOrigin]
-        ) -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
+        ) thin -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
     ]()(num_mime_types)

@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Gamepad
+"""Gamepad.
 
 SDL provides a low-level joystick API, which just treats joysticks as an
 arbitrary pile of buttons, axes, and hat switches. If you're planning to
@@ -460,7 +460,7 @@ def add_gamepad_mapping(var mapping: String) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_AddGamepadMapping",
-        def(mapping: Ptr[c_char, ImmutAnyOrigin]) -> c_int,
+        def(mapping: Ptr[c_char, ImmutAnyOrigin]) thin -> c_int,
     ]()(mapping.as_c_string_slice().unsafe_ptr())
 
 
@@ -504,7 +504,7 @@ def add_gamepad_mappings_from_io(
     return _get_dylib_function[
         lib,
         "SDL_AddGamepadMappingsFromIO",
-        def(src: Ptr[IOStream, MutAnyOrigin], closeio: Bool) -> c_int,
+        def(src: Ptr[IOStream, MutAnyOrigin], closeio: Bool) thin -> c_int,
     ]()(src, closeio)
 
 
@@ -540,7 +540,7 @@ def add_gamepad_mappings_from_file(var file: String) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_AddGamepadMappingsFromFile",
-        def(file: Ptr[c_char, ImmutAnyOrigin]) -> c_int,
+        def(file: Ptr[c_char, ImmutAnyOrigin]) thin -> c_int,
     ]()(file.as_c_string_slice().unsafe_ptr())
 
 
@@ -557,7 +557,7 @@ def reload_gamepad_mappings() raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_ReloadGamepadMappings", def() -> Bool
+        lib, "SDL_ReloadGamepadMappings", def() thin -> Bool
     ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -586,7 +586,7 @@ def get_gamepad_mappings(
         "SDL_GetGamepadMappings",
         def(
             count: Ptr[c_int, MutAnyOrigin]
-        ) -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
+        ) thin -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
     ]()(count)
 
 
@@ -609,7 +609,7 @@ def get_gamepad_mapping_for_guid(
     ret = _get_dylib_function[
         lib,
         "SDL_GetGamepadMappingForGUID",
-        def(guid: GUID) -> Ptr[c_char, MutAnyOrigin],
+        def(guid: GUID) thin -> Ptr[c_char, MutAnyOrigin],
     ]()(guid)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -636,7 +636,7 @@ def get_gamepad_mapping(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadMapping",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> Ptr[c_char, MutAnyOrigin],
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> Ptr[c_char, MutAnyOrigin],
     ]()(gamepad)
 
 
@@ -662,7 +662,7 @@ def set_gamepad_mapping(instance_id: JoystickID, var mapping: String) raises:
         "SDL_SetGamepadMapping",
         def(
             instance_id: JoystickID, mapping: Ptr[c_char, ImmutAnyOrigin]
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(instance_id, mapping.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -677,7 +677,7 @@ def has_gamepad() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HasGamepad.
     """
 
-    return _get_dylib_function[lib, "SDL_HasGamepad", def() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_HasGamepad", def() thin -> Bool]()()
 
 
 def get_gamepads(
@@ -701,7 +701,7 @@ def get_gamepads(
     ret = _get_dylib_function[
         lib,
         "SDL_GetGamepads",
-        def(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[JoystickID, MutAnyOrigin],
+        def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[JoystickID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -721,7 +721,7 @@ def is_gamepad(instance_id: JoystickID) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_IsGamepad", def(instance_id: JoystickID) -> Bool
+        lib, "SDL_IsGamepad", def(instance_id: JoystickID) thin -> Bool
     ]()(instance_id)
 
 
@@ -745,7 +745,7 @@ def get_gamepad_name_for_id(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadNameForID",
-        def(instance_id: JoystickID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(instance_id: JoystickID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
 
 
@@ -769,7 +769,7 @@ def get_gamepad_path_for_id(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadPathForID",
-        def(instance_id: JoystickID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(instance_id: JoystickID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
 
 
@@ -790,7 +790,7 @@ def get_gamepad_player_index_for_id(instance_id: JoystickID) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadPlayerIndexForID",
-        def(instance_id: JoystickID) -> c_int,
+        def(instance_id: JoystickID) thin -> c_int,
     ]()(instance_id)
 
 
@@ -810,7 +810,7 @@ def get_gamepad_guid_for_id(instance_id: JoystickID) raises -> GUID:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetGamepadGUIDForID", def(instance_id: JoystickID) -> GUID
+        lib, "SDL_GetGamepadGUIDForID", def(instance_id: JoystickID) thin -> GUID
     ]()(instance_id)
 
 
@@ -831,7 +831,7 @@ def get_gamepad_vendor_for_id(instance_id: JoystickID) raises -> UInt16:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetGamepadVendorForID", def(instance_id: JoystickID) -> UInt16
+        lib, "SDL_GetGamepadVendorForID", def(instance_id: JoystickID) thin -> UInt16
     ]()(instance_id)
 
 
@@ -854,7 +854,7 @@ def get_gamepad_product_for_id(instance_id: JoystickID) raises -> UInt16:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadProductForID",
-        def(instance_id: JoystickID) -> UInt16,
+        def(instance_id: JoystickID) thin -> UInt16,
     ]()(instance_id)
 
 
@@ -879,7 +879,7 @@ def get_gamepad_product_version_for_id(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadProductVersionForID",
-        def(instance_id: JoystickID) -> UInt16,
+        def(instance_id: JoystickID) thin -> UInt16,
     ]()(instance_id)
 
 
@@ -900,7 +900,7 @@ def get_gamepad_type_for_id(instance_id: JoystickID) raises -> GamepadType:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadTypeForID",
-        def(instance_id: JoystickID) -> GamepadType,
+        def(instance_id: JoystickID) thin -> GamepadType,
     ]()(instance_id)
 
 
@@ -921,7 +921,7 @@ def get_real_gamepad_type_for_id(instance_id: JoystickID) raises -> GamepadType:
     return _get_dylib_function[
         lib,
         "SDL_GetRealGamepadTypeForID",
-        def(instance_id: JoystickID) -> GamepadType,
+        def(instance_id: JoystickID) thin -> GamepadType,
     ]()(instance_id)
 
 
@@ -945,7 +945,7 @@ def get_gamepad_mapping_for_id(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadMappingForID",
-        def(instance_id: JoystickID) -> Ptr[c_char, MutAnyOrigin],
+        def(instance_id: JoystickID) thin -> Ptr[c_char, MutAnyOrigin],
     ]()(instance_id)
 
 
@@ -967,7 +967,7 @@ def open_gamepad(
     return _get_dylib_function[
         lib,
         "SDL_OpenGamepad",
-        def(instance_id: JoystickID) -> Ptr[Gamepad, MutAnyOrigin],
+        def(instance_id: JoystickID) thin -> Ptr[Gamepad, MutAnyOrigin],
     ]()(instance_id)
 
 
@@ -990,7 +990,7 @@ def get_gamepad_from_id(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadFromID",
-        def(instance_id: JoystickID) -> Ptr[Gamepad, MutAnyOrigin],
+        def(instance_id: JoystickID) thin -> Ptr[Gamepad, MutAnyOrigin],
     ]()(instance_id)
 
 
@@ -1011,7 +1011,7 @@ def get_gamepad_from_player_index(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadFromPlayerIndex",
-        def(player_index: c_int) -> Ptr[Gamepad, MutAnyOrigin],
+        def(player_index: c_int) thin -> Ptr[Gamepad, MutAnyOrigin],
     ]()(player_index)
 
 
@@ -1049,7 +1049,7 @@ def get_gamepad_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadProperties",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> PropertiesID,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> PropertiesID,
     ]()(gamepad)
 
 
@@ -1070,7 +1070,7 @@ def get_gamepad_id(gamepad: Ptr[Gamepad, MutAnyOrigin]) raises -> JoystickID:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadID",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> JoystickID,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> JoystickID,
     ]()(gamepad)
 
 
@@ -1093,7 +1093,7 @@ def get_gamepad_name(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadName",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(gamepad)
 
 
@@ -1116,7 +1116,7 @@ def get_gamepad_path(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadPath",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(gamepad)
 
 
@@ -1136,7 +1136,7 @@ def get_gamepad_type(gamepad: Ptr[Gamepad, MutAnyOrigin]) raises -> GamepadType:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadType",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> GamepadType,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> GamepadType,
     ]()(gamepad)
 
 
@@ -1158,7 +1158,7 @@ def get_real_gamepad_type(
     return _get_dylib_function[
         lib,
         "SDL_GetRealGamepadType",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> GamepadType,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> GamepadType,
     ]()(gamepad)
 
 
@@ -1181,7 +1181,7 @@ def get_gamepad_player_index(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadPlayerIndex",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> c_int,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> c_int,
     ]()(gamepad)
 
 
@@ -1205,7 +1205,7 @@ def set_gamepad_player_index(
     ret = _get_dylib_function[
         lib,
         "SDL_SetGamepadPlayerIndex",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin], player_index: c_int) -> Bool,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin], player_index: c_int) thin -> Bool,
     ]()(gamepad, player_index)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1228,7 +1228,7 @@ def get_gamepad_vendor(gamepad: Ptr[Gamepad, MutAnyOrigin]) raises -> UInt16:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadVendor",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> UInt16,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> UInt16,
     ]()(gamepad)
 
 
@@ -1249,7 +1249,7 @@ def get_gamepad_product(gamepad: Ptr[Gamepad, MutAnyOrigin]) raises -> UInt16:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadProduct",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> UInt16,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> UInt16,
     ]()(gamepad)
 
 
@@ -1272,7 +1272,7 @@ def get_gamepad_product_version(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadProductVersion",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> UInt16,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> UInt16,
     ]()(gamepad)
 
 
@@ -1295,7 +1295,7 @@ def get_gamepad_firmware_version(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadFirmwareVersion",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> UInt16,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> UInt16,
     ]()(gamepad)
 
 
@@ -1318,7 +1318,7 @@ def get_gamepad_serial(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadSerial",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(gamepad)
 
 
@@ -1342,7 +1342,7 @@ def get_gamepad_steam_handle(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadSteamHandle",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> UInt64,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> UInt64,
     ]()(gamepad)
 
 
@@ -1365,7 +1365,7 @@ def get_gamepad_connection_state(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadConnectionState",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> JoystickConnectionState,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> JoystickConnectionState,
     ]()(gamepad)
 
 
@@ -1399,7 +1399,7 @@ def get_gamepad_power_info(
         def(
             gamepad: Ptr[Gamepad, MutAnyOrigin],
             percent: Ptr[c_int, MutAnyOrigin],
-        ) -> PowerState,
+        ) thin -> PowerState,
     ]()(gamepad, percent)
 
 
@@ -1420,7 +1420,7 @@ def gamepad_connected(gamepad: Ptr[Gamepad, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_GamepadConnected",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> Bool,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> Bool,
     ]()(gamepad)
 
 
@@ -1452,7 +1452,7 @@ def get_gamepad_joystick(
     ret = _get_dylib_function[
         lib,
         "SDL_GetGamepadJoystick",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> Ptr[Joystick, MutAnyOrigin],
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> Ptr[Joystick, MutAnyOrigin],
     ]()(gamepad)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1471,7 +1471,7 @@ def set_gamepad_events_enabled(enabled: Bool) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_SetGamepadEventsEnabled", def(enabled: Bool) -> None
+        lib, "SDL_SetGamepadEventsEnabled", def(enabled: Bool) thin -> None
     ]()(enabled)
 
 
@@ -1488,7 +1488,7 @@ def gamepad_events_enabled() raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GamepadEventsEnabled", def() -> Bool
+        lib, "SDL_GamepadEventsEnabled", def() thin -> Bool
     ]()()
 
 
@@ -1516,7 +1516,7 @@ def get_gamepad_bindings(
         def(
             gamepad: Ptr[Gamepad, MutAnyOrigin],
             count: Ptr[c_int, MutAnyOrigin],
-        ) -> Ptr[Ptr[GamepadBinding, MutAnyOrigin], MutAnyOrigin],
+        ) thin -> Ptr[Ptr[GamepadBinding, MutAnyOrigin], MutAnyOrigin],
     ]()(gamepad, count)
 
 
@@ -1530,7 +1530,7 @@ def update_gamepads() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateGamepads.
     """
 
-    return _get_dylib_function[lib, "SDL_UpdateGamepads", def() -> None]()()
+    return _get_dylib_function[lib, "SDL_UpdateGamepads", def() thin -> None]()()
 
 
 def get_gamepad_type_from_string(var str: String) raises -> GamepadType:
@@ -1554,7 +1554,7 @@ def get_gamepad_type_from_string(var str: String) raises -> GamepadType:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadTypeFromString",
-        def(str: Ptr[c_char, ImmutAnyOrigin]) -> GamepadType,
+        def(str: Ptr[c_char, ImmutAnyOrigin]) thin -> GamepadType,
     ]()(str.as_c_string_slice().unsafe_ptr())
 
 
@@ -1577,7 +1577,7 @@ def get_gamepad_string_for_type(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadStringForType",
-        def(type: GamepadType) -> Ptr[c_char, ImmutAnyOrigin],
+        def(type: GamepadType) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(type)
 
 
@@ -1606,7 +1606,7 @@ def get_gamepad_axis_from_string(var str: String) raises -> GamepadAxis:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadAxisFromString",
-        def(str: Ptr[c_char, ImmutAnyOrigin]) -> GamepadAxis,
+        def(str: Ptr[c_char, ImmutAnyOrigin]) thin -> GamepadAxis,
     ]()(str.as_c_string_slice().unsafe_ptr())
 
 
@@ -1629,7 +1629,7 @@ def get_gamepad_string_for_axis(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadStringForAxis",
-        def(axis: GamepadAxis) -> Ptr[c_char, ImmutAnyOrigin],
+        def(axis: GamepadAxis) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(axis)
 
 
@@ -1654,7 +1654,7 @@ def gamepad_has_axis(
     return _get_dylib_function[
         lib,
         "SDL_GamepadHasAxis",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin], axis: GamepadAxis) -> Bool,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin], axis: GamepadAxis) thin -> Bool,
     ]()(gamepad, axis)
 
 
@@ -1686,7 +1686,7 @@ def get_gamepad_axis(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadAxis",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin], axis: GamepadAxis) -> Int16,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin], axis: GamepadAxis) thin -> Int16,
     ]()(gamepad, axis)
 
 
@@ -1711,7 +1711,7 @@ def get_gamepad_button_from_string(var str: String) raises -> GamepadButton:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadButtonFromString",
-        def(str: Ptr[c_char, ImmutAnyOrigin]) -> GamepadButton,
+        def(str: Ptr[c_char, ImmutAnyOrigin]) thin -> GamepadButton,
     ]()(str.as_c_string_slice().unsafe_ptr())
 
 
@@ -1734,7 +1734,7 @@ def get_gamepad_string_for_button(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadStringForButton",
-        def(button: GamepadButton) -> Ptr[c_char, ImmutAnyOrigin],
+        def(button: GamepadButton) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(button)
 
 
@@ -1759,7 +1759,7 @@ def gamepad_has_button(
     return _get_dylib_function[
         lib,
         "SDL_GamepadHasButton",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin], button: GamepadButton) -> Bool,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin], button: GamepadButton) thin -> Bool,
     ]()(gamepad, button)
 
 
@@ -1781,7 +1781,7 @@ def get_gamepad_button(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadButton",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin], button: GamepadButton) -> Bool,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin], button: GamepadButton) thin -> Bool,
     ]()(gamepad, button)
 
 
@@ -1803,7 +1803,7 @@ def get_gamepad_button_label_for_type(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadButtonLabelForType",
-        def(type: GamepadType, button: GamepadButton) -> GamepadButtonLabel,
+        def(type: GamepadType, button: GamepadButton) thin -> GamepadButtonLabel,
     ]()(type, button)
 
 
@@ -1827,7 +1827,7 @@ def get_gamepad_button_label(
         "SDL_GetGamepadButtonLabel",
         def(
             gamepad: Ptr[Gamepad, MutAnyOrigin], button: GamepadButton
-        ) -> GamepadButtonLabel,
+        ) thin -> GamepadButtonLabel,
     ]()(gamepad, button)
 
 
@@ -1848,7 +1848,7 @@ def get_num_gamepad_touchpads(
     return _get_dylib_function[
         lib,
         "SDL_GetNumGamepadTouchpads",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> c_int,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> c_int,
     ]()(gamepad)
 
 
@@ -1871,7 +1871,7 @@ def get_num_gamepad_touchpad_fingers(
     return _get_dylib_function[
         lib,
         "SDL_GetNumGamepadTouchpadFingers",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin], touchpad: c_int) -> c_int,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin], touchpad: c_int) thin -> c_int,
     ]()(gamepad, touchpad)
 
 
@@ -1916,7 +1916,7 @@ def get_gamepad_touchpad_finger(
             x: Ptr[c_float, MutAnyOrigin],
             y: Ptr[c_float, MutAnyOrigin],
             pressure: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(gamepad, touchpad, finger, down, x, y, pressure)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1940,7 +1940,7 @@ def gamepad_has_sensor(
     return _get_dylib_function[
         lib,
         "SDL_GamepadHasSensor",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin], type: SensorType) -> Bool,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin], type: SensorType) thin -> Bool,
     ]()(gamepad, type)
 
 
@@ -1968,7 +1968,7 @@ def set_gamepad_sensor_enabled(
             gamepad: Ptr[Gamepad, MutAnyOrigin],
             type: SensorType,
             enabled: Bool,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(gamepad, type, enabled)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1992,7 +1992,7 @@ def gamepad_sensor_enabled(
     return _get_dylib_function[
         lib,
         "SDL_GamepadSensorEnabled",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin], type: SensorType) -> Bool,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin], type: SensorType) thin -> Bool,
     ]()(gamepad, type)
 
 
@@ -2014,7 +2014,7 @@ def get_gamepad_sensor_data_rate(
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadSensorDataRate",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin], type: SensorType) -> c_float,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin], type: SensorType) thin -> c_float,
     ]()(gamepad, type)
 
 
@@ -2050,7 +2050,7 @@ def get_gamepad_sensor_data(
             type: SensorType,
             data: Ptr[c_float, MutAnyOrigin],
             num_values: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(gamepad, type, data, num_values)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2093,7 +2093,7 @@ def rumble_gamepad(
             low_frequency_rumble: UInt16,
             high_frequency_rumble: UInt16,
             duration_ms: UInt32,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(gamepad, low_frequency_rumble, high_frequency_rumble, duration_ms)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2140,7 +2140,7 @@ def rumble_gamepad_triggers(
             left_rumble: UInt16,
             right_rumble: UInt16,
             duration_ms: UInt32,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(gamepad, left_rumble, right_rumble, duration_ms)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2181,7 +2181,7 @@ def set_gamepad_led(
             red: UInt8,
             green: UInt8,
             blue: UInt8,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(gamepad, red, green, blue)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2213,7 +2213,7 @@ def send_gamepad_effect(
             gamepad: Ptr[Gamepad, MutAnyOrigin],
             data: Ptr[NoneType, ImmutAnyOrigin],
             size: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(gamepad, data, size)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2232,7 +2232,7 @@ def close_gamepad(gamepad: Ptr[Gamepad, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_CloseGamepad",
-        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) -> None,
+        def(gamepad: Ptr[Gamepad, MutAnyOrigin]) thin -> None,
     ]()(gamepad)
 
 
@@ -2257,7 +2257,7 @@ def get_gamepad_apple_sf_symbols_name_for_button(
         "SDL_GetGamepadAppleSFSymbolsNameForButton",
         def(
             gamepad: Ptr[Gamepad, MutAnyOrigin], button: GamepadButton
-        ) -> Ptr[c_char, ImmutAnyOrigin],
+        ) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(gamepad, button)
 
 
@@ -2281,5 +2281,5 @@ def get_gamepad_apple_sf_symbols_name_for_axis(
         "SDL_GetGamepadAppleSFSymbolsNameForAxis",
         def(
             gamepad: Ptr[Gamepad, MutAnyOrigin], axis: GamepadAxis
-        ) -> Ptr[c_char, ImmutAnyOrigin],
+        ) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(gamepad, axis)

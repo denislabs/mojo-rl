@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Properties
+"""Properties.
 
 A property is a variable that can be created and retrieved by name at
 runtime.
@@ -111,7 +111,7 @@ def get_global_properties() raises -> PropertiesID:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetGlobalProperties", def() -> PropertiesID
+        lib, "SDL_GetGlobalProperties", def() thin -> PropertiesID
     ]()()
 
 
@@ -131,7 +131,7 @@ def create_properties() raises -> PropertiesID:
     """
 
     return _get_dylib_function[
-        lib, "SDL_CreateProperties", def() -> PropertiesID
+        lib, "SDL_CreateProperties", def() thin -> PropertiesID
     ]()()
 
 
@@ -160,7 +160,7 @@ def copy_properties(src: PropertiesID, dst: PropertiesID) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_CopyProperties",
-        def(src: PropertiesID, dst: PropertiesID) -> Bool,
+        def(src: PropertiesID, dst: PropertiesID) thin -> Bool,
     ]()(src, dst)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -192,7 +192,7 @@ def lock_properties(props: PropertiesID) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_LockProperties", def(props: PropertiesID) -> Bool
+        lib, "SDL_LockProperties", def(props: PropertiesID) thin -> Bool
     ]()(props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -211,14 +211,14 @@ def unlock_properties(props: PropertiesID) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_UnlockProperties", def(props: PropertiesID) -> None
+        lib, "SDL_UnlockProperties", def(props: PropertiesID) thin -> None
     ]()(props)
 
 
 comptime CleanupPropertyCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     value: Ptr[NoneType, MutAnyOrigin],
-) -> None
+) thin -> None
 """A callback used to free resources when a property is deleted.
     
     This should release any resources associated with `value` that are no
@@ -287,7 +287,7 @@ def set_pointer_property_with_cleanup(
             value: Ptr[NoneType, MutAnyOrigin],
             cleanup: CleanupPropertyCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value, cleanup, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -320,7 +320,7 @@ def set_pointer_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Ptr[NoneType, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -356,7 +356,7 @@ def set_string_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         props,
         name.as_c_string_slice().unsafe_ptr(),
@@ -393,7 +393,7 @@ def set_number_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Int64,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -426,7 +426,7 @@ def set_float_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: c_float,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -459,7 +459,7 @@ def set_boolean_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Bool,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -484,7 +484,9 @@ def has_property(props: PropertiesID, var name: String) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_HasProperty",
-        def(props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(
+            props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]
+        ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
 
 
@@ -512,7 +514,7 @@ def get_property_type(
         "SDL_GetPropertyType",
         def(
             props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]
-        ) -> PropertyType,
+        ) thin -> PropertyType,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
 
 
@@ -555,7 +557,7 @@ def get_pointer_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Ptr[NoneType, MutAnyOrigin],
-        ) -> Ptr[NoneType, MutAnyOrigin],
+        ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
@@ -591,7 +593,7 @@ def get_string_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Ptr[c_char, ImmutAnyOrigin],
+        ) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(
         props,
         name.as_c_string_slice().unsafe_ptr(),
@@ -629,7 +631,7 @@ def get_number_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Int64,
-        ) -> Int64,
+        ) thin -> Int64,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
@@ -663,7 +665,7 @@ def get_float_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: c_float,
-        ) -> c_float,
+        ) thin -> c_float,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
@@ -697,7 +699,7 @@ def get_boolean_property(
             props: PropertiesID,
             name: Ptr[c_char, ImmutAnyOrigin],
             default_value: Bool,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
@@ -721,7 +723,9 @@ def clear_property(props: PropertiesID, var name: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_ClearProperty",
-        def(props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(
+            props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]
+        ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -731,7 +735,7 @@ comptime EnumeratePropertiesCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     props: PropertiesID,
     name: Ptr[c_char, ImmutAnyOrigin],
-) -> None
+) thin -> None
 """A callback used to enumerate all the properties in a group of properties.
     
     This callback is called from SDL_EnumerateProperties(), and is called once
@@ -782,7 +786,7 @@ def enumerate_properties(
             props: PropertiesID,
             callback: EnumeratePropertiesCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(props, callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -806,5 +810,5 @@ def destroy_properties(props: PropertiesID) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_DestroyProperties", def(props: PropertiesID) -> None
+        lib, "SDL_DestroyProperties", def(props: PropertiesID) thin -> None
     ]()(props)
