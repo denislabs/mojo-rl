@@ -119,7 +119,7 @@ def main() raises:
             # use_ere=True,
             # ere_eta=0.996,
             checkpoint_every=50_000,
-            checkpoint_path="mbpo_half_cheetah",
+            checkpoint_path="mbpo_half_cheetah.ckpt",
         )
 
         print("Environment: HalfCheetah Continuous (GPU)")

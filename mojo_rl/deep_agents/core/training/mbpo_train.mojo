@@ -232,14 +232,13 @@ def run_mbpo_train[
                     + String(agent.rollout_length)
                 )
 
-        # Autosave checkpoint
+        # Autosave checkpoint (overwrites the same file)
         if (
             agent.checkpoint_every > 0
+            and len(agent.checkpoint_path) > 0
             and (epoch + 1) % agent.checkpoint_every == 0
         ):
-            agent.save_checkpoint(
-                agent.checkpoint_path + "_epoch_" + String(epoch + 1) + ".ckpt"
-            )
+            agent.save_checkpoint(agent.checkpoint_path)
 
     if logger:
         logger[].flush()
@@ -688,17 +687,17 @@ def run_mbpo_train_gpu[
                     + String(synth_buffer.size)
                 )
 
-            # Autosave checkpoint
-            if agent.checkpoint_every > 0 and total_steps >= agent.checkpoint_every and total_steps % agent.checkpoint_every < print_every:
+            # Autosave checkpoint (overwrites the same file)
+            if (
+                agent.checkpoint_every > 0
+                and len(agent.checkpoint_path) > 0
+                and total_steps >= agent.checkpoint_every
+                and total_steps % agent.checkpoint_every < print_every
+            ):
                 gpu_state.actor.download_to(cpu_state.actor, ctx)
                 gpu_state.critics.download_to(cpu_state.critics, ctx)
                 ctx.synchronize()
-                agent.save_checkpoint(
-                    agent.checkpoint_path
-                    + "_step_"
-                    + String(total_steps)
-                    + ".ckpt"
-                )
+                agent.save_checkpoint(agent.checkpoint_path)
 
             next_print += print_every
 
@@ -718,6 +717,10 @@ def run_mbpo_train_gpu[
     gpu_state.actor.download_to(cpu_state.actor, ctx)
     gpu_state.critics.download_to(cpu_state.critics, ctx)
     ctx.synchronize()
+
+    # Final checkpoint (CPU state is now synced from GPU)
+    if agent.checkpoint_every > 0 and len(agent.checkpoint_path) > 0:
+        agent.save_checkpoint(agent.checkpoint_path)
 
     if logger:
         logger[].flush()

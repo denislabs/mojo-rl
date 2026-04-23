@@ -113,7 +113,7 @@ def main() raises:
             real_ratio=0.05,
             sac_updates_per_step=40,  # MBPO paper n_train_repeat=40 for Hopper
             checkpoint_every=50_000,
-            checkpoint_path="mbpo_hopper",
+            checkpoint_path="mbpo_hopper.ckpt",
         )
 
         print("Environment: Hopper Continuous (GPU)")
