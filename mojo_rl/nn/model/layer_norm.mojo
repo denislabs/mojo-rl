@@ -235,7 +235,8 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -279,9 +280,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         var my_var = Scalar[dtype](0)
         idx = local_i
         while idx < Self.dim:
-            var diff = (
-                rebind[Scalar[dtype]](input[b, idx]) - mean_val
-            )
+            var diff = rebind[Scalar[dtype]](input[b, idx]) - mean_val
             my_var += diff * diff
             idx += TPB
         var var_val = (
@@ -310,7 +309,8 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_kernel_impl_no_cache[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -348,9 +348,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         var my_var = Scalar[dtype](0)
         idx = local_i
         while idx < Self.dim:
-            var diff = (
-                rebind[Scalar[dtype]](input[b, idx]) - mean_val
-            )
+            var diff = rebind[Scalar[dtype]](input[b, idx]) - mean_val
             my_var += diff * diff
             idx += TPB
         var var_val = (
@@ -372,7 +370,8 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -442,7 +441,8 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def backward_param_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
@@ -454,7 +454,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(2 * Self.dim), MutAnyOrigin
         ],
     ):
-        """dgamma/dbeta reduction across batch.
+        """Dgamma/dbeta reduction across batch.
 
         Grid: (dim,), Block: (TPB,). One block per output feature column,
         block-parallel sum over the BATCH rows. Replaces the previous
@@ -536,7 +536,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             ],
             eps: Scalar[dtype],
         ):
-            Self.forward_kernel_impl[BATCH, dtype](output, input, params, cache, eps)
+            Self.forward_kernel_impl[BATCH, dtype](
+                output, input, params, cache, eps
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -588,7 +590,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             ],
             eps: Scalar[dtype],
         ):
-            Self.forward_kernel_impl_no_cache[BATCH, dtype](output, input, params, eps)
+            Self.forward_kernel_impl_no_cache[BATCH, dtype](
+                output, input, params, eps
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -617,7 +621,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](
+            ctx, output, input, params, workspace
+        )
 
     @staticmethod
     def backward_gpu[
