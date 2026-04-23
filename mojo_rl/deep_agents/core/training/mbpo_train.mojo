@@ -238,7 +238,7 @@ def run_mbpo_train[
             and len(agent.checkpoint_path) > 0
             and (epoch + 1) % agent.checkpoint_every == 0
         ):
-            agent.save_checkpoint(agent.checkpoint_path)
+            agent.save_checkpoint(cpu_state, agent.checkpoint_path)
 
     if logger:
         logger[].flush()
@@ -697,7 +697,10 @@ def run_mbpo_train_gpu[
                 gpu_state.actor.download_to(cpu_state.actor, ctx)
                 gpu_state.critics.download_to(cpu_state.critics, ctx)
                 ctx.synchronize()
-                agent.save_checkpoint(agent.checkpoint_path)
+                # Write from cpu_state — agent.state is the fresh init and
+                # never receives the trained weights until train_gpu's
+                # post-return swap.
+                agent.save_checkpoint(cpu_state, agent.checkpoint_path)
 
             next_print += print_every
 
@@ -720,7 +723,7 @@ def run_mbpo_train_gpu[
 
     # Final checkpoint (CPU state is now synced from GPU)
     if agent.checkpoint_every > 0 and len(agent.checkpoint_path) > 0:
-        agent.save_checkpoint(agent.checkpoint_path)
+        agent.save_checkpoint(cpu_state, agent.checkpoint_path)
 
     if logger:
         logger[].flush()

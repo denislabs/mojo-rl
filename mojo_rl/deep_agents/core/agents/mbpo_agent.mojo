@@ -82,6 +82,7 @@ from mojo_rl.core import (
     TrainingMetrics,
     BoxContinuousActionEnv,
     GPUContinuousEnv,
+    RenderableEnv,
 )
 from mojo_rl.deep_agents.core.training.mbpo_train import (
     run_mbpo_train,
@@ -2188,6 +2189,77 @@ struct MBPOAgent[
         return result^
 
     # =========================================================================
+    # Evaluation (mirrors DeepSACAgent.evaluate)
+    # =========================================================================
+
+    def evaluate[
+        E: BoxContinuousActionEnv & RenderableEnv,
+    ](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        max_steps_per_episode: Int = 1000,
+        verbose: Bool = False,
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
+        """Evaluate the agent deterministically (mean action, no sampling).
+
+        Returns average reward across `num_episodes`. Optionally renders each
+        frame and honours a user-requested window close.
+        """
+        var quit_requested = False
+        if render:
+            _ = env.init_renderer()
+
+        var total_reward: Float64 = 0.0
+        var completed: Int = 0
+        for ep in range(num_episodes):
+            if quit_requested:
+                break
+            var obs_raw = env.reset_obs_list()
+            var obs = List[Float64]()
+            for i in range(len(obs_raw)):
+                obs.append(Float64(obs_raw[i]))
+
+            var episode_reward: Float64 = 0.0
+            for _ in range(max_steps_per_episode):
+                var action = self.select_greedy_action(self.state, obs)
+                var result = env.step_continuous_vec(action)
+                var next_obs = List[Float64]()
+                for i in range(len(result[0])):
+                    next_obs.append(Float64(result[0][i]))
+                episode_reward += Float64(result[1])
+                obs = next_obs^
+
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
+                if result[2]:
+                    break
+
+            total_reward += episode_reward
+            completed += 1
+            if verbose:
+                print(
+                    "  Episode "
+                    + String(ep + 1)
+                    + " | Reward: "
+                    + String(episode_reward)[byte=:10]
+                )
+
+        if render:
+            env.close_renderer()
+
+        if completed == 0:
+            return 0.0
+        return total_reward / Float64(completed)
+
+    # =========================================================================
     # High-level train method (matches GenericOffPolicyAgent.train)
     # =========================================================================
 
@@ -3459,6 +3531,27 @@ struct MBPOAgent[
     # =========================================================================
 
     def save_checkpoint(self, path: String) raises -> None:
+        """Save checkpoint using network weights from `self.state`.
+
+        Note: during GPU training the freshly-trained weights live in the
+        training loop's local `cpu_state`, not on `self.state`. The loop
+        should call `save_checkpoint(cpu_state, path)` (the overload below)
+        instead of this one — otherwise the saved file contains the
+        agent's random init weights.
+        """
+        self._save_checkpoint_impl(self.state, path)
+
+    def save_checkpoint(
+        self, cpu_state: Self.CPUStateType, path: String
+    ) raises -> None:
+        """Save checkpoint using network weights from the provided
+        `cpu_state`. Used by the GPU training loop after downloading GPU
+        weights into its local cpu_state."""
+        self._save_checkpoint_impl(cpu_state, path)
+
+    def _save_checkpoint_impl(
+        self, cpu_state: Self.CPUStateType, path: String
+    ) raises -> None:
         var content = write_checkpoint_header(
             "mbpo",
             Self.Config.ActorModel.PARAM_SIZE
@@ -3466,13 +3559,13 @@ struct MBPOAgent[
             + Self.Config.DynamicsModel.PARAM_SIZE * Self.Config.ENSEMBLE_SIZE,
             0,
         )
-        content += self.state.actor.write_sections("actor_")
-        content += self.state.critics.pairs[0].write_sections("critic_")
+        content += cpu_state.actor.write_sections("actor_")
+        content += cpu_state.critics.pairs[0].write_sections("critic_")
         comptime if Self.Config.NUM_CRITICS == 2:
-            content += self.state.critics.pairs[1].write_sections("critic2_")
+            content += cpu_state.critics.pairs[1].write_sections("critic2_")
         for m in range(Self.Config.ENSEMBLE_SIZE):
             var prefix = "dyn" + String(m) + "_"
-            content += self.state.dynamics.members[m].write_sections(prefix)
+            content += cpu_state.dynamics.members[m].write_sections(prefix)
 
         var metadata = List[String]()
         metadata.append("gamma=" + String(self.gamma))
@@ -3486,10 +3579,10 @@ struct MBPOAgent[
         metadata.append("train_step_count=" + String(self.train_step_count))
         metadata.append("rollout_length=" + String(self.rollout_length))
         var elite_str = String("")
-        for i in range(len(self.state.dynamics.elite_indices)):
+        for i in range(len(cpu_state.dynamics.elite_indices)):
             if i > 0:
                 elite_str += ","
-            elite_str += String(self.state.dynamics.elite_indices[i])
+            elite_str += String(cpu_state.dynamics.elite_indices[i])
         metadata.append("elite_indices=" + elite_str)
         content += write_metadata_section(metadata)
         save_checkpoint_file(path, content)

@@ -48,6 +48,7 @@ from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
 from mojo_rl.deep_agents.core.utils import obs_to_inline
 from mojo_rl.core.logger import Logger
+from mojo_rl.core import BoxContinuousActionEnv, RenderableEnv
 from mojo_rl.deep_agents.core.kernels import (
     concat_obs_action_kernel,
     td_mse_grad_kernel,
@@ -639,6 +640,77 @@ struct REDQAgent[
             a *= self.action_scale
             result.append(a)
         return result^
+
+    # -------------------------------------------------------------------------
+    # Evaluation (mirrors DeepSACAgent.evaluate)
+    # -------------------------------------------------------------------------
+
+    def evaluate[
+        E: BoxContinuousActionEnv & RenderableEnv,
+    ](
+        self,
+        mut env: E,
+        num_episodes: Int = 10,
+        max_steps_per_episode: Int = 1000,
+        verbose: Bool = False,
+        render: Bool = False,
+        frame_delay_ms: Int = 16,
+    ) raises -> Float64:
+        """Evaluate the agent deterministically (mean action, no sampling).
+
+        Uses `cpu_actor`; call `download_from_gpu` first if GPU weights are
+        fresher than CPU. Returns average reward across `num_episodes`.
+        """
+        var quit_requested = False
+        if render:
+            _ = env.init_renderer()
+
+        var total_reward: Float64 = 0.0
+        var completed: Int = 0
+        for ep in range(num_episodes):
+            if quit_requested:
+                break
+            var obs_raw = env.reset_obs_list()
+            var obs = List[Float64]()
+            for i in range(len(obs_raw)):
+                obs.append(Float64(obs_raw[i]))
+
+            var episode_reward: Float64 = 0.0
+            for _ in range(max_steps_per_episode):
+                var action = self.select_greedy_action(obs)
+                var result = env.step_continuous_vec(action)
+                var next_obs = List[Float64]()
+                for i in range(len(result[0])):
+                    next_obs.append(Float64(result[0][i]))
+                episode_reward += Float64(result[1])
+                obs = next_obs^
+
+                if render:
+                    env.render_frame()
+                    env.renderer_delay(frame_delay_ms)
+                    if env.check_renderer_quit():
+                        quit_requested = True
+                        break
+
+                if result[2]:
+                    break
+
+            total_reward += episode_reward
+            completed += 1
+            if verbose:
+                print(
+                    "  Episode "
+                    + String(ep + 1)
+                    + " | Reward: "
+                    + String(episode_reward)[byte=:10]
+                )
+
+        if render:
+            env.close_renderer()
+
+        if completed == 0:
+            return 0.0
+        return total_reward / Float64(completed)
 
     # -------------------------------------------------------------------------
     # CPU ↔ GPU sync

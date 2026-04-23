@@ -1,8 +1,8 @@
 """CPU evaluation for MBPO on Swimmer.
 
 This evaluates a trained MBPO agent using CPU inference on the Swimmer
-environment. Load a checkpoint from GPU training and run deterministic
-evaluation episodes (using mean action, no sampling).
+environment with 3D rendering. Load a checkpoint from GPU training and run
+deterministic evaluation episodes (using mean action, no sampling).
 
 Run with:
     pixi run mojo run -I . examples/swimmer/mbpo_swimmer_eval_cpu.mojo
@@ -119,34 +119,15 @@ def main() raises:
 
     var start_time = perf_counter_ns()
 
-    var total_reward: Float64 = 0.0
-    for ep in range(NUM_EPISODES):
-        var obs_raw = env.reset_obs_list()
-        var obs = List[Float64]()
-        for i in range(len(obs_raw)):
-            obs.append(Float64(obs_raw[i]))
+    var avg_reward = agent.evaluate(
+        env,
+        num_episodes=NUM_EPISODES,
+        max_steps_per_episode=MAX_STEPS,
+        verbose=True,
+        render=True,
+        frame_delay_ms=32,
+    )
 
-        var episode_reward: Float64 = 0.0
-        for _ in range(MAX_STEPS):
-            var action = agent.select_greedy_action(agent.state, obs)
-            var result = env.step_continuous_vec(action)
-            var next_obs = List[Float64]()
-            for i in range(len(result[0])):
-                next_obs.append(Float64(result[0][i]))
-            episode_reward += Float64(result[1])
-            if result[2]:
-                break
-            obs = next_obs^
-
-        total_reward += episode_reward
-        print(
-            "  Episode "
-            + String(ep + 1)
-            + " | Reward: "
-            + String(episode_reward)[byte=:8]
-        )
-
-    var avg_reward = total_reward / Float64(NUM_EPISODES)
     var elapsed_ms = (perf_counter_ns() - start_time) / 1_000_000
 
     print()
