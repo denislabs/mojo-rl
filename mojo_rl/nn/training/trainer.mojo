@@ -228,7 +228,7 @@ struct Trainer[
             if print_every > 0 and epoch % print_every == 0:
                 print("Epoch " + String(epoch) + " - Loss: " + String(loss))
 
-            if checkpoint_every > 0 and len(checkpoint_path) > 0:
+            if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
                 if (epoch + 1) % checkpoint_every == 0:
                     try:
                         state.save_checkpoint(checkpoint_path)

@@ -84,6 +84,7 @@ struct HopperTerminate(TerminationFn):
         comptime TPB = 256
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def hopper_term_kernel(
             obs: LayoutTensor[
@@ -139,6 +140,7 @@ struct AntTerminate(TerminationFn):
         comptime TPB = 256
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def ant_term_kernel(
             obs: LayoutTensor[
@@ -191,6 +193,7 @@ struct InvertedPendulumTerminate(TerminationFn):
         comptime TPB = 256
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def pendulum_term_kernel(
             obs: LayoutTensor[

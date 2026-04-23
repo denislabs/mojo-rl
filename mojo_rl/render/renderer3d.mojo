@@ -280,7 +280,9 @@ struct Renderer3D(Movable):
     var box_mesh: MeshHandle
     var ground_mesh: MeshHandle
     var capsule_cache: List[CapsuleCacheEntry]
-    var cylinder_cache: List[CapsuleCacheEntry]  # Same cache type (radius, half_height)
+    var cylinder_cache: List[
+        CapsuleCacheEntry
+    ]  # Same cache type (radius, half_height)
     var mesh_cache: List[MeshCacheEntry]
 
     # Texture cache for PNG textures
@@ -593,7 +595,7 @@ struct Renderer3D(Movable):
             "SDL_CreateGPUDevice",
             def(
                 GPUShaderFormat, Bool, Ptr[c_char, ImmutAnyOrigin]
-            ) -> Ptr[GPUDevice, MutAnyOrigin],
+            ) thin -> Ptr[GPUDevice, MutAnyOrigin],
         ]()(
             Self._shader_format(),
             True,
@@ -695,12 +697,18 @@ struct Renderer3D(Movable):
         """Create shader using MSL on macOS or SPIR-V on Linux."""
         comptime if CompilationTarget.is_macos():
             return self._create_shader_msl(
-                msl_source, stage, num_uniform_buffers,
-                msl_entrypoint, num_samplers,
+                msl_source,
+                stage,
+                num_uniform_buffers,
+                msl_entrypoint,
+                num_samplers,
             )
         elif CompilationTarget.is_linux():
             return self._create_shader_spirv(
-                spirv_data, stage, num_uniform_buffers, num_samplers,
+                spirv_data,
+                stage,
+                num_uniform_buffers,
+                num_samplers,
             )
         else:
             comptime assert False, "Unsupported platform for Renderer3D"
@@ -721,9 +729,18 @@ struct Renderer3D(Movable):
             return load_spirv_shaders()
         else:
             return SPIRVShaders(
-                List[UInt8](), List[UInt8](), List[UInt8](), List[UInt8](),
-                List[UInt8](), List[UInt8](), List[UInt8](), List[UInt8](),
-                List[UInt8](), List[UInt8](), List[UInt8](), List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
+                List[UInt8](),
                 List[UInt8](),
             )
 
@@ -733,14 +750,19 @@ struct Renderer3D(Movable):
 
         # --- Solid pipeline ---
         var solid_vs = self._create_shader(
-            SOLID_VERTEX_MSL, String("solid_vertex"), spv.solid_vert,
+            SOLID_VERTEX_MSL,
+            String("solid_vertex"),
+            spv.solid_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
         )
         var solid_fs = self._create_shader(
-            SOLID_FRAGMENT_MSL, String("solid_fragment"), spv.solid_frag,
+            SOLID_FRAGMENT_MSL,
+            String("solid_fragment"),
+            spv.solid_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=2, num_samplers=2,
+            num_uniform_buffers=2,
+            num_samplers=2,
         )
 
         # Vertex input - allocate attributes contiguously on heap
@@ -850,14 +872,19 @@ struct Renderer3D(Movable):
 
         # --- Ground pipeline (alpha blend for distance fade) ---
         var ground_vs = self._create_shader(
-            GROUND_VERTEX_MSL, String("ground_vertex"), spv.ground_vert,
+            GROUND_VERTEX_MSL,
+            String("ground_vertex"),
+            spv.ground_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
         )
         var ground_fs = self._create_shader(
-            GROUND_FRAGMENT_MSL, String("ground_fragment"), spv.ground_frag,
+            GROUND_FRAGMENT_MSL,
+            String("ground_fragment"),
+            spv.ground_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=2, num_samplers=2,
+            num_uniform_buffers=2,
+            num_samplers=2,
         )
 
         var ground_ct = GPUColorTargetDescription(
@@ -966,12 +993,16 @@ struct Renderer3D(Movable):
 
         # --- Line pipeline ---
         var line_vs = self._create_shader(
-            LINE_VERTEX_MSL, String("line_vertex"), spv.line_vert,
+            LINE_VERTEX_MSL,
+            String("line_vertex"),
+            spv.line_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=1,
         )
         var line_fs = self._create_shader(
-            LINE_FRAGMENT_MSL, String("line_fragment"), spv.line_frag,
+            LINE_FRAGMENT_MSL,
+            String("line_fragment"),
+            spv.line_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=1,
         )
@@ -1069,12 +1100,16 @@ struct Renderer3D(Movable):
 
         # --- Shadow pipeline (depth-only, from light POV) ---
         var shadow_vs = self._create_shader(
-            SHADOW_VERTEX_MSL, String("shadow_vertex"), spv.shadow_vert,
+            SHADOW_VERTEX_MSL,
+            String("shadow_vertex"),
+            spv.shadow_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
         )
         var shadow_fs = self._create_shader(
-            SHADOW_FRAGMENT_MSL, String("shadow_fragment"), spv.shadow_frag,
+            SHADOW_FRAGMENT_MSL,
+            String("shadow_fragment"),
+            spv.shadow_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=0,
         )
@@ -1170,14 +1205,17 @@ struct Renderer3D(Movable):
 
         # --- Reflection pipeline (alpha-blended, front-cull, no depth write) ---
         var refl_fs = self._create_shader(
-            REFLECTION_FRAGMENT_MSL, String("reflection_fragment"),
+            REFLECTION_FRAGMENT_MSL,
+            String("reflection_fragment"),
             spv.reflection_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=1,
         )
         # Reuse solid vertex shader for reflection (same vertex output struct)
         var refl_vs = self._create_shader(
-            SOLID_VERTEX_MSL, String("solid_vertex"), spv.solid_vert,
+            SOLID_VERTEX_MSL,
+            String("solid_vertex"),
+            spv.solid_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=2,
         )
@@ -1288,12 +1326,16 @@ struct Renderer3D(Movable):
 
         # --- Skybox pipeline (fullscreen gradient, no depth write, no vertex input) ---
         var skybox_vs = self._create_shader(
-            SKYBOX_VERTEX_MSL, String("skybox_vertex"), spv.skybox_vert,
+            SKYBOX_VERTEX_MSL,
+            String("skybox_vertex"),
+            spv.skybox_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=0,
         )
         var skybox_fs = self._create_shader(
-            SKYBOX_FRAGMENT_MSL, String("skybox_fragment"), spv.skybox_frag,
+            SKYBOX_FRAGMENT_MSL,
+            String("skybox_fragment"),
+            spv.skybox_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
             num_uniform_buffers=1,
         )
@@ -1658,14 +1700,19 @@ struct Renderer3D(Movable):
         # --- 3. Create text pipeline ---
         var spv = Self._load_spirv()
         var text_vs = self._create_shader(
-            TEXT_VERTEX_MSL, String("text_vertex"), spv.text_vert,
+            TEXT_VERTEX_MSL,
+            String("text_vertex"),
+            spv.text_vert,
             GPUShaderStage.GPU_SHADERSTAGE_VERTEX,
             num_uniform_buffers=1,
         )
         var text_fs = self._create_shader(
-            TEXT_FRAGMENT_MSL, String("text_fragment"), spv.text_frag,
+            TEXT_FRAGMENT_MSL,
+            String("text_fragment"),
+            spv.text_frag,
             GPUShaderStage.GPU_SHADERSTAGE_FRAGMENT,
-            num_uniform_buffers=0, num_samplers=1,
+            num_uniform_buffers=0,
+            num_samplers=1,
         )
 
         var text_buf_desc = GPUVertexBufferDescription(
@@ -1839,7 +1886,8 @@ struct Renderer3D(Movable):
         release_gpu_transfer_buffer(self.device, idx_tb)
 
     def _create_default_texture(mut self) raises:
-        """Create a 1x1 white RGBA8 texture as default for untextured objects."""
+        """Create a 1x1 white RGBA8 texture as default for untextured objects.
+        """
         # Create 1x1 RGBA8 texture
         var tex_info = GPUTextureCreateInfo(
             type=GPUTextureType.GPU_TEXTURETYPE_2D,
@@ -1852,9 +1900,7 @@ struct Renderer3D(Movable):
             sample_count=GPUSampleCount.GPU_SAMPLECOUNT_1,
             props=PropertiesID(0),
         )
-        self.default_texture = create_gpu_texture(
-            self.device, Ptr(to=tex_info)
-        )
+        self.default_texture = create_gpu_texture(self.device, Ptr(to=tex_info))
 
         # Upload 1x1 white pixel via transfer buffer
         var tb_info = GPUTransferBufferCreateInfo(
@@ -2012,9 +2058,7 @@ struct Renderer3D(Movable):
             padding2=0,
             props=PropertiesID(0),
         )
-        var tex_sampler = create_gpu_sampler(
-            self.device, Ptr(to=samp_info)
-        )
+        var tex_sampler = create_gpu_sampler(self.device, Ptr(to=samp_info))
 
         # Add to cache
         self.texture_cache.append(
@@ -2062,7 +2106,7 @@ struct Renderer3D(Movable):
         var glyph_w = Float32(8 * scale)
         var glyph_h = Float32(8 * scale)
         var cx = x
-        for i in range(len(text)):
+        for i in range(text.byte_length()):
             var c = text.as_bytes()[i]
             var uv = glyph_uv(c)
             var u0 = uv[0]
@@ -2135,7 +2179,7 @@ struct Renderer3D(Movable):
         """
         # Load and cache texture if provided
         var tex_idx = -1
-        if len(texture_name) > 0 and len(texture_path) > 0:
+        if texture_name.byte_length() > 0 and texture_path.byte_length() > 0:
             for ti in range(len(self.texture_cache)):
                 if self.texture_cache[ti].matches(texture_name):
                     tex_idx = ti
@@ -2144,8 +2188,14 @@ struct Renderer3D(Movable):
                 try:
                     var tex_data = load_png(texture_path)
                     tex_idx = self.upload_texture(texture_name, tex_data)
-                    print("Loaded texture '", texture_name, "':",
-                          tex_data.width, "x", tex_data.height)
+                    print(
+                        "Loaded texture '",
+                        texture_name,
+                        "':",
+                        tex_data.width,
+                        "x",
+                        tex_data.height,
+                    )
                 except e:
                     print("Warning: texture load failed:", String(e))
                     pass
@@ -2161,7 +2211,9 @@ struct Renderer3D(Movable):
         uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
-        self.solid_draws.append(SolidDrawCommand(0, uniforms, texture_cache_idx=tex_idx))
+        self.solid_draws.append(
+            SolidDrawCommand(0, uniforms, texture_cache_idx=tex_idx)
+        )
 
     def draw_capsule(
         mut self,
@@ -2196,7 +2248,7 @@ struct Renderer3D(Movable):
         """
         # Load and cache texture if provided
         var tex_idx = -1
-        if len(texture_name) > 0 and len(texture_path) > 0:
+        if texture_name.byte_length() > 0 and texture_path.byte_length() > 0:
             for ti in range(len(self.texture_cache)):
                 if self.texture_cache[ti].matches(texture_name):
                     tex_idx = ti
@@ -2205,8 +2257,14 @@ struct Renderer3D(Movable):
                 try:
                     var tex_data = load_png(texture_path)
                     tex_idx = self.upload_texture(texture_name, tex_data)
-                    print("Loaded texture '", texture_name, "':",
-                          tex_data.width, "x", tex_data.height)
+                    print(
+                        "Loaded texture '",
+                        texture_name,
+                        "':",
+                        tex_data.width,
+                        "x",
+                        tex_data.height,
+                    )
                 except e:
                     print("Warning: texture load failed:", String(e))
                     pass
@@ -2256,7 +2314,10 @@ struct Renderer3D(Movable):
 
         self.solid_draws.append(
             SolidDrawCommand(
-                0, uniforms, is_capsule=True, capsule_cache_idx=cache_idx,
+                0,
+                uniforms,
+                is_capsule=True,
+                capsule_cache_idx=cache_idx,
                 texture_cache_idx=tex_idx,
             )
         )
@@ -2294,7 +2355,7 @@ struct Renderer3D(Movable):
         """
         # Load and cache texture if provided
         var tex_idx = -1
-        if len(texture_name) > 0 and len(texture_path) > 0:
+        if texture_name.byte_length() > 0 and texture_path.byte_length() > 0:
             for ti in range(len(self.texture_cache)):
                 if self.texture_cache[ti].matches(texture_name):
                     tex_idx = ti
@@ -2303,8 +2364,14 @@ struct Renderer3D(Movable):
                 try:
                     var tex_data = load_png(texture_path)
                     tex_idx = self.upload_texture(texture_name, tex_data)
-                    print("Loaded texture '", texture_name, "':",
-                          tex_data.width, "x", tex_data.height)
+                    print(
+                        "Loaded texture '",
+                        texture_name,
+                        "':",
+                        tex_data.width,
+                        "x",
+                        tex_data.height,
+                    )
                 except e:
                     print("Warning: texture load failed:", String(e))
                     pass
@@ -2350,7 +2417,10 @@ struct Renderer3D(Movable):
 
         self.solid_draws.append(
             SolidDrawCommand(
-                0, uniforms, is_cylinder=True, cylinder_cache_idx=cache_idx,
+                0,
+                uniforms,
+                is_cylinder=True,
+                cylinder_cache_idx=cache_idx,
                 texture_cache_idx=tex_idx,
             )
         )
@@ -2409,7 +2479,7 @@ struct Renderer3D(Movable):
 
         # Load and cache texture if provided
         var tex_idx = -1
-        if len(texture_name) > 0 and len(texture_path) > 0:
+        if texture_name.byte_length() > 0 and texture_path.byte_length() > 0:
             # Check cache first (avoid reloading PNG every frame)
             for ti in range(len(self.texture_cache)):
                 if self.texture_cache[ti].matches(texture_name):
@@ -2418,11 +2488,15 @@ struct Renderer3D(Movable):
             if tex_idx < 0:
                 try:
                     var tex_data = load_png(texture_path)
-                    tex_idx = self.upload_texture(
-                        texture_name, tex_data
+                    tex_idx = self.upload_texture(texture_name, tex_data)
+                    print(
+                        "Loaded texture '",
+                        texture_name,
+                        "':",
+                        tex_data.width,
+                        "x",
+                        tex_data.height,
                     )
-                    print("Loaded texture '", texture_name, "':",
-                          tex_data.width, "x", tex_data.height)
                 except e:
                     print("Warning: texture load failed:", String(e))
                     pass
@@ -2488,7 +2562,7 @@ struct Renderer3D(Movable):
         """
         # Load and cache texture if provided
         var tex_idx = -1
-        if len(texture_name) > 0 and len(texture_path) > 0:
+        if texture_name.byte_length() > 0 and texture_path.byte_length() > 0:
             for ti in range(len(self.texture_cache)):
                 if self.texture_cache[ti].matches(texture_name):
                     tex_idx = ti
@@ -2497,8 +2571,14 @@ struct Renderer3D(Movable):
                 try:
                     var tex_data = load_png(texture_path)
                     tex_idx = self.upload_texture(texture_name, tex_data)
-                    print("Loaded texture '", texture_name, "':",
-                          tex_data.width, "x", tex_data.height)
+                    print(
+                        "Loaded texture '",
+                        texture_name,
+                        "':",
+                        tex_data.width,
+                        "x",
+                        tex_data.height,
+                    )
                 except e:
                     print("Warning: texture load failed:", String(e))
                     pass
@@ -2520,7 +2600,9 @@ struct Renderer3D(Movable):
         uniforms.material[2] = Float32(1.0) if tex_idx >= 0 else reflectance
         uniforms.material[3] = emission
 
-        self.solid_draws.append(SolidDrawCommand(1, uniforms, texture_cache_idx=tex_idx))
+        self.solid_draws.append(
+            SolidDrawCommand(1, uniforms, texture_cache_idx=tex_idx)
+        )
 
     def set_skybox(
         mut self,
@@ -2613,7 +2695,7 @@ struct Renderer3D(Movable):
         """
         # Load and cache ground texture if provided
         self.ground_texture_idx = -1
-        if len(texture_name) > 0 and len(texture_path) > 0:
+        if texture_name.byte_length() > 0 and texture_path.byte_length() > 0:
             for ti in range(len(self.texture_cache)):
                 if self.texture_cache[ti].matches(texture_name):
                     self.ground_texture_idx = ti
@@ -2624,8 +2706,14 @@ struct Renderer3D(Movable):
                     self.ground_texture_idx = self.upload_texture(
                         texture_name, tex_data
                     )
-                    print("Loaded ground texture '", texture_name, "':",
-                          tex_data.width, "x", tex_data.height)
+                    print(
+                        "Loaded ground texture '",
+                        texture_name,
+                        "':",
+                        tex_data.width,
+                        "x",
+                        tex_data.height,
+                    )
                 except e:
                     print("Warning: ground texture load failed:", String(e))
                     pass

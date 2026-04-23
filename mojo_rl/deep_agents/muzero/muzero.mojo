@@ -1386,23 +1386,23 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         var metadata = read_metadata_section(content)
 
         var steps_str = get_metadata_value(metadata, "train_step_count")
-        if len(steps_str) > 0:
+        if steps_str.byte_length() > 0:
             self.train_step_count = Int(atol(steps_str))
 
         var total_str = get_metadata_value(metadata, "total_steps")
-        if len(total_str) > 0:
+        if total_str.byte_length() > 0:
             self.total_steps = Int(atol(total_str))
 
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
 
         var vmin_str = get_metadata_value(metadata, "v_min")
-        if len(vmin_str) > 0:
+        if vmin_str.byte_length() > 0:
             self.v_min = atof(vmin_str)
 
         var vmax_str = get_metadata_value(metadata, "v_max")
-        if len(vmax_str) > 0:
+        if vmax_str.byte_length() > 0:
             self.v_max = atof(vmax_str)
 
     # ══════════════════════════════════════════════════════════════════════
@@ -1689,6 +1689,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             UInt32(self.train_step_count * 7 + 1)
         )
 
+        @parameter
         @always_inline
         def sample_wrapper(
             bo: LayoutTensor[
@@ -1769,6 +1770,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             dtype, Layout.row_major(K * BATCH), MutAnyOrigin
         ](gpu.reward_targets_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def nstep_wrapper(
             vt: LayoutTensor[
@@ -2808,6 +2810,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 (gpu.replay.write_idx - 1 + PER_ENV_CAP) % PER_ENV_CAP
             )
 
+            @parameter
             @always_inline
             def store_targets_wrapper(
                 pi: LayoutTensor[
@@ -3538,6 +3541,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     (gpu.replay.write_idx - 1 + PER_ENV_CAP) % PER_ENV_CAP
                 )
 
+                @parameter
                 @always_inline
                 def store_tgt_w(
                     pi: LayoutTensor[

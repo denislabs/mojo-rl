@@ -500,6 +500,7 @@ struct PPOGPUStateGeneric[
         # Scalar store: actions, log_probs, values (tiny kernel)
         comptime blocks = (N_ENVS + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def store_scalars_wrapper(
             r_a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -1264,23 +1265,23 @@ struct GenericOnPolicyAgent[
         var metadata = read_metadata_section(content)
 
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
 
         var gae_str = get_metadata_value(metadata, "gae_lambda")
-        if len(gae_str) > 0:
+        if gae_str.byte_length() > 0:
             self.gae_lambda = atof(gae_str)
 
         var entropy_str = get_metadata_value(metadata, "entropy_coef")
-        if len(entropy_str) > 0:
+        if entropy_str.byte_length() > 0:
             self.entropy_coef = atof(entropy_str)
 
         var clip_str = get_metadata_value(metadata, "clip_epsilon")
-        if len(clip_str) > 0:
+        if clip_str.byte_length() > 0:
             self.clip_epsilon = atof(clip_str)
 
         var step_str = get_metadata_value(metadata, "train_step_count")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.train_step_count = Int(atol(step_str))
 
     # =========================================================================
@@ -1796,6 +1797,7 @@ struct GenericOnPolicyAgent[
                 )
 
                 # Scalar gather: actions, advantages, returns, log_probs, values
+                @parameter
                 @always_inline
                 def gather_scalars_mb_wrapper(
                     mb_a: LayoutTensor[
@@ -1971,6 +1973,7 @@ struct GenericOnPolicyAgent[
                         MutAnyOrigin,
                     ](loss_input_ptr)
 
+                    @parameter
                     @always_inline
                     def pack_discrete_loss_input_k(
                         dst: LayoutTensor[
@@ -2081,6 +2084,7 @@ struct GenericOnPolicyAgent[
                         MutAnyOrigin,
                     ](loss_grad_output_ptr)
 
+                    @parameter
                     @always_inline
                     def seed_discrete_grad_k(
                         go: LayoutTensor[
@@ -2134,6 +2138,7 @@ struct GenericOnPolicyAgent[
                         ImmutAnyOrigin,
                     ](loss_grad_input_ptr)
 
+                    @parameter
                     @always_inline
                     def extract_entropy_diag_k(
                         dst: LayoutTensor[

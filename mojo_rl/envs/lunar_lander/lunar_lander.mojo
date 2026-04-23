@@ -1748,6 +1748,7 @@ struct LunarLander[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -1820,6 +1821,7 @@ struct LunarLander[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ](rng_counter_ptr)
 
+            @parameter
             @always_inline
             def selective_reset_counter_wrapper(
                 states: LayoutTensor[
@@ -1853,6 +1855,7 @@ struct LunarLander[
             )
         else:
 
+            @parameter
             @always_inline
             def selective_reset_wrapper(
                 states: LayoutTensor[
@@ -1901,6 +1904,7 @@ struct LunarLander[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def extract_obs(
             states: LayoutTensor[
@@ -2225,6 +2229,7 @@ struct LunarLander[
             MutAnyOrigin,
         ](shapes_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def init_shapes_wrapper(
             shapes: LayoutTensor[
@@ -2772,6 +2777,7 @@ struct LunarLander[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def setup_kernel(
             states: LayoutTensor[
@@ -2883,6 +2889,7 @@ struct LunarLander[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def physics_finalize_obs_kernel(
             states: LayoutTensor[
@@ -3084,6 +3091,7 @@ struct LunarLander[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def setup_kernel_continuous(
             states: LayoutTensor[
@@ -3371,6 +3379,7 @@ struct LunarLander[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def physics_finalize_obs_kernel_continuous(
             states: LayoutTensor[

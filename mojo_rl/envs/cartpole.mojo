@@ -1025,6 +1025,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var seed = Scalar[DType.uint64](rng_seed)
 
         # Define kernel wrapper that calls the impl and extracts obs
+        @parameter
         @always_inline
         def step_wrapper(
             states: LayoutTensor[
@@ -1107,6 +1108,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Define kernel wrapper
         # Note: MutAnyOrigin allows mutation, no `mut` keyword needed on wrapper params
         # CartPole doesn't have terrain - initial states are deterministic per env index
+        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -1166,6 +1168,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ](rng_counter_ptr)
 
+            @parameter
             @always_inline
             def selective_reset_counter_wrapper(
                 states: LayoutTensor[
@@ -1198,6 +1201,7 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             var seed = Scalar[DType.uint64](rng_seed)
 
             # Define kernel wrapper
+            @parameter
             @always_inline
             def selective_reset_wrapper(
                 states: LayoutTensor[

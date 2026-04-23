@@ -285,11 +285,11 @@ struct RemoteLogger(Logger):
         api_key: String = "",
     ):
         self._start_ns = perf_counter_ns()
-        if len(run_id) > 0:
+        if run_id.byte_length() > 0:
             self.run_id = run_id
         else:
             self.run_id = "run_" + String(self._start_ns)
-        self.run_name = run_name if len(run_name) > 0 else self.run_id
+        self.run_name = run_name if run_name.byte_length() > 0 else self.run_id
         self.server_url = server_url
         self.api_key = api_key
         self.entries = List[MetricEntry]()
@@ -313,7 +313,7 @@ struct RemoteLogger(Logger):
         self._total_logged = take._total_logged
 
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
-        if len(self.server_url) == 0:
+        if self.server_url.byte_length() == 0:
             return
         if isnan(value) or isinf(value):
             return
@@ -327,7 +327,7 @@ struct RemoteLogger(Logger):
     def log_scalars(
         mut self, names: List[String], values: List[Float64], step: Int
     ) raises:
-        if len(self.server_url) == 0:
+        if self.server_url.byte_length() == 0:
             return
         var elapsed_ns = perf_counter_ns() - self._start_ns
         var wall_time_ms = Float64(elapsed_ns) / 1_000_000.0
@@ -343,7 +343,7 @@ struct RemoteLogger(Logger):
             self.flush()
 
     def flush(mut self) raises:
-        if len(self.server_url) == 0 or len(self.entries) == 0:
+        if self.server_url.byte_length() == 0 or len(self.entries) == 0:
             return
         from std.python import Python
 
@@ -384,7 +384,7 @@ struct RemoteLogger(Logger):
         self._config_vals.append(value)
 
     def is_active(self) -> Bool:
-        return len(self.server_url) > 0
+        return self.server_url.byte_length() > 0
 
     def _register_run(
         mut self,
@@ -492,7 +492,7 @@ def _http_post(
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("User-Agent", "mojo-rl/1.0")
-        if len(api_key) > 0:
+        if api_key.byte_length() > 0:
             req.add_header("Authorization", "Bearer " + api_key)
         _ = urllib_request.urlopen(req, timeout=5)
     except e:

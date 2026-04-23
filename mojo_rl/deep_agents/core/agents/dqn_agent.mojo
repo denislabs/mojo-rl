@@ -1237,27 +1237,27 @@ struct GenericDQNAgent[
         var metadata = read_metadata_section(content)
 
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
 
         var tau_str = get_metadata_value(metadata, "tau")
-        if len(tau_str) > 0:
+        if tau_str.byte_length() > 0:
             self.tau = atof(tau_str)
 
         var epsilon_str = get_metadata_value(metadata, "epsilon")
-        if len(epsilon_str) > 0:
+        if epsilon_str.byte_length() > 0:
             self.epsilon = atof(epsilon_str)
 
         var epsilon_min_str = get_metadata_value(metadata, "epsilon_min")
-        if len(epsilon_min_str) > 0:
+        if epsilon_min_str.byte_length() > 0:
             self.epsilon_min = atof(epsilon_min_str)
 
         var epsilon_decay_str = get_metadata_value(metadata, "epsilon_decay")
-        if len(epsilon_decay_str) > 0:
+        if epsilon_decay_str.byte_length() > 0:
             self.epsilon_decay = atof(epsilon_decay_str)
 
         var train_step_str = get_metadata_value(metadata, "train_step_count")
-        if len(train_step_str) > 0:
+        if train_step_str.byte_length() > 0:
             self.train_step_count = Int(atol(train_step_str))
 
     # =========================================================================
@@ -1443,6 +1443,7 @@ struct GenericDQNAgent[
             UInt64(self.get_total_steps()) * UInt64(2654435761)
         )
 
+        @parameter
         @always_inline
         def argmax_wrapper(
             eps: Scalar[dtype],
@@ -2553,19 +2554,19 @@ struct GenericDQNPERAgent[
 
         var metadata = read_metadata_section(content)
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
         var tau_str = get_metadata_value(metadata, "tau")
-        if len(tau_str) > 0:
+        if tau_str.byte_length() > 0:
             self.tau = atof(tau_str)
         var eps_str = get_metadata_value(metadata, "epsilon")
-        if len(eps_str) > 0:
+        if eps_str.byte_length() > 0:
             self.epsilon = atof(eps_str)
         var beta_str = get_metadata_value(metadata, "beta")
-        if len(beta_str) > 0:
+        if beta_str.byte_length() > 0:
             self.beta = atof(beta_str)
         var step_str = get_metadata_value(metadata, "train_step_count")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.train_step_count = Int(atol(step_str))
 
     # =========================================================================
@@ -2713,6 +2714,7 @@ struct GenericDQNPERAgent[
             UInt64(self.get_total_steps()) * UInt64(2654435761)
         )
 
+        @parameter
         @always_inline
         def argmax_wrapper(
             eps: Scalar[dtype],
@@ -2859,6 +2861,7 @@ struct GenericDQNPERAgent[
         # ---- Phase 4: IS-weighted gradient + TD errors ----
         var grad_q_t = ws.grad_q()
 
+        @parameter
         @always_inline
         def per_weighted_grad_kernel(
             grd: LayoutTensor[

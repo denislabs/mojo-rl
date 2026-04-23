@@ -105,6 +105,7 @@ struct NegateOp[dim: Int](DiffOp):
         comptime total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             o: LayoutTensor[
@@ -151,6 +152,7 @@ struct NegateOp[dim: Int](DiffOp):
         comptime total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             gi: LayoutTensor[

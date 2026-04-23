@@ -368,6 +368,7 @@ struct DualPath[A: Model, B: Model](Model):
         comptime TOTAL = BATCH * Self.OUT_DIM
         var grid_x = (TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_k(
             dst: LayoutTensor[
@@ -497,6 +498,7 @@ struct DualPath[A: Model, B: Model](Model):
         comptime A_TOTAL = BATCH * A_OUT
         var a_grid = (A_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def extract_a(
             dst: LayoutTensor[
@@ -521,6 +523,7 @@ struct DualPath[A: Model, B: Model](Model):
         comptime B_TOTAL = BATCH * B_OUT
         var b_grid = (B_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def extract_b(
             dst: LayoutTensor[
@@ -583,6 +586,7 @@ struct DualPath[A: Model, B: Model](Model):
         comptime GI_TOTAL = BATCH * Self.IN_DIM
         var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def add_gi(
             a: LayoutTensor[

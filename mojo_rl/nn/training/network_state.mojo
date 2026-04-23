@@ -313,7 +313,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
 
         var metadata = read_metadata_section(content)
         var step_str = get_metadata_value(metadata, "step_num")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.step_num = Int(atol(step_str))
 
     # =========================================================================
@@ -378,5 +378,5 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         self.read_sections_binary(ckpt, "")
 
         var step_str = ckpt.get_metadata_value("step_num")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.step_num = Int(atol(step_str))

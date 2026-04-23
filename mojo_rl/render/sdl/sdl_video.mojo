@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Video
+"""Video.
 
 SDL's video subsystem is largely interested in abstracting window
 management from the underlying operating system. You can create windows,
@@ -4151,7 +4151,9 @@ def gl_reset_attributes() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GL_ResetAttributes.
     """
 
-    return _get_dylib_function[lib, "SDL_GL_ResetAttributes", def() -> None]()()
+    return _get_dylib_function[
+        lib, "SDL_GL_ResetAttributes", def() thin -> None
+    ]()()
 
 
 def gl_set_attribute(attr: GLAttr, value: c_int) raises:
@@ -4286,7 +4288,7 @@ def gl_get_current_window(out ret: Ptr[Window, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_GL_GetCurrentWindow", def() -> Ptr[Window, MutAnyOrigin]
+        lib, "SDL_GL_GetCurrentWindow", def() thin -> Ptr[Window, MutAnyOrigin]
     ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4324,7 +4326,7 @@ def egl_get_current_display() raises -> EGLDisplay:
     """
 
     return _get_dylib_function[
-        lib, "SDL_EGL_GetCurrentDisplay", def() -> EGLDisplay
+        lib, "SDL_EGL_GetCurrentDisplay", def() thin -> EGLDisplay
     ]()()
 
 
@@ -4367,7 +4369,7 @@ def egl_get_window_surface(
     return _get_dylib_function[
         lib,
         "SDL_EGL_GetWindowSurface",
-        def(window: Ptr[Window, MutAnyOrigin]) -> EGLSurface,
+        def(window: Ptr[Window, MutAnyOrigin]) thin -> EGLSurface,
     ]()(window)
 
 
@@ -4449,7 +4451,7 @@ def gl_set_swap_interval(interval: c_int) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_GL_SetSwapInterval", def(interval: c_int) -> Bool
+        lib, "SDL_GL_SetSwapInterval", def(interval: c_int) thin -> Bool
     ]()(interval)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4480,7 +4482,7 @@ def gl_get_swap_interval(interval: Ptr[c_int, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GL_GetSwapInterval",
-        def(interval: Ptr[c_int, MutAnyOrigin]) -> Bool,
+        def(interval: Ptr[c_int, MutAnyOrigin]) thin -> Bool,
     ]()(interval)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4512,7 +4514,7 @@ def gl_swap_window(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GL_SwapWindow",
-        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4535,7 +4537,7 @@ def gl_destroy_context(context: GLContext) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_GL_DestroyContext", def(context: GLContext) -> Bool
+        lib, "SDL_GL_DestroyContext", def(context: GLContext) thin -> Bool
     ]()(context)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

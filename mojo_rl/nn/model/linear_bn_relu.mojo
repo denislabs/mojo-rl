@@ -660,6 +660,7 @@ struct LinearBatchNormReLU[
 
         # Copy cached input from mm_cache into our cache (needed for backward)
         comptime COPY_SIZE = BATCH * MM_CS
+        @parameter
         @always_inline
         def copy_input_cache(
             dst: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
@@ -685,6 +686,7 @@ struct LinearBatchNormReLU[
         comptime TOTAL = BATCH * Self.out_dim
         comptime BLOCKS = (TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def bias_add_wrapper(
             output: LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin],
@@ -700,6 +702,7 @@ struct LinearBatchNormReLU[
         )
 
         # Step 3: Fused BN+ReLU kernel
+        @parameter
         @always_inline
         def bn_relu_wrapper(
             output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -757,6 +760,7 @@ struct LinearBatchNormReLU[
         comptime TOTAL = BATCH * Self.out_dim
         comptime BLOCKS = (TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def bias_add_wrapper(
             output: LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin],
@@ -775,6 +779,7 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ](params.ptr)
 
+        @parameter
         @always_inline
         def bn_relu_nc_wrapper(
             output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -854,6 +859,7 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ](cache.ptr)
 
+        @parameter
         @always_inline
         def relu_bn_bwd_wrapper(
             grad_pre_bn: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -875,6 +881,7 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](grads.ptr + Self.BIAS_OFF)
 
+        @parameter
         @always_inline
         def bias_grad_wrapper(
             db: LayoutTensor[dtype, Layout.row_major(Self.out_dim), MutAnyOrigin],
@@ -902,6 +909,7 @@ struct LinearBatchNormReLU[
         ](workspace.unsafe_ptr() + MM_CACHE_BWD_OFF)
 
         comptime COPY_SIZE = BATCH * MM_CS
+        @parameter
         @always_inline
         def copy_input_bwd(
             dst: LayoutTensor[dtype, Layout.row_major(BATCH, MM_CS), MutAnyOrigin],

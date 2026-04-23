@@ -210,7 +210,7 @@ def split_lines(content: String) -> List[String]:
             current_line = String("")
         else:
             current_line += chr(Int(c))
-    if len(current_line) > 0:
+    if current_line.byte_length() > 0:
         lines.append(current_line)
     return lines^
 
@@ -235,19 +235,19 @@ def parse_checkpoint_header(content: String) raises -> CheckpointHeader:
         if line.startswith("# mojo-rl checkpoint v"):
             # Parse version
             var version_str = String(
-                line[byte = len("# mojo-rl checkpoint v") :]
+                line[byte = "# mojo-rl checkpoint v".byte_length() :]
             )
             header.version = Int(atol(version_str))
         elif line.startswith("# type: "):
-            header.checkpoint_type = String(line[byte = len("# type: ") :])
+            header.checkpoint_type = String(line[byte = "# type: ".byte_length() :])
         elif line.startswith("# param_size: "):
-            var size_str = String(line[byte = len("# param_size: ") :])
+            var size_str = String(line[byte = "# param_size: ".byte_length() :])
             header.param_size = Int(atol(size_str))
         elif line.startswith("# state_size: "):
-            var size_str = String(line[byte = len("# state_size: ") :])
+            var size_str = String(line[byte = "# state_size: ".byte_length() :])
             header.state_size = Int(atol(size_str))
         elif line.startswith("# dtype: "):
-            header.dtype_str = String(line[byte = len("# dtype: ") :])
+            header.dtype_str = String(line[byte = "# dtype: ".byte_length() :])
         elif line == "params:":
             # End of header
             break
@@ -302,7 +302,7 @@ def read_float_section[
             result[i] = 0
         else:
             var line = lines[line_idx]
-            if len(line) == 0 or line.startswith("#") or line.endswith(":"):
+            if line.byte_length() == 0 or line.startswith("#") or line.endswith(":"):
                 result[i] = 0
             else:
                 result[i] = Scalar[dtype](atof(line))
@@ -342,7 +342,7 @@ def read_float_section_list[
             result.append(0)
         else:
             var line = lines[line_idx]
-            if len(line) == 0 or line.startswith("#") or line.endswith(":"):
+            if line.byte_length() == 0 or line.startswith("#") or line.endswith(":"):
                 result.append(0)
             else:
                 result.append(Scalar[dtype](atof(line)))
@@ -369,7 +369,7 @@ def read_metadata_section(content: String) raises -> List[String]:
 
     for i in range(start_idx, len(lines)):
         var line = lines[i]
-        if len(line) == 0:
+        if line.byte_length() == 0:
             continue
         if line.startswith("#") or line.endswith(":"):
             break
@@ -392,7 +392,7 @@ def get_metadata_value(metadata: List[String], key: String) -> String:
     var prefix = key + "="
     for i in range(len(metadata)):
         if metadata[i].startswith(prefix):
-            return String(metadata[i][byte = len(prefix) :])
+            return String(metadata[i][byte = prefix.byte_length() :])
     return String("")
 
 
@@ -408,7 +408,7 @@ def set_metadata_value_float(
 
     """
     var value = get_metadata_value(metadata, "target_noise_clip")
-    if len(value) > 0:
+    if value.byte_length() > 0:
         dest = atof(value)
 
 
@@ -423,7 +423,7 @@ def set_metadata_value_int(
         dest: Destination int value.
     """
     var value = get_metadata_value(metadata, "target_noise_clip")
-    if len(value) > 0:
+    if value.byte_length() > 0:
         dest = Int(atol(value))
 
 
@@ -438,7 +438,7 @@ def set_metadata_value_bool(
         dest: Destination bool value.
     """
     var value = get_metadata_value(metadata, "target_noise_clip")
-    if len(value) > 0:
+    if value.byte_length() > 0:
         dest = Bool(atol(value))
 
 

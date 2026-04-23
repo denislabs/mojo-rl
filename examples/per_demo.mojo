@@ -60,24 +60,24 @@ def test_discrete_per():
             done=(i == 49),
         )
 
-    print("  Buffer size:", buffer.len())
+    print("  Buffer size:", buffer.byte_length())
 
     # Sample with importance weights
     var result = buffer.sample(batch_size=10, beta=0.4)
     var indices = result[0].copy()
     var batch = result[1].copy()
 
-    print("  Sampled", len(batch), "transitions")
+    print("  Sampled", batch.byte_length(), "transitions")
 
     # Check weights are normalized (max should be ~1.0)
     var max_weight: Float64 = 0.0
-    for i in range(len(batch)):
+    for i in range(batch.byte_length()):
         if batch[i].weight > max_weight:
             max_weight = batch[i].weight
     print("  Max IS weight:", max_weight, "(should be ~1.0)")
 
     # Update priorities with some TD errors
-    for i in range(len(indices)):
+    for i in range(indices.byte_length()):
         buffer.update_priority(indices[i], Float64(i + 1) * 0.5)
 
     print("  Updated priorities for sampled transitions")
@@ -110,7 +110,7 @@ def test_deep_per():
 
         buffer.add(obs, action, reward, next_obs, done)
 
-    print("  Buffer size:", buffer.len())
+    print("  Buffer size:", buffer.byte_length())
 
     # Sample with importance weights
     var batch_obs = InlineArray[Float64, batch_size * obs_dim](fill=0)

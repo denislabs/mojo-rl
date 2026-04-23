@@ -15,7 +15,6 @@ Example (InvertedDoublePendulum tip):
     comptime IDP_Sites = Sites[Tip]
 """
 
-from std.builtin.variadics import Variadic
 from std.gpu.host import HostBuffer
 from mojo_rl.render import Color, Renderer3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
@@ -225,8 +224,8 @@ struct Sites[*S: SiteSpec](SitesLike):
     Provides N (site count) and type-level access to each site.
     """
 
-    comptime site_types = Variadic.types[T=SiteSpec, *Self.S]
-    comptime N: Int = TypeList[*Self.site_types].size
+    comptime site_types = Self.S
+    comptime N: Int = Self.site_types.size
 
     @staticmethod
     def setup_model[

@@ -4,7 +4,6 @@ from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
-from std.builtin.variadics import Variadic
 from mojo_rl.deep_agents.core.perf_timer import PerfTimer
 
 
@@ -39,8 +38,8 @@ struct Sequential[*LAYERS: Model](Model):
     Uses Variadic.types + comptime for to iterate at compile time.
     """
 
-    comptime model_types = Variadic.types[T=Model, *Self.LAYERS]
-    comptime N = TypeList[*Self.model_types].size
+    comptime model_types = Self.LAYERS
+    comptime N = Self.model_types.size
 
     comptime IN_DIM: Int = Self.model_types[0].IN_DIM
     comptime OUT_DIM: Int = Self.model_types[Self.N - 1].OUT_DIM

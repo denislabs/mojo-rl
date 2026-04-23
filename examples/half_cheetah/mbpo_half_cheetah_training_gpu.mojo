@@ -26,6 +26,7 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents import MBPOAgent, MBPOSACAgent
 from mojo_rl.deep_agents.core.configs.mbpo_config import DefaultMBPOConfig
 from mojo_rl.deep_agents.core.strategies.termination import NeverTerminate
+from mojo_rl.deep_agents.core.training.mbpo_train import run_mbpo_train_gpu
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
@@ -190,10 +191,17 @@ def main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = agent.train_gpu[
+            var cpu_state = agent.make_cpu_state()
+            agent.logger = UnsafePointer(to=logger)
+            agent.diag_every = 500
+            var metrics = run_mbpo_train_gpu[
                 HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
-                USE_CUDA_GRAPH=False,
+                MBPOHalfCheetahConfig,
+                RemoteLogger,
+                False,
             ](
+                agent,
+                cpu_state,
                 ctx,
                 num_steps=NUM_STEPS,
                 warmup_steps=WARMUP_STEPS,
@@ -201,8 +209,8 @@ def main() raises:
                 print_every=10_000,
                 environment_name="HalfCheetah",
                 logger=UnsafePointer(to=logger),
-                diag_every=500,
             )
+            agent.state = cpu_state^
 
             var end_time = perf_counter_ns()
             var elapsed_s = Float64(end_time - start_time) / 1e9

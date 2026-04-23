@@ -969,10 +969,10 @@ struct GenericAlphaZeroAgent[
         self.state.prediction.read_sections(content, "pred_")
         var metadata = read_metadata_section(content)
         var s1 = get_metadata_value(metadata, "train_step_count")
-        if len(s1) > 0:
+        if s1.byte_length() > 0:
             self.train_step_count = Int(atol(s1))
         var s2 = get_metadata_value(metadata, "total_steps")
-        if len(s2) > 0:
+        if s2.byte_length() > 0:
             self.total_steps = Int(atol(s2))
 
     def start_new_iteration(mut self):

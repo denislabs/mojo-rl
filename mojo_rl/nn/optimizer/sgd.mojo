@@ -97,6 +97,7 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
         """
         var lr = Scalar[dtype](Self.LR * lr_scale)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             params: LayoutTensor[

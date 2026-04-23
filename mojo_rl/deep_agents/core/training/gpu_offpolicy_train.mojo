@@ -511,6 +511,7 @@ def run_offpolicy_continuous_train_gpu[
     var scaled_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
     var use_reward_scale = reward_scale != 1.0
 
+    @parameter
     @always_inline
     def _scale_rewards_kernel(
         dst: LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin],
@@ -1213,7 +1214,7 @@ def run_offpolicy_continuous_train_gpu[
                     var stage = CurriculumType.get_stage_name[dtype](
                         Scalar[dtype](cp)
                     )
-                    if len(stage) > 0:
+                    if stage.byte_length() > 0:
                         status_line += " | " + stage
                 print(status_line)
             next_print += print_every
@@ -1238,7 +1239,7 @@ def run_offpolicy_continuous_train_gpu[
         timer.accumulate(7)
 
     # Final checkpoint save (CPU state is now synced from GPU)
-    if checkpoint_every > 0 and len(checkpoint_path) > 0:
+    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
         agent.save_checkpoint(checkpoint_path)
 
     # Final logger flush + print
@@ -1698,7 +1699,7 @@ def run_offpolicy_discrete_train_gpu[
                     var stage = CurriculumType.get_stage_name[dtype](
                         Scalar[dtype](cp)
                     )
-                    if len(stage) > 0:
+                    if stage.byte_length() > 0:
                         status_line += " | " + stage
                 print(status_line)
 
@@ -1724,7 +1725,7 @@ def run_offpolicy_discrete_train_gpu[
         timer.accumulate(7)
 
     # Final checkpoint save (CPU state is now synced from GPU)
-    if checkpoint_every > 0 and len(checkpoint_path) > 0:
+    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
         agent.save_checkpoint(checkpoint_path)
 
     # Final logger flush + print

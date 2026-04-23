@@ -192,8 +192,8 @@ def main() raises:
 
     # Run 1 episode with recording
     var obs_raw = env_q.reset_obs_list()
-    var obs_f64 = List[Float64](capacity=len(obs_raw))
-    for i in range(len(obs_raw)):
+    var obs_f64 = List[Float64](capacity=obs_raw.byte_length())
+    for i in range(obs_raw.byte_length()):
         obs_f64.append(Float64(obs_raw[i]))
 
     for step in range(500):
@@ -207,7 +207,7 @@ def main() raises:
             break
 
         obs_f64.clear()
-        for i in range(len(result[0])):
+        for i in range(result[0].byte_length()):
             obs_f64.append(Float64(result[0][i]))
 
     # Stop recording and clean up

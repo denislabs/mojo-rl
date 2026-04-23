@@ -452,6 +452,7 @@ struct DPGLoss(ActorLoss):
             dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
         ](ws_ptr + W_ACT)
 
+        @parameter
         @always_inline
         def concat_new_ci(
             d: LayoutTensor[
@@ -509,6 +510,7 @@ struct DPGLoss(ActorLoss):
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](ws_ptr + W_DACT)
 
+        @parameter
         @always_inline
         def extract_act_grad(
             da: LayoutTensor[
@@ -1010,6 +1012,7 @@ struct MaxEntLoss[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](rng_counter.unsafe_ptr())
 
+        @parameter
         @always_inline
         def curr_rsample(
             acts: LayoutTensor[
@@ -1054,6 +1057,7 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CriticModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_CI)
 
+        @parameter
         @always_inline
         def concat_new_ci(
             d: LayoutTensor[
@@ -1107,6 +1111,7 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CRITIC_OUT), MutAnyOrigin
         ](ws_ptr + W_DQ2)
 
+        @parameter
         @always_inline
         def min_q_mask(
             dq1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
@@ -1153,6 +1158,7 @@ struct MaxEntLoss[
         )
 
         # 6b. Combine d_ci from both critics: d_ci += d_ci2
+        @parameter
         @always_inline
         def add_grads(
             dst: LayoutTensor[
@@ -1176,6 +1182,7 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
         ](ws_ptr + W_DACT)
 
+        @parameter
         @always_inline
         def extract_act_grad(
             da: LayoutTensor[
@@ -1202,6 +1209,7 @@ struct MaxEntLoss[
             alpha_buf.unsafe_ptr()
         )
 
+        @parameter
         @always_inline
         def rsample_bwd(
             agrad: LayoutTensor[
@@ -1617,6 +1625,7 @@ struct AutodiffMaxEntLoss[
 
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_params_kernel(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -1684,6 +1693,7 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](ws_ptr + W_WORKSPACE + BATCH * RSAMPLE_WS_PER_SAMPLE)
 
+        @parameter
         @always_inline
         def copy_rng_to_ws_k(
             dst: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -1735,6 +1745,7 @@ struct AutodiffMaxEntLoss[
 
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def fill_seed_k(
             seed: LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin],
@@ -1763,6 +1774,7 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
         ](ws_ptr + W_GRADS)
 
+        @parameter
         @always_inline
         def zero_grads_k(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -1797,6 +1809,7 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
         ](critic2_grads.ptr)
 
+        @parameter
         @always_inline
         def scatter_grads_kernel(
             src: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -1835,6 +1848,7 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ](strat_ws.unsafe_ptr() + LP_OFF)
 
+        @parameter
         @always_inline
         def extract_lp_k(
             dst: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
@@ -2134,6 +2148,7 @@ struct AutodiffDPGLoss(ActorLoss):
 
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_params_kernel(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2203,6 +2218,7 @@ struct AutodiffDPGLoss(ActorLoss):
 
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def fill_seed_k(
             seed: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
@@ -2228,6 +2244,7 @@ struct AutodiffDPGLoss(ActorLoss):
             dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
         ](ws_ptr + W_GRADS)
 
+        @parameter
         @always_inline
         def zero_grads_k(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2259,6 +2276,7 @@ struct AutodiffDPGLoss(ActorLoss):
             dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
         ](ws_ptr + W_GRADS)
 
+        @parameter
         @always_inline
         def scatter_grads_kernel(
             src: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2577,6 +2595,7 @@ struct AutodiffTD3Loss(ActorLoss):
 
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_params_kernel(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2654,6 +2673,7 @@ struct AutodiffTD3Loss(ActorLoss):
 
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def fill_seed_k(
             seed: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
@@ -2679,6 +2699,7 @@ struct AutodiffTD3Loss(ActorLoss):
             dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
         ](ws_ptr + W_GRADS)
 
+        @parameter
         @always_inline
         def zero_grads_k(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2713,6 +2734,7 @@ struct AutodiffTD3Loss(ActorLoss):
             dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
         ](critic2_grads.ptr)
 
+        @parameter
         @always_inline
         def scatter_grads_kernel(
             src: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],

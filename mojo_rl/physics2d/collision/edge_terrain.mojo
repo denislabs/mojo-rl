@@ -1162,6 +1162,7 @@ struct EdgeTerrainCollision(CollisionSystem):
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             state: LayoutTensor[
@@ -1331,6 +1332,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         comptime GRID_X = (BATCH + BLOCK_X - 1) // BLOCK_X
         comptime GRID_Y = 1  # All bodies fit in one block in Y
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             state: LayoutTensor[
@@ -1520,6 +1522,7 @@ struct EdgeTerrainCollision(CollisionSystem):
         comptime GRID_Y = 1  # All bodies fit in block
         comptime GRID_Z = (MAX_EDGES + BLOCK_Z - 1) // BLOCK_Z
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             state: LayoutTensor[

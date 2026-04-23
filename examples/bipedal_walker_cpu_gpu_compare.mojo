@@ -101,7 +101,9 @@ def compare_observation(
 
     var all_match = True
     for i in range(24):
-        var cpu_val = cpu_obs[i] if i < len(cpu_obs) else Scalar[dtype](0)
+        var cpu_val = cpu_obs[i] if i < cpu_obs.byte_length() else Scalar[
+            dtype
+        ](0)
         var is_match = compare_scalar(
             obs_names[i], cpu_val, gpu_obs[i], tolerance
         )
@@ -415,7 +417,7 @@ def test_step_comparison(ctx: DeviceContext) raises -> Bool:
     var all_match = True
     var tolerance: Float64 = 0.5  # Larger tolerance due to physics differences
 
-    for step in range(len(test_actions)):
+    for step in range(test_actions.byte_length()):
         print("\n--- Step", step + 1, "---")
 
         var action = test_actions[step].copy()
@@ -873,9 +875,9 @@ def test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
     print("  " + "-" * 50)
 
     for i in range(10):
-        var cpu_lidar = cpu_obs[14 + i] if 14 + i < len(cpu_obs) else Scalar[
-            dtype
-        ](0)
+        var cpu_lidar = cpu_obs[
+            14 + i
+        ] if 14 + i < cpu_obs.byte_length() else Scalar[dtype](0)
         var gpu_lidar = gpu_obs[14 + i]
         var match_str = (
             "OK" if abs_f64(Float64(cpu_lidar - gpu_lidar))
@@ -947,9 +949,10 @@ def test_lidar_comparison(ctx: DeviceContext) raises -> Bool:
 
     var lidar_match = True
     for i in range(10):
-        var cpu_lidar = cpu_obs_step[14 + i] if 14 + i < len(
-            cpu_obs_step
-        ) else Scalar[dtype](0)
+        var cpu_lidar = cpu_obs_step[
+            14 + i
+        ] if 14 + i < cpu_obs_step.byte_length() else Scalar[dtype](0)
+
         var gpu_lidar = gpu_obs_step[14 + i]
         var match_str = (
             "OK" if abs_f64(Float64(cpu_lidar - gpu_lidar))

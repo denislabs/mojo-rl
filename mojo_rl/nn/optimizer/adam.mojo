@@ -179,6 +179,7 @@ struct Adam[
         var beta2 = Scalar[dtype](Self.BETA2)
         var eps = Scalar[dtype](Self.EPS)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             params: LayoutTensor[

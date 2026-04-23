@@ -352,6 +352,7 @@ struct LayerNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ](params.ptr)
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -411,6 +412,7 @@ struct LayerNormOp[dim: Int](DiffOp):
         ](cache.ptr)
 
         # Kernel 1: dx (per-sample reduction)
+        @parameter
         @always_inline
         def dx_wrapper(
             grad_input: LayoutTensor[
@@ -447,6 +449,7 @@ struct LayerNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.dim), MutAnyOrigin
         ](grad_params.ptr + Self.dim)
 
+        @parameter
         @always_inline
         def dp_wrapper(
             dgamma: LayoutTensor[

@@ -270,6 +270,7 @@ struct GPUPrioritizedReplayBuffer[
         comptime OBS_BLOCKS = (Self.OBS_DIM + TPB - 1) // TPB
 
         # Store obs/next_obs in parallel
+        @parameter
         @always_inline
         def store_obs_wrapper(
             s: LayoutTensor[
@@ -312,6 +313,7 @@ struct GPUPrioritizedReplayBuffer[
             dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
         ](self.actions_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def store_scalars_wrapper(
             a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -437,6 +439,7 @@ struct GPUPrioritizedReplayBuffer[
         ](self.next_states_buf.unsafe_ptr())
 
         # Gather obs/next_obs (2D parallel kernel)
+        @parameter
         @always_inline
         def gather_obs_wrapper(
             bs: LayoutTensor[
@@ -493,6 +496,7 @@ struct GPUPrioritizedReplayBuffer[
             dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
         ](self.dones_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def gather_sc_wrapper(
             ba: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],

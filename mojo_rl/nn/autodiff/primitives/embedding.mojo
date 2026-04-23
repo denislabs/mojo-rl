@@ -266,6 +266,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         var total_elements = BATCH * Self.embed_dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -339,6 +340,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         var total_dx = BATCH * Self.vocab_size
         var grid_dx = (total_dx + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def dx_wrapper(
             grad_input: LayoutTensor[
@@ -369,6 +371,7 @@ struct Embedding[vocab_size: Int, embed_dim: Int](DiffOp):
         var total_dW = Self.vocab_size * Self.embed_dim
         var grid_dW = (total_dW + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def dW_wrapper(
             dW: LayoutTensor[

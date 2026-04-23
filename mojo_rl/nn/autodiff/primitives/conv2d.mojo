@@ -1429,6 +1429,7 @@ struct Conv2D[
             comptime im2col_elems = BATCH * Self.CACHE_SIZE
             comptime im2col_blocks = (im2col_elems + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def im2col_wrapper(
                 cache_out: LayoutTensor[
@@ -1494,6 +1495,7 @@ struct Conv2D[
             comptime fwd_grid_x = (Self.out_channels + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime fwd_grid_y = (K_TOTAL + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+            @parameter
             @always_inline
             def fwd_mm_wrapper(
                 out_temp: LayoutTensor[
@@ -1533,6 +1535,7 @@ struct Conv2D[
                 dtype, Layout.row_major(Self.out_channels), ImmutAnyOrigin
             ](params.ptr + Self.out_channels * Self.col_size)
 
+            @parameter
             @always_inline
             def transpose_output_bias_wrapper(
                 output: LayoutTensor[
@@ -1577,6 +1580,7 @@ struct Conv2D[
             comptime grid_x = (Self.spatial_out + 31) // 32
             comptime grid_y = (Self.out_channels + 31) // 32
 
+            @parameter
             @always_inline
             def wrapper(
                 output: LayoutTensor[
@@ -1668,6 +1672,7 @@ struct Conv2D[
             comptime grad_elems = Self.out_channels * K_TOTAL
             comptime grad_blocks = (grad_elems + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def transpose_grad_wrapper(
                 dst: LayoutTensor[
@@ -1703,6 +1708,7 @@ struct Conv2D[
             comptime dW_grid_x_nv = (Self.col_size + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime dW_grid_y_nv = (Self.out_channels + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+            @parameter
             @always_inline
             def dW_mm_wrapper(
                 dW: LayoutTensor[
@@ -1753,6 +1759,7 @@ struct Conv2D[
             comptime dx_grid_x_nv = (K_TOTAL + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime dx_grid_y_nv = (Self.col_size + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+            @parameter
             @always_inline
             def dx_mm_wrapper(
                 dcol: LayoutTensor[
@@ -1787,6 +1794,7 @@ struct Conv2D[
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def col2im_gather(
                 grad_input: LayoutTensor[
@@ -1846,6 +1854,7 @@ struct Conv2D[
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def dx_wrapper(
                 grad_input: LayoutTensor[
@@ -1875,6 +1884,7 @@ struct Conv2D[
             comptime dW_grid_x = (Self.col_size + 31) // 32
             comptime dW_grid_y = (Self.out_channels + 31) // 32
 
+            @parameter
             @always_inline
             def dW_wrapper(
                 dW: LayoutTensor[
@@ -1909,6 +1919,7 @@ struct Conv2D[
         ](grad_params.ptr + Self.out_channels * Self.col_size)
 
         # Grid: one block per output channel, TPB threads reduce across BATCH
+        @parameter
         @always_inline
         def db_wrapper(
             db: LayoutTensor[

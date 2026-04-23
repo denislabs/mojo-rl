@@ -112,8 +112,8 @@ struct Cameras[*C: CameraSpec](CamerasLike):
     Cameras are purely visual — no setup_model needed.
     """
 
-    comptime cam_types = Variadic.types[T=CameraSpec, *Self.C]
-    comptime N: Int = TypeList[*Self.cam_types].size
+    comptime cam_types = Self.C
+    comptime N: Int = Self.cam_types.size
 
     @staticmethod
     def setup_cameras(width: Int, height: Int) -> List[Camera3D]:

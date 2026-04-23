@@ -200,6 +200,7 @@ struct MinOp[dim: Int](DiffOp):
         var total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -253,6 +254,7 @@ struct MinOp[dim: Int](DiffOp):
         var total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[

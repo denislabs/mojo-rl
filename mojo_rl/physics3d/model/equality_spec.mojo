@@ -151,8 +151,8 @@ struct Equalities[*E: EqualitySpec]:
     Provides N (constraint count) and _sum_rows() for total row count.
     """
 
-    comptime eq_types = Variadic.types[T=EqualitySpec, *Self.E]
-    comptime N: Int = TypeList[*Self.eq_types].size
+    comptime eq_types = Self.E
+    comptime N: Int = Self.eq_types.size
 
     @staticmethod
     def _sum_rows() -> Int:

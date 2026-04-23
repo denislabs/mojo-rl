@@ -450,8 +450,8 @@ struct Bodies[*B: BodySpec](BodiesLike):
     Provides N (body count) and type-level access to each body via body_types[i].
     """
 
-    comptime body_types = Variadic.types[T=BodySpec, *Self.B]
-    comptime N: Int = TypeList[*Self.body_types].size
+    comptime body_types = Self.B
+    comptime N: Int = Self.body_types.size
 
     @staticmethod
     def setup_model[

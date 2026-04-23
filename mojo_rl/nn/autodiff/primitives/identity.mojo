@@ -108,6 +108,7 @@ struct IdentityOp[dim: Int](DiffOp):
         comptime total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def copy_fwd(
             o: LayoutTensor[
@@ -154,6 +155,7 @@ struct IdentityOp[dim: Int](DiffOp):
         comptime total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def copy_bwd(
             gi: LayoutTensor[

@@ -238,6 +238,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -289,6 +290,7 @@ struct SoftmaxOp[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](cache.ptr)
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[

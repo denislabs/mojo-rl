@@ -4670,6 +4670,7 @@ struct DreamerV3Agent[
         comptime run_copy_stoch = copy_kernel[n_envs * STOCH]
         comptime run_copy_act = copy_kernel[n_envs * ACT]
 
+        @parameter
         @always_inline
         def run_rssm_reset_done(
             det: LayoutTensor[

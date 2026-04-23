@@ -3046,6 +3046,7 @@ struct TDMPC2Agent[
                 var adam_bc1 = Scalar[dtype](1.0 - (0.9**gpu_wm_step))
                 var adam_bc2 = Scalar[dtype](1.0 - (0.999**gpu_wm_step))
 
+                @parameter
                 @always_inline
                 def adam_5q_wrapper(
                     params1: LayoutTensor[

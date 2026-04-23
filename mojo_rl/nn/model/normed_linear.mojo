@@ -1973,6 +1973,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
         comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+        @parameter
         @always_inline
         def linear_wrapper(
             linear_out: LayoutTensor[
@@ -2014,6 +2015,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
         # Kernel 2: Fused LayerNorm + Mish
+        @parameter
         @always_inline
         def ln_mish_wrapper(
             output: LayoutTensor[
@@ -2096,6 +2098,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         comptime grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
         comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+        @parameter
         @always_inline
         def linear_nc_wrapper(
             linear_out: LayoutTensor[
@@ -2131,6 +2134,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
         # Kernel 2: Fused LN + Mish (no cache)
+        @parameter
         @always_inline
         def ln_mish_wrapper(
             output: LayoutTensor[
@@ -2237,6 +2241,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
 
         # Kernel 1a: Fused Mish + LN backward (per-sample → d_linear_out).
         # Does NOT write dgamma / dbeta to avoid cross-block races on those.
+        @parameter
         @always_inline
         def mish_ln_backward_wrapper(
             d_linear_out: LayoutTensor[
@@ -2271,6 +2276,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # one thread per j).
         comptime dgb_blocks = (Self.OUT_DIM + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def dgamma_dbeta_wrapper(
             dgamma: LayoutTensor[
@@ -2312,6 +2318,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         comptime dx_grid_x = (Self.IN_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
         comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+        @parameter
         @always_inline
         def dx_wrapper(
             grad_input: LayoutTensor[
@@ -2344,6 +2351,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         comptime dW_grid_x = (Self.OUT_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N
         comptime dW_grid_y = (Self.IN_DIM + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+        @parameter
         @always_inline
         def dW_wrapper(
             dW: LayoutTensor[
@@ -2373,6 +2381,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         # Kernel 4: db = sum(d_linear_out, axis=0)
         comptime db_blocks = (Self.OUT_DIM + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def db_wrapper(
             db: LayoutTensor[

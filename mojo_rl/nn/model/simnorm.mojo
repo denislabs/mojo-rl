@@ -350,6 +350,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -398,6 +399,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -441,6 +443,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -496,6 +499,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_input: LayoutTensor[

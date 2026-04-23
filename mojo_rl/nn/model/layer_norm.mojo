@@ -520,6 +520,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         ](params.ptr)
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -577,6 +578,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         ](params.ptr)
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -660,6 +662,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(BATCH, Self.dim + 2), ImmutAnyOrigin
         ](cache.ptr)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_input: LayoutTensor[
@@ -693,6 +696,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
         # Param gradients: dgamma, dbeta accumulated over batch (single thread)
+        @parameter
         @always_inline
         def param_kernel_wrapper(
             grad_output: LayoutTensor[

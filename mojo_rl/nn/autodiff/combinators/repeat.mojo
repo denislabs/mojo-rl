@@ -563,6 +563,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
             var temp_grads_buf = ctx.enqueue_create_buffer[dtype](TEMP_PS)
 
             # Accumulate kernel: dst[i] += src[i]
+            @parameter
             @always_inline
             def _accum_kernel(
                 dst: LayoutTensor[dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin],

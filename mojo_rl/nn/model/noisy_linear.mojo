@@ -383,6 +383,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         ) * UInt64(2654435761)
 
         # Step 1: Generate noise in workspace
+        @parameter
         @always_inline
         def gen_noise_kernel(
             np: LayoutTensor[
@@ -439,6 +440,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         )
 
         # Step 2: Forward pass + cache
+        @parameter
         @always_inline
         def fwd_kernel(
             dst: LayoutTensor[
@@ -544,6 +546,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         ) * UInt64(2654435761) + UInt64(99991)
 
         # Generate noise
+        @parameter
         @always_inline
         def gen_noise_nc(
             np: LayoutTensor[
@@ -598,6 +601,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         )
 
         # Noisy forward
+        @parameter
         @always_inline
         def fwd_noisy_nc_kernel(
             dst: LayoutTensor[
@@ -699,6 +703,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         """GPU backward. Kernel 1: grad_input. Kernel 2: param grads."""
 
         # Kernel 1: Compute grad_input — one thread per (batch, in_dim)
+        @parameter
         @always_inline
         def grad_input_kernel(
             gi: LayoutTensor[
@@ -752,6 +757,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
         # Kernel 2: Accumulate param grads — one thread per (i, j) pair
         # Each thread loops over batch dimension to accumulate
+        @parameter
         @always_inline
         def param_grad_kernel(
             go: LayoutTensor[

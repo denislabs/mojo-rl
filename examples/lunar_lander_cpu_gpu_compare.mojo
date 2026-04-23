@@ -416,7 +416,7 @@ def test_step_comparison(ctx: DeviceContext) raises -> Bool:
         1e-2  # Slightly larger tolerance for accumulated errors
     )
 
-    for step in range(len(test_actions)):
+    for step in range(test_actions.byte_length()):
         print("\n--- Step", step + 1, "---")
 
         var action = test_actions[step].copy()
@@ -2491,7 +2491,7 @@ def main() raises:
     var passed = 0
     var failed = 0
 
-    for i in range(len(test_results)):
+    for i in range(test_results.byte_length()):
         var status = "PASS" if test_results[i] else "FAIL"
         print("  ", test_names[i], ":", status)
         if test_results[i]:
@@ -2500,8 +2500,8 @@ def main() raises:
             failed += 1
 
     print()
-    print("Passed:", passed, "/", len(test_results))
-    print("Failed:", failed, "/", len(test_results))
+    print("Passed:", passed, "/", test_results.byte_length())
+    print("Failed:", failed, "/", test_results.byte_length())
 
     if failed > 0:
         print(

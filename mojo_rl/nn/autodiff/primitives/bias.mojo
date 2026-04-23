@@ -206,6 +206,7 @@ struct BiasAdd[dim: Int](DiffOp):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -261,6 +262,7 @@ struct BiasAdd[dim: Int](DiffOp):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def dx_wrapper(
             grad_input: LayoutTensor[
@@ -280,6 +282,7 @@ struct BiasAdd[dim: Int](DiffOp):
         )
 
         # Kernel 2: db = sum(dy, axis=0)
+        @parameter
         @always_inline
         def db_wrapper(
             db: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],

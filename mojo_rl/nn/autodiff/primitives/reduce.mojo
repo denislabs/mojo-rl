@@ -161,6 +161,7 @@ struct ReduceSum[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -207,6 +208,7 @@ struct ReduceSum[dim: Int](DiffOp):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[
@@ -383,6 +385,7 @@ struct ReduceMean[dim: Int](DiffOp):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -429,6 +432,7 @@ struct ReduceMean[dim: Int](DiffOp):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[

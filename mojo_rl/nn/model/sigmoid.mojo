@@ -281,6 +281,7 @@ struct Sigmoid[dim: Int](Model):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -329,6 +330,7 @@ struct Sigmoid[dim: Int](Model):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -402,6 +404,7 @@ struct Sigmoid[dim: Int](Model):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_input: LayoutTensor[

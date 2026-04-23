@@ -15,7 +15,7 @@ from std.random import seed
 def compute_total_steps(steps: List[Int]) -> Int:
     """Sum all episode steps to get total training steps."""
     var total = 0
-    for i in range(len(steps)):
+    for i in range(steps.byte_length()):
         total += steps[i]
     return total
 

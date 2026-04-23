@@ -360,8 +360,8 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
     MuJoCo-style gain/bias functions: force = gain*ctrl + bias(qpos, qvel).
     """
 
-    comptime act_types = Variadic.types[T=ActuatorSpec, *Self.A]
-    comptime N: Int = TypeList[*Self.act_types].size
+    comptime act_types = Self.A
+    comptime N: Int = Self.act_types.size
 
     # =========================================================================
     # CPU Operations
@@ -614,6 +614,7 @@ struct Actuators[*A: ActuatorSpec](ActuatorsLike):
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel(
             states: LayoutTensor[

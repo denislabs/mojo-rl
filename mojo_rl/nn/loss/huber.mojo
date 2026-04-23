@@ -210,6 +210,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
         """Launch forward pass on GPU to compute Huber loss."""
         var d_scalar = Scalar[dtype](Self.delta)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -254,6 +255,7 @@ struct HuberLoss[delta: Float64 = 1.0](LossFunction):
         """Launch backward pass on GPU to compute loss gradient."""
         var d_scalar = Scalar[dtype](Self.delta)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_output: LayoutTensor[

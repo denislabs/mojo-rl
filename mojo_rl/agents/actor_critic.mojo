@@ -146,7 +146,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
         var preferences = List[Float64]()
         for a in range(self.num_actions):
             var pref: Float64 = 0.0
-            for i in range(len(tiles)):
+            for i in range(tiles.byte_length()):
                 pref += self.theta[a][tiles[i]]
             preferences.append(pref)
         return preferences^
@@ -173,7 +173,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
             Estimated state value.
         """
         var value: Float64 = 0.0
-        for i in range(len(tiles)):
+        for i in range(tiles.byte_length()):
             value += self.critic_weights[tiles[i]]
         return value
 
@@ -233,7 +233,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
 
         # Update critic (value function)
         var critic_step = self.critic_lr / Float64(self.num_tilings)
-        for i in range(len(tiles)):
+        for i in range(tiles.byte_length()):
             self.critic_weights[tiles[i]] += critic_step * td_error
 
         # Update actor (policy)
@@ -261,7 +261,7 @@ struct ActorCriticAgent(Copyable, ImplicitlyCopyable, Movable):
 
             var total_grad = td_error * grad + self.entropy_coef * entropy_grad
 
-            for i in range(len(tiles)):
+            for i in range(tiles.byte_length()):
                 self.theta[a][tiles[i]] += actor_step * total_grad
 
     def reset(mut self):
@@ -545,7 +545,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
         var preferences = List[Float64]()
         for a in range(self.num_actions):
             var pref: Float64 = 0.0
-            for i in range(len(tiles)):
+            for i in range(tiles.byte_length()):
                 pref += self.theta[a][tiles[i]]
             preferences.append(pref)
         return preferences^
@@ -553,19 +553,19 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
     def _softmax(self, preferences: List[Float64]) -> List[Float64]:
         """Compute softmax probabilities."""
         var max_pref = preferences[0]
-        for i in range(1, len(preferences)):
+        for i in range(1, preferences.byte_length()):
             if preferences[i] > max_pref:
                 max_pref = preferences[i]
 
         var exp_prefs = List[Float64]()
         var sum_exp: Float64 = 0.0
-        for i in range(len(preferences)):
+        for i in range(preferences.byte_length()):
             var e = exp(preferences[i] - max_pref)
             exp_prefs.append(e)
             sum_exp += e
 
         var probs = List[Float64]()
-        for i in range(len(exp_prefs)):
+        for i in range(exp_prefs.byte_length()):
             probs.append(exp_prefs[i] / sum_exp)
         return probs^
 
@@ -577,7 +577,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
     def get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate."""
         var value: Float64 = 0.0
-        for i in range(len(tiles)):
+        for i in range(tiles.byte_length()):
             value += self.critic_weights[tiles[i]]
         return value
 
@@ -647,7 +647,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
 
         # Update traces for active tiles
         # Critic: accumulating traces
-        for i in range(len(tiles)):
+        for i in range(tiles.byte_length()):
             self.critic_traces[tiles[i]] += 1.0
 
         # Actor: policy gradient traces
@@ -658,7 +658,7 @@ struct ActorCriticLambdaAgent(Copyable, ImplicitlyCopyable, Movable):
             else:
                 grad = -probs[a]
 
-            for i in range(len(tiles)):
+            for i in range(tiles.byte_length()):
                 self.actor_traces[a][tiles[i]] += grad
 
         # Update parameters using traces
@@ -976,7 +976,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         var preferences = List[Float64]()
         for a in range(self.num_actions):
             var pref: Float64 = 0.0
-            for i in range(len(tiles)):
+            for i in range(tiles.byte_length()):
                 pref += self.theta[a][tiles[i]]
             preferences.append(pref)
         return preferences^
@@ -984,19 +984,19 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
     def _softmax(self, preferences: List[Float64]) -> List[Float64]:
         """Compute softmax probabilities."""
         var max_pref = preferences[0]
-        for i in range(1, len(preferences)):
+        for i in range(1, preferences.byte_length()):
             if preferences[i] > max_pref:
                 max_pref = preferences[i]
 
         var exp_prefs = List[Float64]()
         var sum_exp: Float64 = 0.0
-        for i in range(len(preferences)):
+        for i in range(preferences.byte_length()):
             var e = exp(preferences[i] - max_pref)
             exp_prefs.append(e)
             sum_exp += e
 
         var probs = List[Float64]()
-        for i in range(len(exp_prefs)):
+        for i in range(exp_prefs.byte_length()):
             probs.append(exp_prefs[i] / sum_exp)
         return probs^
 
@@ -1008,14 +1008,14 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
     def get_value(self, tiles: List[Int]) -> Float64:
         """Get state value estimate."""
         var value: Float64 = 0.0
-        for i in range(len(tiles)):
+        for i in range(tiles.byte_length()):
             value += self.critic_weights[tiles[i]]
         return value
 
     def _get_value_idx(self, buffer_idx: Int) -> Float64:
         """Get state value for buffer step by index."""
         var value: Float64 = 0.0
-        var num_tiles = len(self.buffer_tiles[buffer_idx])
+        var num_tiles = self.buffer_tiles[buffer_idx].byte_length()
         for i in range(num_tiles):
             var tile_idx = self.buffer_tiles[buffer_idx][i]
             value += self.critic_weights[tile_idx]
@@ -1024,7 +1024,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
     def _get_action_probs_idx(self, buffer_idx: Int) -> List[Float64]:
         """Get action probabilities for buffer step by index."""
         var preferences = List[Float64]()
-        var num_tiles = len(self.buffer_tiles[buffer_idx])
+        var num_tiles = self.buffer_tiles[buffer_idx].byte_length()
         for a in range(self.num_actions):
             var pref: Float64 = 0.0
             for i in range(num_tiles):
@@ -1069,7 +1069,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
             reward: Reward received.
         """
         var tiles_copy = List[Int]()
-        for i in range(len(tiles)):
+        for i in range(tiles.byte_length()):
             tiles_copy.append(tiles[i])
 
         self.buffer_tiles.append(tiles_copy^)
@@ -1087,7 +1087,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
             next_tiles: Tiles for next state (for bootstrap).
             done: Whether episode terminated.
         """
-        var buffer_len = len(self.buffer_tiles)
+        var buffer_len = self.buffer_tiles.byte_length()
 
         # Check if we should update
         if buffer_len < self.n_steps and not done:
@@ -1119,7 +1119,7 @@ struct A2CAgent(Copyable, ImplicitlyCopyable, Movable):
         for t in range(buffer_len):
             var action = self.buffer_actions[t]
             var g_t = returns[t]
-            var num_tiles_t = len(self.buffer_tiles[t])
+            var num_tiles_t = self.buffer_tiles[t].byte_length()
 
             var current_value = self._get_value_idx(t)
             var advantage = g_t - current_value
@@ -1329,7 +1329,7 @@ def _list_to_simd4[DTYPE: DType](obs: List[Scalar[DTYPE]]) -> SIMD[DTYPE, 4]:
     Pads with zeros if the list has fewer than 4 elements.
     """
     var result = SIMD[DTYPE, 4](0.0)
-    var n = min(len(obs), 4)
+    var n = min(obs.byte_length(), 4)
     for i in range(n):
         result[i] = obs[i]
     return result
@@ -1344,7 +1344,7 @@ def _list_to_simd4_f64[
     Pads with zeros if the list has fewer than 4 elements.
     """
     var result = SIMD[DType.float64, 4](0.0)
-    var n = min(len(obs), 4)
+    var n = min(obs.byte_length(), 4)
     for i in range(n):
         result[i] = obs[i].cast[DType.float64]()
     return result

@@ -1804,6 +1804,7 @@ struct GenericOffPolicyAgent[
                     dtype, Layout.row_major(1), MutAnyOrigin
                 ](gpu_state.gpu_scalars.unsafe_ptr())
 
+                @parameter
                 @always_inline
                 def alpha_wrapper(
                     sc: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -2212,6 +2213,7 @@ struct GenericOffPolicyAgent[
             )
 
         # Deterministic action extraction kernel (takes mean only, no noise)
+        @parameter
         @always_inline
         def extract_deterministic_actions(
             actions: LayoutTensor[

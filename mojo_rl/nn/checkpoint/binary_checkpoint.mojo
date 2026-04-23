@@ -187,7 +187,7 @@ struct BinaryCheckpoint[dtype: DType = DType.float32](Copyable, Movable):
         var prefix = key + "="
         for i in range(len(self.metadata)):
             if self.metadata[i].startswith(prefix):
-                return String(self.metadata[i][byte = len(prefix) :])
+                return String(self.metadata[i][byte = prefix.byte_length() :])
         return String("")
 
     def get_metadata_list(self) -> List[String]:
@@ -343,9 +343,9 @@ struct BinaryCheckpoint[dtype: DType = DType.float32](Copyable, Movable):
         for i in range(len(self.sections)):
             ref section = self.sections[i]
             # ~12 bytes per float in text (e.g. "-0.123456\n")
-            size += len(section.name) + 2 + len(section.data) * 12
+            size += section.name.byte_length() + 2 + len(section.data) * 12
         for i in range(len(self.metadata)):
-            size += len(self.metadata[i]) + 1
+            size += self.metadata[i].byte_length() + 1
         return size
 
     # =========================================================================

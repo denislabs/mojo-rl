@@ -294,6 +294,7 @@ struct SmoothedTarget[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](rng_counter.unsafe_ptr())
 
+        @parameter
         @always_inline
         def noise_wrapper(
             noisy: LayoutTensor[
@@ -497,6 +498,7 @@ struct ReparamTarget(TargetAction):
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](rng_counter.unsafe_ptr())
 
+        @parameter
         @always_inline
         def rsample_wrapper(
             acts: LayoutTensor[

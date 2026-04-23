@@ -256,6 +256,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
         ](input.ptr)
         var grid_x = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -352,6 +353,7 @@ struct GaussianLogProbOp[action_dim: Int](DiffOp):
         comptime total = BATCH * Self.action_dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             gi: LayoutTensor[

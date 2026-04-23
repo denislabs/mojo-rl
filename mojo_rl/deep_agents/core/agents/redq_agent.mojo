@@ -1114,6 +1114,7 @@ struct REDQAgent[
         var ls_max = Scalar[dtype](2.0)
         var ascale = Scalar[dtype](self.action_scale)
 
+        @parameter
         @always_inline
         def rsample_next(
             acts: LayoutTensor[
@@ -1319,6 +1320,7 @@ struct REDQAgent[
         var ls_max = Scalar[dtype](2.0)
         var ascale = Scalar[dtype](self.action_scale)
 
+        @parameter
         @always_inline
         def rsample_curr(
             acts: LayoutTensor[
@@ -1477,6 +1479,7 @@ struct REDQAgent[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](gpu_state.gpu_scalars.unsafe_ptr())
 
+        @parameter
         @always_inline
         def rsample_bwd(
             agrad: LayoutTensor[
@@ -1555,6 +1558,7 @@ struct REDQAgent[
                 dtype, Layout.row_major(1), MutAnyOrigin
             ](gpu_state.gpu_scalars.unsafe_ptr())
 
+            @parameter
             @always_inline
             def alpha_wrapper(
                 sc: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],

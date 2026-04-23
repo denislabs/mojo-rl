@@ -555,6 +555,7 @@ struct ModelDefFromXML[
             DTYPE, Layout.row_major(1, WS_SIZE), MutAnyOrigin
         ](ws_buf)
 
+        @parameter
         @always_inline
         def invweight0_kernel(
             state: LayoutTensor[
@@ -935,6 +936,7 @@ struct ModelDefFromXML[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def apply_kernel(
             states: LayoutTensor[
@@ -983,6 +985,7 @@ struct ModelDefFromXML[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def limits_kernel(
             states: LayoutTensor[
@@ -1036,6 +1039,7 @@ struct ModelDefFromXML[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def obs_kernel(
             states: LayoutTensor[

@@ -2260,73 +2260,15 @@ struct MBPOAgent[
         return total_reward / Float64(completed)
 
     # =========================================================================
-    # High-level train method (matches GenericOffPolicyAgent.train)
+    # High-level training — call run_mbpo_train / run_mbpo_train_gpu directly.
+    # The previous `MBPOAgent.train()` / `.train_gpu()` convenience methods
+    # were removed during the Mojo nightly upgrade (April 2026): passing
+    # `self` to a function with `mut agent: MBPOAgent[Config, L, ...]`
+    # fails with `l-value ... cannot be converted to reference` even when
+    # the types are identical. Users now mirror the REDQ pattern and call
+    # the training functions explicitly — see
+    # `examples/half_cheetah/mbpo_half_cheetah_training_gpu.mojo`.
     # =========================================================================
-
-    def train[
-        E: BoxContinuousActionEnv
-    ](
-        mut self,
-        mut env: E,
-        num_epochs: Int = 200,
-        steps_per_epoch: Int = 1000,
-        max_steps_per_episode: Int = 1000,
-        warmup_steps: Int = 5000,
-        eval_episodes: Int = 5,
-        eval_every: Int = 1,
-        verbose: Bool = False,
-        print_every: Int = 1,
-        environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
-        diag_every: Int = 0,
-    ) raises -> TrainingMetrics:
-        """Train the MBPO agent on a continuous-action environment.
-
-        Creates CPU state internally, runs the MBPO training loop, and
-        stores the final state for later evaluation.
-
-        Args:
-            env: Environment implementing BoxContinuousActionEnv.
-            num_epochs: Number of training epochs (default: 200).
-            steps_per_epoch: Env steps per epoch (default: 1000).
-            max_steps_per_episode: Max episode length (default: 1000).
-            warmup_steps: Random steps to fill real buffer (default: 5000).
-            eval_episodes: Episodes for evaluation (default: 5).
-            eval_every: Evaluate every N epochs (default: 1).
-            verbose: Print progress (default: False).
-            print_every: Print every N epochs if verbose (default: 1).
-            environment_name: Name for metrics labeling.
-            logger: Optional metrics logger.
-            diag_every: Log diagnostics every N train steps (default: 0).
-
-        Returns:
-            TrainingMetrics with episode rewards and statistics.
-        """
-        self.logger = logger
-        self.diag_every = diag_every
-        var cpu_state = Self.CPUStateType()
-        var metrics = run_mbpo_train[
-            E, Self.Config, Self.L, Self.TRAIN_N_ENVS, Self.REAL_RATIO_PCT
-        ](
-            self,
-            cpu_state,
-            env,
-            num_epochs=num_epochs,
-            steps_per_epoch=steps_per_epoch,
-            max_steps_per_episode=max_steps_per_episode,
-            warmup_steps=warmup_steps,
-            eval_episodes=eval_episodes,
-            eval_every=eval_every,
-            verbose=verbose,
-            print_every=print_every,
-            environment_name=environment_name,
-            logger=logger,
-        )
-        self.state = cpu_state^
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
-        return metrics^
 
     # =========================================================================
     # MBPO-specific methods
@@ -3275,6 +3217,7 @@ struct MBPOAgent[
                         dtype, Layout.row_major(1), MutAnyOrigin
                     ](gpu_state.gpu_scalars.unsafe_ptr())
 
+                    @parameter
                     @always_inline
                     def mbpo_alpha_wrapper(
                         sc: LayoutTensor[
@@ -3465,64 +3408,8 @@ struct MBPOAgent[
             gpu_state.critics.soft_update_all(self.tau, ctx)
 
     # =========================================================================
-    # GPU train method — GPU env + GPU SAC + CPU dynamics
+    # GPU training — call run_mbpo_train_gpu directly (see note above).
     # =========================================================================
-
-    def train_gpu[
-        E: GPUContinuousEnv,
-        USE_CUDA_GRAPH: Bool = False,
-    ](
-        mut self,
-        ctx: DeviceContext,
-        num_steps: Int,
-        warmup_steps: Int = 5000,
-        verbose: Bool = False,
-        print_every: Int = 50_000,
-        environment_name: String = "Environment",
-        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
-            Self.L, MutAnyOrigin
-        ](),
-        diag_every: Int = 0,
-    ) raises -> TrainingMetrics:
-        """Train MBPO with GPU-batched environment stepping + GPU SAC.
-
-        Args:
-            ctx: GPU device context.
-            num_steps: Total env transitions.
-            warmup_steps: Transitions before training (default: 5000).
-            verbose: Print progress (default: False).
-            print_every: Print interval in transitions (default: 50000).
-            environment_name: Name for metrics.
-            logger: Optional metrics logger.
-            diag_every: Log diagnostics every N train steps (default: 0).
-
-        Returns:
-            TrainingMetrics with episode-level statistics.
-        """
-        self.logger = logger
-        self.diag_every = diag_every
-        var cpu_state = Self.CPUStateType()
-        var metrics = run_mbpo_train_gpu[
-            E,
-            Self.Config,
-            Self.L,
-            USE_CUDA_GRAPH,
-            Self.TRAIN_N_ENVS,
-            Self.REAL_RATIO_PCT,
-        ](
-            self,
-            cpu_state,
-            ctx,
-            num_steps=num_steps,
-            warmup_steps=warmup_steps,
-            verbose=verbose,
-            print_every=print_every,
-            environment_name=environment_name,
-            logger=logger,
-        )
-        self.state = cpu_state^
-        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
-        return metrics^
 
     # =========================================================================
     # Checkpointable — saves agent hyperparameters and training state.

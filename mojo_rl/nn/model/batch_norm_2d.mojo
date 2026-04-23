@@ -644,6 +644,7 @@ struct BatchNorm2D[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
         ](input.ptr)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -696,6 +697,7 @@ struct BatchNorm2D[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ](params.ptr)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -773,6 +775,7 @@ struct BatchNorm2D[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ](cache.ptr)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_input: LayoutTensor[

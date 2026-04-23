@@ -293,6 +293,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ](cache.ptr)
 
+            @parameter
             @always_inline
             def kernel_wrapper(
                 output: LayoutTensor[
@@ -316,6 +317,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             )
         else:
 
+            @parameter
             @always_inline
             def kernel_wrapper_infer(
                 output: LayoutTensor[
@@ -357,6 +359,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -435,6 +438,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                 dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
             ](cache.ptr)
 
+            @parameter
             @always_inline
             def kernel_wrapper(
                 grad_input: LayoutTensor[
@@ -458,6 +462,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             )
         else:
 
+            @parameter
             @always_inline
             def kernel_wrapper_infer(
                 grad_input: LayoutTensor[

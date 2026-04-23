@@ -168,7 +168,7 @@ def main() raises:
             var obs = List[Scalar[dtype]](capacity=OBS)
             var obs_raw = env.get_obs_list()
             for i in range(OBS):
-                if i < len(obs_raw):
+                if i < obs_raw.byte_length():
                     obs.append(Scalar[dtype](obs_raw[i]))
                 else:
                     obs.append(Scalar[dtype](0.0))
@@ -176,10 +176,14 @@ def main() raises:
             var legal = env.legal_action_mask()
             var ai_action = agent.select_action_mcts[TTTCPU](obs, legal, env)
 
-            if ai_action >= 0 and ai_action < len(legal) and legal[ai_action]:
+            if (
+                ai_action >= 0
+                and ai_action < legal.byte_length()
+                and legal[ai_action]
+            ):
                 _ = env._step_impl(ai_action)
             else:
-                for a in range(len(legal)):
+                for a in range(legal.byte_length()):
                     if legal[a]:
                         _ = env._step_impl(a)
                         break

@@ -149,6 +149,7 @@ struct ManualQGradient(QGradient):
     ) raises -> None:
         """Hand-written sparse MSE gradient on GPU. One thread per sample."""
 
+        @parameter
         @always_inline
         def kernel(
             grd: LayoutTensor[
@@ -403,6 +404,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
         ](loss_in_ptr)
 
         # Pack: [Q_values(A) || action_idx(1) || target(1)]
+        @parameter
         @always_inline
         def pack_k(
             dst: LayoutTensor[
@@ -451,6 +453,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
             dtype, Layout.row_major(BATCH, LossGraph.OUT_DIM), MutAnyOrigin
         ](grad_seed_ptr)
 
+        @parameter
         @always_inline
         def fill_seed_k(
             seed: LayoutTensor[
@@ -481,6 +484,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
         )
 
         # Extract first ACTIONS columns to grad_q
+        @parameter
         @always_inline
         def extract_k(
             dst: LayoutTensor[

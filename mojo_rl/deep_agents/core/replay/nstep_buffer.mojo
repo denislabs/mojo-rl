@@ -380,6 +380,7 @@ struct GPUNStepBuffer[N: Int, OBS_DIM: Int, N_ENVS: Int](Movable):
 
         var gamma_s = self.gamma
 
+        @parameter
         @always_inline
         def nstep_kernel(
             obs_in: LayoutTensor[

@@ -253,6 +253,7 @@ struct SkipConcat[Inner: Model](Model):
         comptime TOTAL = BATCH * Self.OUT_DIM
         var grid_x = (TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_kernel(
             dst: LayoutTensor[
@@ -335,6 +336,7 @@ struct SkipConcat[Inner: Model](Model):
         comptime TOTAL = BATCH * Self.OUT_DIM
         var grid_x = (TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_kernel(
             dst: LayoutTensor[
@@ -433,6 +435,7 @@ struct SkipConcat[Inner: Model](Model):
         comptime INNER_TOTAL = BATCH * INNER_OUT
         var inner_grid = (INNER_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def extract_inner_grad(
             dst: LayoutTensor[
@@ -475,6 +478,7 @@ struct SkipConcat[Inner: Model](Model):
         comptime SKIP_TOTAL = BATCH * Self.IN_DIM
         var skip_grid = (SKIP_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def add_skip_grad(
             gi: LayoutTensor[

@@ -1074,8 +1074,8 @@ struct Geoms[*G: GeomSpec](GeomsLike):
     and helper counts for static vs dynamic geoms.
     """
 
-    comptime geom_types = Variadic.types[T=GeomSpec, *Self.G]
-    comptime N: Int = TypeList[*Self.geom_types].size
+    comptime geom_types = Self.G
+    comptime N: Int = Self.geom_types.size
 
     @staticmethod
     def _count_static_geoms() -> Int:

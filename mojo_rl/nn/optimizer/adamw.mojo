@@ -163,6 +163,7 @@ struct AdamW[
         var eps = Scalar[dtype](Self.EPS)
         var wd_factor = Scalar[dtype](1.0 - Self.LR * Self.WEIGHT_DECAY)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             params: LayoutTensor[

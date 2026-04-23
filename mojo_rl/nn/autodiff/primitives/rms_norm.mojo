@@ -294,6 +294,7 @@ struct RMSNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ](params.ptr)
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -353,6 +354,7 @@ struct RMSNormOp[dim: Int](DiffOp):
         ](cache.ptr)
 
         # Kernel 1: dx (per-sample reduction)
+        @parameter
         @always_inline
         def dx_wrapper(
             grad_input: LayoutTensor[
@@ -388,6 +390,7 @@ struct RMSNormOp[dim: Int](DiffOp):
             dtype, Layout.row_major(Self.dim), MutAnyOrigin
         ](grad_params.ptr)
 
+        @parameter
         @always_inline
         def dgamma_wrapper(
             dgamma: LayoutTensor[

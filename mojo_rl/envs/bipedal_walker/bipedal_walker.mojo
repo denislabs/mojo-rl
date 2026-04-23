@@ -1579,6 +1579,7 @@ struct BipedalWalker[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -1632,6 +1633,7 @@ struct BipedalWalker[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ](rng_counter_ptr)
 
+            @parameter
             @always_inline
             def selective_reset_counter_wrapper(
                 states: LayoutTensor[
@@ -1667,6 +1669,7 @@ struct BipedalWalker[
             )
         else:
 
+            @parameter
             @always_inline
             def selective_reset_wrapper(
                 states: LayoutTensor[
@@ -1717,6 +1720,7 @@ struct BipedalWalker[
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def extract_obs(
             states: LayoutTensor[
@@ -2199,6 +2203,7 @@ struct BipedalWalker[
             MutAnyOrigin,
         ](shapes_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def init_shapes_wrapper(
             shapes: LayoutTensor[
@@ -2316,6 +2321,7 @@ struct BipedalWalker[
             dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
         ](obs_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def step_wrapper(
             states: LayoutTensor[

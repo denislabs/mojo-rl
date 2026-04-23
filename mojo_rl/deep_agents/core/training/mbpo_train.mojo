@@ -15,9 +15,9 @@ from mojo_rl.core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousE
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import dtype
 from ..checkpoint_trait import Checkpointable
-from ..agents.mbpo_agent import MBPOAgent, GPUDynamicsEnsemble
-from ..replay.gpu_replay_buffer import GPUReplayBuffer
-from ..configs.mbpo_config import MBPOConfig
+from mojo_rl.deep_agents.core.agents.mbpo_agent import MBPOAgent, GPUDynamicsEnsemble
+from mojo_rl.deep_agents.core.replay import GPUReplayBuffer
+from mojo_rl.deep_agents.core.configs.mbpo_config import MBPOConfig
 from ..kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
@@ -235,7 +235,7 @@ def run_mbpo_train[
         # Autosave checkpoint (overwrites the same file)
         if (
             agent.checkpoint_every > 0
-            and len(agent.checkpoint_path) > 0
+            and agent.checkpoint_path.byte_length() > 0
             and (epoch + 1) % agent.checkpoint_every == 0
         ):
             agent.save_checkpoint(cpu_state, agent.checkpoint_path)
@@ -690,7 +690,7 @@ def run_mbpo_train_gpu[
             # Autosave checkpoint (overwrites the same file)
             if (
                 agent.checkpoint_every > 0
-                and len(agent.checkpoint_path) > 0
+                and agent.checkpoint_path.byte_length() > 0
                 and total_steps >= agent.checkpoint_every
                 and total_steps % agent.checkpoint_every < print_every
             ):
@@ -722,7 +722,7 @@ def run_mbpo_train_gpu[
     ctx.synchronize()
 
     # Final checkpoint (CPU state is now synced from GPU)
-    if agent.checkpoint_every > 0 and len(agent.checkpoint_path) > 0:
+    if agent.checkpoint_every > 0 and agent.checkpoint_path.byte_length() > 0:
         agent.save_checkpoint(cpu_state, agent.checkpoint_path)
 
     if logger:

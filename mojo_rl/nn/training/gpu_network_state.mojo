@@ -191,6 +191,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         """
         var g = self.grads_view()
 
+        @parameter
         @always_inline
         def _clip_kernel(
             grads: LayoutTensor[
@@ -252,6 +253,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         var source_t = source.params_view()
         var tau_s = Scalar[Self.dtype](tau)
 
+        @parameter
         @always_inline
         def soft_update_wrapper(
             tgt: LayoutTensor[

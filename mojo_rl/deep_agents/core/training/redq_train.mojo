@@ -166,7 +166,7 @@ def run_redq_train_gpu[
     # contract used by SAC / MBPO.
     var ckpt_every = checkpoint_every
     var ckpt_path = checkpoint_path
-    if agent.checkpoint_every > 0 and len(agent.checkpoint_path) > 0:
+    if agent.checkpoint_every > 0 and agent.checkpoint_path.byte_length() > 0:
         ckpt_every = agent.checkpoint_every
         ckpt_path = agent.checkpoint_path
     var next_checkpoint = ckpt_every
@@ -387,7 +387,7 @@ def run_redq_train_gpu[
     ctx.synchronize()
 
     # Final checkpoint (CPU state is now synced from GPU)
-    if ckpt_every > 0 and len(ckpt_path) > 0:
+    if ckpt_every > 0 and ckpt_path.byte_length() > 0:
         agent.save_checkpoint(ckpt_path)
 
     # Final logger flush

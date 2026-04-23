@@ -3329,7 +3329,7 @@ def render_texture_9grid(
             bottom_height: c_float,
             scale: c_float,
             dstrect: Ptr[FRect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         renderer,
         texture,
@@ -3452,7 +3452,7 @@ def render_geometry_raw(
             indices: Ptr[NoneType, ImmutAnyOrigin],
             num_indices: c_int,
             size_indices: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         renderer,
         texture,
@@ -3511,7 +3511,7 @@ def render_read_pixels(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Ptr[Surface, MutAnyOrigin],
+        ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

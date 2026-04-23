@@ -960,6 +960,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime grid_x = (Self.action_dim + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -1040,6 +1041,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime grid_x = (Self.action_dim + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -1141,6 +1143,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime dx_total = BATCH * Self.IN_DIM
         comptime dx_grid = (dx_total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def dx_fused_kernel_wrapper(
             grad_input: LayoutTensor[
@@ -1175,6 +1178,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime dW_size = Self.in_dim * Self.action_dim
         comptime dW_db_grid = dW_size + 2 * Self.action_dim
 
+        @parameter
         @always_inline
         def dW_db_fused_kernel_wrapper(
             grads: LayoutTensor[
@@ -1687,6 +1691,7 @@ def rsample_backward_gpu[
     comptime total_size = BATCH * action_dim
     comptime grid_size = (total_size + TPB - 1) // TPB
 
+    @parameter
     @always_inline
     def kernel_wrapper(
         grad_action: LayoutTensor[

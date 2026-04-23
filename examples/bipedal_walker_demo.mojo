@@ -91,7 +91,7 @@ def main() raises:
     # Test observation dimensions
     print("=== Observation Test ===")
     var obs = env.get_obs_list()
-    print("Observation dimension:", len(obs))
+    print("Observation dimension:", obs.byte_length())
     print("First 4 values (hull state):")
     print("  hull_angle:", Float64(obs[0]))
     print("  hull_angular_velocity:", Float64(obs[1]))

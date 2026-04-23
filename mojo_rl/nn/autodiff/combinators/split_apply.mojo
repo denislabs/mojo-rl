@@ -404,6 +404,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             dtype, Layout.row_major(BATCH, Self.LEFT_IN), MutAnyOrigin
         ](left_ptr)
 
+        @parameter
         @always_inline
         def extract_left(
             dst: LayoutTensor[
@@ -428,6 +429,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
             dtype, Layout.row_major(BATCH, Self.RIGHT_IN), MutAnyOrigin
         ](right_ptr)
 
+        @parameter
         @always_inline
         def extract_right(
             dst: LayoutTensor[
@@ -488,6 +490,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         comptime OUT_TOTAL = BATCH * Self.OUT_DIM
         var o_grid = (OUT_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_out(
             dst: LayoutTensor[
@@ -608,6 +611,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         comptime GL_TOTAL = BATCH * Self.LEFT_OUT
         var gl_grid = (GL_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def extract_gl(
             dst: LayoutTensor[
@@ -634,6 +638,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         comptime GR_TOTAL = BATCH * Self.RIGHT_OUT
         var gr_grid = (GR_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def extract_gr(
             dst: LayoutTensor[
@@ -703,6 +708,7 @@ struct SplitApply[Left: Model, Right: Model, split: Int](Model):
         comptime GI_TOTAL = BATCH * Self.IN_DIM
         var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def assemble_gi(
             dst: LayoutTensor[

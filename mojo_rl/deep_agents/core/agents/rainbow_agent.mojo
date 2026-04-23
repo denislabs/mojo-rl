@@ -1234,10 +1234,10 @@ struct GenericRainbowAgent[
         self.state.target.read_sections(content, "target_")
         var metadata = read_metadata_section(content)
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
         var step_str = get_metadata_value(metadata, "train_step_count")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.train_step_count = Int(atol(step_str))
 
     # =========================================================================
@@ -1380,6 +1380,7 @@ struct GenericRainbowAgent[
             dtype, Layout.row_major(Self.NUM_ATOMS), MutAnyOrigin
         ](gpu_state.bins_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def rainbow_select_kernel(
             raw: LayoutTensor[
@@ -1566,6 +1567,7 @@ struct GenericRainbowAgent[
         )
 
         # ---- Phase 3: Dueling combine (3 kernels) ----
+        @parameter
         @always_inline
         def dueling_combine_kernel(
             raw: LayoutTensor[
@@ -1614,6 +1616,7 @@ struct GenericRainbowAgent[
         )
 
         # ---- Phase 4: Expected Q from online-next (for Double DQN action selection) ----
+        @parameter
         @always_inline
         def expected_q_kernel(
             comb: LayoutTensor[
@@ -1666,6 +1669,7 @@ struct GenericRainbowAgent[
             (Self.Config.v_max - Self.Config.v_min) / Float64(ATOMS - 1)
         )
 
+        @parameter
         @always_inline
         def rainbow_project_grad_kernel(
             online_comb: LayoutTensor[

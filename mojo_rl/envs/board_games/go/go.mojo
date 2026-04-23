@@ -1218,6 +1218,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
+        @parameter
         @always_inline
         def step_wrapper(
             states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -1259,6 +1260,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         ](states_buf.unsafe_ptr())
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
+        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -1290,6 +1292,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         ](dones_buf.unsafe_ptr())
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
+        @parameter
         @always_inline
         def sel_reset_wrapper(
             states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
@@ -1323,6 +1326,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         ](legal_masks_buf.unsafe_ptr())
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
+        @parameter
         @always_inline
         def extract_wrapper(
             states: LayoutTensor[board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin],

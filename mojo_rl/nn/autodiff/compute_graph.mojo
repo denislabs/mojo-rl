@@ -39,7 +39,6 @@ from ..constants import dtype, TPB, gpu_align
 from ..model.model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
-from std.builtin.variadics import Variadic
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 
@@ -360,8 +359,8 @@ struct ComputeGraph[*NODES: GraphNode](Model):
       - IN1_NAME == <node_name> or "input": second input, concatenated
     """
 
-    comptime node_types = Variadic.types[T=GraphNode, *Self.NODES]
-    comptime N = TypeList[*Self.node_types].size
+    comptime node_types = Self.NODES
+    comptime N = Self.node_types.size
 
     # =========================================================================
     # Compile-time dimension inference
@@ -946,6 +945,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         ImmutAnyOrigin,
                     ](input.ptr)
 
+                    @parameter
                     @always_inline
                     def copy_s0_ext(
                         dst: LayoutTensor[
@@ -982,6 +982,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         + BATCH * Self._source_act_offset_by_name[src0_name]()
                     )
 
+                    @parameter
                     @always_inline
                     def copy_s0_node(
                         dst: LayoutTensor[
@@ -1020,6 +1021,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         ImmutAnyOrigin,
                     ](input.ptr)
 
+                    @parameter
                     @always_inline
                     def copy_s1_ext(
                         dst: LayoutTensor[
@@ -1058,6 +1060,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         + BATCH * Self._source_act_offset_by_name[src1_name]()
                     )
 
+                    @parameter
                     @always_inline
                     def copy_s1_node(
                         dst: LayoutTensor[
@@ -1101,6 +1104,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             ImmutAnyOrigin,
         ](cache.ptr + BATCH * Self._act_offset[Self.N - 1]())
 
+        @parameter
         @always_inline
         def copy_output_kernel(
             dst: LayoutTensor[
@@ -1212,6 +1216,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         comptime GA_TOTAL = BATCH * TOTAL_ACT
         var ga_grid = (GA_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def zero_ga_kernel(
             dst: LayoutTensor[
@@ -1239,6 +1244,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         comptime INIT_TOTAL = BATCH * LAST_DIM
         var init_grid = (INIT_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def init_last_grad_kernel(
             dst: LayoutTensor[
@@ -1278,6 +1284,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         comptime GI_TOTAL = BATCH * Self.IN_DIM
         var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def zero_gi_kernel(
             dst: LayoutTensor[
@@ -1365,6 +1372,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         ImmutAnyOrigin,
                     ](gi_scratch_ptr)
 
+                    @parameter
                     @always_inline
                     def add_to_gi_single(
                         dst: LayoutTensor[
@@ -1408,6 +1416,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         ImmutAnyOrigin,
                     ](gi_scratch_ptr)
 
+                    @parameter
                     @always_inline
                     def add_to_pred_single(
                         dst: LayoutTensor[
@@ -1446,6 +1455,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     comptime S0_N = BATCH * dim0
                     var s0_grid = (S0_N + TPB - 1) // TPB
 
+                    @parameter
                     @always_inline
                     def scatter_to_gi_s0(
                         dst: LayoutTensor[
@@ -1485,6 +1495,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     var s0_grid = (S0_N + TPB - 1) // TPB
                     comptime d0_dim = Self._source_dim_by_name[src0_name]()
 
+                    @parameter
                     @always_inline
                     def scatter_to_pred_s0(
                         dst: LayoutTensor[
@@ -1534,6 +1545,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     comptime S1_N = BATCH * dim1
                     var s1_grid = (S1_N + TPB - 1) // TPB
 
+                    @parameter
                     @always_inline
                     def scatter_to_gi_s1(
                         dst: LayoutTensor[
@@ -1573,6 +1585,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                     var s1_grid = (S1_N + TPB - 1) // TPB
                     comptime d1_dim = Self._source_dim_by_name[src1_name]()
 
+                    @parameter
                     @always_inline
                     def scatter_to_pred_s1(
                         dst: LayoutTensor[

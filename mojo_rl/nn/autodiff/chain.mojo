@@ -5,7 +5,6 @@ from .op import DiffOp
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
-from std.builtin.variadics import Variadic
 
 # =============================================================================
 # AutoDiffChain — compose DiffOp primitives into a Model
@@ -36,8 +35,8 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     Uses Variadic.types + comptime for to iterate at compile time.
     """
 
-    comptime op_types = Variadic.types[T=DiffOp, *Self.OPS]
-    comptime N = TypeList[*Self.op_types].size
+    comptime op_types = Self.OPS
+    comptime N = Self.op_types.size
 
     comptime IN_DIM: Int = Self.op_types[0].IN_DIM
     comptime OUT_DIM: Int = Self.op_types[Self.N - 1].OUT_DIM

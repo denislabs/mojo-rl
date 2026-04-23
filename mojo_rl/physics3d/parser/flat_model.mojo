@@ -1313,7 +1313,7 @@ struct FlatModelDef[
             loaded_mesh_ids.append(-1)
         for i in range(Self.NGEOM):
             var gd = self.geoms[i]
-            if gd.geom_type == _GEOM_MESH and gd.mesh_id >= 0 and len(gd.mesh_filename) > 0:
+            if gd.geom_type == _GEOM_MESH and gd.mesh_id >= 0 and gd.mesh_filename.byte_length() > 0:
                 # Check if this mesh was already loaded (shared across geoms)
                 if loaded_mesh_ids[gd.mesh_id] >= 0:
                     model.geom_mesh_id[i] = loaded_mesh_ids[gd.mesh_id]

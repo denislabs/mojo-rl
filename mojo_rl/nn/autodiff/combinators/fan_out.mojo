@@ -333,6 +333,7 @@ struct FanOut[Inner: Model, N: Int](Model):
             comptime I_TOTAL = BATCH * I_OUT
             var i_grid = (I_TOTAL + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def scatter_k(
                 dst: LayoutTensor[
@@ -445,6 +446,7 @@ struct FanOut[Inner: Model, N: Int](Model):
             comptime I_TOTAL = BATCH * I_OUT
             var i_grid = (I_TOTAL + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def extract_k(
                 dst: LayoutTensor[
@@ -515,6 +517,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                 comptime GI_TOTAL = BATCH * Self.IN_DIM
                 var gi_grid = (GI_TOTAL + TPB - 1) // TPB
 
+                @parameter
                 @always_inline
                 def add_gi(
                     a: LayoutTensor[

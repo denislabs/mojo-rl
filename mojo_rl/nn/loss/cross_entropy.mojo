@@ -264,6 +264,7 @@ struct CrossEntropyLoss(LossFunction):
         """Launch forward pass on GPU to compute Cross-Entropy loss."""
         comptime assert dtype.is_floating_point(), "dtype must be floating point"
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -304,6 +305,7 @@ struct CrossEntropyLoss(LossFunction):
         """Launch backward pass on GPU to compute loss gradient."""
         comptime assert dtype.is_floating_point(), "dtype must be floating point"
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_output: LayoutTensor[

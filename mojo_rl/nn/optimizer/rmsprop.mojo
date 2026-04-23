@@ -129,6 +129,7 @@ struct RMSprop[
         var alpha = Scalar[dtype](Self.ALPHA)
         var eps = Scalar[dtype](Self.EPS)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             params: LayoutTensor[

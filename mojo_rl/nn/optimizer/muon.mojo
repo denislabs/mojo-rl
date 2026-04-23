@@ -354,6 +354,7 @@ struct Muon[
             norm_sq += g_nesterov * g_nesterov
         var inv_norm = Scalar[dtype](1.0) / (sqrt(norm_sq) + eps)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             params: LayoutTensor[

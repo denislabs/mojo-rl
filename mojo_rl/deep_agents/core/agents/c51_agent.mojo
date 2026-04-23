@@ -939,27 +939,27 @@ struct GenericC51Agent[
         var metadata = read_metadata_section(content)
 
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
 
         var tau_str = get_metadata_value(metadata, "tau")
-        if len(tau_str) > 0:
+        if tau_str.byte_length() > 0:
             self.tau = atof(tau_str)
 
         var epsilon_str = get_metadata_value(metadata, "epsilon")
-        if len(epsilon_str) > 0:
+        if epsilon_str.byte_length() > 0:
             self.epsilon = atof(epsilon_str)
 
         var epsilon_min_str = get_metadata_value(metadata, "epsilon_min")
-        if len(epsilon_min_str) > 0:
+        if epsilon_min_str.byte_length() > 0:
             self.epsilon_min = atof(epsilon_min_str)
 
         var epsilon_decay_str = get_metadata_value(metadata, "epsilon_decay")
-        if len(epsilon_decay_str) > 0:
+        if epsilon_decay_str.byte_length() > 0:
             self.epsilon_decay = atof(epsilon_decay_str)
 
         var train_step_str = get_metadata_value(metadata, "train_step_count")
-        if len(train_step_str) > 0:
+        if train_step_str.byte_length() > 0:
             self.train_step_count = Int(atol(train_step_str))
 
     # =========================================================================
@@ -1112,6 +1112,7 @@ struct GenericC51Agent[
             UInt64(self.get_total_steps()) * UInt64(2654435761)
         )
 
+        @parameter
         @always_inline
         def c51_select_kernel(
             eps: Scalar[dtype],
@@ -1289,6 +1290,7 @@ struct GenericC51Agent[
         )
 
         # ---- Phase 4: Compute expected Q from online_next for action selection ----
+        @parameter
         @always_inline
         def expected_q_kernel(
             raw: LayoutTensor[
@@ -1339,6 +1341,7 @@ struct GenericC51Agent[
             (Self.Config.v_max - Self.Config.v_min) / Float64(ATOMS - 1)
         )
 
+        @parameter
         @always_inline
         def c51_project_grad_kernel(
             online_raw: LayoutTensor[

@@ -774,6 +774,7 @@ struct Conv2DBatchNormReLU[
         # Copy im2col from conv_cache into our cache (needed for backward)
         # The BN+ReLU kernel reads x_hat/inv_std from our cache, and backward needs im2col
         comptime COPY_SIZE = BATCH * CONV_CS
+        @parameter
         @always_inline
         def copy_im2col(
             dst: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
@@ -796,6 +797,7 @@ struct Conv2DBatchNormReLU[
         )
 
         # Run fused BN+ReLU kernel
+        @parameter
         @always_inline
         def bn_relu_wrapper(
             output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -854,6 +856,7 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ](params.ptr)
 
+        @parameter
         @always_inline
         def bn_relu_nc_wrapper(
             output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -938,6 +941,7 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ](cache.ptr)
 
+        @parameter
         @always_inline
         def relu_bn_bwd_wrapper(
             grad_pre_bn: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
@@ -971,6 +975,7 @@ struct Conv2DBatchNormReLU[
 
         # Copy im2col from our cache (stride=CACHE_SIZE) to conv_cache (stride=CONV_CS)
         comptime COPY_SIZE = BATCH * CONV_CS
+        @parameter
         @always_inline
         def copy_im2col_bwd(
             dst: LayoutTensor[dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin],

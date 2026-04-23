@@ -17,7 +17,6 @@ from ...initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
-from std.builtin.variadics import Variadic
 
 
 @fieldwise_init
@@ -28,8 +27,8 @@ struct Parallel[*BRANCHES: Model](Model):
     along the feature dimension (per row).
     """
 
-    comptime branch_types = Variadic.types[T=Model, *Self.BRANCHES]
-    comptime N = TypeList[*Self.branch_types].size
+    comptime branch_types = Self.BRANCHES
+    comptime N = Self.branch_types.size
 
     comptime IN_DIM: Int = Self.branch_types[0].IN_DIM
 
@@ -506,6 +505,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 ImmutAnyOrigin,
             ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
 
+            @parameter
             @always_inline
             def copy_branch_fwd(
                 dst: LayoutTensor[
@@ -602,6 +602,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 ImmutAnyOrigin,
             ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
 
+            @parameter
             @always_inline
             def copy_branch_fwd_nc(
                 dst: LayoutTensor[
@@ -696,6 +697,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 MutAnyOrigin,
             ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
 
+            @parameter
             @always_inline
             def split_branch(
                 gi: LayoutTensor[
@@ -786,6 +788,7 @@ struct Parallel[*BRANCHES: Model](Model):
         comptime GI_TOTAL = BATCH * Self.IN_DIM
         comptime N_BRANCHES = Self.N
 
+        @parameter
         @always_inline
         def sum_gi_wrapper(
             dst: LayoutTensor[

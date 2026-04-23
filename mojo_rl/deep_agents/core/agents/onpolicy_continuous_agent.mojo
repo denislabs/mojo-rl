@@ -845,19 +845,19 @@ struct GenericOnPolicyContinuousAgent[
 
         var metadata = read_metadata_section(content)
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
         var gae_str = get_metadata_value(metadata, "gae_lambda")
-        if len(gae_str) > 0:
+        if gae_str.byte_length() > 0:
             self.gae_lambda = atof(gae_str)
         var entropy_str = get_metadata_value(metadata, "entropy_coef")
-        if len(entropy_str) > 0:
+        if entropy_str.byte_length() > 0:
             self.entropy_coef = atof(entropy_str)
         var clip_str = get_metadata_value(metadata, "clip_epsilon")
-        if len(clip_str) > 0:
+        if clip_str.byte_length() > 0:
             self.clip_epsilon = atof(clip_str)
         var step_str = get_metadata_value(metadata, "train_step_count")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.train_step_count = Int(atol(step_str))
 
     # =========================================================================
@@ -1143,6 +1143,7 @@ struct GenericOnPolicyContinuousAgent[
         var log_probs_buf = ctx.enqueue_create_buffer[dtype](N_EVAL_ENVS)
 
         # Deterministic action extraction kernel
+        @parameter
         @always_inline
         def extract_deterministic_actions(
             actions: LayoutTensor[
@@ -1827,6 +1828,7 @@ struct GenericOnPolicyContinuousAgent[
                         MutAnyOrigin,
                     ](loss_input_ptr)
 
+                    @parameter
                     @always_inline
                     def pack_loss_input_k(
                         dst: LayoutTensor[
@@ -1938,6 +1940,7 @@ struct GenericOnPolicyContinuousAgent[
                         MutAnyOrigin,
                     ](loss_grad_output_ptr)
 
+                    @parameter
                     @always_inline
                     def seed_grad_k(
                         go: LayoutTensor[
@@ -1989,6 +1992,7 @@ struct GenericOnPolicyContinuousAgent[
                         ImmutAnyOrigin,
                     ](loss_grad_input_ptr)
 
+                    @parameter
                     @always_inline
                     def extract_and_entropy_k(
                         dst: LayoutTensor[
@@ -2029,6 +2033,7 @@ struct GenericOnPolicyContinuousAgent[
                     )
 
                     # Compute diagnostics (KL, entropy, clip_flags) in separate kernel
+                    @parameter
                     @always_inline
                     def diag_kernel(
                         kl_out: LayoutTensor[

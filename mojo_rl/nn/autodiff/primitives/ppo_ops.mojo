@@ -249,6 +249,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
         ](input.ptr)
         var grid_x = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -301,6 +302,7 @@ struct CategoricalLogProbOp[num_actions: Int](DiffOp):
         ](cache.ptr)
         var grid_x = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[
@@ -505,6 +507,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
         var total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -558,6 +561,7 @@ struct RatioOp[dim: Int = 1](DiffOp):
         var total = BATCH * Self.dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[
@@ -818,6 +822,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
         ](input.ptr)
         var grid_x = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -870,6 +875,7 @@ struct ClipSurrogateOp[eps: Float64 = 0.2](DiffOp):
         ](cache.ptr)
         var grid_x = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[

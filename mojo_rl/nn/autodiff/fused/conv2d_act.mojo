@@ -1497,6 +1497,7 @@ struct FusedConv2DActivation[
             comptime im2col_elems = BATCH * Self.CONV_CACHE
             comptime im2col_blocks = (im2col_elems + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def im2col_wrapper(
                 cache_out: LayoutTensor[
@@ -1553,6 +1554,7 @@ struct FusedConv2DActivation[
             comptime col_elems = K_TOTAL * Self.col_size
             comptime col_blocks = (col_elems + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def copy_col_fwd(
                 dst: LayoutTensor[
@@ -1603,6 +1605,7 @@ struct FusedConv2DActivation[
             comptime fwd_grid_x = (Self.out_channels + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime fwd_grid_y = (K_TOTAL + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+            @parameter
             @always_inline
             def fwd_mm_wrapper(
                 out_temp: LayoutTensor[
@@ -1639,6 +1642,7 @@ struct FusedConv2DActivation[
             comptime out_elems = BATCH * Self.OUT_DIM
             comptime out_blocks = (out_elems + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def transpose_output_act_wrapper(
                 output: LayoutTensor[
@@ -1692,6 +1696,7 @@ struct FusedConv2DActivation[
             comptime grid_x = (Self.spatial_out + 31) // 32
             comptime grid_y = (Self.out_channels + 31) // 32
 
+            @parameter
             @always_inline
             def wrapper(
                 output: LayoutTensor[
@@ -1785,6 +1790,7 @@ struct FusedConv2DActivation[
             comptime col_elems = K_TOTAL * Self.col_size
             comptime col_blocks = (col_elems + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def copy_col_wrapper(
                 dst: LayoutTensor[
@@ -1819,6 +1825,7 @@ struct FusedConv2DActivation[
             comptime grad_elems = Self.out_channels * K_TOTAL
             comptime grad_blocks = (grad_elems + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def transpose_mask_grad_wrapper(
                 dst: LayoutTensor[
@@ -1866,6 +1873,7 @@ struct FusedConv2DActivation[
             comptime dW_grid_x_nv = (Self.col_size + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime dW_grid_y_nv = (Self.out_channels + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+            @parameter
             @always_inline
             def dW_mm_wrapper(
                 dW: LayoutTensor[
@@ -1914,6 +1922,7 @@ struct FusedConv2DActivation[
             comptime dx_grid_x_nv = (K_TOTAL + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime dx_grid_y_nv = (Self.col_size + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+            @parameter
             @always_inline
             def dx_mm_wrapper(
                 dcol: LayoutTensor[
@@ -1948,6 +1957,7 @@ struct FusedConv2DActivation[
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def col2im_gather(
                 grad_input: LayoutTensor[
@@ -2007,6 +2017,7 @@ struct FusedConv2DActivation[
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def dx_wrapper(
                 grad_input: LayoutTensor[
@@ -2042,6 +2053,7 @@ struct FusedConv2DActivation[
             comptime dW_grid_x = (Self.col_size + 31) // 32
             comptime dW_grid_y = (Self.out_channels + 31) // 32
 
+            @parameter
             @always_inline
             def dW_wrapper(
                 dW: LayoutTensor[
@@ -2076,6 +2088,7 @@ struct FusedConv2DActivation[
         ](grad_params.ptr + Self.out_channels * Self.col_size)
 
         # Grid: one block per output channel, TPB threads reduce across BATCH
+        @parameter
         @always_inline
         def db_wrapper(
             db: LayoutTensor[

@@ -377,6 +377,7 @@ struct GPUSequenceReplayBuffer[
 
         var write_idx_s = Scalar[DType.int32](self.write_idx)
 
+        @parameter
         @always_inline
         def store_wrapper(
             po: LayoutTensor[
@@ -520,6 +521,7 @@ struct GPUSequenceReplayBuffer[
         var buf_write_idx_s = Scalar[DType.int32](self.write_idx)
         var rng_seed_s = Scalar[DType.uint32](rng_seed)
 
+        @parameter
         @always_inline
         def sample_wrapper(
             bo: LayoutTensor[

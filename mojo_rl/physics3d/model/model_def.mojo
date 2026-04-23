@@ -21,7 +21,6 @@ Usage:
 """
 
 from std.collections import InlineArray
-from std.builtin.variadics import Variadic
 from std.random.philox import Random as PhiloxRandom
 from mojo_rl.render import Color, Renderer3D, Light, Camera3D
 from mojo_rl.math3d import Vec3 as _Vec3G, Quat as _QuatG
@@ -903,6 +902,7 @@ struct ModelDef[
         ](ws_buf)
 
         # Kernel: init state to zero, run FK + mass matrix + LDL, compute invweight0
+        @parameter
         @always_inline
         def invweight0_kernel(
             state: LayoutTensor[

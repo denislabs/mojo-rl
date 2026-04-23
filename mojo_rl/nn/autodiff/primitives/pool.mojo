@@ -237,6 +237,7 @@ struct MaxPool2D[
         var total = BATCH * Self.OUT_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -291,6 +292,7 @@ struct MaxPool2D[
         var total = BATCH * Self.OUT_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[
@@ -556,6 +558,7 @@ struct AvgPool2D[
         var total = BATCH * Self.OUT_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -603,6 +606,7 @@ struct AvgPool2D[
         var total = BATCH * Self.IN_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[

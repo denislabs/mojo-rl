@@ -171,6 +171,7 @@ struct Residual[Inner: Model](Model):
         ](input.ptr)
         var grid_x = (BATCH * Self.IN_DIM + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             a: LayoutTensor[
@@ -217,6 +218,7 @@ struct Residual[Inner: Model](Model):
         ](input.ptr)
         var grid_x = (BATCH * Self.IN_DIM + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             a: LayoutTensor[
@@ -289,6 +291,7 @@ struct Residual[Inner: Model](Model):
         ](grad_output.ptr)
         var grid_x = (BATCH * Self.IN_DIM + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             a: LayoutTensor[

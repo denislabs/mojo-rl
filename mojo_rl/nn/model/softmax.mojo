@@ -355,6 +355,7 @@ struct Softmax[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -401,6 +402,7 @@ struct Softmax[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](input.ptr)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -471,6 +473,7 @@ struct Softmax[dim: Int](Model):
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
         ](cache.ptr)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_input: LayoutTensor[

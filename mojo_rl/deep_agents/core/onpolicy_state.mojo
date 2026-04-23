@@ -505,6 +505,7 @@ struct PPOContinuousGPUState[
         # Scalar store: actions, log_probs, values (tiny kernel)
         comptime blocks = (N_ENVS + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def store_scalars_cont_wrapper(
             r_a: LayoutTensor[

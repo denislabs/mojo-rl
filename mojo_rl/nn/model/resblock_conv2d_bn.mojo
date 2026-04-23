@@ -749,6 +749,7 @@ struct ResBlockConv2DBN[
         Self.Conv1.backward_gpu[BATCH](ctx, temp_gi, go_c1, p1, c1_v, g1_v, conv_ws)
 
         # 4. Add conv1's grad_input to skip grad
+        @parameter
         @always_inline
         def add_wrapper(
             a: LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin],

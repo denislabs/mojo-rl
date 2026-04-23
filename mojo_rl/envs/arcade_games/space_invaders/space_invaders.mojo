@@ -891,6 +891,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed = Scalar[DType.uint64](rng_seed)
 
+        @parameter
         @always_inline
         def step_wrapper(
             states: LayoutTensor[
@@ -968,6 +969,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         ](states_buf.unsafe_ptr())
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
+        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -1013,6 +1015,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ](rng_counter_ptr)
 
+            @parameter
             @always_inline
             def sel_reset_counter_wrapper(
                 states: LayoutTensor[
@@ -1048,6 +1051,7 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         else:
             var seed = Scalar[DType.uint64](rng_seed)
 
+            @parameter
             @always_inline
             def sel_reset_wrapper(
                 states: LayoutTensor[
