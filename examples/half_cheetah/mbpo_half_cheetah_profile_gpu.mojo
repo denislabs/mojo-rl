@@ -23,14 +23,14 @@ from mojo_rl.envs.half_cheetah import (
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM
 comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM
 comptime HIDDEN_DIM = 256
-comptime BUFFER_CAPACITY = 100_000
-comptime SYNTH_CAPACITY = 100_000
+comptime BUFFER_CAPACITY = 1_000_000  # Real buffer (match SAC)
+comptime SYNTH_CAPACITY = 400_000  # Synthetic buffer
 comptime BATCH_SIZE = 256
 comptime NUM_ENSEMBLE = 7
 comptime NUM_ELITES = 5
 comptime DYN_HIDDEN = 200
-comptime NUM_STEPS = 10_000
-comptime WARMUP_STEPS = 1_000
+comptime NUM_STEPS = 5_000
+comptime WARMUP_STEPS = 0
 comptime dtype = DType.float32
 
 comptime MBPOHalfCheetahConfig = DefaultMBPOConfig[

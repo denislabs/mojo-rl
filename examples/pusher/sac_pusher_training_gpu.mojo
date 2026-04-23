@@ -1,15 +1,15 @@
-"""SAC Agent GPU Training on Hopper.
+"""SAC Agent GPU Training on Pusher.
 
-This trains the SAC (Soft Actor-Critic) agent on the Hopper environment
+This trains the SAC (Soft Actor-Critic) agent on the Pusher environment
 using GPU-accelerated off-policy training with:
 - Parallel environments on GPU
 - Generalized Coordinates (GC) physics engine (MuJoCo-style)
-- 3D continuous action space (joint torques)
-- 11D observation (qpos + qvel excluding rootx)
+- 7D continuous action space (joint torques)
+- 23D observation (qpos[:7], qvel[:7], tips_arm, object, goal)
 
 Run with:
-    pixi run -e apple mojo run -I . examples/hopper/sac_hopper_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/hopper/sac_hopper_training_gpu.mojo   # NVIDIA GPU
+    pixi run -e apple mojo run -I . examples/pusher/sac_pusher_training_gpu.mojo    # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/pusher/sac_pusher_training_gpu.mojo   # NVIDIA GPU
 """
 
 from std.random import seed
@@ -21,16 +21,16 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.core.agents import DeepSACAgent
-from mojo_rl.envs.hopper import Hopper, HopperConfig, HopperCurriculum
+from mojo_rl.envs.pusher import Pusher
 
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-# Hopper: 11D observation, 3D continuous action
-comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
-comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
+# Pusher: 23D observation, 7D continuous action
+comptime OBS_DIM = 23  # qpos[:7] + qvel[:7] + tips_arm(3) + object(3) + goal(3)
+comptime ACTION_DIM = 7  # 7 arm joint motors
 
 # Network architecture
 comptime HIDDEN_DIM = 256
@@ -38,9 +38,9 @@ comptime HIDDEN_DIM = 256
 # Off-policy GPU training parameters
 comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 8
+comptime MAX_N_ENVS = 16
 
-# Training duration
+# Training duration (Pusher: 100-step episodes, dense contact dynamics)
 comptime NUM_STEPS = 2_000_000
 comptime WARMUP_STEPS = 25_000
 
@@ -55,7 +55,7 @@ comptime dtype = DType.float32
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC Agent GPU Training on Hopper")
+    print("SAC Agent GPU Training on Pusher")
     print("=" * 70)
     print()
 
@@ -71,25 +71,25 @@ def main() raises:
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
             actor_lr=0.0003,  # CleanRL: policy_lr=3e-4
-            critic_lr=0.001,  # CleanRL: q_lr=1e-3 (3.3x higher than actor)
+            critic_lr=0.001,  # CleanRL: q_lr=1e-3
             L=RemoteLogger,
             max_n_envs=MAX_N_ENVS,
         ](
             gamma=0.99,
             tau=0.005,
-            action_scale=1.0,
+            action_scale=2.0,  # ctrlrange [-2, 2]
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.001,  # CleanRL: uses q_lr for alpha too
-            target_entropy=-1.0,  # -ACTION_DIM
+            alpha_lr=0.001,
+            target_entropy=-7.0,  # -ACTION_DIM
             max_grad_norm=0.0,
             checkpoint_every=100_000,
-            checkpoint_path="sac_hopper.ckpt",
+            checkpoint_path="sac_pusher.ckpt",
             use_ere=True,
             ere_eta=0.996,
         )
 
-        print("Environment: Hopper Continuous (GPU)")
+        print("Environment: Pusher Continuous (GPU)")
         print("Agent: SAC (Soft Actor-Critic)")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
@@ -99,9 +99,10 @@ def main() raises:
         print("  Max parallel envs: " + String(MAX_N_ENVS))
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 1e-3 (CleanRL default)")
-        print("    - Alpha LR: 1e-3 (CleanRL default)")
+        print("    - Critic LR: 1e-3")
+        print("    - Alpha LR: 1e-3")
         print("    - Tau (soft update): 0.005")
+        print("    - Action scale: 2.0 (ctrlrange [-2, 2])")
         print("    - Initial alpha: 0.2 (auto-tuned)")
         print("    - Target entropy: -" + String(ACTION_DIM))
         print("    - Warmup steps: " + String(WARMUP_STEPS))
@@ -117,12 +118,12 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC Hopper GPU",
+            run_name="SAC Pusher GPU",
             buffer_size=64,
             api_key=api_key,
         )
         logger.set_config("agent", "SAC")
-        logger.set_config("env", "Hopper")
+        logger.set_config("env", "Pusher")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("actor_lr", "3e-4")
         logger.set_config("critic_lr", "1e-3")
@@ -141,7 +142,7 @@ def main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                Hopper[dtype, TERMINATE_ON_UNHEALTHY=True],
+                Pusher[dtype, TERMINATE_ON_UNHEALTHY=False],
             ](
                 ctx,
                 num_steps=NUM_STEPS,
@@ -150,8 +151,7 @@ def main() raises:
                 print_every=50_000,
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
-                # gradient_steps=4,
-                reward_scale=5.0,
+                reward_scale=1.0,
             )
 
             var end_time = perf_counter_ns()
@@ -185,22 +185,22 @@ def main() raises:
             print()
 
             var final_avg = metrics.mean_reward_last_n(100)
-            if final_avg > 3000.0:
-                print("EXCELLENT: Agent is hopping fast! (avg reward > 3000)")
-            elif final_avg > 1500.0:
-                print("SUCCESS: Agent learned to hop! (avg reward > 1500)")
-            elif final_avg > 500.0:
+            if final_avg > -25.0:
+                print("EXCELLENT: Arm is pushing to the goal! (avg reward > -25)")
+            elif final_avg > -50.0:
+                print("SUCCESS: Arm learned to push! (avg reward > -50)")
+            elif final_avg > -100.0:
                 print(
-                    "GOOD PROGRESS: Agent is learning locomotion"
-                    " (avg reward > 500)"
+                    "GOOD PROGRESS: Agent is learning manipulation"
+                    " (avg reward > -100)"
                 )
-            elif final_avg > 0.0:
+            elif final_avg > -150.0:
                 print(
                     "LEARNING: Agent improving but needs more training"
-                    " (avg reward > 0)"
+                    " (avg reward > -150)"
                 )
             else:
-                print("EARLY STAGE: Agent still exploring (avg reward < 0)")
+                print("EARLY STAGE: Agent still exploring (avg reward < -150)")
 
             print()
             print("=" * 70)

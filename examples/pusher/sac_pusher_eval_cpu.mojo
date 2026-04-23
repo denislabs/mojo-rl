@@ -1,33 +1,33 @@
-"""CPU evaluation for SAC on Swimmer.
+"""CPU evaluation for SAC on Pusher.
 
-This evaluates a trained SAC agent using CPU inference on the Swimmer
+This evaluates a trained SAC agent using CPU inference on the Pusher
 environment with 3D rendering. Load a checkpoint from GPU training and
 run deterministic evaluation episodes (using mean action, no sampling).
 
 Run with:
-    pixi run mojo run -I . examples/swimmer/sac_swimmer_eval_cpu.mojo
+    pixi run mojo run -I . examples/pusher/sac_pusher_eval_cpu.mojo
 """
 
 from std.random import seed
 from std.time import perf_counter_ns
 
 from mojo_rl.deep_agents.core.agents import DeepSACAgent
-from mojo_rl.envs.swimmer import Swimmer
+from mojo_rl.envs.pusher import Pusher
 
 # =============================================================================
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime OBS_DIM = 8  # qpos[2:5] + qvel[0:5]
-comptime ACTION_DIM = 2  # 2 rotational motors
+comptime OBS_DIM = 23  # qpos[:7] + qvel[:7] + tips_arm(3) + object(3) + goal(3)
+comptime ACTION_DIM = 7  # 7 arm joint motors
 comptime HIDDEN_DIM = 256
-comptime BUFFER_CAPACITY = 300_000
+comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 32
+comptime MAX_N_ENVS = 16
 
 # Evaluation settings
 comptime NUM_EPISODES = 10
-comptime MAX_STEPS = 1000
+comptime MAX_STEPS = 100  # Pusher is truncated at 100 steps
 
 
 # =============================================================================
@@ -39,7 +39,7 @@ def main() raises:
     seed(42)
     print("=" * 70)
     print("SAC Agent CPU Evaluation")
-    print("Swimmer (Generalized Coordinates Physics)")
+    print("Pusher (Generalized Coordinates Physics)")
     print("=" * 70)
     print()
 
@@ -58,7 +58,7 @@ def main() raises:
     ](
         gamma=0.99,
         tau=0.005,
-        action_scale=1.0,
+        action_scale=2.0,
         alpha=0.2,
         auto_alpha=True,
         alpha_lr=0.0003,
@@ -70,14 +70,14 @@ def main() raises:
 
     print("Loading checkpoint...")
     try:
-        agent.load_checkpoint("sac_swimmer.ckpt")
+        agent.load_checkpoint("sac_pusher.ckpt")
         print("Checkpoint loaded successfully!")
     except:
         print("Error loading checkpoint!")
         print("Make sure you have trained the agent first:")
         print(
             "  pixi run -e apple mojo run"
-            " examples/swimmer/sac_swimmer_training_gpu.mojo"
+            " examples/pusher/sac_pusher_training_gpu.mojo"
         )
         return
 
@@ -87,20 +87,20 @@ def main() raises:
     # Create environment and evaluate
     # =========================================================================
 
-    var env = Swimmer[
+    var env = Pusher[
         DType.float64,
-        False,
+        TERMINATE_ON_UNHEALTHY=False,
     ]()
 
     print("Running CPU evaluation...")
     print("  Episodes:", NUM_EPISODES)
     print("  Max steps per episode:", MAX_STEPS)
     print()
-    print("Swimmer Physics:")
+    print("Pusher Physics:")
     print("  - Generalized Coordinates (GC) engine")
     print("  - MuJoCo-style joint-space dynamics")
-    print("  - 3 bodies: head + 2 segments")
-    print("  - 2 actuated rotational joints")
+    print("  - 7-DOF arm + cylinder object + goal marker")
+    print("  - 7 actuated arm joints (zero-gravity tabletop)")
     print()
     print("-" * 70)
 
@@ -119,18 +119,18 @@ def main() raises:
 
     print()
     print("-" * 70)
-    print("CPU EVALUATION SUMMARY - Swimmer (SAC)")
+    print("CPU EVALUATION SUMMARY - Pusher (SAC)")
     print("-" * 70)
     print("Episodes:", NUM_EPISODES)
     print("Average reward:", avg_reward)
     print("Evaluation time:", elapsed_ms / 1000, "seconds")
     print()
 
-    if avg_reward > 300:
-        print("Result: EXCELLENT - Swimmer is moving fast!")
-    elif avg_reward > 100:
-        print("Result: GOOD - Swimmer learned to swim!")
-    elif avg_reward > 0:
+    if avg_reward > -25:
+        print("Result: EXCELLENT - Arm is pushing to the goal!")
+    elif avg_reward > -50:
+        print("Result: GOOD - Arm learned to push!")
+    elif avg_reward > -100:
         print("Result: OKAY - Model is learning but not optimal")
     else:
         print("Result: POOR - Model needs more training")

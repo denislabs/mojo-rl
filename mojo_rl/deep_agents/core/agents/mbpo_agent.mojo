@@ -60,7 +60,12 @@ from mojo_rl.deep_agents.core.kernels import (
     gradient_reduce_apply_fused_kernel,
     build_dynamics_target_kernel,
     gaussian_nll_grad_kernel,
+    gaussian_nll_grad_learnable_kernel,
+    reduce_bounds_grad_l2_adam_kernel,
     dynamics_sample_kernel,
+    dynamics_sample_learnable_kernel,
+    dynamics_sample_ensemble_learnable_kernel,
+    sample_elite_assignment_kernel,
     clamp_rewards_kernel,
     sample_indices_kernel,
     increment_rng_counter_kernel,
@@ -68,6 +73,9 @@ from mojo_rl.deep_agents.core.kernels import (
     reduce_mean_loss_kernel,
     mask_dead_rollouts_kernel,
     update_alive_mask_kernel,
+    compute_scaler_mean_kernel,
+    compute_scaler_std_kernel,
+    normalize_input_kernel,
 )
 from mojo_rl.cuda.graph import CUDAGraph
 from mojo_rl.core import (
@@ -141,6 +149,11 @@ struct DynamicsEnsemble[
         for _ in range(Self.num_ensemble):
             var ns = NetworkState[Self.DynModel, Self.DynOpt]()
             ns.initialize[Xavier[]]()
+            # Reference BNN zeros biases (fc.py:137-141:
+            # `tf.constant_initializer(0.0)`). Our AutoFused init applies the
+            # same initializer to MatMul and BiasAdd; overwrite biases with 0.
+            var dyn_p = ns.params_view()
+            Self.DynModel.zero_biases[dtype](dyn_p)
             self.members.append(ns^)
 
         # Initially all members are elite
@@ -148,7 +161,13 @@ struct DynamicsEnsemble[
         for i in range(Self.num_elites):
             self.elite_indices.append(i)
 
-        self.max_logvar = 0.5
+        # Diagnostic tightening: reference inits max=+0.5 but learns it down to
+        # roughly [-1, -2] via L2 reg. We don't yet implement learnable bounds
+        # + L2 reg, so approximate the converged value with a tighter fixed
+        # start. max=-2 → max std ≈ 0.37 in raw delta_obs space (reasonable
+        # for HalfCheetah where per-step deltas are small). 0.5 → std ≈ 1.28
+        # was too loose and let synthetic rollouts drift far out of dist.
+        self.max_logvar = -2.0
         self.min_logvar = -10.0
 
     def __init__(out self, *, deinit take: Self):
@@ -542,6 +561,10 @@ struct GPUDynamicsEnsemble[
     action_dim: Int,
     train_batch: Int = 256,
     rollout_batch: Int = 400,
+    # Adam learning rate for learnable logvar bounds. Reference MBPO shares
+    # the dynamics-optimizer lr (bnn.py puts bounds inside the same minimize
+    # call). Default matches DefaultMBPOConfig.model_lr.
+    bounds_lr: Float64 = 0.001,
 ](Movable):
     """GPU-resident ensemble of probabilistic dynamics models.
 
@@ -558,9 +581,23 @@ struct GPUDynamicsEnsemble[
     var members: List[GPUNetworkState[Self.DynModel, Self.DynOpt]]
     var elite_indices: List[Int]
 
-    # Logvar bounds
-    var max_logvar: Float64
-    var min_logvar: Float64
+    # Per-member, per-dim learnable logvar bounds (MBPO ref bnn.py:169-172, 192).
+    # Layout: [num_ensemble * DYN_PRED]. Index (m, d) -> m * DYN_PRED + d.
+    # Initialized to +0.5 / -10.0 (reference initial values); learned via
+    # L2 regularization (0.01 * sum(max) - 0.01 * sum(min)) added to NLL loss.
+    var max_lv_buf: DeviceBuffer[dtype]
+    var min_lv_buf: DeviceBuffer[dtype]
+
+    # Adam optimizer state for bounds (shared lr with DynOpt).
+    var max_lv_m: DeviceBuffer[dtype]
+    var max_lv_v: DeviceBuffer[dtype]
+    var min_lv_m: DeviceBuffer[dtype]
+    var min_lv_v: DeviceBuffer[dtype]
+
+    # Per-batch per-dim scratch for bounds gradient contributions, reduced
+    # across BATCH inside reduce_bounds_grad_l2_adam_kernel.
+    var max_lv_grad_scratch: DeviceBuffer[dtype]  # [train_batch * DYN_PRED]
+    var min_lv_grad_scratch: DeviceBuffer[dtype]  # [train_batch * DYN_PRED]
 
     # Pre-allocated GPU buffers for training (fixed train_batch size)
     var t_input: DeviceBuffer[dtype]  # [train_batch * DYN_IN]
@@ -583,6 +620,22 @@ struct GPUDynamicsEnsemble[
     var r_alive: DeviceBuffer[dtype]  # [rollout_batch] alive mask for multi-step
     var r_dyn_input: DeviceBuffer[dtype]  # [rollout_batch * DYN_IN]
     var r_dyn_output: DeviceBuffer[dtype]  # [rollout_batch * DYN_OUT]
+    # Stacked outputs of all elite forward passes for one rollout step.
+    # Layout: [num_elites, rollout_batch, DYN_OUT]. Each slot i gets filled
+    # by forwarding elite member `elite_indices[i]` on r_dyn_input.
+    # Enables per-sample random elite selection (matches fake_env.py:54).
+    var r_dyn_output_all: DeviceBuffer[dtype]
+    # Per-batch random elite-slot index in [0, num_elites). Filled by
+    # sample_elite_assignment_kernel each rollout step.
+    var r_elite_idx_per_sample: DeviceBuffer[DType.int32]
+    # Map elite-slot → ensemble-member index. Used by the sample kernel to
+    # look up per-member logvar bounds. Re-uploaded from self.elite_indices
+    # after every train_on_buffer call.
+    var elite_member_buf: DeviceBuffer[DType.int32]
+    var elite_member_host: HostBuffer[DType.int32]
+    # GPU-side RNG counter for rollout elite-slot assignment (independent
+    # from training rng to avoid coupling rollout randomness with training).
+    var r_elite_rng: DeviceBuffer[DType.uint32]
     var r_ws: DeviceBuffer[dtype]  # workspace for rollout forward
 
     # Scratch buffers for sampling from replay buffer
@@ -593,8 +646,19 @@ struct GPUDynamicsEnsemble[
     var s_done: DeviceBuffer[dtype]
     var s_idx: DeviceBuffer[DType.int32]
 
-    # GPU-side RNG counter for dynamics training
-    var rng_counter: DeviceBuffer[DType.uint32]
+    # Per-member GPU-side RNG counters for dynamics training (ensemble bootstrap).
+    # Each member draws its own bootstrap sample from the replay buffer so
+    # members train on different data subsets, matching MBPO reference
+    # bnn.py:328-336. Initialized with distinct seeds [1..num_ensemble].
+    var rng_counters: List[DeviceBuffer[DType.uint32]]
+
+    # Input scaler state (MBPO TensorStandardScaler equivalent).
+    # Per-dim mean/std over concatenated [obs, act] inputs. Re-fit at the
+    # start of each train_on_buffer() call over the populated real buffer,
+    # then applied on every dynamics forward (training + rollouts). Without
+    # this, dims of very different scale make logvar bounds meaningless.
+    var input_mean: DeviceBuffer[dtype]  # [DYN_IN]
+    var input_std: DeviceBuffer[dtype]  # [DYN_IN]
 
     def __init__(out self, ctx: DeviceContext) raises:
         # Initialize ensemble members on GPU
@@ -610,8 +674,22 @@ struct GPUDynamicsEnsemble[
         for i in range(Self.num_elites):
             self.elite_indices.append(i)
 
-        self.max_logvar = 0.5
-        self.min_logvar = -10.0
+        # Learnable per-member, per-dim logvar bounds (reference bnn.py:169-172).
+        # Init: max=+0.5, min=-10. Bounds learn via Adam on L2-regularized NLL.
+        comptime LV_TOTAL = Self.num_ensemble * Self.DYN_PRED
+        self.max_lv_buf = ctx.enqueue_create_buffer[dtype](LV_TOTAL)
+        self.min_lv_buf = ctx.enqueue_create_buffer[dtype](LV_TOTAL)
+        self.max_lv_buf.enqueue_fill(Scalar[dtype](0.5))
+        self.min_lv_buf.enqueue_fill(Scalar[dtype](-10.0))
+
+        self.max_lv_m = ctx.enqueue_create_buffer[dtype](LV_TOTAL)
+        self.max_lv_v = ctx.enqueue_create_buffer[dtype](LV_TOTAL)
+        self.min_lv_m = ctx.enqueue_create_buffer[dtype](LV_TOTAL)
+        self.min_lv_v = ctx.enqueue_create_buffer[dtype](LV_TOTAL)
+        self.max_lv_m.enqueue_fill(Scalar[dtype](0.0))
+        self.max_lv_v.enqueue_fill(Scalar[dtype](0.0))
+        self.min_lv_m.enqueue_fill(Scalar[dtype](0.0))
+        self.min_lv_v.enqueue_fill(Scalar[dtype](0.0))
 
         # Training buffers
         comptime TB = Self.train_batch
@@ -630,6 +708,17 @@ struct GPUDynamicsEnsemble[
         self.t_loss_host = ctx.enqueue_create_host_buffer[dtype](1)
         self.t_loss_scalar = ctx.enqueue_create_buffer[dtype](1)
 
+        # Per-batch per-dim scratch for bounds grad contributions. Written once
+        # by the NLL kernel (one thread per (b, d)), then reduced across BATCH
+        # inside reduce_bounds_grad_l2_adam_kernel. No zeroing needed because
+        # every slot is overwritten each batch.
+        self.max_lv_grad_scratch = ctx.enqueue_create_buffer[dtype](
+            TB * Self.DYN_PRED
+        )
+        self.min_lv_grad_scratch = ctx.enqueue_create_buffer[dtype](
+            TB * Self.DYN_PRED
+        )
+
         # Rollout buffers
         comptime RB = Self.rollout_batch
         comptime RWS = RB * Self.DynModel.WORKSPACE_SIZE_PER_SAMPLE
@@ -642,6 +731,25 @@ struct GPUDynamicsEnsemble[
         self.r_alive = ctx.enqueue_create_buffer[dtype](RB)
         self.r_dyn_input = ctx.enqueue_create_buffer[dtype](RB * Self.DYN_IN)
         self.r_dyn_output = ctx.enqueue_create_buffer[dtype](RB * Self.DYN_OUT)
+        self.r_dyn_output_all = ctx.enqueue_create_buffer[dtype](
+            Self.num_elites * RB * Self.DYN_OUT
+        )
+        self.r_elite_idx_per_sample = ctx.enqueue_create_buffer[DType.int32](
+            RB
+        )
+        self.elite_member_buf = ctx.enqueue_create_buffer[DType.int32](
+            Self.num_elites
+        )
+        self.elite_member_host = ctx.enqueue_create_host_buffer[DType.int32](
+            Self.num_elites
+        )
+        # Default elite-slot → member mapping is [0, 1, ..., num_elites-1]
+        # until train_on_buffer reshuffles it.
+        for i in range(Self.num_elites):
+            self.elite_member_host[i] = Int32(i)
+        ctx.enqueue_copy(self.elite_member_buf, self.elite_member_host)
+        self.r_elite_rng = ctx.enqueue_create_buffer[DType.uint32](1)
+        self.r_elite_rng.enqueue_fill(UInt32(0xC0FFEE))
         self.r_ws = ctx.enqueue_create_buffer[dtype](RWS_SIZE)
 
         # Sampling scratch buffers (sized for max of train_batch and rollout_batch)
@@ -652,14 +760,37 @@ struct GPUDynamicsEnsemble[
         self.s_nobs = ctx.enqueue_create_buffer[dtype](SB * Self.obs_dim)
         self.s_done = ctx.enqueue_create_buffer[dtype](SB)
         self.s_idx = ctx.enqueue_create_buffer[DType.int32](SB)
-        self.rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
-        self.rng_counter.enqueue_fill(UInt32(0))
+
+        # Per-member RNG counters seeded with distinct values so each ensemble
+        # member samples a different bootstrap subset from the replay buffer.
+        self.rng_counters = List[DeviceBuffer[DType.uint32]](
+            capacity=Self.num_ensemble
+        )
+        for m in range(Self.num_ensemble):
+            var rc = ctx.enqueue_create_buffer[DType.uint32](1)
+            # Seed with (m + 1) * LARGE_PRIME so distinct members produce
+            # distinct Philox streams (Philox seed=0 is fine but ensuring
+            # large gaps between member seeds avoids stream overlap).
+            rc.enqueue_fill(UInt32((m + 1) * 2654435761))
+            self.rng_counters.append(rc^)
+
+        # Scaler state: identity (mean=0, std=1) until first fit_scaler_gpu.
+        self.input_mean = ctx.enqueue_create_buffer[dtype](Self.DYN_IN)
+        self.input_std = ctx.enqueue_create_buffer[dtype](Self.DYN_IN)
+        self.input_mean.enqueue_fill(Scalar[dtype](0.0))
+        self.input_std.enqueue_fill(Scalar[dtype](1.0))
 
     def __init__(out self, *, deinit take: Self):
         self.members = take.members^
         self.elite_indices = take.elite_indices^
-        self.max_logvar = take.max_logvar
-        self.min_logvar = take.min_logvar
+        self.max_lv_buf = take.max_lv_buf^
+        self.min_lv_buf = take.min_lv_buf^
+        self.max_lv_m = take.max_lv_m^
+        self.max_lv_v = take.max_lv_v^
+        self.min_lv_m = take.min_lv_m^
+        self.min_lv_v = take.min_lv_v^
+        self.max_lv_grad_scratch = take.max_lv_grad_scratch^
+        self.min_lv_grad_scratch = take.min_lv_grad_scratch^
         self.t_input = take.t_input^
         self.t_output = take.t_output^
         self.t_cache = take.t_cache^
@@ -678,6 +809,11 @@ struct GPUDynamicsEnsemble[
         self.r_alive = take.r_alive^
         self.r_dyn_input = take.r_dyn_input^
         self.r_dyn_output = take.r_dyn_output^
+        self.r_dyn_output_all = take.r_dyn_output_all^
+        self.r_elite_idx_per_sample = take.r_elite_idx_per_sample^
+        self.elite_member_buf = take.elite_member_buf^
+        self.elite_member_host = take.elite_member_host^
+        self.r_elite_rng = take.r_elite_rng^
         self.r_ws = take.r_ws^
         self.s_obs = take.s_obs^
         self.s_act = take.s_act^
@@ -685,7 +821,9 @@ struct GPUDynamicsEnsemble[
         self.s_nobs = take.s_nobs^
         self.s_done = take.s_done^
         self.s_idx = take.s_idx^
-        self.rng_counter = take.rng_counter^
+        self.rng_counters = take.rng_counters^
+        self.input_mean = take.input_mean^
+        self.input_std = take.input_std^
 
     def upload_from(
         mut self,
@@ -705,6 +843,78 @@ struct GPUDynamicsEnsemble[
         self.elite_indices.clear()
         for i in range(len(cpu_ensemble.elite_indices)):
             self.elite_indices.append(cpu_ensemble.elite_indices[i])
+        self.sync_elite_member_buf(ctx)
+
+    def fit_scaler_gpu[
+        BUF_CAP: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        buffer: GPUReplayBuffer[BUF_CAP, Self.obs_dim, Self.action_dim],
+    ) raises:
+        """Fit per-dim mean/std of [obs || act] over the populated buffer.
+
+        Matches `TensorStandardScaler.fit` in the MBPO reference
+        (bnn.py:335, utils.py:48-50). Called once per train_on_buffer so
+        every gradient step this round uses the same scaler. Cheap: only
+        runs every `model_train_freq` env steps, and serial reductions are
+        fast at realistic buffer sizes (~1M elements per dim).
+        """
+        var n = buffer.size
+        if n < 1:
+            return
+
+        var mean_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.obs_dim), MutAnyOrigin
+        ](self.input_mean.unsafe_ptr())
+        var mean_act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
+        ](self.input_mean.unsafe_ptr() + Self.obs_dim)
+        var std_obs_t = LayoutTensor[
+            dtype, Layout.row_major(Self.obs_dim), MutAnyOrigin
+        ](self.input_std.unsafe_ptr())
+        var std_act_t = LayoutTensor[
+            dtype, Layout.row_major(Self.action_dim), MutAnyOrigin
+        ](self.input_std.unsafe_ptr() + Self.obs_dim)
+        var obs_data_t = LayoutTensor[
+            dtype, Layout.row_major(BUF_CAP, Self.obs_dim), MutAnyOrigin
+        ](buffer.states_buf.unsafe_ptr())
+        var act_data_t = LayoutTensor[
+            dtype, Layout.row_major(BUF_CAP, Self.action_dim), MutAnyOrigin
+        ](buffer.actions_buf.unsafe_ptr())
+
+        # Pass 1: means
+        comptime obs_mean_k = compute_scaler_mean_kernel[
+            dtype, BUF_CAP, Self.obs_dim
+        ]
+        comptime act_mean_k = compute_scaler_mean_kernel[
+            dtype, BUF_CAP, Self.action_dim
+        ]
+        ctx.enqueue_function[obs_mean_k, obs_mean_k](
+            mean_obs_t, obs_data_t, n,
+            grid_dim=(Self.obs_dim,), block_dim=(1,),
+        )
+        ctx.enqueue_function[act_mean_k, act_mean_k](
+            mean_act_t, act_data_t, n,
+            grid_dim=(Self.action_dim,), block_dim=(1,),
+        )
+
+        # Pass 2: stds (need means first, so these enqueue after by stream order)
+        var min_std = Scalar[dtype](1e-12)
+        comptime obs_std_k = compute_scaler_std_kernel[
+            dtype, BUF_CAP, Self.obs_dim
+        ]
+        comptime act_std_k = compute_scaler_std_kernel[
+            dtype, BUF_CAP, Self.action_dim
+        ]
+        ctx.enqueue_function[obs_std_k, obs_std_k](
+            std_obs_t, obs_data_t, mean_obs_t, n, min_std,
+            grid_dim=(Self.obs_dim,), block_dim=(1,),
+        )
+        ctx.enqueue_function[act_std_k, act_std_k](
+            std_act_t, act_data_t, mean_act_t, n, min_std,
+            grid_dim=(Self.action_dim,), block_dim=(1,),
+        )
 
     def _enqueue_train_batch[
         BUF_CAP: Int,
@@ -713,13 +923,12 @@ struct GPUDynamicsEnsemble[
         ctx: DeviceContext,
         buffer: GPUReplayBuffer[BUF_CAP, Self.obs_dim, Self.action_dim],
         m: Int,
-        min_lv: Scalar[dtype],
-        max_lv: Scalar[dtype],
     ) raises:
         """Enqueue one dynamics training batch for model m (pure GPU, capturable).
 
         Sequence: incr_rng → sample → concat → target → forward → NLL_grad
                   → zero_grads → backward → optimizer_step
+                  → reduce_bounds_grad + L2 + Adam step on per-dim bounds
         """
         comptime TB = Self.train_batch
         comptime TPB_VAL = 256
@@ -732,18 +941,21 @@ struct GPUDynamicsEnsemble[
         comptime tgt_k = build_dynamics_target_kernel[
             dtype, TB, Self.obs_dim, Self.DYN_PRED
         ]
-        comptime nll_k = gaussian_nll_grad_kernel[
+        comptime nll_k = gaussian_nll_grad_learnable_kernel[
             dtype, TB, Self.DYN_PRED, Self.DYN_OUT
+        ]
+        comptime bounds_k = reduce_bounds_grad_l2_adam_kernel[
+            dtype, TB, Self.DYN_PRED
         ]
 
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
-        ](self.rng_counter.unsafe_ptr())
+        ](self.rng_counters[m].unsafe_ptr())
         ctx.enqueue_function[incr_k, incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,),
         )
         buffer.sample[TB](
-            ctx, self.rng_counter,
+            ctx, self.rng_counters[m],
             self.s_obs, self.s_act, self.s_rew,
             self.s_nobs, self.s_done, self.s_idx,
         )
@@ -758,6 +970,18 @@ struct GPUDynamicsEnsemble[
         ](self.t_input.unsafe_ptr())
         ctx.enqueue_function[cat_k, cat_k](
             input_t, obs_t, act_t,
+            grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
+        )
+        # Normalize concatenated input in-place using fitted scaler.
+        var mean_full_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+        ](self.input_mean.unsafe_ptr())
+        var std_full_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+        ](self.input_std.unsafe_ptr())
+        comptime norm_k = normalize_input_kernel[dtype, TB, Self.DYN_IN]
+        ctx.enqueue_function[norm_k, norm_k](
+            input_t, mean_full_t, std_full_t,
             grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
         )
         var nobs_t = LayoutTensor[
@@ -789,9 +1013,30 @@ struct GPUDynamicsEnsemble[
         var loss_t = LayoutTensor[
             dtype, Layout.row_major(TB), MutAnyOrigin
         ](self.t_loss.unsafe_ptr())
+        # Per-member bounds views (offset pointer into [num_ensemble * DYN_PRED]).
+        var max_lv_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
+        ](self.max_lv_buf.unsafe_ptr() + m * Self.DYN_PRED)
+        var min_lv_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
+        ](self.min_lv_buf.unsafe_ptr() + m * Self.DYN_PRED)
+        var max_grad_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+        ](self.max_lv_grad_scratch.unsafe_ptr())
+        var min_grad_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+        ](self.min_lv_grad_scratch.unsafe_ptr())
         ctx.enqueue_function[nll_k, nll_k](
-            grad_out_t, output_t, target_t, loss_t, min_lv, max_lv,
-            grid_dim=(PRED_BLOCKS,), block_dim=(TPB_VAL,),
+            grad_out_t,
+            output_t,
+            target_t,
+            loss_t,
+            max_lv_t,
+            min_lv_t,
+            max_grad_t,
+            min_grad_t,
+            grid_dim=(PRED_BLOCKS,),
+            block_dim=(TPB_VAL,),
         )
         var grad_in_t = LayoutTensor[
             dtype, Layout.row_major(TB, Self.DynModel.IN_DIM), MutAnyOrigin
@@ -803,6 +1048,66 @@ struct GPUDynamicsEnsemble[
         )
         self.members[m].optimizer_step(ctx)
 
+        # Reduce per-batch bounds grads, add L2 contribution, Adam step on
+        # per-dim bounds. Reference (bnn.py:192): L2 coef = 0.01 on both
+        # sum(max) and -sum(min). Shares Adam hyperparams with DynOpt but
+        # tracks its own moments. step_num tracks the dynamics network step.
+        var max_m_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
+        ](self.max_lv_m.unsafe_ptr() + m * Self.DYN_PRED)
+        var max_v_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
+        ](self.max_lv_v.unsafe_ptr() + m * Self.DYN_PRED)
+        var min_m_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
+        ](self.min_lv_m.unsafe_ptr() + m * Self.DYN_PRED)
+        var min_v_t = LayoutTensor[
+            dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
+        ](self.min_lv_v.unsafe_ptr() + m * Self.DYN_PRED)
+
+        # Adam hyperparams — mirror Adam defaults, reuse DynOpt's lr so bounds
+        # and weights update at the same step size. Bias correction uses the
+        # dynamics network's step counter (already incremented above).
+        var lv_lr = Scalar[dtype](Self.bounds_lr)
+        var lv_beta1 = Scalar[dtype](0.9)
+        var lv_beta2 = Scalar[dtype](0.999)
+        var lv_eps = Scalar[dtype](1e-8)
+        var step_n = self.members[m].step_num
+        var bc1 = Scalar[dtype](1.0 - 0.9 ** step_n)
+        var bc2 = Scalar[dtype](1.0 - 0.999 ** step_n)
+        var l2_coef = Scalar[dtype](0.01)
+
+        ctx.enqueue_function[bounds_k, bounds_k](
+            max_lv_t,
+            min_lv_t,
+            max_m_t,
+            max_v_t,
+            min_m_t,
+            min_v_t,
+            max_grad_t,
+            min_grad_t,
+            l2_coef,
+            lv_lr,
+            lv_beta1,
+            lv_beta2,
+            lv_eps,
+            bc1,
+            bc2,
+            grid_dim=(Self.DYN_PRED,),
+            block_dim=(1,),
+        )
+
+    def sync_elite_member_buf(mut self, ctx: DeviceContext) raises:
+        """Copy self.elite_indices (CPU List) to elite_member_buf (GPU buffer).
+
+        Called after train_on_buffer re-ranks elites. The rollout sample kernel
+        reads elite_member_buf to map elite-slot → ensemble-member-index for
+        per-member logvar bounds lookup.
+        """
+        for i in range(Self.num_elites):
+            self.elite_member_host[i] = Int32(self.elite_indices[i])
+        ctx.enqueue_copy(self.elite_member_buf, self.elite_member_host)
+
     def train_on_buffer[
         BUF_CAP: Int,
     ](
@@ -812,7 +1117,7 @@ struct GPUDynamicsEnsemble[
         max_epochs: Int = 100,
         max_epochs_since_update: Int = 5,
         holdout_check_every: Int = 5,
-    ) raises:
+    ) raises -> Float64:
         """Train all ensemble members on data from GPU replay buffer.
 
         For each member:
@@ -833,20 +1138,25 @@ struct GPUDynamicsEnsemble[
 
         var n_data = buffer.size
         if n_data < TB:
-            return
+            return 0.0
 
         var n_batches_per_epoch = n_data // TB
         if n_batches_per_epoch < 1:
             n_batches_per_epoch = 1
 
-        var min_lv = Scalar[dtype](self.min_logvar)
-        var max_lv = Scalar[dtype](self.max_logvar)
+        # Re-fit input scaler over the populated real buffer before training
+        # this round (matches MBPO reference: bnn.py:335). Subsequent forward
+        # passes (training + rollouts) use these mean/std until next call.
+        self.fit_scaler_gpu[BUF_CAP](ctx, buffer)
 
         # Kernel aliases
         comptime target_k = build_dynamics_target_kernel[
             dtype, TB, Self.obs_dim, Self.DYN_PRED
         ]
-        comptime nll_k = gaussian_nll_grad_kernel[
+        # Holdout uses the learnable NLL kernel so it reads the current
+        # per-dim bounds; grad writes to scratch are ignored (we only
+        # consume loss_per_sample).
+        comptime nll_k = gaussian_nll_grad_learnable_kernel[
             dtype, TB, Self.DYN_PRED, Self.DYN_OUT
         ]
         comptime concat_k = concat_obs_action_kernel[
@@ -855,13 +1165,13 @@ struct GPUDynamicsEnsemble[
 
         var holdout_losses = List[Float64](capacity=Self.num_ensemble)
 
-        # RNG counter for dynamics training sampling
+        # Per-member RNG counter for dynamics training sampling (bootstrap).
         comptime dyn_incr_k = increment_rng_counter_kernel
-        var dyn_rng_t = LayoutTensor[
-            DType.uint32, Layout.row_major(1), MutAnyOrigin
-        ](self.rng_counter.unsafe_ptr())
 
         for m in range(Self.num_ensemble):
+            var dyn_rng_t = LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ](self.rng_counters[m].unsafe_ptr())
             var best_holdout = Float64(1e10)
             var epochs_since_update = 0
 
@@ -873,13 +1183,13 @@ struct GPUDynamicsEnsemble[
                 if not _dyn_graph:
                     # First epoch: warm-up + capture
                     self._enqueue_train_batch[BUF_CAP](
-                        ctx, buffer, m, min_lv, max_lv
+                        ctx, buffer, m
                     )
                     ctx.synchronize()
                     var graph = CUDAGraph(ctx)
                     graph.begin_capture()
                     self._enqueue_train_batch[BUF_CAP](
-                        ctx, buffer, m, min_lv, max_lv
+                        ctx, buffer, m
                     )
                     graph.end_capture()
                     _dyn_graph = graph^
@@ -903,7 +1213,7 @@ struct GPUDynamicsEnsemble[
                     )
                     buffer.sample[TB](
                         ctx,
-                        self.rng_counter,
+                        self.rng_counters[m],
                         self.s_obs,
                         self.s_act,
                         self.s_rew,
@@ -929,6 +1239,21 @@ struct GPUDynamicsEnsemble[
                         h_input_t,
                         h_obs_t,
                         h_act_t,
+                        grid_dim=(DYN_IN_BLOCKS,),
+                        block_dim=(TPB_VAL,),
+                    )
+                    # Normalize holdout inputs with the same fitted scaler.
+                    var h_mean_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+                    ](self.input_mean.unsafe_ptr())
+                    var h_std_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.DYN_IN), MutAnyOrigin
+                    ](self.input_std.unsafe_ptr())
+                    comptime h_norm_k = normalize_input_kernel[
+                        dtype, TB, Self.DYN_IN
+                    ]
+                    ctx.enqueue_function[h_norm_k, h_norm_k](
+                        h_input_t, h_mean_t, h_std_t,
                         grid_dim=(DYN_IN_BLOCKS,),
                         block_dim=(TPB_VAL,),
                     )
@@ -976,13 +1301,28 @@ struct GPUDynamicsEnsemble[
                     var h_loss_t = LayoutTensor[
                         dtype, Layout.row_major(TB), MutAnyOrigin
                     ](self.t_loss.unsafe_ptr())
+                    # Use current learnable bounds for this member.
+                    var h_max_lv_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
+                    ](self.max_lv_buf.unsafe_ptr() + m * Self.DYN_PRED)
+                    var h_min_lv_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
+                    ](self.min_lv_buf.unsafe_ptr() + m * Self.DYN_PRED)
+                    var h_max_grad_t = LayoutTensor[
+                        dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+                    ](self.max_lv_grad_scratch.unsafe_ptr())
+                    var h_min_grad_t = LayoutTensor[
+                        dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+                    ](self.min_lv_grad_scratch.unsafe_ptr())
                     ctx.enqueue_function[nll_k, nll_k](
                         h_grad_t,
                         h_output_t,
                         h_target_t,
                         h_loss_t,
-                        min_lv,
-                        max_lv,
+                        h_max_lv_t,
+                        h_min_lv_t,
+                        h_max_grad_t,
+                        h_min_grad_t,
                         grid_dim=(PRED_BLOCKS,),
                         block_dim=(TPB_VAL,),
                     )
@@ -1033,6 +1373,15 @@ struct GPUDynamicsEnsemble[
         self.elite_indices.clear()
         for i in range(Self.num_elites):
             self.elite_indices.append(sorted_indices[i])
+        # Sync elite→member map to GPU so the rollout sample kernel picks up
+        # the new ranking on the next do_model_rollouts_gpu call.
+        self.sync_elite_member_buf(ctx)
+
+        # Return mean holdout loss across elites for diagnostic logging.
+        var elite_holdout_sum: Float64 = 0.0
+        for i in range(Self.num_elites):
+            elite_holdout_sum += holdout_losses[self.elite_indices[i]]
+        return elite_holdout_sum / Float64(Self.num_elites)
 
 
 # =============================================================================
@@ -1118,7 +1467,28 @@ struct MBPOCPUState[
             Self.Config.CriticOpt,
             Self.Config.NUM_CRITICS,
         ]()
-        self.critics.initialize[Kaiming[]]()
+        # Match reference MBPO: Keras `Dense` default → Xavier uniform for
+        # both actor and critic. Kaiming (which we used previously) has ~1.4×
+        # wider init and leads to 2–3× larger initial Q-magnitudes, which
+        # exacerbates the high-UTD Q-explosion failure mode.
+        self.critics.initialize[Xavier[]]()
+
+        # Zero-init all biases (matches Keras `Dense(bias_initializer='zeros')`,
+        # which reference MBPO inherits). AutoFused's default init loop applies
+        # the provided initializer uniformly to MatMul + BiasAdd, giving biases
+        # a non-zero Xavier distribution. Overwrite with zeros post-init.
+        # Opt-in and MBPO-only: other agents (SAC/TD3/DDPG) keep their
+        # default non-zero biases via PyTorch/Kaiming conventions.
+        var actor_p = self.actor.online.params_view()
+        Self.Config.ActorModel.zero_biases[dtype](actor_p)
+        # Re-sync target to pick up the zeroed biases.
+        self.actor.target.copy_params_from(self.actor.online)
+        for i in range(Self.Config.NUM_CRITICS):
+            var critic_p = self.critics.pairs[i].online.params_view()
+            Self.Config.CriticModel.zero_biases[dtype](critic_p)
+            self.critics.pairs[i].target.copy_params_from(
+                self.critics.pairs[i].online
+            )
         self.real_buffer = HeapReplayBuffer[
             Self.Config.buffer_capacity, Self.obs_dim, Self.action_dim, dtype
         ]()
@@ -1185,8 +1555,24 @@ struct MBPOCPUState[
 struct MBPOAgent[
     Config: MBPOConfig,
     L: Logger = NoOpLogger,
+    TRAIN_N_ENVS: Int = 1,
+    # Fraction of SAC batch drawn from the real buffer (remainder from synth).
+    # Reference MBPO uses 0.05 (5%). Must be comptime because it sizes REAL_BS
+    # and SYNTH_BS, which are compile-time parameters of the sampling kernels.
+    # Pass as an integer basis-points-percent (e.g. 5 for 5%, 25 for 25%) so
+    # the batch split is exact and the comptime arithmetic is integer-only.
+    REAL_RATIO_PCT: Int = 5,
 ](OffPolicyContinuousAgent & Checkpointable):
-    """MBPO agent: SAC + dynamics ensemble + Dyna-style data augmentation."""
+    """MBPO agent: SAC + dynamics ensemble + Dyna-style data augmentation.
+
+    `TRAIN_N_ENVS` is the number of parallel GPU envs stepped per training
+    iteration. Reference MBPO uses 1; higher values add env-stepping
+    throughput but delay episode feedback (each logged `AvgR` covers
+    fewer completed episodes) and shift the paper's updates-per-env-step
+    schedule (with `sac_updates_per_step=40` and `TRAIN_N_ENVS=N`, the
+    effective updates-per-env-step = 40/N, so N=32 gives only 1.25
+    updates/step — far from the paper's 40). Default 1 matches the paper.
+    """
 
     # Dimension aliases — OBS must match ActorModel.IN_DIM for LayoutTensor
     # compatibility with Network.forward / strategy calls.
@@ -1212,12 +1598,20 @@ struct MBPOAgent[
     # GPU buffer: real-only capacity (synthetic buffer is separate)
     comptime GPU_BUF_CAP: Int = Self.Config.buffer_capacity
 
-    # Mixed sampling: 5% real, 95% synthetic (MBPO paper default)
-    comptime REAL_BS: Int = max(1, Self.Config.batch_size * 5 // 100)
+    # Mixed sampling: REAL_RATIO_PCT% real, (100 - REAL_RATIO_PCT)% synthetic.
+    # Derived from the comptime REAL_RATIO_PCT struct parameter — this is what
+    # actually controls the batch split on the GPU path (the runtime
+    # `real_ratio` constructor arg is CPU-path only and should match).
+    comptime REAL_BS: Int = max(
+        1, Self.Config.batch_size * Self.REAL_RATIO_PCT // 100
+    )
     comptime SYNTH_BS: Int = Self.Config.batch_size - Self.REAL_BS
 
-    # GPU state type — reuses GenericGPUState with real buffer capacity
-    comptime GPU_N_ENVS: Int = 32
+    # GPU state type — reuses GenericGPUState with real buffer capacity.
+    # GPU_N_ENVS is set from the MBPOAgent TRAIN_N_ENVS parameter (default
+    # 1, matching reference). Higher values trade episode-feedback latency
+    # for env-stepping throughput.
+    comptime GPU_N_ENVS: Int = Self.TRAIN_N_ENVS
     comptime GPUStateType = GenericGPUState[
         Self.Config.ActorModel,
         Self.Config.ActorOpt,
@@ -1271,6 +1665,21 @@ struct MBPOAgent[
     var real_ratio: Float64
     var sac_updates_per_step: Int
 
+    # Global gradient-norm clip for actor + both critics. Critical at high UTD
+    # + synthetic-batch mix: un-clipped critic grads let transient α·log_π
+    # spikes in the TD target (from tanh saturation) drive Q-values to 10^7+.
+    var max_grad_norm: Float64
+
+    # ERE (Emphasizing Recent Experience) — biases sampling toward the most
+    # recent transitions. Not in the MBPO paper, but empirically fixes the
+    # Q-explosion pattern that triggers when a high-UTD SAC loop trains
+    # against a rapidly-cycling replay buffer. Applied to BOTH the real
+    # buffer (inside gpu_state) and the synthetic buffer. Disabled by
+    # default to stay paper-faithful; enable for low-env-count runs
+    # (TRAIN_N_ENVS ≤ 8) where UTD is high.
+    var use_ere: Bool
+    var ere_eta: Float32
+
     # Checkpointing
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -1296,6 +1705,9 @@ struct MBPOAgent[
         num_rollouts_per_step: Int = 400,
         real_ratio: Float64 = 0.05,
         sac_updates_per_step: Int = 20,
+        max_grad_norm: Float64 = 0.0,  # Opt-in; reference MBPO uses no clipping
+        use_ere: Bool = False,
+        ere_eta: Float32 = Float32(0.996),
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ):
@@ -1329,8 +1741,28 @@ struct MBPOAgent[
         self.rollout_min_epoch = rollout_min_epoch
         self.rollout_max_epoch = rollout_max_epoch
         self.num_rollouts_per_step = num_rollouts_per_step
-        self.real_ratio = real_ratio
+        # GPU batch sizes are fixed by the comptime REAL_RATIO_PCT struct
+        # parameter (see REAL_BS / SYNTH_BS above). Override the runtime
+        # `real_ratio` value to match so CPU and GPU paths can't disagree.
+        # If the caller passed a different value, emit a one-line warning.
+        var rr_from_comptime = Float64(Self.REAL_RATIO_PCT) / 100.0
+        if (
+            real_ratio > rr_from_comptime + 1e-9
+            or real_ratio < rr_from_comptime - 1e-9
+        ):
+            print(
+                "[MBPO WARN] real_ratio=",
+                real_ratio,
+                " differs from REAL_RATIO_PCT (",
+                rr_from_comptime,
+                "); using the comptime value. Set MBPOAgent[...,"
+                " REAL_RATIO_PCT=N] to change the GPU batch split.",
+            )
+        self.real_ratio = rr_from_comptime
         self.sac_updates_per_step = sac_updates_per_step
+        self.max_grad_norm = max_grad_norm
+        self.use_ere = use_ere
+        self.ere_eta = ere_eta
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
@@ -1803,7 +2235,9 @@ struct MBPOAgent[
         self.logger = logger
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
-        var metrics = run_mbpo_train[E, Self.Config, Self.L](
+        var metrics = run_mbpo_train[
+            E, Self.Config, Self.L, Self.TRAIN_N_ENVS, Self.REAL_RATIO_PCT
+        ](
             self,
             cpu_state,
             env,
@@ -1935,7 +2369,7 @@ struct MBPOAgent[
         ],
     ) raises:
         """Train dynamics ensemble on GPU using data from GPU replay buffer."""
-        gpu_dynamics.train_on_buffer[Self.GPU_BUF_CAP](
+        _ = gpu_dynamics.train_on_buffer[Self.GPU_BUF_CAP](
             ctx,
             gpu_buffer,
         )
@@ -1964,11 +2398,11 @@ struct MBPOAgent[
         1. Sample rollout_batch start obs from GPU buffer
         2. Forward actor → actions
         3. Concat [obs, action] → dynamics input
-        4. Forward one elite model → [mean, logvar]
-        5. dynamics_sample_kernel → next_obs, reward
-        6. Store transitions in GPU buffer
-        7. Copy next_obs → obs for next step
-        Round-robins through elite models across steps.
+        4. Forward EACH elite model → r_dyn_output_all[slot_i, b, :]
+        5. Pick per-sample random elite slot (matches fake_env.py:54)
+        6. dynamics_sample_ensemble_learnable_kernel → next_obs, reward
+        7. Store transitions in GPU buffer
+        8. Copy next_obs → obs for next step
         """
         comptime RB = gpu_dynamics.rollout_batch
         comptime TPB_VAL = 256
@@ -1976,21 +2410,29 @@ struct MBPOAgent[
         comptime DYN_IN = gpu_dynamics.DYN_IN
         comptime DYN_OUT = gpu_dynamics.DYN_OUT
         comptime DYN_PRED = gpu_dynamics.DYN_PRED
+        comptime NUM_ELITES_C = Self.Config.ELITE_SIZE
+        comptime NUM_ENSEMBLE_C = Self.Config.ENSEMBLE_SIZE
         comptime DYN_IN_BLOCKS = (RB * DYN_IN + TPB_VAL - 1) // TPB_VAL
 
         comptime concat_k = concat_obs_action_kernel[
             dtype, RB, Self.Config.obs_dim, Self.Config.action_dim, DYN_IN
         ]
-        comptime sample_k = dynamics_sample_kernel[
-            dtype, RB, Self.Config.obs_dim, DYN_PRED, DYN_OUT
+        comptime sample_k = dynamics_sample_ensemble_learnable_kernel[
+            dtype,
+            RB,
+            Self.Config.obs_dim,
+            NUM_ELITES_C,
+            NUM_ENSEMBLE_C,
+            DYN_PRED,
+            DYN_OUT,
+        ]
+        comptime elite_assign_k = sample_elite_assignment_kernel[
+            dtype, RB, NUM_ELITES_C
         ]
 
         var num_elites = len(gpu_dynamics.elite_indices)
         if num_elites == 0 or not gpu_state.buffer.is_ready[RB]():
             return
-
-        var min_lv = Scalar[dtype](gpu_dynamics.min_logvar)
-        var max_lv = Scalar[dtype](gpu_dynamics.max_logvar)
 
         # Sample start observations from GPU buffer
         comptime rollout_incr_k = increment_rng_counter_kernel
@@ -2019,9 +2461,6 @@ struct MBPOAgent[
         gpu_dynamics.r_alive.enqueue_fill(Scalar[dtype](1.0))
 
         for step in range(self.rollout_length):
-            # Select elite model (round-robin)
-            var elite_idx = gpu_dynamics.elite_indices[step % num_elites]
-
             # Forward actor → actions
             # Use Self.OBS (= Config.ActorModel.IN_DIM) for actor LayoutTensors
             var r_obs_t = LayoutTensor[
@@ -2081,26 +2520,74 @@ struct MBPOAgent[
                 grid_dim=(DYN_IN_BLOCKS,),
                 block_dim=(TPB_VAL,),
             )
+            # Normalize using the scaler fitted at last train_on_buffer call.
+            var r_mean_t = LayoutTensor[
+                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+            ](gpu_dynamics.input_mean.unsafe_ptr())
+            var r_std_t = LayoutTensor[
+                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+            ](gpu_dynamics.input_std.unsafe_ptr())
+            comptime r_norm_k = normalize_input_kernel[dtype, RB, DYN_IN]
+            ctx.enqueue_function[r_norm_k, r_norm_k](
+                r_dyn_in_t, r_mean_t, r_std_t,
+                grid_dim=(DYN_IN_BLOCKS,),
+                block_dim=(TPB_VAL,),
+            )
 
-            # Forward dynamics model
+            # Forward dynamics model — run ALL elites so the sample kernel
+            # can pick a per-sample random elite (matches fake_env.py:43
+            # with factored=True, then elite-restricted random selection).
+            # Each elite writes to its own slot in r_dyn_output_all.
             comptime DynNet = Network[
                 Self.Config.DynamicsModel, Self.Config.DynOpt
             ]
-            var r_dyn_out_t = LayoutTensor[
-                dtype,
-                Layout.row_major(RB, Self.Config.DynamicsModel.OUT_DIM),
-                MutAnyOrigin,
-            ](gpu_dynamics.r_dyn_output.unsafe_ptr())
-            var p_dyn = gpu_dynamics.members[elite_idx].params_view()
-            DynNet.forward_gpu[RB](
-                ctx,
-                r_dyn_in_t,
-                r_dyn_out_t,
-                p_dyn,
-                gpu_dynamics.r_ws,
+            for i in range(NUM_ELITES_C):
+                var elite_member_idx = gpu_dynamics.elite_indices[i]
+                var r_dyn_out_slot_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(RB, Self.Config.DynamicsModel.OUT_DIM),
+                    MutAnyOrigin,
+                ](
+                    gpu_dynamics.r_dyn_output_all.unsafe_ptr()
+                    + i * RB * DYN_OUT
+                )
+                var p_dyn = gpu_dynamics.members[
+                    elite_member_idx
+                ].params_view()
+                # r_ws is shared across elites — safe because enqueue is FIFO
+                # on the stream and each forward finishes before the next
+                # starts (both use r_ws, so hardware serializes them).
+                DynNet.forward_gpu[RB](
+                    ctx,
+                    r_dyn_in_t,
+                    r_dyn_out_slot_t,
+                    p_dyn,
+                    gpu_dynamics.r_ws,
+                )
+
+            # Per-batch random elite slot assignment. Fresh RNG counter per
+            # rollout step so consecutive steps in the same batch don't reuse
+            # the same elite pattern.
+            var elite_rng_t = LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ](gpu_dynamics.r_elite_rng.unsafe_ptr())
+            ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
+                elite_rng_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+            var elite_slot_t = LayoutTensor[
+                DType.int32, Layout.row_major(RB), MutAnyOrigin
+            ](gpu_dynamics.r_elite_idx_per_sample.unsafe_ptr())
+            ctx.enqueue_function[elite_assign_k, elite_assign_k](
+                elite_slot_t,
+                elite_rng_t,
+                grid_dim=(RB_BLOCKS,),
+                block_dim=(TPB_VAL,),
             )
 
-            # Sample next_obs and reward from Gaussian
+            # Sample next_obs and reward — per-sample random elite (matches
+            # softlearning fake_env.py:54-58).
             var r_next_t = LayoutTensor[
                 dtype,
                 Layout.row_major(RB, Self.OBS),
@@ -2109,13 +2596,35 @@ struct MBPOAgent[
             var r_rew_t = LayoutTensor[
                 dtype, Layout.row_major(RB), MutAnyOrigin
             ](gpu_dynamics.r_rewards.unsafe_ptr())
+            var r_dyn_out_all_t = LayoutTensor[
+                dtype,
+                Layout.row_major(
+                    NUM_ELITES_C, RB, Self.Config.DynamicsModel.OUT_DIM
+                ),
+                MutAnyOrigin,
+            ](gpu_dynamics.r_dyn_output_all.unsafe_ptr())
+            var r_elite_map_t = LayoutTensor[
+                DType.int32, Layout.row_major(NUM_ELITES_C), MutAnyOrigin
+            ](gpu_dynamics.elite_member_buf.unsafe_ptr())
+            var r_max_lv_all_t = LayoutTensor[
+                dtype,
+                Layout.row_major(NUM_ENSEMBLE_C * DYN_PRED),
+                MutAnyOrigin,
+            ](gpu_dynamics.max_lv_buf.unsafe_ptr())
+            var r_min_lv_all_t = LayoutTensor[
+                dtype,
+                Layout.row_major(NUM_ENSEMBLE_C * DYN_PRED),
+                MutAnyOrigin,
+            ](gpu_dynamics.min_lv_buf.unsafe_ptr())
             ctx.enqueue_function[sample_k, sample_k](
                 r_next_t,
                 r_rew_t,
-                r_dyn_out_t,
+                r_dyn_out_all_t,
                 r_obs_t,
-                min_lv,
-                max_lv,
+                elite_slot_t,
+                r_elite_map_t,
+                r_max_lv_all_t,
+                r_min_lv_all_t,
                 Scalar[DType.uint32](UInt32(self.total_steps * 100 + step)),
                 grid_dim=(RB_BLOCKS,),
                 block_dim=(TPB_VAL,),
@@ -2502,6 +3011,33 @@ struct MBPOAgent[
             g_critic,
             gpu_state.critic_ws,
         )
+        # Clip critic1 gradients. Without this, a single transient target
+        # spike (from α·log_π blowing up under tanh saturation) sends the
+        # critic weights to ±∞ and Q-values never recover.
+        if self.max_grad_norm > 0.0:
+            comptime C_PS = Self.Config.CriticModel.PARAM_SIZE
+            comptime C_BLOCKS = (C_PS + TPB - 1) // TPB
+            comptime c_norm_k = gradient_norm_kernel[dtype, C_PS, C_BLOCKS, TPB]
+            comptime c_clip_k = gradient_reduce_apply_fused_kernel[
+                dtype, C_PS, C_BLOCKS, TPB
+            ]
+            var c_ps_t = LayoutTensor[
+                dtype, Layout.row_major(C_BLOCKS), MutAnyOrigin
+            ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+            ctx.enqueue_function[c_norm_k, c_norm_k](
+                c_ps_t,
+                g_critic,
+                grid_dim=(C_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[c_clip_k, c_clip_k](
+                g_critic,
+                c_ps_t,
+                Scalar[dtype](self.max_grad_norm),
+                grid_dim=(C_BLOCKS,),
+                block_dim=(TPB,),
+            )
         gpu_state.critics.pairs[0].online.optimizer_step(ctx)
 
         # Critic2 update (twin critics)
@@ -2535,6 +3071,33 @@ struct MBPOAgent[
                 g_c2,
                 gpu_state.critic2_ws,
             )
+            # Clip critic2 gradients
+            if self.max_grad_norm > 0.0:
+                comptime C_PS2 = Self.Config.CriticModel.PARAM_SIZE
+                comptime C_BLOCKS2 = (C_PS2 + TPB - 1) // TPB
+                comptime c2_norm_k = gradient_norm_kernel[
+                    dtype, C_PS2, C_BLOCKS2, TPB
+                ]
+                comptime c2_clip_k = gradient_reduce_apply_fused_kernel[
+                    dtype, C_PS2, C_BLOCKS2, TPB
+                ]
+                var c2_ps_t = LayoutTensor[
+                    dtype, Layout.row_major(C_BLOCKS2), MutAnyOrigin
+                ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+                ctx.enqueue_function[c2_norm_k, c2_norm_k](
+                    c2_ps_t,
+                    g_c2,
+                    grid_dim=(C_BLOCKS2,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[c2_clip_k, c2_clip_k](
+                    g_c2,
+                    c2_ps_t,
+                    Scalar[dtype](self.max_grad_norm),
+                    grid_dim=(C_BLOCKS2,),
+                    block_dim=(TPB,),
+                )
             gpu_state.critics.pairs[1].online.optimizer_step(ctx)
 
         # Phase 4: Actor update (always runs for SAC/EveryStep schedule)
@@ -2581,6 +3144,34 @@ struct MBPOAgent[
                 gpu_state.gpu_scalars,
                 gpu_state.rng_counter,
             )
+
+            # Clip actor gradients
+            if self.max_grad_norm > 0.0:
+                comptime A_PS = Self.Config.ActorModel.PARAM_SIZE
+                comptime A_BLOCKS = (A_PS + TPB - 1) // TPB
+                comptime a_norm_k = gradient_norm_kernel[
+                    dtype, A_PS, A_BLOCKS, TPB
+                ]
+                comptime a_clip_k = gradient_reduce_apply_fused_kernel[
+                    dtype, A_PS, A_BLOCKS, TPB
+                ]
+                var a_ps_t = LayoutTensor[
+                    dtype, Layout.row_major(A_BLOCKS), MutAnyOrigin
+                ](gpu_state.grad_clip_ps.unsafe_ptr())
+
+                ctx.enqueue_function[a_norm_k, a_norm_k](
+                    a_ps_t,
+                    a_grads,
+                    grid_dim=(A_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[a_clip_k, a_clip_k](
+                    a_grads,
+                    a_ps_t,
+                    Scalar[dtype](self.max_grad_norm),
+                    grid_dim=(A_BLOCKS,),
+                    block_dim=(TPB,),
+                )
             gpu_state.actor.online.optimizer_step(ctx)
 
             # Alpha auto-tuning (GPU-side Adam — no D2H or sync)
@@ -2620,14 +3211,27 @@ struct MBPOAgent[
                         lp: LayoutTensor[
                             dtype, Layout.row_major(BS), MutAnyOrigin
                         ],
+                        la_max: Scalar[dtype],
+                        la_min: Scalar[dtype],
+                        lp_clip: Scalar[dtype],
                     ):
-                        mbpo_alpha_k(sc, lp)
+                        mbpo_alpha_k(sc, lp, la_max, la_min, lp_clip)
 
+                    # Tight log_alpha ceiling for MBPO: +0.5 → alpha <= 1.65.
+                    # Prevents transient Q-spikes (common at high UTD with
+                    # synthetic rollouts) from pinning alpha against the
+                    # classic SAC cap of exp(2) = 7.4, where the policy
+                    # collapses to max-entropy and never recovers.
+                    # lp_clip=50 bounds per-sample log_pi so a single
+                    # tanh-saturated batch element can't poison Adam's moments.
                     ctx.enqueue_function[
                         mbpo_alpha_wrapper, mbpo_alpha_wrapper
                     ](
                         scalars_t,
                         src_lp,
+                        Scalar[dtype](0.5),
+                        Scalar[dtype](-10.0),
+                        Scalar[dtype](50.0),
                         grid_dim=(1,),
                         block_dim=(1,),
                     )
@@ -2637,8 +3241,13 @@ struct MBPOAgent[
         ctx: DeviceContext,
         mut gpu_state: Self.GPUStateType,
         steps: Int,
+        alpha_host: HostBuffer[dtype],
     ) raises:
-        """CPU-side bookkeeping + diagnostics. Call outside graph."""
+        """CPU-side bookkeeping + diagnostics. Call outside graph.
+
+        `alpha_host` is a size-1 host buffer pre-allocated by the training
+        loop and reused across diagnostic calls (avoids per-call allocs).
+        """
         self.train_step_count += steps
         self.update_count += steps
 
@@ -2699,7 +3308,17 @@ struct MBPOAgent[
                 self.logger[].log_scalar("mean_next_q", mean_nq, step)
                 self.logger[].log_scalar("mean_done", mean_done, step)
                 self.logger[].log_scalar("mean_abs_action", mean_abs_act, step)
-                self.logger[].log_scalar("alpha", self.alpha, step)
+                # Read alpha from GPU (not self.alpha — that's only synced at
+                # print boundaries by the training loop). Uses caller-supplied
+                # pre-allocated alpha_host to avoid per-diag allocation.
+                comptime if Self.Config.ActorLoss.HAS_ALPHA:
+                    ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
+                    ctx.synchronize()
+                    self.logger[].log_scalar(
+                        "alpha", Float64(alpha_host[0]), step
+                    )
+                else:
+                    self.logger[].log_scalar("alpha", self.alpha, step)
             except:
                 pass
 
@@ -2748,17 +3367,20 @@ struct MBPOAgent[
         ],
         s_real_idx: DeviceBuffer[DType.int32],
         s_synth_idx: DeviceBuffer[DType.int32],
+        alpha_host: HostBuffer[dtype],
     ) raises:
         """GPU SAC training step with CPU bookkeeping + diagnostics.
 
         For CUDA graph capture, use _gpu_train_kernels() instead (pure GPU,
         no CPU counters or D2H copies). Call _gpu_train_diagnostics()
         periodically outside the graph for metrics logging.
+
+        `alpha_host` is a size-1 host buffer reused by the diagnostics.
         """
         self._gpu_train_kernels(
             ctx, gpu_state, synth_buffer, s_real_idx, s_synth_idx
         )
-        self._gpu_train_diagnostics(ctx, gpu_state, 1)
+        self._gpu_train_diagnostics(ctx, gpu_state, 1, alpha_host)
 
     def soft_update_targets_gpu(
         mut self,
@@ -2808,7 +3430,14 @@ struct MBPOAgent[
         self.logger = logger
         self.diag_every = diag_every
         var cpu_state = Self.CPUStateType()
-        var metrics = run_mbpo_train_gpu[E, Self.Config, Self.L, USE_CUDA_GRAPH](
+        var metrics = run_mbpo_train_gpu[
+            E,
+            Self.Config,
+            Self.L,
+            USE_CUDA_GRAPH,
+            Self.TRAIN_N_ENVS,
+            Self.REAL_RATIO_PCT,
+        ](
             self,
             cpu_state,
             ctx,
@@ -2824,12 +3453,12 @@ struct MBPOAgent[
         return metrics^
 
     # =========================================================================
-    # Checkpointable trait (minimal implementation)
+    # Checkpointable — saves agent hyperparameters and training state.
+    # Network weights require save_cpu_state(cpu_state, path) separately
+    # because the Checkpointable trait doesn't include state access.
     # =========================================================================
 
     def save_checkpoint(self, path: String) raises -> None:
-        """Save actor, critic, and dynamics ensemble weights + hyperparameters.
-        """
         var content = write_checkpoint_header(
             "mbpo",
             Self.Config.ActorModel.PARAM_SIZE
@@ -2837,18 +3466,14 @@ struct MBPOAgent[
             + Self.Config.DynamicsModel.PARAM_SIZE * Self.Config.ENSEMBLE_SIZE,
             0,
         )
-        # SAC networks
         content += self.state.actor.write_sections("actor_")
         content += self.state.critics.pairs[0].write_sections("critic_")
         comptime if Self.Config.NUM_CRITICS == 2:
             content += self.state.critics.pairs[1].write_sections("critic2_")
-
-        # Dynamics ensemble
         for m in range(Self.Config.ENSEMBLE_SIZE):
             var prefix = "dyn" + String(m) + "_"
             content += self.state.dynamics.members[m].write_sections(prefix)
 
-        # Metadata
         var metadata = List[String]()
         metadata.append("gamma=" + String(self.gamma))
         metadata.append("tau=" + String(self.tau))
@@ -2860,7 +3485,6 @@ struct MBPOAgent[
         metadata.append("total_steps=" + String(self.total_steps))
         metadata.append("train_step_count=" + String(self.train_step_count))
         metadata.append("rollout_length=" + String(self.rollout_length))
-        # Elite indices
         var elite_str = String("")
         for i in range(len(self.state.dynamics.elite_indices)):
             if i > 0:
@@ -2871,22 +3495,15 @@ struct MBPOAgent[
         save_checkpoint_file(path, content)
 
     def load_checkpoint(mut self, path: String) raises -> None:
-        """Load actor, critic, and dynamics ensemble weights + hyperparameters.
-        """
         var content = read_checkpoint_file(path)
-
-        # SAC networks
         self.state.actor.read_sections(content, "actor_")
         self.state.critics.pairs[0].read_sections(content, "critic_")
         comptime if Self.Config.NUM_CRITICS == 2:
             self.state.critics.pairs[1].read_sections(content, "critic2_")
-
-        # Dynamics ensemble
         for m in range(Self.Config.ENSEMBLE_SIZE):
             var prefix = "dyn" + String(m) + "_"
             self.state.dynamics.members[m].read_sections(content, prefix)
 
-        # Metadata
         var metadata = read_metadata_section(content)
         set_metadata_value_float(metadata, "gamma", self.gamma)
         set_metadata_value_float(metadata, "tau", self.tau)
@@ -2900,3 +3517,40 @@ struct MBPOAgent[
             metadata, "train_step_count", self.train_step_count
         )
         set_metadata_value_int(metadata, "rollout_length", self.rollout_length)
+
+    def save_cpu_state(self, cpu_state: Self.CPUStateType, path: String) raises:
+        """Save network weights and optimizer state from cpu_state.
+
+        Saves actor (online+target), critic(s) (online+target), and dynamics
+        ensemble params and optimizer states. Replay buffers are NOT saved.
+        """
+
+        var content = write_checkpoint_header(
+            "mbpo_state",
+            Self.Config.ActorModel.PARAM_SIZE
+            + Self.Config.CriticModel.PARAM_SIZE * Self.Config.NUM_CRITICS
+            + Self.Config.DynamicsModel.PARAM_SIZE * Self.Config.ENSEMBLE_SIZE,
+            0,
+        )
+        content += cpu_state.actor.write_sections("actor_")
+        content += cpu_state.critics.pairs[0].write_sections("critic_")
+        comptime if Self.Config.NUM_CRITICS == 2:
+            content += cpu_state.critics.pairs[1].write_sections("critic2_")
+        for m in range(Self.Config.ENSEMBLE_SIZE):
+            var prefix = "dyn" + String(m) + "_"
+            content += cpu_state.dynamics.members[m].write_sections(prefix)
+        save_checkpoint_file(path, content)
+
+    def load_cpu_state(
+        self, mut cpu_state: Self.CPUStateType, path: String
+    ) raises:
+        """Load network weights and optimizer state into cpu_state."""
+
+        var content = read_checkpoint_file(path)
+        cpu_state.actor.read_sections(content, "actor_")
+        cpu_state.critics.pairs[0].read_sections(content, "critic_")
+        comptime if Self.Config.NUM_CRITICS == 2:
+            cpu_state.critics.pairs[1].read_sections(content, "critic2_")
+        for m in range(Self.Config.ENSEMBLE_SIZE):
+            var prefix = "dyn" + String(m) + "_"
+            cpu_state.dynamics.members[m].read_sections(content, prefix)

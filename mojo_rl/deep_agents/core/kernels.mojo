@@ -511,6 +511,9 @@ def alpha_adam_update_kernel[
 ](
     gpu_scalars: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
     log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    log_alpha_max: Scalar[dtype],
+    log_alpha_min: Scalar[dtype],
+    lp_clip: Scalar[dtype],
 ):
     """GPU-side SAC alpha auto-tuning. Launch with grid=(1,), block=(1,).
 
@@ -521,17 +524,32 @@ def alpha_adam_update_kernel[
     Args:
         gpu_scalars: Workspace buffer containing alpha, log_alpha, adam_m/v/t.
         log_probs: Current policy log-probabilities [BATCH].
+        log_alpha_max: Upper clamp on log_alpha. Classic SAC uses +2 (alpha≤7.4);
+            MBPO benefits from tighter (e.g. +0.5 → alpha≤1.6) because transient
+            Q-spikes can drive log_alpha into the ceiling, and Adam momentum
+            then pins it there even after the gradient flips sign.
+        log_alpha_min: Lower clamp on log_alpha (typically -10).
+        lp_clip: Per-sample |log_prob| clip used *only* for the alpha gradient
+            (does not affect policy loss). Stops transient tanh-saturation
+            spikes from poisoning Adam's moments. Set to a large value (e.g.
+            50) to effectively disable.
     """
     if Int(thread_idx.x) != 0:
         return
 
-    # 1. Reduce log_probs to mean
+    # 1. Reduce log_probs to mean (with per-sample clip for robustness)
     var sum_lp = Scalar[dtype](0.0)
     for b in range(BATCH):
-        sum_lp += log_probs.ptr[b]
+        var lp = log_probs.ptr[b]
+        if lp != lp:
+            lp = Scalar[dtype](0.0)
+        elif lp > lp_clip:
+            lp = lp_clip
+        elif lp < -lp_clip:
+            lp = -lp_clip
+        sum_lp += lp
     var mean_lp = sum_lp / Scalar[dtype](BATCH)
 
-    # Guard against NaN
     if mean_lp != mean_lp:
         mean_lp = Scalar[dtype](0.0)
 
@@ -565,13 +583,21 @@ def alpha_adam_update_kernel[
     var v_hat = adam_v / b2_corr
     log_alpha -= lr * m_hat / (sqrt(v_hat) + eps)
 
-    # 5. Clamp log_alpha (NaN guard first — NaN comparisons are always false)
+    # 5. Clamp log_alpha (NaN guard first — NaN comparisons are always false).
+    # If we saturate either clamp, reset Adam moments so momentum can't pin
+    # log_alpha against the wall across many subsequent updates.
     if log_alpha != log_alpha:
         log_alpha = Scalar[dtype](0.0)
-    if log_alpha > Scalar[dtype](2.0):
-        log_alpha = Scalar[dtype](2.0)
-    elif log_alpha < Scalar[dtype](-10.0):
-        log_alpha = Scalar[dtype](-10.0)
+        adam_m = Scalar[dtype](0.0)
+        adam_v = Scalar[dtype](0.0)
+    if log_alpha > log_alpha_max:
+        log_alpha = log_alpha_max
+        adam_m = Scalar[dtype](0.0)
+        adam_v = Scalar[dtype](0.0)
+    elif log_alpha < log_alpha_min:
+        log_alpha = log_alpha_min
+        adam_m = Scalar[dtype](0.0)
+        adam_v = Scalar[dtype](0.0)
 
     # 6. Write back
     gpu_scalars.ptr[ALPHA_OFF] = exp(log_alpha)
@@ -2214,6 +2240,126 @@ def add_ci_grads_kernel[
 
 
 # =============================================================================
+# REDQ Ensemble Target Kernels
+# =============================================================================
+
+
+@always_inline
+def redq_ensemble_target_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    N_ENSEMBLE: Int,
+    N_MIN: Int,
+    MODE: Int,  # 0=min subset, 1=ave all, 2=rem (random ensemble mixture)
+](
+    td_targets: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    # Target Q values stacked contiguously: q_next[n, b] = Q_target^n(s', a')
+    q_next: LayoutTensor[
+        dtype, Layout.row_major(N_ENSEMBLE, BATCH), MutAnyOrigin
+    ],
+    dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    log_probs: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    # Subset indices (for MODE=0): which N_MIN of N_ENSEMBLE to use.
+    # Ignored when MODE != 0; pass a 1-element placeholder.
+    subset_idxs: LayoutTensor[
+        DType.uint32, Layout.row_major(N_MIN), MutAnyOrigin
+    ],
+    gamma: Scalar[dtype],
+    alpha_buf: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+):
+    """Compute REDQ TD target from N stacked target-Q values.
+
+    SAC: y = r + γ * (combined_Q(s', a') - α * log_π(a'|s')) * (1 - done)
+
+    combined_Q depends on MODE:
+      MODE=0 (min): min over q_next[subset_idxs[m], b] for m in 0..N_MIN
+      MODE=1 (ave): mean over q_next[n, b] for n in 0..N_ENSEMBLE
+      MODE=2 (rem): Σ_n w_n * q_next[n, b], w_n ~ Uniform(0,1), normalized
+
+    One thread per batch sample. Reads alpha from GPU memory.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var one = Scalar[dtype](1.0)
+    var combined = Scalar[dtype](0.0)
+
+    comptime if MODE == 0:
+        # --- min over N_MIN subset ---
+        var first_idx = Int(subset_idxs.ptr[0])
+        var v0 = q_next.ptr[first_idx * BATCH + b]
+        if v0 != v0:
+            v0 = Scalar[dtype](0.0)
+        combined = v0
+        comptime for m in range(1, N_MIN):
+            var idx = Int(subset_idxs.ptr[m])
+            var v = q_next.ptr[idx * BATCH + b]
+            if v != v:
+                v = Scalar[dtype](0.0)
+            if v < combined:
+                combined = v
+    comptime if MODE == 1:
+        # --- mean over all N_ENSEMBLE ---
+        var acc = Scalar[dtype](0.0)
+        comptime for n in range(N_ENSEMBLE):
+            var v = q_next.ptr[n * BATCH + b]
+            if v != v:
+                v = Scalar[dtype](0.0)
+            acc = acc + v
+        combined = acc / Scalar[dtype](N_ENSEMBLE)
+    comptime if MODE == 2:
+        # --- REM: random convex combination over all N_ENSEMBLE ---
+        # Philox-generated uniforms per (sample, critic) pair, normalized.
+        var seed = UInt64(rng_counter.ptr[0]) + UInt64(b) * UInt64(N_ENSEMBLE)
+        var ws = InlineArray[Scalar[dtype], N_ENSEMBLE](uninitialized=True)
+        var sum_w = Scalar[dtype](0.0)
+        comptime for n in range(N_ENSEMBLE):
+            var philox = PhiloxRandom(
+                seed=seed + UInt64(n), offset=0
+            )
+            var r = philox.step_uniform()
+            var w = Scalar[dtype](Float32(r[0]) + Float32(1e-8))
+            ws[n] = w
+            sum_w = sum_w + w
+        var inv_sum = Scalar[dtype](1.0) / sum_w
+        var acc = Scalar[dtype](0.0)
+        comptime for n in range(N_ENSEMBLE):
+            var v = q_next.ptr[n * BATCH + b]
+            if v != v:
+                v = Scalar[dtype](0.0)
+            acc = acc + ws[n] * inv_sum * v
+        combined = acc
+
+    # Subtract entropy bonus and build TD target.
+    var alpha = alpha_buf.ptr[0]
+    var lp = log_probs.ptr[b]
+    var tgt = Scalar[dtype](
+        rewards.ptr[b] + gamma * (combined - alpha * lp) * (one - dones.ptr[b])
+    )
+    if tgt != tgt:
+        tgt = Scalar[dtype](0.0)
+    td_targets.ptr[b] = tgt
+
+
+@always_inline
+def fill_constant_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    TOTAL: Int,
+](
+    buf: LayoutTensor[dtype, Layout.row_major(TOTAL), MutAnyOrigin],
+    value: Scalar[dtype],
+):
+    """Write `value` to every element of a flat buffer of length TOTAL."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= TOTAL:
+        return
+    buf.ptr[i] = value
+
+
+# =============================================================================
 # PPO Continuous Action Kernels
 # =============================================================================
 
@@ -3335,24 +3481,59 @@ def gaussian_nll_grad_kernel[
     var b = idx // PRED_DIM
     var d = idx % PRED_DIM
 
-    var mean_val = model_output[b, d]
-    var raw_lv = model_output[b, PRED_DIM + d]
-    var lv = raw_lv
-    if lv < min_logvar:
-        lv = min_logvar
-    if lv > max_logvar:
-        lv = max_logvar
+    var mean_val = rebind[Scalar[dtype]](model_output[b, d])
+    var raw_lv = rebind[Scalar[dtype]](model_output[b, PRED_DIM + d])
+
+    # Soft clamp via double softplus (MBPO reference bnn.py:556-557):
+    #   lv_inter = max - softplus(max - raw)   -> lv_inter ≤ max, differentiable
+    #   lv       = min + softplus(lv_inter - min) -> lv ≥ min, differentiable
+    # Hard `if > max: lv = max` would zero the gradient outside the bounds;
+    # soft clamp always has nonzero gradient so the network can learn to
+    # output logvar within the intended range.
+    var a1 = max_logvar - raw_lv
+    var s1 = Scalar[dtype](0.0)
+    if a1 > Scalar[dtype](20.0):
+        s1 = a1
+    elif a1 > Scalar[dtype](-20.0):
+        s1 = log(Scalar[dtype](1.0) + exp(a1))
+    var lv_inter = max_logvar - s1
+
+    var a2 = lv_inter - min_logvar
+    var s2 = Scalar[dtype](0.0)
+    if a2 > Scalar[dtype](20.0):
+        s2 = a2
+    elif a2 > Scalar[dtype](-20.0):
+        s2 = log(Scalar[dtype](1.0) + exp(a2))
+    var lv = min_logvar + s2
+
     var var_val = exp(lv)
-    var tgt = target[b, d]
+    var tgt = rebind[Scalar[dtype]](target[b, d])
     var diff = tgt - mean_val
     var diff_sq = diff * diff
     var inv_batch = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
+
+    # Gradient chain through softplus:
+    #   d lv / d raw = sigmoid(lv_inter - min) * sigmoid(max - raw)
+    # (from the two softplus nestings). Existing kernel multiplied by 1 always,
+    # which leaked gradient past a hard clamp; here we scale correctly.
+    var g1 = Scalar[dtype](0.0)
+    if a1 > Scalar[dtype](20.0):
+        g1 = Scalar[dtype](1.0)
+    elif a1 > Scalar[dtype](-20.0):
+        g1 = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-a1))
+    var g2 = Scalar[dtype](0.0)
+    if a2 > Scalar[dtype](20.0):
+        g2 = Scalar[dtype](1.0)
+    elif a2 > Scalar[dtype](-20.0):
+        g2 = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-a2))
+    var chain = g1 * g2
 
     # Gradients
     grad_output[b, d] = (mean_val - tgt) / var_val * inv_batch
     grad_output[b, PRED_DIM + d] = (
         Scalar[dtype](0.5)
         * (Scalar[dtype](1.0) - diff_sq / var_val)
+        * chain
         * inv_batch
     )
 
@@ -3368,6 +3549,200 @@ def gaussian_nll_grad_kernel[
         loss_per_sample[b] = sample_loss
     else:
         loss_per_sample[b] = loss_per_sample[b] + sample_loss
+
+
+@always_inline
+def gaussian_nll_grad_learnable_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    PRED_DIM: Int,
+    OUT_DIM: Int = 2 * PRED_DIM,
+](
+    grad_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    model_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    target: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    loss_per_sample: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    max_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_lv_grad_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    min_lv_grad_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+):
+    """Gaussian NLL gradient with learnable per-dim logvar bounds.
+
+    Matches `gaussian_nll_grad_kernel` but reads per-dim bounds from device
+    buffers and writes per-(b, d) gradient contributions for max_lv and
+    min_lv into scratch buffers. A follow-up reduce kernel sums over batch
+    and Adam-updates the bounds.
+
+    Gradient chain through double softplus clamp (ref bnn.py:556-557):
+      lv_inter = max - softplus(max - raw),  a1 = max - raw, g1 = sigmoid(a1)
+      lv       = min + softplus(lv_inter - min), a2 = lv_inter - min, g2 = sigmoid(a2)
+
+      d lv / d raw          = g1 * g2          (existing chain — flows to network)
+      d lv / d max_logvar   = g2 * (1 - g1)    (new — flows to max_lv)
+      d lv / d min_logvar   = 1 - g2           (new — flows to min_lv)
+
+    Per-element contribution to loss is d NLL / d lv = 0.5 * (1 - diff²/var) / BATCH.
+
+    Grid: ceil(BATCH * PRED_DIM / TPB), block: TPB. One thread per (b, d).
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * PRED_DIM:
+        return
+    var b = idx // PRED_DIM
+    var d = idx % PRED_DIM
+
+    var mean_val = rebind[Scalar[dtype]](model_output[b, d])
+    var raw_lv = rebind[Scalar[dtype]](model_output[b, PRED_DIM + d])
+    var max_d = rebind[Scalar[dtype]](max_lv[d])
+    var min_d = rebind[Scalar[dtype]](min_lv[d])
+
+    # Soft double-softplus clamp (matches gaussian_nll_grad_kernel).
+    var a1 = max_d - raw_lv
+    var s1 = Scalar[dtype](0.0)
+    if a1 > Scalar[dtype](20.0):
+        s1 = a1
+    elif a1 > Scalar[dtype](-20.0):
+        s1 = log(Scalar[dtype](1.0) + exp(a1))
+    var lv_inter = max_d - s1
+
+    var a2 = lv_inter - min_d
+    var s2 = Scalar[dtype](0.0)
+    if a2 > Scalar[dtype](20.0):
+        s2 = a2
+    elif a2 > Scalar[dtype](-20.0):
+        s2 = log(Scalar[dtype](1.0) + exp(a2))
+    var lv = min_d + s2
+
+    var var_val = exp(lv)
+    var tgt = rebind[Scalar[dtype]](target[b, d])
+    var diff = tgt - mean_val
+    var diff_sq = diff * diff
+    var inv_batch = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
+
+    var g1 = Scalar[dtype](0.0)
+    if a1 > Scalar[dtype](20.0):
+        g1 = Scalar[dtype](1.0)
+    elif a1 > Scalar[dtype](-20.0):
+        g1 = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-a1))
+    var g2 = Scalar[dtype](0.0)
+    if a2 > Scalar[dtype](20.0):
+        g2 = Scalar[dtype](1.0)
+    elif a2 > Scalar[dtype](-20.0):
+        g2 = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-a2))
+
+    var grad_lv = (
+        Scalar[dtype](0.5)
+        * (Scalar[dtype](1.0) - diff_sq / var_val)
+        * inv_batch
+    )
+
+    # Existing grads wrt network output (mean + raw logvar).
+    grad_output[b, d] = (mean_val - tgt) / var_val * inv_batch
+    grad_output[b, PRED_DIM + d] = grad_lv * g1 * g2
+
+    # New: per-element grad contributions for bounds (reduced over batch next).
+    max_lv_grad_scratch[b, d] = grad_lv * g2 * (Scalar[dtype](1.0) - g1)
+    min_lv_grad_scratch[b, d] = grad_lv * (Scalar[dtype](1.0) - g2)
+
+    var sample_loss = (
+        Scalar[dtype](0.5) * diff_sq / var_val + Scalar[dtype](0.5) * lv
+    )
+    if d == 0:
+        loss_per_sample[b] = sample_loss
+    else:
+        loss_per_sample[b] = loss_per_sample[b] + sample_loss
+
+
+@always_inline
+def reduce_bounds_grad_l2_adam_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    PRED_DIM: Int,
+](
+    max_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_lv_m: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_lv_v: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv_m: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv_v: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    max_lv_grad_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    min_lv_grad_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    l2_coef: Scalar[dtype],
+    lr: Scalar[dtype],
+    beta1: Scalar[dtype],
+    beta2: Scalar[dtype],
+    eps: Scalar[dtype],
+    bias_correction1: Scalar[dtype],
+    bias_correction2: Scalar[dtype],
+):
+    """Reduce per-batch bounds grads, add L2, and Adam-update bounds.
+
+    Reference (bnn.py:192): train_loss += 0.01 * sum(max_lv) - 0.01 * sum(min_lv).
+    So d loss / d max_lv[d] += +l2_coef and d loss / d min_lv[d] += -l2_coef
+    for every dim.
+
+    One thread per PRED_DIM (grid=(PRED_DIM,), block=(1,)). Each thread:
+      1. Sums scratch[0..BATCH, d] for both max_lv and min_lv grads.
+      2. Adds the L2 contribution.
+      3. Applies one Adam step in place.
+    PRED_DIM is small (~18) so the serial BATCH sum per thread is fine.
+    """
+    var d = Int(block_idx.x)
+    if d >= PRED_DIM:
+        return
+    if Int(thread_idx.x) != 0:
+        return
+
+    var g_max = Scalar[dtype](0.0)
+    var g_min = Scalar[dtype](0.0)
+    for b in range(BATCH):
+        g_max += rebind[Scalar[dtype]](max_lv_grad_scratch[b, d])
+        g_min += rebind[Scalar[dtype]](min_lv_grad_scratch[b, d])
+
+    # L2: +l2 pulls max down, -l2 pushes min up (toward each other).
+    g_max += l2_coef
+    g_min -= l2_coef
+
+    var one = Scalar[dtype](1.0)
+
+    # Adam update on max_lv[d]
+    var m_max = rebind[Scalar[dtype]](max_lv_m[d])
+    var v_max = rebind[Scalar[dtype]](max_lv_v[d])
+    var m_max_new = beta1 * m_max + (one - beta1) * g_max
+    var v_max_new = beta2 * v_max + (one - beta2) * g_max * g_max
+    max_lv_m[d] = m_max_new
+    max_lv_v[d] = v_max_new
+    var m_max_hat = m_max_new / bias_correction1
+    var v_max_hat = v_max_new / bias_correction2
+    var cur_max = rebind[Scalar[dtype]](max_lv[d])
+    max_lv[d] = cur_max - lr * m_max_hat / (sqrt(v_max_hat) + eps)
+
+    # Adam update on min_lv[d]
+    var m_min = rebind[Scalar[dtype]](min_lv_m[d])
+    var v_min = rebind[Scalar[dtype]](min_lv_v[d])
+    var m_min_new = beta1 * m_min + (one - beta1) * g_min
+    var v_min_new = beta2 * v_min + (one - beta2) * g_min * g_min
+    min_lv_m[d] = m_min_new
+    min_lv_v[d] = v_min_new
+    var m_min_hat = m_min_new / bias_correction1
+    var v_min_hat = v_min_new / bias_correction2
+    var cur_min = rebind[Scalar[dtype]](min_lv[d])
+    min_lv[d] = cur_min - lr * m_min_hat / (sqrt(v_min_hat) + eps)
 
 
 @always_inline
@@ -3516,13 +3891,25 @@ def dynamics_sample_kernel[
             Scalar[dtype](6.283185307) * u2
         )
 
-        var mean_val = model_output[b, d]
-        var raw_lv = model_output[b, PRED_DIM + d]
-        var lv = raw_lv
-        if lv < min_logvar:
-            lv = min_logvar
-        if lv > max_logvar:
-            lv = max_logvar
+        var mean_val = rebind[Scalar[dtype]](model_output[b, d])
+        var raw_lv = rebind[Scalar[dtype]](model_output[b, PRED_DIM + d])
+        # Soft clamp logvar to match training-time behavior (bnn.py:556-557).
+        # Inference must use the same clamp as training or variance predictions
+        # will not match what the network was trained to produce.
+        var a1 = max_logvar - raw_lv
+        var s1 = Scalar[dtype](0.0)
+        if a1 > Scalar[dtype](20.0):
+            s1 = a1
+        elif a1 > Scalar[dtype](-20.0):
+            s1 = log(Scalar[dtype](1.0) + exp(a1))
+        var lv_inter = max_logvar - s1
+        var a2 = lv_inter - min_logvar
+        var s2 = Scalar[dtype](0.0)
+        if a2 > Scalar[dtype](20.0):
+            s2 = a2
+        elif a2 > Scalar[dtype](-20.0):
+            s2 = log(Scalar[dtype](1.0) + exp(a2))
+        var lv = min_logvar + s2
         var std = sqrt(exp(lv))
         var sample = mean_val + std * z
 
@@ -3531,3 +3918,320 @@ def dynamics_sample_kernel[
         else:
             # Residual prediction: next_obs = obs + delta
             next_obs[b, d - 1] = obs[b, d - 1] + sample
+
+
+@always_inline
+def dynamics_sample_learnable_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    OBS_DIM: Int,
+    PRED_DIM: Int = 1 + OBS_DIM,
+    OUT_DIM: Int = 2 * PRED_DIM,
+](
+    next_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ],
+    sampled_rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    model_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
+    max_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    min_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Sample next_obs and reward from dynamics output with per-dim bounds.
+
+    Mirror of `dynamics_sample_kernel` but reads logvar bounds from per-dim
+    device buffers (learnable bounds for one ensemble member — caller offsets
+    the pointer by `member_idx * PRED_DIM`).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    for d in range(PRED_DIM):
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(b * PRED_DIM + d),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = rand_vals[0].cast[dtype]()
+        var u2 = rand_vals[1].cast[dtype]()
+        var eps = Scalar[dtype](1e-7)
+        var z = sqrt(Scalar[dtype](-2.0) * log(u1 + eps)) * cos(
+            Scalar[dtype](6.283185307) * u2
+        )
+
+        var mean_val = rebind[Scalar[dtype]](model_output[b, d])
+        var raw_lv = rebind[Scalar[dtype]](model_output[b, PRED_DIM + d])
+        var max_d = rebind[Scalar[dtype]](max_lv[d])
+        var min_d = rebind[Scalar[dtype]](min_lv[d])
+
+        var a1 = max_d - raw_lv
+        var s1 = Scalar[dtype](0.0)
+        if a1 > Scalar[dtype](20.0):
+            s1 = a1
+        elif a1 > Scalar[dtype](-20.0):
+            s1 = log(Scalar[dtype](1.0) + exp(a1))
+        var lv_inter = max_d - s1
+        var a2 = lv_inter - min_d
+        var s2 = Scalar[dtype](0.0)
+        if a2 > Scalar[dtype](20.0):
+            s2 = a2
+        elif a2 > Scalar[dtype](-20.0):
+            s2 = log(Scalar[dtype](1.0) + exp(a2))
+        var lv = min_d + s2
+        var std = sqrt(exp(lv))
+        var sample = mean_val + std * z
+
+        if d == 0:
+            sampled_rewards[b] = sample
+        else:
+            next_obs[b, d - 1] = obs[b, d - 1] + sample
+
+
+@always_inline
+def sample_elite_assignment_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    NUM_ELITES: Int,
+](
+    out_slot: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
+    rng_counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+):
+    """Per-sample random elite-slot assignment for MBPO rollouts.
+
+    Matches softlearning fake_env.py:54 (`model_inds = np.random.choice(
+    elite_inds, size=batch_size)`): every batch element picks its own
+    uniform random elite, with replacement. Without this, consecutive
+    synthetic rollouts come from the same elite's biased predictions,
+    which drives critic Q-value oscillations.
+
+    Grid: ceil(BATCH / TPB), block: TPB. One thread per batch element.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var rng_seed = UInt64(rng_counter.ptr[0])
+    var philox = PhiloxRandom(
+        seed=UInt64(rng_seed) + UInt64(b),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var u = Scalar[DType.float32](rand_vals[0])
+    # floor(u * NUM_ELITES) lands in [0, NUM_ELITES).
+    var slot = Int32(u * Float32(NUM_ELITES))
+    if slot < Int32(0):
+        slot = Int32(0)
+    if slot >= Int32(NUM_ELITES):
+        slot = Int32(NUM_ELITES - 1)
+    out_slot[b] = slot
+
+
+@always_inline
+def dynamics_sample_ensemble_learnable_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    OBS_DIM: Int,
+    NUM_ELITES: Int,
+    NUM_ENSEMBLE: Int,
+    PRED_DIM: Int = 1 + OBS_DIM,
+    OUT_DIM: Int = 2 * PRED_DIM,
+](
+    next_obs: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ],
+    sampled_rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    model_output_all: LayoutTensor[
+        dtype, Layout.row_major(NUM_ELITES, BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
+    elite_idx_per_sample: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    elite_member_map: LayoutTensor[
+        DType.int32, Layout.row_major(NUM_ELITES), MutAnyOrigin
+    ],
+    max_lv_buf: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENSEMBLE * PRED_DIM), MutAnyOrigin
+    ],
+    min_lv_buf: LayoutTensor[
+        dtype, Layout.row_major(NUM_ENSEMBLE * PRED_DIM), MutAnyOrigin
+    ],
+    rng_seed: Scalar[DType.uint32],
+):
+    """Per-sample random-elite dynamics sampling (matches fake_env.py:54-58).
+
+    For each batch element b:
+      elite_slot  = elite_idx_per_sample[b]   # uniform random in [0, NUM_ELITES)
+      member_idx  = elite_member_map[elite_slot]
+      (mean, raw_logvar) = model_output_all[elite_slot, b, :]
+      (max_lv, min_lv)   = bounds[member_idx * PRED_DIM + d]
+      apply soft clamp + gaussian noise + residual prediction.
+
+    One thread per batch element.
+    Grid: ceil(BATCH / TPB), block: TPB.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var elite_slot = Int(elite_idx_per_sample[b])
+    if elite_slot < 0:
+        elite_slot = 0
+    if elite_slot >= NUM_ELITES:
+        elite_slot = NUM_ELITES - 1
+    var member_idx = Int(elite_member_map[elite_slot])
+    if member_idx < 0 or member_idx >= NUM_ENSEMBLE:
+        member_idx = 0
+
+    for d in range(PRED_DIM):
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(b * PRED_DIM + d),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = rand_vals[0].cast[dtype]()
+        var u2 = rand_vals[1].cast[dtype]()
+        var eps = Scalar[dtype](1e-7)
+        var z = sqrt(Scalar[dtype](-2.0) * log(u1 + eps)) * cos(
+            Scalar[dtype](6.283185307) * u2
+        )
+
+        var mean_val = rebind[Scalar[dtype]](
+            model_output_all[elite_slot, b, d]
+        )
+        var raw_lv = rebind[Scalar[dtype]](
+            model_output_all[elite_slot, b, PRED_DIM + d]
+        )
+        var max_d = rebind[Scalar[dtype]](
+            max_lv_buf[member_idx * PRED_DIM + d]
+        )
+        var min_d = rebind[Scalar[dtype]](
+            min_lv_buf[member_idx * PRED_DIM + d]
+        )
+
+        var a1 = max_d - raw_lv
+        var s1 = Scalar[dtype](0.0)
+        if a1 > Scalar[dtype](20.0):
+            s1 = a1
+        elif a1 > Scalar[dtype](-20.0):
+            s1 = log(Scalar[dtype](1.0) + exp(a1))
+        var lv_inter = max_d - s1
+        var a2 = lv_inter - min_d
+        var s2 = Scalar[dtype](0.0)
+        if a2 > Scalar[dtype](20.0):
+            s2 = a2
+        elif a2 > Scalar[dtype](-20.0):
+            s2 = log(Scalar[dtype](1.0) + exp(a2))
+        var lv = min_d + s2
+        var std = sqrt(exp(lv))
+        var sample = mean_val + std * z
+
+        if d == 0:
+            sampled_rewards[b] = sample
+        else:
+            next_obs[b, d - 1] = obs[b, d - 1] + sample
+
+
+# =============================================================================
+# Dynamics input scaler (MBPO TensorStandardScaler equivalent)
+#
+# Reference: mbpo-master/mbpo/models/bnn.py:335, 548 and utils.py:48-50.
+# Per-dim mean/std fit once per dynamics train() call on the populated portion
+# of the real buffer; applied to every dynamics forward pass (training +
+# rollouts). Without this, HalfCheetah dims with very different scales (joint
+# angles vs velocities) make the ensemble's predictions and logvar bounds
+# useless in the raw input space.
+# =============================================================================
+
+
+@always_inline
+def compute_scaler_mean_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    CAP: Int,
+    D: Int,
+](
+    out_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+    data: LayoutTensor[dtype, Layout.row_major(CAP, D), MutAnyOrigin],
+    n_samples: Int,
+):
+    """Per-column mean over first `n_samples` rows of `data`. One block per dim.
+
+    Grid: (D,), Block: (1,). Single-thread serial sum per dim. Cheap because
+    it only runs every model_train_freq env steps and N is at most the real
+    buffer size (~1M for HalfCheetah).
+    """
+    var d = Int(block_idx.x)
+    if d >= D:
+        return
+    if Int(thread_idx.x) != 0:
+        return
+    if n_samples <= 0:
+        out_mean.ptr[d] = Scalar[dtype](0.0)
+        return
+    var total = Scalar[dtype](0.0)
+    for i in range(n_samples):
+        total += data.ptr[i * D + d]
+    out_mean.ptr[d] = total / Scalar[dtype](n_samples)
+
+
+@always_inline
+def compute_scaler_std_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    CAP: Int,
+    D: Int,
+](
+    out_std: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+    data: LayoutTensor[dtype, Layout.row_major(CAP, D), MutAnyOrigin],
+    in_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+    n_samples: Int,
+    min_std: Scalar[dtype],
+):
+    """Per-column std over first `n_samples` rows. Must be called after mean.
+
+    Matches reference utils.py:49 behavior: `sigma[sigma < 1e-12] = 1.0` — if
+    a dim has near-zero variance (constant), fall back to std=1.0 so
+    normalization leaves it approximately unchanged instead of dividing by 0.
+    """
+    var d = Int(block_idx.x)
+    if d >= D:
+        return
+    if Int(thread_idx.x) != 0:
+        return
+    if n_samples <= 0:
+        out_std.ptr[d] = Scalar[dtype](1.0)
+        return
+    var mu = in_mean.ptr[d]
+    var total = Scalar[dtype](0.0)
+    for i in range(n_samples):
+        var diff = data.ptr[i * D + d] - mu
+        total += diff * diff
+    var var_val = total / Scalar[dtype](n_samples)
+    var s = sqrt(var_val)
+    if s < min_std:
+        s = Scalar[dtype](1.0)
+    out_std.ptr[d] = s
+
+
+@always_inline
+def normalize_input_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    D: Int,
+](
+    data: LayoutTensor[dtype, Layout.row_major(BATCH, D), MutAnyOrigin],
+    in_mean: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+    in_std: LayoutTensor[dtype, Layout.row_major(D), MutAnyOrigin],
+):
+    """In-place z-score per element: data[b, d] = (data[b, d] - mean[d]) / std[d].
+
+    Grid: ceil(BATCH * D / TPB), Block: TPB.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH * D:
+        return
+    var d = i % D
+    data.ptr[i] = (data.ptr[i] - in_mean.ptr[d]) / in_std.ptr[d]

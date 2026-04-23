@@ -10,7 +10,7 @@ Differs from standard off-policy training:
 
 from std.random import random_float64
 from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from mojo_rl.core import TrainingMetrics, BoxContinuousActionEnv, GPUContinuousEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import dtype
@@ -33,9 +33,13 @@ def run_mbpo_train[
     E: BoxContinuousActionEnv,
     Config: MBPOConfig,
     L: Logger = NoOpLogger,
+    TRAIN_N_ENVS: Int = 1,
+    REAL_RATIO_PCT: Int = 5,
 ](
-    mut agent: MBPOAgent[Config, L],
-    mut cpu_state: MBPOAgent[Config, L].CPUStateType,
+    mut agent: MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT],
+    mut cpu_state: MBPOAgent[
+        Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT
+    ].CPUStateType,
     mut env: E,
     num_epochs: Int,
     steps_per_epoch: Int = 1000,
@@ -252,9 +256,13 @@ def run_mbpo_train_gpu[
     Config: MBPOConfig,
     L: Logger = NoOpLogger,
     USE_CUDA_GRAPH: Bool = False,
+    TRAIN_N_ENVS: Int = 1,
+    REAL_RATIO_PCT: Int = 5,
 ](
-    mut agent: MBPOAgent[Config, L],
-    mut cpu_state: MBPOAgent[Config, L].CPUStateType,
+    mut agent: MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT],
+    mut cpu_state: MBPOAgent[
+        Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT
+    ].CPUStateType,
     ctx: DeviceContext,
     num_steps: Int,
     warmup_steps: Int = 5000,
@@ -291,14 +299,14 @@ def run_mbpo_train_gpu[
     Returns:
         TrainingMetrics with episode-level statistics.
     """
-    comptime n_envs = MBPOAgent[Config, L].GPU_N_ENVS
+    comptime n_envs = MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT].GPU_N_ENVS
 
     var metrics = TrainingMetrics(
         algorithm_name="MBPO-GPU",
         environment_name=environment_name,
     )
 
-    comptime GPUState = MBPOAgent[Config, L].GPUStateType
+    comptime GPUState = MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT].GPUStateType
     var gpu_state = GPUState(ctx)
 
     var gpu_dynamics = GPUDynamicsEnsemble[
@@ -314,13 +322,51 @@ def run_mbpo_train_gpu[
     gpu_state.actor.upload_from(cpu_state.actor, ctx)
     gpu_state.critics.upload_from(cpu_state.critics, ctx)
 
+    # Upload SAC alpha state to GPU scalars (matches SAC's upload_to_gpu).
+    # Without this, gpu_scalars is zero-filled: GPU_ALPHA=0 → alpha kernel
+    # sets alpha=exp(log_alpha)=exp(0)=1.0 (not the intended 0.2), and
+    # GPU_ALPHA_LR=0 freezes alpha there. With saturated tanh actions,
+    # log_pi → -∞ and TD target = r + γ*(min_Q - α*log_pi) → +∞,
+    # blowing Q-values to 10^30.
+    comptime GPUStateT = MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT].GPUStateType
+    var scalars_host = ctx.enqueue_create_host_buffer[dtype](
+        GPUStateT.GPU_SCALARS_SIZE
+    )
+    scalars_host[GPUStateT.GPU_ALPHA] = Scalar[dtype](agent.alpha)
+    scalars_host[GPUStateT.GPU_LOG_ALPHA] = Scalar[dtype](agent.log_alpha)
+    scalars_host[GPUStateT.GPU_ADAM_M] = Scalar[dtype](agent.alpha_adam_m)
+    scalars_host[GPUStateT.GPU_ADAM_V] = Scalar[dtype](agent.alpha_adam_v)
+    scalars_host[GPUStateT.GPU_ADAM_T] = Scalar[dtype](agent.alpha_adam_t)
+    scalars_host[GPUStateT.GPU_TARGET_ENT] = Scalar[dtype](agent.target_entropy)
+    scalars_host[GPUStateT.GPU_ALPHA_LR] = Scalar[dtype](agent.alpha_lr)
+    ctx.enqueue_copy(gpu_state.gpu_scalars, scalars_host)
+
+    # Pre-allocated host buffer for alpha/scalars D2H (reused by diagnostics
+    # and print-boundary downloads to avoid per-call host allocations).
+    # Sized to GPU_SCALARS_SIZE so the print-boundary path can read both
+    # alpha (index 0) and log_alpha (index 1).
+    var alpha_host = ctx.enqueue_create_host_buffer[dtype](
+        GPUStateT.GPU_SCALARS_SIZE
+    )
+
     # Synthetic replay buffer (separate from real buffer in gpu_state)
     var synth_buffer = GPUReplayBuffer[
         Config.SYNTH_CAPACITY, Config.obs_dim, Config.action_dim
     ](ctx)
+
+    # ERE (Emphasizing Recent Experience): opt-in via MBPOAgent(use_ere=True).
+    # Applied to BOTH real and synth buffers. Reference MBPO doesn't use ERE,
+    # but it empirically closes the Q-explosion failure mode we hit at high
+    # UTD (low TRAIN_N_ENVS) where SAC over-fits to a rapidly-cycling
+    # synthetic buffer. Enable idempotently BEFORE the CUDA graph captures
+    # the sampling kernel — once captured, the ere-vs-uniform branch in
+    # buffer.sample is baked into the graph.
+    if agent.use_ere:
+        gpu_state.buffer.enable_ere(agent.ere_eta)
+        synth_buffer.enable_ere(agent.ere_eta)
     # Scratch index buffers for mixed sampling
-    comptime REAL_BS = MBPOAgent[Config, L].REAL_BS
-    comptime SYNTH_BS = MBPOAgent[Config, L].SYNTH_BS
+    comptime REAL_BS = MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT].REAL_BS
+    comptime SYNTH_BS = MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT].SYNTH_BS
     var s_real_idx = ctx.enqueue_create_buffer[DType.int32](REAL_BS)
     var s_synth_idx = ctx.enqueue_create_buffer[DType.int32](SYNTH_BS)
 
@@ -464,6 +510,9 @@ def run_mbpo_train_gpu[
         )
 
         # GPU SAC gradient steps
+        # Soft target update must run per gradient step (matches SAC GPU loop).
+        # Calling it once per env iteration makes targets update at 1/sac_updates_per_step
+        # the intended rate and causes Q-value divergence with synthetic data.
         if gpu_state.gpu_buffer_is_ready():
             if synth_buffer.is_ready[SYNTH_BS]():
                 # Mixed sampling: REAL_BS real + SYNTH_BS synthetic
@@ -473,6 +522,7 @@ def run_mbpo_train_gpu[
                             ctx, gpu_state, synth_buffer,
                             s_real_idx, s_synth_idx,
                         )
+                        agent.soft_update_targets_gpu(ctx, gpu_state)
                         ctx.synchronize()
                         var graph = CUDAGraph(ctx)
                         graph.begin_capture()
@@ -480,6 +530,7 @@ def run_mbpo_train_gpu[
                             ctx, gpu_state, synth_buffer,
                             s_real_idx, s_synth_idx,
                         )
+                        agent.soft_update_targets_gpu(ctx, gpu_state)
                         graph.end_capture()
                         if verbose:
                             print(
@@ -492,19 +543,20 @@ def run_mbpo_train_gpu[
                         _train_graph.value().replay_async()
                     _train_graph.value().sync()
                     agent._gpu_train_diagnostics(
-                        ctx, gpu_state, agent.sac_updates_per_step
+                        ctx, gpu_state, agent.sac_updates_per_step, alpha_host
                     )
                 else:
                     for _ in range(agent.sac_updates_per_step):
                         agent.do_gpu_train_step(
                             ctx, gpu_state, synth_buffer,
-                            s_real_idx, s_synth_idx,
+                            s_real_idx, s_synth_idx, alpha_host,
                         )
+                        agent.soft_update_targets_gpu(ctx, gpu_state)
             else:
                 # No synthetic data yet: train on 100% real (like CPU path)
                 for _ in range(agent.sac_updates_per_step):
                     agent.do_gpu_train_step_real_only(ctx, gpu_state)
-            agent.soft_update_targets_gpu(ctx, gpu_state)
+                    agent.soft_update_targets_gpu(ctx, gpu_state)
             total_train_steps += agent.sac_updates_per_step
 
         # Periodic dynamics training
@@ -513,9 +565,13 @@ def run_mbpo_train_gpu[
 
         if total_steps >= next_model_train and total_steps >= warmup_steps:
             # GPU dynamics training on REAL data only (paper design)
-            gpu_dynamics.train_on_buffer[MBPOAgent[Config, L].GPU_BUF_CAP](
-                ctx, gpu_state.buffer,
-            )
+            var mean_holdout = gpu_dynamics.train_on_buffer[
+                MBPOAgent[Config, L, TRAIN_N_ENVS, REAL_RATIO_PCT].GPU_BUF_CAP
+            ](ctx, gpu_state.buffer)
+            if logger:
+                logger[].log_scalar(
+                    "dyn_holdout_loss", mean_holdout, total_steps
+                )
             agent.update_rollout_length(epoch)
             epoch += 1
 
@@ -547,10 +603,14 @@ def run_mbpo_train_gpu[
         if (
             verbose or (logger and logger[].is_active())
         ) and total_steps >= next_print:
-            # Download GPU-side episode stats
+            # Download GPU-side episode stats + alpha for logging (reuses
+            # the hoisted alpha_host buffer allocated at loop start).
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+            ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
             ctx.synchronize()
+            agent.alpha = Float64(alpha_host[GPUStateT.GPU_ALPHA])
+            agent.log_alpha = Float64(alpha_host[GPUStateT.GPU_LOG_ALPHA])
 
             var raw_count = Float64(host_episode_count[0])
             var recent_count = Int(raw_count) if raw_count > 0.0 and raw_count == raw_count else 0

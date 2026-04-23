@@ -1,25 +1,25 @@
-"""CPU evaluation for SAC on Swimmer.
+"""CPU evaluation for SAC on Reacher.
 
-This evaluates a trained SAC agent using CPU inference on the Swimmer
+This evaluates a trained SAC agent using CPU inference on the Reacher
 environment with 3D rendering. Load a checkpoint from GPU training and
 run deterministic evaluation episodes (using mean action, no sampling).
 
 Run with:
-    pixi run mojo run -I . examples/swimmer/sac_swimmer_eval_cpu.mojo
+    pixi run mojo run -I . examples/reacher/sac_reacher_eval_cpu.mojo
 """
 
 from std.random import seed
 from std.time import perf_counter_ns
 
 from mojo_rl.deep_agents.core.agents import DeepSACAgent
-from mojo_rl.envs.swimmer import Swimmer
+from mojo_rl.envs.reacher import Reacher
 
 # =============================================================================
 # Constants (must match training configuration)
 # =============================================================================
 
-comptime OBS_DIM = 8  # qpos[2:5] + qvel[0:5]
-comptime ACTION_DIM = 2  # 2 rotational motors
+comptime OBS_DIM = 10  # cos(q0,q1), sin(q0,q1), target_xy, qvel[0:2], delta_xy
+comptime ACTION_DIM = 2  # 2 hinge motors
 comptime HIDDEN_DIM = 256
 comptime BUFFER_CAPACITY = 300_000
 comptime BATCH_SIZE = 256
@@ -27,7 +27,7 @@ comptime MAX_N_ENVS = 32
 
 # Evaluation settings
 comptime NUM_EPISODES = 10
-comptime MAX_STEPS = 1000
+comptime MAX_STEPS = 50  # Reacher is truncated at 50 steps
 
 
 # =============================================================================
@@ -39,7 +39,7 @@ def main() raises:
     seed(42)
     print("=" * 70)
     print("SAC Agent CPU Evaluation")
-    print("Swimmer (Generalized Coordinates Physics)")
+    print("Reacher (Generalized Coordinates Physics)")
     print("=" * 70)
     print()
 
@@ -70,14 +70,14 @@ def main() raises:
 
     print("Loading checkpoint...")
     try:
-        agent.load_checkpoint("sac_swimmer.ckpt")
+        agent.load_checkpoint("sac_reacher.ckpt")
         print("Checkpoint loaded successfully!")
     except:
         print("Error loading checkpoint!")
         print("Make sure you have trained the agent first:")
         print(
             "  pixi run -e apple mojo run"
-            " examples/swimmer/sac_swimmer_training_gpu.mojo"
+            " examples/reacher/sac_reacher_training_gpu.mojo"
         )
         return
 
@@ -87,20 +87,20 @@ def main() raises:
     # Create environment and evaluate
     # =========================================================================
 
-    var env = Swimmer[
+    var env = Reacher[
         DType.float64,
-        False,
+        TERMINATE_ON_UNHEALTHY=False,
     ]()
 
     print("Running CPU evaluation...")
     print("  Episodes:", NUM_EPISODES)
     print("  Max steps per episode:", MAX_STEPS)
     print()
-    print("Swimmer Physics:")
+    print("Reacher Physics:")
     print("  - Generalized Coordinates (GC) engine")
     print("  - MuJoCo-style joint-space dynamics")
-    print("  - 3 bodies: head + 2 segments")
-    print("  - 2 actuated rotational joints")
+    print("  - 2-link planar arm + fingertip + movable target")
+    print("  - 2 actuated hinge joints (shoulder, elbow)")
     print()
     print("-" * 70)
 
@@ -119,18 +119,18 @@ def main() raises:
 
     print()
     print("-" * 70)
-    print("CPU EVALUATION SUMMARY - Swimmer (SAC)")
+    print("CPU EVALUATION SUMMARY - Reacher (SAC)")
     print("-" * 70)
     print("Episodes:", NUM_EPISODES)
     print("Average reward:", avg_reward)
     print("Evaluation time:", elapsed_ms / 1000, "seconds")
     print()
 
-    if avg_reward > 300:
-        print("Result: EXCELLENT - Swimmer is moving fast!")
-    elif avg_reward > 100:
-        print("Result: GOOD - Swimmer learned to swim!")
-    elif avg_reward > 0:
+    if avg_reward > -4:
+        print("Result: EXCELLENT - Arm is tracking the target!")
+    elif avg_reward > -7:
+        print("Result: GOOD - Arm learned to reach!")
+    elif avg_reward > -15:
         print("Result: OKAY - Model is learning but not optimal")
     else:
         print("Result: POOR - Model needs more training")

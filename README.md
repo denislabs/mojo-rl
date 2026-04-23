@@ -7,7 +7,7 @@ An educational reinforcement learning framework written in Mojo, featuring trait
 ## Features
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, actions, models, optimizers, and physics
-- **40+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC), deep RL (DQN family including Noisy DQN, C51, Rainbow; A2C, PPO), and model-based RL (TD-MPC2, DreamerV3, MuZero)
+- **40+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC, REDQ), deep RL (DQN family including Noisy DQN, C51, Rainbow; A2C, PPO), and model-based RL (MBPO, TD-MPC2, DreamerV3, MuZero)
 - **Deep learning framework** (`mojo_rl/nn/`): Trait-based neural networks with autodiff, 20+ layer types, 5 optimizers (SGD, Adam, AdamW, RMSprop, Muon), automatic compile-time fusion, CPU/GPU support
 - **Autodiff system** (`mojo_rl/nn/autodiff/`): Composition-based automatic differentiation with 27+ DiffOp primitives, AutoDiffChain, fused kernels, 7 combinators (Residual, Parallel, Repeat, SkipConcat, DualPath, SplitApply, FanOut), ComputeGraph named-node DAG builder
 - **3D physics engine** (`mojo_rl/physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
@@ -17,7 +17,7 @@ An educational reinforcement learning framework written in Mojo, featuring trait
 - **Atari 2600 emulator** (`mojo_rl/envs/atari/`): Full 6502 CPU, TIA, RIOT emulation for ROM-based training
 - **SDL3 rendering** (`mojo_rl/render/`): 2D CPU rasterizer + GPU-accelerated 3D renderer with Blinn-Phong lighting, shadows, skybox, interactive camera, video recording
 - **20+ Gymnasium wrappers**: Classic Control, Box2D, Toy Text, MuJoCo environments
-- **GPU training**: All deep agents (DQN, C51, Rainbow, DDPG, TD3, SAC, PPO, TD-MPC2, DreamerV3, MuZero) support GPU-accelerated training
+- **GPU training**: All deep agents (DQN, C51, Rainbow, DDPG, TD3, SAC, REDQ, PPO, MBPO, TD-MPC2, DreamerV3, MuZero) support GPU-accelerated training
 
 ## Acknowledgments
 
@@ -194,8 +194,10 @@ mojo-rl/
 | **DDPG** | Continuous | Yes | Deterministic actor, Gaussian noise |
 | **TD3** | Continuous | Yes | Twin critics, delayed policy, target smoothing |
 | **SAC** | Continuous | Yes | Max entropy, stochastic policy, auto alpha |
+| **REDQ** | Continuous | Yes | N critic ensemble, subset-min target, high UTD (~20), LayerNorm variant |
 | **A2C** | Discrete | CPU | GAE, softmax policy |
 | **PPO** | Both | Yes | Clipped surrogate, GAE, multi-epoch, CNN variant |
+| **MBPO** | Continuous | Yes | SAC + probabilistic dynamics ensemble + synthetic rollouts |
 | **TD-MPC2** | Continuous | Yes | World model, MPPI planning, distributional RL |
 | **DreamerV3** | Continuous | Yes | RSSM world model, imagination rollouts |
 | **MuZero** | Discrete | Yes | Learned model, MCTS planning, distributional |

@@ -37,5 +37,15 @@ from .core.agents import (
 from .core.agents.mbpo_agent import MBPOAgent
 from .core.configs.mbpo_config import MBPOConfig, DefaultMBPOConfig
 from .core.training.mbpo_train import run_mbpo_train
+from .core.agents.redq_agent import REDQAgent
+from .core.configs.redq_config import (
+    REDQConfig,
+    DefaultREDQConfig,
+    DefaultREDQLNConfig,
+    REDQ_TARGET_MIN,
+    REDQ_TARGET_AVE,
+    REDQ_TARGET_REM,
+)
+from .core.training.redq_train import run_redq_train_gpu
 from .dreamer_v3 import DreamerV3Agent
 from .muzero import GenericMuZeroAgent, MuZeroMLPConfig

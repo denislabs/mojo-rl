@@ -46,7 +46,7 @@ comptime HIDDEN_DIM = 256
 # Buffer sizes
 comptime BUFFER_CAPACITY = 1_000_000  # Real buffer (match SAC)
 comptime SYNTH_CAPACITY = 400_000  # Synthetic buffer
-comptime BATCH_SIZE = 256
+comptime BATCH_SIZE = 128
 
 # Dynamics ensemble
 comptime NUM_ENSEMBLE = 7
@@ -71,7 +71,7 @@ comptime MBPOHalfCheetahConfig = DefaultMBPOConfig[
     NUM_ELITES,
     DYN_HIDDEN,
     0.0003,  # actor_lr
-    0.001,  # critic_lr (CleanRL default)
+    0.0003,  # critic_lr (MBPO paper; 1e-3 over-shoots at high UTD)
     0.001,  # model_lr
     NeverTerminate,  # HalfCheetah has no termination
 ]
@@ -94,13 +94,16 @@ def main() raises:
     # =========================================================================
 
     with DeviceContext() as ctx:
-        var agent = MBPOAgent[MBPOHalfCheetahConfig, RemoteLogger](
+        var agent = MBPOAgent[
+            MBPOHalfCheetahConfig,
+            RemoteLogger,
+        ](
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.001,
+            alpha_lr=0.0003,
             target_entropy=-3.0,  # Reference uses -3 (not -ACTION_DIM)
             model_train_freq=250,
             rollout_min_length=1,
@@ -110,6 +113,11 @@ def main() raises:
             num_rollouts_per_step=100_000,  # Reference: 100K per dynamics training
             real_ratio=0.05,
             sac_updates_per_step=40,  # Reference: n_train_repeat=40
+            # ERE (Emphasizing Recent Experience) on both real + synth buffers.
+            # Not paper-faithful, but closes the Q-explosion gap at high UTD
+            # (low TRAIN_N_ENVS). Safe to keep on at TRAIN_N_ENVS=32 too.
+            # use_ere=True,
+            # ere_eta=0.996,
             checkpoint_every=50_000,
             checkpoint_path="mbpo_half_cheetah",
         )
@@ -132,9 +140,9 @@ def main() raises:
         )
         print("  Key hyperparameters:")
         print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 1e-3")
+        print("    - Critic LR: 3e-4")
         print("    - Model LR: 1e-3")
-        print("    - Alpha LR: 1e-3 (auto-tuned)")
+        print("    - Alpha LR: 3e-4 (auto-tuned)")
         print("    - Tau: 0.005")
         print("    - Model train freq: 250 steps")
         print("    - Rollout length: 1 (HalfCheetah)")
@@ -164,7 +172,7 @@ def main() raises:
         logger.set_config("dyn_hidden", String(DYN_HIDDEN))
         logger.set_config("ensemble_size", String(NUM_ENSEMBLE))
         logger.set_config("actor_lr", "3e-4")
-        logger.set_config("critic_lr", "1e-3")
+        logger.set_config("critic_lr", "3e-4")
         logger.set_config("model_lr", "1e-3")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("model_train_freq", "250")
@@ -190,7 +198,7 @@ def main() raises:
                 num_steps=NUM_STEPS,
                 warmup_steps=WARMUP_STEPS,
                 verbose=True,
-                print_every=50_000,
+                print_every=10_000,
                 environment_name="HalfCheetah",
                 logger=UnsafePointer(to=logger),
                 diag_every=500,

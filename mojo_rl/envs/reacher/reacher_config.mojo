@@ -59,8 +59,17 @@ struct ReacherConfig(Phyics3dEnvConfig):
         NSITE: Int = 0,
     ](
         mut model: Model[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-            MAX_EQUALITY, CONE_TYPE, MAX_TENDON, NSITE,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
         ],
         mut data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         verbose: Bool,
@@ -71,7 +80,11 @@ struct ReacherConfig(Phyics3dEnvConfig):
     @staticmethod
     def pre_step_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
@@ -83,13 +96,18 @@ struct ReacherConfig(Phyics3dEnvConfig):
     @staticmethod
     def custom_extract_obs_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
         mut obs: List[Scalar[DTYPE]],
     ) -> Bool:
-        """Gymnasium Reacher-v5 observation: cos/sin encoding + target pos + vel + delta."""
+        """Gymnasium Reacher-v5 observation: cos/sin encoding + target pos + vel + delta.
+        """
         var q0 = Float64(data.qpos[0])
         var q1 = Float64(data.qpos[1])
 
@@ -118,7 +136,11 @@ struct ReacherConfig(Phyics3dEnvConfig):
     @staticmethod
     def compute_reward_and_done_cpu[
         DTYPE: DType where DTYPE.is_floating_point(),
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int, MAX_CONTACTS: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
         NSITE: Int = 0,
     ](
         data: Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE],
@@ -165,8 +187,14 @@ struct ReacherConfig(Phyics3dEnvConfig):
     def physics_substep_gpu[
         DTYPE: DType where DTYPE.is_floating_point(),
         BATCH_SIZE: Int,
-        NQ: Int, NV: Int, NBODY: Int, NJOINT: Int,
-        MAX_CONTACTS: Int, NGEOM: Int, MAX_EQUALITY: Int, CONE_TYPE: Int,
+        NQ: Int,
+        NV: Int,
+        NBODY: Int,
+        NJOINT: Int,
+        MAX_CONTACTS: Int,
+        NGEOM: Int,
+        MAX_EQUALITY: Int,
+        CONE_TYPE: Int,
         MAX_TENDON: Int = 0,
         NSITE: Int = 0,
     ](
@@ -176,7 +204,14 @@ struct ReacherConfig(Phyics3dEnvConfig):
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
         RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, BATCH_SIZE, NGEOM,
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH_SIZE,
+            NGEOM,
             CONE_TYPE=CONE_TYPE,
             MAX_TENDON=MAX_TENDON,
             NSITE=NSITE,
@@ -187,7 +222,9 @@ struct ReacherConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def pre_step_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -201,8 +238,11 @@ struct ReacherConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def compute_reward_and_done_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int,
-        ACTION_DIM: Int, MODEL_SIZE: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        ACTION_DIM: Int,
+        MODEL_SIZE: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -247,9 +287,7 @@ struct ReacherConfig(Phyics3dEnvConfig):
         var dx = ftip_x - tgt_x
         var dy = ftip_y - tgt_y
         var dz = ftip_z - tgt_z
-        var dist = Scalar[DTYPE](
-            sqrt(Float64(dx * dx + dy * dy + dz * dz))
-        )
+        var dist = sqrt(dx * dx + dy * dy + dz * dz)
 
         var reward_dist = -dist * Scalar[DTYPE](Self.REWARD_DIST_WEIGHT)
 
@@ -269,7 +307,9 @@ struct ReacherConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def init_qpos_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -283,7 +323,10 @@ struct ReacherConfig(Phyics3dEnvConfig):
     @always_inline
     @staticmethod
     def custom_extract_obs_gpu[
-        DTYPE: DType, BATCH_SIZE: Int, STATE_SIZE: Int, OBS_DIM: Int,
+        DTYPE: DType,
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
     ](
         states: LayoutTensor[
             DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -296,15 +339,18 @@ struct ReacherConfig(Phyics3dEnvConfig):
         qvel_off: Int,
         xpos_off: Int,
     ) -> Bool:
+        comptime assert (
+            DTYPE.is_floating_point()
+        ), "DTYPE must be floating point"
         var q0 = rebind[Scalar[DTYPE]](states[env, qpos_off + 0])
         var q1 = rebind[Scalar[DTYPE]](states[env, qpos_off + 1])
 
         # cos(theta) [2]
-        obs[env, 0] = Scalar[DTYPE](cos(Float64(q0)))
-        obs[env, 1] = Scalar[DTYPE](cos(Float64(q1)))
+        obs[env, 0] = cos(q0)
+        obs[env, 1] = cos(q1)
         # sin(theta) [2]
-        obs[env, 2] = Scalar[DTYPE](sin(Float64(q0)))
-        obs[env, 3] = Scalar[DTYPE](sin(Float64(q1)))
+        obs[env, 2] = sin(q0)
+        obs[env, 3] = sin(q1)
         # target joint positions (qpos[2:4]) [2]
         obs[env, 4] = rebind[Scalar[DTYPE]](states[env, qpos_off + 2])
         obs[env, 5] = rebind[Scalar[DTYPE]](states[env, qpos_off + 3])

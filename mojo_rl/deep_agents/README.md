@@ -25,10 +25,14 @@ deep_agents/
 │   │   ├── offpolicy_agent.mojo       # GenericOffPolicyAgent (DDPG/TD3/SAC)
 │   │   ├── onpolicy_agent.mojo        # GenericOnPolicyAgent (PPO/A2C discrete)
 │   │   ├── onpolicy_continuous_agent.mojo  # GenericOnPolicyContinuousAgent (PPO continuous)
+│   │   ├── mbpo_agent.mojo            # MBPOAgent (SAC + dynamics ensemble + synthetic rollouts)
+│   │   ├── redq_agent.mojo            # REDQAgent (N-critic ensemble + subset-min + high UTD)
 │   │   └── aliases.mojo               # Convenience aliases (DQNAgent, DeepSACAgent, etc.)
 │   ├── configs/                   # Compile-time algorithm configurations
 │   │   ├── offpolicy_config.mojo      # DDPGConfig, TD3Config, SACConfig
-│   │   └── onpolicy_config.mojo       # PPOConfig, A2CConfig, ContinuousPPOConfig, PPOCNNConfig
+│   │   ├── onpolicy_config.mojo       # PPOConfig, A2CConfig, ContinuousPPOConfig, PPOCNNConfig
+│   │   ├── mbpo_config.mojo           # MBPOConfig, DefaultMBPOConfig
+│   │   └── redq_config.mojo           # REDQConfig, DefaultREDQConfig, DefaultREDQLNConfig
 │   ├── strategies/                # Composable building blocks
 │   │   ├── exploration.mojo           # GaussianNoise, StochasticSample
 │   │   ├── update_schedule.mojo       # EveryStep, DelayedAll, DelayedActorOnly
@@ -45,6 +49,8 @@ deep_agents/
 │   │   ├── gpu_offpolicy_train.mojo   # GPU off-policy loop
 │   │   ├── onpolicy_train.mojo        # CPU on-policy loop
 │   │   ├── gpu_onpolicy_train.mojo    # GPU on-policy loop
+│   │   ├── mbpo_train.mojo            # MBPO training loop (dynamics train + model rollouts + SAC)
+│   │   ├── redq_train.mojo            # REDQ GPU training loop (UTD-scheduled, subset-min target)
 │   │   ├── offpolicy_helpers.mojo     # Action selection, transition storage
 │   │   └── onpolicy_helpers.mojo      # GAE computation, advantage normalization
 │   ├── replay/                    # Experience replay buffers
@@ -86,9 +92,11 @@ deep_agents/
 | **DDPG** | `DDPGConfig` | `GenericOffPolicyAgent` | Yes | Deterministic actor, Gaussian noise |
 | **TD3** | `TD3Config` | `GenericOffPolicyAgent` | Yes | Twin critics, delayed policy, target smoothing |
 | **SAC** | `SACConfig` | `GenericOffPolicyAgent` | Yes | Stochastic policy, max entropy, auto alpha |
+| **REDQ** | `DefaultREDQConfig` / `DefaultREDQLNConfig` | `REDQAgent` | Yes | N=10 critic ensemble, subset-min (M=2) target, UTD=20, policy delay 20, optional LayerNorm critic |
 | **A2C** | `A2CConfig` | `GenericOnPolicyAgent` | CPU | GAE, softmax policy |
 | **PPO** | `PPOConfig` / `PPOCNNConfig` | `GenericOnPolicyAgent` | Yes | Clipped surrogate, multi-epoch |
 | **PPO Continuous** | `ContinuousPPOConfig` | `GenericOnPolicyContinuousAgent` | Yes | Unbounded Gaussian (CleanRL-style) |
+| **MBPO** | `DefaultMBPOConfig` | `MBPOAgent` | Yes | SAC + probabilistic dynamics ensemble (7 models, 5 elites) + synthetic rollouts into a mixed replay |
 | **TD-MPC2** | — | `TDMPC2Agent` | Yes | World model ensemble, MPPI, distributional |
 | **DreamerV3** | — | `DreamerV3Agent` | Yes | RSSM, imagination rollouts |
 
@@ -107,10 +115,17 @@ deep_agents/
 
 ```mojo
 # Convenience aliases
-from mojo_rl.deep_agents import DQNAgent, DeepSACAgent, RainbowAgent, DreamerV3Agent
+from mojo_rl.deep_agents import (
+    DQNAgent, DeepSACAgent, RainbowAgent, DreamerV3Agent,
+    MBPOAgent, REDQAgent,
+)
 
 # Or use configs directly
 from mojo_rl.deep_agents.core.agents import GenericOffPolicyAgent, GenericDQNAgent
 from mojo_rl.deep_agents.core.configs import TD3Config, SACConfig
 from mojo_rl.deep_agents.core.agents import C51Config, RainbowConfig
+from mojo_rl.deep_agents.core.configs.mbpo_config import DefaultMBPOConfig
+from mojo_rl.deep_agents.core.configs.redq_config import (
+    DefaultREDQConfig, DefaultREDQLNConfig,
+)
 ```
