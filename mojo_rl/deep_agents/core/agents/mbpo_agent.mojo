@@ -3453,12 +3453,12 @@ struct MBPOAgent[
         return metrics^
 
     # =========================================================================
-    # Checkpointable trait (minimal implementation)
+    # Checkpointable — saves agent hyperparameters and training state.
+    # Network weights require save_cpu_state(cpu_state, path) separately
+    # because the Checkpointable trait doesn't include state access.
     # =========================================================================
 
     def save_checkpoint(self, path: String) raises -> None:
-        """Save actor, critic, and dynamics ensemble weights + hyperparameters.
-        """
         var content = write_checkpoint_header(
             "mbpo",
             Self.Config.ActorModel.PARAM_SIZE
@@ -3466,18 +3466,14 @@ struct MBPOAgent[
             + Self.Config.DynamicsModel.PARAM_SIZE * Self.Config.ENSEMBLE_SIZE,
             0,
         )
-        # SAC networks
         content += self.state.actor.write_sections("actor_")
         content += self.state.critics.pairs[0].write_sections("critic_")
         comptime if Self.Config.NUM_CRITICS == 2:
             content += self.state.critics.pairs[1].write_sections("critic2_")
-
-        # Dynamics ensemble
         for m in range(Self.Config.ENSEMBLE_SIZE):
             var prefix = "dyn" + String(m) + "_"
             content += self.state.dynamics.members[m].write_sections(prefix)
 
-        # Metadata
         var metadata = List[String]()
         metadata.append("gamma=" + String(self.gamma))
         metadata.append("tau=" + String(self.tau))
@@ -3489,7 +3485,6 @@ struct MBPOAgent[
         metadata.append("total_steps=" + String(self.total_steps))
         metadata.append("train_step_count=" + String(self.train_step_count))
         metadata.append("rollout_length=" + String(self.rollout_length))
-        # Elite indices
         var elite_str = String("")
         for i in range(len(self.state.dynamics.elite_indices)):
             if i > 0:
@@ -3500,22 +3495,15 @@ struct MBPOAgent[
         save_checkpoint_file(path, content)
 
     def load_checkpoint(mut self, path: String) raises -> None:
-        """Load actor, critic, and dynamics ensemble weights + hyperparameters.
-        """
         var content = read_checkpoint_file(path)
-
-        # SAC networks
         self.state.actor.read_sections(content, "actor_")
         self.state.critics.pairs[0].read_sections(content, "critic_")
         comptime if Self.Config.NUM_CRITICS == 2:
             self.state.critics.pairs[1].read_sections(content, "critic2_")
-
-        # Dynamics ensemble
         for m in range(Self.Config.ENSEMBLE_SIZE):
             var prefix = "dyn" + String(m) + "_"
             self.state.dynamics.members[m].read_sections(content, prefix)
 
-        # Metadata
         var metadata = read_metadata_section(content)
         set_metadata_value_float(metadata, "gamma", self.gamma)
         set_metadata_value_float(metadata, "tau", self.tau)
@@ -3529,3 +3517,40 @@ struct MBPOAgent[
             metadata, "train_step_count", self.train_step_count
         )
         set_metadata_value_int(metadata, "rollout_length", self.rollout_length)
+
+    def save_cpu_state(self, cpu_state: Self.CPUStateType, path: String) raises:
+        """Save network weights and optimizer state from cpu_state.
+
+        Saves actor (online+target), critic(s) (online+target), and dynamics
+        ensemble params and optimizer states. Replay buffers are NOT saved.
+        """
+
+        var content = write_checkpoint_header(
+            "mbpo_state",
+            Self.Config.ActorModel.PARAM_SIZE
+            + Self.Config.CriticModel.PARAM_SIZE * Self.Config.NUM_CRITICS
+            + Self.Config.DynamicsModel.PARAM_SIZE * Self.Config.ENSEMBLE_SIZE,
+            0,
+        )
+        content += cpu_state.actor.write_sections("actor_")
+        content += cpu_state.critics.pairs[0].write_sections("critic_")
+        comptime if Self.Config.NUM_CRITICS == 2:
+            content += cpu_state.critics.pairs[1].write_sections("critic2_")
+        for m in range(Self.Config.ENSEMBLE_SIZE):
+            var prefix = "dyn" + String(m) + "_"
+            content += cpu_state.dynamics.members[m].write_sections(prefix)
+        save_checkpoint_file(path, content)
+
+    def load_cpu_state(
+        self, mut cpu_state: Self.CPUStateType, path: String
+    ) raises:
+        """Load network weights and optimizer state into cpu_state."""
+
+        var content = read_checkpoint_file(path)
+        cpu_state.actor.read_sections(content, "actor_")
+        cpu_state.critics.pairs[0].read_sections(content, "critic_")
+        comptime if Self.Config.NUM_CRITICS == 2:
+            cpu_state.critics.pairs[1].read_sections(content, "critic2_")
+        for m in range(Self.Config.ENSEMBLE_SIZE):
+            var prefix = "dyn" + String(m) + "_"
+            cpu_state.dynamics.members[m].read_sections(content, prefix)
