@@ -1254,17 +1254,12 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
-        dgamma: LayoutTensor[
-            dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
-        ],
-        dbeta: LayoutTensor[
-            dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
-        ],
     ):
         """Fused Mish backward + LayerNorm backward kernel.
 
-        Computes d_linear_out and accumulates dgamma, dbeta.
-        One block per sample.
+        Computes d_linear_out per sample. dgamma/dbeta are produced by a
+        separate reduction kernel (backward_dgamma_dbeta_kernel_impl) — having
+        every block write into dgamma[j]/dbeta[j] here races across samples.
 
         Grid: (BATCH,)
         Block: (1,)
@@ -1278,12 +1273,11 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         var inv_std = cache[batch_idx, Self._INV_STD_OFFSET]
         var n = Scalar[dtype](Self.OUT_DIM)
 
-        # First pass: compute Mish gradient and LN intermediate sums
+        # First pass: compute LN intermediate sums from d_ln_out = dy * d_mish.
         var sum_dy_gamma: d_linear_out.element_type = 0.0
         var sum_dy_gamma_norm: d_linear_out.element_type = 0.0
 
         for j in range(Self.OUT_DIM):
-            # Mish backward
             var tanh_sp = rebind[Scalar[DType.float32]](
                 cache[batch_idx, Self._TANH_SP_OFFSET + j]
             )
@@ -1295,14 +1289,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             var dy = rebind[Scalar[DType.float32]](grad_output[batch_idx, j])
             var d_ln_out = dy * d_mish  # gradient w.r.t. LN output
 
-            # Accumulate dgamma, dbeta
             var normalized = cache[batch_idx, Self._LN_NORM_OFFSET + j]
-            dgamma[j] = (
-                dgamma[j] + rebind[dgamma.element_type](d_ln_out) * normalized
-            )
-            dbeta[j] = dbeta[j] + rebind[dbeta.element_type](d_ln_out)
-
-            # LN backward intermediate sums
             var g = gamma[j]
             sum_dy_gamma = (
                 sum_dy_gamma + rebind[d_linear_out.element_type](d_ln_out) * g
@@ -1335,6 +1322,64 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
                 - normalized * sum_dy_gamma_norm / n
             )
             d_linear_out[batch_idx, j] = dx
+
+    @always_inline
+    @staticmethod
+    def backward_dgamma_dbeta_kernel_impl[
+        BATCH: Int,
+        dtype: DType = DType.float32,
+    ](
+        dgamma: LayoutTensor[
+            dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
+        ],
+        dbeta: LayoutTensor[
+            dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ],
+    ):
+        """Accumulate dgamma[j] and dbeta[j] by reducing over BATCH.
+
+        dgamma[j] += sum_b d_ln_out[b,j] * normalized[b,j]
+        dbeta[j]  += sum_b d_ln_out[b,j]
+
+        One thread per j (no cross-block write to the same [j] location),
+        so the accumulation is race-free. Recomputes d_ln_out = dy * d_mish
+        from cache to avoid needing an intermediate workspace.
+
+        Grid: ((OUT_DIM + TPB - 1) // TPB,)
+        Block: (TPB,)
+        """
+        var j = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if j >= Self.OUT_DIM:
+            return
+
+        var dg_acc: Scalar[DType.float32] = 0.0
+        var db_acc: Scalar[DType.float32] = 0.0
+
+        for b in range(BATCH):
+            var tanh_sp = rebind[Scalar[DType.float32]](
+                cache[b, Self._TANH_SP_OFFSET + j]
+            )
+            var x_val = rebind[Scalar[DType.float32]](
+                cache[b, Self._LN_OUT_OFFSET + j]
+            )
+            var sigmoid_x: Scalar[DType.float32] = 1.0 / (1.0 + exp(-x_val))
+            var d_mish = tanh_sp + x_val * sigmoid_x * (1.0 - tanh_sp * tanh_sp)
+            var dy = rebind[Scalar[DType.float32]](grad_output[b, j])
+            var d_ln_out = dy * d_mish
+            var normalized = rebind[Scalar[DType.float32]](
+                cache[b, Self._LN_NORM_OFFSET + j]
+            )
+            dg_acc += d_ln_out * normalized
+            db_acc += d_ln_out
+
+        dgamma[j] = dgamma[j] + rebind[dgamma.element_type](dg_acc)
+        dbeta[j] = dbeta[j] + rebind[dbeta.element_type](db_acc)
 
     @always_inline
     @staticmethod
@@ -2190,7 +2235,8 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ](workspace.unsafe_ptr())
 
-        # Kernel 1: Fused Mish + LN backward (per-sample)
+        # Kernel 1a: Fused Mish + LN backward (per-sample → d_linear_out).
+        # Does NOT write dgamma / dbeta to avoid cross-block races on those.
         @always_inline
         def mish_ln_backward_wrapper(
             d_linear_out: LayoutTensor[
@@ -2205,15 +2251,9 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
             ],
-            dgamma: LayoutTensor[
-                dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
-            ],
-            dbeta: LayoutTensor[
-                dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
-            ],
         ):
             Self.backward_mish_ln_kernel_impl[BATCH, dtype](
-                d_linear_out, grad_output, gamma, cache, dgamma, dbeta
+                d_linear_out, grad_output, gamma, cache
             )
 
         ctx.enqueue_function[
@@ -2223,10 +2263,42 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
             grad_output_immut,
             gamma,
             cache_immut,
-            dgamma,
-            dbeta,
             grid_dim=(BATCH,),
             block_dim=(32,),
+        )
+
+        # Kernel 1b: dgamma[j] / dbeta[j] reduction over BATCH (race-free —
+        # one thread per j).
+        comptime dgb_blocks = (Self.OUT_DIM + TPB - 1) // TPB
+
+        @always_inline
+        def dgamma_dbeta_wrapper(
+            dgamma: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
+            ],
+            dbeta: LayoutTensor[
+                dtype, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+            ],
+        ):
+            Self.backward_dgamma_dbeta_kernel_impl[BATCH, dtype](
+                dgamma, dbeta, grad_output, cache
+            )
+
+        ctx.enqueue_function[
+            dgamma_dbeta_wrapper, dgamma_dbeta_wrapper
+        ](
+            dgamma,
+            dbeta,
+            grad_output_immut,
+            cache_immut,
+            grid_dim=(dgb_blocks,),
+            block_dim=(TPB,),
         )
 
         # Kernel 2: dx = d_linear_out @ W.T
