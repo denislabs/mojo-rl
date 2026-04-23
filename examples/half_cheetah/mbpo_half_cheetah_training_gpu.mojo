@@ -95,7 +95,8 @@ def main() raises:
 
     with DeviceContext() as ctx:
         var agent = MBPOAgent[
-            MBPOHalfCheetahConfig, RemoteLogger, TRAIN_N_ENVS=4
+            MBPOHalfCheetahConfig,
+            RemoteLogger,
         ](
             gamma=0.99,
             tau=0.005,
