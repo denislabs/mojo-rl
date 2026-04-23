@@ -46,6 +46,7 @@ from mojo_rl.nn.checkpoint import (
 from mojo_rl.deep_agents.core.critic_group import CriticGroup, GPUCriticGroup
 from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
+from mojo_rl.deep_agents.core.utils import obs_to_inline
 from mojo_rl.core.logger import Logger
 from mojo_rl.deep_agents.core.kernels import (
     concat_obs_action_kernel,
@@ -602,6 +603,42 @@ struct REDQAgent[
 
     def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         return Self.GPUStateType(ctx)
+
+    # -------------------------------------------------------------------------
+    # CPU greedy inference (for evaluation)
+    # -------------------------------------------------------------------------
+
+    def select_greedy_action(
+        self,
+        obs: List[Float64],
+    ) -> List[Float64]:
+        """Deterministic action selection using the mean of the tanh-Gaussian
+        actor (no sampling). Uses `cpu_actor` — call `download_from_gpu`
+        first if GPU weights are fresher than CPU."""
+        var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
+        var obs_t = LayoutTensor[
+            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+        ](obs_arr.unsafe_ptr())
+
+        var out_arr = InlineArray[Scalar[dtype], Self.Config.ActorModel.OUT_DIM](
+            uninitialized=True
+        )
+        var out_t = LayoutTensor[
+            dtype,
+            Layout.row_major(1, Self.Config.ActorModel.OUT_DIM),
+            MutAnyOrigin,
+        ](out_arr.unsafe_ptr())
+        var p = self.cpu_actor.online.params_view()
+        Self.ActorNet.forward[1](obs_t, out_t, p)
+
+        var result = List[Float64](capacity=Self.ACTIONS)
+        for i in range(Self.ACTIONS):
+            var mean = Float64(out_arr[i])
+            # Apply tanh squashing (matches training's tanh-Gaussian actor).
+            var a = (exp(2.0 * mean) - 1.0) / (exp(2.0 * mean) + 1.0)
+            a *= self.action_scale
+            result.append(a)
+        return result^
 
     # -------------------------------------------------------------------------
     # CPU ↔ GPU sync

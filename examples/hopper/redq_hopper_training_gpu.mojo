@@ -1,12 +1,15 @@
-"""REDQ Agent GPU Training on HalfCheetah.
+"""REDQ Agent GPU Training on Hopper.
 
 Paper-faithful REDQ: N=10 critics, subset-min target (M=2), UTD=20,
 policy update delay=20. Single parallel env (paper setup); each env
 transition triggers UTD_RATIO gradient updates.
 
+Hopper terminates early when |angle| > 0.2 or height < 0.7 (handled by
+the env when TERMINATE_ON_UNHEALTHY=True).
+
 Run with:
-    pixi run -e apple mojo run -I . examples/half_cheetah/redq_half_cheetah_training_gpu.mojo
-    pixi run -e nvidia mojo run -I . examples/half_cheetah/redq_half_cheetah_training_gpu.mojo
+    pixi run -e apple mojo run -I . examples/hopper/redq_hopper_training_gpu.mojo
+    pixi run -e nvidia mojo run -I . examples/hopper/redq_hopper_training_gpu.mojo
 """
 
 from std.random import seed
@@ -23,18 +26,15 @@ from mojo_rl.deep_agents.core.configs.redq_config import (
 )
 from mojo_rl.deep_agents.core.agents.redq_agent import REDQAgent
 from mojo_rl.deep_agents.core.training.redq_train import run_redq_train_gpu
-from mojo_rl.envs.half_cheetah import (
-    HalfCheetah,
-    HalfCheetahConfig,
-)
+from mojo_rl.envs.hopper import Hopper, HopperConfig
 
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
-comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
+comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
+comptime ACTION_DIM = HopperConfig.ACTION_DIM  # 3
 
 # REDQ paper configuration
 comptime HIDDEN_DIM = 256
@@ -55,7 +55,7 @@ comptime WARMUP_STEPS = 5_000
 
 comptime dtype = DType.float32
 
-comptime REDQHalfCheetahConfig = DefaultREDQConfig[
+comptime REDQHopperConfig = DefaultREDQConfig[
     OBS_DIM,
     ACTION_DIM,
     HIDDEN_DIM,
@@ -75,29 +75,29 @@ comptime REDQHalfCheetahConfig = DefaultREDQConfig[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("REDQ Agent GPU Training on HalfCheetah")
+    print("REDQ Agent GPU Training on Hopper")
     print("=" * 70)
     print()
 
     with DeviceContext() as ctx:
-        var agent = REDQAgent[REDQHalfCheetahConfig, max_n_envs=N_ENVS](
+        var agent = REDQAgent[REDQHopperConfig, max_n_envs=N_ENVS](
             gamma=0.99,
             tau=0.005,
             action_scale=1.0,
             auto_alpha=True,
             alpha=0.2,
             alpha_lr=0.0003,
-            target_entropy=-3,
+            target_entropy=-3,  # -ACTION_DIM
             max_grad_norm=0.0,  # paper does not clip
             checkpoint_every=50_000,
-            checkpoint_path="redq_half_cheetah.ckpt",
+            checkpoint_path="redq_hopper.ckpt",
             diag_every=1_000,  # per-train-step metrics (critic_loss, mean_q, ...)
         )
 
         # To resume from a previous run, uncomment:
-        # agent.load_checkpoint("redq_half_cheetah.ckpt")
+        # agent.load_checkpoint("redq_hopper.ckpt")
 
-        print("Environment: HalfCheetah Continuous (GPU)")
+        print("Environment: Hopper Continuous (GPU)")
         print("Agent: REDQ (Randomized Ensembled Double Q-learning)")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
@@ -129,12 +129,12 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="REDQ HalfCheetah GPU",
+            run_name="REDQ Hopper GPU",
             buffer_size=64,
             api_key=api_key,
         )
         logger.set_config("agent", "REDQ")
-        logger.set_config("env", "HalfCheetah")
+        logger.set_config("env", "Hopper")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("actor_lr", "3e-4")
         logger.set_config("critic_lr", "3e-4")
@@ -153,8 +153,8 @@ def main() raises:
 
         try:
             var metrics = run_redq_train_gpu[
-                HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
-                REDQHalfCheetahConfig,
+                Hopper[dtype, TERMINATE_ON_UNHEALTHY=True],
+                REDQHopperConfig,
                 RemoteLogger,
                 N_ENVS,
             ](
@@ -164,7 +164,7 @@ def main() raises:
                 warmup_steps=WARMUP_STEPS,
                 verbose=True,
                 print_every=10_000,
-                environment_name="HalfCheetah",
+                environment_name="Hopper",
                 logger=UnsafePointer(to=logger),
             )
 
@@ -193,12 +193,12 @@ def main() raises:
             print()
 
             var final_avg = metrics.mean_reward_last_n(100)
-            if final_avg > 1000.0:
-                print("EXCELLENT: Agent is running fast! (avg reward > 1000)")
+            if final_avg > 3000.0:
+                print("EXCELLENT: Agent is hopping fast! (avg reward > 3000)")
+            elif final_avg > 1500.0:
+                print("SUCCESS: Agent learned to hop! (avg reward > 1500)")
             elif final_avg > 500.0:
-                print("SUCCESS: Agent learned to run! (avg reward > 500)")
-            elif final_avg > 100.0:
-                print("GOOD PROGRESS: Agent is learning locomotion (avg > 100)")
+                print("GOOD PROGRESS: Agent is learning locomotion (avg > 500)")
             elif final_avg > 0.0:
                 print("LEARNING: Agent improving but needs more training")
             else:
