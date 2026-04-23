@@ -46,6 +46,7 @@ from mojo_rl.nn.checkpoint import (
 from mojo_rl.deep_agents.core.critic_group import CriticGroup, GPUCriticGroup
 from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
+from mojo_rl.core.logger import Logger
 from mojo_rl.deep_agents.core.kernels import (
     concat_obs_action_kernel,
     td_mse_grad_kernel,
@@ -180,6 +181,16 @@ struct REDQGPUState[
     # --- Gradient clipping scratch ---
     var grad_clip_ps: DeviceBuffer[dtype]
 
+    # --- Diagnostic host buffers (mirror SAC's _gpu_train_diagnostics) ---
+    var diag_q_host: HostBuffer[dtype]      # [BS]   last critic's Q
+    var diag_tgt_host: HostBuffer[dtype]    # [BS]   TD target
+    var diag_rew_host: HostBuffer[dtype]    # [BS]   sampled reward
+    var diag_done_host: HostBuffer[dtype]   # [BS]   sampled done
+    var diag_act_host: HostBuffer[dtype]    # [BS*ACTIONS]  sampled action
+    var diag_nq_host: HostBuffer[dtype]     # [BS]   first target critic's Q
+    var diag_lp_host: HostBuffer[dtype]     # [BS]   last policy-step log_pi
+    var diag_scalars_host: HostBuffer[dtype]  # [GPU_SCALARS_SIZE]
+
     def __init__(out self, ctx: DeviceContext) raises:
         self.actor = GPUNetworkPair[
             Self.Config.ActorModel, Self.Config.ActorOpt
@@ -266,6 +277,20 @@ struct REDQGPUState[
         comptime MAX_BLOCKS = (MAX_PS + TPB - 1) // TPB
         self.grad_clip_ps = ctx.enqueue_create_buffer[dtype](MAX_BLOCKS)
 
+        # Diagnostic host buffers (pre-allocated, reused each diag call)
+        self.diag_q_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_tgt_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_rew_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_act_host = ctx.enqueue_create_host_buffer[dtype](
+            BS * Self.ACTIONS
+        )
+        self.diag_nq_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_lp_host = ctx.enqueue_create_host_buffer[dtype](BS)
+        self.diag_scalars_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.GPU_SCALARS_SIZE
+        )
+
     def __init__(out self, *, deinit take: Self):
         self.actor = take.actor^
         self.critics = take.critics^
@@ -307,6 +332,14 @@ struct REDQGPUState[
         self.explore_counter = take.explore_counter^
         self.subset_idxs = take.subset_idxs^
         self.grad_clip_ps = take.grad_clip_ps^
+        self.diag_q_host = take.diag_q_host^
+        self.diag_tgt_host = take.diag_tgt_host^
+        self.diag_rew_host = take.diag_rew_host^
+        self.diag_done_host = take.diag_done_host^
+        self.diag_act_host = take.diag_act_host^
+        self.diag_nq_host = take.diag_nq_host^
+        self.diag_lp_host = take.diag_lp_host^
+        self.diag_scalars_host = take.diag_scalars_host^
 
     # -------------------------------------------------------------------------
     # Tensor view helpers
@@ -418,6 +451,12 @@ struct REDQAgent[
     var checkpoint_every: Int
     var checkpoint_path: String
 
+    # Diagnostic logging frequency (in critic update steps; 0 = disabled).
+    # Mirrors offpolicy_agent's diag_every — drives detailed metrics
+    # (critic_loss, mean_q, etc.) emitted on every Nth gradient update,
+    # independent of `print_every` (which is in env-transition units).
+    var diag_every: Int
+
     def __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -430,6 +469,7 @@ struct REDQAgent[
         max_grad_norm: Float64 = 0.0,  # REDQ paper does not clip; default off
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        diag_every: Int = 0,
     ):
         self.cpu_actor = NetworkPair[
             Self.Config.ActorModel, Self.Config.ActorOpt
@@ -460,6 +500,7 @@ struct REDQAgent[
         self.critic_update_count = 0
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
+        self.diag_every = diag_every
 
     def __init__(out self, *, deinit take: Self):
         self.cpu_actor = take.cpu_actor^
@@ -480,6 +521,7 @@ struct REDQAgent[
         self.critic_update_count = take.critic_update_count
         self.checkpoint_every = take.checkpoint_every
         self.checkpoint_path = take.checkpoint_path^
+        self.diag_every = take.diag_every
 
     # -------------------------------------------------------------------------
     # Checkpointable — save/load CPU networks + scalar training state
@@ -735,6 +777,125 @@ struct REDQAgent[
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
         gpu_state.critics.soft_update_all(self.tau, ctx)
+
+    # -------------------------------------------------------------------------
+    # Diagnostics — fine-grained per-train-step logging.
+    # Mirrors offpolicy_agent._gpu_train_diagnostics: copies GPU buffers to
+    # pre-allocated host buffers on each diag_every boundary, computes mean
+    # critic_loss / Q / target / reward / next_q / |action| / log_pi / alpha
+    # on the host, and emits one log_scalar per metric. The step axis is
+    # `critic_update_count` (gradient updates), not env transitions, so the
+    # dashboard plots stay on the same axis as SAC/MBPO.
+    # -------------------------------------------------------------------------
+
+    def maybe_log_diagnostics[
+        L: Logger
+    ](
+        self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+        logger: UnsafePointer[L, MutAnyOrigin],
+    ) raises -> None:
+        """Emit fine-grained diagnostics every `diag_every` critic updates.
+
+        No-op unless `diag_every > 0`, the logger pointer is non-null, and
+        the current `critic_update_count` is on a `diag_every` boundary.
+        Safe to call after every `do_gpu_train_step`.
+
+        Notes:
+          - The reported `critic_loss` / `mean_q` come from whichever online
+            critic ran LAST in the critic-update phase (i.e. critic N-1).
+            All N critics share the same TD target so any one is
+            representative; this matches SAC's "Q1 only" reporting.
+          - `mean_next_q` is taken from target critic 0 (first row of the
+            stacked next_q buffer), again as a representative slice.
+          - `mean_log_pi` reflects the most recent policy-update step. On
+            iterations between policy updates, it stays at the previously
+            written value — consistent with SAC, where log_pi is only
+            recomputed during actor updates.
+        """
+        if not logger:
+            return
+        if self.diag_every <= 0:
+            return
+        if self.critic_update_count <= 0:
+            return
+        if self.critic_update_count % self.diag_every != 0:
+            return
+
+        comptime BS = Self.BATCH
+
+        # GPU → host: q_out (last online critic), targets, sampled batch,
+        # first target critic's Q (offset 0 of the stacked buffer), curr_lp,
+        # and the alpha scalar bank.
+        ctx.enqueue_copy(gpu_state.diag_q_host, gpu_state.q_out)
+        ctx.enqueue_copy(gpu_state.diag_tgt_host, gpu_state.targets)
+        ctx.enqueue_copy(gpu_state.diag_rew_host, gpu_state.s_rew)
+        ctx.enqueue_copy(gpu_state.diag_done_host, gpu_state.s_done)
+        ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
+        ctx.enqueue_copy(gpu_state.diag_lp_host, gpu_state.curr_lp)
+        ctx.enqueue_copy(gpu_state.diag_scalars_host, gpu_state.gpu_scalars)
+
+        # First target critic (slice 0 of next_q_stack [N_ENS, BS]).
+        var nq0_subbuf = DeviceBuffer[dtype](
+            ctx,
+            gpu_state.next_q_stack.unsafe_ptr(),
+            BS,
+            owning=False,
+        )
+        ctx.enqueue_copy(gpu_state.diag_nq_host, nq0_subbuf)
+        ctx.synchronize()
+
+        var mean_q: Float64 = 0.0
+        var mean_tgt: Float64 = 0.0
+        var mean_rew: Float64 = 0.0
+        var mean_done: Float64 = 0.0
+        var mean_nq: Float64 = 0.0
+        var mean_lp: Float64 = 0.0
+        var critic_loss: Float64 = 0.0
+        for b in range(BS):
+            var q_val = Float64(gpu_state.diag_q_host[b])
+            var tgt_val = Float64(gpu_state.diag_tgt_host[b])
+            mean_q += q_val
+            mean_tgt += tgt_val
+            mean_rew += Float64(gpu_state.diag_rew_host[b])
+            mean_done += Float64(gpu_state.diag_done_host[b])
+            mean_nq += Float64(gpu_state.diag_nq_host[b])
+            mean_lp += Float64(gpu_state.diag_lp_host[b])
+            critic_loss += (q_val - tgt_val) * (q_val - tgt_val)
+
+        var mean_abs_act: Float64 = 0.0
+        for i in range(BS * Self.ACTIONS):
+            var a = Float64(gpu_state.diag_act_host[i])
+            mean_abs_act += a if a >= 0.0 else -a
+
+        mean_q /= Float64(BS)
+        mean_tgt /= Float64(BS)
+        mean_rew /= Float64(BS)
+        mean_done /= Float64(BS)
+        mean_nq /= Float64(BS)
+        mean_lp /= Float64(BS)
+        critic_loss /= Float64(BS)
+        mean_abs_act /= Float64(BS * Self.ACTIONS)
+
+        var alpha = Float64(
+            gpu_state.diag_scalars_host[Self.GPUStateType.GPU_ALPHA]
+        )
+        var log_alpha = Float64(
+            gpu_state.diag_scalars_host[Self.GPUStateType.GPU_LOG_ALPHA]
+        )
+
+        var step = self.critic_update_count
+        logger[].log_scalar("critic_loss", critic_loss, step)
+        logger[].log_scalar("mean_q", mean_q, step)
+        logger[].log_scalar("mean_target", mean_tgt, step)
+        logger[].log_scalar("mean_reward", mean_rew, step)
+        logger[].log_scalar("mean_next_q", mean_nq, step)
+        logger[].log_scalar("mean_done", mean_done, step)
+        logger[].log_scalar("mean_abs_action", mean_abs_act, step)
+        logger[].log_scalar("mean_log_pi", mean_lp, step)
+        logger[].log_scalar("alpha", alpha, step)
+        logger[].log_scalar("log_alpha", log_alpha, step)
 
     # -------------------------------------------------------------------------
     # Single REDQ training iteration (one of UTD_RATIO inner steps)

@@ -91,6 +91,7 @@ def main() raises:
             max_grad_norm=0.0,  # paper does not clip
             checkpoint_every=50_000,
             checkpoint_path="redq_half_cheetah.ckpt",
+            diag_every=1_000,  # per-train-step metrics (critic_loss, mean_q, ...)
         )
 
         # To resume from a previous run, uncomment:

@@ -67,19 +67,21 @@ def run_redq_train_gpu[
         E: GPU environment type.
         Config: REDQ configuration.
         L: Logger type.
-        n_envs: number of parallel environments (compile-time).
+        n_envs: Number of parallel environments (compile-time).
 
     Args:
         agent: REDQ agent (updated in place).
         ctx: GPU device context.
-        num_steps: total env transitions to collect.
-        warmup_steps: transitions of uniform-random action collection before
+        num_steps: Total env transitions to collect.
+        warmup_steps: Transitions of uniform-random action collection before
             the agent's actor is used.
-        verbose: print per-iteration progress.
-        print_every: env-transition interval between progress prints.
-        environment_name: label for metrics.
-        logger: optional logger.
-        rng_seed: initial env RNG seed.
+        verbose: Print per-iteration progress.
+        print_every: Env-transition interval between progress prints.
+        environment_name: Label for metrics.
+        logger: Optional logger.
+        rng_seed: Initial env RNG seed.
+        checkpoint_every: Checkpoint every N steps.
+        checkpoint_path: Checkpoint path.
 
     Returns:
         TrainingMetrics.
@@ -118,9 +120,7 @@ def run_redq_train_gpu[
         E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
 
     # --- Reset envs ---
-    E.reset_kernel_gpu[n_envs, E.STATE_SIZE](
-        ctx, states_buf, rng_seed=rng_seed
-    )
+    E.reset_kernel_gpu[n_envs, E.STATE_SIZE](ctx, states_buf, rng_seed=rng_seed)
     E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
         ctx,
         states_buf,
@@ -224,18 +224,18 @@ def run_redq_train_gpu[
         )
 
         # --- 4. Episode tracking ---
-        var er_t = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](episode_rewards_buf.unsafe_ptr())
-        var rw_t = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
-        var es_t = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](episode_steps_buf.unsafe_ptr())
-        var dn_t = LayoutTensor[
-            dtype, Layout.row_major(n_envs), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+        var er_t = LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin](
+            episode_rewards_buf.unsafe_ptr()
+        )
+        var rw_t = LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin](
+            rewards_buf.unsafe_ptr()
+        )
+        var es_t = LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin](
+            episode_steps_buf.unsafe_ptr()
+        )
+        var dn_t = LayoutTensor[dtype, Layout.row_major(n_envs), MutAnyOrigin](
+            dones_buf.unsafe_ptr()
+        )
         var rs_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
             gpu_reward_sum_buf.unsafe_ptr()
         )
@@ -279,6 +279,10 @@ def run_redq_train_gpu[
             var n_updates = UTD * n_envs
             for _ in range(n_updates):
                 agent.do_gpu_train_step(ctx, gpu_state)
+                # Per-train-step diagnostics (no-op unless agent.diag_every
+                # > 0 and we're on a boundary). Train-step axis matches
+                # SAC/MBPO so dashboard plots line up.
+                agent.maybe_log_diagnostics[L](ctx, gpu_state, logger)
             total_train_steps += n_updates
 
         # --- 7a. Progress bar (no GPU sync, pure CPU counters) ---
