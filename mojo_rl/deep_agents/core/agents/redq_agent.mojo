@@ -33,9 +33,19 @@ from mojo_rl.nn.training import (
 )
 from mojo_rl.nn.initializer import Kaiming, Xavier
 from mojo_rl.nn.gpu.random import gaussian_noise
+from mojo_rl.nn.checkpoint import (
+    write_checkpoint_header,
+    write_metadata_section,
+    read_metadata_section,
+    save_checkpoint_file,
+    read_checkpoint_file,
+    set_metadata_value_float,
+    set_metadata_value_int,
+)
 
 from mojo_rl.deep_agents.core.critic_group import CriticGroup, GPUCriticGroup
 from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
+from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
 from mojo_rl.deep_agents.core.kernels import (
     concat_obs_action_kernel,
     td_mse_grad_kernel,
@@ -346,7 +356,7 @@ struct REDQGPUState[
 struct REDQAgent[
     Config: REDQConfig,
     max_n_envs: Int = 64,
-](Movable):
+](Movable & Checkpointable):
     """REDQ agent. Owns an in-memory CPU CriticGroup for init / save-load
     and a GPU-side REDQGPUState for training.
 
@@ -404,6 +414,10 @@ struct REDQAgent[
     var total_steps: Int
     var critic_update_count: Int  # inner UTD-loop counter (total # critic steps)
 
+    # Checkpointing
+    var checkpoint_every: Int
+    var checkpoint_path: String
+
     def __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -414,6 +428,8 @@ struct REDQAgent[
         alpha_lr: Float64 = 0.0003,
         target_entropy: Float64 = 0.0,
         max_grad_norm: Float64 = 0.0,  # REDQ paper does not clip; default off
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
     ):
         self.cpu_actor = NetworkPair[
             Self.Config.ActorModel, Self.Config.ActorOpt
@@ -442,6 +458,8 @@ struct REDQAgent[
         self.max_grad_norm = max_grad_norm
         self.total_steps = 0
         self.critic_update_count = 0
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = checkpoint_path
 
     def __init__(out self, *, deinit take: Self):
         self.cpu_actor = take.cpu_actor^
@@ -460,6 +478,85 @@ struct REDQAgent[
         self.max_grad_norm = take.max_grad_norm
         self.total_steps = take.total_steps
         self.critic_update_count = take.critic_update_count
+        self.checkpoint_every = take.checkpoint_every
+        self.checkpoint_path = take.checkpoint_path^
+
+    # -------------------------------------------------------------------------
+    # Checkpointable — save/load CPU networks + scalar training state
+    # -------------------------------------------------------------------------
+
+    def save_checkpoint(self, path: String) raises -> None:
+        """Save CPU actor + N-critic ensemble + agent scalars to a single file.
+
+        Network weights are taken from `cpu_actor` / `cpu_critics`, so call
+        `download_from_gpu` first if the GPU has fresher weights. The replay
+        buffer is NOT serialized.
+        """
+        var content = write_checkpoint_header(
+            "redq",
+            Self.Config.ActorModel.PARAM_SIZE
+            + Self.Config.CriticModel.PARAM_SIZE * Self.N_ENS,
+            0,
+        )
+        content += self.cpu_actor.write_sections("actor_")
+        # CriticGroup writes one section per critic with prefix
+        # "<prefix>critic<i>_" — here that's "ensemble_critic0_" .. _critic9_.
+        content += self.cpu_critics.write_sections("ensemble_")
+        var metadata = List[String]()
+        metadata.append("gamma=" + String(self.gamma))
+        metadata.append("tau=" + String(self.tau))
+        metadata.append("action_scale=" + String(self.action_scale))
+        metadata.append("alpha=" + String(self.alpha))
+        metadata.append("log_alpha=" + String(self.log_alpha))
+        metadata.append("alpha_lr=" + String(self.alpha_lr))
+        metadata.append("alpha_adam_m=" + String(self.alpha_adam_m))
+        metadata.append("alpha_adam_v=" + String(self.alpha_adam_v))
+        metadata.append("alpha_adam_t=" + String(self.alpha_adam_t))
+        metadata.append("target_entropy=" + String(self.target_entropy))
+        metadata.append("max_grad_norm=" + String(self.max_grad_norm))
+        metadata.append("total_steps=" + String(self.total_steps))
+        metadata.append(
+            "critic_update_count=" + String(self.critic_update_count)
+        )
+        # Persist ensemble shape so a misconfigured reload errors via the
+        # NUM_ENSEMBLE check below rather than reading garbage.
+        metadata.append("num_ensemble=" + String(Self.N_ENS))
+        metadata.append("num_min=" + String(Self.N_MIN))
+        content += write_metadata_section(metadata)
+        save_checkpoint_file(path, content)
+
+    def load_checkpoint(mut self, path: String) raises -> None:
+        """Restore CPU networks + scalar state. After this, call
+        `upload_to_gpu` before resuming training so the GPU sees the
+        reloaded weights and alpha state.
+
+        Note: ensemble size N is fixed at compile time. A checkpoint saved
+        with a different `NUM_ENSEMBLE` will read garbage into the extra
+        critic sections — caller is responsible for matching configs.
+        """
+        var content = read_checkpoint_file(path)
+        self.cpu_actor.read_sections(content, "actor_")
+        self.cpu_critics.read_sections(content, "ensemble_")
+        var metadata = read_metadata_section(content)
+        set_metadata_value_float(metadata, "gamma", self.gamma)
+        set_metadata_value_float(metadata, "tau", self.tau)
+        set_metadata_value_float(metadata, "action_scale", self.action_scale)
+        set_metadata_value_float(metadata, "alpha", self.alpha)
+        set_metadata_value_float(metadata, "log_alpha", self.log_alpha)
+        set_metadata_value_float(metadata, "alpha_lr", self.alpha_lr)
+        set_metadata_value_float(metadata, "alpha_adam_m", self.alpha_adam_m)
+        set_metadata_value_float(metadata, "alpha_adam_v", self.alpha_adam_v)
+        set_metadata_value_int(metadata, "alpha_adam_t", self.alpha_adam_t)
+        set_metadata_value_float(
+            metadata, "target_entropy", self.target_entropy
+        )
+        set_metadata_value_float(
+            metadata, "max_grad_norm", self.max_grad_norm
+        )
+        set_metadata_value_int(metadata, "total_steps", self.total_steps)
+        set_metadata_value_int(
+            metadata, "critic_update_count", self.critic_update_count
+        )
 
     def make_gpu_state(self, ctx: DeviceContext) raises -> Self.GPUStateType:
         return Self.GPUStateType(ctx)

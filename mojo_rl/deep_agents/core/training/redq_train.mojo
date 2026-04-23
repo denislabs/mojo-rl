@@ -33,6 +33,10 @@ from mojo_rl.deep_agents.core.kernels import (
     log_and_reset_completed_kernel,
     uniform_random_actions_kernel,
 )
+from mojo_rl.deep_agents.core.utils import (
+    print_progress_bar,
+    clear_progress_bar,
+)
 from mojo_rl.deep_agents.core.agents.redq_agent import REDQAgent
 from mojo_rl.deep_agents.core.configs.redq_config import REDQConfig
 
@@ -52,6 +56,8 @@ def run_redq_train_gpu[
     environment_name: String = "Environment",
     logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[L, MutAnyOrigin](),
     rng_seed: UInt64 = 42,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
 ) raises -> TrainingMetrics:
     """REDQ training loop. `n_envs` parallel envs collect n_envs transitions
     per loop iteration; each iteration then runs `UTD_RATIO * n_envs` inner
@@ -143,10 +149,31 @@ def run_redq_train_gpu[
     ]
 
     var total_steps = 0
+    var total_train_steps = 0
+    var completed_episodes = 0
+    var last_avg_reward: Float64 = 0.0
     var step_seed: UInt32 = UInt32(rng_seed)
     var next_print = print_every
 
+    # Progress bar: ~20 updates per print interval
+    var progress_interval = print_every // 20
+    if progress_interval < n_envs:
+        progress_interval = n_envs
+    var next_progress = progress_interval
+
+    # Checkpointing: agent's own settings take precedence if set, else use
+    # the function args. Either path satisfies the same `checkpoint_every`
+    # contract used by SAC / MBPO.
+    var ckpt_every = checkpoint_every
+    var ckpt_path = checkpoint_path
+    if agent.checkpoint_every > 0 and len(agent.checkpoint_path) > 0:
+        ckpt_every = agent.checkpoint_every
+        ckpt_path = agent.checkpoint_path
+    var next_checkpoint = ckpt_every
+
     var action_scale_val = Scalar[dtype](agent.action_scale)
+    var alg_name = String("REDQ")
+    var alpha_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     while total_steps < num_steps:
         # --- 1. Action selection ---
@@ -249,37 +276,143 @@ def run_redq_train_gpu[
         # --- 6. REDQ inner updates (UTD_RATIO * n_envs iterations) ---
         if total_steps >= warmup_steps:
             comptime UTD = Config.UTD_RATIO
-            for _ in range(UTD * n_envs):
+            var n_updates = UTD * n_envs
+            for _ in range(n_updates):
                 agent.do_gpu_train_step(ctx, gpu_state)
+            total_train_steps += n_updates
 
-        # --- 7. Periodic progress print ---
-        if verbose and total_steps >= next_print:
+        # --- 7a. Progress bar (no GPU sync, pure CPU counters) ---
+        if verbose and total_steps >= next_progress:
+            var interval_start = next_print - print_every
+            print_progress_bar(
+                total_steps - interval_start,
+                print_every,
+                total_train_steps,
+                alg_name,
+            )
+            next_progress += progress_interval
+
+        # --- 7b. Periodic print + logger flush ---
+        if (
+            verbose or (logger and logger[].is_active())
+        ) and total_steps >= next_print:
             ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
             ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+            ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
             ctx.synchronize()
-            var rsum = Float64(host_reward_sum[0])
-            var ecount = Float64(host_episode_count[0])
-            var avg_ret = rsum / ecount if ecount > 0.0 else 0.0
-            print(
-                "[REDQ]",
-                environment_name,
-                "step",
-                total_steps,
-                "/",
-                num_steps,
-                "episodes:",
-                Int(ecount),
-                "avg_return:",
-                avg_ret,
-                "alpha:",
-                agent.alpha,
-            )
-            # Reset accumulators for next interval
+
+            var recent_count = Int(host_episode_count[0])
+            var recent_sum = Float64(host_reward_sum[0])
+            var cur_alpha = Float64(alpha_host[0])
+            completed_episodes += recent_count
+            if recent_count > 0:
+                last_avg_reward = recent_sum / Float64(recent_count)
+                for _ in range(recent_count):
+                    metrics.log_episode(
+                        completed_episodes, last_avg_reward, 0, 0.0
+                    )
+
+            # Reset GPU-side accumulators for next interval
             ctx.enqueue_memset(gpu_reward_sum_buf, 0)
             ctx.enqueue_memset(gpu_episode_count_buf, 0)
+
+            # Logger: record scalar metrics
+            if logger:
+                logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
+                logger[].log_scalar(
+                    "episodes", Float64(completed_episodes), total_steps
+                )
+                logger[].log_scalar(
+                    "train_steps", Float64(total_train_steps), total_steps
+                )
+                logger[].log_scalar("alpha", cur_alpha, total_steps)
+
+            # Clear progress bar, then print status line
+            if verbose:
+                clear_progress_bar()
+                var status_line = (
+                    alg_name
+                    + " | Step "
+                    + String(total_steps)
+                    + " / "
+                    + String(num_steps)
+                    + " | Ep: "
+                    + String(completed_episodes)
+                    + " | AvgR: "
+                    + String(last_avg_reward)[byte=:7]
+                    + " | Train: "
+                    + String(total_train_steps)
+                    + " | α: "
+                    + String(cur_alpha)[byte=:6]
+                )
+                print(status_line)
             next_print += print_every
+
+        # --- 7c. Periodic checkpoint ---
+        if ckpt_every > 0 and total_steps >= next_checkpoint:
+            agent.download_from_gpu(gpu_state, ctx)
+            ctx.synchronize()
+            agent.save_checkpoint(ckpt_path)
+            if verbose:
+                clear_progress_bar()
+                print(
+                    alg_name
+                    + " | checkpoint @ step "
+                    + String(total_steps)
+                    + " -> "
+                    + ckpt_path
+                )
+            next_checkpoint += ckpt_every
+
+    # --- Final sync: download trailing episode stats ---
+    ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
+    ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+    ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
+    ctx.synchronize()
+
+    var final_count = Int(host_episode_count[0])
+    var final_sum = Float64(host_reward_sum[0])
+    completed_episodes += final_count
+    if final_count > 0:
+        last_avg_reward = final_sum / Float64(final_count)
+        for _ in range(final_count):
+            metrics.log_episode(completed_episodes, last_avg_reward, 0, 0.0)
 
     # Final download of weights
     agent.download_from_gpu(gpu_state, ctx)
     ctx.synchronize()
+
+    # Final checkpoint (CPU state is now synced from GPU)
+    if ckpt_every > 0 and len(ckpt_path) > 0:
+        agent.save_checkpoint(ckpt_path)
+
+    # Final logger flush
+    if logger and logger[].is_active():
+        logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
+        logger[].log_scalar(
+            "episodes", Float64(completed_episodes), total_steps
+        )
+        logger[].log_scalar(
+            "train_steps", Float64(total_train_steps), total_steps
+        )
+        logger[].log_scalar("alpha", Float64(alpha_host[0]), total_steps)
+        logger[].flush()
+
+    if verbose:
+        clear_progress_bar()
+        print(
+            alg_name
+            + " | Step "
+            + String(total_steps)
+            + " / "
+            + String(num_steps)
+            + " | Ep: "
+            + String(completed_episodes)
+            + " | AvgR: "
+            + String(last_avg_reward)[byte=:7]
+            + " | Train: "
+            + String(total_train_steps)
+            + " [DONE]"
+        )
+
     return metrics^
