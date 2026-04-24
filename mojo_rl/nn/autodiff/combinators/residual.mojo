@@ -41,6 +41,7 @@ struct Residual[Inner: Model](Model):
     comptime OUT_DIM: Int = Self.Inner.OUT_DIM
     comptime PARAM_SIZE: Int = Self.Inner.PARAM_SIZE
     comptime CACHE_SIZE: Int = Self.Inner.CACHE_SIZE
+    comptime STATE_SIZE: Int = Self.Inner.STATE_SIZE
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
         Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
     )
@@ -60,6 +61,16 @@ struct Residual[Inner: Model](Model):
         """Delegate to Inner model's initialize_params."""
         Self.Inner.initialize_params[INIT, dtype](params)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Delegate to Inner model's initialize_state."""
+        comptime if Self.Inner.STATE_SIZE > 0:
+            Self.Inner.initialize_state[dtype](state)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -77,11 +88,14 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Inner.forward[BATCH, dtype](input, output, params, cache)
+        Self.Inner.forward[BATCH, dtype](input, output, params, state, cache)
         for i in range(BATCH * Self.IN_DIM):
             output.ptr[i] = output.ptr[i] + input.ptr[i]
 
@@ -102,8 +116,11 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
-        Self.Inner.forward[BATCH, dtype](input, output, params)
+        Self.Inner.forward[BATCH, dtype](input, output, params, state)
         for i in range(BATCH * Self.IN_DIM):
             output.ptr[i] = output.ptr[i] + input.ptr[i]
 
@@ -124,6 +141,9 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -132,7 +152,7 @@ struct Residual[Inner: Model](Model):
         ],
     ):
         Self.Inner.backward[BATCH, dtype](
-            grad_output, grad_input, params, cache, grads
+            grad_output, grad_input, params, state, cache, grads
         )
         for i in range(BATCH * Self.IN_DIM):
             grad_input.ptr[i] = grad_input.ptr[i] + grad_output.ptr[i]
@@ -155,6 +175,9 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -163,7 +186,7 @@ struct Residual[Inner: Model](Model):
         perf_slot: Int = 0,
     ) raises:
         Self.Inner.forward_gpu[BATCH, dtype](
-            ctx, output, input, params, cache, workspace
+            ctx, output, input, params, state, cache, workspace
         )
 
         var input_immut = LayoutTensor[
@@ -205,12 +228,15 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
         Self.Inner.forward_gpu_no_cache[BATCH, dtype](
-            ctx, output, input, params, workspace
+            ctx, output, input, params, state, workspace
         )
 
         var input_immut = LayoutTensor[
@@ -249,10 +275,13 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -272,6 +301,9 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -283,7 +315,7 @@ struct Residual[Inner: Model](Model):
         perf_slot: Int = 0,
     ) raises:
         Self.Inner.backward_gpu[BATCH, dtype](
-            ctx, grad_input, grad_output, params, cache, grads, workspace
+            ctx, grad_input, grad_output, params, state, cache, grads, workspace
         )
 
         var go_immut = LayoutTensor[

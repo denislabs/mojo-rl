@@ -1225,47 +1225,56 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(Self.BINS), MutAnyOrigin
         ](gpu_state.bins_buf.unsafe_ptr())
         var enc_params_tensor = gpu_state.enc.params_view()
+        var enc_state_t = gpu_state.enc.model_state_view()
 
         var enc_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.ENC_C), MutAnyOrigin
         ](gpu_state.enc_cache_buf.unsafe_ptr())
         var enc_grads_t = gpu_state.enc.grads_view()
         var dyn_params_t = gpu_state.dyn.params_view()
+        var dyn_state_t = gpu_state.dyn.model_state_view()
         var dyn_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.DYN_C), MutAnyOrigin
         ](gpu_state.dyn_cache_buf.unsafe_ptr())
         var dyn_grads_t = gpu_state.dyn.grads_view()
         var rew_params_t = gpu_state.rew.params_view()
+        var rew_state_t = gpu_state.rew.model_state_view()
         var rew_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.REW_C), MutAnyOrigin
         ](gpu_state.rew_cache_buf.unsafe_ptr())
         var rew_grads_t = gpu_state.rew.grads_view()
         var term_params_t = gpu_state.term.params_view()
+        var term_state_t = gpu_state.term.model_state_view()
         var term_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.TERM_C), MutAnyOrigin
         ](gpu_state.term_cache_buf.unsafe_ptr())
         var term_grads_t = gpu_state.term.grads_view()
         var q1_params_t = gpu_state.q1.params_view()
+        var q1_state_t = gpu_state.q1.model_state_view()
         var q1_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
         ](gpu_state.q1_cache_buf.unsafe_ptr())
         var q1_grads_t = gpu_state.q1.grads_view()
         var q2_params_t = gpu_state.q2.params_view()
+        var q2_state_t = gpu_state.q2.model_state_view()
         var q2_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
         ](gpu_state.q2_cache_buf.unsafe_ptr())
         var q2_grads_t = gpu_state.q2.grads_view()
         var q3_params_t = gpu_state.q3.params_view()
+        var q3_state_t = gpu_state.q3.model_state_view()
         var q3_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
         ](gpu_state.q3_cache_buf.unsafe_ptr())
         var q3_grads_t = gpu_state.q3.grads_view()
         var q4_params_t = gpu_state.q4.params_view()
+        var q4_state_t = gpu_state.q4.model_state_view()
         var q4_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
         ](gpu_state.q4_cache_buf.unsafe_ptr())
         var q4_grads_t = gpu_state.q4.grads_view()
         var q5_params_t = gpu_state.q5.params_view()
+        var q5_state_t = gpu_state.q5.model_state_view()
         var q5_cache_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.Q_C), MutAnyOrigin
         ](gpu_state.q5_cache_buf.unsafe_ptr())
@@ -1333,6 +1342,7 @@ struct TDMPC2Agent[
                 z_pred_tensor,
                 za_tensor,
                 dyn_params_t,
+                dyn_state_t,
                 gpu_state.dyn_batch_ws_buf,
             )
 
@@ -1404,6 +1414,7 @@ struct TDMPC2Agent[
                 za_tensor,
                 z_pred_tensor,
                 dyn_params_t,
+                dyn_state_t,
                 dyn_cache_t,
                 gpu_state.dyn_batch_ws_buf,
             )
@@ -1414,6 +1425,7 @@ struct TDMPC2Agent[
                 z_next_tensor,
                 obs_next_step_tensor,
                 enc_params_tensor,
+                enc_state_t,
                 gpu_state.enc_batch_ws_buf,
             )
 
@@ -1456,6 +1468,7 @@ struct TDMPC2Agent[
                 grad_z_pred_tensor,
                 grad_za_tensor,
                 dyn_params_t,
+                dyn_state_t,
                 dyn_cache_t,
                 dyn_grads_t,
                 gpu_state.dyn_batch_ws_buf,
@@ -1492,6 +1505,7 @@ struct TDMPC2Agent[
                 za_tensor,
                 logits_tensor,
                 rew_params_t,
+                rew_state_t,
                 rew_cache_t,
                 gpu_state.rew_batch_ws_buf,
             )
@@ -1518,6 +1532,7 @@ struct TDMPC2Agent[
                 grad_logits_tensor,
                 grad_za_tensor,
                 rew_params_t,
+                rew_state_t,
                 rew_cache_t,
                 rew_grads_t,
                 gpu_state.rew_batch_ws_buf,
@@ -1560,6 +1575,7 @@ struct TDMPC2Agent[
                 za_tensor,
                 logits_tensor,
                 q1_params_t,
+                q1_state_t,
                 q1_cache_t,
                 gpu_state.q1_batch_ws_buf,
             )
@@ -1580,6 +1596,7 @@ struct TDMPC2Agent[
                 grad_logits_tensor,
                 grad_za_tensor,
                 q1_params_t,
+                q1_state_t,
                 q1_cache_t,
                 q1_grads_t,
                 gpu_state.q1_batch_ws_buf,
@@ -1613,6 +1630,7 @@ struct TDMPC2Agent[
                 za_tensor,
                 logits_tensor,
                 q2_params_t,
+                q2_state_t,
                 q2_cache_t,
                 gpu_state.q2_batch_ws_buf,
             )
@@ -1633,6 +1651,7 @@ struct TDMPC2Agent[
                 grad_logits_tensor,
                 grad_za_tensor,
                 q2_params_t,
+                q2_state_t,
                 q2_cache_t,
                 q2_grads_t,
                 gpu_state.q2_batch_ws_buf,
@@ -1666,6 +1685,7 @@ struct TDMPC2Agent[
                 za_tensor,
                 logits_tensor,
                 q3_params_t,
+                q3_state_t,
                 q3_cache_t,
                 gpu_state.q3_batch_ws_buf,
             )
@@ -1686,6 +1706,7 @@ struct TDMPC2Agent[
                 grad_logits_tensor,
                 grad_za_tensor,
                 q3_params_t,
+                q3_state_t,
                 q3_cache_t,
                 q3_grads_t,
                 gpu_state.q3_batch_ws_buf,
@@ -1719,6 +1740,7 @@ struct TDMPC2Agent[
                 za_tensor,
                 logits_tensor,
                 q4_params_t,
+                q4_state_t,
                 q4_cache_t,
                 gpu_state.q4_batch_ws_buf,
             )
@@ -1739,6 +1761,7 @@ struct TDMPC2Agent[
                 grad_logits_tensor,
                 grad_za_tensor,
                 q4_params_t,
+                q4_state_t,
                 q4_cache_t,
                 q4_grads_t,
                 gpu_state.q4_batch_ws_buf,
@@ -1772,6 +1795,7 @@ struct TDMPC2Agent[
                 za_tensor,
                 logits_tensor,
                 q5_params_t,
+                q5_state_t,
                 q5_cache_t,
                 gpu_state.q5_batch_ws_buf,
             )
@@ -1792,6 +1816,7 @@ struct TDMPC2Agent[
                 grad_logits_tensor,
                 grad_za_tensor,
                 q5_params_t,
+                q5_state_t,
                 q5_cache_t,
                 q5_grads_t,
                 gpu_state.q5_batch_ws_buf,
@@ -1825,6 +1850,7 @@ struct TDMPC2Agent[
                 z_tensor,
                 term_out_t,
                 term_params_t,
+                term_state_t,
                 term_cache_t,
                 gpu_state.term_batch_ws_buf,
             )
@@ -1846,6 +1872,7 @@ struct TDMPC2Agent[
                 grad_term_out_t,
                 grad_z_term_2d_t,
                 term_params_t,
+                term_state_t,
                 term_cache_t,
                 term_grads_t,
                 gpu_state.term_batch_ws_buf,
@@ -1870,6 +1897,7 @@ struct TDMPC2Agent[
             grad_z_carry_2d_tensor,
             dummy_grad_obs_t,
             enc_params_tensor,
+            enc_state_t,
             enc_cache_t,
             enc_grads_t,
             gpu_state.enc_batch_ws_buf,
@@ -2050,37 +2078,47 @@ struct TDMPC2Agent[
             dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
         ](gs.z_pred_buf.unsafe_ptr())
 
-        # Network params/grads/state views (via GPUNetworkState)
+        # Network params/grads/opt-state views (via GPUNetworkState)
         var enc_params_tensor = gs.enc.params_view()
         var enc_grads_tensor = gs.enc.grads_view()
-        var enc_state_tensor = gs.enc.state_view()
+        var enc_state_tensor = gs.enc.opt_state_view()
+        var enc_model_state_tensor = gs.enc.model_state_view()
         var dyn_params_tensor = gs.dyn.params_view()
         var dyn_grads_tensor = gs.dyn.grads_view()
-        var dyn_state_tensor = gs.dyn.state_view()
+        var dyn_state_tensor = gs.dyn.opt_state_view()
+        var dyn_model_state_tensor = gs.dyn.model_state_view()
         var rew_params_tensor = gs.rew.params_view()
         var rew_grads_tensor = gs.rew.grads_view()
-        var rew_state_tensor = gs.rew.state_view()
+        var rew_state_tensor = gs.rew.opt_state_view()
+        var rew_model_state_tensor = gs.rew.model_state_view()
         var term_params_tensor = gs.term.params_view()
         var term_grads_tensor = gs.term.grads_view()
-        var term_state_tensor = gs.term.state_view()
+        var term_state_tensor = gs.term.opt_state_view()
+        var term_model_state_tensor = gs.term.model_state_view()
         var pol_params_tensor = gs.pol.params_view()
         var pol_grads_tensor = gs.pol.grads_view()
-        var pol_state_tensor = gs.pol.state_view()
+        var pol_state_tensor = gs.pol.opt_state_view()
+        var pol_model_state_tensor = gs.pol.model_state_view()
         var q1_params_tensor = gs.q1.params_view()
         var q1_grads_tensor = gs.q1.grads_view()
-        var q1_state_tensor = gs.q1.state_view()
+        var q1_state_tensor = gs.q1.opt_state_view()
+        var q1_model_state_tensor = gs.q1.model_state_view()
         var q2_params_tensor = gs.q2.params_view()
         var q2_grads_tensor = gs.q2.grads_view()
-        var q2_state_tensor = gs.q2.state_view()
+        var q2_state_tensor = gs.q2.opt_state_view()
+        var q2_model_state_tensor = gs.q2.model_state_view()
         var q3_params_tensor = gs.q3.params_view()
         var q3_grads_tensor = gs.q3.grads_view()
-        var q3_state_tensor = gs.q3.state_view()
+        var q3_state_tensor = gs.q3.opt_state_view()
+        var q3_model_state_tensor = gs.q3.model_state_view()
         var q4_params_tensor = gs.q4.params_view()
         var q4_grads_tensor = gs.q4.grads_view()
-        var q4_state_tensor = gs.q4.state_view()
+        var q4_state_tensor = gs.q4.opt_state_view()
+        var q4_model_state_tensor = gs.q4.model_state_view()
         var q5_params_tensor = gs.q5.params_view()
         var q5_grads_tensor = gs.q5.grads_view()
-        var q5_state_tensor = gs.q5.state_view()
+        var q5_state_tensor = gs.q5.opt_state_view()
+        var q5_model_state_tensor = gs.q5.model_state_view()
 
         # Target Q param views
         var q1t_params_tensor = LayoutTensor[
@@ -2362,6 +2400,7 @@ struct TDMPC2Agent[
                     env_z_tensor,
                     env_obs_tensor,
                     enc_params_tensor,
+                    enc_model_state_tensor,
                     gs.enc_env_ws_buf,
                 )
 
@@ -2418,6 +2457,7 @@ struct TDMPC2Agent[
                     env_z_tensor,
                     env_obs_tensor,
                     enc_params_tensor,
+                    enc_model_state_tensor,
                     gs.enc_env_ws_buf,
                 )
                 Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[n_envs](
@@ -2425,6 +2465,7 @@ struct TDMPC2Agent[
                     env_pi_out_tensor,
                     env_z_tensor,
                     pol_params_tensor,
+                    pol_model_state_tensor,
                     gs.pol_env_ws_buf,
                 )
                 ctx.enqueue_function[sample_act_wrapper, sample_act_wrapper](
@@ -2678,6 +2719,7 @@ struct TDMPC2Agent[
                         z_next_tensor,
                         obs_next_step_tensor,
                         enc_params_tensor,
+                        enc_model_state_tensor,
                         gs.enc_batch_ws_buf,
                     )
 
@@ -2687,6 +2729,7 @@ struct TDMPC2Agent[
                         pi_out_tensor,
                         z_next_tensor,
                         pol_params_tensor,
+                        pol_model_state_tensor,
                         gs.pol_batch_ws_buf,
                     )
 
@@ -2723,11 +2766,13 @@ struct TDMPC2Agent[
                     var qta_p = LayoutTensor[
                         dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
                     ](qt_param_ptrs[td_qi_a])
+                    # Target Q nets share stateless QModel; any q*_model_state_tensor works
                     Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                         ctx,
                         logits_tensor,
                         za_tensor,
                         qta_p,
+                        q1_model_state_tensor,
                         gs.qt_batch_ws_buf,
                     )
                     ctx.enqueue_function[
@@ -2750,6 +2795,7 @@ struct TDMPC2Agent[
                         logits_tensor,
                         za_tensor,
                         qtb_p,
+                        q1_model_state_tensor,
                         gs.qt_batch_ws_buf,
                     )
                     ctx.enqueue_function[
@@ -2848,6 +2894,7 @@ struct TDMPC2Agent[
                     obs_step_tensor,
                     z_tensor,
                     enc_params_tensor,
+                    enc_model_state_tensor,
                     enc_cache_tensor,
                     gs.enc_batch_ws_buf,
                 )
@@ -3164,6 +3211,7 @@ struct TDMPC2Agent[
                     z_tensor,
                     obs_step_tensor,
                     enc_params_tensor,
+                    enc_model_state_tensor,
                     gs.enc_batch_ws_buf,
                 )
                 # obs_step_buf still contains obs_0 from the world model step
@@ -3184,6 +3232,7 @@ struct TDMPC2Agent[
                         z_tensor,
                         pi_out_tensor,
                         pol_params_tensor,
+                        pol_model_state_tensor,
                         pol_cache_tensor,
                         gs.pol_batch_ws_buf,
                     )
@@ -3233,6 +3282,7 @@ struct TDMPC2Agent[
                             logits_tensor,
                             za_tensor,
                             qi_a_p,
+                            q1_model_state_tensor,
                             gs.q1_batch_ws_buf,
                         )
                         # Decode logits → scalar Q-values into q_min_tensor
@@ -3311,6 +3361,7 @@ struct TDMPC2Agent[
                             za_tensor,
                             logits_tensor,
                             qi_p,
+                            q1_model_state_tensor,
                             qi_c,
                             gs.q1_batch_ws_buf,
                         )
@@ -3339,6 +3390,7 @@ struct TDMPC2Agent[
                             grad_logits_tensor,
                             grad_za_pi_tensor,
                             qi_p,
+                            q1_model_state_tensor,
                             qi_c,
                             qi_g,
                             gs.q1_batch_ws_buf,
@@ -3368,6 +3420,7 @@ struct TDMPC2Agent[
                         grad_pi_out_tensor,
                         dummy_grad_latent_t,  # grad_input = dummy (z is stop-grad)
                         pol_params_tensor,
+                        pol_model_state_tensor,
                         pol_cache_tensor,
                         pol_grads_tensor,
                         gs.pol_batch_ws_buf,
@@ -3380,6 +3433,7 @@ struct TDMPC2Agent[
                             z_pred_tensor,
                             za_tensor,
                             dyn_params_tensor,
+                            dyn_model_state_tensor,
                             gs.dyn_batch_ws_buf,
                         )
                         ctx.enqueue_function[

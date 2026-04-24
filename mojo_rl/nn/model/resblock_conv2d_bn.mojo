@@ -410,6 +410,12 @@ struct ResBlockConv2DBN[
     comptime MAX_CONV_WS: Int = Self.CONV1_WS if Self.CONV1_WS > Self.CONV2_WS else Self.CONV2_WS
     # conv ws + grad_conv2 buffer + temp_gi buffer + grad_inter buffer
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MAX_CONV_WS + Self.DIM + Self.DIM + Self.DIM
+    # TODO(phase 3): once BatchNorm2D / Conv2DBatchNormReLU migrate their running
+    # stats into state, this should become
+    #   Self.Conv1.STATE_SIZE + Self.Conv2.STATE_SIZE + (BN2 running stats size).
+    # For Phase 1 BN's STATE_SIZE is still 0 so a pure pass-through zero-size
+    # state is valid; sub-model state slices are zero-length views.
+    comptime STATE_SIZE: Int = 0
 
     # ── Initialization ─────────────────────────────────────────────
 
@@ -438,6 +444,9 @@ struct ResBlockConv2DBN[
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
     ):
         """CPU forward: Conv1BNReLU → Conv2 → BN2 + skip + ReLU."""
@@ -449,17 +458,21 @@ struct ResBlockConv2DBN[
         var c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
         var c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
         var bn2c = cache.ptr + BATCH * Self.BN2_CACHE_OFF
+        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
+        # are zero-length views; Phase 3 will split a real state buffer here.
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         # 1. Conv1BNReLU → inter
         var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
         var inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1, c1)
+        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1, s1, c1)
 
         # 2. Conv2 → output (holds conv2 output pre-BN)
         var inter_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin]](inter_t)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2, c2)
+        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2, s2, c2)
 
         # 3. BN2 + skip + ReLU + cache
         var eps = Scalar[dtype](Self.BN_EPSILON)
@@ -515,6 +528,9 @@ struct ResBlockConv2DBN[
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """CPU inference forward: Conv1BNReLU (running stats) → Conv2 → BN2 (running stats) + skip + ReLU."""
         from std.memory import alloc
@@ -522,17 +538,21 @@ struct ResBlockConv2DBN[
 
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
+        # are zero-length views; Phase 3 will split a real state buffer here.
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         # 1. Conv1BNReLU inference → inter
         var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
         var inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1)
+        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1, s1)
 
         # 2. Conv2 inference → output (pre-BN2)
         var inter_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin]](inter_t)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2)
+        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2, s2)
 
         # 3. BN2 (running stats) + skip + ReLU
         var eps = Scalar[dtype](Self.BN_EPSILON)
@@ -561,6 +581,9 @@ struct ResBlockConv2DBN[
         grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
         mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
@@ -577,6 +600,10 @@ struct ResBlockConv2DBN[
         var g1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
         var g2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
         var bn2c = cache.ptr + BATCH * Self.BN2_CACHE_OFF
+        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
+        # are zero-length views; Phase 3 will split a real state buffer here.
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         comptime C = Self.channels
         comptime S = Self.spatial
@@ -631,14 +658,14 @@ struct ResBlockConv2DBN[
         memset(grad_inter, 0, BATCH * Self.DIM)
         var grad_conv2_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin](grad_conv2)
         var grad_inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](grad_inter)
-        Self.Conv2.backward[BATCH, dtype](grad_conv2_t, grad_inter_t, p2, c2, g2)
+        Self.Conv2.backward[BATCH, dtype](grad_conv2_t, grad_inter_t, p2, s2, c2, g2)
 
         # 3. Conv1BNReLU backward: grad_inter → temp_gi
         var temp_gi = alloc[Scalar[dtype]](BATCH * Self.DIM)
         memset(temp_gi, 0, BATCH * Self.DIM)
         var go_c1 = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin]](grad_inter_t)
         var temp_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](temp_gi)
-        Self.Conv1.backward[BATCH, dtype](go_c1, temp_gi_t, p1, c1, g1)
+        Self.Conv1.backward[BATCH, dtype](go_c1, temp_gi_t, p1, s1, c1, g1)
 
         # 4. grad_input += conv1's grad_input
         for i in range(BATCH * Self.DIM):
@@ -659,6 +686,9 @@ struct ResBlockConv2DBN[
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
@@ -668,6 +698,10 @@ struct ResBlockConv2DBN[
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
         var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
         var c2_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
+        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
+        # are zero-length views; Phase 3 will split a real state buffer here.
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         var conv_ws_size = BATCH * Self.MAX_CONV_WS
         var conv_ws = DeviceBuffer[dtype](ctx, workspace.unsafe_ptr(), conv_ws_size if conv_ws_size > 0 else 1, owning=False)
@@ -676,12 +710,12 @@ struct ResBlockConv2DBN[
         var inter_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
         var inter_out = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter_ptr)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward_gpu[BATCH](ctx, inter_out, in_rb, p1, c1_v, conv_ws)
+        Self.Conv1.forward_gpu[BATCH](ctx, inter_out, in_rb, p1, s1, c1_v, conv_ws)
 
         # Conv2 (no activation) → output (temporarily holds conv2 output pre-BN)
         var inter_in = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](inter_ptr)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward_gpu[BATCH](ctx, out_rb, inter_in, p2, c2_v, conv_ws)
+        Self.Conv2.forward_gpu[BATCH](ctx, out_rb, inter_in, p2, s2, c2_v, conv_ws)
 
         # Fused BN2 + skip-add + ReLU (one kernel, one block per channel)
         var bn2_params = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), MutAnyOrigin](params.ptr + Self.BN2_OFF)
@@ -710,12 +744,19 @@ struct ResBlockConv2DBN[
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
+        # are zero-length views; Phase 3 will split a real state buffer here.
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         var conv_ws_size = BATCH * Self.MAX_CONV_WS
         var conv_ws = DeviceBuffer[dtype](ctx, workspace.unsafe_ptr(), conv_ws_size if conv_ws_size > 0 else 1, owning=False)
@@ -723,11 +764,11 @@ struct ResBlockConv2DBN[
         var inter_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
         var inter_out = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter_ptr)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward_gpu_no_cache[BATCH](ctx, inter_out, in_rb, p1, conv_ws)
+        Self.Conv1.forward_gpu_no_cache[BATCH](ctx, inter_out, in_rb, p1, s1, conv_ws)
 
         var inter_in = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](inter_ptr)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward_gpu_no_cache[BATCH](ctx, out_rb, inter_in, p2, conv_ws)
+        Self.Conv2.forward_gpu_no_cache[BATCH](ctx, out_rb, inter_in, p2, s2, conv_ws)
 
         # BN2 (running stats) + skip + ReLU — inference, no cache, no stat update
         var bn2_params = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), ImmutAnyOrigin](params.ptr + Self.BN2_OFF)
@@ -753,9 +794,12 @@ struct ResBlockConv2DBN[
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # ── GPU Backward ─────────────────────────────────────────────
 
@@ -768,6 +812,9 @@ struct ResBlockConv2DBN[
         mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
         mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
         workspace: DeviceBuffer[dtype],
@@ -776,6 +823,10 @@ struct ResBlockConv2DBN[
     ) raises:
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
+        # are zero-length views; Phase 3 will split a real state buffer here.
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         var conv_ws_size = BATCH * Self.MAX_CONV_WS
         var conv_ws = DeviceBuffer[dtype](ctx, workspace.unsafe_ptr(), conv_ws_size if conv_ws_size > 0 else 1, owning=False)
@@ -815,14 +866,14 @@ struct ResBlockConv2DBN[
         var go_c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin](grad_conv2_ptr)
         var c2_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
         var g2_v = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
-        Self.Conv2.backward_gpu[BATCH](ctx, grad_inter, go_c2, p2, c2_v, g2_v, conv_ws)
+        Self.Conv2.backward_gpu[BATCH](ctx, grad_inter, go_c2, p2, s2, c2_v, g2_v, conv_ws)
 
         # 3. Conv1 backward: grad_inter → temp_gi (separate workspace region)
         var go_c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](grad_inter_ptr)
         var temp_gi = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](temp_gi_ptr)
         var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
         var g1_v = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
-        Self.Conv1.backward_gpu[BATCH](ctx, temp_gi, go_c1, p1, c1_v, g1_v, conv_ws)
+        Self.Conv1.backward_gpu[BATCH](ctx, temp_gi, go_c1, p1, s1, c1_v, g1_v, conv_ws)
 
         # 4. Add conv1's grad_input to skip grad
         @parameter

@@ -25,7 +25,7 @@ def aux_mse_grad_kernel[
     pred: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     target: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
 ):
-    """grad[b, d] = 2 * (pred[b, d] - target[b, d]) / (BATCH * DIM).
+    """Formula : grad[b, d] = 2 * (pred[b, d] - target[b, d]) / (BATCH * DIM).
 
     Scales by 1/(BATCH*DIM) so the loss is mean-over-all-elements
     (equivalent to tf.reduce_mean on the squared error matrix).
@@ -36,9 +36,11 @@ def aux_mse_grad_kernel[
         return
     var b = idx // DIM
     var d = idx % DIM
-    grad[b, d] = Scalar[dtype](2.0) * (pred[b, d] - target[b, d]) / Scalar[
-        dtype
-    ](BATCH * DIM)
+    grad[b, d] = (
+        Scalar[dtype](2.0)
+        * (pred[b, d] - target[b, d])
+        / Scalar[dtype](BATCH * DIM)
+    )
 
 
 @always_inline
@@ -147,9 +149,7 @@ def redq_ensemble_target_kernel[
         var ws = InlineArray[Scalar[dtype], N_ENSEMBLE](uninitialized=True)
         var sum_w = Scalar[dtype](0.0)
         comptime for n in range(N_ENSEMBLE):
-            var philox = PhiloxRandom(
-                seed=seed + UInt64(n), offset=0
-            )
+            var philox = PhiloxRandom(seed=seed + UInt64(n), offset=0)
             var r = philox.step_uniform()
             var w = Scalar[dtype](Float32(r[0]) + Float32(1e-8))
             ws[n] = w

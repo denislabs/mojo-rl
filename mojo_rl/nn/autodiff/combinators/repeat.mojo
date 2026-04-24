@@ -38,6 +38,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
     comptime OUT_DIM: Int = Self.Inner.OUT_DIM
     comptime PARAM_SIZE: Int = Self.Inner.PARAM_SIZE if Self.shared else Self.n * Self.Inner.PARAM_SIZE
     comptime CACHE_SIZE: Int = Self.Inner.CACHE_SIZE * Self.n  # one per iter
+    comptime STATE_SIZE: Int = Self.Inner.STATE_SIZE if Self.shared else Self.n * Self.Inner.STATE_SIZE
     # Workspace: (n-1) intermediate buffers + Inner's own workspace + cache for no_cache inference
     comptime INTER_SIZE_PER_SAMPLE: Int = (
         Self.Inner.WORKSPACE_SIZE_PER_SAMPLE + (Self.n - 1) * Self.Inner.OUT_DIM
@@ -63,6 +64,14 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
             return 0
         else:
             return idx * Self.Inner.PARAM_SIZE
+
+    @staticmethod
+    def _state_offset[idx: Int]() -> Int:
+        """State offset for iteration idx. 0 for all if shared."""
+        comptime if Self.shared:
+            return 0
+        else:
+            return idx * Self.Inner.STATE_SIZE
 
     # =========================================================================
     # Initialization
@@ -93,6 +102,30 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                 ](params.ptr + Self._param_offset[i]())
                 Self.Inner.initialize_params[INIT, dtype](pi)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize state. If shared, one init. If independent, init each block."""
+        comptime if Self.Inner.STATE_SIZE > 0:
+            comptime if Self.shared:
+                var s0 = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr)
+                Self.Inner.initialize_state[dtype](s0)
+            else:
+                comptime for i in range(Self.n):
+                    var si = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.Inner.STATE_SIZE),
+                        MutAnyOrigin,
+                    ](state.ptr + Self._state_offset[i]())
+                    Self.Inner.initialize_state[dtype](si)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -110,6 +143,9 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -125,7 +161,12 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                 Layout.row_major(Self.Inner.PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
-            Self.Inner.forward[BATCH, dtype](input, output, pi, ci)
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
+            Self.Inner.forward[BATCH, dtype](input, output, pi, si, ci)
         else:
             # Intermediate buffers for n-1 activations
             var inter_storage = List[Scalar[dtype]](
@@ -146,6 +187,11 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                     Layout.row_major(Self.Inner.PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var si = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
 
                 comptime if i == 0:
                     var li_out = LayoutTensor[
@@ -153,14 +199,14 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         Layout.row_major(BATCH, Self.Inner.OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr)
-                    Self.Inner.forward[BATCH, dtype](input, li_out, pi, ci)
+                    Self.Inner.forward[BATCH, dtype](input, li_out, pi, si, ci)
                 elif i == Self.n - 1:
                     var li_in = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, Self.Inner.IN_DIM),
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i - 1]())
-                    Self.Inner.forward[BATCH, dtype](li_in, output, pi, ci)
+                    Self.Inner.forward[BATCH, dtype](li_in, output, pi, si, ci)
                 else:
                     var li_in = LayoutTensor[
                         dtype,
@@ -172,7 +218,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         Layout.row_major(BATCH, Self.Inner.OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i]())
-                    Self.Inner.forward[BATCH, dtype](li_in, li_out, pi, ci)
+                    Self.Inner.forward[BATCH, dtype](li_in, li_out, pi, si, ci)
 
     # =========================================================================
     # CPU Forward (no cache — inference)
@@ -191,6 +237,9 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         # Allocate dummy cache and delegate
         var cap = BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
@@ -202,7 +251,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](dummy_cache.unsafe_ptr())
-        Self.forward[BATCH, dtype](input, output, params, c)
+        Self.forward[BATCH, dtype](input, output, params, state, c)
 
     # =========================================================================
     # CPU Backward
@@ -220,6 +269,9 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -239,13 +291,18 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                 Layout.row_major(Self.Inner.PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
             var gi = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.Inner.PARAM_SIZE),
                 MutAnyOrigin,
             ](grads.ptr)
             Self.Inner.backward[BATCH, dtype](
-                grad_output, grad_input, pi, ci, gi
+                grad_output, grad_input, pi, si, ci, gi
             )
         else:
             # Gradient intermediate buffer
@@ -270,6 +327,11 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                     Layout.row_major(Self.Inner.PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var si = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
                 var gp = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.Inner.PARAM_SIZE),
@@ -284,7 +346,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.Inner.backward[BATCH, dtype](
-                        grad_output, li_gi, pi, ci, gp
+                        grad_output, li_gi, pi, si, ci, gp
                     )
                 elif i == 0:
                     # First: grad_inter[0] -> grad_input
@@ -294,7 +356,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         MutAnyOrigin,
                     ](gi_ptr)
                     Self.Inner.backward[BATCH, dtype](
-                        li_go, grad_input, pi, ci, gp
+                        li_go, grad_input, pi, si, ci, gp
                     )
                 else:
                     # Middle: grad_inter[i] -> grad_inter[i-1]
@@ -308,7 +370,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         Layout.row_major(BATCH, Self.Inner.IN_DIM),
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
-                    Self.Inner.backward[BATCH, dtype](li_go, li_gi, pi, ci, gp)
+                    Self.Inner.backward[BATCH, dtype](li_go, li_gi, pi, si, ci, gp)
 
     # =========================================================================
     # GPU Forward (with cache)
@@ -327,6 +389,9 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -347,6 +412,11 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                 Layout.row_major(Self.Inner.PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
             var out_rb = rebind[
                 LayoutTensor[
                     dtype,
@@ -362,7 +432,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                 ]
             ](input)
             Self.Inner.forward_gpu[BATCH, dtype](
-                ctx, out_rb, in_rb, pi, ci, workspace
+                ctx, out_rb, in_rb, pi, si, ci, workspace
             )
         else:
             var ws_ptr = workspace.unsafe_ptr()
@@ -386,6 +456,11 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                     Layout.row_major(Self.Inner.PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var si = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
 
                 comptime if i == 0:
                     var inter_out = LayoutTensor[
@@ -401,7 +476,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         ]
                     ](input)
                     Self.Inner.forward_gpu[BATCH, dtype](
-                        ctx, inter_out, in_rb, pi, ci, inner_ws
+                        ctx, inter_out, in_rb, pi, si, ci, inner_ws
                     )
                 elif i == Self.n - 1:
                     var inter_in = LayoutTensor[
@@ -417,7 +492,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         ]
                     ](output)
                     Self.Inner.forward_gpu[BATCH, dtype](
-                        ctx, out_rb, inter_in, pi, ci, inner_ws
+                        ctx, out_rb, inter_in, pi, si, ci, inner_ws
                     )
                 else:
                     var inter_in = LayoutTensor[
@@ -431,7 +506,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i]())
                     Self.Inner.forward_gpu[BATCH, dtype](
-                        ctx, inter_out, inter_in, pi, ci, inner_ws
+                        ctx, inter_out, inter_in, pi, si, ci, inner_ws
                     )
 
     # =========================================================================
@@ -452,6 +527,9 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -462,7 +540,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](workspace.unsafe_ptr() + BATCH * Self.INTER_SIZE_PER_SAMPLE)
-        Self.forward_gpu[BATCH, dtype](ctx, output, input, params, cache_v, workspace)
+        Self.forward_gpu[BATCH, dtype](ctx, output, input, params, state, cache_v, workspace)
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
@@ -479,10 +557,13 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -501,6 +582,9 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -523,6 +607,11 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                 Layout.row_major(Self.Inner.PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
             var gp = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.Inner.PARAM_SIZE),
@@ -543,7 +632,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                 ]
             ](grad_output)
             Self.Inner.backward_gpu[BATCH, dtype](
-                ctx, gi_rb, go_rb, pi, ci, gp, workspace
+                ctx, gi_rb, go_rb, pi, si, ci, gp, workspace
             )
         else:
             var ws_ptr = workspace.unsafe_ptr()
@@ -588,6 +677,11 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                     Layout.row_major(Self.Inner.PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var si = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
 
                 # For shared weights: zero temp, backward into temp
                 # For independent weights: backward into main grads directly
@@ -615,7 +709,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         ]
                     ](grad_output)
                     Self.Inner.backward_gpu[BATCH, dtype](
-                        ctx, gi, go_rb, pi, ci, gp, inner_ws
+                        ctx, gi, go_rb, pi, si, ci, gp, inner_ws
                     )
                 elif i == 0:
                     var go = LayoutTensor[
@@ -631,7 +725,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         ]
                     ](grad_input)
                     Self.Inner.backward_gpu[BATCH, dtype](
-                        ctx, gi_rb, go, pi, ci, gp, inner_ws
+                        ctx, gi_rb, go, pi, si, ci, gp, inner_ws
                     )
                 else:
                     var go = LayoutTensor[
@@ -645,7 +739,7 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.Inner.backward_gpu[BATCH, dtype](
-                        ctx, gi, go, pi, ci, gp, inner_ws
+                        ctx, gi, go, pi, si, ci, gp, inner_ws
                     )
 
                 # Accumulate temp grads into main grads for shared weights

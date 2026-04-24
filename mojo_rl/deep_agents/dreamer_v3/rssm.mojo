@@ -24,7 +24,7 @@ World Models (DreamerV3)
 
 from std.math import exp, log, sqrt, abs
 from std.random import random_float64
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from layout import Layout, LayoutTensor
@@ -473,13 +473,13 @@ struct RSSM[
 
         # 1. Input projections (each with Mish activation)
         Self.DeterProjNet.forward[BATCH](
-            prev_deter, proj_d, self.deter_proj.params_view()
+            prev_deter, proj_d, self.deter_proj.params_view(), self.deter_proj.model_state_view()
         )
         Self.StochProjNet.forward[BATCH](
-            prev_stoch, proj_s, self.stoch_proj.params_view()
+            prev_stoch, proj_s, self.stoch_proj.params_view(), self.stoch_proj.model_state_view()
         )
         Self.ActionProjNet.forward[BATCH](
-            norm_action, proj_a, self.action_proj.params_view()
+            norm_action, proj_a, self.action_proj.params_view(), self.action_proj.model_state_view()
         )
 
         # 2. Concatenate [deter, proj_d, proj_s, proj_a]
@@ -495,12 +495,12 @@ struct RSSM[
 
         # 3. Hidden layer (LinearMish)
         Self.GRUHiddenNet.forward[BATCH](
-            concat_buf, hidden_out, self.gru_hidden.params_view()
+            concat_buf, hidden_out, self.gru_hidden.params_view(), self.gru_hidden.model_state_view()
         )
 
         # 4. Gate layer (Linear, no activation)
         Self.GRUGateNet.forward[BATCH](
-            hidden_out, gate_out, self.gru_gates.params_view()
+            hidden_out, gate_out, self.gru_gates.params_view(), self.gru_gates.model_state_view()
         )
 
         # 5. Apply GRU-style gating
@@ -663,7 +663,7 @@ struct RSSM[
                 symlog_obs_t[b, i] = Scalar[dtype](symlog(val))
 
         Self.EncNet.forward[BATCH](
-            symlog_obs_t, embed_t, self.encoder.params_view()
+            symlog_obs_t, embed_t, self.encoder.params_view(), self.encoder.model_state_view()
         )
 
         # --- 2. GRU core forward ---
@@ -688,12 +688,12 @@ struct RSSM[
                 post_in_t[b, Self.DETER_DIM + i] = embed_t[b, i]
 
         Self.PostNet.forward[BATCH](
-            post_in_t, post_logits_t, self.posterior.params_view()
+            post_in_t, post_logits_t, self.posterior.params_view(), self.posterior.model_state_view()
         )
 
         # --- 4. Prior: deter -> logits ---
         Self.PriorNet.forward[BATCH](
-            new_deter, prior_logits_t, self.prior.params_view()
+            new_deter, prior_logits_t, self.prior.params_view(), self.prior.model_state_view()
         )
 
         # --- 5. Sample from posterior (with probs for KL) ---
@@ -842,7 +842,7 @@ struct RSSM[
 
         # --- 2. Prior: deter -> logits ---
         Self.PriorNet.forward[BATCH](
-            new_deter, prior_logits_t, self.prior.params_view()
+            new_deter, prior_logits_t, self.prior.params_view(), self.prior.model_state_view()
         )
 
         # --- 3. Sample from prior ---
@@ -890,7 +890,7 @@ struct RSSM[
             feat: Feature vector [BATCH, FEAT_DIM].
             obs_pred: Predicted observation [BATCH, OBS_DIM] (written).
         """
-        Self.DecNet.forward[BATCH](feat, obs_pred, self.decoder.params_view())
+        Self.DecNet.forward[BATCH](feat, obs_pred, self.decoder.params_view(), self.decoder.model_state_view())
 
     def predict_reward[
         BATCH: Int
@@ -913,7 +913,7 @@ struct RSSM[
             reward_logits: Output reward logits [BATCH, NUM_BINS] (written).
         """
         Self.RewNet.forward[BATCH](
-            feat, reward_logits, self.reward_head.params_view()
+            feat, reward_logits, self.reward_head.params_view(), self.reward_head.model_state_view()
         )
 
     def predict_continue[
@@ -936,7 +936,7 @@ struct RSSM[
             cont_prob: Output continuation probability [BATCH, 1] (written).
         """
         Self.ContNet.forward[BATCH](
-            feat, cont_prob, self.continue_head.params_view()
+            feat, cont_prob, self.continue_head.params_view(), self.continue_head.model_state_view()
         )
 
         # Apply sigmoid manually
@@ -1054,7 +1054,12 @@ struct RSSM[
             MutAnyOrigin,
         ](combined.unsafe_ptr())
 
-        Self.HeadsGraph.forward[BATCH](feat, output, params_t, cache)
+        # Zero-length model state slice (HeadsGraph is stateless)
+        var heads_state_t = LayoutTensor[
+            dtype, Layout.row_major(Self.HeadsGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
+        Self.HeadsGraph.forward[BATCH](feat, output, params_t, heads_state_t, cache)
 
     def backward_all_heads[
         BATCH: Int
@@ -1114,8 +1119,13 @@ struct RSSM[
         ](combined_grads.unsafe_ptr())
 
         # Backward: computes grad_feat + param grads for all heads
+        # Zero-length model state slice (HeadsGraph is stateless)
+        var heads_state_t = LayoutTensor[
+            dtype, Layout.row_major(Self.HeadsGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         Self.HeadsGraph.backward[BATCH](
-            grad_output, grad_feat, params_t, cache, grads_t
+            grad_output, grad_feat, params_t, heads_state_t, cache, grads_t
         )
 
         # Scatter param grads back to individual networks (accumulate)
@@ -1164,11 +1174,17 @@ struct RSSM[
         Output layout: [obs_hat(OBS_DIM), rew_logits(NUM_BINS), cont_logit(1)]
         The cache must be preserved for the subsequent backward call.
         """
+        # Zero-length model state slice (HeadsGraph is stateless)
+        var heads_state = LayoutTensor[
+            dtype, Layout.row_major(Self.HeadsGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         Self.HeadsGraph.forward_gpu[BATCH](
             ctx,
             output,
             feat,
             params,
+            heads_state,
             cache,
             workspace,
         )
@@ -1205,11 +1221,17 @@ struct RSSM[
 
         Use HeadsCP.scatter_add_gpu to distribute grads to individual networks.
         """
+        # Zero-length model state slice (HeadsGraph is stateless)
+        var heads_state = LayoutTensor[
+            dtype, Layout.row_major(Self.HeadsGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         Self.HeadsGraph.backward_gpu[BATCH](
             ctx,
             grad_feat,
             grad_output,
             params,
+            heads_state,
             cache,
             grads,
             workspace,
@@ -1372,7 +1394,7 @@ struct RSSM[
         ](enc_cache.unsafe_ptr())
 
         Self.EncNet.forward_with_cache[BATCH](
-            symlog_obs_t, embed_t, self.encoder.params_view(), enc_cache_t
+            symlog_obs_t, embed_t, self.encoder.params_view(), self.encoder.model_state_view(), enc_cache_t
         )
 
         # =====================================================================
@@ -1411,6 +1433,7 @@ struct RSSM[
             post_in_t,
             post_logits_t,
             self.posterior.params_view(),
+            self.posterior.model_state_view(),
             post_cache_t,
         )
 
@@ -1431,6 +1454,7 @@ struct RSSM[
             grad_logits_t,
             grad_post_in_t,
             self.posterior.params_view(),
+            self.posterior.model_state_view(),
             post_cache_t,
             post_grads,
         )
@@ -1464,6 +1488,7 @@ struct RSSM[
             grad_embed_t,
             grad_obs_t,
             self.encoder.params_view(),
+            self.encoder.model_state_view(),
             enc_cache_t,
             enc_grads,
         )
@@ -1653,6 +1678,7 @@ struct RSSM[
                 deter,
                 prior_logits_tmp_t,
                 self.prior.params_view(),
+                self.prior.model_state_view(),
                 prior_cache_t,
             )
 
@@ -1673,6 +1699,7 @@ struct RSSM[
                 grad_prior_logits_t,
                 grad_deter_prior_t,
                 self.prior.params_view(),
+                self.prior.model_state_view(),
                 prior_cache_t,
                 prior_grads,
             )
@@ -1793,6 +1820,7 @@ struct RSSM[
                 symlog_obs_t,
                 embed_t,
                 self.encoder.params_view(),
+                self.encoder.model_state_view(),
                 enc_cache_t,
             )
 
@@ -1834,6 +1862,7 @@ struct RSSM[
                 post_in_t,
                 post_logits_tmp_t,
                 self.posterior.params_view(),
+                self.posterior.model_state_view(),
                 post_cache_t,
             )
 
@@ -1852,6 +1881,7 @@ struct RSSM[
                 grad_post_logits_t,
                 grad_post_in_t,
                 self.posterior.params_view(),
+                self.posterior.model_state_view(),
                 post_cache_t,
                 post_grads,
             )
@@ -1885,6 +1915,7 @@ struct RSSM[
                 grad_embed_t,
                 grad_obs_t,
                 self.encoder.params_view(),
+                self.encoder.model_state_view(),
                 enc_cache_t,
                 enc_grads,
             )
@@ -2007,7 +2038,7 @@ struct RSSM[
             dtype, Layout.row_major(BATCH, DP_CS), MutAnyOrigin
         ](dp_cache.unsafe_ptr())
         Self.DeterProjNet.forward_with_cache[BATCH](
-            prev_deter, proj_d_t, self.deter_proj.params_view(), dp_cache_t
+            prev_deter, proj_d_t, self.deter_proj.params_view(), self.deter_proj.model_state_view(), dp_cache_t
         )
 
         var proj_s = InlineArray[Scalar[dtype], BATCH * Self.HIDDEN](
@@ -2023,7 +2054,7 @@ struct RSSM[
             dtype, Layout.row_major(BATCH, SP_CS), MutAnyOrigin
         ](sp_cache.unsafe_ptr())
         Self.StochProjNet.forward_with_cache[BATCH](
-            prev_stoch, proj_s_t, self.stoch_proj.params_view(), sp_cache_t
+            prev_stoch, proj_s_t, self.stoch_proj.params_view(), self.stoch_proj.model_state_view(), sp_cache_t
         )
 
         var proj_a = InlineArray[Scalar[dtype], BATCH * Self.HIDDEN](
@@ -2039,7 +2070,7 @@ struct RSSM[
             dtype, Layout.row_major(BATCH, AP_CS), MutAnyOrigin
         ](ap_cache.unsafe_ptr())
         Self.ActionProjNet.forward_with_cache[BATCH](
-            norm_action_t, proj_a_t, self.action_proj.params_view(), ap_cache_t
+            norm_action_t, proj_a_t, self.action_proj.params_view(), self.action_proj.model_state_view(), ap_cache_t
         )
 
         # =================================================================
@@ -2080,7 +2111,7 @@ struct RSSM[
             dtype, Layout.row_major(BATCH, GH_CS), MutAnyOrigin
         ](gh_cache.unsafe_ptr())
         Self.GRUHiddenNet.forward_with_cache[BATCH](
-            concat_t, hidden_t, self.gru_hidden.params_view(), gh_cache_t
+            concat_t, hidden_t, self.gru_hidden.params_view(), self.gru_hidden.model_state_view(), gh_cache_t
         )
 
         var gate_out = InlineArray[Scalar[dtype], BATCH * 3 * DETER](
@@ -2096,7 +2127,7 @@ struct RSSM[
             dtype, Layout.row_major(BATCH, GG_CS), MutAnyOrigin
         ](gg_cache.unsafe_ptr())
         Self.GRUGateNet.forward_with_cache[BATCH](
-            hidden_t, gate_t, self.gru_gates.params_view(), gg_cache_t
+            hidden_t, gate_t, self.gru_gates.params_view(), self.gru_gates.model_state_view(), gg_cache_t
         )
 
         # =================================================================
@@ -2188,6 +2219,7 @@ struct RSSM[
             d_gate_t,
             d_hidden_t,
             self.gru_gates.params_view(),
+            self.gru_gates.model_state_view(),
             gg_cache_t,
             gg_grads,
         )
@@ -2209,6 +2241,7 @@ struct RSSM[
             d_hidden_t,
             d_concat_t,
             self.gru_hidden.params_view(),
+            self.gru_hidden.model_state_view(),
             gh_cache_t,
             gh_grads,
         )
@@ -2275,6 +2308,7 @@ struct RSSM[
             d_proj_d_t,
             d_prev_deter_proj_t,
             self.deter_proj.params_view(),
+            self.deter_proj.model_state_view(),
             dp_cache_t,
             dp_grads,
         )
@@ -2294,6 +2328,7 @@ struct RSSM[
             d_proj_s_t,
             grad_prev_stoch,
             self.stoch_proj.params_view(),
+            self.stoch_proj.model_state_view(),
             sp_cache_t,
             sp_grads,
         )
@@ -2314,6 +2349,7 @@ struct RSSM[
             d_proj_a_t,
             d_action_t,
             self.action_proj.params_view(),
+            self.action_proj.model_state_view(),
             ap_cache_t,
             ap_grads,
         )

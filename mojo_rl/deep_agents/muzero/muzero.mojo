@@ -614,7 +614,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         ](self.state._rep_cache)
 
         Self.RepNet.forward_with_cache[BATCH](
-            obs_t, h0_t, self.state.representation.params_view(), rep_cache_t
+            obs_t, h0_t, self.state.representation.params_view(), self.state.representation.model_state_view(), rep_cache_t
         )
 
         # Scale hidden state
@@ -639,7 +639,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             ](self.state._pred_caches + pred_cache_offset)
 
             Self.PredNet.forward_with_cache[BATCH](
-                hk_t, pred_t, self.state.prediction.params_view(), pred_cache_t
+                hk_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view(), pred_cache_t
             )
 
             # Compute policy and value loss for this step
@@ -744,6 +744,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     dyn_in_t,
                     dyn_out_t,
                     self.state.dynamics.params_view(),
+                    self.state.dynamics.model_state_view(),
                     dyn_cache_t,
                 )
 
@@ -930,6 +931,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 grad_pred_out_t,
                 grad_pred_in_t,
                 self.state.prediction.params_view(),
+                self.state.prediction.model_state_view(),
                 pred_cache_t,
                 pred_grads,
             )
@@ -1027,6 +1029,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     grad_dyn_out_t,
                     grad_dyn_in_t,
                     self.state.dynamics.params_view(),
+                    self.state.dynamics.model_state_view(),
                     dyn_cache_t,
                     dyn_grads,
                 )
@@ -1059,6 +1062,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             grad_hidden_t,
             grad_rep_in_t,
             self.state.representation.params_view(),
+            self.state.representation.model_state_view(),
             rep_cache_t,
             rep_grads,
         )
@@ -1186,7 +1190,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         ](pred_ptr)
 
         Self.PredNet.forward[B](
-            obs_t, pred_t, self.state.prediction.params_view()
+            obs_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view()
         )
 
         # Argmax over legal actions (first ACT elements are policy logits)
@@ -1850,6 +1854,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             obs_t,
             h0_t,
             gpu.representation.params_view(),
+            gpu.representation.model_state_view(),
             rep_cache_t,
             gpu.workspace_buf,
         )
@@ -1887,6 +1892,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 hk_t,
                 pred_t,
                 gpu.prediction.params_view(),
+                gpu.prediction.model_state_view(),
                 pred_cache_t,
                 gpu.workspace_buf,
             )
@@ -1938,6 +1944,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     dyn_in_t,
                     dyn_out_t,
                     gpu.dynamics.params_view(),
+                    gpu.dynamics.model_state_view(),
                     dyn_cache_t,
                     gpu.workspace_buf,
                 )
@@ -1996,6 +2003,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 hk_bwd,
                 pred_bwd,
                 gpu.prediction.params_view(),
+                gpu.prediction.model_state_view(),
                 gpu.workspace_buf,
             )
 
@@ -2076,6 +2084,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 grad_pred_out_t,
                 grad_pred_in_t,
                 gpu.prediction.params_view(),
+                gpu.prediction.model_state_view(),
                 pred_cache_bwd,
                 pred_grads,
                 gpu.workspace_buf,
@@ -2170,6 +2179,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     dyn_in_bwd,
                     dyn_out_bwd,
                     gpu.dynamics.params_view(),
+                    gpu.dynamics.model_state_view(),
                     gpu.workspace_buf,
                 )
 
@@ -2221,6 +2231,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     grad_dyn_out_t,
                     grad_dyn_in_t,
                     gpu.dynamics.params_view(),
+                    gpu.dynamics.model_state_view(),
                     dyn_cache_bwd,
                     dyn_grads,
                     gpu.workspace_buf,
@@ -2261,6 +2272,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             grad_rep_out_t,
             grad_rep_in_t,
             gpu.representation.params_view(),
+            gpu.representation.model_state_view(),
             rep_cache_bwd,
             rep_grads,
             gpu.workspace_buf,
@@ -2490,6 +2502,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     rep_obs_t,
                     rep_h_t,
                     gpu.representation.params_view(),
+                    gpu.representation.model_state_view(),
                     mcts_workspace,
                 )
 
@@ -2509,6 +2522,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     pred_root_in,
                     pred_root_out,
                     gpu.prediction.params_view(),
+                    gpu.prediction.model_state_view(),
                     mcts_workspace,
                 )
 
@@ -2703,6 +2717,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                         pred_in_net,
                         pred_out_net,
                         gpu.prediction.params_view(),
+                        gpu.prediction.model_state_view(),
                         mcts_workspace,
                     )
 
@@ -3177,6 +3192,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                         rep_obs,
                         rep_h,
                         gpu.representation.params_view(),
+                        gpu.representation.model_state_view(),
                         mcts_workspace,
                     )
 
@@ -3196,6 +3212,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                         pred_root_in,
                         pred_root_out,
                         gpu.prediction.params_view(),
+                        gpu.prediction.model_state_view(),
                         mcts_workspace,
                     )
 
@@ -3361,6 +3378,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                             dyn_in_t,
                             dyn_out_t,
                             gpu.dynamics.params_view(),
+                            gpu.dynamics.model_state_view(),
                             mcts_workspace,
                         )
 
@@ -3404,6 +3422,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                             pred_in_t,
                             pred_out_t,
                             gpu.prediction.params_view(),
+                            gpu.prediction.model_state_view(),
                             mcts_workspace,
                         )
 
@@ -3874,6 +3893,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     rep_obs,
                     rep_h,
                     gpu.representation.params_view(),
+                    gpu.representation.model_state_view(),
                     mcts_ws,
                 )
 
@@ -3893,6 +3913,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     pred_root_in,
                     pred_root_out,
                     gpu.prediction.params_view(),
+                    gpu.prediction.model_state_view(),
                     mcts_ws,
                 )
 
@@ -4051,6 +4072,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                         e_dyn_in_t,
                         e_dyn_out_t,
                         gpu.dynamics.params_view(),
+                        gpu.dynamics.model_state_view(),
                         mcts_ws,
                     )
 
@@ -4092,6 +4114,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                         e_pred_in,
                         e_pred_out,
                         gpu.prediction.params_view(),
+                        gpu.prediction.model_state_view(),
                         mcts_ws,
                     )
 

@@ -291,7 +291,14 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
             dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
         ](params.unsafe_ptr())
 
-        LossGraph.forward[BATCH](loss_in_t, loss_out_t, params_t, cache_t)
+        # Zero-length model state slice (LossGraph is stateless)
+        var model_state = LayoutTensor[
+            dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
+        LossGraph.forward[BATCH](
+            loss_in_t, loss_out_t, params_t, model_state, cache_t
+        )
 
         # Mean loss
         var total_loss: Float64 = 0.0
@@ -322,7 +329,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
         ](grads.unsafe_ptr())
 
         LossGraph.backward[BATCH](
-            grad_seed_t, grad_in_t, params_t, cache_t, grads_t
+            grad_seed_t, grad_in_t, params_t, model_state, cache_t, grads_t
         )
 
         # Extract first ACTIONS columns as grad_q
@@ -444,8 +451,13 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
             dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
         ](params_ptr)
 
+        # Zero-length model state slice (LossGraph is stateless)
+        var model_state = LayoutTensor[
+            dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         LossGraph.forward_gpu[BATCH](
-            ctx, loss_out_t, loss_in_t, params_t, cache_t, ws_buf
+            ctx, loss_out_t, loss_in_t, params_t, model_state, cache_t, ws_buf
         )
 
         # Fill grad_seed with 1/BATCH on GPU (no host alloc needed)
@@ -480,7 +492,7 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
 
         # Backward
         LossGraph.backward_gpu[BATCH](
-            ctx, grad_in_t, grad_seed_t, params_t, cache_t, grads_t, ws_buf
+            ctx, grad_in_t, grad_seed_t, params_t, model_state, cache_t, grads_t, ws_buf
         )
 
         # Extract first ACTIONS columns to grad_q

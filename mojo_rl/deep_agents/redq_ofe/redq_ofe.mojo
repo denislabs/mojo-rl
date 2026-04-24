@@ -820,7 +820,8 @@ struct REDQOFEAgent[
             MutAnyOrigin,
         ](phi_s_arr.unsafe_ptr())
         var p_sb = self.cpu_ofe_sb.params_view()
-        Self.OFESBModel.forward[1](obs_t, phi_s_sb_t, p_sb)
+        var s_sb = self.cpu_ofe_sb.model_state_view()
+        Self.OFESBModel.forward[1](obs_t, phi_s_sb_t, p_sb, s_sb)
 
         var phi_s_actor_t = LayoutTensor[
             dtype,
@@ -837,7 +838,8 @@ struct REDQOFEAgent[
             MutAnyOrigin,
         ](out_arr.unsafe_ptr())
         var p = self.cpu_actor.online.params_view()
-        Self.ActorNet.forward[1](phi_s_actor_t, out_t, p)
+        var s = self.cpu_actor.online.model_state_view()
+        Self.ActorNet.forward[1](phi_s_actor_t, out_t, p, s)
 
         var result = List[Float64](capacity=Self.ACTIONS)
         for i in range(Self.ACTIONS):
@@ -1013,6 +1015,7 @@ struct REDQOFEAgent[
             obs_sb_t,
             phi_s_env_t,
             gpu_state.ofe_sb.params_view(),
+            gpu_state.ofe_sb.model_state_view(),
             gpu_state.ofe_sb_ws,
         )
         # Re-view phi_s_env as ActorModel.IN_DIM-sized for actor forward.
@@ -1025,9 +1028,10 @@ struct REDQOFEAgent[
             dtype, Layout.row_major(N_ENVS, Self.ACTOR_OUT), MutAnyOrigin
         ](gpu_state.explore_raw.unsafe_ptr())
         var p = gpu_state.actor.online.params_view()
+        var s = gpu_state.actor.online.model_state_view()
 
         Self.ActorNet.forward_gpu[N_ENVS](
-            ctx, phi_s_actor_t, raw_t, p, gpu_state.explore_ws
+            ctx, phi_s_actor_t, raw_t, p, s, gpu_state.explore_ws
         )
 
         var act_t = LayoutTensor[
@@ -1385,6 +1389,7 @@ struct REDQOFEAgent[
             obs_sb_t,
             phi_s_sb_t,
             gpu_state.ofe_sb.params_view(),
+            gpu_state.ofe_sb.model_state_view(),
             ofe_sb_cache_t,
             gpu_state.ofe_sb_ws,
         )
@@ -1425,6 +1430,7 @@ struct REDQOFEAgent[
             phi_sa_in_ab_t,
             phi_sa_ab_t,
             gpu_state.ofe_ab.params_view(),
+            gpu_state.ofe_ab.model_state_view(),
             ofe_ab_cache_t,
             gpu_state.ofe_ab_ws,
         )
@@ -1447,6 +1453,7 @@ struct REDQOFEAgent[
             phi_sa_pr_t,
             pred_pr_t,
             gpu_state.ofe_pr.params_view(),
+            gpu_state.ofe_pr.model_state_view(),
             ofe_pr_cache_t,
             gpu_state.ofe_pr_ws,
         )
@@ -1494,6 +1501,7 @@ struct REDQOFEAgent[
             grad_pred_pr_t,
             grad_phi_sa_pr_t,
             gpu_state.ofe_pr.params_view(),
+            gpu_state.ofe_pr.model_state_view(),
             ofe_pr_cache_t,
             pr_grads,
             gpu_state.ofe_pr_ws,
@@ -1515,6 +1523,7 @@ struct REDQOFEAgent[
             grad_phi_sa_ab_t,
             grad_phi_sa_in_ab_t,
             gpu_state.ofe_ab.params_view(),
+            gpu_state.ofe_ab.model_state_view(),
             ofe_ab_cache_t,
             ab_grads,
             gpu_state.ofe_ab_ws,
@@ -1547,6 +1556,7 @@ struct REDQOFEAgent[
             grad_phi_s_sb_t,
             grad_s_t,
             gpu_state.ofe_sb.params_view(),
+            gpu_state.ofe_sb.model_state_view(),
             ofe_sb_cache_t,
             sb_grads,
             gpu_state.ofe_sb_ws,
@@ -1621,6 +1631,7 @@ struct REDQOFEAgent[
             obs_sb_t,
             phi_s_t,
             gpu_state.ofe_sb.params_view(),
+            gpu_state.ofe_sb.model_state_view(),
             ofe_sb_cache_t,
             gpu_state.ofe_sb_ws,
         )
@@ -1629,6 +1640,7 @@ struct REDQOFEAgent[
             nobs_sb_t,
             phi_s_next_t,
             gpu_state.ofe_sb.params_view(),
+            gpu_state.ofe_sb.model_state_view(),
             ofe_sb_cache_t,
             gpu_state.ofe_sb_ws,
         )
@@ -1656,11 +1668,12 @@ struct REDQOFEAgent[
         )
 
         var p_actor = gpu_state.actor.online.params_view()
+        var s_actor = gpu_state.actor.online.model_state_view()
         var nact_raw_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.ACTOR_OUT), MutAnyOrigin
         ](gpu_state.actor_out.unsafe_ptr())
         Self.ActorNet.forward_gpu[BS](
-            ctx, phi_s_next_actor_t, nact_raw_t, p_actor, gpu_state.actor_ws
+            ctx, phi_s_next_actor_t, nact_raw_t, p_actor, s_actor, gpu_state.actor_ws
         )
         var nact_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
@@ -1738,6 +1751,7 @@ struct REDQOFEAgent[
             phi_sa_in_tgt_t,
             phi_sa_tgt_t,
             gpu_state.ofe_ab.params_view(),
+            gpu_state.ofe_ab.model_state_view(),
             ofe_ab_cache_t,
             gpu_state.ofe_ab_ws,
         )
@@ -1749,6 +1763,10 @@ struct REDQOFEAgent[
         ](gpu_state.phi_sa_target.unsafe_ptr())
 
         # --- 3. Forward all N target critics on phi_sa_target — stacked output ---
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        var s_critic = LayoutTensor[
+            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         for n in range(Self.N_ENS):
             var p_t = gpu_state.critics.target_params_view(n)
             var slice_t = LayoutTensor[
@@ -1757,7 +1775,7 @@ struct REDQOFEAgent[
                 gpu_state.next_q_stack.unsafe_ptr() + n * BS * Self.CRITIC_OUT
             )
             Self.CriticNet.forward_gpu[BS](
-                ctx, phi_sa_tgt_critic_t, slice_t, p_t, gpu_state.critic_ws
+                ctx, phi_sa_tgt_critic_t, slice_t, p_t, s_critic, gpu_state.critic_ws
             )
 
         # --- 4. Compute TD targets from stacked Q + subset indices ---
@@ -1815,6 +1833,7 @@ struct REDQOFEAgent[
             phi_sa_in_online_t,
             phi_sa_online_t,
             gpu_state.ofe_ab.params_view(),
+            gpu_state.ofe_ab.model_state_view(),
             ofe_ab_cache_t,
             gpu_state.ofe_ab_ws,
         )
@@ -1847,6 +1866,7 @@ struct REDQOFEAgent[
                 phi_sa_online_critic_t,
                 q_out_t,
                 p_o,
+                s_critic,
                 q_cache_t,
                 gpu_state.critic_ws,
             )
@@ -1867,6 +1887,7 @@ struct REDQOFEAgent[
                 q_grad_t,
                 d_ci_t,
                 p_o,
+                s_critic,
                 q_cache_t,
                 g_o,
                 gpu_state.critic_ws,
@@ -1930,7 +1951,7 @@ struct REDQOFEAgent[
             dtype, Layout.row_major(BS, Self.ACTOR_CS), MutAnyOrigin
         ](gpu_state.actor_cache.unsafe_ptr())
         Self.ActorNet.forward_gpu_with_cache[BS](
-            ctx, phi_s_actor_t, raw_t, p_actor, actor_cache_t, gpu_state.actor_ws
+            ctx, phi_s_actor_t, raw_t, p_actor, gpu_state.actor.online.model_state_view(), actor_cache_t, gpu_state.actor_ws
         )
 
         # --- 3. sac_rsample → curr_act, curr_lp, eps_cache ---
@@ -2010,6 +2031,7 @@ struct REDQOFEAgent[
             phi_sa_in_sampled_t,
             phi_sa_sampled_t,
             gpu_state.ofe_ab.params_view(),
+            gpu_state.ofe_ab.model_state_view(),
             ofe_ab_cache_sampled_t,
             gpu_state.ofe_ab_ws,
         )
@@ -2073,6 +2095,10 @@ struct REDQOFEAgent[
             dtype, BS, Self.PHI_SA
         ]
 
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        var s_critic2 = LayoutTensor[
+            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         for n in range(Self.N_ENS):
             var p_o = gpu_state.critics.online_params_view(n)
             var g_o = gpu_state.critics.online_grads_view(n)
@@ -2081,6 +2107,7 @@ struct REDQOFEAgent[
                 phi_sa_sampled_critic_t,
                 q_out_t,
                 p_o,
+                s_critic2,
                 q_cache_t,
                 gpu_state.critic_ws,
             )
@@ -2090,6 +2117,7 @@ struct REDQOFEAgent[
                 dq_t,
                 d_ci_per_t,       # reused as d_phi_sa_per (BS, PHI_SA)
                 p_o,
+                s_critic2,
                 q_cache_t,
                 g_o,
                 gpu_state.critic_ws,
@@ -2123,6 +2151,7 @@ struct REDQOFEAgent[
             d_phi_sa_ab_t,
             d_phi_sa_in_t,
             gpu_state.ofe_ab.params_view(),
+            gpu_state.ofe_ab.model_state_view(),
             ofe_ab_cache_sampled_t,
             ab_grads_actor,
             gpu_state.ofe_ab_ws,
@@ -2208,6 +2237,7 @@ struct REDQOFEAgent[
             actor_grad_t,
             d_phi_s_t,
             p_actor,
+            gpu_state.actor.online.model_state_view(),
             actor_cache_t,
             a_grads,
             gpu_state.actor_ws,

@@ -75,6 +75,8 @@ trait GraphNode(Movable & ImplicitlyCopyable):
     comptime OP_PARAM_SIZE: Int
     comptime OP_CACHE_SIZE: Int
     comptime OP_WORKSPACE_SIZE_PER_SAMPLE: Int
+    # Persistent non-trainable state size for the wrapped op (0 for most nodes).
+    comptime OP_STATE_SIZE: Int = 0
 
     @staticmethod
     def initialize_params[
@@ -85,6 +87,19 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         ],
     ):
         ...
+
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize persistent non-trainable state for the wrapped op.
+
+        Default: no-op (OP_STATE_SIZE == 0). Nodes wrapping stateful Models
+        override to recurse into the underlying Model.initialize_state.
+        """
+        pass
 
     @staticmethod
     def op_forward[
@@ -98,6 +113,9 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_CACHE_SIZE), MutAnyOrigin
@@ -118,6 +136,9 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
+        ],
     ):
         ...
 
@@ -133,6 +154,9 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_CACHE_SIZE), MutAnyOrigin
@@ -159,6 +183,9 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_CACHE_SIZE), MutAnyOrigin
         ],
@@ -179,6 +206,9 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_CACHE_SIZE), MutAnyOrigin
@@ -223,6 +253,7 @@ struct GNode[
     comptime OP_WORKSPACE_SIZE_PER_SAMPLE: Int = (
         Self.Op.WORKSPACE_SIZE_PER_SAMPLE
     )
+    comptime OP_STATE_SIZE: Int = Self.Op.STATE_SIZE
 
     @staticmethod
     def initialize_params[
@@ -233,6 +264,14 @@ struct GNode[
         ],
     ):
         Self.Op.initialize_params[INIT, dtype](params)
+
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        Self.Op.initialize_state[dtype](state)
 
     @staticmethod
     def op_forward[
@@ -247,11 +286,14 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Op.forward[BATCH, dtype](input, output, params, cache)
+        Self.Op.forward[BATCH, dtype](input, output, params, state, cache)
 
     @staticmethod
     def op_forward_no_cache[
@@ -266,8 +308,11 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
+        ],
     ):
-        Self.Op.forward[BATCH, dtype](input, output, params)
+        Self.Op.forward[BATCH, dtype](input, output, params, state)
 
     @staticmethod
     def op_backward[
@@ -282,6 +327,9 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_CACHE_SIZE), MutAnyOrigin
         ],
@@ -289,7 +337,7 @@ struct GNode[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        Self.Op.backward[BATCH, dtype](grad_output, grad_input, params, cache, grads)
+        Self.Op.backward[BATCH, dtype](grad_output, grad_input, params, state, cache, grads)
 
     @staticmethod
     def op_forward_gpu[
@@ -305,12 +353,15 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_CACHE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.Op.forward_gpu[BATCH, dtype](ctx, output, input, params, cache, workspace)
+        Self.Op.forward_gpu[BATCH, dtype](ctx, output, input, params, state, cache, workspace)
 
     @staticmethod
     def op_backward_gpu[
@@ -326,6 +377,9 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OP_CACHE_SIZE), MutAnyOrigin
         ],
@@ -335,7 +389,7 @@ struct GNode[
         workspace: DeviceBuffer[dtype],
     ) raises:
         Self.Op.backward_gpu[BATCH, dtype](
-            ctx, grad_input, grad_output, params, cache, grads, workspace
+            ctx, grad_input, grad_output, params, state, cache, grads, workspace
         )
 
 
@@ -447,6 +501,26 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         return total
 
     @staticmethod
+    def _sum_state_size() -> Int:
+        """Total per-node state storage (scalar-indexed — no alignment padding).
+
+        Mirrors Sequential._sum_state_size: state slots hold RNG counters /
+        running stats, not matmul'd, so no 4-element GPU alignment is needed.
+        """
+        var total = 0
+        comptime for i in range(Self.N):
+            total += Self.node_types[i].OP_STATE_SIZE
+        return total
+
+    @staticmethod
+    def _state_offset[idx: Int]() -> Int:
+        """Unaligned state offset for node idx (scalar-indexed)."""
+        var total = 0
+        comptime for j in range(idx):
+            total += Self.node_types[j].OP_STATE_SIZE
+        return total
+
+    @staticmethod
     def _max_concat_dim() -> Int:
         """Max concat input dimension across all dual-input nodes."""
         var m = 0
@@ -486,6 +560,9 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     comptime PARAM_SIZE: Int = Self._sum_param_size()
 
+    # Persistent non-trainable state: sum of node states (unaligned).
+    comptime STATE_SIZE: Int = Self._sum_state_size()
+
     # Workspace: grad_activations + scratch buffer + op workspace + dummy cache
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
         Self._total_act_size()
@@ -519,6 +596,22 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 ](params.ptr + Self._param_offset[i]())
                 Self.node_types[i].initialize_params[INIT, dtype](np)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Recursively initialize each node's persistent state slice."""
+        comptime for i in range(Self.N):
+            comptime if Self.node_types[i].OP_STATE_SIZE > 0:
+                var node_state = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.node_types[i].OP_STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
+                Self.node_types[i].initialize_state[dtype](node_state)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -536,6 +629,9 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -550,12 +646,17 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 MutAnyOrigin,
             ](act_ptr)
 
-            # Params and cache for this node
+            # Params, state, and cache for this node
             var node_p = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.node_types[i].OP_PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var node_s = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.node_types[i].OP_STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var node_c = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.node_types[i].OP_CACHE_SIZE),
@@ -573,7 +674,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         MutAnyOrigin,
                     ](input.ptr)
                     Self.node_types[i].op_forward[BATCH, dtype](
-                        node_in, node_out, node_p, node_c
+                        node_in, node_out, node_p, node_s, node_c
                     )
                 else:
                     # From predecessor activation (resolved by name)
@@ -587,7 +688,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         + BATCH * Self._source_act_offset_by_name[src0_name]()
                     )
                     Self.node_types[i].op_forward[BATCH, dtype](
-                        node_in, node_out, node_p, node_c
+                        node_in, node_out, node_p, node_s, node_c
                     )
             else:
                 # Dual input: concat in0 and in1 outputs
@@ -641,7 +742,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 ](concat_buf.unsafe_ptr())
 
                 Self.node_types[i].op_forward[BATCH, dtype](
-                    node_in, node_out, node_p, node_c
+                    node_in, node_out, node_p, node_s, node_c
                 )
 
             # Copy last node's activation to output tensor
@@ -666,6 +767,9 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Inference forward — allocate dummy cache and delegate."""
         var cache_storage = List[Scalar[dtype]](
@@ -679,7 +783,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](cache_storage.unsafe_ptr())
-        Self.forward[BATCH, dtype](input, output, params, cache)
+        Self.forward[BATCH, dtype](input, output, params, state, cache)
 
     # =========================================================================
     # CPU Backward
@@ -697,6 +801,9 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -740,12 +847,17 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 MutAnyOrigin,
             ](ga_ptr + BATCH * Self._act_offset[i]())
 
-            # Params and cache for this node
+            # Params, state, cache, and grads for this node
             var node_p = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.node_types[i].OP_PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var node_s = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.node_types[i].OP_STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var node_c = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.node_types[i].OP_CACHE_SIZE),
@@ -772,7 +884,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
             # Run VJP
             Self.node_types[i].op_backward[BATCH, dtype](
-                gi_go, gi_t, node_p, node_c, node_g
+                gi_go, gi_t, node_p, node_s, node_c, node_g
             )
 
             # --- Scatter grad_input to predecessors ---
@@ -856,6 +968,9 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -880,12 +995,17 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 MutAnyOrigin,
             ](cache.ptr + BATCH * Self._act_offset[i]())
 
-            # Params and op cache
+            # Params, state, and op cache
             var node_p = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.node_types[i].OP_PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var node_s = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.node_types[i].OP_STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var node_c = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.node_types[i].OP_CACHE_SIZE),
@@ -902,7 +1022,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         MutAnyOrigin,
                     ](input.ptr)
                     Self.node_types[i].op_forward_gpu[BATCH, dtype](
-                        ctx, act_t, node_in, node_p, node_c, op_ws
+                        ctx, act_t, node_in, node_p, node_s, node_c, op_ws
                     )
                 else:
                     comptime src0_name = Self.node_types[i].IN0_NAME
@@ -915,7 +1035,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                         + BATCH * Self._source_act_offset_by_name[src0_name]()
                     )
                     Self.node_types[i].op_forward_gpu[BATCH, dtype](
-                        ctx, act_t, node_in, node_p, node_c, op_ws
+                        ctx, act_t, node_in, node_p, node_s, node_c, op_ws
                     )
             else:
                 # Dual input: concat on GPU using two copy kernels
@@ -1090,7 +1210,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
                 # Forward through node
                 Self.node_types[i].op_forward_gpu[BATCH, dtype](
-                    ctx, act_t, concat_t, node_p, node_c, op_ws
+                    ctx, act_t, concat_t, node_p, node_s, node_c, op_ws
                 )
 
         # Copy last node's activation to output
@@ -1144,6 +1264,9 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -1156,7 +1279,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](cache_ptr)
-        Self.forward_gpu[BATCH, dtype](ctx, output, input, params, cache_t, workspace)
+        Self.forward_gpu[BATCH, dtype](ctx, output, input, params, state, cache_t, workspace)
 
     @staticmethod
     def forward_gpu_no_cache_on_stream[
@@ -1173,10 +1296,13 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default."""
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -1195,6 +1321,9 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -1328,12 +1457,17 @@ struct ComputeGraph[*NODES: GraphNode](Model):
                 MutAnyOrigin,
             ](ga_ptr + BATCH * Self._act_offset[i]())
 
-            # Params and cache for this node
+            # Params, state, cache, grads for this node
             var node_p = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.node_types[i].OP_PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var node_s = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.node_types[i].OP_STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var node_c = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.node_types[i].OP_CACHE_SIZE),
@@ -1355,7 +1489,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
             # Run VJP on GPU
             Self.node_types[i].op_backward_gpu[BATCH, dtype](
-                ctx, gi_t, gi_go, node_p, node_c, node_g, op_ws
+                ctx, gi_t, gi_go, node_p, node_s, node_c, node_g, op_ws
             )
 
             # --- Scatter grad_input to predecessors (GPU add kernels) ---

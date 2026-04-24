@@ -460,7 +460,7 @@ struct DreamerV3Agent[
         ](actor_out_ptr)
 
         Self.ActorNet.forward[B](
-            feat_t, actor_out_t, self.state.actor.params_view()
+            feat_t, actor_out_t, self.state.actor.params_view(), self.state.actor.model_state_view()
         )
 
         # ── Sample action from tanh-normal ─────────────────────────────
@@ -749,7 +749,7 @@ struct DreamerV3Agent[
             ](self.state._actor_out)
 
             Self.ActorNet.forward[IB](
-                imag_feat_h, actor_out_h, self.state.actor.params_view()
+                imag_feat_h, actor_out_h, self.state.actor.params_view(), self.state.actor.model_state_view()
             )
 
             # Sample actions and compute log probs
@@ -892,6 +892,7 @@ struct DreamerV3Agent[
                 imag_feat_h,
                 critic_logits_h,
                 self.state.critic.params_view(),
+                self.state.critic.model_state_view(),
             )
 
             for ib in range(IB):
@@ -972,6 +973,7 @@ struct DreamerV3Agent[
                 imag_feat_h,
                 critic_logits_h,
                 self.state.critic.params_view(),
+                self.state.critic.model_state_view(),
                 cache_t,
             )
 
@@ -1053,6 +1055,7 @@ struct DreamerV3Agent[
                 grad_out_t,
                 grad_in_t,
                 self.state.critic.params_view(),
+                self.state.critic.model_state_view(),
                 cache_t,
                 critic_grads,
             )
@@ -1093,6 +1096,7 @@ struct DreamerV3Agent[
                 imag_feat_h,
                 actor_out_h,
                 self.state.actor.params_view(),
+                self.state.actor.model_state_view(),
                 actor_cache_t,
             )
 
@@ -1173,6 +1177,7 @@ struct DreamerV3Agent[
                 actor_grad_t,
                 actor_grad_in_t,
                 self.state.actor.params_view(),
+                self.state.actor.model_state_view(),
                 actor_cache_t,
                 actor_grads,
             )
@@ -2187,6 +2192,7 @@ struct DreamerV3Agent[
                 d_post_total_2d,
                 post_grad_in,
                 gpu_state.posterior.params_view(),
+                gpu_state.posterior.model_state_view(),
                 post_cache_t,
                 post_grads_bptt,
                 gpu_state.ws_posterior,
@@ -2230,6 +2236,7 @@ struct DreamerV3Agent[
                 d_prior_logits,
                 prior_grad_in,
                 gpu_state.prior.params_view(),
+                gpu_state.prior.model_state_view(),
                 prior_cache_t,
                 prior_grads_bptt,
                 gpu_state.ws_prior,
@@ -2250,6 +2257,7 @@ struct DreamerV3Agent[
                 d_embed,
                 d_symlog_obs,
                 gpu_state.encoder.params_view(),
+                gpu_state.encoder.model_state_view(),
                 enc_cache_t,
                 enc_grads_bptt,
                 gpu_state.ws_encoder,
@@ -2346,6 +2354,7 @@ struct DreamerV3Agent[
                 d_gate,
                 d_hidden,
                 gpu_state.gru_gates.params_view(),
+                gpu_state.gru_gates.model_state_view(),
                 gg_cache_t,
                 gg_grads_bptt,
                 gpu_state.ws_gru_gates,
@@ -2369,6 +2378,7 @@ struct DreamerV3Agent[
                 d_hidden,
                 d_concat,
                 gpu_state.gru_hidden.params_view(),
+                gpu_state.gru_hidden.model_state_view(),
                 gh_cache_t,
                 gh_grads_bptt,
                 gpu_state.ws_gru_hidden,
@@ -2422,6 +2432,7 @@ struct DreamerV3Agent[
                 d_proj_d,
                 d_prev_deter_dproj,
                 gpu_state.deter_proj.params_view(),
+                gpu_state.deter_proj.model_state_view(),
                 dproj_cache_t,
                 dp_grads_bptt,
                 gpu_state.ws_deter_proj,
@@ -2442,6 +2453,7 @@ struct DreamerV3Agent[
                 d_proj_s,
                 d_prev_stoch,
                 gpu_state.stoch_proj.params_view(),
+                gpu_state.stoch_proj.model_state_view(),
                 sproj_cache_t,
                 sp_grads_bptt,
                 gpu_state.ws_stoch_proj,
@@ -2462,6 +2474,7 @@ struct DreamerV3Agent[
                 d_proj_a,
                 d_prev_action,
                 gpu_state.action_proj.params_view(),
+                gpu_state.action_proj.model_state_view(),
                 aproj_cache_t,
                 ap_grads_bptt,
                 gpu_state.ws_action_proj,
@@ -2860,6 +2873,7 @@ struct DreamerV3Agent[
             all_symlog_2d,
             all_embed_2d,
             gpu_state.encoder.params_view(),
+            gpu_state.encoder.model_state_view(),
             all_enc_cache_2d,
             gpu_state.ws_encoder,
         )
@@ -2975,6 +2989,7 @@ struct DreamerV3Agent[
                 deter_2d,
                 proj_d_2d,
                 gpu_state.deter_proj.params_view(),
+                gpu_state.deter_proj.model_state_view(),
                 dproj_cache_t,
                 gpu_state.ws_deter_proj,
             )
@@ -2983,6 +2998,7 @@ struct DreamerV3Agent[
                 stoch_2d,
                 proj_s_2d,
                 gpu_state.stoch_proj.params_view(),
+                gpu_state.stoch_proj.model_state_view(),
                 sproj_cache_t,
                 gpu_state.ws_stoch_proj,
             )
@@ -2991,6 +3007,7 @@ struct DreamerV3Agent[
                 norm_act_2d,
                 proj_a_2d,
                 gpu_state.action_proj.params_view(),
+                gpu_state.action_proj.model_state_view(),
                 aproj_cache_t,
                 gpu_state.ws_action_proj,
             )
@@ -3030,6 +3047,7 @@ struct DreamerV3Agent[
                 concat_2d,
                 hidden_2d,
                 gpu_state.gru_hidden.params_view(),
+                gpu_state.gru_hidden.model_state_view(),
                 gh_cache_t,
                 gpu_state.ws_gru_hidden,
             )
@@ -3047,6 +3065,7 @@ struct DreamerV3Agent[
                 hidden_2d,
                 gate_2d,
                 gpu_state.gru_gates.params_view(),
+                gpu_state.gru_gates.model_state_view(),
                 gg_cache_t,
                 gpu_state.ws_gru_gates,
             )
@@ -3115,6 +3134,7 @@ struct DreamerV3Agent[
                 post_in_2d,
                 post_logits_2d,
                 gpu_state.posterior.params_view(),
+                gpu_state.posterior.model_state_view(),
                 post_cache_2d,
                 gpu_state.ws_posterior,
             )
@@ -3132,6 +3152,7 @@ struct DreamerV3Agent[
                 new_deter_2d,
                 prior_logits_2d,
                 gpu_state.prior.params_view(),
+                gpu_state.prior.model_state_view(),
                 prior_cache_2d,
                 gpu_state.ws_prior,
             )
@@ -3610,6 +3631,7 @@ struct DreamerV3Agent[
                 imag_feat_2d,
                 rew_logits_2d,
                 gpu_state.reward_head.params_view(),
+                gpu_state.reward_head.model_state_view(),
                 imag_rew_cache_h,
                 gpu_state.ws_reward,
             )
@@ -3642,6 +3664,7 @@ struct DreamerV3Agent[
                 imag_feat_2d,
                 cont_out_2d,
                 gpu_state.continue_head.params_view(),
+                gpu_state.continue_head.model_state_view(),
                 gpu_state.ws_continue,
             )
 
@@ -3671,6 +3694,7 @@ struct DreamerV3Agent[
                 imag_feat_2d,
                 critic_logits_2d,
                 gpu_state.critic.params_view(),
+                gpu_state.critic.model_state_view(),
                 gpu_state.ws_critic,
             )
 
@@ -3731,6 +3755,7 @@ struct DreamerV3Agent[
                     imag_deter_2d,
                     imag_proj_d_2d,
                     gpu_state.deter_proj.params_view(),
+                    gpu_state.deter_proj.model_state_view(),
                     gpu_state.ws_deter_proj,
                 )
                 SProjNet.forward_gpu[IB](
@@ -3738,6 +3763,7 @@ struct DreamerV3Agent[
                     imag_stoch_2d,
                     imag_proj_s_2d,
                     gpu_state.stoch_proj.params_view(),
+                    gpu_state.stoch_proj.model_state_view(),
                     gpu_state.ws_stoch_proj,
                 )
                 comptime IMAG_APROJ_CACHE_SZ = Self.StateType.RSSMType.ActionProj.CACHE_SIZE
@@ -3754,6 +3780,7 @@ struct DreamerV3Agent[
                     imag_norm_act_2d,
                     imag_proj_a_2d,
                     gpu_state.action_proj.params_view(),
+                    gpu_state.action_proj.model_state_view(),
                     imag_aproj_cache_h,
                     gpu_state.ws_action_proj,
                 )
@@ -3795,6 +3822,7 @@ struct DreamerV3Agent[
                     imag_concat_2d,
                     imag_hidden_2d,
                     gpu_state.gru_hidden.params_view(),
+                    gpu_state.gru_hidden.model_state_view(),
                     imag_gh_cache_h,
                     gpu_state.ws_gru_hidden,
                 )
@@ -3815,6 +3843,7 @@ struct DreamerV3Agent[
                     imag_hidden_2d,
                     imag_gate_2d,
                     gpu_state.gru_gates.params_view(),
+                    gpu_state.gru_gates.model_state_view(),
                     imag_gg_cache_h,
                     gpu_state.ws_gru_gates,
                 )
@@ -3863,6 +3892,7 @@ struct DreamerV3Agent[
                     next_deter_2d,
                     imag_prior_logits_2d,
                     gpu_state.prior.params_view(),
+                    gpu_state.prior.model_state_view(),
                     gpu_state.ws_prior,
                 )
 
@@ -4082,6 +4112,7 @@ struct DreamerV3Agent[
             all_ac_feat,
             critic_logits_all,
             gpu_state.critic.params_view(),
+            gpu_state.critic.model_state_view(),
             critic_cache_all,
             gpu_state.ws_critic,
         )
@@ -4139,6 +4170,7 @@ struct DreamerV3Agent[
             critic_grad_all,
             critic_grad_in_all,
             gpu_state.critic.params_view(),
+            gpu_state.critic.model_state_view(),
             critic_cache_all,
             critic_grads,
             gpu_state.ws_critic,
@@ -4160,6 +4192,7 @@ struct DreamerV3Agent[
             all_ac_feat,
             actor_out_all,
             gpu_state.actor.params_view(),
+            gpu_state.actor.model_state_view(),
             actor_cache_all,
             gpu_state.ws_actor,
         )
@@ -4200,6 +4233,7 @@ struct DreamerV3Agent[
             actor_grad_all,
             actor_grad_in_all,
             gpu_state.actor.params_view(),
+            gpu_state.actor.model_state_view(),
             actor_cache_all,
             actor_grads,
             gpu_state.ws_actor,
@@ -4905,6 +4939,7 @@ struct DreamerV3Agent[
                     sym_2d,
                     emb_2d,
                     gpu_state.encoder.params_view(),
+                    gpu_state.encoder.model_state_view(),
                     inf_ws,
                 )
                 # 3. Action normalize
@@ -4920,6 +4955,7 @@ struct DreamerV3Agent[
                     deter_2d,
                     proj_d_2d,
                     gpu_state.deter_proj.params_view(),
+                    gpu_state.deter_proj.model_state_view(),
                     inf_ws,
                 )
                 SProjNet.forward_gpu[n_envs](
@@ -4927,6 +4963,7 @@ struct DreamerV3Agent[
                     stoch_2d,
                     proj_s_2d,
                     gpu_state.stoch_proj.params_view(),
+                    gpu_state.stoch_proj.model_state_view(),
                     inf_ws,
                 )
                 AProjNet.forward_gpu[n_envs](
@@ -4934,6 +4971,7 @@ struct DreamerV3Agent[
                     norm_act_2d,
                     proj_a_2d,
                     gpu_state.action_proj.params_view(),
+                    gpu_state.action_proj.model_state_view(),
                     inf_ws,
                 )
                 # 7. Concat GRU input
@@ -4952,6 +4990,7 @@ struct DreamerV3Agent[
                     concat_2d,
                     hidden_2d,
                     gpu_state.gru_hidden.params_view(),
+                    gpu_state.gru_hidden.model_state_view(),
                     inf_ws,
                 )
                 # 9. GRU gate forward
@@ -4960,6 +4999,7 @@ struct DreamerV3Agent[
                     hidden_2d,
                     gate_2d,
                     gpu_state.gru_gates.params_view(),
+                    gpu_state.gru_gates.model_state_view(),
                     inf_ws,
                 )
                 # 10. GRU gate application → new_deter
@@ -4984,6 +5024,7 @@ struct DreamerV3Agent[
                     post_in_2d,
                     post_logits_2d,
                     gpu_state.posterior.params_view(),
+                    gpu_state.posterior.model_state_view(),
                     inf_ws,
                 )
                 # 13. Categorical sample → new_stoch
@@ -5014,6 +5055,7 @@ struct DreamerV3Agent[
                     feat_2d,
                     actor_out_2d,
                     gpu_state.actor.params_view(),
+                    gpu_state.actor.model_state_view(),
                     inf_ws,
                 )
                 # 16. Sample tanh-normal actions → act_buf

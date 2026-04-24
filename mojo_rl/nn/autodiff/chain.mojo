@@ -84,6 +84,10 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
     comptime INTER_SIZE_PER_SAMPLE: Int = Self._total_inter()
     comptime MAX_OP_WORKSPACE_PER_SAMPLE: Int = Self._max_op_workspace()
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE + Self.MAX_OP_WORKSPACE_PER_SAMPLE
+    # DiffOp primitives are stateless (the DiffOp trait has no STATE_SIZE slot),
+    # so AutoDiffChain owns no persistent state. Kept at 0 to satisfy the Model
+    # trait's STATE_SIZE contract.
+    comptime STATE_SIZE: Int = 0
 
     # --- Offset helpers ---
 
@@ -138,6 +142,15 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
                     Self.op_types[i].OUT_DIM,
                 ](op_params)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """No-op: DiffOp primitives are stateless (STATE_SIZE == 0)."""
+        pass
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -155,10 +168,14 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
+        # state is unused — DiffOp primitives are stateless.
         comptime if Self.N == 1:
             var in_v = LayoutTensor[
                 dtype,
@@ -255,7 +272,11 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
+        # state is unused — DiffOp primitives are stateless.
         # DiffOp.eval always takes a cache param, so allocate a dummy cache.
         var dummy_cache = List[Scalar[dtype]](
             capacity=BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
@@ -268,7 +289,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](dummy_cache.unsafe_ptr())
-        Self.forward[BATCH, dtype](input, output, params, c)
+        Self.forward[BATCH, dtype](input, output, params, state, c)
 
     # =========================================================================
     # CPU Backward
@@ -287,6 +308,9 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -294,6 +318,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
+        # state is unused — DiffOp primitives are stateless.
         comptime if Self.N == 1:
             var go_v = LayoutTensor[
                 dtype,
@@ -408,6 +433,9 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -421,6 +449,8 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
           [inter_buf_0 | ... | inter_buf_{N-2} | cache (unused) | op_workspace]
         Each inter_buf_i has size BATCH * op_types[i].OUT_DIM.
         op_workspace has size BATCH * MAX_OP_WORKSPACE_PER_SAMPLE.
+
+        state is unused — DiffOp primitives are stateless.
         """
 
         # Op workspace pointer: past inter + cache region
@@ -536,11 +566,16 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
         """GPU inference forward. Dummy cache carved from workspace — no allocation.
+
+        state is unused — DiffOp primitives are stateless.
         """
 
         # Op workspace pointer: past inter + cache region
@@ -586,7 +621,7 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
             ](workspace.unsafe_ptr() + BATCH * Self.INTER_SIZE_PER_SAMPLE)
             # Delegate to the caching forward
             Self.forward_gpu[BATCH, dtype](
-                ctx, output, input, params, cache_v, workspace
+                ctx, output, input, params, state, cache_v, workspace
             )
 
     @staticmethod
@@ -604,10 +639,16 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        """GPU forward on stream — delegates to default stream.
+
+        state is unused — DiffOp primitives are stateless.
+        """
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -627,6 +668,9 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -638,6 +682,8 @@ struct AutoDiffChain[*OPS: DiffOp](Model):
         perf_slot: Int = 0,
     ) raises:
         """GPU backward pass. Workspace inter region reused for gradient intermediates.
+
+        state is unused — DiffOp primitives are stateless.
         """
 
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (

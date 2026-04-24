@@ -278,12 +278,14 @@ struct Trainer[
         # State views — lvalue vars required (params/state are mut in step())
         var params = state.params_view()
         var grads = state.grads_view()
-        var opt_state = state.state_view()
+        var opt_state = state.opt_state_view()
+        var model_state = state.model_state_view()
+        var opt_global = state.opt_global_state_view()
 
         var final_loss: Float64 = 0.0
 
         for epoch in range(epochs):
-            Self.MODEL.forward[BATCH](input, output_t, params, cache_t)
+            Self.MODEL.forward[BATCH](input, output_t, params, model_state, cache_t)
 
             # Loss: CPU LossFunction takes 2D [BATCH, OUT_DIM] — no reshape needed
             var loss = Self.LOSS_FUNCTION.forward[BATCH, Self.MODEL.OUT_DIM](
@@ -295,12 +297,12 @@ struct Trainer[
 
             state.zero_grads()
             Self.MODEL.backward[BATCH](
-                grad_out_t, grad_in_t, params, cache_t, grads
+                grad_out_t, grad_in_t, params, model_state, cache_t, grads
             )
 
             state.step_num += 1
             Self.OPTIMIZER.step[Self.MODEL.PARAM_SIZE](
-                params, grads, opt_state, state.step_num
+                params, grads, opt_state, opt_global, state.step_num
             )
 
             final_loss = loss
@@ -332,6 +334,9 @@ struct Trainer[
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
+        mut model_state: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
+        ],
         input: LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
         ],
@@ -343,12 +348,14 @@ struct Trainer[
     ) -> Float64:
         """CPU forward pass + loss, no gradient computation.
 
-        Accepts a params LayoutTensor so it works with either
-        state.params_view() (CPU NetworkState) or — after downloading
-        via gpu.download_to(state, ctx) — state.params_view() from std.gpu.
+        Accepts params + model_state LayoutTensors so it works with either
+        CPU NetworkState views or — after downloading via
+        gpu.download_to(state, ctx) — the same CPU views.
 
         Args:
             params: Model parameters [PARAM_SIZE] (e.g. state.params_view()).
+            model_state: Persistent non-trainable state [STATE_SIZE]
+                (e.g. state.model_state_view()). Zero-length for stateless models.
             input: Input tensor [BATCH, IN_DIM].
             target: Target tensor [BATCH, OUT_DIM].
 
@@ -368,7 +375,7 @@ struct Trainer[
         ](output_data.unsafe_ptr())
 
         # params is already an lvalue from the caller — pass directly
-        Self.MODEL.forward[BATCH](input, output_t, params)
+        Self.MODEL.forward[BATCH](input, output_t, params, model_state)
 
         return Self.LOSS_FUNCTION.forward[BATCH, Self.MODEL.OUT_DIM](
             output_t, target
@@ -506,14 +513,15 @@ struct Trainer[
             state.zero_grads(ctx)
             var params = state.params_view()
             var grads = state.grads_view()
+            var model_state = state.model_state_view()
             Self.MODEL.forward_gpu[BATCH](
-                ctx, output_t, input_t, params, cache_t, ws_buf
+                ctx, output_t, input_t, params, model_state, cache_t, ws_buf
             )
             Self.LOSS_FUNCTION.backward_gpu[BATCH, Self.MODEL.OUT_DIM](
                 ctx, grad_out_t, output_t, target_t
             )
             Self.MODEL.backward_gpu[BATCH](
-                ctx, grad_in_t, grad_out_t, params, cache_t, grads, ws_buf
+                ctx, grad_in_t, grad_out_t, params, model_state, cache_t, grads, ws_buf
             )
             state.optimizer_step(ctx)
 
@@ -809,8 +817,9 @@ struct Trainer[
                 state.zero_grads(ctx)
                 var params = state.params_view()
                 var grads = state.grads_view()
+                var model_state = state.model_state_view()
                 Self.MODEL.forward_gpu[BATCH](
-                    ctx, output_t, batch_input, params, cache_t, ws_buf
+                    ctx, output_t, batch_input, params, model_state, cache_t, ws_buf
                 )
                 Self.LOSS_FUNCTION.backward_gpu[BATCH, Self.MODEL.OUT_DIM](
                     ctx, grad_out_t, output_t, batch_target
@@ -820,6 +829,7 @@ struct Trainer[
                     grad_in_t,
                     grad_out_t,
                     params,
+                    model_state,
                     cache_t,
                     grads,
                     ws_buf,
@@ -884,8 +894,9 @@ struct Trainer[
                             MutAnyOrigin,
                         ](target.ptr + last_off_tg)
                     var params_peek = state.params_view()
+                    var model_state_peek = state.model_state_view()
                     Self.MODEL.forward_gpu[BATCH](
-                        ctx, output_t, last_in, params_peek, cache_t, ws_buf
+                        ctx, output_t, last_in, params_peek, model_state_peek, cache_t, ws_buf
                     )
                     Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
                         ctx, loss_t, output_t, last_tg
@@ -930,8 +941,9 @@ struct Trainer[
                 MutAnyOrigin,
             ](target.ptr + last_batch_idx * BATCH * Self.MODEL.OUT_DIM)
         var params_final = state.params_view()
+        var model_state_final = state.model_state_view()
         Self.MODEL.forward_gpu[BATCH](
-            ctx, output_t, last_input, params_final, cache_t, ws_buf
+            ctx, output_t, last_input, params_final, model_state_final, cache_t, ws_buf
         )
         Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
             ctx, loss_t, output_t, last_target

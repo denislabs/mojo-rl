@@ -48,6 +48,7 @@ struct DualPath[A: Model, B: Model](Model):
     comptime PARAM_SIZE: Int = Self._B_PARAM_OFF + Self.B.PARAM_SIZE
 
     comptime CACHE_SIZE: Int = Self.A.CACHE_SIZE + Self.B.CACHE_SIZE
+    comptime STATE_SIZE: Int = Self.A.STATE_SIZE + Self.B.STATE_SIZE
     # Own scratch: shared between forward and backward
     # Forward:  a_out(A.OUT_DIM) + b_out(B.OUT_DIM)
     # Backward: ga(A.OUT_DIM) + gb(B.OUT_DIM) + gi_b(IN_DIM)  ← larger
@@ -84,6 +85,24 @@ struct DualPath[A: Model, B: Model](Model):
         ](params.ptr + Self._B_PARAM_OFF)
         Self.B.initialize_params[INIT, dtype](pb)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Recurse into A and B initialize_state (scalar offsets, no padding)."""
+        comptime if Self.A.STATE_SIZE > 0:
+            var sa = LayoutTensor[
+                dtype, Layout.row_major(Self.A.STATE_SIZE), MutAnyOrigin
+            ](state.ptr)
+            Self.A.initialize_state[dtype](sa)
+        comptime if Self.B.STATE_SIZE > 0:
+            var sb = LayoutTensor[
+                dtype, Layout.row_major(Self.B.STATE_SIZE), MutAnyOrigin
+            ](state.ptr + Self.A.STATE_SIZE)
+            Self.B.initialize_state[dtype](sb)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -100,6 +119,9 @@ struct DualPath[A: Model, B: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -118,10 +140,13 @@ struct DualPath[A: Model, B: Model](Model):
         var pa = LayoutTensor[
             dtype, Layout.row_major(Self.A.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
+        var sa = LayoutTensor[
+            dtype, Layout.row_major(Self.A.STATE_SIZE), MutAnyOrigin
+        ](state.ptr)
         var ca = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.A.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr)
-        Self.A.forward[BATCH, dtype](input, a_out, pa, ca)
+        Self.A.forward[BATCH, dtype](input, a_out, pa, sa, ca)
 
         # Forward B (params at aligned offset)
         var b_buf = InlineArray[Scalar[dtype], BATCH * B_OUT](
@@ -133,13 +158,16 @@ struct DualPath[A: Model, B: Model](Model):
         var pb = LayoutTensor[
             dtype, Layout.row_major(Self.B.PARAM_SIZE), MutAnyOrigin
         ](params.ptr + Self._B_PARAM_OFF)
+        var sb = LayoutTensor[
+            dtype, Layout.row_major(Self.B.STATE_SIZE), MutAnyOrigin
+        ](state.ptr + Self.A.STATE_SIZE)
         var cb = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr + BATCH * Self.A.CACHE_SIZE)
         var input_b = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.IN_DIM), MutAnyOrigin
         ](input.ptr)
-        Self.B.forward[BATCH, dtype](input_b, b_out, pb, cb)
+        Self.B.forward[BATCH, dtype](input_b, b_out, pb, sb, cb)
 
         # Concat outputs
         for b in range(BATCH):
@@ -165,6 +193,9 @@ struct DualPath[A: Model, B: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         comptime A_OUT = Self.A.OUT_DIM
         comptime B_OUT = Self.B.OUT_DIM
@@ -178,7 +209,10 @@ struct DualPath[A: Model, B: Model](Model):
         var pa = LayoutTensor[
             dtype, Layout.row_major(Self.A.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
-        Self.A.forward[BATCH, dtype](input, a_out, pa)
+        var sa = LayoutTensor[
+            dtype, Layout.row_major(Self.A.STATE_SIZE), MutAnyOrigin
+        ](state.ptr)
+        Self.A.forward[BATCH, dtype](input, a_out, pa, sa)
 
         var b_buf = InlineArray[Scalar[dtype], BATCH * B_OUT](
             uninitialized=True
@@ -189,10 +223,13 @@ struct DualPath[A: Model, B: Model](Model):
         var pb = LayoutTensor[
             dtype, Layout.row_major(Self.B.PARAM_SIZE), MutAnyOrigin
         ](params.ptr + Self._B_PARAM_OFF)
+        var sb = LayoutTensor[
+            dtype, Layout.row_major(Self.B.STATE_SIZE), MutAnyOrigin
+        ](state.ptr + Self.A.STATE_SIZE)
         var input_b = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.IN_DIM), MutAnyOrigin
         ](input.ptr)
-        Self.B.forward[BATCH, dtype](input_b, b_out, pb)
+        Self.B.forward[BATCH, dtype](input_b, b_out, pb, sb)
 
         for b in range(BATCH):
             for i in range(A_OUT):
@@ -216,6 +253,9 @@ struct DualPath[A: Model, B: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -249,13 +289,16 @@ struct DualPath[A: Model, B: Model](Model):
         var pa = LayoutTensor[
             dtype, Layout.row_major(Self.A.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
+        var sa = LayoutTensor[
+            dtype, Layout.row_major(Self.A.STATE_SIZE), MutAnyOrigin
+        ](state.ptr)
         var ca = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.A.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr)
         var grads_a = LayoutTensor[
             dtype, Layout.row_major(Self.A.PARAM_SIZE), MutAnyOrigin
         ](grads.ptr)
-        Self.A.backward[BATCH, dtype](ga, grad_input, pa, ca, grads_a)
+        Self.A.backward[BATCH, dtype](ga, grad_input, pa, sa, ca, grads_a)
 
         # Backward B → temp grad_input, then add
         var gi_b_buf = InlineArray[Scalar[dtype], BATCH * Self.IN_DIM](
@@ -267,6 +310,9 @@ struct DualPath[A: Model, B: Model](Model):
         var pb = LayoutTensor[
             dtype, Layout.row_major(Self.B.PARAM_SIZE), MutAnyOrigin
         ](params.ptr + Self._B_PARAM_OFF)
+        var sb = LayoutTensor[
+            dtype, Layout.row_major(Self.B.STATE_SIZE), MutAnyOrigin
+        ](state.ptr + Self.A.STATE_SIZE)
         var cb = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr + BATCH * Self.A.CACHE_SIZE)
@@ -276,7 +322,7 @@ struct DualPath[A: Model, B: Model](Model):
         var gi_b_rb = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.IN_DIM), MutAnyOrigin
         ](gi_b_buf.unsafe_ptr())
-        Self.B.backward[BATCH, dtype](gb, gi_b_rb, pb, cb, grads_b)
+        Self.B.backward[BATCH, dtype](gb, gi_b_rb, pb, sb, cb, grads_b)
 
         # Sum grad_inputs
         for i in range(BATCH * Self.IN_DIM):
@@ -299,6 +345,9 @@ struct DualPath[A: Model, B: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -344,6 +393,13 @@ struct DualPath[A: Model, B: Model](Model):
             params.ptr + Self._B_PARAM_OFF
         )  # Aligned!
 
+        var sa = LayoutTensor[
+            dtype, Layout.row_major(Self.A.STATE_SIZE), MutAnyOrigin
+        ](state.ptr)
+        var sb = LayoutTensor[
+            dtype, Layout.row_major(Self.B.STATE_SIZE), MutAnyOrigin
+        ](state.ptr + Self.A.STATE_SIZE)
+
         var ca = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.A.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr)
@@ -352,11 +408,11 @@ struct DualPath[A: Model, B: Model](Model):
         ](cache.ptr + BATCH * Self.A.CACHE_SIZE)
 
         # Forward both
-        Self.A.forward_gpu[BATCH, dtype](ctx, a_out_t, input, pa, ca, child_ws)
+        Self.A.forward_gpu[BATCH, dtype](ctx, a_out_t, input, pa, sa, ca, child_ws)
         var input_b = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.IN_DIM), MutAnyOrigin
         ](input.ptr)
-        Self.B.forward_gpu[BATCH, dtype](ctx, b_out_t, input_b, pb, cb, child_ws)
+        Self.B.forward_gpu[BATCH, dtype](ctx, b_out_t, input_b, pb, sb, cb, child_ws)
 
         # Concat into output
         var a_immut = LayoutTensor[
@@ -409,6 +465,9 @@ struct DualPath[A: Model, B: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -430,9 +489,12 @@ struct DualPath[A: Model, B: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -451,6 +513,9 @@ struct DualPath[A: Model, B: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -548,6 +613,9 @@ struct DualPath[A: Model, B: Model](Model):
         var pa = LayoutTensor[
             dtype, Layout.row_major(Self.A.PARAM_SIZE), MutAnyOrigin
         ](params.ptr)
+        var sa = LayoutTensor[
+            dtype, Layout.row_major(Self.A.STATE_SIZE), MutAnyOrigin
+        ](state.ptr)
         var ca = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.A.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr)
@@ -555,7 +623,7 @@ struct DualPath[A: Model, B: Model](Model):
             dtype, Layout.row_major(Self.A.PARAM_SIZE), MutAnyOrigin
         ](grads.ptr)
         Self.A.backward_gpu[BATCH, dtype](
-            ctx, grad_input, ga_t, pa, ca, grads_a, child_ws
+            ctx, grad_input, ga_t, pa, sa, ca, grads_a, child_ws
         )
 
         # Backward B — params/grads at aligned offset
@@ -567,6 +635,9 @@ struct DualPath[A: Model, B: Model](Model):
         ](
             params.ptr + Self._B_PARAM_OFF
         )  # Aligned!
+        var sb = LayoutTensor[
+            dtype, Layout.row_major(Self.B.STATE_SIZE), MutAnyOrigin
+        ](state.ptr + Self.A.STATE_SIZE)
         var cb = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.B.CACHE_SIZE), MutAnyOrigin
         ](cache.ptr + BATCH * Self.A.CACHE_SIZE)
@@ -576,7 +647,7 @@ struct DualPath[A: Model, B: Model](Model):
             grads.ptr + Self._B_PARAM_OFF
         )  # Aligned!
         Self.B.backward_gpu[BATCH, dtype](
-            ctx, gi_b_rb, gb_t, pb, cb, grads_b, child_ws
+            ctx, gi_b_rb, gb_t, pb, sb, cb, grads_b, child_ws
         )
 
         # Add B's grad_input to A's

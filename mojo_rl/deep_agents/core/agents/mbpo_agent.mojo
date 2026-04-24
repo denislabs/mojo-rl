@@ -221,7 +221,8 @@ struct DynamicsEnsemble[
             dtype, Layout.row_major(1, Self.DynModel.OUT_DIM), MutAnyOrigin
         ](out_arr.unsafe_ptr())
         var p = self.members[member_idx].params_view()
-        Self.DynNet.forward[1](in_t, out_t, p)
+        var s = self.members[member_idx].model_state_view()
+        Self.DynNet.forward[1](in_t, out_t, p, s)
 
         # Extract mean and logvar, clamp logvar
         var pred_mean = List[Scalar[dtype]](capacity=Self.DYN_PRED)
@@ -442,7 +443,7 @@ struct DynamicsEnsemble[
                 MutAnyOrigin,
             ](cache_arr.unsafe_ptr())
             var p = self.members[member_idx].params_view()
-            Self.DynNet.forward_with_cache[1](in_t, out_t, p, cache_t)
+            Self.DynNet.forward_with_cache[1](in_t, out_t, p, s, cache_t)
 
             # Compute Gaussian NLL loss and gradient w.r.t. output
             var grad_out_arr = InlineArray[
@@ -487,7 +488,7 @@ struct DynamicsEnsemble[
                 dtype, Layout.row_major(1, Self.DynModel.IN_DIM), MutAnyOrigin
             ](grad_in_arr.unsafe_ptr())
             var g = self.members[member_idx].grads_view()
-            Self.DynNet.backward[1](grad_out_t, grad_in_t, p, cache_t, g)
+            Self.DynNet.backward[1](grad_out_t, grad_in_t, p, s, cache_t, g)
 
         # Optimizer step
         self.members[member_idx].optimizer_step()
@@ -540,7 +541,8 @@ struct DynamicsEnsemble[
                 dtype, Layout.row_major(1, Self.DynModel.OUT_DIM), MutAnyOrigin
             ](out_arr.unsafe_ptr())
             var p = self.members[member_idx].params_view()
-            Self.DynNet.forward[1](in_t, out_t, p)
+            var s = self.members[member_idx].model_state_view()
+            Self.DynNet.forward[1](in_t, out_t, p, s)
 
             for i in range(Self.DYN_PRED):
                 var mean = Float64(out_arr[i])
@@ -1014,8 +1016,9 @@ struct GPUDynamicsEnsemble[
             dtype, Layout.row_major(TB, Self.DynModel.CACHE_SIZE), MutAnyOrigin
         ](self.t_cache.unsafe_ptr())
         var p = self.members[m].params_view()
+        var s = self.members[m].model_state_view()
         Self.DynNet.forward_gpu_with_cache[TB](
-            ctx, input_t, output_t, p, cache_t, self.t_ws,
+            ctx, input_t, output_t, p, s, cache_t, self.t_ws,
         )
         var grad_out_t = LayoutTensor[
             dtype, Layout.row_major(TB, Self.DynModel.OUT_DIM), MutAnyOrigin
@@ -1054,7 +1057,7 @@ struct GPUDynamicsEnsemble[
         var g = self.members[m].grads_view()
         self.members[m].zero_grads(ctx)
         Self.DynNet.backward_gpu[TB](
-            ctx, grad_out_t, grad_in_t, p, cache_t, g, self.t_ws,
+            ctx, grad_out_t, grad_in_t, p, s, cache_t, g, self.t_ws,
         )
         self.members[m].optimizer_step(ctx)
 
@@ -1294,11 +1297,13 @@ struct GPUDynamicsEnsemble[
                         MutAnyOrigin,
                     ](self.t_output.unsafe_ptr())
                     var p_h = self.members[m].params_view()
+                    var s_h = self.members[m].model_state_view()
                     Self.DynNet.forward_gpu[TB](
                         ctx,
                         h_input_t,
                         h_output_t,
                         p_h,
+                        s_h,
                         self.t_ws,
                     )
 
@@ -1807,7 +1812,8 @@ struct MBPOAgent[
             dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
         ](out_arr.unsafe_ptr())
         var p = cpu_state.actor.online.params_view()
-        Self.ActorNet.forward[1](obs_t, out_t, p)
+        var s = cpu_state.actor.online.model_state_view()
+        Self.ActorNet.forward[1](obs_t, out_t, p, s)
 
         # Extract mean + log_std
         var mean_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
@@ -1986,10 +1992,14 @@ struct MBPOAgent[
         var next_ci_t = ws.next_ci()
 
         # Forward all target critics
+        # Zero-length model state slice (critic is stateless; CriticGroup has no model_state_view)
+        var critic_state = LayoutTensor[
+            dtype, Layout.row_major(Self.CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         for i in range(Self.Config.NUM_CRITICS):
             var next_qi_t = ws.next_q(i)
             var p_ct = cpu_state.critics.target_params_view(i)
-            Self.CriticNet.forward[Self.BATCH](next_ci_t, next_qi_t, p_ct)
+            Self.CriticNet.forward[Self.BATCH](next_ci_t, next_qi_t, p_ct, critic_state)
 
         # TD targets
         var q1_tv = LayoutTensor[
@@ -2033,7 +2043,7 @@ struct MBPOAgent[
             var qi_cache_t = ws.q_cache(i)
             var p_ci = cpu_state.critics.online_params_view(i)
             Self.CriticNet.forward_with_cache[Self.BATCH](
-                ci_t, qi_t, p_ci, qi_cache_t
+                ci_t, qi_t, p_ci, critic_state, qi_cache_t
             )
 
             var qio_p = ws.q_out(i).ptr
@@ -2049,7 +2059,7 @@ struct MBPOAgent[
             var g_ci = cpu_state.critics.online_grads_view(i)
             cpu_state.critics.pairs[i].zero_grads()
             Self.CriticNet.backward[Self.BATCH](
-                q_grad_t, d_ci_t, p_ci, qi_cache_t, g_ci
+                q_grad_t, d_ci_t, p_ci, critic_state, qi_cache_t, g_ci
             )
             cpu_state.critics.pairs[i].optimizer_step()
 
@@ -2187,7 +2197,8 @@ struct MBPOAgent[
             dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
         ](out_arr.unsafe_ptr())
         var p = cpu_state.actor.online.params_view()
-        Self.ActorNet.forward[1](obs_t, out_t, p)
+        var s = cpu_state.actor.online.model_state_view()
+        Self.ActorNet.forward[1](obs_t, out_t, p, s)
 
         var result = List[Float64](capacity=Self.ACTIONS)
         for i in range(Self.ACTIONS):
@@ -2493,12 +2504,14 @@ struct MBPOAgent[
                 gpu_dynamics.r_dyn_output.unsafe_ptr()
             )  # reuse buffer for raw output
             var p_actor = gpu_state.actor.online.params_view()
+            var s_actor = gpu_state.actor.online.model_state_view()
 
             Self.ActorNet.forward_gpu[RB](
                 ctx,
                 r_obs_t,
                 raw_t,
                 p_actor,
+                s_actor,
                 gpu_dynamics.r_ws,
             )
 
@@ -2735,9 +2748,10 @@ struct MBPOAgent[
         ](obs_buf.unsafe_ptr())
         var raw_t = gpu_state.explore.raw_act[N_ENVS]()
         var p = gpu_state.actor.online.params_view()
+        var s = gpu_state.actor.online.model_state_view()
 
         Self.ActorNet.forward_gpu[N_ENVS](
-            ctx, obs_t, raw_t, p, gpu_state.explore_buf
+            ctx, obs_t, raw_t, p, s, gpu_state.explore_buf
         )
 
         var act_t = LayoutTensor[
@@ -2915,8 +2929,13 @@ struct MBPOAgent[
         var rew_t = gpu_state.rew_view[BS]()
         var done_t = gpu_state.done_view[BS]()
         var p_actor = gpu_state.actor.online.params_view()
+        var s_actor = gpu_state.actor.online.model_state_view()
         var p_critic = gpu_state.critics.online_params_view(0)
         var p_critic_t = gpu_state.critics.target_params_view(0)
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        var s_critic = LayoutTensor[
+            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
         # Phase 2: Target actions (SAC: use online actor, no target)
         # Increment RNG counter before target action
@@ -2956,13 +2975,13 @@ struct MBPOAgent[
 
         var next_q_t = gpu_state.next_q_view[BS]()
         Self.CriticNet.forward_gpu[BS](
-            ctx, next_ci_t, next_q_t, p_critic_t, gpu_state.critic_ws
+            ctx, next_ci_t, next_q_t, p_critic_t, s_critic, gpu_state.critic_ws
         )
         comptime if Self.Config.NUM_CRITICS == 2:
             var nq2_t = gpu_state.nq2_view[BS]()
             var p_c2t = gpu_state.critics.target_params_view(1)
             Self.CriticNet.forward_gpu[BS](
-                ctx, next_ci_t, nq2_t, p_c2t, gpu_state.critic2_ws
+                ctx, next_ci_t, nq2_t, p_c2t, s_critic, gpu_state.critic2_ws
             )
 
         # Phase 2c: TD targets
@@ -3004,6 +3023,7 @@ struct MBPOAgent[
             ci_t,
             q_t,
             p_critic,
+            s_critic,
             q_cache_t,
             gpu_state.critic_ws,
         )
@@ -3021,6 +3041,7 @@ struct MBPOAgent[
             q_grad_t,
             d_ci_t,
             p_critic,
+            s_critic,
             q_cache_t,
             g_critic,
             gpu_state.critic_ws,
@@ -3064,6 +3085,7 @@ struct MBPOAgent[
                 ci_t,
                 q2_out_t,
                 p_c2,
+                s_critic,
                 q2_cache_t,
                 gpu_state.critic2_ws,
             )
@@ -3081,6 +3103,7 @@ struct MBPOAgent[
                 q_grad_t,
                 d_ci_t,
                 p_c2,
+                s_critic,
                 q2_cache_t,
                 g_c2,
                 gpu_state.critic2_ws,

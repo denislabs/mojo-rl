@@ -34,6 +34,7 @@ struct SkipConcat[Inner: Model](Model):
     comptime OUT_DIM: Int = Self.Inner.IN_DIM + Self.Inner.OUT_DIM
     comptime PARAM_SIZE: Int = Self.Inner.PARAM_SIZE
     comptime CACHE_SIZE: Int = Self.Inner.CACHE_SIZE
+    comptime STATE_SIZE: Int = Self.Inner.STATE_SIZE
     # Own scratch: inner_out / grad_inner buffer (shared between fwd/bwd)
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
         Self.Inner.OUT_DIM + Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
@@ -53,6 +54,16 @@ struct SkipConcat[Inner: Model](Model):
     ):
         Self.Inner.initialize_params[INIT, dtype](params)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Delegate to Inner model's initialize_state."""
+        comptime if Self.Inner.STATE_SIZE > 0:
+            Self.Inner.initialize_state[dtype](state)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -69,6 +80,9 @@ struct SkipConcat[Inner: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -95,7 +109,7 @@ struct SkipConcat[Inner: Model](Model):
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
         ](inner_buf.unsafe_ptr())
 
-        Self.Inner.forward[BATCH, dtype](input, inner_out, params, cache)
+        Self.Inner.forward[BATCH, dtype](input, inner_out, params, state, cache)
 
         # Copy inner output to second part of output
         for b in range(BATCH):
@@ -121,6 +135,9 @@ struct SkipConcat[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         # Copy input
         for b in range(BATCH):
@@ -138,7 +155,7 @@ struct SkipConcat[Inner: Model](Model):
             dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
         ](inner_buf.unsafe_ptr())
 
-        Self.Inner.forward[BATCH, dtype](input, inner_out, params)
+        Self.Inner.forward[BATCH, dtype](input, inner_out, params, state)
 
         for b in range(BATCH):
             for i in range(INNER_OUT):
@@ -163,6 +180,9 @@ struct SkipConcat[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -186,7 +206,7 @@ struct SkipConcat[Inner: Model](Model):
         ](grad_inner_buf.unsafe_ptr())
 
         # Backward through Inner
-        Self.Inner.backward[BATCH, dtype](grad_inner, grad_input, params, cache, grads)
+        Self.Inner.backward[BATCH, dtype](grad_inner, grad_input, params, state, cache, grads)
 
         # Add skip gradient: grad_input += grad_output[:, :IN_DIM]
         for b in range(BATCH):
@@ -214,6 +234,9 @@ struct SkipConcat[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -240,7 +263,7 @@ struct SkipConcat[Inner: Model](Model):
 
         # Forward Inner
         Self.Inner.forward_gpu[BATCH, dtype](
-            ctx, inner_out_t, input, params, cache, child_ws
+            ctx, inner_out_t, input, params, state, cache, child_ws
         )
 
         # Copy input + inner_output → output (interleaved)
@@ -302,6 +325,9 @@ struct SkipConcat[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -324,7 +350,7 @@ struct SkipConcat[Inner: Model](Model):
         ](inner_out_ptr)
 
         Self.Inner.forward_gpu_no_cache[BATCH, dtype](
-            ctx, inner_out_t, input, params, child_ws
+            ctx, inner_out_t, input, params, state, child_ws
         )
 
         var input_immut = LayoutTensor[
@@ -382,9 +408,12 @@ struct SkipConcat[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -403,6 +432,9 @@ struct SkipConcat[Inner: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -469,6 +501,7 @@ struct SkipConcat[Inner: Model](Model):
             grad_input,
             grad_inner_t,
             params,
+            state,
             cache,
             grads,
             child_ws,

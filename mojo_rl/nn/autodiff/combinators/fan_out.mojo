@@ -47,6 +47,7 @@ struct FanOut[Inner: Model, N: Int](Model):
     ) * Self._ALIGNED_INNER_PS + Self.Inner.PARAM_SIZE
 
     comptime CACHE_SIZE: Int = Self.N * Self.Inner.CACHE_SIZE
+    comptime STATE_SIZE: Int = Self.N * Self.Inner.STATE_SIZE
     # Own scratch: go_buf (Inner.OUT_DIM) + gi_buf (IN_DIM) reused across iterations
     comptime _OWN_WS: Int = Self.Inner.OUT_DIM + Self.IN_DIM
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = (
@@ -68,6 +69,10 @@ struct FanOut[Inner: Model, N: Int](Model):
     @staticmethod
     def _out_offset[i: Int]() -> Int:
         return i * Self.Inner.OUT_DIM
+
+    @staticmethod
+    def _state_offset[i: Int]() -> Int:
+        return i * Self.Inner.STATE_SIZE
 
     # =========================================================================
     # Initialization
@@ -92,6 +97,20 @@ struct FanOut[Inner: Model, N: Int](Model):
             ](params.ptr + Self._param_offset[i]())
             Self.Inner.initialize_params[INIT, dtype](pi)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Recurse into each copy's initialize_state."""
+        comptime if Self.Inner.STATE_SIZE > 0:
+            comptime for i in range(Self.N):
+                var si = LayoutTensor[
+                    dtype, Layout.row_major(Self.Inner.STATE_SIZE), MutAnyOrigin
+                ](state.ptr + Self._state_offset[i]())
+                Self.Inner.initialize_state[dtype](si)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -108,6 +127,9 @@ struct FanOut[Inner: Model, N: Int](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -127,6 +149,9 @@ struct FanOut[Inner: Model, N: Int](Model):
             var pi = LayoutTensor[
                 dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin
             ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype, Layout.row_major(Self.Inner.STATE_SIZE), MutAnyOrigin
+            ](state.ptr + Self._state_offset[i]())
             var ci = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
@@ -136,7 +161,7 @@ struct FanOut[Inner: Model, N: Int](Model):
             var input_i = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.Inner.IN_DIM), MutAnyOrigin
             ](input.ptr)
-            Self.Inner.forward[BATCH, dtype](input_i, i_out, pi, ci)
+            Self.Inner.forward[BATCH, dtype](input_i, i_out, pi, si, ci)
 
             # Copy into concat output
             for b in range(BATCH):
@@ -162,6 +187,9 @@ struct FanOut[Inner: Model, N: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         comptime I_OUT = Self.Inner.OUT_DIM
 
@@ -176,10 +204,13 @@ struct FanOut[Inner: Model, N: Int](Model):
             var pi = LayoutTensor[
                 dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin
             ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype, Layout.row_major(Self.Inner.STATE_SIZE), MutAnyOrigin
+            ](state.ptr + Self._state_offset[i]())
             var input_i = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.Inner.IN_DIM), MutAnyOrigin
             ](input.ptr)
-            Self.Inner.forward[BATCH, dtype](input_i, i_out, pi)
+            Self.Inner.forward[BATCH, dtype](input_i, i_out, pi, si)
 
             for b in range(BATCH):
                 for j in range(I_OUT):
@@ -203,6 +234,9 @@ struct FanOut[Inner: Model, N: Int](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -237,6 +271,9 @@ struct FanOut[Inner: Model, N: Int](Model):
             var pi = LayoutTensor[
                 dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin
             ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype, Layout.row_major(Self.Inner.STATE_SIZE), MutAnyOrigin
+            ](state.ptr + Self._state_offset[i]())
             var ci = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
@@ -248,7 +285,7 @@ struct FanOut[Inner: Model, N: Int](Model):
 
             comptime if i == 0:
                 # First copy: write directly to grad_input
-                Self.Inner.backward[BATCH, dtype](go_i, grad_input, pi, ci, grads_i)
+                Self.Inner.backward[BATCH, dtype](go_i, grad_input, pi, si, ci, grads_i)
             else:
                 # Subsequent copies: write to temp, then accumulate
                 var gi_tmp = LayoutTensor[
@@ -256,7 +293,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                     Layout.row_major(BATCH, Self.Inner.IN_DIM),
                     MutAnyOrigin,
                 ](gi_tmp_buf.unsafe_ptr())
-                Self.Inner.backward[BATCH, dtype](go_i, gi_tmp, pi, ci, grads_i)
+                Self.Inner.backward[BATCH, dtype](go_i, gi_tmp, pi, si, ci, grads_i)
                 # Accumulate into grad_input
                 for k in range(BATCH * Self.IN_DIM):
                     grad_input.ptr[k] = grad_input.ptr[k] + gi_tmp_buf[k]
@@ -278,6 +315,9 @@ struct FanOut[Inner: Model, N: Int](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -317,13 +357,18 @@ struct FanOut[Inner: Model, N: Int](Model):
             ](
                 params.ptr + Self._param_offset[i]()
             )  # Aligned!
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var ci = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
                 MutAnyOrigin,
             ](cache.ptr + BATCH * Self._cache_offset[i]())
             Self.Inner.forward_gpu[BATCH, dtype](
-                ctx, i_out_t, input_i, pi, ci, child_ws
+                ctx, i_out_t, input_i, pi, si, ci, child_ws
             )
 
             # Scatter copy i's output into the concat output
@@ -370,6 +415,9 @@ struct FanOut[Inner: Model, N: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -391,9 +439,12 @@ struct FanOut[Inner: Model, N: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     @staticmethod
     def backward_gpu[
@@ -408,6 +459,9 @@ struct FanOut[Inner: Model, N: Int](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -479,6 +533,11 @@ struct FanOut[Inner: Model, N: Int](Model):
             ](
                 params.ptr + Self._param_offset[i]()
             )  # Aligned!
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var ci = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
@@ -495,7 +554,7 @@ struct FanOut[Inner: Model, N: Int](Model):
             comptime if i == 0:
                 # First copy: backward directly into grad_input
                 Self.Inner.backward_gpu[BATCH, dtype](
-                    ctx, grad_input, go_t, pi, ci, grads_i, child_ws
+                    ctx, grad_input, go_t, pi, si, ci, grads_i, child_ws
                 )
             else:
                 # Subsequent copies: backward into workspace temp, then accumulate
@@ -505,7 +564,7 @@ struct FanOut[Inner: Model, N: Int](Model):
                     MutAnyOrigin,
                 ](gi_ws_ptr)
                 Self.Inner.backward_gpu[BATCH, dtype](
-                    ctx, gi_t, go_t, pi, ci, grads_i, child_ws
+                    ctx, gi_t, go_t, pi, si, ci, grads_i, child_ws
                 )
 
                 # Add to grad_input

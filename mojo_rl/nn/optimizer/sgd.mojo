@@ -19,6 +19,7 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
     """
 
     comptime STATE_PER_PARAM: Int = 1
+    comptime GLOBAL_STATE_SIZE: Int = 0
 
     def __init__(out self):
         pass
@@ -41,6 +42,9 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
             dtype,
             Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
             MutAnyOrigin,
+        ],
+        mut opt_global_state: LayoutTensor[
+            dtype, Layout.row_major(Self.GLOBAL_STATE_SIZE), MutAnyOrigin
         ],
         step_num: Int,
         lr_scale: Float64 = 1.0,
@@ -89,6 +93,9 @@ struct SGD[LR: Float64 = 0.01](Optimizer):
             dtype,
             Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
             MutAnyOrigin,
+        ],
+        mut opt_global_state: LayoutTensor[
+            dtype, Layout.row_major(Self.GLOBAL_STATE_SIZE), MutAnyOrigin
         ],
         step_num: Int,
         lr_scale: Float64 = 1.0,

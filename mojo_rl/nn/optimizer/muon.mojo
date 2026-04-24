@@ -42,6 +42,7 @@ struct Muon[
     """
 
     comptime STATE_PER_PARAM: Int = 1
+    comptime GLOBAL_STATE_SIZE: Int = 0
 
     # Newton-Schulz coefficients (tuned values from paper)
     comptime NS_A: Float64 = 3.4445
@@ -69,6 +70,9 @@ struct Muon[
             dtype,
             Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
             MutAnyOrigin,
+        ],
+        mut opt_global_state: LayoutTensor[
+            dtype, Layout.row_major(Self.GLOBAL_STATE_SIZE), MutAnyOrigin
         ],
         step_num: Int,
         lr_scale: Float64 = 1.0,
@@ -330,6 +334,9 @@ struct Muon[
             dtype,
             Layout.row_major(PARAM_SIZE, Self.STATE_PER_PARAM),
             MutAnyOrigin,
+        ],
+        mut opt_global_state: LayoutTensor[
+            dtype, Layout.row_major(Self.GLOBAL_STATE_SIZE), MutAnyOrigin
         ],
         step_num: Int,
         lr_scale: Float64 = 1.0,

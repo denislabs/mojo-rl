@@ -94,9 +94,24 @@ struct Sequential[*LAYERS: Model](Model):
             total += Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
         return total
 
+    @staticmethod
+    def _sum_state_size() -> Int:
+        """Total STATE_SIZE across layers — no alignment padding.
+
+        State slots are scalar-indexed (RNG counters, BN running stats),
+        not matmul'd, so they don't need the 4-element GPU alignment that
+        _sum_param_size applies.
+        """
+        var total = 0
+
+        comptime for i in range(Self.N):
+            total += Self.model_types[i].STATE_SIZE
+        return total
+
     comptime PARAM_SIZE: Int = Self._sum_param_size()
     comptime CACHE_SIZE: Int = Self._sum_cache_size()
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self._total_inter() + Self._sum_ws()
+    comptime STATE_SIZE: Int = Self._sum_state_size()
 
     # --- Offset helpers (all per-sample) ---
 
@@ -140,6 +155,15 @@ struct Sequential[*LAYERS: Model](Model):
         comptime for j in range(idx):
             var ws = Self.model_types[j].WORKSPACE_SIZE_PER_SAMPLE
             total += _seq_align4(ws) if ws > 0 else 0
+        return total
+
+    @staticmethod
+    def _state_offset[idx: Int]() -> Int:
+        """Offset of layer idx's state slice (no alignment)."""
+        var total = 0
+
+        comptime for j in range(idx):
+            total += Self.model_types[j].STATE_SIZE
         return total
 
     @staticmethod
@@ -189,6 +213,22 @@ struct Sequential[*LAYERS: Model](Model):
                 ](params.ptr + Self._param_offset[i]())
                 Self.model_types[i].zero_biases[dtype](layer_params)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Recursively initialize each layer's persistent state."""
+        comptime for i in range(Self.N):
+            comptime if Self.model_types[i].STATE_SIZE > 0:
+                var layer_state = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
+                Self.model_types[i].initialize_state[dtype](layer_state)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -205,6 +245,9 @@ struct Sequential[*LAYERS: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -226,12 +269,17 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var s_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
             var c_v = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
                 MutAnyOrigin,
             ](cache.ptr)
-            Self.model_types[0].forward[BATCH, dtype](in_v, out_v, p_v, c_v)
+            Self.model_types[0].forward[BATCH, dtype](in_v, out_v, p_v, s_v, c_v)
         else:
             # Flat intermediate buffer for all N-1 inter-layer activations
             var inter_storage = List[Scalar[dtype]](
@@ -247,6 +295,11 @@ struct Sequential[*LAYERS: Model](Model):
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var li_s = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
                 var li_c = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
@@ -265,7 +318,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](inter_ptr)
                     Self.model_types[i].forward[BATCH, dtype](
-                        li_in, li_out, li_p, li_c
+                        li_in, li_out, li_p, li_s, li_c
                     )
                 elif i == Self.N - 1:
                     var li_in = LayoutTensor[
@@ -279,7 +332,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](output.ptr)
                     Self.model_types[i].forward[BATCH, dtype](
-                        li_in, li_out, li_p, li_c
+                        li_in, li_out, li_p, li_s, li_c
                     )
                 else:
                     var li_in = LayoutTensor[
@@ -293,7 +346,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i]())
                     Self.model_types[i].forward[BATCH, dtype](
-                        li_in, li_out, li_p, li_c
+                        li_in, li_out, li_p, li_s, li_c
                     )
 
     # =========================================================================
@@ -313,6 +366,9 @@ struct Sequential[*LAYERS: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         comptime if Self.N == 1:
             var in_v = LayoutTensor[
@@ -330,7 +386,12 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
-            Self.model_types[0].forward[BATCH, dtype](in_v, out_v, p_v)
+            var s_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
+            Self.model_types[0].forward[BATCH, dtype](in_v, out_v, p_v, s_v)
         else:
             var inter_storage = List[Scalar[dtype]](
                 capacity=BATCH * Self._total_inter()
@@ -345,6 +406,11 @@ struct Sequential[*LAYERS: Model](Model):
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var li_s = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
 
                 comptime if i == 0:
                     var li_in = LayoutTensor[
@@ -357,7 +423,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr)
-                    Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p)
+                    Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p, li_s)
                 elif i == Self.N - 1:
                     var li_in = LayoutTensor[
                         dtype,
@@ -369,7 +435,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](output.ptr)
-                    Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p)
+                    Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p, li_s)
                 else:
                     var li_in = LayoutTensor[
                         dtype,
@@ -381,7 +447,7 @@ struct Sequential[*LAYERS: Model](Model):
                         Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](inter_ptr + BATCH * Self._inter_offset[i]())
-                    Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p)
+                    Self.model_types[i].forward[BATCH, dtype](li_in, li_out, li_p, li_s)
 
     # =========================================================================
     # CPU Backward
@@ -399,6 +465,9 @@ struct Sequential[*LAYERS: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -423,6 +492,11 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var s_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
             var c_v = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
@@ -433,7 +507,7 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](grads.ptr)
-            Self.model_types[0].backward[BATCH, dtype](go_v, gi_v, p_v, c_v, g_v)
+            Self.model_types[0].backward[BATCH, dtype](go_v, gi_v, p_v, s_v, c_v, g_v)
         else:
             # Gradient intermediate buffer (same layout as forward inter)
             var grad_inter_storage = List[Scalar[dtype]](
@@ -452,6 +526,11 @@ struct Sequential[*LAYERS: Model](Model):
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var li_s = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
                 var li_c = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
@@ -476,7 +555,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.model_types[i].backward[BATCH, dtype](
-                        li_go, li_gi, li_p, li_c, li_g
+                        li_go, li_gi, li_p, li_s, li_c, li_g
                     )
                 elif i == 0:
                     # First layer: grad_inter[0] -> Sequential grad_input
@@ -491,7 +570,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](grad_input.ptr)
                     Self.model_types[i].backward[BATCH, dtype](
-                        li_go, li_gi, li_p, li_c, li_g
+                        li_go, li_gi, li_p, li_s, li_c, li_g
                     )
                 else:
                     # Middle: grad_inter[i] -> grad_inter[i-1]
@@ -506,7 +585,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](gi_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.model_types[i].backward[BATCH, dtype](
-                        li_go, li_gi, li_p, li_c, li_g
+                        li_go, li_gi, li_p, li_s, li_c, li_g
                     )
 
     # =========================================================================
@@ -526,6 +605,9 @@ struct Sequential[*LAYERS: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -553,6 +635,11 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var s_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
             var c_v = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
@@ -575,7 +662,7 @@ struct Sequential[*LAYERS: Model](Model):
             if perf:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
             Self.model_types[0].forward_gpu[BATCH, dtype](
-                ctx, out_rb, in_rb, p_v, c_v, workspace
+                ctx, out_rb, in_rb, p_v, s_v, c_v, workspace
             )
             if perf:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
@@ -590,6 +677,11 @@ struct Sequential[*LAYERS: Model](Model):
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var li_s = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
                 var li_c = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
@@ -622,7 +714,7 @@ struct Sequential[*LAYERS: Model](Model):
                         ]
                     ](input)
                     Self.model_types[i].forward_gpu[BATCH, dtype](
-                        ctx, inter_out, in_rb, li_p, li_c, li_ws
+                        ctx, inter_out, in_rb, li_p, li_s, li_c, li_ws
                     )
                 elif i == Self.N - 1:
                     var inter_in = LayoutTensor[
@@ -640,7 +732,7 @@ struct Sequential[*LAYERS: Model](Model):
                         ]
                     ](output)
                     Self.model_types[i].forward_gpu[BATCH, dtype](
-                        ctx, out_rb, inter_in, li_p, li_c, li_ws
+                        ctx, out_rb, inter_in, li_p, li_s, li_c, li_ws
                     )
                 else:
                     var inter_in = LayoutTensor[
@@ -654,7 +746,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i]())
                     Self.model_types[i].forward_gpu[BATCH, dtype](
-                        ctx, inter_out, inter_in, li_p, li_c, li_ws
+                        ctx, inter_out, inter_in, li_p, li_s, li_c, li_ws
                     )
 
                 if perf:
@@ -684,6 +776,9 @@ struct Sequential[*LAYERS: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -699,6 +794,11 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var s_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
             var out_rb = rebind[
                 LayoutTensor[
                     dtype,
@@ -716,7 +816,7 @@ struct Sequential[*LAYERS: Model](Model):
             if perf:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
             Self.model_types[0].forward_gpu_no_cache[BATCH, dtype](
-                ctx, out_rb, in_rb, p_v, workspace
+                ctx, out_rb, in_rb, p_v, s_v, workspace
             )
             if perf:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
@@ -731,6 +831,11 @@ struct Sequential[*LAYERS: Model](Model):
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var li_s = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
                 var li_ws_size = (
                     BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
                 )
@@ -758,7 +863,7 @@ struct Sequential[*LAYERS: Model](Model):
                         ]
                     ](input)
                     Self.model_types[i].forward_gpu_no_cache[BATCH, dtype](
-                        ctx, inter_out, in_rb, li_p, li_ws
+                        ctx, inter_out, in_rb, li_p, li_s, li_ws
                     )
                 elif i == Self.N - 1:
                     var inter_in = LayoutTensor[
@@ -776,7 +881,7 @@ struct Sequential[*LAYERS: Model](Model):
                         ]
                     ](output)
                     Self.model_types[i].forward_gpu_no_cache[BATCH, dtype](
-                        ctx, out_rb, inter_in, li_p, li_ws
+                        ctx, out_rb, inter_in, li_p, li_s, li_ws
                     )
                 else:
                     var inter_in = LayoutTensor[
@@ -790,7 +895,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i]())
                     Self.model_types[i].forward_gpu_no_cache[BATCH, dtype](
-                        ctx, inter_out, inter_in, li_p, li_ws
+                        ctx, inter_out, inter_in, li_p, li_s, li_ws
                     )
 
                 if perf:
@@ -821,6 +926,9 @@ struct Sequential[*LAYERS: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         comptime if Self.N == 1:
@@ -829,6 +937,11 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var s_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
             var out_rb = rebind[
                 LayoutTensor[
                     dtype,
@@ -844,7 +957,7 @@ struct Sequential[*LAYERS: Model](Model):
                 ]
             ](input)
             Self.model_types[0].forward_gpu_no_cache_on_stream[BATCH, dtype](
-                ctx, stream, out_rb, in_rb, p_v, workspace
+                ctx, stream, out_rb, in_rb, p_v, s_v, workspace
             )
         else:
             var ws_ptr = workspace.unsafe_ptr()
@@ -855,6 +968,11 @@ struct Sequential[*LAYERS: Model](Model):
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var li_s = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
                 var li_ws_size = (
                     BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
                 )
@@ -879,7 +997,7 @@ struct Sequential[*LAYERS: Model](Model):
                         ]
                     ](input)
                     Self.model_types[i].forward_gpu_no_cache_on_stream[BATCH, dtype](
-                        ctx, stream, inter_out, in_rb, li_p, li_ws
+                        ctx, stream, inter_out, in_rb, li_p, li_s, li_ws
                     )
                 elif i == Self.N - 1:
                     var inter_in = LayoutTensor[
@@ -897,7 +1015,7 @@ struct Sequential[*LAYERS: Model](Model):
                         ]
                     ](output)
                     Self.model_types[i].forward_gpu_no_cache_on_stream[BATCH, dtype](
-                        ctx, stream, out_rb, inter_in, li_p, li_ws
+                        ctx, stream, out_rb, inter_in, li_p, li_s, li_ws
                     )
                 else:
                     var inter_in = LayoutTensor[
@@ -911,7 +1029,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i]())
                     Self.model_types[i].forward_gpu_no_cache_on_stream[BATCH, dtype](
-                        ctx, stream, inter_out, inter_in, li_p, li_ws
+                        ctx, stream, inter_out, inter_in, li_p, li_s, li_ws
                     )
 
     # =========================================================================
@@ -931,6 +1049,9 @@ struct Sequential[*LAYERS: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -959,6 +1080,11 @@ struct Sequential[*LAYERS: Model](Model):
                 Layout.row_major(Self.model_types[0].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr)
+            var s_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
             var c_v = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
@@ -986,7 +1112,7 @@ struct Sequential[*LAYERS: Model](Model):
             if perf:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
             Self.model_types[0].backward_gpu[BATCH, dtype](
-                ctx, gi_rb, go_rb, p_v, c_v, g_v, workspace
+                ctx, gi_rb, go_rb, p_v, s_v, c_v, g_v, workspace
             )
             if perf:
                 perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
@@ -1004,6 +1130,11 @@ struct Sequential[*LAYERS: Model](Model):
                     Layout.row_major(Self.model_types[i].PARAM_SIZE),
                     MutAnyOrigin,
                 ](params.ptr + Self._param_offset[i]())
+                var li_s = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
                 var li_c = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
@@ -1044,7 +1175,7 @@ struct Sequential[*LAYERS: Model](Model):
                         ]
                     ](grad_output)
                     Self.model_types[i].backward_gpu[BATCH, dtype](
-                        ctx, gi, go_rb, li_p, li_c, li_g, li_ws
+                        ctx, gi, go_rb, li_p, li_s, li_c, li_g, li_ws
                     )
                 elif i == 0:
                     # First layer: grad_inter[0] -> grad_input
@@ -1061,7 +1192,7 @@ struct Sequential[*LAYERS: Model](Model):
                         ]
                     ](grad_input)
                     Self.model_types[i].backward_gpu[BATCH, dtype](
-                        ctx, gi_rb, go, li_p, li_c, li_g, li_ws
+                        ctx, gi_rb, go, li_p, li_s, li_c, li_g, li_ws
                     )
                 else:
                     # Middle: grad_inter[i] -> grad_inter[i-1]
@@ -1076,7 +1207,7 @@ struct Sequential[*LAYERS: Model](Model):
                         MutAnyOrigin,
                     ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
                     Self.model_types[i].backward_gpu[BATCH, dtype](
-                        ctx, gi, go, li_p, li_c, li_g, li_ws
+                        ctx, gi, go, li_p, li_s, li_c, li_g, li_ws
                     )
 
                 if perf:

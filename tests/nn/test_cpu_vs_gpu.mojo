@@ -91,7 +91,8 @@ def cpu_vs_gpu_check[M: Model, BS: Int = 4](
         dtype, Layout.row_major(BS, CS), MutAnyOrigin
     ](cpu_cache_ptr)
 
-    M.forward[BS](cpu_input_t, cpu_output_t, cpu_state.params_view(), cpu_cache_t)
+    var cpu_model_state = cpu_state.model_state_view()
+    M.forward[BS](cpu_input_t, cpu_output_t, cpu_state.params_view(), cpu_model_state, cpu_cache_t)
 
     # ── GPU forward ──────────────────────────────────────────
     var gpu_input_host = ctx.enqueue_create_host_buffer[dtype](BS * IN)
@@ -118,11 +119,13 @@ def cpu_vs_gpu_check[M: Model, BS: Int = 4](
         dtype, Layout.row_major(BS, CS), MutAnyOrigin
     ](gpu_cache_buf.unsafe_ptr())
 
+    var gpu_model_state = gpu.model_state_view()
     M.forward_gpu[BS](
         ctx,
         gpu_output_t,
         gpu_input_t,
         gpu.params_view(),
+        gpu_model_state,
         gpu_cache_t,
         workspace,
     )
@@ -210,6 +213,7 @@ def cpu_vs_gpu_check[M: Model, BS: Int = 4](
         cpu_grad_out_t,
         cpu_grad_in_t,
         cpu_state.params_view(),
+        cpu_model_state,
         cpu_cache_t,
         cpu_grads,
     )
@@ -238,6 +242,7 @@ def cpu_vs_gpu_check[M: Model, BS: Int = 4](
         gpu_grad_in_t,
         gpu_grad_out_t,
         gpu.params_view(),
+        gpu_model_state,
         gpu_cache_t,
         gpu_grads,
         workspace,

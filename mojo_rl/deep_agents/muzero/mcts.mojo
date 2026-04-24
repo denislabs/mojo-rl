@@ -276,7 +276,7 @@ struct MCTS[
         ](h0_ptr)
 
         Network[RepModel, RepOpt].forward[B](
-            obs_t, h0_t, rep_state.params_view()
+            obs_t, h0_t, rep_state.params_view(), rep_state.model_state_view()
         )
 
         # Scale hidden state to [0, 1]
@@ -298,7 +298,7 @@ struct MCTS[
             dtype, Layout.row_major(B, PRED_IN), MutAnyOrigin
         ](h0_ptr)
         Network[PredModel, PredOpt].forward[B](
-            h0_view, pred_out_t, pred_state.params_view()
+            h0_view, pred_out_t, pred_state.params_view(), pred_state.model_state_view()
         )
 
         # Parse prediction: [policy_logits(ACTION_DIM) | value_logits(NUM_BINS)]
@@ -461,7 +461,7 @@ struct MCTS[
             dtype, Layout.row_major(B1, REP_OUT), MutAnyOrigin
         ](h0_ptr)
         Network[RepModel, RepOpt].forward[B1](
-            obs_t, h0_t, rep_state.params_view()
+            obs_t, h0_t, rep_state.params_view(), rep_state.model_state_view()
         )
         self._scale_hidden_state(0)
         obs_ptr.free()
@@ -478,7 +478,7 @@ struct MCTS[
             dtype, Layout.row_major(B1, PRED_IN_R), MutAnyOrigin
         ](h0_ptr)
         Network[PredModel, PredOpt].forward[B1](
-            h0_view, pred_out_t, pred_state.params_view()
+            h0_view, pred_out_t, pred_state.params_view(), pred_state.model_state_view()
         )
 
         # Create root node with softmax prior
@@ -624,7 +624,7 @@ struct MCTS[
                 dtype, Layout.row_major(BATCH_SIMS, DYN_OUT), MutAnyOrigin
             ](batch_dyn_output)
             Network[DynModel, DynOpt].forward[BATCH_SIMS](
-                dyn_in_t, dyn_out_t, dyn_state.params_view()
+                dyn_in_t, dyn_out_t, dyn_state.params_view(), dyn_state.model_state_view()
             )
 
             # ── Phase 3: Extract hidden states, batched prediction ───
@@ -670,7 +670,7 @@ struct MCTS[
                 dtype, Layout.row_major(BATCH_SIMS, PRED_OUT), MutAnyOrigin
             ](batch_pred_output)
             Network[PredModel, PredOpt].forward[BATCH_SIMS](
-                pred_in_t, pred_out_t_b, pred_state.params_view()
+                pred_in_t, pred_out_t_b, pred_state.params_view(), pred_state.model_state_view()
             )
 
             # ── Phase 4: Create nodes + backup ───────────────────────
@@ -938,7 +938,7 @@ struct MCTS[
         ](dyn_output_ptr)
 
         Network[DynModel, DynOpt].forward[B](
-            dyn_input_t, dyn_output_t, dyn_state.params_view()
+            dyn_input_t, dyn_output_t, dyn_state.params_view(), dyn_state.model_state_view()
         )
 
         # Extract child hidden state (first LATENT_DIM elements)
@@ -972,7 +972,7 @@ struct MCTS[
         ](self.hidden_states + child_h_offset)
 
         Network[PredModel, PredOpt].forward[B](
-            child_h_t, pred_out_t, pred_state.params_view()
+            child_h_t, pred_out_t, pred_state.params_view(), pred_state.model_state_view()
         )
 
         # Create child node
@@ -1036,7 +1036,7 @@ struct MCTS[
         ](self.hidden_states + h_offset)
 
         Network[PredModel, PredOpt].forward[B](
-            h_t, pred_out_t, pred_state.params_view()
+            h_t, pred_out_t, pred_state.params_view(), pred_state.model_state_view()
         )
 
         var value = self._decode_value(

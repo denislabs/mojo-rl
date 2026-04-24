@@ -1699,6 +1699,12 @@ struct AutoFused[*OPS: DiffOp](Model):
     comptime CACHE_SIZE: Int = _fused_cache_size[*Self.OPS]()
     comptime INTER_SIZE_PER_SAMPLE: Int = _fused_inter_size[*Self.OPS]()
 
+    # Persistent non-trainable state: sum of children's STATE_SIZE — unaligned
+    # (state slots are scalar-indexed, not matmul'd). DiffOp primitives don't
+    # currently declare STATE_SIZE, so this collapses to 0. Kept for symmetry
+    # with PARAM_SIZE/CACHE_SIZE and to satisfy the Model trait.
+    comptime STATE_SIZE: Int = 0
+
     @staticmethod
     def _max_op_workspace() -> Int:
         """Max per-sample op workspace across all ops (reused sequentially)."""
@@ -1724,6 +1730,16 @@ struct AutoFused[*OPS: DiffOp](Model):
         comptime for j in range(idx):
             total += Self.op_types[j].PARAM_SIZE
         return total
+
+    @staticmethod
+    def _state_offset[idx: Int]() -> Int:
+        """Unaligned state offset for child idx.
+
+        Mirrors _param_offset_raw but for STATE_SIZE. Since DiffOp primitives
+        don't declare STATE_SIZE, this is effectively 0 today; the helper
+        is kept for symmetry with Sequential's per-child state slicing.
+        """
+        return 0
 
     @staticmethod
     def initialize_params[
@@ -1766,6 +1782,20 @@ struct AutoFused[*OPS: DiffOp](Model):
                 for j in range(Self.op_types[i].PARAM_SIZE):
                     params.ptr[base + j] = Scalar[dtype](0.0)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize persistent non-trainable state.
+
+        DiffOp primitives don't declare STATE_SIZE, so this is a no-op in
+        practice (Self.STATE_SIZE == 0 → zero-length tensor). Kept for
+        trait conformance and forward-compatibility.
+        """
+        pass
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -1783,10 +1813,14 @@ struct AutoFused[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
+        # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
         var inter_size = BATCH * Self.WORKSPACE_SIZE_PER_SAMPLE
         var inter_storage = List[Scalar[dtype]](
             capacity=inter_size if inter_size > 0 else 1
@@ -1822,7 +1856,11 @@ struct AutoFused[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
+        # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
         var cap = BATCH * Self.CACHE_SIZE if Self.CACHE_SIZE > 0 else 1
         var dummy_cache = List[Scalar[dtype]](capacity=cap)
         for _ in range(cap):
@@ -1832,7 +1870,7 @@ struct AutoFused[*OPS: DiffOp](Model):
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](dummy_cache.unsafe_ptr())
-        Self.forward[BATCH](input, output, params, c)
+        Self.forward[BATCH](input, output, params, state, c)
 
     # =========================================================================
     # CPU Backward
@@ -1851,6 +1889,9 @@ struct AutoFused[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -1858,6 +1899,7 @@ struct AutoFused[*OPS: DiffOp](Model):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
+        # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
         var gi_size = BATCH * Self.WORKSPACE_SIZE_PER_SAMPLE
         var gi_storage = List[Scalar[dtype]](
             capacity=gi_size if gi_size > 0 else 1
@@ -1895,6 +1937,9 @@ struct AutoFused[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -1902,6 +1947,7 @@ struct AutoFused[*OPS: DiffOp](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
+        # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
             Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
         )
@@ -1936,17 +1982,21 @@ struct AutoFused[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
+        # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
         # Dummy cache carved from workspace (after inter region) — no allocation.
         var cache_v = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.CACHE_SIZE),
             MutAnyOrigin,
         ](workspace.unsafe_ptr() + BATCH * Self.INTER_SIZE_PER_SAMPLE)
-        Self.forward_gpu[BATCH](ctx, output, input, params, cache_v, workspace)
+        Self.forward_gpu[BATCH](ctx, output, input, params, state, cache_v, workspace)
 
     # =========================================================================
     # GPU Forward (no cache) — on DeviceStream
@@ -1967,8 +2017,12 @@ struct AutoFused[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
+        # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
         var cache_v = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.CACHE_SIZE),
@@ -2009,6 +2063,9 @@ struct AutoFused[*OPS: DiffOp](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -2019,6 +2076,7 @@ struct AutoFused[*OPS: DiffOp](Model):
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
+        # state is unused — DiffOp primitives are stateless (STATE_SIZE == 0).
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
             Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
         )

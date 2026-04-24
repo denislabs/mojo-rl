@@ -12,7 +12,7 @@ Self-Play with a General Reinforcement Learning Algorithm
 
 from std.math import exp, log, sqrt
 from std.random import random_float64
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
@@ -559,7 +559,7 @@ struct GenericAlphaZeroAgent[
         ](pred_ptr)
 
         Self.PredNet.forward[B](
-            obs_t, pred_t, self.state.prediction.params_view()
+            obs_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view()
         )
 
         var best_action = -1
@@ -612,7 +612,7 @@ struct GenericAlphaZeroAgent[
             dtype, Layout.row_major(B, PRED_OUT_DIM), MutAnyOrigin
         ](pred_ptr)
         Self.PredNet.forward[B](
-            obs_t, pred_t, self.state.prediction.params_view()
+            obs_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view()
         )
 
         # Softmax over legal actions for root prior
@@ -763,6 +763,7 @@ struct GenericAlphaZeroAgent[
                             c_obs_t,
                             c_pred_t,
                             self.state.prediction.params_view(),
+                            self.state.prediction.model_state_view(),
                         )
 
                         # Child prior (softmax over legal)
@@ -1045,6 +1046,7 @@ struct GenericAlphaZeroAgent[
             obs_t,
             pred_t,
             gpu.prediction.params_view(),
+            gpu.prediction.model_state_view(),
             cache_t,
             gpu.workspace,
         )
@@ -1092,6 +1094,7 @@ struct GenericAlphaZeroAgent[
             grad_out_t,
             grad_in_t,
             gpu.prediction.params_view(),
+            gpu.prediction.model_state_view(),
             cache_t,
             grads,
             gpu.workspace,
@@ -1438,6 +1441,7 @@ struct GenericAlphaZeroAgent[
             obs_t,
             pred_t,
             gpu.prediction.params_view(),
+            gpu.prediction.model_state_view(),
             cache_t,
             gpu.workspace,
         )
@@ -1485,6 +1489,7 @@ struct GenericAlphaZeroAgent[
             grad_out_t,
             grad_in_t,
             gpu.prediction.params_view(),
+            gpu.prediction.model_state_view(),
             cache_t,
             grads,
             gpu.workspace,
@@ -1854,7 +1859,7 @@ struct GenericAlphaZeroAgent[
             MutAnyOrigin,
         ](gpu_mcts.pred_output.unsafe_ptr())
         Self.PredNet.forward_gpu[TOTAL_EXPAND](
-            ctx, p_in, p_out, gpu.prediction.params_view(), mcts_ws
+            ctx, p_in, p_out, gpu.prediction.params_view(), gpu.prediction.model_state_view(), mcts_ws
         )
 
         # 4. Fused expand + backup + remove virtual losses
@@ -2141,6 +2146,10 @@ struct GenericAlphaZeroAgent[
             var active_params = LayoutTensor[
                 dtype, Layout.row_major(_PS), MutAnyOrigin
             ](p0_params.unsafe_ptr() if p0_turn else p1_params.unsafe_ptr())
+            # Zero-length model state slice (stateless PredModel; no GPUNetworkState)
+            var active_state = LayoutTensor[
+                dtype, Layout.row_major(Self.Config.PredModel.STATE_SIZE), MutAnyOrigin
+            ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
             # LayoutTensor views over MCTS buffers
             var pred_obs = LayoutTensor[
@@ -2205,7 +2214,7 @@ struct GenericAlphaZeroAgent[
 
             # Forward pass → prediction output
             Self.PredNet.forward_gpu[N_ENVS](
-                ctx, pred_obs, pred_out, active_params, mcts_ws
+                ctx, pred_obs, pred_out, active_params, active_state, mcts_ws
             )
 
             # Zero tree data via bulk memset, then init root
@@ -2315,7 +2324,7 @@ struct GenericAlphaZeroAgent[
                     MutAnyOrigin,
                 ](gpu_mcts.pred_output.unsafe_ptr())
                 Self.PredNet.forward_gpu[TOTAL_EXPAND](
-                    ctx, p_in, p_out, active_params, mcts_ws
+                    ctx, p_in, p_out, active_params, active_state, mcts_ws
                 )
 
                 var b_po = LayoutTensor[
@@ -2892,6 +2901,7 @@ struct GenericAlphaZeroAgent[
                         ep_in,
                         ep_out,
                         gpu.prediction.params_view(),
+                        gpu.prediction.model_state_view(),
                         mcts_ws,
                     )
                     var e_b_po = LayoutTensor[

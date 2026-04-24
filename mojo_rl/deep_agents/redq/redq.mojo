@@ -643,7 +643,8 @@ struct REDQAgent[
             MutAnyOrigin,
         ](out_arr.unsafe_ptr())
         var p = self.cpu_actor.online.params_view()
-        Self.ActorNet.forward[1](obs_t, out_t, p)
+        var s = self.cpu_actor.online.model_state_view()
+        Self.ActorNet.forward[1](obs_t, out_t, p, s)
 
         var result = List[Float64](capacity=Self.ACTIONS)
         for i in range(Self.ACTIONS):
@@ -799,9 +800,10 @@ struct REDQAgent[
             dtype, Layout.row_major(N_ENVS, Self.ACTOR_OUT), MutAnyOrigin
         ](gpu_state.explore_raw.unsafe_ptr())
         var p = gpu_state.actor.online.params_view()
+        var s = gpu_state.actor.online.model_state_view()
 
         Self.ActorNet.forward_gpu[N_ENVS](
-            ctx, obs_t, raw_t, p, gpu_state.explore_ws
+            ctx, obs_t, raw_t, p, s, gpu_state.explore_ws
         )
 
         var act_t = LayoutTensor[
@@ -1108,11 +1110,12 @@ struct REDQAgent[
         )
 
         var p_actor = gpu_state.actor.online.params_view()
+        var s_actor = gpu_state.actor.online.model_state_view()
         var nact_raw_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.ACTOR_OUT), MutAnyOrigin
         ](gpu_state.actor_out.unsafe_ptr())
         Self.ActorNet.forward_gpu[BS](
-            ctx, nobs_t, nact_raw_t, p_actor, gpu_state.actor_ws
+            ctx, nobs_t, nact_raw_t, p_actor, s_actor, gpu_state.actor_ws
         )
         var nact_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
@@ -1175,6 +1178,10 @@ struct REDQAgent[
         )
 
         # --- 3. Forward all N target critics on next_ci — stacked output ---
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        var s_critic = LayoutTensor[
+            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         for n in range(Self.N_ENS):
             var p_t = gpu_state.critics.target_params_view(n)
             # Per-critic slice of the stacked buffer.
@@ -1184,7 +1191,7 @@ struct REDQAgent[
                 gpu_state.next_q_stack.unsafe_ptr() + n * BS * Self.CRITIC_OUT
             )
             Self.CriticNet.forward_gpu[BS](
-                ctx, next_ci_t, slice_t, p_t, gpu_state.critic_ws
+                ctx, next_ci_t, slice_t, p_t, s_critic, gpu_state.critic_ws
             )
 
         # --- 4. Compute TD targets from stacked Q + subset indices ---
@@ -1253,6 +1260,7 @@ struct REDQAgent[
                 ci_t,
                 q_out_t,
                 p_o,
+                s_critic,
                 q_cache_t,
                 gpu_state.critic_ws,
             )
@@ -1269,6 +1277,7 @@ struct REDQAgent[
                 q_grad_t,
                 d_ci_t,
                 p_o,
+                s_critic,
                 q_cache_t,
                 g_o,
                 gpu_state.critic_ws,
@@ -1301,7 +1310,12 @@ struct REDQAgent[
 
         var obs_t = gpu_state.s_obs_t()
         var p_actor = gpu_state.actor.online.params_view()
+        var s_actor = gpu_state.actor.online.model_state_view()
         var a_grads = gpu_state.actor.online.grads_view()
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        var s_critic = LayoutTensor[
+            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
         # --- 1. Increment RNG counter before rsample ---
         ctx.enqueue_function[incr_k, incr_k](
@@ -1316,7 +1330,7 @@ struct REDQAgent[
             dtype, Layout.row_major(BS, Self.ACTOR_CS), MutAnyOrigin
         ](gpu_state.actor_cache.unsafe_ptr())
         Self.ActorNet.forward_gpu_with_cache[BS](
-            ctx, obs_t, raw_t, p_actor, actor_cache_t, gpu_state.actor_ws
+            ctx, obs_t, raw_t, p_actor, s_actor, actor_cache_t, gpu_state.actor_ws
         )
 
         # --- 3. sac_rsample → curr_act, curr_lp, eps_cache ---
@@ -1446,6 +1460,7 @@ struct REDQAgent[
                 new_ci_t,
                 q_out_t,
                 p_o,
+                s_critic,
                 q_cache_t,
                 gpu_state.critic_ws,
             )
@@ -1455,6 +1470,7 @@ struct REDQAgent[
                 dq_t,
                 d_ci_per_t,
                 p_o,
+                s_critic,
                 q_cache_t,
                 g_o,
                 gpu_state.critic_ws,
@@ -1543,6 +1559,7 @@ struct REDQAgent[
             actor_grad_t,
             d_obs_t,
             p_actor,
+            s_actor,
             actor_cache_t,
             a_grads,
             gpu_state.actor_ws,

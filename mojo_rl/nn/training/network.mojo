@@ -84,6 +84,9 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (inference / action selection).
 
@@ -91,8 +94,10 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
             input: Input tensor [BATCH, IN_DIM].
             output: Output tensor [BATCH, OUT_DIM] (written).
             params: Model parameters [PARAM_SIZE] (e.g. state.params_view()).
+            state: Persistent non-trainable state [STATE_SIZE]
+                (e.g. state.model_state_view()). Zero-length for stateless models.
         """
-        Self.MODEL.forward[BATCH](input, output, params)
+        Self.MODEL.forward[BATCH](input, output, params, state)
 
     @staticmethod
     def forward_with_cache[
@@ -107,6 +112,9 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ],
@@ -117,9 +125,10 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
             input: Input tensor [BATCH, IN_DIM].
             output: Output tensor [BATCH, OUT_DIM] (written).
             params: Model parameters [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE].
             cache: Cache tensor [BATCH, CACHE_SIZE] (written).
         """
-        Self.MODEL.forward[BATCH](input, output, params, cache)
+        Self.MODEL.forward[BATCH](input, output, params, state, cache)
 
     # =========================================================================
     # CPU Backward Pass
@@ -138,6 +147,9 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ],
@@ -153,11 +165,12 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
             grad_output: Gradient of the loss w.r.t. output [BATCH, OUT_DIM].
             grad_input: Gradient of the loss w.r.t. input [BATCH, IN_DIM] (written).
             params: Model parameters [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE].
             cache: Cache from forward_with_cache [BATCH, CACHE_SIZE].
             grads: Gradient accumulator [PARAM_SIZE] (e.g. state.grads_view()).
         """
         Self.MODEL.backward[BATCH](
-            grad_output, grad_input, params, cache, grads
+            grad_output, grad_input, params, state, cache, grads
         )
 
     # =========================================================================
@@ -180,6 +193,9 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
+        ],
         workspace_buf: DeviceBuffer[Self.dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -191,12 +207,14 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
             input: Device input tensor [BATCH, IN_DIM].
             output: Device output tensor [BATCH, OUT_DIM] (written).
             params: Device params tensor [PARAM_SIZE] (e.g. gpu.params_view()).
+            state: Persistent non-trainable state [STATE_SIZE]
+                (e.g. gpu.model_state_view()). Zero-length for stateless models.
             workspace_buf: Pre-allocated workspace [BATCH * WORKSPACE_SIZE_PER_SAMPLE].
             perf: Optional profiling timer pointer (null = no profiling).
             perf_slot: Base slot index for per-layer timing.
         """
         Self.MODEL.forward_gpu_no_cache[BATCH](
-            ctx, output, input, params, workspace_buf, perf, perf_slot
+            ctx, output, input, params, state, workspace_buf, perf, perf_slot
         )
 
     @staticmethod
@@ -213,6 +231,9 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
         ],
@@ -227,13 +248,14 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
             input: Device input tensor [BATCH, IN_DIM].
             output: Device output tensor [BATCH, OUT_DIM] (written).
             params: Device params tensor [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE].
             cache: Device cache tensor [BATCH, CACHE_SIZE] (written).
             workspace_buf: Pre-allocated workspace.
             perf: Optional profiling timer pointer (null = no profiling).
             perf_slot: Base slot index for per-layer timing.
         """
         Self.MODEL.forward_gpu[BATCH](
-            ctx, output, input, params, cache, workspace_buf, perf, perf_slot
+            ctx, output, input, params, state, cache, workspace_buf, perf, perf_slot
         )
 
     @staticmethod
@@ -249,6 +271,9 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         ],
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
@@ -267,6 +292,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
             grad_output: Gradient of the loss w.r.t. output [BATCH, OUT_DIM].
             grad_input: Gradient of the loss w.r.t. input [BATCH, IN_DIM] (written).
             params: Device params tensor [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE].
             cache: Cache from forward_gpu_with_cache [BATCH, CACHE_SIZE].
             grads: Device grads tensor [PARAM_SIZE] (e.g. gpu.grads_view()).
             workspace_buf: Pre-allocated workspace.
@@ -278,6 +304,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
             grad_input,
             grad_output,
             params,
+            state,
             cache,
             grads,
             workspace_buf,

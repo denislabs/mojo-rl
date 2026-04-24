@@ -43,6 +43,11 @@ trait Model(Movable & ImplicitlyCopyable):
     comptime CACHE_SIZE: Int
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int
 
+    # Persistent non-trainable state (BN running stats, RNG counters, etc.).
+    # Lives on GPU between forward/backward calls. Default 0 — most layers
+    # don't need it. See docs/STATE_SIZE_DESIGN.md.
+    comptime STATE_SIZE: Int = 0
+
     # =========================================================================
     # Initialization
     # =========================================================================
@@ -80,6 +85,22 @@ trait Model(Movable & ImplicitlyCopyable):
         """
         pass
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize persistent non-trainable state (BN running stats, RNG
+        counters, etc.).
+
+        Default = no-op: layers with STATE_SIZE=0 get a zero-length tensor
+        and don't need to do anything. Stateful layers (BN, Dropout,
+        NoisyLinear) override; composites (Sequential, Parallel, etc.)
+        override to recurse.
+        """
+        pass
+
     # =========================================================================
     # Forward passes
     # =========================================================================
@@ -97,6 +118,9 @@ trait Model(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -107,6 +131,8 @@ trait Model(Movable & ImplicitlyCopyable):
             input: Input tensor [BATCH, IN_DIM].
             output: Output tensor [BATCH, OUT_DIM] (written).
             params: Model parameters [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE] (BN running
+                stats, RNG counters; zero-length for most layers).
             cache: Cache buffer [BATCH, CACHE_SIZE] for backward pass (written).
         """
         ...
@@ -124,6 +150,9 @@ trait Model(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (for inference).
 
@@ -131,6 +160,8 @@ trait Model(Movable & ImplicitlyCopyable):
             input: Input tensor [BATCH, IN_DIM].
             output: Output tensor [BATCH, OUT_DIM] (written).
             params: Model parameters [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE] (read-only in
+                inference; zero-length for most layers).
         """
         ...
 
@@ -151,6 +182,9 @@ trait Model(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -164,6 +198,8 @@ trait Model(Movable & ImplicitlyCopyable):
             grad_output: Gradient of loss w.r.t. output [BATCH, OUT_DIM].
             grad_input: Gradient of loss w.r.t. input [BATCH, IN_DIM] (written).
             params: Model parameters [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE] (read-only;
+                zero-length for most layers).
             cache: Cache from forward pass [BATCH, CACHE_SIZE].
             grads: Parameter gradients [PARAM_SIZE] (accumulated, not overwritten).
         """
@@ -192,6 +228,9 @@ trait Model(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -206,6 +245,8 @@ trait Model(Movable & ImplicitlyCopyable):
             output: Output [BATCH, OUT_DIM] (written).
             input: Input [BATCH, IN_DIM].
             params: Parameters [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE] (BN running
+                stats, RNG counters; zero-length for most layers).
             cache: Cache [BATCH, CACHE_SIZE] (written).
             workspace: Pre-allocated workspace for Sequential intermediate buffers.
             perf: Optional profiling timer pointer (null = no profiling).
@@ -227,6 +268,9 @@ trait Model(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -238,6 +282,8 @@ trait Model(Movable & ImplicitlyCopyable):
             output: Output [BATCH, OUT_DIM] (written).
             input: Input [BATCH, IN_DIM].
             params: Parameters [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE] (read-only;
+                zero-length for most layers).
             workspace: Pre-allocated workspace for Sequential intermediate buffers.
             perf: Optional profiling timer pointer (null = no profiling).
             perf_slot: Base slot index in the timer for per-layer timing.
@@ -262,6 +308,9 @@ trait Model(Movable & ImplicitlyCopyable):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
     ) raises:
@@ -290,6 +339,9 @@ trait Model(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        mut state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -307,6 +359,8 @@ trait Model(Movable & ImplicitlyCopyable):
             grad_input: Gradient w.r.t. input [BATCH, IN_DIM] (written).
             grad_output: Gradient w.r.t. output [BATCH, OUT_DIM].
             params: Parameters [PARAM_SIZE].
+            state: Persistent non-trainable state [STATE_SIZE] (read-only in
+                training-mode backward; zero-length for most layers).
             cache: Cache from forward pass [BATCH, CACHE_SIZE].
             grads: Parameter gradients [PARAM_SIZE] (accumulated).
             workspace: Pre-allocated workspace for Sequential intermediate buffers.

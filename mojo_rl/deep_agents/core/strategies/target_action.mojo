@@ -132,8 +132,12 @@ struct DeterministicTarget(TargetAction):
         var out_act = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](out_actions.ptr)
+        # Zero-length model state slice (stateless model)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         Network[ActorModel, ActorOpt].forward[BATCH](
-            next_obs, out_act, actor_params
+            next_obs, out_act, actor_params, actor_state
         )
 
     @staticmethod
@@ -165,8 +169,12 @@ struct DeterministicTarget(TargetAction):
         var out_act = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](out_actions.ptr)
+        # Zero-length model state slice (stateless model)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         Network[ActorModel, ActorOpt].forward_gpu[BATCH](
-            ctx, next_obs, out_act, actor_params, actor_ws
+            ctx, next_obs, out_act, actor_params, actor_state, actor_ws
         )
 
 
@@ -222,8 +230,12 @@ struct SmoothedTarget[
         var out_act = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](out_actions.ptr)
+        # Zero-length model state slice (stateless model)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         Network[ActorModel, ActorOpt].forward[BATCH](
-            next_obs, out_act, actor_params
+            next_obs, out_act, actor_params, actor_state
         )
 
         # Target policy smoothing: add clipped noise, clip actions to [-1, 1]
@@ -277,8 +289,12 @@ struct SmoothedTarget[
         var clean_act = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](strat_ws.unsafe_ptr())
+        # Zero-length model state slice (stateless model)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         Network[ActorModel, ActorOpt].forward_gpu[BATCH](
-            ctx, next_obs, clean_act, actor_params, actor_ws
+            ctx, next_obs, clean_act, actor_params, actor_state, actor_ws
         )
 
         # Rebind clean_act as [BATCH, ACTIONS] for the noise kernel
@@ -387,8 +403,12 @@ struct ReparamTarget(TargetAction):
         var raw_out = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](ws)
+        # Zero-length model state slice (stateless model)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         Network[ActorModel, ActorOpt].forward[BATCH](
-            next_obs, raw_out, actor_params
+            next_obs, raw_out, actor_params, actor_state
         )
 
         # Extract mean and log_std from Parallel output
@@ -482,8 +502,12 @@ struct ReparamTarget(TargetAction):
         var raw_out = LayoutTensor[
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](strat_ws.unsafe_ptr())
+        # Zero-length model state slice (stateless model)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         Network[ActorModel, ActorOpt].forward_gpu[BATCH](
-            ctx, next_obs, raw_out, actor_params, actor_ws
+            ctx, next_obs, raw_out, actor_params, actor_state, actor_ws
         )
 
         # SAC rsample: raw_out -> actions, log_probs (no eps_cache needed
