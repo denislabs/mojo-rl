@@ -72,8 +72,8 @@ comptime REDQOFEHumanoidConfig = DefaultREDQOFEConfig8[
     0.0003,  # actor_lr
     0.0003,  # critic_lr
     0.0003,  # ofe_lr (aux Adam)
-    240,     # OFE_TOTAL_UNITS
-    0.4,     # action_scale (match SAC Humanoid)
+    240,  # OFE_TOTAL_UNITS
+    0.4,  # action_scale (match SAC Humanoid)
 ]
 
 
@@ -178,6 +178,7 @@ def main() raises:
                 print_every=10_000,
                 environment_name="Humanoid",
                 logger=UnsafePointer(to=logger),
+                diag_every=1_000,
             )
 
             var end_time = perf_counter_ns()

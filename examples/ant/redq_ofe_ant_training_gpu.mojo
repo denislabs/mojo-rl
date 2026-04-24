@@ -176,6 +176,7 @@ def main() raises:
                 print_every=10_000,
                 environment_name="Ant",
                 logger=UnsafePointer(to=logger),
+                diag_every=1_000,
             )
 
             var end_time = perf_counter_ns()

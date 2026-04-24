@@ -2358,11 +2358,20 @@ struct REDQOFEAgent[
         rng_seed: UInt64 = 42,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        diag_every: Int = -1,
     ) raises -> TrainingMetrics:
-        """REDQ GPU training loop body. See `train_gpu()` for the public wrapper."""
+        """REDQ GPU training loop body. See `train_gpu()` for the public wrapper.
+
+        If `diag_every >= 0`, it overrides the value stored at construction
+        (so callers can tune metric cadence per run without re-initializing).
+        Pass -1 (the default) to keep whatever was set in __init__.
+        """
+        if diag_every >= 0:
+            self.diag_every = diag_every
+
         comptime n_envs = Self.max_n_envs
         var metrics = TrainingMetrics(
-            algorithm_name="REDQ",
+            algorithm_name="REDQ-OFE",
             environment_name=environment_name,
         )
 
@@ -2700,11 +2709,18 @@ struct REDQOFEAgent[
         rng_seed: UInt64 = 42,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        diag_every: Int = -1,
     ) raises -> TrainingMetrics:
-        """GPU REDQ training convenience wrapper.
+        """GPU REDQ-OFE training convenience wrapper.
 
         Runs the GPU training loop in-place on `self`. Final trained weights
-        are downloaded back onto `self.cpu_actor` / `self.cpu_critics`.
+        are downloaded back onto `self.cpu_actor` / `self.cpu_critics` /
+        `self.cpu_ofe_{sb,ab,pr}`.
+
+        Args:
+            diag_every: If >= 0, override the `diag_every` set in __init__
+                for this run (log fine-grained metrics every N critic
+                updates). -1 keeps the constructor value.
         """
         return self._run_train_gpu_impl[E, L](
             ctx,
@@ -2717,4 +2733,5 @@ struct REDQOFEAgent[
             rng_seed=rng_seed,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            diag_every=diag_every,
         )
