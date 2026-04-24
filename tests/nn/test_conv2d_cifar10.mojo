@@ -1,17 +1,30 @@
-"""End-to-end CNN training on CIFAR-10 — validates Conv2D with RGB channels.
+"""End-to-end CNN training on CIFAR-10 — validates Conv2D RGB + BatchNorm.
 
-Trains a small CNN on real CIFAR-10 (32×32 RGB, 10 classes). The point is to
-stress Conv2D with 3 input channels, which MNIST (1 channel) does not
-exercise — a bug in multi-channel indexing would cap accuracy around the
-linear-on-pixels baseline (~35%).
+Trains a deeper VGG-style CNN on real CIFAR-10 with per-channel input
+normalization. The test targets ≥65% test accuracy after 5 epochs, which is
+well above:
+  - 10% random baseline
+  - ~35% linear-on-pixels baseline
+  - ~43% shallow-conv-without-BN baseline (previous version of this test)
 
-Target: ≥40% test accuracy after 1 epoch. Random baseline is 10%.
+A pass at ≥65% validates the fused Conv2D + BatchNorm + ReLU pipeline end-
+to-end, including gradient flow through 6 conv layers and running-stat
+updates. Skipping Dropout since it requires twin Sequential routing for
+train/eval that isn't set up yet.
 
-Architecture (fused Conv+ReLU via Conv2DReLU):
-    Conv2DReLU[3,  32, 5×5, s=2]  32×32 -> 14×14×32
-    Conv2DReLU[32, 64, 5×5, s=2]  14×14 -> 5×5×64
-    Flatten -> 1600
-    Linear[1600, 10]
+Architecture (mirrors a Kaggle CIFAR-10 recipe minus Dropout + aug):
+    Conv2DBNReLU[3,  32, 3, 1, 1, 32, 32]   preserves 32x32
+    Conv2DBNReLU[32, 32, 3, 1, 1, 32, 32]   preserves 32x32
+    MaxPoolLayer[32, 32, 32, 2]             -> 16x16x32
+    Conv2DBNReLU[32, 64, 3, 1, 1, 16, 16]   preserves 16x16
+    Conv2DBNReLU[64, 64, 3, 1, 1, 16, 16]   preserves 16x16
+    MaxPoolLayer[64, 16, 16, 2]             -> 8x8x64
+    Conv2DBNReLU[64,  128, 3, 1, 1, 8, 8]   preserves 8x8
+    Conv2DBNReLU[128, 128, 3, 1, 1, 8, 8]   preserves 8x8
+    MaxPoolLayer[128, 8, 8, 2]              -> 4x4x128 = 2048
+    Flatten
+    LinearReLU[2048, 128]
+    Linear[128, 10]
 
 Run:
     pixi run -e apple  mojo run -I . tests/nn/test_conv2d_cifar10.mojo
@@ -24,8 +37,10 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model.conv2d_layer import Conv2DReLU
+from mojo_rl.nn.model.conv2d_bn_relu import Conv2DBatchNormReLU
+from mojo_rl.nn.model.pool_layer import MaxPoolLayer
 from mojo_rl.nn.model.flatten_layer import FlattenLayer
+from mojo_rl.nn.model.linear_act import LinearReLU
 from mojo_rl.nn.model.linear import Linear
 from mojo_rl.nn.model.sequential import Sequential
 from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
@@ -36,13 +51,25 @@ from mojo_rl.nn.datasets.cifar10 import CIFAR10
 
 
 comptime BATCH = 128
-comptime EPOCHS = 1
+comptime EPOCHS = 5
 
 comptime CNN = Sequential[
-    Conv2DReLU[3, 32, 5, 2, 0, 32, 32],    # 32 -> 14 (×32 ch)
-    Conv2DReLU[32, 64, 5, 2, 0, 14, 14],   # 14 -> 5  (×64 ch) = 1600
-    FlattenLayer[64 * 5 * 5],
-    Linear[64 * 5 * 5, 10],
+    # Block 1: 32×32 → 16×16, 32 channels
+    Conv2DBatchNormReLU[3, 32, 3, 1, 1, 32, 32],
+    Conv2DBatchNormReLU[32, 32, 3, 1, 1, 32, 32],
+    MaxPoolLayer[32, 32, 32, 2],
+    # Block 2: 16×16 → 8×8, 64 channels
+    Conv2DBatchNormReLU[32, 64, 3, 1, 1, 16, 16],
+    Conv2DBatchNormReLU[64, 64, 3, 1, 1, 16, 16],
+    MaxPoolLayer[64, 16, 16, 2],
+    # Block 3: 8×8 → 4×4, 128 channels
+    Conv2DBatchNormReLU[64, 128, 3, 1, 1, 8, 8],
+    Conv2DBatchNormReLU[128, 128, 3, 1, 1, 8, 8],
+    MaxPoolLayer[128, 8, 8, 2],
+    # Classifier head
+    FlattenLayer[128 * 4 * 4],
+    LinearReLU[128 * 4 * 4, 128],
+    Linear[128, 10],
 ]
 
 
@@ -50,12 +77,9 @@ def main() raises:
     seed(42)
 
     print("=" * 65)
-    print("CIFAR-10 CNN training — validates Conv2D RGB (3 input channels)")
+    print("CIFAR-10 deep CNN — validates Conv2D + BatchNorm + deep gradient flow")
     print("=" * 65)
-    print(
-        "  architecture: Conv2DReLU(3→32,5,s=2) → Conv2DReLU(32→64,5,s=2)"
-        " → Flatten → FC(1600→10)"
-    )
+    print("  architecture: 6× Conv2DBatchNormReLU + 3 MaxPool + FC(2048→128→10)")
     print("  params: " + String(CNN.PARAM_SIZE))
     print("  batch: " + String(BATCH) + " | epochs: " + String(EPOCHS))
 
@@ -65,7 +89,7 @@ def main() raises:
     comptime TRAINER = Trainer[CNN, Adam[LR=0.001], CrossEntropyLoss]
     var state = TRAINER.init_state_gpu[Kaiming[]](ctx)
 
-    # ── Upload full training set (images + one-hot labels) to GPU once ──
+    # ── Upload full training set to GPU once (images + one-hot labels) ──
     var train_img_host = ctx.enqueue_create_host_buffer[dtype](
         CIFAR10.N_TRAIN * CIFAR10.IMG_SIZE
     )
@@ -110,7 +134,7 @@ def main() raises:
         train_img_lt,
         train_tgt_lt,
         epochs=EPOCHS,
-        print_every_batches=1,  # per-epoch loss on end of each epoch
+        print_every_batches=1,
         shuffle=True,
         rng_seed=42,
     )
@@ -124,6 +148,10 @@ def main() raises:
     print("  final batch loss: " + String(result.final_loss)[byte=:8])
 
     # ── Evaluate test set ──
+    # Note: uses training-mode forward (forward_gpu), so BN normalizes via
+    # batch stats of each eval batch and running stats get nudged by eval
+    # data. OK for a one-shot test; 128-sample batches from 10 classes
+    # approximate population stats well.
     print("\n── Evaluating ──")
 
     var test_img_host = ctx.enqueue_create_host_buffer[dtype](
@@ -191,8 +219,8 @@ def main() raises:
     )
 
     print("=" * 65)
-    if acc >= 0.40:
-        print("PASS — Conv2D RGB converges on CIFAR-10 (>=40% after 1 epoch)")
+    if acc >= 0.65:
+        print("PASS — deep CNN + BatchNorm converges on CIFAR-10 (>=65%)")
     else:
-        print("FAIL — expected >=40% test accuracy, got " + String(acc))
+        print("FAIL — expected >=65% test accuracy, got " + String(acc))
         raise Error("accuracy below threshold")

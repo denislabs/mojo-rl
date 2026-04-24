@@ -154,11 +154,9 @@ struct CrossEntropyLoss(LossFunction):
 
         var my_value: predictions.element_type = 0.0
 
-        comptime BATCH_SIZE = BATCH * OUT_DIM
-
-        # Each thread processes multiple batch samples
+        # Each thread processes multiple batch samples (one row = one sample).
         var batch_idx = Int(local_i)
-        while batch_idx < BATCH_SIZE:
+        while batch_idx < BATCH:
             # Find max for this sample
             var max_val = predictions[batch_idx, 0]
             for j in range(1, OUT_DIM):
@@ -187,7 +185,7 @@ struct CrossEntropyLoss(LossFunction):
         var total = block.sum[block_size=TPB, broadcast=False](val=my_value)
 
         if local_i == 0:
-            loss[0] = total[0] / Scalar[dtype](BATCH_SIZE)
+            loss[0] = total[0] / Scalar[dtype](BATCH)
 
     @always_inline
     @staticmethod
@@ -214,8 +212,7 @@ struct CrossEntropyLoss(LossFunction):
         """
         comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var batch_idx = Int(block_idx.x)
-        comptime SIZE = BATCH * OUT_DIM
-        if batch_idx >= SIZE:
+        if batch_idx >= BATCH:
             return
 
         if thread_idx.x != 0:
@@ -235,7 +232,7 @@ struct CrossEntropyLoss(LossFunction):
             sum_exp = sum_exp + exp(pred - max_val)
 
         # Compute gradient
-        var n = Scalar[dtype](SIZE)
+        var n = Scalar[dtype](BATCH)
         for j in range(OUT_DIM):
             var pred = rebind[Scalar[dtype]](predictions[batch_idx, j])
             var tgt = rebind[Scalar[dtype]](targets[batch_idx, j])

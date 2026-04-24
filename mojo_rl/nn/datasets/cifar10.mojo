@@ -25,6 +25,16 @@ comptime _TEST_FILE = "test_batch.bin"
 comptime _SAMPLES_PER_FILE = 10000
 comptime _BYTES_PER_SAMPLE = 1 + 3 * 32 * 32  # 1 label + 3072 pixels
 
+# Canonical CIFAR-10 per-channel normalization constants (PyTorch convention).
+# Applied during load: normalized = (raw / 255 - mean[c]) / std[c]
+# Keeps values roughly in [-2, 2], stabilizes training + BN.
+comptime _MEAN_R: Float32 = 0.4914
+comptime _MEAN_G: Float32 = 0.4822
+comptime _MEAN_B: Float32 = 0.4465
+comptime _STD_R: Float32 = 0.2470
+comptime _STD_G: Float32 = 0.2435
+comptime _STD_B: Float32 = 0.2616
+
 
 def _train_filename(idx: Int) -> String:
     """data_batch_1.bin .. data_batch_5.bin indexed 0..4."""
@@ -95,14 +105,36 @@ def _load_batch(
             + " got "
             + String(len(bytes))
         )
-    var inv = Scalar[DType.float32](1.0) / Scalar[DType.float32](255.0)
+    var inv255 = Scalar[DType.float32](1.0) / Scalar[DType.float32](255.0)
+    var inv_std_r = Scalar[DType.float32](1.0) / _STD_R
+    var inv_std_g = Scalar[DType.float32](1.0) / _STD_G
+    var inv_std_b = Scalar[DType.float32](1.0) / _STD_B
+    comptime CHAN_SZ = 32 * 32
     for i in range(_SAMPLES_PER_FILE):
         var base = i * _BYTES_PER_SAMPLE
         dst_labels[offset_samples + i] = Int32(Int(bytes[base]))
         var img_dst = (offset_samples + i) * (3 * 32 * 32)
-        for p in range(3 * 32 * 32):
-            dst_images[img_dst + p] = (
-                Scalar[DType.float32](Int(bytes[base + 1 + p])) * inv
+        # Channel R (first 1024 bytes)
+        for p in range(CHAN_SZ):
+            var raw = Scalar[DType.float32](Int(bytes[base + 1 + p])) * inv255
+            dst_images[img_dst + p] = (raw - _MEAN_R) * inv_std_r
+        # Channel G (next 1024 bytes)
+        for p in range(CHAN_SZ):
+            var raw = (
+                Scalar[DType.float32](Int(bytes[base + 1 + CHAN_SZ + p]))
+                * inv255
+            )
+            dst_images[img_dst + CHAN_SZ + p] = (raw - _MEAN_G) * inv_std_g
+        # Channel B (last 1024 bytes)
+        for p in range(CHAN_SZ):
+            var raw = (
+                Scalar[DType.float32](
+                    Int(bytes[base + 1 + 2 * CHAN_SZ + p])
+                )
+                * inv255
+            )
+            dst_images[img_dst + 2 * CHAN_SZ + p] = (
+                (raw - _MEAN_B) * inv_std_b
             )
 
 
