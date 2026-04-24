@@ -77,9 +77,13 @@ def main() raises:
     seed(42)
 
     print("=" * 65)
-    print("CIFAR-10 deep CNN — validates Conv2D + BatchNorm + deep gradient flow")
+    print(
+        "CIFAR-10 deep CNN — validates Conv2D + BatchNorm + deep gradient flow"
+    )
     print("=" * 65)
-    print("  architecture: 6× Conv2DBatchNormReLU + 3 MaxPool + FC(2048→128→10)")
+    print(
+        "  architecture: 6× Conv2DBatchNormReLU + 3 MaxPool + FC(2048→128→10)"
+    )
     print("  params: " + String(CNN.PARAM_SIZE))
     print("  batch: " + String(BATCH) + " | epochs: " + String(EPOCHS))
 
@@ -128,7 +132,9 @@ def main() raises:
     # ── Train ──
     print("\n── Training ──")
     var t0 = perf_counter_ns()
-    var result = TRAINER.train_gpu_minibatch[BATCH, CIFAR10.N_TRAIN](
+    var result = TRAINER.train_gpu_minibatch[
+        BATCH, CIFAR10.N_TRAIN, USE_CUDA_GRAPH=False
+    ](
         state,
         ctx,
         train_img_lt,
@@ -140,11 +146,7 @@ def main() raises:
     )
     ctx.synchronize()
     var t1 = perf_counter_ns()
-    print(
-        "  training time: "
-        + String(Float64(t1 - t0) / 1e9)[byte=:6]
-        + " s"
-    )
+    print("  training time: " + String(Float64(t1 - t0) / 1e9)[byte=:6] + " s")
     print("  final batch loss: " + String(result.final_loss)[byte=:8])
 
     # ── Evaluate test set ──
