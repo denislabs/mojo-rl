@@ -4,6 +4,7 @@ from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
+from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from ..constants import TPB
 
@@ -156,11 +157,17 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
+        base_seed: Scalar[DType.uint64],
     ):
         """Training forward kernel: dropout with PhiloxRandom.
 
         Grid: ((BATCH * dim + TPB - 1) // TPB,)
         Block: (TPB,)
+
+        Mask = Philox(base_seed ^ SEED, idx). `base_seed` varies per call
+        (generated on CPU before enqueue) so each forward sees a fresh mask;
+        `SEED` is the comptime per-layer constant so stacked Dropouts stay
+        decorrelated.
         """
 
         comptime if Self.training:
@@ -171,8 +178,10 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             var row = idx // Self.dim
             var col = idx % Self.dim
 
-            # PhiloxRandom per element — no Float64, Metal-safe
-            var rng = PhiloxRandom(seed=Self.SEED, offset=UInt64(idx))
+            var rng = PhiloxRandom(
+                seed=UInt64(base_seed) ^ Self.SEED,
+                offset=UInt64(idx),
+            )
             var rand = Scalar[dtype](rng.step_uniform()[0])
 
             var threshold = Scalar[dtype](Self.p)
@@ -293,6 +302,13 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ](cache.ptr)
 
+            # Fresh seed per call so the mask varies across forward passes.
+            # Note: not CUDA-graph-capturable (baked at capture time).
+            var base_seed = Scalar[DType.uint64](
+                UInt64(random_float64(0.0, Float64(UInt32.MAX)))
+                * UInt64(2654435761)
+            )
+
             @parameter
             @always_inline
             def kernel_wrapper(
@@ -305,13 +321,17 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                 cache: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
                 ],
+                base_seed: Scalar[DType.uint64],
             ):
-                Self.forward_kernel_impl[BATCH, dtype](output, input, cache)
+                Self.forward_kernel_impl[BATCH, dtype](
+                    output, input, cache, base_seed
+                )
 
             ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
                 output,
                 input_immut,
                 cache_view,
+                base_seed,
                 grid_dim=(grid_x,),
                 block_dim=(TPB,),
             )
