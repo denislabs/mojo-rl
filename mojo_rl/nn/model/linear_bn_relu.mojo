@@ -187,7 +187,7 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Inference forward: Linear → BN (batch stats) → ReLU, no caching."""
+        """Inference forward: Linear → BN (running stats) → ReLU, no caching."""
         # Linear into output
         for b in range(BATCH):
             for j in range(Self.out_dim):
@@ -196,30 +196,20 @@ struct LinearBatchNormReLU[
                     acc += rebind[Scalar[dtype]](input[b, i]) * rebind[Scalar[dtype]](params[i * Self.out_dim + j])
                 output[b, j] = acc
 
-        # BN + ReLU using batch stats
+        # BN + ReLU using running stats
         var eps = Scalar[dtype](Self.BN_EPSILON)
-        var n = Scalar[dtype](BATCH)
 
         for f in range(Self.out_dim):
             var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
             var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + f])
+            var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
+            var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
 
-            var mean = Scalar[dtype](0.0)
-            for b in range(BATCH):
-                mean += rebind[Scalar[dtype]](output[b, f])
-            mean = mean / n
-
-            var var_ = Scalar[dtype](0.0)
-            for b in range(BATCH):
-                var diff = rebind[Scalar[dtype]](output[b, f]) - mean
-                var_ += diff * diff
-            var_ = var_ / n
-
-            var inv_std = Scalar[dtype](1.0) / Scalar[dtype](sqrt(Float64(var_ + eps)))
+            var inv_std = Scalar[dtype](1.0) / Scalar[dtype](sqrt(Float64(rvar + eps)))
 
             for b in range(BATCH):
                 var x = rebind[Scalar[dtype]](output[b, f])
-                var pre_relu = gamma * (x - mean) * inv_std + beta
+                var pre_relu = gamma * (x - rmean) * inv_std + beta
                 output[b, f] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
 
     # =========================================================================
@@ -419,10 +409,9 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ],
     ):
-        """Fused BN+ReLU inference kernel (batch stats, no cache).
+        """Fused BN+ReLU inference kernel using running stats (no cache, no update).
 
         Grid: (out_dim,), Block: (TPB,)
-        Block-parallel reduction across BATCH per feature.
         """
         var f = Int(block_idx.x)
         if f >= Self.out_dim:
@@ -430,60 +419,17 @@ struct LinearBatchNormReLU[
         var tid = Int(thread_idx.x)
 
         var eps = Scalar[dtype](Self.BN_EPSILON)
-        var n_f = Scalar[dtype](BATCH)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + f])
+        var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
+        var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
+        var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
 
-        var smem = LayoutTensor[
-            dtype, Layout.row_major(TPB), MutAnyOrigin,
-            address_space=AddressSpace.SHARED,
-        ].stack_allocation()
-
-        # Pass 1: Compute mean
-        var local_sum = Scalar[dtype](0.0)
+        # Parallel scatter: normalize + ReLU
         var idx = tid
         while idx < BATCH:
-            local_sum += rebind[Scalar[dtype]](output[idx, f])
-            idx += TPB
-        smem[tid] = local_sum
-        barrier()
-
-        var stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
-            barrier()
-            stride = stride // 2
-
-        var mean = rebind[Scalar[dtype]](smem[0]) / n_f
-        barrier()
-
-        # Pass 2: Compute variance
-        var local_var = Scalar[dtype](0.0)
-        idx = tid
-        while idx < BATCH:
-            var diff = rebind[Scalar[dtype]](output[idx, f]) - mean
-            local_var += diff * diff
-            idx += TPB
-        smem[tid] = local_var
-        barrier()
-
-        stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
-            barrier()
-            stride = stride // 2
-
-        var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
-        var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
-        barrier()
-
-        # Pass 3: Normalize + ReLU (parallel scatter)
-        idx = tid
-        while idx < BATCH:
             var x = rebind[Scalar[dtype]](output[idx, f])
-            var pre_relu = gamma * (x - mean) * inv_std + beta
+            var pre_relu = gamma * (x - rmean) * inv_std + beta
             output[idx, f] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
             idx += TPB
 
@@ -736,7 +682,7 @@ struct LinearBatchNormReLU[
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        """GPU inference forward: Linear matmul → fused BN+ReLU (batch stats)."""
+        """GPU inference forward: Linear matmul → fused BN+ReLU (running stats)."""
         from ..autodiff.primitives.matmul import MatMul
 
         comptime MM = MatMul[Self.in_dim, Self.out_dim]

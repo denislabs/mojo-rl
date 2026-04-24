@@ -225,7 +225,7 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Inference forward: Conv → BN (batch stats) → ReLU, no caching."""
+        """Inference forward: Conv → BN (running stats) → ReLU, no caching."""
         # Conv matmul into output
         for b in range(BATCH):
             for oh in range(Self.out_h):
@@ -243,34 +243,22 @@ struct Conv2DBatchNormReLU[
                                         acc += rebind[Scalar[dtype]](params[oc * Self.col_size + c_k]) * rebind[Scalar[dtype]](input[b, c * Self.in_h * Self.in_w + ih * Self.in_w + iw])
                         output[b, oc * Self.spatial_out + s] = acc
 
-        # BN + ReLU using batch stats
+        # BN + ReLU using running stats (inference)
         var eps = Scalar[dtype](Self.BN_EPSILON)
-        var n = Scalar[dtype](BATCH * Self.spatial_out)
 
         for c in range(Self.out_channels):
             var c_off = c * Self.spatial_out
             var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
             var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
+            var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + c])
+            var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + c])
 
-            var mean = Scalar[dtype](0.0)
-            for b in range(BATCH):
-                for s in range(Self.spatial_out):
-                    mean += rebind[Scalar[dtype]](output[b, c_off + s])
-            mean = mean / n
-
-            var var_ = Scalar[dtype](0.0)
-            for b in range(BATCH):
-                for s in range(Self.spatial_out):
-                    var diff = rebind[Scalar[dtype]](output[b, c_off + s]) - mean
-                    var_ += diff * diff
-            var_ = var_ / n
-
-            var inv_std = Scalar[dtype](1.0) / Scalar[dtype](sqrt(Float64(var_ + eps)))
+            var inv_std = Scalar[dtype](1.0) / Scalar[dtype](sqrt(Float64(rvar + eps)))
 
             for b in range(BATCH):
                 for s in range(Self.spatial_out):
                     var x = rebind[Scalar[dtype]](output[b, c_off + s])
-                    var pre_relu = gamma * (x - mean) * inv_std + beta
+                    var pre_relu = gamma * (x - rmean) * inv_std + beta
                     output[b, c_off + s] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
 
     # =========================================================================
@@ -504,10 +492,9 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ],
     ):
-        """Fused BN+ReLU inference kernel (batch stats, no cache).
+        """Fused BN+ReLU inference kernel using running stats (no cache, no update).
 
         Grid: (out_channels,), Block: (TPB,)
-        Optimized: 2-pass Welford (sum+sumsq in pass 1, normalize+relu in pass 2).
         """
         var c = Int(block_idx.x)
         if c >= Self.out_channels:
@@ -517,67 +504,21 @@ struct Conv2DBatchNormReLU[
         var c_off = c * Self.spatial_out
         var eps = Scalar[dtype](Self.BN_EPSILON)
         comptime N = BATCH * Self.spatial_out
-        var n_f = Scalar[dtype](N)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
+        var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + c])
+        var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + c])
+        var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
         comptime OUT_STRIDE = Self.OUT_DIM
 
-        var smem = LayoutTensor[
-            dtype, Layout.row_major(TPB), MutAnyOrigin,
-            address_space=AddressSpace.SHARED,
-        ].stack_allocation()
-
-        # Pass 1: Mean
-        var local_sum = Scalar[dtype](0.0)
-        var base = output.ptr + c_off
+        # Parallel scatter: normalize + ReLU
         var idx = tid
-        while idx < N:
-            var b = idx // Self.spatial_out
-            var s = idx - b * Self.spatial_out
-            local_sum += (base + b * OUT_STRIDE + s)[]
-            idx += TPB
-
-        smem[tid] = local_sum
-        barrier()
-        var st = TPB // 2
-        while st > 0:
-            if tid < st:
-                smem[tid] = smem[tid] + smem[tid + st]
-            barrier()
-            st = st // 2
-        var mean = rebind[Scalar[dtype]](smem[0]) / n_f
-        barrier()
-
-        # Pass 1b: Variance using (x - mean)² — numerically stable
-        var local_var = Scalar[dtype](0.0)
-        idx = tid
-        while idx < N:
-            var b = idx // Self.spatial_out
-            var s = idx - b * Self.spatial_out
-            var diff = (base + b * OUT_STRIDE + s)[] - mean
-            local_var += diff * diff
-            idx += TPB
-
-        smem[tid] = local_var
-        barrier()
-        st = TPB // 2
-        while st > 0:
-            if tid < st:
-                smem[tid] = smem[tid] + smem[tid + st]
-            barrier()
-            st = st // 2
-        var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
-        var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
-        barrier()
-
-        # Pass 2: Normalize + ReLU
-        idx = tid
         while idx < N:
             var b = idx // Self.spatial_out
             var s = idx - b * Self.spatial_out
             var out_off = b * OUT_STRIDE + c_off + s
             var x = output.ptr[out_off]
-            var pre_relu = gamma * (x - mean) * inv_std + beta
+            var pre_relu = gamma * (x - rmean) * inv_std + beta
             output.ptr[out_off] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
             idx += TPB
 
@@ -831,7 +772,7 @@ struct Conv2DBatchNormReLU[
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
-        """GPU inference forward: Conv matmul → fused BN+ReLU (batch stats)."""
+        """GPU inference forward: Conv matmul → fused BN+ReLU (running stats)."""
         from ..autodiff import Conv2D
         comptime ConvOp = Conv2D[
             Self.in_channels, Self.out_channels,

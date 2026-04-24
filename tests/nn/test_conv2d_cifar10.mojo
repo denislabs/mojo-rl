@@ -148,10 +148,9 @@ def main() raises:
     print("  final batch loss: " + String(result.final_loss)[byte=:8])
 
     # ── Evaluate test set ──
-    # Note: uses training-mode forward (forward_gpu), so BN normalizes via
-    # batch stats of each eval batch and running stats get nudged by eval
-    # data. OK for a one-shot test; 128-sample batches from 10 classes
-    # approximate population stats well.
+    # Uses forward_gpu_no_cache: BN layers normalize with their EMA-tracked
+    # running_mean/running_var (populated during training), so test accuracy
+    # reflects true generalization and isn't contaminated by eval-batch stats.
     print("\n── Evaluating ──")
 
     var test_img_host = ctx.enqueue_create_host_buffer[dtype](
@@ -166,7 +165,6 @@ def main() raises:
 
     comptime num_test_batches = CIFAR10.N_TEST // BATCH
     var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * CNN.OUT_DIM)
-    var cache_buf = ctx.enqueue_create_buffer[dtype](BATCH * CNN.CACHE_SIZE)
     var workspace_buf = ctx.enqueue_create_buffer[dtype](
         BATCH * CNN.WORKSPACE_SIZE_PER_SAMPLE
     )
@@ -175,9 +173,6 @@ def main() raises:
     var output_lt = LayoutTensor[
         dtype, Layout.row_major(BATCH, CNN.OUT_DIM), MutAnyOrigin
     ](output_buf)
-    var cache_lt = LayoutTensor[
-        dtype, Layout.row_major(BATCH, CNN.CACHE_SIZE), MutAnyOrigin
-    ](cache_buf)
 
     var correct: Int = 0
     var total: Int = 0
@@ -188,8 +183,8 @@ def main() raises:
         ](test_img_buf.unsafe_ptr() + batch_idx * BATCH * CNN.IN_DIM)
 
         var params_eval = state.params_view()
-        CNN.forward_gpu[BATCH](
-            ctx, output_lt, batch_input, params_eval, cache_lt, workspace_buf
+        CNN.forward_gpu_no_cache[BATCH](
+            ctx, output_lt, batch_input, params_eval, workspace_buf
         )
         ctx.enqueue_copy(output_host, output_buf)
         ctx.synchronize()

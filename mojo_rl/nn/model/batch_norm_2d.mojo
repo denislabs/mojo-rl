@@ -168,42 +168,24 @@ struct BatchNorm2D[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Inference forward: always uses batch stats for normalization.
-
-        This ensures BatchNorm normalizes properly even when running stats
-        are not yet populated (e.g., fresh network in MCTS evaluation).
-        """
+        """Inference forward: use stored running stats, no update."""
         var eps = Scalar[dtype](Self.EPSILON)
-        var n = Scalar[dtype](BATCH * Self.S)
 
         for c in range(Self.channels):
             var c_off = c * Self.S
             var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
             var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
-
-            # Compute batch mean
-            var mean = Scalar[dtype](0.0)
-            for b in range(BATCH):
-                for s in range(Self.S):
-                    mean += rebind[Scalar[dtype]](input[b, c_off + s])
-            mean = mean / n
-
-            # Compute batch variance
-            var var_ = Scalar[dtype](0.0)
-            for b in range(BATCH):
-                for s in range(Self.S):
-                    var diff = rebind[Scalar[dtype]](input[b, c_off + s]) - mean
-                    var_ += diff * diff
-            var_ = var_ / n
+            var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + c])
+            var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + c])
 
             var inv_std = Scalar[dtype](1.0) / Scalar[dtype](
-                sqrt(Float64(var_ + eps))
+                sqrt(Float64(rvar + eps))
             )
 
             for b in range(BATCH):
                 for s in range(Self.S):
                     var x = rebind[Scalar[dtype]](input[b, c_off + s])
-                    output[b, c_off + s] = gamma * (x - mean) * inv_std + beta
+                    output[b, c_off + s] = gamma * (x - rmean) * inv_std + beta
 
     # =========================================================================
     # CPU Backward
@@ -409,14 +391,9 @@ struct BatchNorm2D[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ],
     ):
-        """Inference forward kernel using batch stats (not running stats).
-
-        Always computes batch statistics even in no-cache mode.
-        This ensures BatchNorm normalizes properly during MCTS evaluation
-        where running stats may not be populated yet.
+        """Inference forward kernel using running stats (no update).
 
         Grid: (channels,), Block: (TPB,).
-        Block-parallel reduction across BATCH * spatial per channel.
         """
         var c = Int(block_idx.x)
         if c >= Self.channels:
@@ -425,66 +402,19 @@ struct BatchNorm2D[
 
         var c_off = c * Self.S
         var eps = Scalar[dtype](Self.EPSILON)
-        var n_f = Scalar[dtype](BATCH * Self.S)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
+        var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + c])
+        var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + c])
+        var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
 
-        var smem = LayoutTensor[
-            dtype, Layout.row_major(TPB), MutAnyOrigin,
-            address_space=AddressSpace.SHARED,
-        ].stack_allocation()
-
-        # Pass 1: Compute mean
-        var local_sum = Scalar[dtype](0.0)
+        # Parallel scatter over BATCH × spatial
         var idx = tid
         while idx < BATCH * Self.S:
             var b = idx // Self.S
             var s = idx % Self.S
-            local_sum += rebind[Scalar[dtype]](input[b, c_off + s])
-            idx += TPB
-        smem[tid] = local_sum
-        barrier()
-
-        var stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
-            barrier()
-            stride = stride // 2
-
-        var mean = rebind[Scalar[dtype]](smem[0]) / n_f
-        barrier()
-
-        # Pass 2: Compute variance
-        var local_var = Scalar[dtype](0.0)
-        idx = tid
-        while idx < BATCH * Self.S:
-            var b = idx // Self.S
-            var s = idx % Self.S
-            var diff = rebind[Scalar[dtype]](input[b, c_off + s]) - mean
-            local_var += diff * diff
-            idx += TPB
-        smem[tid] = local_var
-        barrier()
-
-        stride = TPB // 2
-        while stride > 0:
-            if tid < stride:
-                smem[tid] = smem[tid] + smem[tid + stride]
-            barrier()
-            stride = stride // 2
-
-        var var_ = rebind[Scalar[dtype]](smem[0]) / n_f
-        var inv_std: Scalar[dtype] = 1.0 / sqrt(var_ + eps)
-        barrier()
-
-        # Pass 3: Normalize (parallel scatter)
-        idx = tid
-        while idx < BATCH * Self.S:
-            var b = idx // Self.S
-            var s = idx % Self.S
             var x = rebind[Scalar[dtype]](input[b, c_off + s])
-            output[b, c_off + s] = gamma * (x - mean) * inv_std + beta
+            output[b, c_off + s] = gamma * (x - rmean) * inv_std + beta
             idx += TPB
 
     @always_inline

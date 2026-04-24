@@ -151,6 +151,55 @@ def _bn_skip_relu_fwd_kernel[
         params.ptr[RVAR_OFF + c] = one_m * rv + mom * var_
 
 
+def _bn_skip_relu_fwd_kernel_no_cache[
+    BATCH: Int,
+    channels: Int,
+    spatial: Int,
+    BN_PS: Int,
+    GAMMA_OFF: Int,
+    BETA_OFF: Int,
+    RMEAN_OFF: Int,
+    RVAR_OFF: Int,
+    BN_EPSILON: Float64,
+    dtype: DType = DType.float32,
+](
+    output: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
+    skip: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
+    params: LayoutTensor[dtype, Layout.row_major(BN_PS), ImmutAnyOrigin],
+):
+    """Fused BN (running stats) + skip-add + ReLU. Inference, no cache, no update.
+
+    One block per channel; parallel scatter over BATCH * spatial.
+    """
+    var c = Int(block_idx.x)
+    if c >= channels:
+        return
+    var tid = Int(thread_idx.x)
+    var c_off = c * spatial
+    var eps = Scalar[dtype](BN_EPSILON)
+    var gamma = rebind[Scalar[dtype]](params[GAMMA_OFF + c])
+    var beta = rebind[Scalar[dtype]](params[BETA_OFF + c])
+    var rmean = rebind[Scalar[dtype]](params[RMEAN_OFF + c])
+    var rvar = rebind[Scalar[dtype]](params[RVAR_OFF + c])
+    var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
+
+    comptime N = BATCH * spatial
+    comptime OUT_STRIDE = channels * spatial
+    var base = output.ptr + c_off
+    var skip_base = skip.ptr + c_off
+
+    var idx = tid
+    while idx < N:
+        var b = idx // spatial
+        var s = idx - b * spatial
+        var off = b * OUT_STRIDE + s
+        var x = (base + off)[]
+        var bn_out = gamma * (x - rmean) * inv_std + beta
+        var val = bn_out + (skip_base + off)[]
+        (base + off)[] = val if val > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+        idx += TPB
+
+
 def _bn_skip_relu_bwd_kernel[
     BATCH: Int,
     channels: Int,
@@ -467,15 +516,45 @@ struct ResBlockConv2DBN[
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
-        """CPU inference forward (allocates temporary cache)."""
-        from std.memory import alloc, memset
+        """CPU inference forward: Conv1BNReLU (running stats) → Conv2 → BN2 (running stats) + skip + ReLU."""
+        from std.memory import alloc
+        from std.math import sqrt as msqrt
 
-        comptime CAP = BATCH * Self.CACHE_SIZE
-        var dummy = alloc[Scalar[dtype]](CAP if CAP > 0 else 1)
-        memset(dummy, 0, CAP if CAP > 0 else 1)
-        var c = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](dummy)
-        Self.forward[BATCH, dtype](input, output, params, c)
-        dummy.free()
+        var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
+        var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+
+        # 1. Conv1BNReLU inference → inter
+        var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
+        var inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter)
+        var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
+        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1)
+
+        # 2. Conv2 inference → output (pre-BN2)
+        var inter_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin]](inter_t)
+        var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
+        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2)
+
+        # 3. BN2 (running stats) + skip + ReLU
+        var eps = Scalar[dtype](Self.BN_EPSILON)
+        comptime C = Self.channels
+        comptime S = Self.spatial
+
+        for c in range(C):
+            var gamma = params.ptr[Self.BN2_OFF + Self.BN2_GAMMA_OFF + c]
+            var beta = params.ptr[Self.BN2_OFF + Self.BN2_BETA_OFF + c]
+            var rmean = params.ptr[Self.BN2_OFF + Self.BN2_RMEAN_OFF + c]
+            var rvar = params.ptr[Self.BN2_OFF + Self.BN2_RVAR_OFF + c]
+            var inv_std = Scalar[dtype](1.0 / msqrt(Float64(rvar + eps)))
+
+            for b in range(BATCH):
+                for s in range(S):
+                    var idx = b * Self.DIM + c * S + s
+                    var x = output.ptr[idx]
+                    var bn_out = gamma * (x - rmean) * inv_std + beta
+                    var val = bn_out + input.ptr[idx]
+                    output.ptr[idx] = val if Float64(val) > 0.0 else Scalar[dtype](0.0)
+
+        inter.free()
 
     @staticmethod
     def backward[BATCH: Int, dtype: DType = DType.float32](
@@ -650,20 +729,17 @@ struct ResBlockConv2DBN[
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
         Self.Conv2.forward_gpu_no_cache[BATCH](ctx, out_rb, inter_in, p2, conv_ws)
 
-        # BN2 + skip + ReLU (inference: use batch stats like training for MCTS consistency)
-        var bn2_params = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), MutAnyOrigin](params.ptr + Self.BN2_OFF)
-        # Allocate temp BN cache in workspace inter region (we're done with it)
-        var bn2_cache = LayoutTensor[dtype, Layout.row_major(BATCH, Self.BN2_CS), MutAnyOrigin](inter_ptr)
+        # BN2 (running stats) + skip + ReLU — inference, no cache, no stat update
+        var bn2_params = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), ImmutAnyOrigin](params.ptr + Self.BN2_OFF)
         var skip_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](input.ptr)
 
-        comptime fwd_k = _bn_skip_relu_fwd_kernel[
-            BATCH, Self.channels, Self.spatial, Self.BN2_PS, Self.BN2_CS,
+        comptime fwd_k = _bn_skip_relu_fwd_kernel_no_cache[
+            BATCH, Self.channels, Self.spatial, Self.BN2_PS,
             Self.BN2_GAMMA_OFF, Self.BN2_BETA_OFF, Self.BN2_RMEAN_OFF, Self.BN2_RVAR_OFF,
-            Self.BN2_XHAT_OFF, Self.BN2_INVSTD_OFF,
-            Self.BN_EPSILON, Self.BN_MOMENTUM, dtype,
+            Self.BN_EPSILON, dtype,
         ]
         ctx.enqueue_function[fwd_k, fwd_k](
-            output, skip_t, bn2_params, bn2_cache,
+            output, skip_t, bn2_params,
             grid_dim=(Self.channels,), block_dim=(TPB,),
         )
 
