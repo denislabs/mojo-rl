@@ -47,6 +47,7 @@ from .redq import (
     REDQ_TARGET_REM,
 )
 from .redq_ofe import (
+    REDQOFEAgent,
     REDQOFEConfig,
     DefaultREDQOFEConfig6,
     DefaultREDQOFEConfig8,
