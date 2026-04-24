@@ -1975,7 +1975,7 @@ struct Conv2D[
                 block_dim=(TPB,),
             )
         else:
-            # Apple: fused im2col + tiled matmul kernel
+            # Apple: fused im2col + tiled matmul kernel (TileTensor-native)
             comptime grid_x = (Self.spatial_out + 31) // 32
             comptime grid_y = (Self.out_channels + 31) // 32
 
@@ -1997,7 +1997,9 @@ struct Conv2D[
                     MutAnyOrigin,
                 ],
             ):
-                Self.eval_kernel_2x2[BATCH, dtype](output, input, params, cache)
+                Self.eval_kernel_2x2_tt[BATCH, dtype](
+                    output, input, params, cache
+                )
 
             ctx.enqueue_function[wrapper, wrapper](
                 output,
@@ -2027,21 +2029,198 @@ struct Conv2D[
         ],
         workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
-        """Sibling of eval_gpu for regression testing. Apple path routes to
-        eval_kernel_2x2_tt; NVIDIA path delegates to eval_gpu (unchanged).
+        """Sibling of eval_gpu for regression testing.
+
+        Apple path routes to eval_kernel_2x2_tt. NVIDIA path uses TileTensor
+        N-d views for the plumbing kernels (im2col, transpose+bias) while the
+        MMA matmul kernel itself is unchanged — the mma intrinsic operates on
+        register SIMD fragments, orthogonal to how memory is viewed.
         """
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+
         comptime if has_nvidia_gpu_accelerator():
-            Self.eval_gpu[BATCH, dtype](
-                ctx, output, input, params, cache, workspace
+            comptime K_TOTAL = BATCH * Self.spatial_out
+            comptime KS2 = Self.kernel_size * Self.kernel_size
+
+            # ── im2col (TileTensor views) ──
+            comptime im2col_elems = BATCH * Self.CACHE_SIZE
+            comptime im2col_blocks = (im2col_elems + TPB - 1) // TPB
+
+            @parameter
+            @always_inline
+            def im2col_wrapper_tt(
+                cache_out: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    MutAnyOrigin,
+                ],
+                input: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.IN_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var input_4d = TileTensor(
+                    input.ptr,
+                    row_major[
+                        BATCH, Self.in_channels, Self.in_h, Self.in_w
+                    ](),
+                )
+                var cache_3d = TileTensor(
+                    cache_out.ptr,
+                    row_major[BATCH, Self.spatial_out, Self.col_size](),
+                )
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= im2col_elems:
+                    return
+                var b = idx // Self.CACHE_SIZE
+                var pos = idx % Self.CACHE_SIZE
+                var s = pos // Self.col_size
+                var k = pos % Self.col_size
+                var oh = s // Self.out_w
+                var ow = s % Self.out_w
+                var ch = k // KS2
+                var rem_k = k % KS2
+                var kh = rem_k // Self.kernel_size
+                var kw = rem_k % Self.kernel_size
+                var ih = oh * Self.stride - Self.padding + kh
+                var iw = ow * Self.stride - Self.padding + kw
+                var val: Scalar[dtype] = 0
+                if (
+                    ih >= 0
+                    and ih < Self.in_h
+                    and iw >= 0
+                    and iw < Self.in_w
+                ):
+                    val = input_4d[b, ch, ih, iw]
+                cache_3d[b, s, k] = val
+
+            ctx.enqueue_function[im2col_wrapper_tt, im2col_wrapper_tt](
+                cache,
+                input_immut,
+                grid_dim=(im2col_blocks,),
+                block_dim=(TPB,),
+            )
+
+            # ── MMA matmul (unchanged — operates on SIMD register fragments) ──
+            var col_flat = LayoutTensor[
+                dtype, Layout.row_major(K_TOTAL, Self.col_size), MutAnyOrigin
+            ](cache.ptr)
+            var W_mat = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.out_channels, Self.col_size),
+                MutAnyOrigin,
+            ](params.ptr)
+            var out_temp = LayoutTensor[
+                dtype,
+                Layout.row_major(K_TOTAL, Self.out_channels),
+                MutAnyOrigin,
+            ](workspace)
+
+            comptime fwd_grid_x = (
+                Self.out_channels + MMA_BLOCK_N - 1
+            ) // MMA_BLOCK_N
+            comptime fwd_grid_y = (K_TOTAL + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+            @parameter
+            @always_inline
+            def fwd_mm_wrapper(
+                out_temp: LayoutTensor[
+                    dtype,
+                    Layout.row_major(K_TOTAL, Self.out_channels),
+                    MutAnyOrigin,
+                ],
+                col_flat: LayoutTensor[
+                    dtype,
+                    Layout.row_major(K_TOTAL, Self.col_size),
+                    MutAnyOrigin,
+                ],
+                W_mat: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.col_size),
+                    MutAnyOrigin,
+                ],
+            ):
+                Self.conv_matmul_fwd_mma[K_TOTAL, dtype](
+                    out_temp, col_flat, W_mat
+                )
+
+            ctx.enqueue_function[fwd_mm_wrapper, fwd_mm_wrapper](
+                out_temp,
+                col_flat,
+                W_mat,
+                grid_dim=(fwd_grid_x, fwd_grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
+
+            # ── Transpose output + bias (TileTensor views) ──
+            comptime out_elems = BATCH * Self.OUT_DIM
+            comptime out_blocks = (out_elems + TPB - 1) // TPB
+
+            var b_ptr = LayoutTensor[
+                dtype, Layout.row_major(Self.out_channels), ImmutAnyOrigin
+            ](params.ptr + Self.out_channels * Self.col_size)
+
+            @parameter
+            @always_inline
+            def transpose_output_bias_wrapper_tt(
+                output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                out_temp: LayoutTensor[
+                    dtype,
+                    Layout.row_major(K_TOTAL, Self.out_channels),
+                    MutAnyOrigin,
+                ],
+                bias: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                # out_temp flat K_TOTAL = BATCH * spatial_out — view as 3D
+                var out_temp_3d = TileTensor(
+                    out_temp.ptr,
+                    row_major[
+                        BATCH, Self.spatial_out, Self.out_channels
+                    ](),
+                )
+                var output_3d = TileTensor(
+                    output.ptr,
+                    row_major[
+                        BATCH, Self.out_channels, Self.spatial_out
+                    ](),
+                )
+                var bias_tt = TileTensor(
+                    bias.ptr, row_major[Self.out_channels]()
+                )
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= out_elems:
+                    return
+                var b = idx // Self.OUT_DIM
+                var out_pos = idx % Self.OUT_DIM
+                var oc = out_pos // Self.spatial_out
+                var s = out_pos % Self.spatial_out
+                output_3d[b, oc, s] = out_temp_3d[b, s, oc] + bias_tt[oc]
+
+            ctx.enqueue_function[
+                transpose_output_bias_wrapper_tt,
+                transpose_output_bias_wrapper_tt,
+            ](
+                output,
+                out_temp,
+                b_ptr,
+                grid_dim=(out_blocks,),
+                block_dim=(TPB,),
             )
         else:
-            var input_immut = LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
-            ](input.ptr)
-            var params_immut = LayoutTensor[
-                dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
-            ](params.ptr)
-
             comptime grid_x = (Self.spatial_out + 31) // 32
             comptime grid_y = (Self.out_channels + 31) // 32
 
@@ -2317,7 +2496,7 @@ struct Conv2D[
                 block_dim=(TPB,),
             )
         else:
-            # ── Apple path: dx first, then dW ──
+            # ── Apple path: dx first, then dW (TileTensor-native) ──
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
@@ -2336,7 +2515,7 @@ struct Conv2D[
                     dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
                 ],
             ):
-                Self.backward_dx_kernel_impl[BATCH, dtype](
+                Self.backward_dx_kernel_impl_tt[BATCH, dtype](
                     grad_input, grad_output, params
                 )
 
@@ -2370,7 +2549,9 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
-                Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
+                Self.backward_dW_kernel_2x2_tt[BATCH, dtype](
+                    dW, cache, grad_output
+                )
 
             ctx.enqueue_function[dW_wrapper, dW_wrapper](
                 dW,
@@ -2427,37 +2608,282 @@ struct Conv2D[
         ],
         workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ) raises:
-        """Sibling of vjp_gpu for regression testing. Apple path routes to
-        the _tt backward kernels; NVIDIA path delegates to vjp_gpu (unchanged).
+        """Sibling of vjp_gpu for regression testing.
+
+        Apple path routes to the _tt backward kernels. NVIDIA path uses
+        TileTensor N-d views for the plumbing kernels (transpose_grad,
+        col2im_gather) while the MMA matmul kernels (dW, dx) are unchanged —
+        the mma intrinsics operate on register SIMD fragments, orthogonal
+        to how memory is viewed.
         """
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ](cache.ptr)
+
+        var dW = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
+        ](grad_params.ptr)
+
         comptime if has_nvidia_gpu_accelerator():
-            Self.vjp_gpu[BATCH, dtype](
-                ctx,
-                grad_output,
-                grad_input,
-                params,
-                cache,
-                grad_params,
-                workspace,
+            comptime K_TOTAL = BATCH * Self.spatial_out
+
+            # Workspace layout: [grad_reshaped: OC*K_TOTAL | dcol: col_size*K_TOTAL]
+            var grad_reshaped = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.out_channels, K_TOTAL),
+                MutAnyOrigin,
+            ](workspace)
+
+            # ── Transpose grad: (BATCH, OC*S) → (OC, BATCH*S) (TileTensor) ──
+            comptime grad_elems = Self.out_channels * K_TOTAL
+            comptime grad_blocks = (grad_elems + TPB - 1) // TPB
+
+            @parameter
+            @always_inline
+            def transpose_grad_wrapper_tt(
+                dst: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+                src: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var src_3d = TileTensor(
+                    src.ptr,
+                    row_major[
+                        BATCH, Self.out_channels, Self.spatial_out
+                    ](),
+                )
+                var dst_3d = TileTensor(
+                    dst.ptr,
+                    row_major[
+                        Self.out_channels, BATCH, Self.spatial_out
+                    ](),
+                )
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= grad_elems:
+                    return
+                var oc = idx // K_TOTAL
+                var bs = idx % K_TOTAL
+                var b = bs // Self.spatial_out
+                var s = bs % Self.spatial_out
+                dst_3d[oc, b, s] = src_3d[b, oc, s]
+
+            ctx.enqueue_function[
+                transpose_grad_wrapper_tt, transpose_grad_wrapper_tt
+            ](
+                grad_reshaped,
+                grad_output_immut,
+                grid_dim=(grad_blocks,),
+                block_dim=(TPB,),
             )
-        else:
-            var params_immut = LayoutTensor[
-                dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
-            ](params.ptr)
-            var grad_output_immut = LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
-            ](grad_output.ptr)
-            var cache_immut = LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+
+            # ── dW MMA matmul (unchanged — SIMD register fragments) ──
+            var col_flat = LayoutTensor[
+                dtype,
+                Layout.row_major(K_TOTAL, Self.col_size),
+                MutAnyOrigin,
             ](cache.ptr)
 
-            var dW = LayoutTensor[
+            comptime dW_grid_x_nv = (
+                Self.col_size + MMA_BLOCK_N - 1
+            ) // MMA_BLOCK_N
+            comptime dW_grid_y_nv = (
+                Self.out_channels + MMA_BLOCK_M - 1
+            ) // MMA_BLOCK_M
+
+            @parameter
+            @always_inline
+            def dW_mm_wrapper(
+                dW: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.col_size),
+                    MutAnyOrigin,
+                ],
+                grad_reshaped: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+                col_flat: LayoutTensor[
+                    dtype,
+                    Layout.row_major(K_TOTAL, Self.col_size),
+                    MutAnyOrigin,
+                ],
+            ):
+                Self.conv_matmul_dW_mma[K_TOTAL, dtype](
+                    dW, grad_reshaped, col_flat
+                )
+
+            ctx.enqueue_function[dW_mm_wrapper, dW_mm_wrapper](
+                dW,
+                grad_reshaped,
+                col_flat,
+                grid_dim=(dW_grid_x_nv, dW_grid_y_nv),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
+
+            # ── dx MMA matmul (unchanged) ──
+            var W_bwd = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.out_channels, Self.col_size),
                 MutAnyOrigin,
-            ](grad_params.ptr)
+            ](params.ptr)
 
-            # dx (col2im gather with W.T @ grad_output)
+            comptime dcol_offset = Self.out_channels * K_TOTAL
+            var dcol = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.col_size, K_TOTAL),
+                MutAnyOrigin,
+            ](workspace + dcol_offset)
+
+            comptime dx_grid_x_nv = (
+                K_TOTAL + MMA_BLOCK_N - 1
+            ) // MMA_BLOCK_N
+            comptime dx_grid_y_nv = (
+                Self.col_size + MMA_BLOCK_M - 1
+            ) // MMA_BLOCK_M
+
+            @parameter
+            @always_inline
+            def dx_mm_wrapper(
+                dcol: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.col_size, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+                W: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.col_size),
+                    MutAnyOrigin,
+                ],
+                grad_reshaped: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+            ):
+                Self.conv_matmul_dx_mma[K_TOTAL, dtype](
+                    dcol, W, grad_reshaped
+                )
+
+            ctx.enqueue_function[dx_mm_wrapper, dx_mm_wrapper](
+                dcol,
+                W_bwd,
+                grad_reshaped,
+                grid_dim=(dx_grid_x_nv, dx_grid_y_nv),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
+
+            # ── col2im gather (TileTensor N-d views) ──
+            var total_dx = BATCH * Self.IN_DIM
+            var grid_dx = (total_dx + TPB - 1) // TPB
+
+            @parameter
+            @always_inline
+            def col2im_gather_tt(
+                grad_input: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.IN_DIM),
+                    MutAnyOrigin,
+                ],
+                dcol: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.col_size, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+            ):
+                var dcol_3d = TileTensor(
+                    dcol.ptr,
+                    row_major[
+                        Self.col_size, BATCH, Self.spatial_out
+                    ](),
+                )
+                var grad_in_4d = TileTensor(
+                    grad_input.ptr,
+                    row_major[
+                        BATCH, Self.in_channels, Self.in_h, Self.in_w
+                    ](),
+                )
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= BATCH * Self.IN_DIM:
+                    return
+                var b = idx // Self.IN_DIM
+                var in_pos = idx % Self.IN_DIM
+                var c = in_pos // (Self.in_h * Self.in_w)
+                var rem = in_pos % (Self.in_h * Self.in_w)
+                var ih = rem // Self.in_w
+                var iw = rem % Self.in_w
+
+                var acc: Scalar[dtype] = 0
+                for kh in range(Self.kernel_size):
+                    for kw in range(Self.kernel_size):
+                        var oh_num = ih + Self.padding - kh
+                        var ow_num = iw + Self.padding - kw
+                        if (
+                            oh_num >= 0
+                            and oh_num % Self.stride == 0
+                            and ow_num >= 0
+                            and ow_num % Self.stride == 0
+                        ):
+                            var oh = oh_num // Self.stride
+                            var ow = ow_num // Self.stride
+                            if oh < Self.out_h and ow < Self.out_w:
+                                var s = oh * Self.out_w + ow
+                                var c_k = (
+                                    c * Self.kernel_size * Self.kernel_size
+                                    + kh * Self.kernel_size
+                                    + kw
+                                )
+                                acc += dcol_3d[c_k, b, s]
+                grad_in_4d[b, c, ih, iw] = acc
+
+            ctx.enqueue_function[col2im_gather_tt, col2im_gather_tt](
+                grad_input,
+                dcol,
+                grid_dim=(grid_dx,),
+                block_dim=(TPB,),
+            )
+
+            # ── db (shared reduction, unchanged) ──
+            var db_nv = LayoutTensor[
+                dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
+            ](grad_params.ptr + Self.out_channels * Self.col_size)
+
+            @parameter
+            @always_inline
+            def db_wrapper_nv_tt(
+                db: LayoutTensor[
+                    dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
+                ],
+                grad_output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                Self.backward_db_kernel[BATCH, dtype](db, grad_output)
+
+            ctx.enqueue_function[db_wrapper_nv_tt, db_wrapper_nv_tt](
+                db_nv,
+                grad_output_immut,
+                grid_dim=(Self.out_channels,),
+                block_dim=(TPB,),
+            )
+        else:
+            # ── Apple path: dx first, then dW (TileTensor-native) ──
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
