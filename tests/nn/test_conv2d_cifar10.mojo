@@ -8,9 +8,9 @@ test accuracy, which is well above:
   - ~43% shallow-conv-without-BN baseline
 
 A pass validates the fused Conv2D + BatchNorm + ReLU pipeline end-to-end,
-including gradient flow through 6 conv layers and running-stat updates.
-Skipping Dropout since it requires twin Sequential routing for train/eval
-that isn't set up yet.
+including gradient flow through 6 conv layers, running-stat updates, and
+Dropout train-vs-eval routing (forward_gpu applies mask, forward_gpu_no_cache
+is identity).
 
 Architecture (mirrors a Kaggle CIFAR-10 recipe minus Dropout + aug):
     Conv2DBNReLU[3,  32, 3, 1, 1, 32, 32]   preserves 32x32
@@ -44,6 +44,7 @@ from mojo_rl.nn.model.pool_layer import MaxPoolLayer
 from mojo_rl.nn.model.flatten_layer import FlattenLayer
 from mojo_rl.nn.model.linear_act import LinearReLU
 from mojo_rl.nn.model.linear import Linear
+from mojo_rl.nn.model.dropout import Dropout
 from mojo_rl.nn.model.sequential import Sequential
 from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
 from mojo_rl.nn.optimizer.adam import Adam
@@ -108,17 +109,21 @@ comptime CNN = Sequential[
     Conv2DBatchNormReLU[3, 32, 3, 1, 1, 32, 32],
     Conv2DBatchNormReLU[32, 32, 3, 1, 1, 32, 32],
     MaxPoolLayer[32, 32, 32, 2],
+    Dropout[32 * 16 * 16, 0.25, 101, True],
     # Block 2: 16×16 → 8×8, 64 channels
     Conv2DBatchNormReLU[32, 64, 3, 1, 1, 16, 16],
     Conv2DBatchNormReLU[64, 64, 3, 1, 1, 16, 16],
     MaxPoolLayer[64, 16, 16, 2],
+    Dropout[64 * 8 * 8, 0.25, 202, True],
     # Block 3: 8×8 → 4×4, 128 channels
     Conv2DBatchNormReLU[64, 128, 3, 1, 1, 8, 8],
     Conv2DBatchNormReLU[128, 128, 3, 1, 1, 8, 8],
     MaxPoolLayer[128, 8, 8, 2],
+    Dropout[128 * 4 * 4, 0.25, 303, True],
     # Classifier head
     FlattenLayer[128 * 4 * 4],
     LinearReLU[128 * 4 * 4, 128],
+    Dropout[128, 0.5, 404, True],
     Linear[128, 10],
 ]
 
@@ -132,7 +137,7 @@ def main() raises:
     )
     print("=" * 65)
     print(
-        "  architecture: 6× Conv2DBatchNormReLU + 3 MaxPool + FC(2048→128→10)"
+        "  architecture: 6× Conv2DBatchNormReLU + 3 MaxPool + 4× Dropout + FC(2048→128→10)"
     )
     print("  params: " + String(CNN.PARAM_SIZE))
     print("  batch: " + String(BATCH) + " | epochs: " + String(EPOCHS))
