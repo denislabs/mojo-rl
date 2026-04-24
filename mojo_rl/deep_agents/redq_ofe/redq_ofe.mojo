@@ -66,20 +66,24 @@ from mojo_rl.deep_agents.core.kernels import (
     add_ci_grads_kernel,
     gradient_norm_kernel,
     gradient_reduce_apply_fused_kernel,
-    redq_ensemble_target_kernel,
     fill_constant_kernel,
     accumulate_rewards_kernel,
     increment_steps_kernel,
     log_and_reset_completed_kernel,
     uniform_random_actions_kernel,
 )
+from .kernels import (
+    redq_ensemble_target_kernel,
+    aux_mse_grad_kernel,
+    extract_phi_s_grad_kernel,
+)
 from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
     clear_progress_bar,
 )
 
-from ..configs.redq_config import (
-    REDQConfig,
+from .config import (
+    REDQOFEConfig,
     REDQ_TARGET_MIN,
     REDQ_TARGET_AVE,
     REDQ_TARGET_REM,
@@ -87,12 +91,12 @@ from ..configs.redq_config import (
 
 
 # =============================================================================
-# REDQGPUState — all GPU-side buffers for an N-critic REDQ agent
+# REDQOFEGPUState — all GPU-side buffers for an N-critic REDQ agent
 # =============================================================================
 
 
-struct REDQGPUState[
-    Config: REDQConfig,
+struct REDQOFEGPUState[
+    Config: REDQOFEConfig,
     max_n_envs: Int = 64,
 ](Movable):
     """GPU state for REDQ. Owns actor + N-critic ensemble + replay buffer
@@ -104,11 +108,16 @@ struct REDQGPUState[
     across other critics.
     """
 
-    # Compile-time dims
-    comptime OBS: Int = Self.Config.ActorModel.IN_DIM
+    # Compile-time dims.
+    # OBS is the RAW observation dim (replay buffer, env interaction).
+    # PHI_S / PHI_SA are the feature dims seen by the actor / critic
+    # (computed by OFE state branch / action branch forwards).
+    comptime OBS: Int = Self.Config.obs_dim
     comptime ACTIONS: Int = Self.Config.action_dim
+    comptime PHI_S: Int = Self.Config.ActorModel.IN_DIM     # == Config.PHI_S_DIM
+    comptime PHI_SA: Int = Self.Config.CriticModel.IN_DIM   # == Config.PHI_SA_DIM
     comptime ACTOR_OUT: Int = Self.Config.ActorModel.OUT_DIM
-    comptime CRITIC_IN: Int = Self.Config.CriticModel.IN_DIM
+    comptime CRITIC_IN: Int = Self.PHI_SA
     comptime CRITIC_OUT: Int = Self.Config.CriticModel.OUT_DIM
     comptime ACTOR_CS: Int = Self.Config.ActorModel.CACHE_SIZE
     comptime CRITIC_CS: Int = Self.Config.CriticModel.CACHE_SIZE
@@ -121,6 +130,19 @@ struct REDQGPUState[
     ]
     comptime ACTOR_WS = Self.ActorNet.WORKSPACE_SIZE_PER_SAMPLE
     comptime CRITIC_WS = Self.CriticNet.WORKSPACE_SIZE_PER_SAMPLE
+
+    # OFE sub-network aliases (bound to Config's OFE models + aux Adam LR).
+    comptime OFESBModel = Self.Config.OFEStateBranchModel
+    comptime OFEABModel = Self.Config.OFEActionBranchModel
+    comptime OFEPRModel = Self.Config.OFEPredictorModel
+    comptime AuxOpt = Adam[Self.Config.OFE_LR]
+    comptime OFESBNet = Network[Self.OFESBModel, Self.AuxOpt]
+    comptime OFEABNet = Network[Self.OFEABModel, Self.AuxOpt]
+    comptime OFEPRNet = Network[Self.OFEPRModel, Self.AuxOpt]
+    comptime OFE_SB_WS = Self.OFESBNet.WORKSPACE_SIZE_PER_SAMPLE
+    comptime OFE_AB_WS = Self.OFEABNet.WORKSPACE_SIZE_PER_SAMPLE
+    comptime OFE_PR_WS = Self.OFEPRNet.WORKSPACE_SIZE_PER_SAMPLE
+    comptime PHI_SA_IN: Int = Self.PHI_S + Self.ACTIONS  # input to action branch
 
     # GPU-side agent scalar layout (same as SAC path)
     comptime GPU_ALPHA = 0
@@ -137,6 +159,48 @@ struct REDQGPUState[
     var critics: GPUCriticGroup[
         Self.Config.CriticModel, Self.Config.CriticOpt, Self.N_ENS
     ]
+
+    # --- OFE networks (state branch + action branch + Linear predictor) ---
+    # Each has its own Adam optimizer state; all share OFE_LR. OFE params
+    # are updated ONLY by the aux next-state-prediction loss (matches
+    # paper). Actor / critics consume OFE features as stop-gradient inputs.
+    var ofe_sb: GPUNetworkState[Self.OFESBModel, Self.AuxOpt]
+    var ofe_ab: GPUNetworkState[Self.OFEABModel, Self.AuxOpt]
+    var ofe_pr: GPUNetworkState[Self.OFEPRModel, Self.AuxOpt]
+
+    # OFE workspace (shared; max size of any OFE forward / backward).
+    var ofe_sb_ws: DeviceBuffer[dtype]
+    var ofe_ab_ws: DeviceBuffer[dtype]
+    var ofe_pr_ws: DeviceBuffer[dtype]
+
+    # Training-mode OFE caches (populated by aux forward, consumed by aux backward).
+    var ofe_sb_cache: DeviceBuffer[dtype]   # [BS, OFE_SB_CACHE]
+    var ofe_ab_cache: DeviceBuffer[dtype]   # [BS, OFE_AB_CACHE]
+    var ofe_pr_cache: DeviceBuffer[dtype]   # [BS, OFE_PR_CACHE] (Linear cache may be 0)
+
+    # Feature buffers (inference-mode outputs for actor / critic).
+    # Env-step (action selection) uses small [max_n_envs, PHI_S]; training
+    # uses [BS, PHI_*]. We allocate both.
+    var phi_s_env: DeviceBuffer[dtype]       # [max_n_envs, PHI_S]
+    var phi_s_batch: DeviceBuffer[dtype]     # [BS, PHI_S] (for minibatch obs)
+    var phi_s_next_batch: DeviceBuffer[dtype]  # [BS, PHI_S] (for minibatch next_obs)
+    var phi_sa_in_target: DeviceBuffer[dtype]  # [BS, PHI_SA_IN] concat(phi_s_next, next_action)
+    var phi_sa_in_online: DeviceBuffer[dtype]  # [BS, PHI_SA_IN] concat(phi_s, action)
+    var phi_sa_in_sampled: DeviceBuffer[dtype] # [BS, PHI_SA_IN] concat(phi_s, sampled_action)
+    var phi_sa_target: DeviceBuffer[dtype]     # [BS, PHI_SA]
+    var phi_sa_online: DeviceBuffer[dtype]     # [BS, PHI_SA]
+    var phi_sa_sampled: DeviceBuffer[dtype]    # [BS, PHI_SA]
+
+    # Aux-loss training buffers (full predictor chain in TRAINING mode).
+    var aux_phi_s: DeviceBuffer[dtype]            # [BS, PHI_S]
+    var aux_phi_sa_in: DeviceBuffer[dtype]        # [BS, PHI_SA_IN]
+    var aux_phi_sa: DeviceBuffer[dtype]           # [BS, PHI_SA]
+    var aux_pred_s_next: DeviceBuffer[dtype]      # [BS, OBS]
+    var aux_grad_pred: DeviceBuffer[dtype]        # [BS, OBS]
+    var aux_grad_phi_sa: DeviceBuffer[dtype]      # [BS, PHI_SA]
+    var aux_grad_phi_sa_in: DeviceBuffer[dtype]   # [BS, PHI_SA_IN]
+    var aux_grad_phi_s: DeviceBuffer[dtype]       # [BS, PHI_S]
+    var aux_grad_s: DeviceBuffer[dtype]           # [BS, OBS] (discarded)
 
     # --- Replay buffer ---
     var buffer: GPUReplayBuffer[
@@ -217,8 +281,65 @@ struct REDQGPUState[
             Self.Config.buffer_capacity, Self.OBS, Self.ACTIONS
         ](ctx)
 
+        # OFE networks (params + grads + Adam state on GPU)
+        self.ofe_sb = GPUNetworkState[Self.OFESBModel, Self.AuxOpt](ctx)
+        self.ofe_ab = GPUNetworkState[Self.OFEABModel, Self.AuxOpt](ctx)
+        self.ofe_pr = GPUNetworkState[Self.OFEPRModel, Self.AuxOpt](ctx)
+
         comptime BS = Self.BATCH
         comptime MNE = Self.max_n_envs
+
+        # OFE workspaces + caches
+        self.ofe_sb_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, BS * Self.OFE_SB_WS)
+        )
+        self.ofe_ab_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, BS * Self.OFE_AB_WS)
+        )
+        self.ofe_pr_ws = ctx.enqueue_create_buffer[dtype](
+            max(1, BS * Self.OFE_PR_WS)
+        )
+        self.ofe_sb_cache = ctx.enqueue_create_buffer[dtype](
+            BS * Self.OFESBModel.CACHE_SIZE
+        )
+        self.ofe_ab_cache = ctx.enqueue_create_buffer[dtype](
+            BS * Self.OFEABModel.CACHE_SIZE
+        )
+        self.ofe_pr_cache = ctx.enqueue_create_buffer[dtype](
+            max(1, BS * Self.OFEPRModel.CACHE_SIZE)
+        )
+
+        # Feature buffers
+        self.phi_s_env = ctx.enqueue_create_buffer[dtype](MNE * Self.PHI_S)
+        self.phi_s_batch = ctx.enqueue_create_buffer[dtype](BS * Self.PHI_S)
+        self.phi_s_next_batch = ctx.enqueue_create_buffer[dtype](BS * Self.PHI_S)
+        self.phi_sa_in_target = ctx.enqueue_create_buffer[dtype](
+            BS * Self.PHI_SA_IN
+        )
+        self.phi_sa_in_online = ctx.enqueue_create_buffer[dtype](
+            BS * Self.PHI_SA_IN
+        )
+        self.phi_sa_in_sampled = ctx.enqueue_create_buffer[dtype](
+            BS * Self.PHI_SA_IN
+        )
+        self.phi_sa_target = ctx.enqueue_create_buffer[dtype](BS * Self.PHI_SA)
+        self.phi_sa_online = ctx.enqueue_create_buffer[dtype](BS * Self.PHI_SA)
+        self.phi_sa_sampled = ctx.enqueue_create_buffer[dtype](BS * Self.PHI_SA)
+
+        # Aux-loss buffers
+        self.aux_phi_s = ctx.enqueue_create_buffer[dtype](BS * Self.PHI_S)
+        self.aux_phi_sa_in = ctx.enqueue_create_buffer[dtype](
+            BS * Self.PHI_SA_IN
+        )
+        self.aux_phi_sa = ctx.enqueue_create_buffer[dtype](BS * Self.PHI_SA)
+        self.aux_pred_s_next = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
+        self.aux_grad_pred = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
+        self.aux_grad_phi_sa = ctx.enqueue_create_buffer[dtype](BS * Self.PHI_SA)
+        self.aux_grad_phi_sa_in = ctx.enqueue_create_buffer[dtype](
+            BS * Self.PHI_SA_IN
+        )
+        self.aux_grad_phi_s = ctx.enqueue_create_buffer[dtype](BS * Self.PHI_S)
+        self.aux_grad_s = ctx.enqueue_create_buffer[dtype](BS * Self.OBS)
 
         # Exploration
         self.explore_raw = ctx.enqueue_create_buffer[dtype](MNE * Self.ACTOR_OUT)
@@ -355,6 +476,33 @@ struct REDQGPUState[
         self.diag_nq_host = take.diag_nq_host^
         self.diag_lp_host = take.diag_lp_host^
         self.diag_scalars_host = take.diag_scalars_host^
+        self.ofe_sb = take.ofe_sb^
+        self.ofe_ab = take.ofe_ab^
+        self.ofe_pr = take.ofe_pr^
+        self.ofe_sb_ws = take.ofe_sb_ws^
+        self.ofe_ab_ws = take.ofe_ab_ws^
+        self.ofe_pr_ws = take.ofe_pr_ws^
+        self.ofe_sb_cache = take.ofe_sb_cache^
+        self.ofe_ab_cache = take.ofe_ab_cache^
+        self.ofe_pr_cache = take.ofe_pr_cache^
+        self.phi_s_env = take.phi_s_env^
+        self.phi_s_batch = take.phi_s_batch^
+        self.phi_s_next_batch = take.phi_s_next_batch^
+        self.phi_sa_in_target = take.phi_sa_in_target^
+        self.phi_sa_in_online = take.phi_sa_in_online^
+        self.phi_sa_in_sampled = take.phi_sa_in_sampled^
+        self.phi_sa_target = take.phi_sa_target^
+        self.phi_sa_online = take.phi_sa_online^
+        self.phi_sa_sampled = take.phi_sa_sampled^
+        self.aux_phi_s = take.aux_phi_s^
+        self.aux_phi_sa_in = take.aux_phi_sa_in^
+        self.aux_phi_sa = take.aux_phi_sa^
+        self.aux_pred_s_next = take.aux_pred_s_next^
+        self.aux_grad_pred = take.aux_grad_pred^
+        self.aux_grad_phi_sa = take.aux_grad_phi_sa^
+        self.aux_grad_phi_sa_in = take.aux_grad_phi_sa_in^
+        self.aux_grad_phi_s = take.aux_grad_phi_s^
+        self.aux_grad_s = take.aux_grad_s^
 
     # -------------------------------------------------------------------------
     # Tensor view helpers
@@ -397,24 +545,28 @@ struct REDQGPUState[
 
 
 # =============================================================================
-# REDQAgent — config-driven ensemble SAC agent
+# REDQOFEAgent — config-driven ensemble SAC agent
 # =============================================================================
 
 
-struct REDQAgent[
-    Config: REDQConfig,
+struct REDQOFEAgent[
+    Config: REDQOFEConfig,
     max_n_envs: Int = 64,
 ](Movable & Checkpointable):
     """REDQ agent. Owns an in-memory CPU CriticGroup for init / save-load
-    and a GPU-side REDQGPUState for training.
+    and a GPU-side REDQOFEGPUState for training.
 
-    Training is driven by `run_redq_train_gpu` (see redq_train.mojo), which
-    calls `select_actions_gpu`, `gpu_store`, `do_gpu_train_step`, and
+    Training is driven by `train_gpu()` (defined below), which calls
+    `select_actions_gpu`, `gpu_store`, `do_gpu_train_step`, and
     `soft_update_all` as appropriate.
     """
 
-    comptime OBS: Int = Self.Config.ActorModel.IN_DIM
+    # OBS = raw observation dim; PHI_S / PHI_SA are OFE feature dims.
+    comptime OBS: Int = Self.Config.obs_dim
     comptime ACTIONS: Int = Self.Config.action_dim
+    comptime PHI_S: Int = Self.Config.ActorModel.IN_DIM
+    comptime PHI_SA: Int = Self.Config.CriticModel.IN_DIM
+    comptime PHI_SA_IN: Int = Self.PHI_S + Self.ACTIONS
     comptime ACTOR_OUT: Int = Self.Config.ActorModel.OUT_DIM
     comptime BATCH: Int = Self.Config.batch_size
     comptime N_ENS: Int = Self.Config.NUM_ENSEMBLE
@@ -422,7 +574,7 @@ struct REDQAgent[
     comptime UTD: Int = Self.Config.UTD_RATIO
     comptime POL_DELAY: Int = Self.Config.POLICY_DELAY
     comptime Q_MODE: Int = Self.Config.Q_TARGET_MODE
-    comptime CRITIC_IN: Int = Self.Config.CriticModel.IN_DIM
+    comptime CRITIC_IN: Int = Self.PHI_SA
     comptime CRITIC_OUT: Int = Self.Config.CriticModel.OUT_DIM
     comptime CRITIC_CS: Int = Self.Config.CriticModel.CACHE_SIZE
     comptime ACTOR_CS: Int = Self.Config.ActorModel.CACHE_SIZE
@@ -431,7 +583,16 @@ struct REDQAgent[
         Self.Config.CriticModel, Self.Config.CriticOpt
     ]
 
-    comptime GPUStateType = REDQGPUState[Self.Config, Self.max_n_envs]
+    # OFE sub-network aliases
+    comptime OFESBModel = Self.Config.OFEStateBranchModel
+    comptime OFEABModel = Self.Config.OFEActionBranchModel
+    comptime OFEPRModel = Self.Config.OFEPredictorModel
+    comptime AuxOpt = Adam[Self.Config.OFE_LR]
+    comptime OFESBNet = Network[Self.OFESBModel, Self.AuxOpt]
+    comptime OFEABNet = Network[Self.OFEABModel, Self.AuxOpt]
+    comptime OFEPRNet = Network[Self.OFEPRModel, Self.AuxOpt]
+
+    comptime GPUStateType = REDQOFEGPUState[Self.Config, Self.max_n_envs]
 
     # CPU-side networks (used only for init / upload; CPU training is not
     # implemented in v1).
@@ -439,6 +600,10 @@ struct REDQAgent[
     var cpu_critics: CriticGroup[
         Self.Config.CriticModel, Self.Config.CriticOpt, Self.N_ENS
     ]
+    # CPU-side OFE networks (single copy each — no target OFE).
+    var cpu_ofe_sb: NetworkState[Self.OFESBModel, Self.AuxOpt]
+    var cpu_ofe_ab: NetworkState[Self.OFEABModel, Self.AuxOpt]
+    var cpu_ofe_pr: NetworkState[Self.OFEPRModel, Self.AuxOpt]
 
     # Hyperparameters
     var gamma: Float64
@@ -494,6 +659,12 @@ struct REDQAgent[
             Self.Config.CriticModel, Self.Config.CriticOpt, Self.N_ENS
         ]()
         self.cpu_critics.initialize[Xavier[]]()
+        self.cpu_ofe_sb = NetworkState[Self.OFESBModel, Self.AuxOpt]()
+        self.cpu_ofe_sb.initialize[Xavier[]]()
+        self.cpu_ofe_ab = NetworkState[Self.OFEABModel, Self.AuxOpt]()
+        self.cpu_ofe_ab.initialize[Xavier[]]()
+        self.cpu_ofe_pr = NetworkState[Self.OFEPRModel, Self.AuxOpt]()
+        self.cpu_ofe_pr.initialize[Xavier[]]()
 
         self.gamma = gamma
         self.tau = tau
@@ -520,6 +691,9 @@ struct REDQAgent[
     def __init__(out self, *, deinit take: Self):
         self.cpu_actor = take.cpu_actor^
         self.cpu_critics = take.cpu_critics^
+        self.cpu_ofe_sb = take.cpu_ofe_sb^
+        self.cpu_ofe_ab = take.cpu_ofe_ab^
+        self.cpu_ofe_pr = take.cpu_ofe_pr^
         self.gamma = take.gamma
         self.tau = take.tau
         self.action_scale = take.action_scale
@@ -627,12 +801,32 @@ struct REDQAgent[
         obs: List[Float64],
     ) -> List[Float64]:
         """Deterministic action selection using the mean of the tanh-Gaussian
-        actor (no sampling). Uses `cpu_actor` — call `download_from_gpu`
-        first if GPU weights are fresher than CPU."""
+        actor (no sampling). Uses `cpu_actor` + `cpu_ofe_sb` — call
+        `download_from_gpu` first if GPU weights are fresher."""
         var obs_arr = obs_to_inline[Self.OBS, DType.float64](obs)
         var obs_t = LayoutTensor[
-            dtype, Layout.row_major(1, Self.OBS), MutAnyOrigin
+            dtype,
+            Layout.row_major(1, Self.OFESBModel.IN_DIM),
+            MutAnyOrigin,
         ](obs_arr.unsafe_ptr())
+
+        # CPU OFE state-branch forward (inference mode, no cache).
+        var phi_s_arr = InlineArray[
+            Scalar[dtype], Self.OFESBModel.OUT_DIM
+        ](uninitialized=True)
+        var phi_s_sb_t = LayoutTensor[
+            dtype,
+            Layout.row_major(1, Self.OFESBModel.OUT_DIM),
+            MutAnyOrigin,
+        ](phi_s_arr.unsafe_ptr())
+        var p_sb = self.cpu_ofe_sb.params_view()
+        Self.OFESBModel.forward[1](obs_t, phi_s_sb_t, p_sb)
+
+        var phi_s_actor_t = LayoutTensor[
+            dtype,
+            Layout.row_major(1, Self.Config.ActorModel.IN_DIM),
+            MutAnyOrigin,
+        ](phi_s_arr.unsafe_ptr())
 
         var out_arr = InlineArray[Scalar[dtype], Self.Config.ActorModel.OUT_DIM](
             uninitialized=True
@@ -643,7 +837,7 @@ struct REDQAgent[
             MutAnyOrigin,
         ](out_arr.unsafe_ptr())
         var p = self.cpu_actor.online.params_view()
-        Self.ActorNet.forward[1](obs_t, out_t, p)
+        Self.ActorNet.forward[1](phi_s_actor_t, out_t, p)
 
         var result = List[Float64](capacity=Self.ACTIONS)
         for i in range(Self.ACTIONS):
@@ -736,6 +930,9 @@ struct REDQAgent[
     ) raises -> None:
         gpu_state.actor.upload_from(self.cpu_actor, ctx)
         gpu_state.critics.upload_from(self.cpu_critics, ctx)
+        gpu_state.ofe_sb.upload_from(self.cpu_ofe_sb, ctx)
+        gpu_state.ofe_ab.upload_from(self.cpu_ofe_ab, ctx)
+        gpu_state.ofe_pr.upload_from(self.cpu_ofe_pr, ctx)
 
         var scalars_host = ctx.enqueue_create_host_buffer[dtype](
             Self.GPUStateType.GPU_SCALARS_SIZE
@@ -768,6 +965,9 @@ struct REDQAgent[
     ) raises -> None:
         gpu_state.actor.download_to(self.cpu_actor, ctx)
         gpu_state.critics.download_to(self.cpu_critics, ctx)
+        gpu_state.ofe_sb.download_to(self.cpu_ofe_sb, ctx)
+        gpu_state.ofe_ab.download_to(self.cpu_ofe_ab, ctx)
+        gpu_state.ofe_pr.download_to(self.cpu_ofe_pr, ctx)
 
         var scalars_host = ctx.enqueue_create_host_buffer[dtype](
             Self.GPUStateType.GPU_SCALARS_SIZE
@@ -790,18 +990,44 @@ struct REDQAgent[
         obs_buf: DeviceBuffer[dtype],
         mut actions_buf: DeviceBuffer[dtype],
     ) raises -> None:
-        """Stochastic action selection — forward actor, sample tanh-Gaussian.
+        """Stochastic action selection — OFE state-branch (inference mode)
+        then actor forward + tanh-Gaussian sample.
         """
-        var obs_t = LayoutTensor[
-            dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
+        # Tensors typed against OFESBModel.IN_DIM / .OUT_DIM so the network's
+        # template dims resolve to the same comptime expression as the call
+        # (avoids unfolded-expression Layout mismatches).
+        var obs_sb_t = LayoutTensor[
+            dtype,
+            Layout.row_major(N_ENVS, Self.OFESBModel.IN_DIM),
+            MutAnyOrigin,
         ](obs_buf.unsafe_ptr())
+        var phi_s_env_t = LayoutTensor[
+            dtype,
+            Layout.row_major(N_ENVS, Self.OFESBModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_s_env.unsafe_ptr())
+        # Inference-mode OFE forward (no cache, uses running stats — no
+        # EMA update, so env-step stats don't drift).
+        Self.OFESBNet.forward_gpu[N_ENVS](
+            ctx,
+            obs_sb_t,
+            phi_s_env_t,
+            gpu_state.ofe_sb.params_view(),
+            gpu_state.ofe_sb_ws,
+        )
+        # Re-view phi_s_env as ActorModel.IN_DIM-sized for actor forward.
+        var phi_s_actor_t = LayoutTensor[
+            dtype,
+            Layout.row_major(N_ENVS, Self.Config.ActorModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_s_env.unsafe_ptr())
         var raw_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.ACTOR_OUT), MutAnyOrigin
         ](gpu_state.explore_raw.unsafe_ptr())
         var p = gpu_state.actor.online.params_view()
 
         Self.ActorNet.forward_gpu[N_ENVS](
-            ctx, obs_t, raw_t, p, gpu_state.explore_ws
+            ctx, phi_s_actor_t, raw_t, p, gpu_state.explore_ws
         )
 
         var act_t = LayoutTensor[
@@ -1075,6 +1301,263 @@ struct REDQAgent[
         self.soft_update_all(ctx, gpu_state)
 
     # -------------------------------------------------------------------------
+    # Aux training step: train OFE via next-state prediction MSE.
+    #
+    # Called by `_run_train_gpu_impl` once per env step (paper cadence —
+    # less frequent than critic updates, which run UTD_RATIO × n_envs times
+    # per env step).
+    # -------------------------------------------------------------------------
+
+    def aux_train_step(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises -> None:
+        """One auxiliary-loss update of the full OFE chain.
+
+        Samples a fresh minibatch, forwards through
+            s → StateBranch → phi_s
+            (phi_s, a) → ActionBranch → phi_sa
+            phi_sa → Linear → pred_next_s
+        computes MSE against the real next_s, then chains backward with a
+        single aux Adam step on all three OFE sub-networks.
+        """
+        comptime BS = Self.BATCH
+        comptime MSE_BLOCKS = (BS * Self.OBS + TPB - 1) // TPB
+        comptime EXTRACT_BLOCKS = (BS * Self.PHI_S + TPB - 1) // TPB
+        comptime CONCAT_BLOCKS = (BS * Self.PHI_SA_IN + TPB - 1) // TPB
+        comptime concat_phi_k = concat_obs_action_kernel[
+            dtype, BS, Self.PHI_S, Self.ACTIONS, Self.PHI_SA_IN
+        ]
+        comptime mse_k = aux_mse_grad_kernel[dtype, BS, Self.OBS]
+        comptime extract_k = extract_phi_s_grad_kernel[
+            dtype, BS, Self.PHI_S, Self.PHI_SA_IN
+        ]
+
+        # --- Fresh minibatch (independent sample from the RL one) ---
+        var rng_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](gpu_state.rng_counter.unsafe_ptr())
+        comptime incr_k = increment_rng_counter_kernel
+        ctx.enqueue_function[incr_k, incr_k](
+            rng_t, grid_dim=(1,), block_dim=(1,)
+        )
+        gpu_state.buffer.sample[BS](
+            ctx,
+            rng_counter=gpu_state.rng_counter,
+            sampled_obs=gpu_state.s_obs,
+            sampled_actions=gpu_state.s_act,
+            sampled_rewards=gpu_state.s_rew,
+            sampled_next_obs=gpu_state.s_nobs,
+            sampled_dones=gpu_state.s_done,
+            indices=gpu_state.s_idx,
+        )
+
+        var act_t = gpu_state.s_act_t()
+        # Model-typed views of sampled obs / next_obs for OFE forwards.
+        var obs_sb_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.s_obs.unsafe_ptr())
+        var nobs_mse_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEPRModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.s_nobs.unsafe_ptr())
+
+        # --- Aux forward (dedicated cache buffers) ---
+        var phi_s_sb_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_phi_s.unsafe_ptr())
+        var phi_s_concat_t = LayoutTensor[
+            dtype, Layout.row_major(BS, Self.PHI_S), MutAnyOrigin
+        ](gpu_state.aux_phi_s.unsafe_ptr())
+        var ofe_sb_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu_state.ofe_sb_cache.unsafe_ptr())
+        Self.OFESBNet.forward_gpu_with_cache[BS](
+            ctx,
+            obs_sb_t,
+            phi_s_sb_t,
+            gpu_state.ofe_sb.params_view(),
+            ofe_sb_cache_t,
+            gpu_state.ofe_sb_ws,
+        )
+
+        var phi_sa_in_concat_t = LayoutTensor[
+            dtype, Layout.row_major(BS, Self.PHI_SA_IN), MutAnyOrigin
+        ](gpu_state.aux_phi_sa_in.unsafe_ptr())
+        var phi_sa_in_ab_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_phi_sa_in.unsafe_ptr())
+        ctx.enqueue_function[concat_phi_k, concat_phi_k](
+            phi_sa_in_concat_t,
+            phi_s_concat_t,
+            act_t,
+            grid_dim=(CONCAT_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        var phi_sa_ab_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_phi_sa.unsafe_ptr())
+        var phi_sa_pr_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEPRModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_phi_sa.unsafe_ptr())
+        var ofe_ab_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu_state.ofe_ab_cache.unsafe_ptr())
+        Self.OFEABNet.forward_gpu_with_cache[BS](
+            ctx,
+            phi_sa_in_ab_t,
+            phi_sa_ab_t,
+            gpu_state.ofe_ab.params_view(),
+            ofe_ab_cache_t,
+            gpu_state.ofe_ab_ws,
+        )
+
+        var pred_pr_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEPRModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_pred_s_next.unsafe_ptr())
+        var pred_mse_t = LayoutTensor[
+            dtype, Layout.row_major(BS, Self.OBS), MutAnyOrigin
+        ](gpu_state.aux_pred_s_next.unsafe_ptr())
+        var ofe_pr_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEPRModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu_state.ofe_pr_cache.unsafe_ptr())
+        Self.OFEPRNet.forward_gpu_with_cache[BS](
+            ctx,
+            phi_sa_pr_t,
+            pred_pr_t,
+            gpu_state.ofe_pr.params_view(),
+            ofe_pr_cache_t,
+            gpu_state.ofe_pr_ws,
+        )
+
+        # --- MSE gradient: 2 * (pred - next_obs) / (BS * OBS) ---
+        var grad_pred_mse_t = LayoutTensor[
+            dtype, Layout.row_major(BS, Self.OBS), MutAnyOrigin
+        ](gpu_state.aux_grad_pred.unsafe_ptr())
+        var grad_pred_pr_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEPRModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_grad_pred.unsafe_ptr())
+        ctx.enqueue_function[mse_k, mse_k](
+            grad_pred_mse_t,
+            pred_mse_t,
+            nobs_mse_t,
+            grid_dim=(MSE_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # --- Aux backward chain ---
+        gpu_state.ofe_sb.zero_grads(ctx)
+        gpu_state.ofe_ab.zero_grads(ctx)
+        gpu_state.ofe_pr.zero_grads(ctx)
+
+        # Bind mutable grad views to locals (backward_gpu takes `mut grads`).
+        var pr_grads = gpu_state.ofe_pr.grads_view()
+        var ab_grads = gpu_state.ofe_ab.grads_view()
+        var sb_grads = gpu_state.ofe_sb.grads_view()
+
+        # Linear predictor backward
+        var grad_phi_sa_pr_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEPRModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_grad_phi_sa.unsafe_ptr())
+        var grad_phi_sa_ab_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_grad_phi_sa.unsafe_ptr())
+        Self.OFEPRNet.backward_gpu[BS](
+            ctx,
+            grad_pred_pr_t,
+            grad_phi_sa_pr_t,
+            gpu_state.ofe_pr.params_view(),
+            ofe_pr_cache_t,
+            pr_grads,
+            gpu_state.ofe_pr_ws,
+        )
+
+        # Action branch backward
+        var grad_phi_sa_in_ab_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_grad_phi_sa_in.unsafe_ptr())
+        var grad_phi_sa_in_extract_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.PHI_SA_IN),
+            MutAnyOrigin,
+        ](gpu_state.aux_grad_phi_sa_in.unsafe_ptr())
+        Self.OFEABNet.backward_gpu[BS](
+            ctx,
+            grad_phi_sa_ab_t,
+            grad_phi_sa_in_ab_t,
+            gpu_state.ofe_ab.params_view(),
+            ofe_ab_cache_t,
+            ab_grads,
+            gpu_state.ofe_ab_ws,
+        )
+
+        # Extract phi_s portion of input gradient, drop action portion
+        var grad_phi_s_extract_t = LayoutTensor[
+            dtype, Layout.row_major(BS, Self.PHI_S), MutAnyOrigin
+        ](gpu_state.aux_grad_phi_s.unsafe_ptr())
+        var grad_phi_s_sb_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_grad_phi_s.unsafe_ptr())
+        ctx.enqueue_function[extract_k, extract_k](
+            grad_phi_s_extract_t,
+            grad_phi_sa_in_extract_t,
+            grid_dim=(EXTRACT_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # State branch backward (input gradient wrt s is discarded)
+        var grad_s_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_grad_s.unsafe_ptr())
+        Self.OFESBNet.backward_gpu[BS](
+            ctx,
+            grad_phi_s_sb_t,
+            grad_s_t,
+            gpu_state.ofe_sb.params_view(),
+            ofe_sb_cache_t,
+            sb_grads,
+            gpu_state.ofe_sb_ws,
+        )
+
+        # --- Aux optimizer step on all three sub-networks ---
+        gpu_state.ofe_sb.optimizer_step(ctx)
+        gpu_state.ofe_ab.optimizer_step(ctx)
+        gpu_state.ofe_pr.optimizer_step(ctx)
+
+    # -------------------------------------------------------------------------
     # Phase: critic update (N critics, subset-min target)
     # -------------------------------------------------------------------------
 
@@ -1084,11 +1567,15 @@ struct REDQAgent[
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
         comptime BS = Self.BATCH
-        comptime ELEM_BLOCKS = (BS * Self.CRITIC_IN + TPB - 1) // TPB
         comptime BATCH_BLOCKS = (BS + TPB - 1) // TPB
-        comptime concat_k = concat_obs_action_kernel[
-            dtype, BS, Self.OBS, Self.ACTIONS, Self.CRITIC_IN
+        # OFE-feature concat kernel: concat(phi_s, action) → phi_sa_in
+        # (reuses concat_obs_action_kernel with PHI_S in place of obs_dim)
+        comptime concat_phi_k = concat_obs_action_kernel[
+            dtype, BS, Self.PHI_S, Self.ACTIONS, Self.PHI_SA_IN
         ]
+        comptime concat_phi_blocks = (
+            BS * Self.PHI_SA_IN + TPB - 1
+        ) // TPB
         comptime mse_grad_k = td_mse_grad_kernel[dtype, BS, Self.CRITIC_OUT]
 
         var obs_t = gpu_state.s_obs_t()
@@ -1097,8 +1584,69 @@ struct REDQAgent[
         var rew_t = gpu_state.s_rew_t()
         var done_t = gpu_state.s_done_t()
 
-        # --- 1. Reparameterized next action from ONLINE actor ---
-        # Increment RNG counter before sampling.
+        # --- 0a. OFE state-branch forward on obs and next_obs ---
+        # Training-mode forward with cache — BN uses batch stats and also
+        # updates running stats. Caches are not used for this branch's
+        # backward (paper: OFE params updated only by aux loss), so we
+        # overwrite them each call.
+        # Tensors typed against OFESBModel.IN_DIM / .OUT_DIM / .CACHE_SIZE
+        # so Layout expressions match the network's templates.
+        var obs_sb_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.s_obs.unsafe_ptr())
+        var nobs_sb_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.s_nobs.unsafe_ptr())
+        var phi_s_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_s_batch.unsafe_ptr())
+        var phi_s_next_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_s_next_batch.unsafe_ptr())
+        var ofe_sb_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFESBModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu_state.ofe_sb_cache.unsafe_ptr())
+        Self.OFESBNet.forward_gpu_with_cache[BS](
+            ctx,
+            obs_sb_t,
+            phi_s_t,
+            gpu_state.ofe_sb.params_view(),
+            ofe_sb_cache_t,
+            gpu_state.ofe_sb_ws,
+        )
+        Self.OFESBNet.forward_gpu_with_cache[BS](
+            ctx,
+            nobs_sb_t,
+            phi_s_next_t,
+            gpu_state.ofe_sb.params_view(),
+            ofe_sb_cache_t,
+            gpu_state.ofe_sb_ws,
+        )
+
+        # Alias views for downstream actor / critic calls that use
+        # the matching model's IN_DIM.
+        var phi_s_actor_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.Config.ActorModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_s_batch.unsafe_ptr())
+        var phi_s_next_actor_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.Config.ActorModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_s_next_batch.unsafe_ptr())
+
+        # --- 1. Reparameterized next action from ONLINE actor (on phi_s_next) ---
         comptime incr_k = increment_rng_counter_kernel
         var rng_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
@@ -1112,7 +1660,7 @@ struct REDQAgent[
             dtype, Layout.row_major(BS, Self.ACTOR_OUT), MutAnyOrigin
         ](gpu_state.actor_out.unsafe_ptr())
         Self.ActorNet.forward_gpu[BS](
-            ctx, nobs_t, nact_raw_t, p_actor, gpu_state.actor_ws
+            ctx, phi_s_next_actor_t, nact_raw_t, p_actor, gpu_state.actor_ws
         )
         var nact_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
@@ -1162,29 +1710,54 @@ struct REDQAgent[
             block_dim=(TPB,),
         )
 
-        # --- 2. Concat [nobs, nact] → next_ci ---
-        var next_ci_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
-        ](gpu_state.next_ci.unsafe_ptr())
-        ctx.enqueue_function[concat_k, concat_k](
-            next_ci_t,
-            nobs_t,
+        # --- 2. OFE action-branch: concat(phi_s_next, nact) → phi_sa_target ---
+        var phi_sa_in_tgt_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_sa_in_target.unsafe_ptr())
+        ctx.enqueue_function[concat_phi_k, concat_phi_k](
+            phi_sa_in_tgt_t,
+            phi_s_next_t,
             nact_t,
-            grid_dim=(ELEM_BLOCKS,),
+            grid_dim=(concat_phi_blocks,),
             block_dim=(TPB,),
         )
+        var phi_sa_tgt_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_sa_target.unsafe_ptr())
+        var ofe_ab_cache_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu_state.ofe_ab_cache.unsafe_ptr())
+        Self.OFEABNet.forward_gpu_with_cache[BS](
+            ctx,
+            phi_sa_in_tgt_t,
+            phi_sa_tgt_t,
+            gpu_state.ofe_ab.params_view(),
+            ofe_ab_cache_t,
+            gpu_state.ofe_ab_ws,
+        )
+        # Alias for critic forward (CriticModel.IN_DIM typing).
+        var phi_sa_tgt_critic_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.Config.CriticModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_sa_target.unsafe_ptr())
 
-        # --- 3. Forward all N target critics on next_ci — stacked output ---
+        # --- 3. Forward all N target critics on phi_sa_target — stacked output ---
         for n in range(Self.N_ENS):
             var p_t = gpu_state.critics.target_params_view(n)
-            # Per-critic slice of the stacked buffer.
             var slice_t = LayoutTensor[
                 dtype, Layout.row_major(BS, Self.CRITIC_OUT), MutAnyOrigin
             ](
                 gpu_state.next_q_stack.unsafe_ptr() + n * BS * Self.CRITIC_OUT
             )
             Self.CriticNet.forward_gpu[BS](
-                ctx, next_ci_t, slice_t, p_t, gpu_state.critic_ws
+                ctx, phi_sa_tgt_critic_t, slice_t, p_t, gpu_state.critic_ws
             )
 
         # --- 4. Compute TD targets from stacked Q + subset indices ---
@@ -1219,17 +1792,38 @@ struct REDQAgent[
             block_dim=(TPB,),
         )
 
-        # --- 5. Concat [obs, act] → ci (input for ALL online critics) ---
-        var ci_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
-        ](gpu_state.ci.unsafe_ptr())
-        ctx.enqueue_function[concat_k, concat_k](
-            ci_t,
-            obs_t,
+        # --- 5. OFE action-branch: concat(phi_s, action) → phi_sa_online ---
+        var phi_sa_in_online_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_sa_in_online.unsafe_ptr())
+        ctx.enqueue_function[concat_phi_k, concat_phi_k](
+            phi_sa_in_online_t,
+            phi_s_t,
             act_t,
-            grid_dim=(ELEM_BLOCKS,),
+            grid_dim=(concat_phi_blocks,),
             block_dim=(TPB,),
         )
+        var phi_sa_online_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_sa_online.unsafe_ptr())
+        Self.OFEABNet.forward_gpu_with_cache[BS](
+            ctx,
+            phi_sa_in_online_t,
+            phi_sa_online_t,
+            gpu_state.ofe_ab.params_view(),
+            ofe_ab_cache_t,
+            gpu_state.ofe_ab_ws,
+        )
+        # Alias for critic forward.
+        var phi_sa_online_critic_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.Config.CriticModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_sa_online.unsafe_ptr())
 
         # --- 6. For each online critic: forward → MSE grad → backward → step ---
         var q_out_t = LayoutTensor[
@@ -1250,7 +1844,7 @@ struct REDQAgent[
             var g_o = gpu_state.critics.online_grads_view(n)
             Self.CriticNet.forward_gpu_with_cache[BS](
                 ctx,
-                ci_t,
+                phi_sa_online_critic_t,
                 q_out_t,
                 p_o,
                 q_cache_t,
@@ -1264,6 +1858,10 @@ struct REDQAgent[
                 block_dim=(TPB,),
             )
             gpu_state.critics.pairs[n].online.zero_grads(ctx)
+            # Critic backward writes grad wrt phi_sa input into d_ci (sized
+            # BS*PHI_SA). This gradient is DISCARDED — per paper, OFE params
+            # are updated only by the aux loss; we don't propagate dQ back
+            # through OFE during the RL update.
             Self.CriticNet.backward_gpu[BS](
                 ctx,
                 q_grad_t,
@@ -1287,12 +1885,13 @@ struct REDQAgent[
         mut gpu_state: Self.GPUStateType,
     ) raises -> None:
         comptime BS = Self.BATCH
-        comptime ELEM_BLOCKS = (BS * Self.CRITIC_IN + TPB - 1) // TPB
+        comptime PHI_SA_BLOCKS = (BS * Self.PHI_SA + TPB - 1) // TPB
+        comptime PHI_SA_IN_BLOCKS = (BS * Self.PHI_SA_IN + TPB - 1) // TPB
         comptime BATCH_BLOCKS = (BS + TPB - 1) // TPB
         comptime ACT_BLOCKS = (BS * Self.ACTIONS + TPB - 1) // TPB
         comptime incr_k = increment_rng_counter_kernel
-        comptime concat_k = concat_obs_action_kernel[
-            dtype, BS, Self.OBS, Self.ACTIONS, Self.CRITIC_IN
+        comptime concat_phi_k = concat_obs_action_kernel[
+            dtype, BS, Self.PHI_S, Self.ACTIONS, Self.PHI_SA_IN
         ]
 
         var rng_t = LayoutTensor[
@@ -1303,12 +1902,27 @@ struct REDQAgent[
         var p_actor = gpu_state.actor.online.params_view()
         var a_grads = gpu_state.actor.online.grads_view()
 
+        # phi_s_batch was computed in _phase_critic_update on the same
+        # minibatch. Reuse it here for actor forward + critic-of-sampled-a.
+        # View with ActorModel.IN_DIM for actor, and OFEABModel.IN_DIM slice
+        # for the concat with sampled_act.
+        var phi_s_actor_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.Config.ActorModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_s_batch.unsafe_ptr())
+        var phi_s_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.PHI_S),
+            MutAnyOrigin,
+        ](gpu_state.phi_s_batch.unsafe_ptr())
+
         # --- 1. Increment RNG counter before rsample ---
         ctx.enqueue_function[incr_k, incr_k](
             rng_t, grid_dim=(1,), block_dim=(1,)
         )
 
-        # --- 2. Forward actor with cache → raw [mean || log_std_raw] ---
+        # --- 2. Forward actor with cache on phi_s → raw [mean || log_std_raw] ---
         var raw_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.ACTOR_OUT), MutAnyOrigin
         ](gpu_state.actor_out.unsafe_ptr())
@@ -1316,7 +1930,7 @@ struct REDQAgent[
             dtype, Layout.row_major(BS, Self.ACTOR_CS), MutAnyOrigin
         ](gpu_state.actor_cache.unsafe_ptr())
         Self.ActorNet.forward_gpu_with_cache[BS](
-            ctx, obs_t, raw_t, p_actor, actor_cache_t, gpu_state.actor_ws
+            ctx, phi_s_actor_t, raw_t, p_actor, actor_cache_t, gpu_state.actor_ws
         )
 
         # --- 3. sac_rsample → curr_act, curr_lp, eps_cache ---
@@ -1368,17 +1982,42 @@ struct REDQAgent[
             block_dim=(TPB,),
         )
 
-        # --- 4. Concat [obs, curr_act] → new_ci ---
-        var new_ci_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.CRITIC_IN), MutAnyOrigin
-        ](gpu_state.new_ci.unsafe_ptr())
-        ctx.enqueue_function[concat_k, concat_k](
-            new_ci_t,
-            obs_t,
+        # --- 4. OFE action-branch: concat(phi_s, curr_act) → phi_sa_sampled ---
+        var phi_sa_in_sampled_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_sa_in_sampled.unsafe_ptr())
+        ctx.enqueue_function[concat_phi_k, concat_phi_k](
+            phi_sa_in_sampled_t,
+            phi_s_t,
             curr_act_t,
-            grid_dim=(ELEM_BLOCKS,),
+            grid_dim=(PHI_SA_IN_BLOCKS,),
             block_dim=(TPB,),
         )
+        var phi_sa_sampled_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_sa_sampled.unsafe_ptr())
+        var ofe_ab_cache_sampled_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu_state.ofe_ab_cache.unsafe_ptr())
+        Self.OFEABNet.forward_gpu_with_cache[BS](
+            ctx,
+            phi_sa_in_sampled_t,
+            phi_sa_sampled_t,
+            gpu_state.ofe_ab.params_view(),
+            ofe_ab_cache_sampled_t,
+            gpu_state.ofe_ab_ws,
+        )
+        var phi_sa_sampled_critic_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.Config.CriticModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.phi_sa_sampled.unsafe_ptr())
 
         # --- 5. For each online critic: forward(cache) → backward with
         #         seed -1/(N·BS), accumulate d_ci_sum = Σ d_ci[n] ---
@@ -1416,34 +2055,30 @@ struct REDQAgent[
             block_dim=(TPB,),
         )
 
-        # Zero d_ci_sum.
+        # Zero d_phi_sa_sum (critic-input gradient accumulator, sized PHI_SA).
         comptime fill_sum_k = fill_constant_kernel[
-            dtype, BS * Self.CRITIC_IN
+            dtype, BS * Self.PHI_SA
         ]
-        var d_ci_sum_flat_t = LayoutTensor[
-            dtype, Layout.row_major(BS * Self.CRITIC_IN), MutAnyOrigin
+        var d_phi_sa_sum_flat_t = LayoutTensor[
+            dtype, Layout.row_major(BS * Self.PHI_SA), MutAnyOrigin
         ](gpu_state.d_ci_sum.unsafe_ptr())
         ctx.enqueue_function[fill_sum_k, fill_sum_k](
-            d_ci_sum_flat_t,
+            d_phi_sa_sum_flat_t,
             Scalar[dtype](0.0),
-            grid_dim=(ELEM_BLOCKS,),
+            grid_dim=(PHI_SA_BLOCKS,),
             block_dim=(TPB,),
         )
 
         comptime add_k = add_ci_grads_kernel[
-            dtype, BS, Self.CRITIC_IN
+            dtype, BS, Self.PHI_SA
         ]
 
         for n in range(Self.N_ENS):
             var p_o = gpu_state.critics.online_params_view(n)
-            # Note: we write backward into the critic's grad buffer to be
-            # accurate, but REDQ doesn't need those grads here (policy update
-            # doesn't step the critics). We zero them so stale state can't
-            # leak back into the next critic loss step.
             var g_o = gpu_state.critics.online_grads_view(n)
             Self.CriticNet.forward_gpu_with_cache[BS](
                 ctx,
-                new_ci_t,
+                phi_sa_sampled_critic_t,
                 q_out_t,
                 p_o,
                 q_cache_t,
@@ -1453,33 +2088,57 @@ struct REDQAgent[
             Self.CriticNet.backward_gpu[BS](
                 ctx,
                 dq_t,
-                d_ci_per_t,
+                d_ci_per_t,       # reused as d_phi_sa_per (BS, PHI_SA)
                 p_o,
                 q_cache_t,
                 g_o,
                 gpu_state.critic_ws,
             )
-            # Zero the critic grads again — policy update must not leave them
-            # populated for the next critic-update phase.
             gpu_state.critics.pairs[n].online.zero_grads(ctx)
-            # Accumulate d_ci_sum += d_ci_per.
+            # Accumulate d_phi_sa_sum += d_phi_sa_per.
             ctx.enqueue_function[add_k, add_k](
-                d_ci_sum_t,
+                d_ci_sum_t,           # reused as d_phi_sa_sum (BS, PHI_SA)
                 d_ci_per_t,
-                grid_dim=(ELEM_BLOCKS,),
+                grid_dim=(PHI_SA_BLOCKS,),
                 block_dim=(TPB,),
             )
 
-        # --- 6. Extract grad_act from d_ci_sum ---
+        # --- 6. OFE_AB backward: d_phi_sa_sum → d_phi_sa_in (for action grad).
+        # OFE param grads written here are discarded (the aux step below
+        # re-zeroes them before aux backward).
+        var d_phi_sa_ab_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu_state.d_ci_sum.unsafe_ptr())
+        var d_phi_sa_in_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.OFEABModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_grad_phi_sa_in.unsafe_ptr())
+        gpu_state.ofe_ab.zero_grads(ctx)
+        var ab_grads_actor = gpu_state.ofe_ab.grads_view()
+        Self.OFEABNet.backward_gpu[BS](
+            ctx,
+            d_phi_sa_ab_t,
+            d_phi_sa_in_t,
+            gpu_state.ofe_ab.params_view(),
+            ofe_ab_cache_sampled_t,
+            ab_grads_actor,
+            gpu_state.ofe_ab_ws,
+        )
+        # Extract grad wrt sampled action: d_phi_sa_in[:, PHI_S : PHI_S+ACTIONS].
+        # actor_grad_from_critic_kernel[dtype, BS, OBS, ACTIONS] extracts
+        # [OBS : OBS+ACTIONS]; passing OBS=PHI_S yields the right slice.
         var grad_act_t = LayoutTensor[
             dtype, Layout.row_major(BS, Self.ACTIONS), MutAnyOrigin
         ](gpu_state.grad_act.unsafe_ptr())
         comptime ext_k = actor_grad_from_critic_kernel[
-            dtype, BS, Self.OBS, Self.ACTIONS
+            dtype, BS, Self.PHI_S, Self.ACTIONS
         ]
         ctx.enqueue_function[ext_k, ext_k](
             grad_act_t,
-            d_ci_sum_t,
+            d_phi_sa_in_t,
             grid_dim=(ACT_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1534,14 +2193,20 @@ struct REDQAgent[
         )
 
         # --- 8. Actor backward ---
-        var d_obs_t = LayoutTensor[
-            dtype, Layout.row_major(BS, Self.OBS), MutAnyOrigin
-        ](gpu_state.d_obs.unsafe_ptr())
+        # Actor's input was phi_s (ActorModel.IN_DIM), so the
+        # input-gradient buffer must match. We discard the gradient
+        # (OFE is frozen in RL update) — reuse aux_grad_phi_s as
+        # throwaway since aux runs after this phase.
+        var d_phi_s_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BS, Self.Config.ActorModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu_state.aux_grad_phi_s.unsafe_ptr())
         gpu_state.actor.online.zero_grads(ctx)
         Self.ActorNet.backward_gpu[BS](
             ctx,
             actor_grad_t,
-            d_obs_t,
+            d_phi_s_t,
             p_actor,
             actor_cache_t,
             a_grads,
@@ -1670,11 +2335,10 @@ struct REDQAgent[
     # High-level training loop implementation
     #
     # Lives on the struct so `train_gpu()` below can invoke it via method
-    # dispatch on `self`. A free-function `run_redq_train_gpu` (in
-    # redq_train.mojo) forwards to this method so external callers with an
-    # `agent` local continue working. See MBPOAgent for the full rationale
-    # (Mojo nightly dev2026042305 L-value unification bug on `mut self` →
-    # `mut agent: REDQAgent[Config, max_n_envs=n_envs]`).
+    # dispatch on `self`. See MBPOAgent for the rationale (Mojo nightly
+    # dev2026042305 L-value unification bug on `mut self` →
+    # `mut agent: REDQOFEAgent[Config, max_n_envs=n_envs]` — kept on the
+    # struct to sidestep the bug).
     # =========================================================================
 
     def _run_train_gpu_impl[
@@ -1695,7 +2359,7 @@ struct REDQAgent[
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
     ) raises -> TrainingMetrics:
-        """REDQ GPU training loop body. See `train_gpu()` and `run_redq_train_gpu`."""
+        """REDQ GPU training loop body. See `train_gpu()` for the public wrapper."""
         comptime n_envs = Self.max_n_envs
         var metrics = TrainingMetrics(
             algorithm_name="REDQ",
@@ -1874,6 +2538,11 @@ struct REDQAgent[
 
             if total_steps >= warmup_steps:
                 comptime UTD = Self.Config.UTD_RATIO
+                # Aux step: train OFE via next-state MSE once per env step
+                # (paper: aux update frequency = env step rate, not UTD rate).
+                for _ in range(n_envs):
+                    if self.gpu_buffer_is_ready(gpu_state):
+                        self.aux_train_step(ctx, gpu_state)
                 var n_updates = UTD * n_envs
                 for _ in range(n_updates):
                     self.do_gpu_train_step(ctx, gpu_state)

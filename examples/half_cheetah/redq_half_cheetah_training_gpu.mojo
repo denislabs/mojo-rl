@@ -17,11 +17,11 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.core.configs.redq_config import (
+from mojo_rl.deep_agents.redq import (
     DefaultREDQConfig,
     REDQ_TARGET_MIN,
 )
-from mojo_rl.deep_agents.core.agents.redq_agent import REDQAgent
+from mojo_rl.deep_agents.redq import REDQAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,

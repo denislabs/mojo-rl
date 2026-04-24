@@ -27,12 +27,12 @@ from mojo_rl.nn.model import (
 )
 from mojo_rl.nn.optimizer import Optimizer, Adam
 
-from .offpolicy_config import OffPolicyConfig
-from ..strategies.exploration import Explore, StochasticSample
-from ..strategies.update_schedule import Schedule, DelayedActorOnly
-from ..strategies.target_value import TargetValue, EntropicTwinQTarget
-from ..strategies.target_action import TargetAction, ReparamTarget
-from ..strategies.actor_loss import ActorLoss, AutodiffMaxEntLoss
+from mojo_rl.deep_agents.core.configs.offpolicy_config import OffPolicyConfig
+from mojo_rl.deep_agents.core.strategies.exploration import Explore, StochasticSample
+from mojo_rl.deep_agents.core.strategies.update_schedule import Schedule, DelayedActorOnly
+from mojo_rl.deep_agents.core.strategies.target_value import TargetValue, EntropicTwinQTarget
+from mojo_rl.deep_agents.core.strategies.target_action import TargetAction, ReparamTarget
+from mojo_rl.deep_agents.core.strategies.actor_loss import ActorLoss, AutodiffMaxEntLoss
 
 
 # =============================================================================

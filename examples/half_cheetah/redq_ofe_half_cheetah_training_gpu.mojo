@@ -1,16 +1,15 @@
-"""REDQ Agent GPU Training on Humanoid.
+"""REDQ-OFE Agent GPU Training on HalfCheetah.
+
+REDQ + OFENet (Ota et al., ICML 2020): DenseNet-style feature extractor
+(total_units=240, num_layers=6 per paper's gin config) trained jointly
+via auxiliary next-state-prediction loss.
 
 Paper-faithful REDQ: N=10 critics, subset-min target (M=2), UTD=20,
-policy update delay=20. Single parallel env (paper setup); each env
-transition triggers UTD_RATIO gradient updates.
-
-Humanoid terminates early when torso z-position leaves [1.0, 2.0] (handled
-by the env when TERMINATE_ON_UNHEALTHY=True). action_scale=0.4 matches the
-SAC Humanoid setup.
+policy update delay=20. Single parallel env (paper setup).
 
 Run with:
-    pixi run -e apple mojo run -I . examples/humanoid/redq_humanoid_training_gpu.mojo
-    pixi run -e nvidia mojo run -I . examples/humanoid/redq_humanoid_training_gpu.mojo
+    pixi run -e apple mojo run -I . examples/half_cheetah/redq_ofe_half_cheetah_training_gpu.mojo
+    pixi run -e nvidia mojo run -I . examples/half_cheetah/redq_ofe_half_cheetah_training_gpu.mojo
 """
 
 from std.random import seed
@@ -21,20 +20,23 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.redq import (
-    DefaultREDQConfig,
-    REDQ_TARGET_MIN,
+from mojo_rl.deep_agents.redq_ofe import (
+    DefaultREDQOFEConfig6,
 )
-from mojo_rl.deep_agents.redq import REDQAgent
-from mojo_rl.envs.humanoid import Humanoid
+from mojo_rl.deep_agents.redq import REDQ_TARGET_MIN
+from mojo_rl.deep_agents.redq_ofe.redq_ofe import REDQOFEAgent
+from mojo_rl.envs.half_cheetah import (
+    HalfCheetah,
+    HalfCheetahConfig,
+)
 
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-comptime OBS_DIM = 45  # qpos[2:24] + qvel[0:23]
-comptime ACTION_DIM = 17  # 17 motors for all joints
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
+comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
 
 # REDQ paper configuration
 comptime HIDDEN_DIM = 256
@@ -49,14 +51,13 @@ comptime POLICY_DELAY = 20
 # gradient updates per transition.
 comptime N_ENVS = 1
 
-# Training duration (Humanoid is high-D; REDQ is sample-efficient but
-# each update is expensive at UTD=20, so use 500K steps as a budget)
-comptime NUM_STEPS = 500_000
-comptime WARMUP_STEPS = 10_000
+# Training duration
+comptime NUM_STEPS = 300_000
+comptime WARMUP_STEPS = 5_000
 
 comptime dtype = DType.float32
 
-comptime REDQHumanoidConfig = DefaultREDQConfig[
+comptime REDQOFEHalfCheetahConfig = DefaultREDQOFEConfig6[
     OBS_DIM,
     ACTION_DIM,
     HIDDEN_DIM,
@@ -69,36 +70,38 @@ comptime REDQHumanoidConfig = DefaultREDQConfig[
     REDQ_TARGET_MIN,
     0.0003,  # actor_lr
     0.0003,  # critic_lr
-    0.4,  # action_scale (match SAC Humanoid)
+    0.0003,  # ofe_lr (aux Adam)
+    240,     # OFE_TOTAL_UNITS (paper's HalfCheetah.gin)
+    1.0,     # action_scale
 ]
 
 
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("REDQ Agent GPU Training on Humanoid")
+    print("REDQ Agent GPU Training on HalfCheetah")
     print("=" * 70)
     print()
 
     with DeviceContext() as ctx:
-        var agent = REDQAgent[REDQHumanoidConfig, max_n_envs=N_ENVS](
+        var agent = REDQOFEAgent[REDQOFEHalfCheetahConfig, max_n_envs=N_ENVS](
             gamma=0.99,
             tau=0.005,
-            action_scale=0.4,
+            action_scale=1.0,
             auto_alpha=True,
             alpha=0.2,
             alpha_lr=0.0003,
-            target_entropy=-17,  # -ACTION_DIM
+            target_entropy=-3,
             max_grad_norm=0.0,  # paper does not clip
-            checkpoint_every=100_000,
-            checkpoint_path="redq_humanoid.ckpt",
+            checkpoint_every=50_000,
+            checkpoint_path="redq_half_cheetah.ckpt",
             diag_every=1_000,  # per-train-step metrics (critic_loss, mean_q, ...)
         )
 
         # To resume from a previous run, uncomment:
-        # agent.load_checkpoint("redq_humanoid.ckpt")
+        # agent.load_checkpoint("redq_half_cheetah.ckpt")
 
-        print("Environment: Humanoid Continuous (GPU)")
+        print("Environment: HalfCheetah Continuous (GPU)")
         print("Agent: REDQ (Randomized Ensembled Double Q-learning)")
         print("  Observation dim: " + String(OBS_DIM))
         print("  Action dim: " + String(ACTION_DIM))
@@ -115,10 +118,9 @@ def main() raises:
         print("    - Actor LR: 3e-4")
         print("    - Critic LR: 3e-4")
         print("    - Alpha LR: 3e-4")
-        print("    - Action scale: 0.4")
         print("    - Tau (soft update): 0.005")
         print("    - Initial alpha: 0.2 (auto-tuned)")
-        print("    - Target entropy: -17")
+        print("    - Target entropy: -3")
         print()
 
         # =====================================================================
@@ -131,12 +133,12 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="REDQ Humanoid GPU",
+            run_name="REDQ HalfCheetah GPU",
             buffer_size=64,
             api_key=api_key,
         )
         logger.set_config("agent", "REDQ")
-        logger.set_config("env", "Humanoid")
+        logger.set_config("env", "HalfCheetah")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("actor_lr", "3e-4")
         logger.set_config("critic_lr", "3e-4")
@@ -155,7 +157,7 @@ def main() raises:
 
         try:
             var metrics = agent.train_gpu[
-                Humanoid[dtype, TERMINATE_ON_UNHEALTHY=True],
+                HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
                 RemoteLogger,
             ](
                 ctx,
@@ -163,7 +165,7 @@ def main() raises:
                 warmup_steps=WARMUP_STEPS,
                 verbose=True,
                 print_every=10_000,
-                environment_name="Humanoid",
+                environment_name="HalfCheetah",
                 logger=UnsafePointer(to=logger),
             )
 
@@ -192,15 +194,12 @@ def main() raises:
             print()
 
             var final_avg = metrics.mean_reward_last_n(100)
-            if final_avg > 5000.0:
-                print("EXCELLENT: Humanoid is running! (avg reward > 5000)")
-            elif final_avg > 2000.0:
-                print("SUCCESS: Humanoid learned to walk! (avg reward > 2000)")
+            if final_avg > 1000.0:
+                print("EXCELLENT: Agent is running fast! (avg reward > 1000)")
             elif final_avg > 500.0:
-                print(
-                    "GOOD PROGRESS: Humanoid is learning locomotion"
-                    " (avg > 500)"
-                )
+                print("SUCCESS: Agent learned to run! (avg reward > 500)")
+            elif final_avg > 100.0:
+                print("GOOD PROGRESS: Agent is learning locomotion (avg > 100)")
             elif final_avg > 0.0:
                 print("LEARNING: Agent improving but needs more training")
             else:
