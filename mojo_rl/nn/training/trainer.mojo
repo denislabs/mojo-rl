@@ -118,12 +118,8 @@ def _gather_rows_kernel[
     dtype: DType,
 ](
     batch_out: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-    full: LayoutTensor[
-        dtype, Layout.row_major(N_TOTAL, DIM), MutAnyOrigin
-    ],
-    indices: LayoutTensor[
-        DType.int32, Layout.row_major(N_TOTAL), MutAnyOrigin
-    ],
+    full: LayoutTensor[dtype, Layout.row_major(N_TOTAL, DIM), MutAnyOrigin],
+    indices: LayoutTensor[DType.int32, Layout.row_major(N_TOTAL), MutAnyOrigin],
     offset: Int,
 ):
     """batch_out[b, d] = full[indices[offset + b], d]. Parallel over BATCH*DIM.
@@ -574,6 +570,7 @@ struct Trainer[
     def train_gpu_minibatch[
         BATCH: Int,
         N_TOTAL: Int,
+        USE_CUDA_GRAPH: Bool = True,
     ](
         mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
         ctx: DeviceContext,
@@ -608,6 +605,11 @@ struct Trainer[
         Parameters:
             BATCH: Samples per gradient step.
             N_TOTAL: Total samples in the dataset (comptime).
+            USE_CUDA_GRAPH: When True on NVIDIA, captures one epoch's kernel
+                sequence into a CUDA graph and replays for subsequent epochs.
+                Requires LD_PRELOAD with libcuda_intercept.so (pixi nvidia
+                env). No-op on non-NVIDIA. Implies print_every_batches=0
+                (enqueue_copy + sync can't happen during capture).
 
         Args:
             state: GPU network state — updated in place.
@@ -616,6 +618,7 @@ struct Trainer[
             target: Device tensor [N_TOTAL, OUT_DIM].
             epochs: Number of passes through the dataset.
             print_every_batches: Print batch loss every N batches (0 = never).
+                Ignored when USE_CUDA_GRAPH=True.
             shuffle: If True, re-shuffle sample order each epoch on device.
             rng_seed: Initial seed for the shuffle PRNG. Ignored if shuffle
                 is False. Incremented by 1 each epoch via a device-side kernel.
@@ -701,7 +704,7 @@ struct Trainer[
         ](batch_target_buf.unsafe_ptr())
 
         if shuffle:
-            # Seed the device RNG buffer from the host
+            # Seed the device RNG buffer from the host (one-time, pre-loop)
             var seed_host = ctx.enqueue_create_host_buffer[DType.uint64](1)
             seed_host.unsafe_ptr()[0] = rng_seed
             ctx.enqueue_copy(seed_buf, seed_host)
@@ -713,16 +716,31 @@ struct Trainer[
                 _init_identity_indices_kernel[N_TOTAL],
             ](indices_t, grid_dim=(init_blocks,), block_dim=(TPB,))
 
-        comptime gather_in_blocks = (
-            BATCH * Self.MODEL.IN_DIM + TPB - 1
-        ) // TPB
+        comptime gather_in_blocks = (BATCH * Self.MODEL.IN_DIM + TPB - 1) // TPB
         comptime gather_tg_blocks = (
             BATCH * Self.MODEL.OUT_DIM + TPB - 1
         ) // TPB
 
-        for epoch in range(epochs):
+        # --- Helper: run one training epoch (pure GPU, no host syncs) ---
+        # Captures everything it reads/writes so it can be a graph body.
+        @always_inline
+        def _run_one_epoch() raises unified {
+            read ctx,
+            mut state,
+            read input,
+            read target,
+            mut output_t,
+            mut cache_t,
+            mut grad_out_t,
+            mut grad_in_t,
+            mut shuf_input_t,
+            mut shuf_target_t,
+            mut indices_t,
+            mut seed_t,
+            read ws_buf,
+            read shuffle,
+        }:
             if shuffle:
-                # Re-shuffle indices on device, then bump the seed for next epoch
                 ctx.enqueue_function[
                     _fisher_yates_shuffle_kernel[N_TOTAL],
                     _fisher_yates_shuffle_kernel[N_TOTAL],
@@ -744,7 +762,6 @@ struct Trainer[
                 ]
 
                 if shuffle:
-                    # Gather this batch's samples via the permutation
                     ctx.enqueue_function[
                         _gather_rows_kernel[
                             N_TOTAL, BATCH, Self.MODEL.IN_DIM, Self.dtype
@@ -778,7 +795,6 @@ struct Trainer[
                     batch_input = shuf_input_t
                     batch_target = shuf_target_t
                 else:
-                    # Contiguous slicing of the caller's dataset tensor
                     batch_input = LayoutTensor[
                         Self.dtype,
                         Layout.row_major(BATCH, Self.MODEL.IN_DIM),
@@ -810,27 +826,79 @@ struct Trainer[
                 )
                 state.optimizer_step(ctx)
 
-                total_batches_trained += 1
+        # --- Main loop: either graph capture + replay, or plain re-run ---
+        comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
+            from mojo_rl.cuda import CUDAGraph
 
-                if (
-                    print_every_batches > 0
-                    and total_batches_trained % print_every_batches == 0
-                ):
+            # Warmup: run one epoch to ensure stream is discoverable
+            _run_one_epoch()
+            ctx.synchronize()
+
+            # Capture one epoch into a CUDA graph
+            var graph = CUDAGraph(ctx)
+            graph.begin_capture()
+            _run_one_epoch()
+            graph.end_capture()
+
+            # Replay for remaining epochs (first epoch already ran)
+            for _ in range(epochs - 1):
+                graph.replay()
+
+        else:
+            for epoch in range(epochs):
+                _run_one_epoch()
+
+                # Post-epoch diagnostic (optional, never inside a graph)
+                if print_every_batches > 0:
+                    # Compute loss on the last batch from this epoch.
+                    # shuf_* hold the last gathered batch in shuffle mode;
+                    # otherwise reconstruct the last contiguous slice.
+                    var last_in: LayoutTensor[
+                        Self.dtype,
+                        Layout.row_major(BATCH, Self.MODEL.IN_DIM),
+                        MutAnyOrigin,
+                    ]
+                    var last_tg: LayoutTensor[
+                        Self.dtype,
+                        Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+                        MutAnyOrigin,
+                    ]
+                    if shuffle:
+                        last_in = shuf_input_t
+                        last_tg = shuf_target_t
+                    else:
+                        comptime last_off_in = (
+                            (NUM_BATCHES - 1) * BATCH * Self.MODEL.IN_DIM
+                        )
+                        comptime last_off_tg = (
+                            (NUM_BATCHES - 1) * BATCH * Self.MODEL.OUT_DIM
+                        )
+                        last_in = LayoutTensor[
+                            Self.dtype,
+                            Layout.row_major(BATCH, Self.MODEL.IN_DIM),
+                            MutAnyOrigin,
+                        ](input.ptr + last_off_in)
+                        last_tg = LayoutTensor[
+                            Self.dtype,
+                            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+                            MutAnyOrigin,
+                        ](target.ptr + last_off_tg)
+                    var params_peek = state.params_view()
+                    Self.MODEL.forward_gpu[BATCH](
+                        ctx, output_t, last_in, params_peek, cache_t, ws_buf
+                    )
                     Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                        ctx, loss_t, output_t, batch_target
+                        ctx, loss_t, output_t, last_tg
                     )
                     ctx.enqueue_copy(loss_host, loss_buf)
                     ctx.synchronize()
-                    var bl = Float64(loss_host[0])
                     print(
                         "  epoch "
                         + String(epoch + 1)
-                        + " batch "
-                        + String(batch_idx + 1)
                         + "/"
-                        + String(NUM_BATCHES)
-                        + "  loss="
-                        + String(bl)
+                        + String(epochs)
+                        + "  last-batch loss="
+                        + String(Float64(loss_host[0]))
                     )
 
         # Final loss on the last batch actually trained on.

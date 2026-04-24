@@ -1720,6 +1720,7 @@ struct MBPOAgent[
         ere_eta: Float32 = Float32(0.996),
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
+        diag_every: Int = 0,
     ):
         self.state = Self.CPUStateType()
         self.gamma = gamma
@@ -1777,7 +1778,7 @@ struct MBPOAgent[
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
-        self.diag_every = 0
+        self.diag_every = diag_every
 
     # =========================================================================
     # OffPolicyContinuousAgent trait
