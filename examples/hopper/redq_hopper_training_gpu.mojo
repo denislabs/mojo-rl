@@ -25,7 +25,6 @@ from mojo_rl.deep_agents.core.configs.redq_config import (
     REDQ_TARGET_MIN,
 )
 from mojo_rl.deep_agents.core.agents.redq_agent import REDQAgent
-from mojo_rl.deep_agents.core.training.redq_train import run_redq_train_gpu
 from mojo_rl.envs.hopper import Hopper, HopperConfig
 
 
@@ -152,13 +151,10 @@ def main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = run_redq_train_gpu[
+            var metrics = agent.train_gpu[
                 Hopper[dtype, TERMINATE_ON_UNHEALTHY=True],
-                REDQHopperConfig,
                 RemoteLogger,
-                N_ENVS,
             ](
-                agent,
                 ctx,
                 num_steps=NUM_STEPS,
                 warmup_steps=WARMUP_STEPS,

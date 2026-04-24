@@ -33,9 +33,7 @@ def fill_random_ptr(
     n: Int,
 ):
     for i in range(n):
-        ptr[i] = Scalar[dtype](
-            random_float64(-2.0, 2.0).cast[dtype]()
-        )
+        ptr[i] = Scalar[dtype](random_float64(-2.0, 2.0).cast[dtype]())
 
 
 def max_abs_diff_ptr(
@@ -59,9 +57,7 @@ def max_abs_diff_ptr(
 
 
 def bench_add[SIZE: Int](ctx: DeviceContext) raises:
-    print(
-        "\n── Vector add: SIZE=" + String(SIZE) + " ──"
-    )
+    print("\n── Vector add: SIZE=" + String(SIZE) + " ──")
 
     var a_buf = ctx.enqueue_create_buffer[dtype](SIZE)
     var b_buf = ctx.enqueue_create_buffer[dtype](SIZE)
@@ -77,6 +73,7 @@ def bench_add[SIZE: Int](ctx: DeviceContext) raises:
 
     # ── Scalar kernel: 1 element per thread ──
     @always_inline
+    @parameter
     def add_scalar(
         c: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
         a: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -90,6 +87,7 @@ def bench_add[SIZE: Int](ctx: DeviceContext) raises:
 
     # ── Vectorized kernel: 4 elements per thread ──
     @always_inline
+    @parameter
     def add_vec4(
         c: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
         a: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
@@ -132,7 +130,12 @@ def bench_add[SIZE: Int](ctx: DeviceContext) raises:
     ctx.synchronize()
 
     var diff = max_abs_diff_ptr(hc_s.unsafe_ptr(), hc_v.unsafe_ptr(), SIZE)
-    print("  correctness (scalar vs vec4): " + String(diff) + " " + ("PASS" if diff < 1e-5 else "FAIL"))
+    print(
+        "  correctness (scalar vs vec4): "
+        + String(diff)
+        + " "
+        + ("PASS" if diff < 1e-5 else "FAIL")
+    )
 
     # Benchmark
     comptime N_ITERS = 2000
@@ -203,16 +206,11 @@ def bench_relu_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     # ── Scalar: matches existing ReLUOp.eval_kernel_impl pattern ──
     @always_inline
+    @parameter
     def relu_scalar(
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= SIZE:
@@ -225,16 +223,11 @@ def bench_relu_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     # ── Vectorized: 4 elements per thread, flat view ──
     @always_inline
+    @parameter
     def relu_vec4(
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
         var vi = TileTensor(input.ptr, row_major[SIZE]()).vectorize[4]()
         var vo = TileTensor(output.ptr, row_major[SIZE]()).vectorize[4]()
@@ -256,9 +249,9 @@ def bench_relu_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
     var out_v_lt = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](out_vec_buf)
-    var in_lt = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](input_buf)
+    var in_lt = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        input_buf
+    )
     var cache_s_lt = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](cache_scalar_buf)
@@ -268,12 +261,18 @@ def bench_relu_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     # Correctness
     ctx.enqueue_function[relu_scalar, relu_scalar](
-        out_s_lt, in_lt, cache_s_lt,
-        grid_dim=(scalar_blocks,), block_dim=(TPB,),
+        out_s_lt,
+        in_lt,
+        cache_s_lt,
+        grid_dim=(scalar_blocks,),
+        block_dim=(TPB,),
     )
     ctx.enqueue_function[relu_vec4, relu_vec4](
-        out_v_lt, in_lt, cache_v_lt,
-        grid_dim=(vec_blocks,), block_dim=(TPB,),
+        out_v_lt,
+        in_lt,
+        cache_v_lt,
+        grid_dim=(vec_blocks,),
+        block_dim=(TPB,),
     )
     ctx.synchronize()
 
@@ -287,12 +286,19 @@ def bench_relu_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
     ctx.enqueue_copy(h_cache_v, cache_vec_buf)
     ctx.synchronize()
 
-    var out_diff = max_abs_diff_ptr(h_out_s.unsafe_ptr(), h_out_v.unsafe_ptr(), SIZE)
-    var cache_diff = max_abs_diff_ptr(h_cache_s.unsafe_ptr(), h_cache_v.unsafe_ptr(), SIZE)
+    var out_diff = max_abs_diff_ptr(
+        h_out_s.unsafe_ptr(), h_out_v.unsafe_ptr(), SIZE
+    )
+    var cache_diff = max_abs_diff_ptr(
+        h_cache_s.unsafe_ptr(), h_cache_v.unsafe_ptr(), SIZE
+    )
     print(
-        "  output diff: " + String(out_diff)
-        + " | cache diff: " + String(cache_diff)
-        + " " + ("PASS" if out_diff < 1e-5 and cache_diff < 1e-5 else "FAIL")
+        "  output diff: "
+        + String(out_diff)
+        + " | cache diff: "
+        + String(cache_diff)
+        + " "
+        + ("PASS" if out_diff < 1e-5 and cache_diff < 1e-5 else "FAIL")
     )
 
     # Benchmark
@@ -301,27 +307,39 @@ def bench_relu_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     for _ in range(WARMUP):
         ctx.enqueue_function[relu_scalar, relu_scalar](
-            out_s_lt, in_lt, cache_s_lt,
-            grid_dim=(scalar_blocks,), block_dim=(TPB,),
+            out_s_lt,
+            in_lt,
+            cache_s_lt,
+            grid_dim=(scalar_blocks,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[relu_vec4, relu_vec4](
-            out_v_lt, in_lt, cache_v_lt,
-            grid_dim=(vec_blocks,), block_dim=(TPB,),
+            out_v_lt,
+            in_lt,
+            cache_v_lt,
+            grid_dim=(vec_blocks,),
+            block_dim=(TPB,),
         )
     ctx.synchronize()
 
     var t0 = perf_counter_ns()
     for _ in range(N_ITERS):
         ctx.enqueue_function[relu_scalar, relu_scalar](
-            out_s_lt, in_lt, cache_s_lt,
-            grid_dim=(scalar_blocks,), block_dim=(TPB,),
+            out_s_lt,
+            in_lt,
+            cache_s_lt,
+            grid_dim=(scalar_blocks,),
+            block_dim=(TPB,),
         )
     ctx.synchronize()
     var t1 = perf_counter_ns()
     for _ in range(N_ITERS):
         ctx.enqueue_function[relu_vec4, relu_vec4](
-            out_v_lt, in_lt, cache_v_lt,
-            grid_dim=(vec_blocks,), block_dim=(TPB,),
+            out_v_lt,
+            in_lt,
+            cache_v_lt,
+            grid_dim=(vec_blocks,),
+            block_dim=(TPB,),
         )
     ctx.synchronize()
     var t2 = perf_counter_ns()
@@ -368,6 +386,7 @@ def bench_relu_backward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     # ── Scalar: matches existing ReLUOp.backward_kernel_impl ──
     @always_inline
+    @parameter
     def relu_bwd_scalar(
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
@@ -375,9 +394,7 @@ def bench_relu_backward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= SIZE:
@@ -385,13 +402,15 @@ def bench_relu_backward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
         var row = idx // DIM
         var col = idx % DIM
         grad_input[row, col] = (
-            rebind[Scalar[dtype]](grad_output[row, col])
-            if rebind[Scalar[dtype]](cache[row, col]) > 0
-            else 0
+            rebind[Scalar[dtype]](grad_output[row, col]) if rebind[
+                Scalar[dtype]
+            ](cache[row, col])
+            > 0 else 0
         )
 
     # ── Vectorized: SIMD comparison + select ──
     @always_inline
+    @parameter
     def relu_bwd_vec4(
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
@@ -399,9 +418,7 @@ def bench_relu_backward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
         var vgo = TileTensor(grad_output.ptr, row_major[SIZE]()).vectorize[4]()
         var vc = TileTensor(cache.ptr, row_major[SIZE]()).vectorize[4]()
@@ -425,21 +442,27 @@ def bench_relu_backward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
     var gi_v_lt = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](gi_vec_buf)
-    var go_lt = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](grad_out_buf)
+    var go_lt = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        grad_out_buf
+    )
     var cache_lt = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](cache_buf)
 
     # Correctness
     ctx.enqueue_function[relu_bwd_scalar, relu_bwd_scalar](
-        gi_s_lt, go_lt, cache_lt,
-        grid_dim=(scalar_blocks,), block_dim=(TPB,),
+        gi_s_lt,
+        go_lt,
+        cache_lt,
+        grid_dim=(scalar_blocks,),
+        block_dim=(TPB,),
     )
     ctx.enqueue_function[relu_bwd_vec4, relu_bwd_vec4](
-        gi_v_lt, go_lt, cache_lt,
-        grid_dim=(vec_blocks,), block_dim=(TPB,),
+        gi_v_lt,
+        go_lt,
+        cache_lt,
+        grid_dim=(vec_blocks,),
+        block_dim=(TPB,),
     )
     ctx.synchronize()
 
@@ -450,9 +473,7 @@ def bench_relu_backward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
     ctx.synchronize()
 
     var diff = max_abs_diff_ptr(h_gi_s.unsafe_ptr(), h_gi_v.unsafe_ptr(), SIZE)
-    print(
-        "  diff: " + String(diff) + " " + ("PASS" if diff < 1e-5 else "FAIL")
-    )
+    print("  diff: " + String(diff) + " " + ("PASS" if diff < 1e-5 else "FAIL"))
 
     # Benchmark
     comptime N_ITERS = 2000
@@ -460,27 +481,39 @@ def bench_relu_backward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     for _ in range(WARMUP):
         ctx.enqueue_function[relu_bwd_scalar, relu_bwd_scalar](
-            gi_s_lt, go_lt, cache_lt,
-            grid_dim=(scalar_blocks,), block_dim=(TPB,),
+            gi_s_lt,
+            go_lt,
+            cache_lt,
+            grid_dim=(scalar_blocks,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[relu_bwd_vec4, relu_bwd_vec4](
-            gi_v_lt, go_lt, cache_lt,
-            grid_dim=(vec_blocks,), block_dim=(TPB,),
+            gi_v_lt,
+            go_lt,
+            cache_lt,
+            grid_dim=(vec_blocks,),
+            block_dim=(TPB,),
         )
     ctx.synchronize()
 
     var t0 = perf_counter_ns()
     for _ in range(N_ITERS):
         ctx.enqueue_function[relu_bwd_scalar, relu_bwd_scalar](
-            gi_s_lt, go_lt, cache_lt,
-            grid_dim=(scalar_blocks,), block_dim=(TPB,),
+            gi_s_lt,
+            go_lt,
+            cache_lt,
+            grid_dim=(scalar_blocks,),
+            block_dim=(TPB,),
         )
     ctx.synchronize()
     var t1 = perf_counter_ns()
     for _ in range(N_ITERS):
         ctx.enqueue_function[relu_bwd_vec4, relu_bwd_vec4](
-            gi_v_lt, go_lt, cache_lt,
-            grid_dim=(vec_blocks,), block_dim=(TPB,),
+            gi_v_lt,
+            go_lt,
+            cache_lt,
+            grid_dim=(vec_blocks,),
+            block_dim=(TPB,),
         )
     ctx.synchronize()
     var t2 = perf_counter_ns()
@@ -525,16 +558,11 @@ def bench_tanh_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     # ── Scalar: 1 element per thread ──
     @always_inline
+    @parameter
     def tanh_scalar(
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= SIZE:
@@ -547,16 +575,11 @@ def bench_tanh_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     # ── Vectorized: 4 elements per thread ──
     @always_inline
+    @parameter
     def tanh_vec4(
-        output: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        input: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        cache: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        output: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
         var vi = TileTensor(input.ptr, row_major[SIZE]()).vectorize[4]()
         var vo = TileTensor(output.ptr, row_major[SIZE]()).vectorize[4]()
@@ -578,9 +601,9 @@ def bench_tanh_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
     var out_v_lt = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](out_vec_buf)
-    var in_lt = LayoutTensor[
-        dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-    ](input_buf)
+    var in_lt = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](
+        input_buf
+    )
     var cache_s_lt = LayoutTensor[
         dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
     ](cache_scalar_buf)
@@ -590,12 +613,18 @@ def bench_tanh_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     # Correctness
     ctx.enqueue_function[tanh_scalar, tanh_scalar](
-        out_s_lt, in_lt, cache_s_lt,
-        grid_dim=(scalar_blocks,), block_dim=(TPB,),
+        out_s_lt,
+        in_lt,
+        cache_s_lt,
+        grid_dim=(scalar_blocks,),
+        block_dim=(TPB,),
     )
     ctx.enqueue_function[tanh_vec4, tanh_vec4](
-        out_v_lt, in_lt, cache_v_lt,
-        grid_dim=(vec_blocks,), block_dim=(TPB,),
+        out_v_lt,
+        in_lt,
+        cache_v_lt,
+        grid_dim=(vec_blocks,),
+        block_dim=(TPB,),
     )
     ctx.synchronize()
 
@@ -605,10 +634,10 @@ def bench_tanh_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
     ctx.enqueue_copy(h_out_v, out_vec_buf)
     ctx.synchronize()
 
-    var diff = max_abs_diff_ptr(h_out_s.unsafe_ptr(), h_out_v.unsafe_ptr(), SIZE)
-    print(
-        "  diff: " + String(diff) + " " + ("PASS" if diff < 1e-5 else "FAIL")
+    var diff = max_abs_diff_ptr(
+        h_out_s.unsafe_ptr(), h_out_v.unsafe_ptr(), SIZE
     )
+    print("  diff: " + String(diff) + " " + ("PASS" if diff < 1e-5 else "FAIL"))
 
     # Benchmark
     comptime N_ITERS = 2000
@@ -616,27 +645,39 @@ def bench_tanh_forward[BATCH: Int, DIM: Int](ctx: DeviceContext) raises:
 
     for _ in range(WARMUP):
         ctx.enqueue_function[tanh_scalar, tanh_scalar](
-            out_s_lt, in_lt, cache_s_lt,
-            grid_dim=(scalar_blocks,), block_dim=(TPB,),
+            out_s_lt,
+            in_lt,
+            cache_s_lt,
+            grid_dim=(scalar_blocks,),
+            block_dim=(TPB,),
         )
         ctx.enqueue_function[tanh_vec4, tanh_vec4](
-            out_v_lt, in_lt, cache_v_lt,
-            grid_dim=(vec_blocks,), block_dim=(TPB,),
+            out_v_lt,
+            in_lt,
+            cache_v_lt,
+            grid_dim=(vec_blocks,),
+            block_dim=(TPB,),
         )
     ctx.synchronize()
 
     var t0 = perf_counter_ns()
     for _ in range(N_ITERS):
         ctx.enqueue_function[tanh_scalar, tanh_scalar](
-            out_s_lt, in_lt, cache_s_lt,
-            grid_dim=(scalar_blocks,), block_dim=(TPB,),
+            out_s_lt,
+            in_lt,
+            cache_s_lt,
+            grid_dim=(scalar_blocks,),
+            block_dim=(TPB,),
         )
     ctx.synchronize()
     var t1 = perf_counter_ns()
     for _ in range(N_ITERS):
         ctx.enqueue_function[tanh_vec4, tanh_vec4](
-            out_v_lt, in_lt, cache_v_lt,
-            grid_dim=(vec_blocks,), block_dim=(TPB,),
+            out_v_lt,
+            in_lt,
+            cache_v_lt,
+            grid_dim=(vec_blocks,),
+            block_dim=(TPB,),
         )
     ctx.synchronize()
     var t2 = perf_counter_ns()

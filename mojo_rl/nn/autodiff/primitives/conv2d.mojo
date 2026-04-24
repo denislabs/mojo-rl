@@ -13,7 +13,7 @@ from ...constants import (
     MMA_BLOCK_THREADS,
 )
 from ...autodiff.op import DiffOp, OpID
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
@@ -316,6 +316,80 @@ struct Conv2D[
 
         grad_input[b, in_pos] = acc
 
+    @always_inline
+    @staticmethod
+    def backward_dx_kernel_impl_tt[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ],
+    ):
+        """TileTensor variant of backward_dx_kernel_impl.
+
+        W viewed as 4D (out_channels, in_channels, kernel_size, kernel_size).
+        grad_output as 4D (BATCH, out_channels, out_h, out_w).
+        grad_input as 4D (BATCH, in_channels, in_h, in_w).
+        """
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        var total = BATCH * Self.IN_DIM
+        if idx >= total:
+            return
+
+        var W_4d = TileTensor(
+            params.ptr,
+            row_major[
+                Self.out_channels,
+                Self.in_channels,
+                Self.kernel_size,
+                Self.kernel_size,
+            ](),
+        )
+        var grad_out_4d = TileTensor(
+            grad_output.ptr,
+            row_major[
+                BATCH, Self.out_channels, Self.out_h, Self.out_w
+            ](),
+        )
+        var grad_in_4d = TileTensor(
+            grad_input.ptr,
+            row_major[BATCH, Self.in_channels, Self.in_h, Self.in_w](),
+        )
+
+        var b = idx // Self.IN_DIM
+        var in_pos = idx % Self.IN_DIM
+        var c = in_pos // (Self.in_h * Self.in_w)
+        var rem = in_pos % (Self.in_h * Self.in_w)
+        var ih = rem // Self.in_w
+        var iw = rem % Self.in_w
+
+        var acc: Scalar[dtype] = 0
+        for kh in range(Self.kernel_size):
+            for kw in range(Self.kernel_size):
+                var oh_num = ih + Self.padding - kh
+                var ow_num = iw + Self.padding - kw
+                if (
+                    oh_num >= 0
+                    and oh_num % Self.stride == 0
+                    and ow_num >= 0
+                    and ow_num % Self.stride == 0
+                ):
+                    var oh = oh_num // Self.stride
+                    var ow = ow_num // Self.stride
+                    if oh < Self.out_h and ow < Self.out_w:
+                        for oc in range(Self.out_channels):
+                            acc += (
+                                W_4d[oc, c, kh, kw] * grad_out_4d[b, oc, oh, ow]
+                            )
+
+        grad_in_4d[b, c, ih, iw] = acc
+
     # =========================================================================
     # GPU kernels — tiled forward (Apple 2x2 / NVIDIA MMA)
     # =========================================================================
@@ -506,6 +580,193 @@ struct Conv2D[
             output[
                 batch, (oc0 + 1) * Self.spatial_out + s0 + 1
             ] = acc11 + rebind[Scalar[dtype]](params[W_SIZE + oc0 + 1])
+
+    @always_inline
+    @staticmethod
+    def eval_kernel_2x2_tt[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """TileTensor variant of eval_kernel_2x2 — same algorithm, N-d views.
+
+        Param/cache/output/input viewed through TileTensor to replace flat
+        index arithmetic with structured N-d indexing.
+        """
+        comptime BT = 32
+        comptime SK = 16
+        comptime W_SIZE = Self.out_channels * Self.col_size
+        comptime KS2 = Self.kernel_size * Self.kernel_size
+
+        var W = TileTensor(
+            params.ptr, row_major[Self.out_channels, Self.col_size]()
+        )
+        var bias = TileTensor(
+            params.ptr + W_SIZE, row_major[Self.out_channels]()
+        )
+        var input_4d = TileTensor(
+            input.ptr,
+            row_major[BATCH, Self.in_channels, Self.in_h, Self.in_w](),
+        )
+        var cache_3d = TileTensor(
+            cache.ptr,
+            row_major[BATCH, Self.spatial_out, Self.col_size](),
+        )
+        var output_3d = TileTensor(
+            output.ptr,
+            row_major[BATCH, Self.out_channels, Self.spatial_out](),
+        )
+
+        var tid = Int(thread_idx.x)
+        var sub_r = tid // 16
+        var sub_c = tid % 16
+        var block_oc = Int(block_idx.y) * BT
+        var block_s = Int(block_idx.x) * BT
+        var batch = Int(block_idx.z)
+
+        var a_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        var b_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+
+        var acc00: Scalar[dtype] = 0
+        var acc01: Scalar[dtype] = 0
+        var acc10: Scalar[dtype] = 0
+        var acc11: Scalar[dtype] = 0
+
+        comptime num_k_tiles = (Self.col_size + SK - 1) // SK
+
+        for k_tile in range(num_k_tiles):
+            var k_off = k_tile * SK
+
+            # Load A tile: W[block_oc + r, k_off + c]
+            var a_r0 = tid // SK
+            var a_c0 = tid % SK
+            var a_r1 = (tid + 256) // SK
+            var a_c1 = (tid + 256) % SK
+
+            var ga_oc0 = block_oc + a_r0
+            var ga_k0 = k_off + a_c0
+            if ga_oc0 < Self.out_channels and ga_k0 < Self.col_size:
+                a_smem[a_r0, a_c0] = W[ga_oc0, ga_k0]
+            else:
+                a_smem[a_r0, a_c0] = 0
+
+            var ga_oc1 = block_oc + a_r1
+            var ga_k1 = k_off + a_c1
+            if ga_oc1 < Self.out_channels and ga_k1 < Self.col_size:
+                a_smem[a_r1, a_c1] = W[ga_oc1, ga_k1]
+            else:
+                a_smem[a_r1, a_c1] = 0
+
+            # Load B tile (implicit im2col): col[k_off + r, block_s + c]
+            var b_r0 = tid // BT
+            var b_c0 = tid % BT
+            var b_r1 = (tid + 256) // BT
+            var b_c1 = (tid + 256) % BT
+
+            # Element 0
+            var k_idx0 = k_off + b_r0
+            var s_idx0 = block_s + b_c0
+            var val0: Scalar[dtype] = 0
+            if k_idx0 < Self.col_size and s_idx0 < Self.spatial_out:
+                var ch0 = k_idx0 // KS2
+                var rem_k0 = k_idx0 % KS2
+                var kh0 = rem_k0 // Self.kernel_size
+                var kw0 = rem_k0 % Self.kernel_size
+                var oh0 = s_idx0 // Self.out_w
+                var ow0 = s_idx0 % Self.out_w
+                var ih0 = oh0 * Self.stride - Self.padding + kh0
+                var iw0 = ow0 * Self.stride - Self.padding + kw0
+                if (
+                    ih0 >= 0
+                    and ih0 < Self.in_h
+                    and iw0 >= 0
+                    and iw0 < Self.in_w
+                ):
+                    val0 = input_4d[batch, ch0, ih0, iw0]
+            b_smem[b_r0, b_c0] = val0
+            if (
+                Int(block_idx.y) == 0
+                and k_idx0 < Self.col_size
+                and s_idx0 < Self.spatial_out
+            ):
+                cache_3d[batch, s_idx0, k_idx0] = val0
+
+            # Element 1
+            var k_idx1 = k_off + b_r1
+            var s_idx1 = block_s + b_c1
+            var val1: Scalar[dtype] = 0
+            if k_idx1 < Self.col_size and s_idx1 < Self.spatial_out:
+                var ch1 = k_idx1 // KS2
+                var rem_k1 = k_idx1 % KS2
+                var kh1 = rem_k1 // Self.kernel_size
+                var kw1 = rem_k1 % Self.kernel_size
+                var oh1 = s_idx1 // Self.out_w
+                var ow1 = s_idx1 % Self.out_w
+                var ih1 = oh1 * Self.stride - Self.padding + kh1
+                var iw1 = ow1 * Self.stride - Self.padding + kw1
+                if (
+                    ih1 >= 0
+                    and ih1 < Self.in_h
+                    and iw1 >= 0
+                    and iw1 < Self.in_w
+                ):
+                    val1 = input_4d[batch, ch1, ih1, iw1]
+            b_smem[b_r1, b_c1] = val1
+            if (
+                Int(block_idx.y) == 0
+                and k_idx1 < Self.col_size
+                and s_idx1 < Self.spatial_out
+            ):
+                cache_3d[batch, s_idx1, k_idx1] = val1
+
+            barrier()
+
+            for k in range(SK):
+                if k_off + k < Self.col_size:
+                    var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
+                    var a1 = rebind[Scalar[dtype]](a_smem[sub_r * 2 + 1, k])
+                    var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
+                    var b1 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2 + 1])
+                    acc00 += a0 * b0
+                    acc01 += a0 * b1
+                    acc10 += a1 * b0
+                    acc11 += a1 * b1
+
+            barrier()
+
+        # Store with bias — 3D output view, 1D bias view
+        var oc0 = block_oc + sub_r * 2
+        var s0 = block_s + sub_c * 2
+
+        if oc0 < Self.out_channels and s0 < Self.spatial_out:
+            output_3d[batch, oc0, s0] = acc00 + bias[oc0]
+        if oc0 < Self.out_channels and s0 + 1 < Self.spatial_out:
+            output_3d[batch, oc0, s0 + 1] = acc01 + bias[oc0]
+        if oc0 + 1 < Self.out_channels and s0 < Self.spatial_out:
+            output_3d[batch, oc0 + 1, s0] = acc10 + bias[oc0 + 1]
+        if oc0 + 1 < Self.out_channels and s0 + 1 < Self.spatial_out:
+            output_3d[batch, oc0 + 1, s0 + 1] = acc11 + bias[oc0 + 1]
 
     @always_inline
     @staticmethod
@@ -781,6 +1042,144 @@ struct Conv2D[
                 var bb1 = bki1 // Self.spatial_out
                 var bs1 = bki1 % Self.spatial_out
                 b_smem[b_r1, b_c1] = cache[bb1, bs1 * Self.col_size + gk1]
+            else:
+                b_smem[b_r1, b_c1] = 0
+
+            barrier()
+
+            for k in range(SK):
+                if k_off + k < K_TOTAL:
+                    var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
+                    var a1 = rebind[Scalar[dtype]](a_smem[sub_r * 2 + 1, k])
+                    var b0v = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
+                    var b1v = rebind[Scalar[dtype]](b_smem[k, sub_c * 2 + 1])
+                    acc00 += a0 * b0v
+                    acc01 += a0 * b1v
+                    acc10 += a1 * b0v
+                    acc11 += a1 * b1v
+
+            barrier()
+
+        var oc0 = block_oc + sub_r * 2
+        var k0 = block_k + sub_c * 2
+        if oc0 < Self.out_channels and k0 < Self.col_size:
+            dW[oc0, k0] = acc00
+        if oc0 < Self.out_channels and k0 + 1 < Self.col_size:
+            dW[oc0, k0 + 1] = acc01
+        if oc0 + 1 < Self.out_channels and k0 < Self.col_size:
+            dW[oc0 + 1, k0] = acc10
+        if oc0 + 1 < Self.out_channels and k0 + 1 < Self.col_size:
+            dW[oc0 + 1, k0 + 1] = acc11
+
+    @always_inline
+    @staticmethod
+    def backward_dW_kernel_2x2_tt[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        dW: LayoutTensor[
+            dtype,
+            Layout.row_major(Self.out_channels, Self.col_size),
+            MutAnyOrigin,
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+    ):
+        """TileTensor variant of backward_dW_kernel_2x2.
+
+        cache viewed as (BATCH, spatial_out, col_size); grad_output as
+        (BATCH, out_channels, spatial_out). dW stays 2D (OC, col_size).
+        """
+        comptime BT = 32
+        comptime SK = 16
+        comptime K_TOTAL = BATCH * Self.spatial_out
+
+        var grad_out_3d = TileTensor(
+            grad_output.ptr,
+            row_major[BATCH, Self.out_channels, Self.spatial_out](),
+        )
+        var cache_3d = TileTensor(
+            cache.ptr,
+            row_major[BATCH, Self.spatial_out, Self.col_size](),
+        )
+
+        var tid = Int(thread_idx.x)
+        var sub_r = tid // 16
+        var sub_c = tid % 16
+        var block_oc = Int(block_idx.y) * BT
+        var block_k = Int(block_idx.x) * BT
+
+        var a_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        var b_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+
+        var acc00: Scalar[dtype] = 0
+        var acc01: Scalar[dtype] = 0
+        var acc10: Scalar[dtype] = 0
+        var acc11: Scalar[dtype] = 0
+
+        comptime num_k_tiles = (K_TOTAL + SK - 1) // SK
+
+        for k_tile in range(num_k_tiles):
+            var k_off = k_tile * SK
+
+            # Load A: grad_output reshaped — A[oc, ki]
+            var a_r0 = tid // SK
+            var a_c0 = tid % SK
+            var a_r1 = (tid + 256) // SK
+            var a_c1 = (tid + 256) % SK
+
+            var ki0 = k_off + a_c0
+            var g_oc0 = block_oc + a_r0
+            if g_oc0 < Self.out_channels and ki0 < K_TOTAL:
+                var b0 = ki0 // Self.spatial_out
+                var s0 = ki0 % Self.spatial_out
+                a_smem[a_r0, a_c0] = grad_out_3d[b0, g_oc0, s0]
+            else:
+                a_smem[a_r0, a_c0] = 0
+
+            var ki1 = k_off + a_c1
+            var g_oc1 = block_oc + a_r1
+            if g_oc1 < Self.out_channels and ki1 < K_TOTAL:
+                var b1 = ki1 // Self.spatial_out
+                var s1 = ki1 % Self.spatial_out
+                a_smem[a_r1, a_c1] = grad_out_3d[b1, g_oc1, s1]
+            else:
+                a_smem[a_r1, a_c1] = 0
+
+            # Load B: im2col cache — B[ki, col_k]
+            var b_r0 = tid // BT
+            var b_c0 = tid % BT
+            var b_r1 = (tid + 256) // BT
+            var b_c1 = (tid + 256) % BT
+
+            var bki0 = k_off + b_r0
+            var gk0 = block_k + b_c0
+            if gk0 < Self.col_size and bki0 < K_TOTAL:
+                var bb0 = bki0 // Self.spatial_out
+                var bs0 = bki0 % Self.spatial_out
+                b_smem[b_r0, b_c0] = cache_3d[bb0, bs0, gk0]
+            else:
+                b_smem[b_r0, b_c0] = 0
+
+            var bki1 = k_off + b_r1
+            var gk1 = block_k + b_c1
+            if gk1 < Self.col_size and bki1 < K_TOTAL:
+                var bb1 = bki1 // Self.spatial_out
+                var bs1 = bki1 % Self.spatial_out
+                b_smem[b_r1, b_c1] = cache_3d[bb1, bs1, gk1]
             else:
                 b_smem[b_r1, b_c1] = 0
 
@@ -1610,6 +2009,74 @@ struct Conv2D[
             )
 
     @staticmethod
+    def eval_gpu_tt[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        """Sibling of eval_gpu for regression testing. Apple path routes to
+        eval_kernel_2x2_tt; NVIDIA path delegates to eval_gpu (unchanged).
+        """
+        comptime if has_nvidia_gpu_accelerator():
+            Self.eval_gpu[BATCH, dtype](
+                ctx, output, input, params, cache, workspace
+            )
+        else:
+            var input_immut = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ](input.ptr)
+            var params_immut = LayoutTensor[
+                dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+            ](params.ptr)
+
+            comptime grid_x = (Self.spatial_out + 31) // 32
+            comptime grid_y = (Self.out_channels + 31) // 32
+
+            @parameter
+            @always_inline
+            def wrapper_tt(
+                output: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+                ],
+                input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+                ],
+                params: LayoutTensor[
+                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+                ],
+                cache: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    MutAnyOrigin,
+                ],
+            ):
+                Self.eval_kernel_2x2_tt[BATCH, dtype](
+                    output, input, params, cache
+                )
+
+            ctx.enqueue_function[wrapper_tt, wrapper_tt](
+                output,
+                input_immut,
+                params_immut,
+                cache,
+                grid_dim=(grid_x, grid_y, BATCH),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
+
+    @staticmethod
     def vjp_gpu[
         BATCH: Int, dtype: DType = DType.float32
     ](
@@ -1937,3 +2404,147 @@ struct Conv2D[
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
         )
+
+    @staticmethod
+    def vjp_gpu_tt[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grad_params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        """Sibling of vjp_gpu for regression testing. Apple path routes to
+        the _tt backward kernels; NVIDIA path delegates to vjp_gpu (unchanged).
+        """
+        comptime if has_nvidia_gpu_accelerator():
+            Self.vjp_gpu[BATCH, dtype](
+                ctx,
+                grad_output,
+                grad_input,
+                params,
+                cache,
+                grad_params,
+                workspace,
+            )
+        else:
+            var params_immut = LayoutTensor[
+                dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+            ](params.ptr)
+            var grad_output_immut = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ](grad_output.ptr)
+            var cache_immut = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+            ](cache.ptr)
+
+            var dW = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.out_channels, Self.col_size),
+                MutAnyOrigin,
+            ](grad_params.ptr)
+
+            # dx (col2im gather with W.T @ grad_output)
+            var total_dx = BATCH * Self.IN_DIM
+            var grid_dx = (total_dx + TPB - 1) // TPB
+
+            @parameter
+            @always_inline
+            def dx_wrapper_tt(
+                grad_input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+                ],
+                grad_output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+                params: LayoutTensor[
+                    dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+                ],
+            ):
+                Self.backward_dx_kernel_impl_tt[BATCH, dtype](
+                    grad_input, grad_output, params
+                )
+
+            ctx.enqueue_function[dx_wrapper_tt, dx_wrapper_tt](
+                grad_input,
+                grad_output_immut,
+                params_immut,
+                grid_dim=(grid_dx,),
+                block_dim=(TPB,),
+            )
+
+            # dW (tiled matmul: grad_output_reshaped @ col.T)
+            comptime dW_grid_x = (Self.col_size + 31) // 32
+            comptime dW_grid_y = (Self.out_channels + 31) // 32
+
+            @parameter
+            @always_inline
+            def dW_wrapper_tt(
+                dW: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.col_size),
+                    MutAnyOrigin,
+                ],
+                cache: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    ImmutAnyOrigin,
+                ],
+                grad_output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                Self.backward_dW_kernel_2x2_tt[BATCH, dtype](
+                    dW, cache, grad_output
+                )
+
+            ctx.enqueue_function[dW_wrapper_tt, dW_wrapper_tt](
+                dW,
+                cache_immut,
+                grad_output_immut,
+                grid_dim=(dW_grid_x, dW_grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
+
+            # db (shared reduction, unchanged)
+            var db = LayoutTensor[
+                dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
+            ](grad_params.ptr + Self.out_channels * Self.col_size)
+
+            @parameter
+            @always_inline
+            def db_wrapper_tt(
+                db: LayoutTensor[
+                    dtype, Layout.row_major(Self.out_channels), MutAnyOrigin
+                ],
+                grad_output: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                Self.backward_db_kernel[BATCH, dtype](db, grad_output)
+
+            ctx.enqueue_function[db_wrapper_tt, db_wrapper_tt](
+                db,
+                grad_output_immut,
+                grid_dim=(Self.out_channels,),
+                block_dim=(TPB,),
+            )

@@ -47,8 +47,13 @@ from mojo_rl.deep_agents.core.critic_group import CriticGroup, GPUCriticGroup
 from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from mojo_rl.deep_agents.core.checkpoint_trait import Checkpointable
 from mojo_rl.deep_agents.core.utils import obs_to_inline
-from mojo_rl.core.logger import Logger
-from mojo_rl.core import BoxContinuousActionEnv, RenderableEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
+from mojo_rl.core import (
+    BoxContinuousActionEnv,
+    RenderableEnv,
+    TrainingMetrics,
+    GPUContinuousEnv,
+)
 from mojo_rl.deep_agents.core.kernels import (
     concat_obs_action_kernel,
     td_mse_grad_kernel,
@@ -63,6 +68,14 @@ from mojo_rl.deep_agents.core.kernels import (
     gradient_reduce_apply_fused_kernel,
     redq_ensemble_target_kernel,
     fill_constant_kernel,
+    accumulate_rewards_kernel,
+    increment_steps_kernel,
+    log_and_reset_completed_kernel,
+    uniform_random_actions_kernel,
+)
+from mojo_rl.deep_agents.core.utils import (
+    print_progress_bar,
+    clear_progress_bar,
 )
 
 from ..configs.redq_config import (
@@ -1651,4 +1664,388 @@ struct REDQAgent[
             Scalar[dtype](self.max_grad_norm),
             grid_dim=(A_BLOCKS,),
             block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # High-level training loop implementation
+    #
+    # Lives on the struct so `train_gpu()` below can invoke it via method
+    # dispatch on `self`. A free-function `run_redq_train_gpu` (in
+    # redq_train.mojo) forwards to this method so external callers with an
+    # `agent` local continue working. See MBPOAgent for the full rationale
+    # (Mojo nightly dev2026042305 L-value unification bug on `mut self` →
+    # `mut agent: REDQAgent[Config, max_n_envs=n_envs]`).
+    # =========================================================================
+
+    def _run_train_gpu_impl[
+        E: GPUContinuousEnv,
+        L: Logger = NoOpLogger,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        num_steps: Int,
+        warmup_steps: Int = 5_000,
+        verbose: Bool = False,
+        print_every: Int = 10_000,
+        environment_name: String = "Environment",
+        logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+            L, MutAnyOrigin
+        ](),
+        rng_seed: UInt64 = 42,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
+    ) raises -> TrainingMetrics:
+        """REDQ GPU training loop body. See `train_gpu()` and `run_redq_train_gpu`."""
+        comptime n_envs = Self.max_n_envs
+        var metrics = TrainingMetrics(
+            algorithm_name="REDQ",
+            environment_name=environment_name,
+        )
+
+        var gpu_state = self.make_gpu_state(ctx)
+        self.upload_to_gpu(gpu_state, ctx)
+
+        var states_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.STATE_SIZE)
+        var obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
+        var prev_obs_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.OBS_DIM)
+        var actions_buf = ctx.enqueue_create_buffer[dtype](n_envs * E.ACTION_DIM)
+        var rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+        var dones_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+        var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+
+        var episode_rewards_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+        var episode_steps_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+        var gpu_reward_sum_buf = ctx.enqueue_create_buffer[dtype](1)
+        var gpu_episode_count_buf = ctx.enqueue_create_buffer[dtype](1)
+        var host_reward_sum = ctx.enqueue_create_host_buffer[dtype](1)
+        var host_episode_count = ctx.enqueue_create_host_buffer[dtype](1)
+
+        var ws_size = E.STEP_WS_SHARED + n_envs * E.STEP_WS_PER_ENV
+        if ws_size == 0:
+            ws_size = 1
+        var workspace_buf = ctx.enqueue_create_buffer[dtype](ws_size)
+        if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
+            E.init_step_workspace_gpu[n_envs](ctx, workspace_buf)
+
+        E.reset_kernel_gpu[n_envs, E.STATE_SIZE](
+            ctx, states_buf, rng_seed=rng_seed
+        )
+        E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
+            ctx,
+            states_buf,
+            actions_buf,
+            rewards_buf,
+            dones_buf,
+            terminated_buf,
+            obs_buf,
+            rng_seed=rng_seed,
+            workspace_ptr=workspace_buf.unsafe_ptr(),
+        )
+        ctx.enqueue_memset(episode_rewards_buf, 0)
+        ctx.enqueue_memset(episode_steps_buf, 0)
+        ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+        ctx.enqueue_memset(gpu_episode_count_buf, 0)
+
+        comptime tpb = 256
+        comptime env_blocks = (n_envs + tpb - 1) // tpb
+        comptime accum_k = accumulate_rewards_kernel[dtype, n_envs]
+        comptime incr_steps_k = increment_steps_kernel[dtype, n_envs]
+        comptime log_reset_k = log_and_reset_completed_kernel[dtype, n_envs]
+        comptime act_tpb = 256
+        comptime act_blocks = (n_envs * E.ACTION_DIM + act_tpb - 1) // act_tpb
+        comptime warmup_kernel = uniform_random_actions_kernel[
+            dtype, n_envs, E.ACTION_DIM
+        ]
+
+        var total_steps = 0
+        var total_train_steps = 0
+        var completed_episodes = 0
+        var last_avg_reward: Float64 = 0.0
+        var step_seed: UInt32 = UInt32(rng_seed)
+        var next_print = print_every
+
+        var progress_interval = print_every // 20
+        if progress_interval < n_envs:
+            progress_interval = n_envs
+        var next_progress = progress_interval
+
+        var ckpt_every = checkpoint_every
+        var ckpt_path = checkpoint_path
+        if self.checkpoint_every > 0 and self.checkpoint_path.byte_length() > 0:
+            ckpt_every = self.checkpoint_every
+            ckpt_path = self.checkpoint_path
+        var next_checkpoint = ckpt_every
+
+        var action_scale_val = Scalar[dtype](self.action_scale)
+        var alg_name = String("REDQ")
+        var alpha_host = ctx.enqueue_create_host_buffer[dtype](1)
+
+        while total_steps < num_steps:
+            ctx.enqueue_copy(prev_obs_buf, obs_buf)
+            if total_steps < warmup_steps:
+                var act_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(n_envs, E.ACTION_DIM),
+                    MutAnyOrigin,
+                ](actions_buf.unsafe_ptr())
+                ctx.enqueue_function[warmup_kernel, warmup_kernel](
+                    act_t,
+                    action_scale_val,
+                    Scalar[DType.uint32](step_seed),
+                    grid_dim=(act_blocks,),
+                    block_dim=(act_tpb,),
+                )
+            else:
+                self.sync_explore_counter(ctx, gpu_state)
+                self.select_actions_gpu[n_envs](
+                    ctx, gpu_state, obs_buf, actions_buf
+                )
+
+            step_seed += 1
+            E.step_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM, E.ACTION_DIM](
+                ctx,
+                states_buf,
+                actions_buf,
+                rewards_buf,
+                dones_buf,
+                terminated_buf,
+                obs_buf,
+                rng_seed=UInt64(step_seed),
+                workspace_ptr=workspace_buf.unsafe_ptr(),
+            )
+
+            self.gpu_store[n_envs](
+                ctx,
+                gpu_state,
+                prev_obs_buf,
+                actions_buf,
+                rewards_buf,
+                obs_buf,
+                terminated_buf,
+            )
+
+            var er_t = LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ](episode_rewards_buf.unsafe_ptr())
+            var rw_t = LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ](rewards_buf.unsafe_ptr())
+            var es_t = LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ](episode_steps_buf.unsafe_ptr())
+            var dn_t = LayoutTensor[
+                dtype, Layout.row_major(n_envs), MutAnyOrigin
+            ](dones_buf.unsafe_ptr())
+            var rs_t = LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ](gpu_reward_sum_buf.unsafe_ptr())
+            var ec_t = LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ](gpu_episode_count_buf.unsafe_ptr())
+            ctx.enqueue_function[accum_k, accum_k](
+                er_t, rw_t, grid_dim=(env_blocks,), block_dim=(tpb,)
+            )
+            ctx.enqueue_function[incr_steps_k, incr_steps_k](
+                es_t, grid_dim=(env_blocks,), block_dim=(tpb,)
+            )
+            ctx.enqueue_function[log_reset_k, log_reset_k](
+                dn_t,
+                er_t,
+                es_t,
+                rs_t,
+                ec_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+
+            step_seed += 1
+            E.selective_reset_kernel_gpu[n_envs, E.STATE_SIZE](
+                ctx,
+                states_buf,
+                dones_buf,
+                rng_seed=UInt64(step_seed),
+                workspace_ptr=workspace_buf.unsafe_ptr(),
+            )
+            E.extract_obs_kernel_gpu[n_envs, E.STATE_SIZE, E.OBS_DIM](
+                ctx, states_buf, obs_buf
+            )
+
+            total_steps += n_envs
+
+            if total_steps >= warmup_steps:
+                comptime UTD = Self.Config.UTD_RATIO
+                var n_updates = UTD * n_envs
+                for _ in range(n_updates):
+                    self.do_gpu_train_step(ctx, gpu_state)
+                    self.maybe_log_diagnostics[L](ctx, gpu_state, logger)
+                total_train_steps += n_updates
+
+            if verbose and total_steps >= next_progress:
+                var interval_start = next_print - print_every
+                print_progress_bar(
+                    total_steps - interval_start,
+                    print_every,
+                    total_train_steps,
+                    alg_name,
+                )
+                next_progress += progress_interval
+
+            if (
+                verbose or (logger and logger[].is_active())
+            ) and total_steps >= next_print:
+                ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
+                ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+                ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
+                ctx.synchronize()
+
+                var recent_count = Int(host_episode_count[0])
+                var recent_sum = Float64(host_reward_sum[0])
+                var cur_alpha = Float64(alpha_host[0])
+                completed_episodes += recent_count
+                if recent_count > 0:
+                    last_avg_reward = recent_sum / Float64(recent_count)
+                    for _ in range(recent_count):
+                        metrics.log_episode(
+                            completed_episodes, last_avg_reward, 0, 0.0
+                        )
+
+                ctx.enqueue_memset(gpu_reward_sum_buf, 0)
+                ctx.enqueue_memset(gpu_episode_count_buf, 0)
+
+                if logger:
+                    logger[].log_scalar(
+                        "avg_reward", last_avg_reward, total_steps
+                    )
+                    logger[].log_scalar(
+                        "episodes", Float64(completed_episodes), total_steps
+                    )
+                    logger[].log_scalar(
+                        "train_steps", Float64(total_train_steps), total_steps
+                    )
+                    logger[].log_scalar("alpha", cur_alpha, total_steps)
+
+                if verbose:
+                    clear_progress_bar()
+                    var status_line = (
+                        alg_name
+                        + " | Step "
+                        + String(total_steps)
+                        + " / "
+                        + String(num_steps)
+                        + " | Ep: "
+                        + String(completed_episodes)
+                        + " | AvgR: "
+                        + String(last_avg_reward)[byte=:7]
+                        + " | Train: "
+                        + String(total_train_steps)
+                        + " | α: "
+                        + String(cur_alpha)[byte=:6]
+                    )
+                    print(status_line)
+                next_print += print_every
+
+            if ckpt_every > 0 and total_steps >= next_checkpoint:
+                self.download_from_gpu(gpu_state, ctx)
+                ctx.synchronize()
+                self.save_checkpoint(ckpt_path)
+                if verbose:
+                    clear_progress_bar()
+                    print(
+                        alg_name
+                        + " | checkpoint @ step "
+                        + String(total_steps)
+                        + " -> "
+                        + ckpt_path
+                    )
+                next_checkpoint += ckpt_every
+
+        ctx.enqueue_copy(host_reward_sum, gpu_reward_sum_buf)
+        ctx.enqueue_copy(host_episode_count, gpu_episode_count_buf)
+        ctx.enqueue_copy(alpha_host, gpu_state.gpu_scalars)
+        ctx.synchronize()
+
+        var final_count = Int(host_episode_count[0])
+        var final_sum = Float64(host_reward_sum[0])
+        completed_episodes += final_count
+        if final_count > 0:
+            last_avg_reward = final_sum / Float64(final_count)
+            for _ in range(final_count):
+                metrics.log_episode(completed_episodes, last_avg_reward, 0, 0.0)
+
+        self.download_from_gpu(gpu_state, ctx)
+        ctx.synchronize()
+
+        if ckpt_every > 0 and ckpt_path.byte_length() > 0:
+            self.save_checkpoint(ckpt_path)
+
+        if logger and logger[].is_active():
+            logger[].log_scalar(
+                "avg_reward", last_avg_reward, total_steps
+            )
+            logger[].log_scalar(
+                "episodes", Float64(completed_episodes), total_steps
+            )
+            logger[].log_scalar(
+                "train_steps", Float64(total_train_steps), total_steps
+            )
+            logger[].log_scalar("alpha", Float64(alpha_host[0]), total_steps)
+            logger[].flush()
+
+        if verbose:
+            clear_progress_bar()
+            print(
+                alg_name
+                + " | Step "
+                + String(total_steps)
+                + " / "
+                + String(num_steps)
+                + " | Ep: "
+                + String(completed_episodes)
+                + " | AvgR: "
+                + String(last_avg_reward)[byte=:7]
+                + " | Train: "
+                + String(total_train_steps)
+                + " [DONE]"
+            )
+
+        return metrics^
+
+    # =========================================================================
+    # High-level training — convenience wrapper
+    # =========================================================================
+
+    def train_gpu[
+        E: GPUContinuousEnv,
+        L: Logger = NoOpLogger,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        num_steps: Int,
+        warmup_steps: Int = 5_000,
+        verbose: Bool = False,
+        print_every: Int = 10_000,
+        environment_name: String = "Environment",
+        logger: UnsafePointer[L, MutAnyOrigin] = UnsafePointer[
+            L, MutAnyOrigin
+        ](),
+        rng_seed: UInt64 = 42,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
+    ) raises -> TrainingMetrics:
+        """GPU REDQ training convenience wrapper.
+
+        Runs the GPU training loop in-place on `self`. Final trained weights
+        are downloaded back onto `self.cpu_actor` / `self.cpu_critics`.
+        """
+        return self._run_train_gpu_impl[E, L](
+            ctx,
+            num_steps,
+            warmup_steps=warmup_steps,
+            verbose=verbose,
+            print_every=print_every,
+            environment_name=environment_name,
+            logger=logger,
+            rng_seed=rng_seed,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
