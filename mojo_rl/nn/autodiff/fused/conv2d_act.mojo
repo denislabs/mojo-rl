@@ -25,7 +25,7 @@ from ...constants import (
 )
 from ...autodiff.op import DiffOp, FusedOp, OpID
 from .activation import Activation
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
@@ -292,7 +292,34 @@ struct FusedConv2DActivation[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """GPU backward for grad_input with fused activation gradient."""
+        """GPU backward for grad_input with fused activation gradient.
+
+        Note: cache layout is (BATCH, CACHE_SIZE) where CACHE_SIZE =
+        CONV_CACHE + OUT_DIM per batch. The act_cache section has batch
+        stride CACHE_SIZE, not OUT_DIM — so a row_major[BATCH, OC, out_h,
+        out_w]() view over cache.ptr + CONV_CACHE would be wrong. Access
+        with 2D cache[b, CONV_CACHE + flat_idx] instead.
+        """
+        var W_4d = TileTensor(
+            params.ptr,
+            row_major[
+                Self.out_channels,
+                Self.in_channels,
+                Self.kernel_size,
+                Self.kernel_size,
+            ](),
+        )
+        var grad_out_4d = TileTensor(
+            grad_output.ptr,
+            row_major[
+                BATCH, Self.out_channels, Self.out_h, Self.out_w
+            ](),
+        )
+        var grad_in_4d = TileTensor(
+            grad_input.ptr,
+            row_major[BATCH, Self.in_channels, Self.in_h, Self.in_w](),
+        )
+
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         var total = BATCH * Self.IN_DIM
         if idx >= total:
@@ -300,7 +327,6 @@ struct FusedConv2DActivation[
 
         var b = idx // Self.IN_DIM
         var in_pos = idx % Self.IN_DIM
-
         var c = in_pos // (Self.in_h * Self.in_w)
         var rem = in_pos % (Self.in_h * Self.in_w)
         var ih = rem // Self.in_w
@@ -321,28 +347,18 @@ struct FusedConv2DActivation[
                     var ow = ow_num // Self.stride
                     if oh < Self.out_h and ow < Self.out_w:
                         var s = oh * Self.out_w + ow
-                        var c_k = (
-                            c * Self.kernel_size * Self.kernel_size
-                            + kh * Self.kernel_size
-                            + kw
-                        )
                         for oc in range(Self.out_channels):
                             var out_idx = oc * Self.spatial_out + s
                             var cache_val = rebind[Scalar[dtype]](
                                 cache[b, Self.CONV_CACHE + out_idx]
                             )
-                            var go_val = rebind[Scalar[dtype]](
-                                grad_output[b, out_idx]
+                            var go_val = grad_out_4d[b, oc, oh, ow]
+                            var masked_go = Self.ACT.backward(
+                                cache_val, go_val
                             )
-                            var masked_go = Self.ACT.backward(cache_val, go_val)
-                            acc += (
-                                rebind[Scalar[dtype]](
-                                    params[oc * Self.col_size + c_k]
-                                )
-                                * masked_go
-                            )
+                            acc += W_4d[oc, c, kh, kw] * masked_go
 
-        grad_input[b, in_pos] = acc
+        grad_in_4d[b, c, ih, iw] = acc
 
     # =========================================================================
     # GPU kernels — tiled forward (Apple 2x2 / NVIDIA MMA)
@@ -375,6 +391,24 @@ struct FusedConv2DActivation[
         comptime SK = 16
         comptime W_SIZE = Self.out_channels * Self.col_size
         comptime KS2 = Self.kernel_size * Self.kernel_size
+
+        # Note: cache has per-batch layout [im2col | act_cache] with stride
+        # CACHE_SIZE, not CONV_CACHE. row_major[BATCH, ...] views over sub-
+        # sections of cache would have wrong strides. Keep cache as 2D.
+        var W = TileTensor(
+            params.ptr, row_major[Self.out_channels, Self.col_size]()
+        )
+        var bias = TileTensor(
+            params.ptr + W_SIZE, row_major[Self.out_channels]()
+        )
+        var input_4d = TileTensor(
+            input.ptr,
+            row_major[BATCH, Self.in_channels, Self.in_h, Self.in_w](),
+        )
+        var output_3d = TileTensor(
+            output.ptr,
+            row_major[BATCH, Self.out_channels, Self.spatial_out](),
+        )
 
         var tid = Int(thread_idx.x)
         var sub_r = tid // 16
@@ -415,14 +449,14 @@ struct FusedConv2DActivation[
             var ga_oc0 = block_oc + a_r0
             var ga_k0 = k_off + a_c0
             if ga_oc0 < Self.out_channels and ga_k0 < Self.col_size:
-                a_smem[a_r0, a_c0] = params[ga_oc0 * Self.col_size + ga_k0]
+                a_smem[a_r0, a_c0] = W[ga_oc0, ga_k0]
             else:
                 a_smem[a_r0, a_c0] = 0
 
             var ga_oc1 = block_oc + a_r1
             var ga_k1 = k_off + a_c1
             if ga_oc1 < Self.out_channels and ga_k1 < Self.col_size:
-                a_smem[a_r1, a_c1] = params[ga_oc1 * Self.col_size + ga_k1]
+                a_smem[a_r1, a_c1] = W[ga_oc1, ga_k1]
             else:
                 a_smem[a_r1, a_c1] = 0
 
@@ -451,12 +485,7 @@ struct FusedConv2DActivation[
                     and iw0 >= 0
                     and iw0 < Self.in_w
                 ):
-                    val0 = rebind[Scalar[dtype]](
-                        input[
-                            batch,
-                            ch0 * Self.in_h * Self.in_w + ih0 * Self.in_w + iw0,
-                        ]
-                    )
+                    val0 = input_4d[batch, ch0, ih0, iw0]
             b_smem[b_r0, b_c0] = val0
             if (
                 Int(block_idx.y) == 0
@@ -484,12 +513,7 @@ struct FusedConv2DActivation[
                     and iw1 >= 0
                     and iw1 < Self.in_w
                 ):
-                    val1 = rebind[Scalar[dtype]](
-                        input[
-                            batch,
-                            ch1 * Self.in_h * Self.in_w + ih1 * Self.in_w + iw1,
-                        ]
-                    )
+                    val1 = input_4d[batch, ch1, ih1, iw1]
             b_smem[b_r1, b_c1] = val1
             if (
                 Int(block_idx.y) == 0
@@ -513,43 +537,39 @@ struct FusedConv2DActivation[
 
             barrier()
 
-        # Store with bias + fused activation
+        # Store with bias + fused activation — 3D output + 3D act-cache views
         var oc0 = block_oc + sub_r * 2
         var s0 = block_s + sub_c * 2
 
         if oc0 < Self.out_channels and s0 < Self.spatial_out:
-            var pre_act = acc00 + rebind[Scalar[dtype]](params[W_SIZE + oc0])
+            var pre_act = acc00 + bias[oc0]
             var act_out = Self.ACT.forward(pre_act)
             var out_idx = oc0 * Self.spatial_out + s0
-            output[batch, out_idx] = act_out
+            output_3d[batch, oc0, s0] = act_out
             cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
                 pre_act, act_out
             )
         if oc0 < Self.out_channels and s0 + 1 < Self.spatial_out:
-            var pre_act = acc01 + rebind[Scalar[dtype]](params[W_SIZE + oc0])
+            var pre_act = acc01 + bias[oc0]
             var act_out = Self.ACT.forward(pre_act)
             var out_idx = oc0 * Self.spatial_out + s0 + 1
-            output[batch, out_idx] = act_out
+            output_3d[batch, oc0, s0 + 1] = act_out
             cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
                 pre_act, act_out
             )
         if oc0 + 1 < Self.out_channels and s0 < Self.spatial_out:
-            var pre_act = acc10 + rebind[Scalar[dtype]](
-                params[W_SIZE + oc0 + 1]
-            )
+            var pre_act = acc10 + bias[oc0 + 1]
             var act_out = Self.ACT.forward(pre_act)
             var out_idx = (oc0 + 1) * Self.spatial_out + s0
-            output[batch, out_idx] = act_out
+            output_3d[batch, oc0 + 1, s0] = act_out
             cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
                 pre_act, act_out
             )
         if oc0 + 1 < Self.out_channels and s0 + 1 < Self.spatial_out:
-            var pre_act = acc11 + rebind[Scalar[dtype]](
-                params[W_SIZE + oc0 + 1]
-            )
+            var pre_act = acc11 + bias[oc0 + 1]
             var act_out = Self.ACT.forward(pre_act)
             var out_idx = (oc0 + 1) * Self.spatial_out + s0 + 1
-            output[batch, out_idx] = act_out
+            output_3d[batch, oc0 + 1, s0 + 1] = act_out
             cache[batch, Self.CONV_CACHE + out_idx] = Self.ACT.cache(
                 pre_act, act_out
             )
@@ -765,10 +785,18 @@ struct FusedConv2DActivation[
         ACT.backward applied when loading grad_output into A tile.
         Grid: (ceil(col_size/32), ceil(out_channels/32))
         Block: (256, 1)
+
+        Note: cache stays 2D — fused layout is [im2col | act_cache] per batch
+        with stride CACHE_SIZE. grad_output is fully contiguous → 3D TT view.
         """
         comptime BT = 32
         comptime SK = 16
         comptime K_TOTAL = BATCH * Self.spatial_out
+
+        var grad_out_3d = TileTensor(
+            grad_output.ptr,
+            row_major[BATCH, Self.out_channels, Self.spatial_out](),
+        )
 
         var tid = Int(thread_idx.x)
         var sub_r = tid // 16
@@ -811,7 +839,7 @@ struct FusedConv2DActivation[
                 var b0 = ki0 // Self.spatial_out
                 var s0 = ki0 % Self.spatial_out
                 var out_idx0 = g_oc0 * Self.spatial_out + s0
-                var go_val = rebind[Scalar[dtype]](grad_output[b0, out_idx0])
+                var go_val = grad_out_3d[b0, g_oc0, s0]
                 var cache_val = rebind[Scalar[dtype]](
                     cache[b0, Self.CONV_CACHE + out_idx0]
                 )
@@ -825,7 +853,7 @@ struct FusedConv2DActivation[
                 var b1 = ki1 // Self.spatial_out
                 var s1 = ki1 % Self.spatial_out
                 var out_idx1 = g_oc1 * Self.spatial_out + s1
-                var go_val = rebind[Scalar[dtype]](grad_output[b1, out_idx1])
+                var go_val = grad_out_3d[b1, g_oc1, s1]
                 var cache_val = rebind[Scalar[dtype]](
                     cache[b1, Self.CONV_CACHE + out_idx1]
                 )
@@ -1038,7 +1066,14 @@ struct FusedConv2DActivation[
 
         Grid: (out_channels,)
         Block: (TPB,)  — TPB threads split across BATCH dimension
+
+        Note: cache stays 2D due to fused [im2col | act_cache] per-batch layout.
         """
+        var grad_out_3d = TileTensor(
+            grad_output.ptr,
+            row_major[BATCH, Self.out_channels, Self.spatial_out](),
+        )
+
         var oc = Int(block_idx.x)
         if oc >= Self.out_channels:
             return
@@ -1049,7 +1084,7 @@ struct FusedConv2DActivation[
         for b in range(tid, BATCH, TPB):
             for s in range(Self.spatial_out):
                 var out_idx = oc * Self.spatial_out + s
-                var go_val = rebind[Scalar[dtype]](grad_output[b, out_idx])
+                var go_val = grad_out_3d[b, oc, s]
                 var cache_val = rebind[Scalar[dtype]](
                     cache[b, Self.CONV_CACHE + out_idx]
                 )
@@ -1511,6 +1546,12 @@ struct FusedConv2DActivation[
                     ImmutAnyOrigin,
                 ],
             ):
+                var input_4d = TileTensor(
+                    input.ptr,
+                    row_major[
+                        BATCH, Self.in_channels, Self.in_h, Self.in_w
+                    ](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= im2col_elems:
                     return
@@ -1528,12 +1569,9 @@ struct FusedConv2DActivation[
                 var iw = ow * Self.stride - Self.padding + kw
                 var val: Scalar[dtype] = 0
                 if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                    val = rebind[Scalar[dtype]](
-                        input[
-                            b,
-                            ch * Self.in_h * Self.in_w + ih * Self.in_w + iw,
-                        ]
-                    )
+                    val = input_4d[b, ch, ih, iw]
+                # cache_out stays 2D: fused layout is [im2col | act_cache]
+                # per-batch with stride CACHE_SIZE, not CONV_CACHE
                 cache_out[b, pos] = val
 
             ctx.enqueue_function[im2col_wrapper, im2col_wrapper](
@@ -1568,6 +1606,13 @@ struct FusedConv2DActivation[
                     ImmutAnyOrigin,
                 ],
             ):
+                # dst (col_flat) is contiguous (K_TOTAL=BATCH*spatial_out,
+                # col_size), can be viewed 3D. src (cache) stays 2D due to
+                # [im2col | act_cache] per-batch layout.
+                var dst_3d = TileTensor(
+                    dst.ptr,
+                    row_major[BATCH, Self.spatial_out, Self.col_size](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= col_elems:
                     return
@@ -1575,7 +1620,9 @@ struct FusedConv2DActivation[
                 var k = idx % Self.col_size
                 var b = row // Self.spatial_out
                 var s = row % Self.spatial_out
-                dst[row, k] = src[b, s * Self.col_size + k]
+                dst_3d[b, s, k] = rebind[Scalar[dtype]](
+                    src[b, s * Self.col_size + k]
+                )
 
             var cache_immut_fwd = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
@@ -1664,6 +1711,24 @@ struct FusedConv2DActivation[
                     MutAnyOrigin,
                 ],
             ):
+                # out_temp (K_TOTAL, OC) is contiguous → 3D view
+                # (BATCH, spatial_out, OC). output fully contiguous → 3D.
+                # cache_out stays 2D (fused per-batch layout issue).
+                var out_temp_3d = TileTensor(
+                    out_temp.ptr,
+                    row_major[
+                        BATCH, Self.spatial_out, Self.out_channels
+                    ](),
+                )
+                var output_3d = TileTensor(
+                    output.ptr,
+                    row_major[
+                        BATCH, Self.out_channels, Self.spatial_out
+                    ](),
+                )
+                var bias_tt = TileTensor(
+                    params.ptr + W_SIZE, row_major[Self.out_channels]()
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= out_elems:
                     return
@@ -1671,11 +1736,9 @@ struct FusedConv2DActivation[
                 var out_pos = idx % Self.OUT_DIM
                 var oc = out_pos // Self.spatial_out
                 var s = out_pos % Self.spatial_out
-                var pre_act = rebind[Scalar[dtype]](
-                    out_temp[b * Self.spatial_out + s, oc]
-                ) + rebind[Scalar[dtype]](params[W_SIZE + oc])
+                var pre_act = out_temp_3d[b, s, oc] + bias_tt[oc]
                 var act_out = Self.ACT.forward(pre_act)
-                output[b, out_pos] = act_out
+                output_3d[b, oc, s] = act_out
                 cache_out[b, Self.CONV_CACHE + out_pos] = Self.ACT.cache(
                     pre_act, act_out
                 )
@@ -1804,6 +1867,12 @@ struct FusedConv2DActivation[
                     ImmutAnyOrigin,
                 ],
             ):
+                # dst (col_flat in workspace) contiguous → 3D view. src
+                # (cache) stays 2D due to fused per-batch layout.
+                var dst_3d = TileTensor(
+                    dst.ptr,
+                    row_major[BATCH, Self.spatial_out, Self.col_size](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= col_elems:
                     return
@@ -1811,7 +1880,9 @@ struct FusedConv2DActivation[
                 var k = idx % Self.col_size
                 var b = row // Self.spatial_out
                 var s = row % Self.spatial_out
-                dst[row, k] = src[b, s * Self.col_size + k]
+                dst_3d[b, s, k] = rebind[Scalar[dtype]](
+                    src[b, s * Self.col_size + k]
+                )
 
             ctx.enqueue_function[copy_col_wrapper, copy_col_wrapper](
                 col_flat,
@@ -1844,6 +1915,20 @@ struct FusedConv2DActivation[
                     ImmutAnyOrigin,
                 ],
             ):
+                # src (grad_output) contiguous → 3D view. dst (grad_reshaped
+                # in workspace) contiguous → 3D view. act_cache stays 2D.
+                var src_3d = TileTensor(
+                    src.ptr,
+                    row_major[
+                        BATCH, Self.out_channels, Self.spatial_out
+                    ](),
+                )
+                var dst_3d = TileTensor(
+                    dst.ptr,
+                    row_major[
+                        Self.out_channels, BATCH, Self.spatial_out
+                    ](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= grad_elems:
                     return
@@ -1852,11 +1937,11 @@ struct FusedConv2DActivation[
                 var b = bs // Self.spatial_out
                 var s = bs % Self.spatial_out
                 var out_idx = oc * Self.spatial_out + s
-                var go_val = rebind[Scalar[dtype]](src[b, out_idx])
+                var go_val = src_3d[b, oc, s]
                 var cache_val = rebind[Scalar[dtype]](
                     act_cache[b, Self.CONV_CACHE + out_idx]
                 )
-                dst[oc, bs] = Self.ACT.backward(cache_val, go_val)
+                dst_3d[oc, b, s] = Self.ACT.backward(cache_val, go_val)
 
             ctx.enqueue_function[
                 transpose_mask_grad_wrapper,
@@ -1971,6 +2056,20 @@ struct FusedConv2DActivation[
                     MutAnyOrigin,
                 ],
             ):
+                # dcol (col_size, K_TOTAL=BATCH*spatial_out) contiguous → 3D
+                # view. grad_input contiguous → 4D view.
+                var dcol_3d = TileTensor(
+                    dcol.ptr,
+                    row_major[
+                        Self.col_size, BATCH, Self.spatial_out
+                    ](),
+                )
+                var grad_in_4d = TileTensor(
+                    grad_input.ptr,
+                    row_major[
+                        BATCH, Self.in_channels, Self.in_h, Self.in_w
+                    ](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= BATCH * Self.IN_DIM:
                     return
@@ -2001,10 +2100,8 @@ struct FusedConv2DActivation[
                                     + kh * Self.kernel_size
                                     + kw
                                 )
-                                acc += rebind[Scalar[dtype]](
-                                    dcol[c_k, b * Self.spatial_out + s]
-                                )
-                grad_input[b, in_pos] = acc
+                                acc += dcol_3d[c_k, b, s]
+                grad_in_4d[b, c, ih, iw] = acc
 
             ctx.enqueue_function[col2im_gather, col2im_gather](
                 grad_input,
