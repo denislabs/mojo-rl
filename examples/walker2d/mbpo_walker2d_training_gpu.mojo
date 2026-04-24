@@ -115,6 +115,7 @@ def main() raises:
             sac_updates_per_step=40,  # MBPO paper n_train_repeat=40 for Walker2d
             checkpoint_every=50_000,
             checkpoint_path="mbpo_walker2d.ckpt",
+            diag_every=500,  # log critic_loss, mean_q, mean_target, ... every 500 SAC updates
         )
 
         print("Environment: Walker2d Continuous (GPU)")

@@ -120,6 +120,7 @@ def main() raises:
             # ere_eta=0.996,
             checkpoint_every=50_000,
             checkpoint_path="mbpo_half_cheetah.ckpt",
+            diag_every=500,  # log critic_loss, mean_q, mean_target, ... every 500 SAC updates
         )
 
         print("Environment: HalfCheetah Continuous (GPU)")
@@ -191,7 +192,6 @@ def main() raises:
 
         try:
             agent.logger = UnsafePointer(to=logger)
-            agent.diag_every = 500
             var metrics = agent.train_gpu[
                 HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
             ](

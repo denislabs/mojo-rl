@@ -114,6 +114,7 @@ def main() raises:
             sac_updates_per_step=20,  # MBPO paper n_train_repeat=20 for Ant
             checkpoint_every=50_000,
             checkpoint_path="mbpo_ant.ckpt",
+            diag_every=500,  # log critic_loss, mean_q, mean_target, ... every 500 SAC updates
         )
 
         print("Environment: Ant Continuous (GPU)")

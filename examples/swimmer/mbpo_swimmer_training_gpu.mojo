@@ -112,6 +112,7 @@ def main() raises:
             sac_updates_per_step=40,
             checkpoint_every=50_000,
             checkpoint_path="mbpo_swimmer.ckpt",
+            diag_every=500,  # log critic_loss, mean_q, mean_target, ... every 500 SAC updates
         )
 
         print("Environment: Swimmer Continuous (GPU)")
@@ -195,7 +196,6 @@ def main() raises:
                 print_every=10_000,
                 environment_name="Swimmer",
                 logger=UnsafePointer(to=logger),
-                diag_every=500,
             )
 
             var end_time = perf_counter_ns()

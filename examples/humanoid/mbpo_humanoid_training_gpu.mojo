@@ -119,6 +119,7 @@ def main() raises:
             sac_updates_per_step=20,  # n_train_repeat=20 for Humanoid
             checkpoint_every=100_000,
             checkpoint_path="mbpo_humanoid.ckpt",
+            diag_every=500,  # log critic_loss, mean_q, mean_target, ... every 500 SAC updates
         )
 
         print("Environment: Humanoid Continuous (GPU)")

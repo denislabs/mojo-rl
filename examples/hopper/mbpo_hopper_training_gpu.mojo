@@ -114,6 +114,7 @@ def main() raises:
             sac_updates_per_step=40,  # MBPO paper n_train_repeat=40 for Hopper
             checkpoint_every=50_000,
             checkpoint_path="mbpo_hopper.ckpt",
+            diag_every=500,  # log critic_loss, mean_q, mean_target, ... every 500 SAC updates
         )
 
         print("Environment: Hopper Continuous (GPU)")
@@ -196,7 +197,6 @@ def main() raises:
                 print_every=10_000,
                 environment_name="Hopper",
                 logger=UnsafePointer(to=logger),
-                diag_every=500,
             )
 
             var end_time = perf_counter_ns()
