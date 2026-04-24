@@ -51,7 +51,7 @@ from mojo_rl.nn.datasets.cifar10 import CIFAR10
 
 
 comptime BATCH = 128
-comptime EPOCHS = 5
+comptime EPOCHS = 30
 
 comptime CNN = Sequential[
     # Block 1: 32×32 → 16×16, 32 channels
