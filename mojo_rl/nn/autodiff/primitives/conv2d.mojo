@@ -1842,6 +1842,16 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
+                var input_4d = TileTensor(
+                    input.ptr,
+                    row_major[
+                        BATCH, Self.in_channels, Self.in_h, Self.in_w
+                    ](),
+                )
+                var cache_3d = TileTensor(
+                    cache_out.ptr,
+                    row_major[BATCH, Self.spatial_out, Self.col_size](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= im2col_elems:
                     return
@@ -1859,12 +1869,8 @@ struct Conv2D[
                 var iw = ow * Self.stride - Self.padding + kw
                 var val: Scalar[dtype] = 0
                 if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                    val = rebind[Scalar[dtype]](
-                        input[
-                            b, ch * Self.in_h * Self.in_w + ih * Self.in_w + iw
-                        ]
-                    )
-                cache_out[b, pos] = val
+                    val = input_4d[b, ch, ih, iw]
+                cache_3d[b, s, k] = val
 
             ctx.enqueue_function[im2col_wrapper, im2col_wrapper](
                 cache,
@@ -1953,6 +1959,21 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
+                var out_temp_3d = TileTensor(
+                    out_temp.ptr,
+                    row_major[
+                        BATCH, Self.spatial_out, Self.out_channels
+                    ](),
+                )
+                var output_3d = TileTensor(
+                    output.ptr,
+                    row_major[
+                        BATCH, Self.out_channels, Self.spatial_out
+                    ](),
+                )
+                var bias_tt = TileTensor(
+                    bias.ptr, row_major[Self.out_channels]()
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= out_elems:
                     return
@@ -1960,9 +1981,7 @@ struct Conv2D[
                 var out_pos = idx % Self.OUT_DIM
                 var oc = out_pos // Self.spatial_out
                 var s = out_pos % Self.spatial_out
-                output[b, out_pos] = rebind[Scalar[dtype]](
-                    out_temp[b * Self.spatial_out + s, oc]
-                ) + rebind[Scalar[dtype]](bias[oc])
+                output_3d[b, oc, s] = out_temp_3d[b, s, oc] + bias_tt[oc]
 
             ctx.enqueue_function[
                 transpose_output_bias_wrapper,
@@ -2332,6 +2351,18 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
+                var src_3d = TileTensor(
+                    src.ptr,
+                    row_major[
+                        BATCH, Self.out_channels, Self.spatial_out
+                    ](),
+                )
+                var dst_3d = TileTensor(
+                    dst.ptr,
+                    row_major[
+                        Self.out_channels, BATCH, Self.spatial_out
+                    ](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= grad_elems:
                     return
@@ -2339,7 +2370,7 @@ struct Conv2D[
                 var bs = idx % K_TOTAL
                 var b = bs // Self.spatial_out
                 var s = bs % Self.spatial_out
-                dst[oc, bs] = src[b, oc * Self.spatial_out + s]
+                dst_3d[oc, b, s] = src_3d[b, oc, s]
 
             ctx.enqueue_function[
                 transpose_grad_wrapper, transpose_grad_wrapper
@@ -2454,6 +2485,18 @@ struct Conv2D[
                     MutAnyOrigin,
                 ],
             ):
+                var dcol_3d = TileTensor(
+                    dcol.ptr,
+                    row_major[
+                        Self.col_size, BATCH, Self.spatial_out
+                    ](),
+                )
+                var grad_in_4d = TileTensor(
+                    grad_input.ptr,
+                    row_major[
+                        BATCH, Self.in_channels, Self.in_h, Self.in_w
+                    ](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= BATCH * Self.IN_DIM:
                     return
@@ -2484,10 +2527,8 @@ struct Conv2D[
                                     + kh * Self.kernel_size
                                     + kw
                                 )
-                                acc += rebind[Scalar[dtype]](
-                                    dcol[c_k, b * Self.spatial_out + s]
-                                )
-                grad_input[b, in_pos] = acc
+                                acc += dcol_3d[c_k, b, s]
+                grad_in_4d[b, c, ih, iw] = acc
 
             ctx.enqueue_function[col2im_gather, col2im_gather](
                 grad_input,
