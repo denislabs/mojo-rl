@@ -1,16 +1,16 @@
 """End-to-end CNN training on CIFAR-10 — validates Conv2D RGB + BatchNorm.
 
 Trains a deeper VGG-style CNN on real CIFAR-10 with per-channel input
-normalization. The test targets ≥65% test accuracy after 5 epochs, which is
-well above:
+normalization and standard crop+flip augmentation. The test targets ≥65%
+test accuracy, which is well above:
   - 10% random baseline
   - ~35% linear-on-pixels baseline
-  - ~43% shallow-conv-without-BN baseline (previous version of this test)
+  - ~43% shallow-conv-without-BN baseline
 
-A pass at ≥65% validates the fused Conv2D + BatchNorm + ReLU pipeline end-
-to-end, including gradient flow through 6 conv layers and running-stat
-updates. Skipping Dropout since it requires twin Sequential routing for
-train/eval that isn't set up yet.
+A pass validates the fused Conv2D + BatchNorm + ReLU pipeline end-to-end,
+including gradient flow through 6 conv layers and running-stat updates.
+Skipping Dropout since it requires twin Sequential routing for train/eval
+that isn't set up yet.
 
 Architecture (mirrors a Kaggle CIFAR-10 recipe minus Dropout + aug):
     Conv2DBNReLU[3,  32, 3, 1, 1, 32, 32]   preserves 32x32
@@ -32,11 +32,13 @@ Run:
 """
 
 from std.random import seed
+from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
+from std.gpu import thread_idx, block_idx
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.constants import dtype, TPB
 from mojo_rl.nn.model.conv2d_bn_relu import Conv2DBatchNormReLU
 from mojo_rl.nn.model.pool_layer import MaxPoolLayer
 from mojo_rl.nn.model.flatten_layer import FlattenLayer
@@ -52,6 +54,54 @@ from mojo_rl.nn.datasets.cifar10 import CIFAR10
 
 comptime BATCH = 128
 comptime EPOCHS = 30
+
+
+def _cifar_augment_kernel[
+    N: Int,
+    dtype: DType = DType.float32,
+](
+    aug: LayoutTensor[dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin],
+    raw: LayoutTensor[dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin],
+    epoch_seed: Scalar[DType.uint64],
+):
+    """Random crop (pad 4) + random horizontal flip, per sample.
+
+    Grid: (N,), Block: (TPB,). One block per sample; threads parallelize
+    the 3072 output pixels. All threads in a block derive dx/dy/flip from
+    PhiloxRandom(epoch_seed, b) identically — out-of-bounds pixels get 0.
+    """
+    var b = Int(block_idx.x)
+    if b >= N:
+        return
+    var tid = Int(thread_idx.x)
+
+    comptime C = 3
+    comptime H = 32
+    comptime W = 32
+    comptime CHAN = H * W
+    comptime IMG_SIZE = C * CHAN
+
+    var rng = PhiloxRandom(seed=UInt64(epoch_seed), offset=UInt64(b))
+    var r = rng.step_uniform()
+    var dx = Int(Scalar[DType.float32](r[0]) * 9.0) - 4  # [-4, 4]
+    var dy = Int(Scalar[DType.float32](r[1]) * 9.0) - 4  # [-4, 4]
+    var flip = Scalar[DType.float32](r[2]) > 0.5
+
+    var idx = tid
+    while idx < IMG_SIZE:
+        var c = idx // CHAN
+        var yx = idx % CHAN
+        var oy = yx // W
+        var ox = yx % W
+        var src_y = oy + dy
+        var vx = ox + dx
+        var val = Scalar[dtype](0.0)
+        if src_y >= 0 and src_y < H and vx >= 0 and vx < W:
+            var src_x = (W - 1 - vx) if flip else vx
+            val = rebind[Scalar[dtype]](raw[b, c * CHAN + src_y * W + src_x])
+        aug[b, idx] = val
+        idx += TPB
+
 
 comptime CNN = Sequential[
     # Block 1: 32×32 → 16×16, 32 channels
@@ -109,20 +159,28 @@ def main() raises:
             i * CIFAR10.NUM_CLASSES + Int(ds.train_labels[i])
         ] = 1.0
 
-    var train_img_buf = ctx.enqueue_create_buffer[dtype](
+    var raw_train_img_buf = ctx.enqueue_create_buffer[dtype](
+        CIFAR10.N_TRAIN * CIFAR10.IMG_SIZE
+    )
+    var aug_train_img_buf = ctx.enqueue_create_buffer[dtype](
         CIFAR10.N_TRAIN * CIFAR10.IMG_SIZE
     )
     var train_tgt_buf = ctx.enqueue_create_buffer[dtype](
         CIFAR10.N_TRAIN * CIFAR10.NUM_CLASSES
     )
-    ctx.enqueue_copy(train_img_buf, train_img_host)
+    ctx.enqueue_copy(raw_train_img_buf, train_img_host)
     ctx.enqueue_copy(train_tgt_buf, train_tgt_host)
 
-    var train_img_lt = LayoutTensor[
+    var raw_train_img_lt = LayoutTensor[
         dtype,
         Layout.row_major(CIFAR10.N_TRAIN, CIFAR10.IMG_SIZE),
         MutAnyOrigin,
-    ](train_img_buf)
+    ](raw_train_img_buf)
+    var aug_train_img_lt = LayoutTensor[
+        dtype,
+        Layout.row_major(CIFAR10.N_TRAIN, CIFAR10.IMG_SIZE),
+        MutAnyOrigin,
+    ](aug_train_img_buf)
     var train_tgt_lt = LayoutTensor[
         dtype,
         Layout.row_major(CIFAR10.N_TRAIN, CIFAR10.NUM_CLASSES),
@@ -130,24 +188,47 @@ def main() raises:
     ](train_tgt_buf)
 
     # ── Train ──
+    # One augmented copy per epoch (random 32×32 crop from pad-4, + h-flip).
+    # Trainer sees the augmented buffer; raw copy is preserved for next epoch.
     print("\n── Training ──")
     var t0 = perf_counter_ns()
-    var result = TRAINER.train_gpu_minibatch[
-        BATCH, CIFAR10.N_TRAIN, USE_CUDA_GRAPH=False
-    ](
-        state,
-        ctx,
-        train_img_lt,
-        train_tgt_lt,
-        epochs=EPOCHS,
-        print_every_batches=1,
-        shuffle=True,
-        rng_seed=42,
-    )
-    ctx.synchronize()
+    var final_loss: Float32 = 0.0
+    comptime aug_k = _cifar_augment_kernel[CIFAR10.N_TRAIN, dtype]
+    for epoch in range(EPOCHS):
+        var aug_seed = Scalar[DType.uint64](UInt64(1000) + UInt64(epoch))
+        ctx.enqueue_function[aug_k, aug_k](
+            aug_train_img_lt,
+            raw_train_img_lt,
+            aug_seed,
+            grid_dim=(CIFAR10.N_TRAIN,),
+            block_dim=(TPB,),
+        )
+
+        var result = TRAINER.train_gpu_minibatch[
+            BATCH, CIFAR10.N_TRAIN, USE_CUDA_GRAPH=False
+        ](
+            state,
+            ctx,
+            aug_train_img_lt,
+            train_tgt_lt,
+            epochs=1,
+            print_every_batches=0,
+            shuffle=True,
+            rng_seed=UInt64(42 + epoch),
+        )
+        ctx.synchronize()
+        final_loss = Float32(result.final_loss)
+        print(
+            "  epoch "
+            + String(epoch + 1)
+            + "/"
+            + String(EPOCHS)
+            + "  last-batch loss="
+            + String(final_loss)
+        )
     var t1 = perf_counter_ns()
     print("  training time: " + String(Float64(t1 - t0) / 1e9)[byte=:6] + " s")
-    print("  final batch loss: " + String(result.final_loss)[byte=:8])
+    print("  final batch loss: " + String(final_loss)[byte=:8])
 
     # ── Evaluate test set ──
     # Uses forward_gpu_no_cache: BN layers normalize with their EMA-tracked
