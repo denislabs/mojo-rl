@@ -47,6 +47,7 @@ def test_bn_single_layer() raises:
     comptime OUT_DIM = Fused.OUT_DIM                 # OC*H*W = 64 (stride=1, pad=1)
     comptime PS = Fused.PARAM_SIZE
     comptime CS = Fused.CACHE_SIZE
+    comptime SS = Fused.STATE_SIZE                   # 2*OC = 8 (rmean | rvar)
     comptime COL = Fused.col_size                    # IC*K*K = 27
     comptime SP = Fused.spatial_out                  # H*W = 16
     comptime WS = BATCH * Fused.WORKSPACE_SIZE_PER_SAMPLE
@@ -75,17 +76,21 @@ def test_bn_single_layer() raises:
     # conv_bias
     for oc in range(OC):
         params_host[Fused.BIAS_OFF + oc] = Scalar[dtype](Float64(oc) * 0.01)
-    # gamma=1, beta=0, rmean=0, rvar=1
+    # gamma=1, beta=0 (running stats live in state, not params, post-Phase-3)
     for oc in range(OC):
         params_host[Fused.GAMMA_OFF + oc] = Scalar[dtype](1.0)
         params_host[Fused.BETA_OFF + oc] = Scalar[dtype](0.0)
-        params_host[Fused.RMEAN_OFF + oc] = Scalar[dtype](0.0)
-        params_host[Fused.RVAR_OFF + oc] = Scalar[dtype](1.0)
 
-    # Save params before (running stats get modified by forward)
+    # Save params before
     var params_save = alloc[Scalar[dtype]](PS)
     for i in range(PS):
         params_save[i] = params_host[i]
+
+    # Initial state: rmean=0, rvar=1
+    var state_init = alloc[Scalar[dtype]](max(1, SS))
+    for oc in range(OC):
+        state_init[Fused.RMEAN_OFF + oc] = Scalar[dtype](0.0)
+        state_init[Fused.RVAR_OFF + oc] = Scalar[dtype](1.0)
 
     # =====================================================================
     # PATH A — Fused CPU forward (straight-line Conv→BN→ReLU in one call)
@@ -93,6 +98,9 @@ def test_bn_single_layer() raises:
     var cpu_params = alloc[Scalar[dtype]](PS)
     for i in range(PS):
         cpu_params[i] = params_host[i]
+    var cpu_state = alloc[Scalar[dtype]](max(1, SS))
+    for i in range(SS):
+        cpu_state[i] = state_init[i]
     var cpu_out = alloc[Scalar[dtype]](BATCH * OUT_DIM)
     var cpu_cache = alloc[Scalar[dtype]](BATCH * CS)
     memset(cpu_out, 0, BATCH * OUT_DIM)
@@ -102,18 +110,16 @@ def test_bn_single_layer() raises:
     var cpu_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin](cpu_out)
     var cpu_p_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](cpu_params)
     var cpu_c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cpu_cache)
-    var cpu_s_t = LayoutTensor[dtype, Layout.row_major(Fused.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
-    )
+    var cpu_s_t = LayoutTensor[dtype, Layout.row_major(SS), MutAnyOrigin](cpu_state)
 
     Fused.forward[BATCH](cpu_in_t, cpu_out_t, cpu_p_t, cpu_s_t, cpu_c_t)
 
-    # Snapshot CPU running stats
+    # Snapshot CPU running stats (now in state buffer)
     var cpu_rmean = alloc[Scalar[dtype]](OC)
     var cpu_rvar = alloc[Scalar[dtype]](OC)
     for oc in range(OC):
-        cpu_rmean[oc] = cpu_params[Fused.RMEAN_OFF + oc]
-        cpu_rvar[oc] = cpu_params[Fused.RVAR_OFF + oc]
+        cpu_rmean[oc] = cpu_state[Fused.RMEAN_OFF + oc]
+        cpu_rvar[oc] = cpu_state[Fused.RVAR_OFF + oc]
 
     # =====================================================================
     # PATH B — Fused GPU forward
@@ -121,6 +127,7 @@ def test_bn_single_layer() raises:
     var gpu_input = ctx.enqueue_create_buffer[dtype](BATCH * IN_DIM)
     var gpu_output = ctx.enqueue_create_buffer[dtype](BATCH * OUT_DIM)
     var gpu_params = ctx.enqueue_create_buffer[dtype](PS)
+    var gpu_state = ctx.enqueue_create_buffer[dtype](max(1, SS))
     var gpu_cache = ctx.enqueue_create_buffer[dtype](BATCH * CS)
     var gpu_ws = ctx.enqueue_create_buffer[dtype](WS if WS > 0 else 1)
 
@@ -134,6 +141,11 @@ def test_bn_single_layer() raises:
         p_host[i] = params_save[i]
     ctx.enqueue_copy(gpu_params, p_host)
 
+    var s_host = ctx.enqueue_create_host_buffer[dtype](max(1, SS))
+    for i in range(SS):
+        s_host[i] = state_init[i]
+    ctx.enqueue_copy(gpu_state, s_host)
+
     gpu_output.enqueue_fill(Scalar[dtype](0.0))
     gpu_cache.enqueue_fill(Scalar[dtype](0.0))
     ctx.synchronize()
@@ -142,18 +154,18 @@ def test_bn_single_layer() raises:
     var gpu_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin](gpu_output.unsafe_ptr())
     var gpu_p_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_params.unsafe_ptr())
     var gpu_c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](gpu_cache.unsafe_ptr())
-    var gpu_s_t = LayoutTensor[dtype, Layout.row_major(Fused.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
-    )
+    var gpu_s_t = LayoutTensor[dtype, Layout.row_major(SS), MutAnyOrigin](gpu_state.unsafe_ptr())
 
     Fused.forward_gpu[BATCH](ctx, gpu_out_t, gpu_in_t, gpu_p_t, gpu_s_t, gpu_c_t, gpu_ws)
     ctx.synchronize()
 
-    # Download GPU outputs + updated params + cache
+    # Download GPU outputs + updated params + state + cache
     var gpu_out_dl = ctx.enqueue_create_host_buffer[dtype](BATCH * OUT_DIM)
     ctx.enqueue_copy(gpu_out_dl, gpu_output)
     var gpu_p_dl = ctx.enqueue_create_host_buffer[dtype](PS)
     ctx.enqueue_copy(gpu_p_dl, gpu_params)
+    var gpu_s_dl = ctx.enqueue_create_host_buffer[dtype](max(1, SS))
+    ctx.enqueue_copy(gpu_s_dl, gpu_state)
     var gpu_c_dl = ctx.enqueue_create_host_buffer[dtype](BATCH * CS)
     ctx.enqueue_copy(gpu_c_dl, gpu_cache)
     ctx.synchronize()
@@ -198,12 +210,12 @@ def test_bn_single_layer() raises:
                 max_inv_diff = d
     print("[fused GPU vs fused CPU] max |inv_std diff| =", max_inv_diff)
 
-    # Compare running stats
+    # Compare running stats (now stored in state buffer)
     var max_rmean_diff: Float64 = 0.0
     var max_rvar_diff: Float64 = 0.0
     for oc in range(OC):
-        var dm = _abs(Float64(gpu_p_dl[Fused.RMEAN_OFF + oc]) - Float64(cpu_rmean[oc]))
-        var dv = _abs(Float64(gpu_p_dl[Fused.RVAR_OFF + oc]) - Float64(cpu_rvar[oc]))
+        var dm = _abs(Float64(gpu_s_dl[Fused.RMEAN_OFF + oc]) - Float64(cpu_rmean[oc]))
+        var dv = _abs(Float64(gpu_s_dl[Fused.RVAR_OFF + oc]) - Float64(cpu_rvar[oc]))
         if dm > max_rmean_diff:
             max_rmean_diff = dm
         if dv > max_rvar_diff:
@@ -220,8 +232,8 @@ def test_bn_single_layer() raises:
     print("H1 check — running stats on GPU after one forward:")
     for oc in range(OC):
         print("  c", oc,
-              " rmean=", Float64(gpu_p_dl[Fused.RMEAN_OFF + oc]),
-              " rvar=", Float64(gpu_p_dl[Fused.RVAR_OFF + oc]))
+              " rmean=", Float64(gpu_s_dl[Fused.RMEAN_OFF + oc]),
+              " rvar=", Float64(gpu_s_dl[Fused.RVAR_OFF + oc]))
 
     # =====================================================================
     # PATH C — Independent reference: manual Conv + BatchNorm2D + ReLU (all CPU)
@@ -248,14 +260,18 @@ def test_bn_single_layer() raises:
                     ref_pre[b * OUT_DIM + oc * SP + s_] = Scalar[dtype](acc)
 
     # Step 2: BatchNorm2D CPU forward on ref_pre.
-    # BatchNorm2D params layout: [gamma(C) | beta(C) | rmean(C) | rvar(C)]
+    # BatchNorm2D params layout: [gamma(C) | beta(C)] (post-Phase-3)
+    # BatchNorm2D state layout:  [rmean(C) | rvar(C)]
     comptime BNRef = BatchNorm2D[OC, H, W]
     var bn_params = alloc[Scalar[dtype]](BNRef.PARAM_SIZE)
     for oc in range(OC):
         bn_params[BNRef.GAMMA_OFF + oc] = params_save[Fused.GAMMA_OFF + oc]
         bn_params[BNRef.BETA_OFF + oc] = params_save[Fused.BETA_OFF + oc]
-        bn_params[BNRef.RMEAN_OFF + oc] = params_save[Fused.RMEAN_OFF + oc]
-        bn_params[BNRef.RVAR_OFF + oc] = params_save[Fused.RVAR_OFF + oc]
+
+    var bn_state = alloc[Scalar[dtype]](max(1, BNRef.STATE_SIZE))
+    for oc in range(OC):
+        bn_state[BNRef.RMEAN_OFF + oc] = state_init[Fused.RMEAN_OFF + oc]
+        bn_state[BNRef.RVAR_OFF + oc] = state_init[Fused.RVAR_OFF + oc]
 
     var bn_out = alloc[Scalar[dtype]](BATCH * OUT_DIM)
     memset(bn_out, 0, BATCH * OUT_DIM)
@@ -266,9 +282,7 @@ def test_bn_single_layer() raises:
     var bn_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, BNRef.OUT_DIM), MutAnyOrigin](bn_out)
     var bn_p_t = LayoutTensor[dtype, Layout.row_major(BNRef.PARAM_SIZE), MutAnyOrigin](bn_params)
     var bn_c_t = LayoutTensor[dtype, Layout.row_major(BATCH, BNRef.CACHE_SIZE), MutAnyOrigin](bn_cache)
-    var bn_s_t = LayoutTensor[dtype, Layout.row_major(BNRef.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
-    )
+    var bn_s_t = LayoutTensor[dtype, Layout.row_major(BNRef.STATE_SIZE), MutAnyOrigin](bn_state)
     BNRef.forward[BATCH](ref_pre_t, bn_out_t, bn_p_t, bn_s_t, bn_c_t)
 
     # Step 3: apply ReLU
@@ -298,12 +312,12 @@ def test_bn_single_layer() raises:
                           " ref=", Float64(ref_out[i]))
                     printed += 1
 
-    # Compare BN2D running stats to fused CPU running stats
+    # Compare BN2D running stats to fused CPU running stats (state buffer)
     var max_rmean_ref: Float64 = 0.0
     var max_rvar_ref: Float64 = 0.0
     for oc in range(OC):
-        var dm = _abs(Float64(bn_params[BNRef.RMEAN_OFF + oc]) - Float64(cpu_rmean[oc]))
-        var dv = _abs(Float64(bn_params[BNRef.RVAR_OFF + oc]) - Float64(cpu_rvar[oc]))
+        var dm = _abs(Float64(bn_state[BNRef.RMEAN_OFF + oc]) - Float64(cpu_rmean[oc]))
+        var dv = _abs(Float64(bn_state[BNRef.RVAR_OFF + oc]) - Float64(cpu_rvar[oc]))
         if dm > max_rmean_ref:
             max_rmean_ref = dm
         if dv > max_rvar_ref:
@@ -365,7 +379,7 @@ def test_bn_single_layer() raises:
             max_gi_diff = d
     print("[fused GPU vs fused CPU] max |grad_input diff| =", max_gi_diff)
 
-    # Per-region grad diffs: W, bias, gamma, beta, rmean (should be 0), rvar (should be 0)
+    # Per-region grad diffs: W, bias, gamma, beta (rmean/rvar are state-only post-Phase-3, no grads)
     var max_w_diff: Float64 = 0.0
     for i in range(Fused.CONV_W_SIZE):
         var d = _abs(Float64(gpu_gp_dl[i]) - Float64(cpu_grads[i]))
@@ -425,13 +439,16 @@ def test_bn_single_layer() raises:
     input_data.free()
     params_host.free()
     params_save.free()
+    state_init.free()
     cpu_params.free()
+    cpu_state.free()
     cpu_out.free()
     cpu_cache.free()
     cpu_rmean.free()
     cpu_rvar.free()
     ref_pre.free()
     bn_params.free()
+    bn_state.free()
     bn_out.free()
     bn_cache.free()
     ref_out.free()

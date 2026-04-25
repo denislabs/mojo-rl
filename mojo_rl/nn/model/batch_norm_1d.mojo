@@ -9,11 +9,13 @@ Normalizes per-feature across batch, matching the PyTorch/TF
 Training mode = forward WITH cache (uses batch stats, updates running stats).
 Inference mode = forward WITHOUT cache (uses running stats, no update).
 
-Params layout: [gamma(dim) | beta(dim) | running_mean(dim) | running_var(dim)]
+Params layout: [gamma(dim) | beta(dim)]                       (PARAM_SIZE = 2*dim)
+State layout:  [running_mean(dim) | running_var(dim)]         (STATE_SIZE = 2*dim)
 Cache layout per sample: [x_hat(dim) | batch_mean(dim) | batch_inv_std(dim)]
 
-Running stats live in params but never receive gradients — the optimizer
-leaves them unchanged, while forward (training) updates them via EMA.
+Phase 3 split: gamma/beta live in params (gradient-tracked), running_mean
+and running_var live in the persistent model-state buffer (never touched by
+the optimizer, updated via EMA inside the training-mode forward).
 
 This is the 1D analogue of BatchNorm2D with channels=dim and spatial_size=1.
 """
@@ -46,16 +48,17 @@ struct BatchNorm1D[
 
     comptime IN_DIM: Int = Self.dim
     comptime OUT_DIM: Int = Self.dim
-    comptime PARAM_SIZE: Int = 4 * Self.dim  # gamma, beta, running_mean, running_var
+    comptime PARAM_SIZE: Int = 2 * Self.dim  # gamma, beta (gradient-tracked)
     comptime CACHE_SIZE: Int = 3 * Self.dim  # x_hat + batch_mean + batch_inv_std
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0
-    comptime STATE_SIZE: Int = 0  # Phase 1: stateless. Phase 3 moves running stats here.
+    comptime STATE_SIZE: Int = 2 * Self.dim  # running_mean, running_var
 
-    # Param offsets
+    # Param offsets (within PARAM_SIZE)
     comptime GAMMA_OFF: Int = 0
     comptime BETA_OFF: Int = Self.dim
-    comptime RMEAN_OFF: Int = 2 * Self.dim
-    comptime RVAR_OFF: Int = 3 * Self.dim
+    # State offsets (within STATE_SIZE) — running stats live here post-Phase-3.
+    comptime RMEAN_OFF: Int = 0
+    comptime RVAR_OFF: Int = Self.dim
     # Cache offsets (per sample)
     comptime XHAT_OFF: Int = 0
     comptime CMEAN_OFF: Int = Self.dim
@@ -73,12 +76,21 @@ struct BatchNorm1D[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Initialize: gamma=1, beta=0, running_mean=0, running_var=1."""
+        """Initialize gamma=1, beta=0. Running stats are owned by `state`."""
         for i in range(Self.dim):
             params[Self.GAMMA_OFF + i] = Scalar[dtype](1.0)
             params[Self.BETA_OFF + i] = Scalar[dtype](0.0)
-            params[Self.RMEAN_OFF + i] = Scalar[dtype](0.0)
-            params[Self.RVAR_OFF + i] = Scalar[dtype](1.0)
+
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize running_mean=0, running_var=1."""
+        for i in range(Self.dim):
+            state.ptr[Self.RMEAN_OFF + i] = Scalar[dtype](0.0)
+            state.ptr[Self.RVAR_OFF + i] = Scalar[dtype](1.0)
 
     # =========================================================================
     # CPU Forward (training — with cache)
@@ -139,11 +151,11 @@ struct BatchNorm1D[
                 cache[b, Self.CMEAN_OFF + f] = mean
                 cache[b, Self.CINV_OFF + f] = inv_std
 
-            # 4. Update running stats (EMA)
-            var rm = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
-            var rv = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
-            params.ptr[Self.RMEAN_OFF + f] = one_m * rm + mom * mean
-            params.ptr[Self.RVAR_OFF + f] = one_m * rv + mom * var_
+            # 4. Update running stats (EMA) in the persistent state buffer.
+            var rm = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + f])
+            var rv = rebind[Scalar[dtype]](state[Self.RVAR_OFF + f])
+            state.ptr[Self.RMEAN_OFF + f] = one_m * rm + mom * mean
+            state.ptr[Self.RVAR_OFF + f] = one_m * rv + mom * var_
 
     # =========================================================================
     # CPU Forward (inference — no cache, uses running stats)
@@ -172,8 +184,8 @@ struct BatchNorm1D[
         for f in range(Self.dim):
             var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
             var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + f])
-            var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
-            var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
+            var rmean = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + f])
+            var rvar = rebind[Scalar[dtype]](state[Self.RVAR_OFF + f])
 
             var inv_std = Scalar[dtype](1.0) / Scalar[dtype](
                 sqrt(Float64(rvar + eps))
@@ -212,7 +224,8 @@ struct BatchNorm1D[
     ):
         """Backward: compute grad_gamma, grad_beta, grad_input.
 
-        Running stats (grads[2*dim:4*dim]) are never written — stays zero.
+        Running stats live in `state` (not `params`) post-Phase-3, so there
+        are no extra grad slots to keep zeroed.
         """
         var n = Scalar[dtype](BATCH)
 
@@ -274,6 +287,9 @@ struct BatchNorm1D[
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -351,12 +367,12 @@ struct BatchNorm1D[
             output[idx, f] = gamma * x_hat + beta
             idx += TPB
 
-        # Update running stats (thread 0 only)
+        # Update running stats (thread 0 only) in the state buffer.
         if tid == 0:
-            var rm = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
-            var rv = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
-            params.ptr[Self.RMEAN_OFF + f] = one_m * rm + mom * mean
-            params.ptr[Self.RVAR_OFF + f] = one_m * rv + mom * var_
+            var rm = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + f])
+            var rv = rebind[Scalar[dtype]](state[Self.RVAR_OFF + f])
+            state.ptr[Self.RMEAN_OFF + f] = one_m * rm + mom * mean
+            state.ptr[Self.RVAR_OFF + f] = one_m * rv + mom * var_
 
     @always_inline
     @staticmethod
@@ -372,6 +388,9 @@ struct BatchNorm1D[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+        ],
     ):
         """Inference forward kernel using running stats (no update).
 
@@ -385,8 +404,8 @@ struct BatchNorm1D[
         var eps = Scalar[dtype](Self.EPSILON)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + f])
-        var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
-        var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
+        var rmean = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + f])
+        var rvar = rebind[Scalar[dtype]](state[Self.RVAR_OFF + f])
         var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
 
         # Parallel scatter over batch
@@ -563,16 +582,20 @@ struct BatchNorm1D[
             params: LayoutTensor[
                 dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
             ],
+            state: LayoutTensor[
+                dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+            ],
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
         ):
-            Self.forward_kernel_impl[BATCH, dtype](output, input, params, cache)
+            Self.forward_kernel_impl[BATCH, dtype](output, input, params, state, cache)
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
             input_immut,
-            params,  # Mutable — running stats updated in kernel
+            params,
+            state,  # mutable — EMA-updated in kernel
             cache,
             grid_dim=(Self.dim,),
             block_dim=(TPB,),
@@ -606,6 +629,9 @@ struct BatchNorm1D[
         var params_immut = LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ](params.ptr)
+        var state_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+        ](state.ptr)
 
         @parameter
         @always_inline
@@ -619,13 +645,19 @@ struct BatchNorm1D[
             params: LayoutTensor[
                 dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
             ],
+            state: LayoutTensor[
+                dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+            ],
         ):
-            Self.forward_kernel_impl_no_cache[BATCH, dtype](output, input, params)
+            Self.forward_kernel_impl_no_cache[BATCH, dtype](
+                output, input, params, state
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
             input_immut,
             params_immut,
+            state_immut,
             grid_dim=(Self.dim,),
             block_dim=(TPB,),
         )

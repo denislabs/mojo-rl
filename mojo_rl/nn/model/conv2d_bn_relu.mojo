@@ -55,19 +55,20 @@ struct Conv2DBatchNormReLU[
     comptime IN_DIM: Int = Self.in_channels * Self.in_h * Self.in_w
     comptime OUT_DIM: Int = Self.out_channels * Self.spatial_out
 
-    # Params: conv_W (oc * col_size) + conv_bias (oc) + BN gamma/beta/rmean/rvar (4*oc)
+    # Params: conv_W (oc * col_size) + conv_bias (oc) + BN gamma/beta (2*oc, gradient-tracked)
     comptime CONV_W_SIZE: Int = Self.out_channels * Self.col_size
     comptime CONV_PARAM_SIZE: Int = Self.CONV_W_SIZE + Self.out_channels
-    comptime BN_PARAM_SIZE: Int = 4 * Self.out_channels
+    comptime BN_PARAM_SIZE: Int = 2 * Self.out_channels  # gamma, beta only
     comptime PARAM_SIZE: Int = Self.CONV_PARAM_SIZE + Self.BN_PARAM_SIZE
 
-    # Param offsets
+    # Param offsets (within PARAM_SIZE)
     comptime W_OFF: Int = 0
     comptime BIAS_OFF: Int = Self.CONV_W_SIZE
     comptime GAMMA_OFF: Int = Self.CONV_PARAM_SIZE
     comptime BETA_OFF: Int = Self.CONV_PARAM_SIZE + Self.out_channels
-    comptime RMEAN_OFF: Int = Self.CONV_PARAM_SIZE + 2 * Self.out_channels
-    comptime RVAR_OFF: Int = Self.CONV_PARAM_SIZE + 3 * Self.out_channels
+    # State offsets (within STATE_SIZE) — running stats live here post-Phase-3.
+    comptime RMEAN_OFF: Int = 0
+    comptime RVAR_OFF: Int = Self.out_channels
 
     # Cache: im2col + x_hat + batch_inv_std
     comptime CONV_CACHE: Int = Self.col_size * Self.spatial_out
@@ -83,7 +84,7 @@ struct Conv2DBatchNormReLU[
     # grad_pre_bn (backward): OUT_DIM (reuses temp conv cache region in forward)
     comptime CONV2D_WS: Int = Self.CONV_CACHE + Self.col_size * Self.out_channels
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.CONV2D_WS + Self.CONV_CACHE + Self.OUT_DIM
-    comptime STATE_SIZE: Int = 0  # Phase 1: stateless. Phase 3 moves running stats here.
+    comptime STATE_SIZE: Int = 2 * Self.out_channels  # running_mean, running_var
 
     # =========================================================================
     # Initialization
@@ -98,7 +99,7 @@ struct Conv2DBatchNormReLU[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Init conv weights with INIT, bias=0, BN gamma=1, beta=0, rmean=0, rvar=1."""
+        """Init conv weights with INIT, bias=0, BN gamma=1, beta=0. Running stats are owned by `state`."""
         # Conv weights: use the provided initializer
         var conv_params = LayoutTensor[
             dtype, Layout.row_major(Self.CONV_W_SIZE), MutAnyOrigin
@@ -109,12 +110,21 @@ struct Conv2DBatchNormReLU[
         # Conv bias = 0
         for i in range(Self.out_channels):
             params.ptr[Self.BIAS_OFF + i] = Scalar[dtype](0.0)
-        # BN params
+        # BN params (gradient-tracked)
         for i in range(Self.out_channels):
             params.ptr[Self.GAMMA_OFF + i] = Scalar[dtype](1.0)
             params.ptr[Self.BETA_OFF + i] = Scalar[dtype](0.0)
-            params.ptr[Self.RMEAN_OFF + i] = Scalar[dtype](0.0)
-            params.ptr[Self.RVAR_OFF + i] = Scalar[dtype](1.0)
+
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize BN running_mean=0, running_var=1."""
+        for i in range(Self.out_channels):
+            state.ptr[Self.RMEAN_OFF + i] = Scalar[dtype](0.0)
+            state.ptr[Self.RVAR_OFF + i] = Scalar[dtype](1.0)
 
     # =========================================================================
     # CPU Forward (training — with cache)
@@ -206,9 +216,9 @@ struct Conv2DBatchNormReLU[
                     output[b, c_off + s] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
                 cache[b, Self.INVSTD_OFF + c] = inv_std
 
-            # Update running stats
-            params.ptr[Self.RMEAN_OFF + c] = one_m * rebind[Scalar[dtype]](params[Self.RMEAN_OFF + c]) + mom * mean
-            params.ptr[Self.RVAR_OFF + c] = one_m * rebind[Scalar[dtype]](params[Self.RVAR_OFF + c]) + mom * var_
+            # Update running stats (EMA) in the persistent state buffer.
+            state.ptr[Self.RMEAN_OFF + c] = one_m * rebind[Scalar[dtype]](state[Self.RMEAN_OFF + c]) + mom * mean
+            state.ptr[Self.RVAR_OFF + c] = one_m * rebind[Scalar[dtype]](state[Self.RVAR_OFF + c]) + mom * var_
 
     # =========================================================================
     # CPU Forward (inference — no cache, batch stats)
@@ -257,8 +267,8 @@ struct Conv2DBatchNormReLU[
             var c_off = c * Self.spatial_out
             var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
             var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
-            var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + c])
-            var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + c])
+            var rmean = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + c])
+            var rvar = rebind[Scalar[dtype]](state[Self.RVAR_OFF + c])
 
             var inv_std = Scalar[dtype](1.0) / Scalar[dtype](sqrt(Float64(rvar + eps)))
 
@@ -399,6 +409,9 @@ struct Conv2DBatchNormReLU[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Fused BN+ReLU kernel. Reads pre-BN from output, writes final output.
 
@@ -485,10 +498,10 @@ struct Conv2DBatchNormReLU[
         if tid < BATCH:
             (cache.ptr + tid * Self.CACHE_SIZE + Self.INVSTD_OFF + c)[] = inv_std
         if tid == 0:
-            var rm = params.ptr[Self.RMEAN_OFF + c]
-            var rv = params.ptr[Self.RVAR_OFF + c]
-            params.ptr[Self.RMEAN_OFF + c] = one_m * rm + mom * mean
-            params.ptr[Self.RVAR_OFF + c] = one_m * rv + mom * var_
+            var rm = state.ptr[Self.RMEAN_OFF + c]
+            var rv = state.ptr[Self.RVAR_OFF + c]
+            state.ptr[Self.RMEAN_OFF + c] = one_m * rm + mom * mean
+            state.ptr[Self.RVAR_OFF + c] = one_m * rv + mom * var_
 
     @always_inline
     @staticmethod
@@ -500,6 +513,9 @@ struct Conv2DBatchNormReLU[
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
         ],
     ):
         """Fused BN+ReLU inference kernel using running stats (no cache, no update).
@@ -516,8 +532,8 @@ struct Conv2DBatchNormReLU[
         comptime N = BATCH * Self.spatial_out
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
-        var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + c])
-        var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + c])
+        var rmean = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + c])
+        var rvar = rebind[Scalar[dtype]](state[Self.RVAR_OFF + c])
         var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
         comptime OUT_STRIDE = Self.OUT_DIM
 
@@ -757,11 +773,12 @@ struct Conv2DBatchNormReLU[
             output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
             cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
             params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+            state: LayoutTensor[dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin],
         ):
-            Self.bn_relu_kernel_impl[BATCH, dtype](output, cache, params)
+            Self.bn_relu_kernel_impl[BATCH, dtype](output, cache, params, state)
 
         ctx.enqueue_function[bn_relu_wrapper, bn_relu_wrapper](
-            output, cache, params,
+            output, cache, params, state,
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
         )
@@ -812,17 +829,21 @@ struct Conv2DBatchNormReLU[
         var params_immut = LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ](params.ptr)
+        var state_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+        ](state.ptr)
 
         @parameter
         @always_inline
         def bn_relu_nc_wrapper(
             output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
             params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+            state: LayoutTensor[dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin],
         ):
-            Self.bn_relu_kernel_impl_no_cache[BATCH, dtype](output, params)
+            Self.bn_relu_kernel_impl_no_cache[BATCH, dtype](output, params, state)
 
         ctx.enqueue_function[bn_relu_nc_wrapper, bn_relu_nc_wrapper](
-            output, params_immut,
+            output, params_immut, state_immut,
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
         )

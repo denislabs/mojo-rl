@@ -11,7 +11,8 @@ Backward:
   1. ReLU + BN backward per feature → grad_pre_bn
   2. Linear backward (dW, db, dx)
 
-Params: [W | bias | bn_gamma | bn_beta | bn_running_mean | bn_running_var]
+Params: [W | bias | bn_gamma | bn_beta]                       (gradient-tracked)
+State:  [bn_running_mean | bn_running_var]                    (Phase 3: persistent state)
 Cache per sample: [input | x_hat | inv_std_per_feature]
 
 BatchNorm is 1D (spatial=1): normalizes each output feature across the batch.
@@ -42,19 +43,20 @@ struct LinearBatchNormReLU[
     comptime IN_DIM: Int = Self.in_dim
     comptime OUT_DIM: Int = Self.out_dim
 
-    # Params: W (in*out) + bias (out) + BN gamma/beta/rmean/rvar (4*out)
+    # Params: W (in*out) + bias (out) + BN gamma/beta (2*out, gradient-tracked)
     comptime W_SIZE: Int = Self.in_dim * Self.out_dim
     comptime LINEAR_PARAM_SIZE: Int = Self.W_SIZE + Self.out_dim
-    comptime BN_PARAM_SIZE: Int = 4 * Self.out_dim
+    comptime BN_PARAM_SIZE: Int = 2 * Self.out_dim  # gamma, beta only
     comptime PARAM_SIZE: Int = Self.LINEAR_PARAM_SIZE + Self.BN_PARAM_SIZE
 
-    # Param offsets
+    # Param offsets (within PARAM_SIZE)
     comptime W_OFF: Int = 0
     comptime BIAS_OFF: Int = Self.W_SIZE
     comptime GAMMA_OFF: Int = Self.LINEAR_PARAM_SIZE
     comptime BETA_OFF: Int = Self.LINEAR_PARAM_SIZE + Self.out_dim
-    comptime RMEAN_OFF: Int = Self.LINEAR_PARAM_SIZE + 2 * Self.out_dim
-    comptime RVAR_OFF: Int = Self.LINEAR_PARAM_SIZE + 3 * Self.out_dim
+    # State offsets (within STATE_SIZE) — running stats live here post-Phase-3.
+    comptime RMEAN_OFF: Int = 0
+    comptime RVAR_OFF: Int = Self.out_dim
 
     # Cache: input (for matmul backward) + x_hat (for BN backward) + inv_std
     comptime LINEAR_CACHE: Int = Self.in_dim
@@ -68,7 +70,7 @@ struct LinearBatchNormReLU[
     # MatMul doesn't use workspace internally (OP_WORKSPACE_PER_SAMPLE=0).
     # Layout: [mm_cache: in_dim | grad_pre_bn: out_dim]
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.in_dim + Self.out_dim
-    comptime STATE_SIZE: Int = 0  # Phase 1: stateless. Phase 3 moves running stats here.
+    comptime STATE_SIZE: Int = 2 * Self.out_dim  # running_mean, running_var
 
     # =========================================================================
     # Initialization
@@ -83,7 +85,7 @@ struct LinearBatchNormReLU[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        """Init W with INIT, bias=0, BN gamma=1, beta=0, rmean=0, rvar=1."""
+        """Init W with INIT, bias=0, BN gamma=1, beta=0. Running stats are owned by `state`."""
         var w_params = LayoutTensor[
             dtype, Layout.row_major(Self.W_SIZE), MutAnyOrigin
         ](params.ptr)
@@ -91,12 +93,21 @@ struct LinearBatchNormReLU[
         # Bias = 0
         for i in range(Self.out_dim):
             params.ptr[Self.BIAS_OFF + i] = Scalar[dtype](0.0)
-        # BN params
+        # BN params (gradient-tracked)
         for i in range(Self.out_dim):
             params.ptr[Self.GAMMA_OFF + i] = Scalar[dtype](1.0)
             params.ptr[Self.BETA_OFF + i] = Scalar[dtype](0.0)
-            params.ptr[Self.RMEAN_OFF + i] = Scalar[dtype](0.0)
-            params.ptr[Self.RVAR_OFF + i] = Scalar[dtype](1.0)
+
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Initialize BN running_mean=0, running_var=1."""
+        for i in range(Self.out_dim):
+            state.ptr[Self.RMEAN_OFF + i] = Scalar[dtype](0.0)
+            state.ptr[Self.RVAR_OFF + i] = Scalar[dtype](1.0)
 
     # =========================================================================
     # CPU Forward (training — with cache)
@@ -168,9 +179,9 @@ struct LinearBatchNormReLU[
                 output[b, f] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
                 cache[b, Self.INVSTD_OFF + f] = inv_std
 
-            # Update running stats
-            params.ptr[Self.RMEAN_OFF + f] = one_m * rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f]) + mom * mean
-            params.ptr[Self.RVAR_OFF + f] = one_m * rebind[Scalar[dtype]](params[Self.RVAR_OFF + f]) + mom * var_
+            # Update running stats (EMA) in the persistent state buffer.
+            state.ptr[Self.RMEAN_OFF + f] = one_m * rebind[Scalar[dtype]](state[Self.RMEAN_OFF + f]) + mom * mean
+            state.ptr[Self.RVAR_OFF + f] = one_m * rebind[Scalar[dtype]](state[Self.RVAR_OFF + f]) + mom * var_
 
     # =========================================================================
     # CPU Forward (inference — no cache, batch stats)
@@ -209,8 +220,8 @@ struct LinearBatchNormReLU[
         for f in range(Self.out_dim):
             var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
             var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + f])
-            var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
-            var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
+            var rmean = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + f])
+            var rvar = rebind[Scalar[dtype]](state[Self.RVAR_OFF + f])
 
             var inv_std = Scalar[dtype](1.0) / Scalar[dtype](sqrt(Float64(rvar + eps)))
 
@@ -326,6 +337,9 @@ struct LinearBatchNormReLU[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Fused BN+ReLU kernel. Reads pre-BN from output, writes final output.
 
@@ -400,12 +414,12 @@ struct LinearBatchNormReLU[
             cache[idx, Self.INVSTD_OFF + f] = inv_std
             idx += TPB
 
-        # Update running stats (thread 0 only)
+        # Update running stats (thread 0 only) in the state buffer.
         if tid == 0:
-            var rm = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
-            var rv = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
-            params.ptr[Self.RMEAN_OFF + f] = one_m * rm + mom * mean
-            params.ptr[Self.RVAR_OFF + f] = one_m * rv + mom * var_
+            var rm = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + f])
+            var rv = rebind[Scalar[dtype]](state[Self.RVAR_OFF + f])
+            state.ptr[Self.RMEAN_OFF + f] = one_m * rm + mom * mean
+            state.ptr[Self.RVAR_OFF + f] = one_m * rv + mom * var_
 
     @always_inline
     @staticmethod
@@ -417,6 +431,9 @@ struct LinearBatchNormReLU[
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
         ],
     ):
         """Fused BN+ReLU inference kernel using running stats (no cache, no update).
@@ -431,8 +448,8 @@ struct LinearBatchNormReLU[
         var eps = Scalar[dtype](Self.BN_EPSILON)
         var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + f])
         var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + f])
-        var rmean = rebind[Scalar[dtype]](params[Self.RMEAN_OFF + f])
-        var rvar = rebind[Scalar[dtype]](params[Self.RVAR_OFF + f])
+        var rmean = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + f])
+        var rvar = rebind[Scalar[dtype]](state[Self.RVAR_OFF + f])
         var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
 
         # Parallel scatter: normalize + ReLU
@@ -667,11 +684,12 @@ struct LinearBatchNormReLU[
             output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
             cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
             params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+            state: LayoutTensor[dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin],
         ):
-            Self.bn_relu_kernel_impl[BATCH, dtype](output, cache, params)
+            Self.bn_relu_kernel_impl[BATCH, dtype](output, cache, params, state)
 
         ctx.enqueue_function[bn_relu_wrapper, bn_relu_wrapper](
-            output, cache, params,
+            output, cache, params, state,
             grid_dim=(Self.out_dim,),
             block_dim=(TPB,),
         )
@@ -740,17 +758,21 @@ struct LinearBatchNormReLU[
         var params_immut = LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ](params.ptr)
+        var state_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+        ](state.ptr)
 
         @parameter
         @always_inline
         def bn_relu_nc_wrapper(
             output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
             params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+            state: LayoutTensor[dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin],
         ):
-            Self.bn_relu_kernel_impl_no_cache[BATCH, dtype](output, params)
+            Self.bn_relu_kernel_impl_no_cache[BATCH, dtype](output, params, state)
 
         ctx.enqueue_function[bn_relu_nc_wrapper, bn_relu_nc_wrapper](
-            output, params_immut,
+            output, params_immut, state_immut,
             grid_dim=(Self.out_dim,),
             block_dim=(TPB,),
         )

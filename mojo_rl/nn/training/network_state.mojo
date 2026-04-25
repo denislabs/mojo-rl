@@ -36,6 +36,8 @@ from ..checkpoint import (
     read_metadata_section,
     get_metadata_value,
     save_checkpoint_file,
+    split_lines,
+    find_section_start,
     BinaryCheckpoint,
 )
 
@@ -271,7 +273,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
     # =========================================================================
 
     def write_sections(self, prefix: String) -> String:
-        """Serialize params and optimizer_state as prefixed sections.
+        """Serialize params, optimizer_state, and model_state as prefixed sections.
 
         Used by agents to build a single checkpoint file containing multiple
         networks. Example prefix "actor_" produces sections:
@@ -281,12 +283,18 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
             actor_optimizer_state:
             0.0
             ...
+            actor_model_state:
+            0.0
+            ...
+
+        The `model_state` section is only emitted when the model declares
+        STATE_SIZE > 0 (Phase 3+ — BN running stats, RNG counters, etc.).
 
         Args:
             prefix: Section name prefix (e.g. "actor_", "critic_").
 
         Returns:
-            String with two sections ready to append to a checkpoint file.
+            String with the sections ready to append to a checkpoint file.
         """
         var content = write_float_section_ptr(
             prefix + "params:", self.params, Self.PARAM_SIZE
@@ -296,13 +304,25 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
             self.optimizer_state,
             Self.OPT_STATE_SIZE,
         )
+        if Self.MODEL_STATE_SIZE > 0:
+            content += write_float_section_ptr(
+                prefix + "model_state:",
+                self.model_state,
+                Self.MODEL_STATE_SIZE,
+            )
         return content
 
     def read_sections(mut self, content: String, prefix: String) raises:
-        """Load params and optimizer_state from prefixed sections.
+        """Load params, optimizer_state, and model_state from prefixed sections.
 
-        Counterpart of write_sections — reads "{prefix}params:" and
-        "{prefix}optimizer_state:" from a combined checkpoint file.
+        Counterpart of write_sections — reads "{prefix}params:",
+        "{prefix}optimizer_state:", and (when present) "{prefix}model_state:"
+        from a combined checkpoint file.
+
+        Backward compat: legacy checkpoints lacking the model_state section
+        are detected and `MODEL.initialize_state` is invoked to populate the
+        running-stat slots with their defaults (running_mean=0, running_var=1
+        for BN), with a warning printed.
 
         Args:
             content: Full checkpoint file content.
@@ -319,6 +339,24 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         )
         for i in range(Self.OPT_STATE_SIZE):
             (self.optimizer_state + i)[] = loaded_state[i]
+
+        if Self.MODEL_STATE_SIZE > 0:
+            var lines = split_lines(content)
+            var ms_idx = find_section_start(lines, prefix + "model_state:")
+            if ms_idx < 0:
+                # Legacy v1 checkpoint — re-initialize running stats to defaults.
+                print(
+                    "Warning: checkpoint missing '"
+                    + prefix
+                    + "model_state:' section — running stats will be re-initialized to defaults."
+                )
+                Self.MODEL.initialize_state[Self.dtype](self.model_state_view())
+            else:
+                var loaded_ms = read_float_section_list[Self.dtype](
+                    content, prefix + "model_state:", Self.MODEL_STATE_SIZE
+                )
+                for i in range(Self.MODEL_STATE_SIZE):
+                    (self.model_state + i)[] = loaded_ms[i]
 
     # =========================================================================
     # Checkpoint Save / Load (single-network file)
@@ -369,7 +407,10 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
     # =========================================================================
 
     def write_sections_binary(self, mut ckpt: BinaryCheckpoint[Self.dtype], prefix: String):
-        """Add params and optimizer_state as named sections to a binary checkpoint.
+        """Add params, optimizer_state, and model_state as named sections to a binary checkpoint.
+
+        The model_state section is only emitted when the model declares
+        STATE_SIZE > 0 (Phase 3+).
 
         Args:
             ckpt: BinaryCheckpoint to add sections to.
@@ -381,11 +422,19 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         ckpt.add_float_section_ptr(
             prefix + "optimizer_state", self.optimizer_state, Self.OPT_STATE_SIZE
         )
+        if Self.MODEL_STATE_SIZE > 0:
+            ckpt.add_float_section_ptr(
+                prefix + "model_state", self.model_state, Self.MODEL_STATE_SIZE
+            )
 
     def read_sections_binary(
         mut self, ckpt: BinaryCheckpoint[Self.dtype], prefix: String
     ) raises:
-        """Load params and optimizer_state from a binary checkpoint.
+        """Load params, optimizer_state, and model_state from a binary checkpoint.
+
+        Backward compat: legacy checkpoints lacking model_state are detected
+        and `MODEL.initialize_state` is invoked to populate the running-stat
+        slots with defaults (with a warning).
 
         Args:
             ckpt: BinaryCheckpoint to read sections from.
@@ -402,6 +451,21 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         )
         for i in range(Self.OPT_STATE_SIZE):
             (self.optimizer_state + i)[] = loaded_state[i]
+
+        if Self.MODEL_STATE_SIZE > 0:
+            if not ckpt.has_section(prefix + "model_state"):
+                print(
+                    "Warning: binary checkpoint missing '"
+                    + prefix
+                    + "model_state' section — running stats will be re-initialized to defaults."
+                )
+                Self.MODEL.initialize_state[Self.dtype](self.model_state_view())
+            else:
+                var loaded_ms = ckpt.get_float_section(
+                    prefix + "model_state", Self.MODEL_STATE_SIZE
+                )
+                for i in range(Self.MODEL_STATE_SIZE):
+                    (self.model_state + i)[] = loaded_ms[i]
 
     def save_checkpoint_binary(self, filepath: String) raises:
         """Save params, optimizer state, and step_num to a binary checkpoint.

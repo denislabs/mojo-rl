@@ -123,6 +123,7 @@ comptime L11 = Linear[128, 10]
 def _report_params_and_grads(
     p_host: UnsafePointer[Scalar[dtype], ...],
     g_host: UnsafePointer[Scalar[dtype], ...],
+    s_host: UnsafePointer[Scalar[dtype], ...],
     tag: String,
 ):
     # Compute each layer's cumulative offset in the Sequential param buffer,
@@ -140,24 +141,32 @@ def _report_params_and_grads(
     var off_L10 = off_L9 + gpu_align(0)
     var off_L11 = off_L10 + gpu_align(L10.PARAM_SIZE)
 
+    # State offsets (no alignment in Sequential._state_offset).
+    # State sizes per layer (Conv2DBNReLU = 2*out_channels, others = 0).
+    var sof_L0 = 0
+    var sof_L1 = L0.STATE_SIZE
+    var sof_L3 = sof_L1 + L1.STATE_SIZE  # L2 maxpool has STATE_SIZE=0
+    var sof_L4 = sof_L3 + L3.STATE_SIZE
+    var sof_L6 = sof_L4 + L4.STATE_SIZE  # L5 maxpool has STATE_SIZE=0
+    var sof_L7 = sof_L6 + L6.STATE_SIZE
+
     print("  === params [" + tag + "] ===")
     _report_stats("  L0  W    ", p_host + off_L0 + L0.W_OFF, L0.CONV_W_SIZE)
     _report_stats("  L0  bias ", p_host + off_L0 + L0.BIAS_OFF, L0.out_channels)
     _report_stats("  L0  gamma", p_host + off_L0 + L0.GAMMA_OFF, L0.out_channels)
     _report_stats("  L0  beta ", p_host + off_L0 + L0.BETA_OFF, L0.out_channels)
-    _report_stats("  L0  rmean", p_host + off_L0 + L0.RMEAN_OFF, L0.out_channels)
-    _report_stats("  L0  rvar ", p_host + off_L0 + L0.RVAR_OFF, L0.out_channels)
+    _report_stats("  L0  rmean", s_host + sof_L0 + L0.RMEAN_OFF, L0.out_channels)
+    _report_stats("  L0  rvar ", s_host + sof_L0 + L0.RVAR_OFF, L0.out_channels)
     _report_stats("  L7  W    ", p_host + off_L7 + L7.W_OFF, L7.CONV_W_SIZE)
     _report_stats("  L7  gamma", p_host + off_L7 + L7.GAMMA_OFF, L7.out_channels)
-    _report_stats("  L7  rvar ", p_host + off_L7 + L7.RVAR_OFF, L7.out_channels)
+    _report_stats("  L7  rvar ", s_host + sof_L7 + L7.RVAR_OFF, L7.out_channels)
     _report_stats("  L10 params", p_host + off_L10, L10.PARAM_SIZE)
     _report_stats("  L11 params", p_host + off_L11, L11.PARAM_SIZE)
     print("  === grads [" + tag + "] ===")
     _report_stats("  L0  dW   ", g_host + off_L0 + L0.W_OFF, L0.CONV_W_SIZE)
     _report_stats("  L0  dgamma", g_host + off_L0 + L0.GAMMA_OFF, L0.out_channels)
     _report_stats("  L0  dbeta", g_host + off_L0 + L0.BETA_OFF, L0.out_channels)
-    _report_stats("  L0  drmean (should be 0)", g_host + off_L0 + L0.RMEAN_OFF, L0.out_channels)
-    _report_stats("  L0  drvar  (should be 0)", g_host + off_L0 + L0.RVAR_OFF, L0.out_channels)
+    # NOTE: rmean/rvar are state-only post-Phase-3, no longer have grads.
     _report_stats("  L7  dW   ", g_host + off_L7 + L7.W_OFF, L7.CONV_W_SIZE)
     _report_stats("  L7  dgamma", g_host + off_L7 + L7.GAMMA_OFF, L7.out_channels)
     _report_stats("  L10 grads", g_host + off_L10, L10.PARAM_SIZE)
@@ -239,6 +248,8 @@ def main() raises:
     var go_host = ctx.enqueue_create_host_buffer[dtype](BATCH * OUT_DIM)
     var params_dl = ctx.enqueue_create_host_buffer[dtype](CNN.PARAM_SIZE)
     var grads_dl = ctx.enqueue_create_host_buffer[dtype](CNN.PARAM_SIZE)
+    comptime MS_SIZE = max(1, CNN.STATE_SIZE)
+    var state_dl = ctx.enqueue_create_host_buffer[dtype](MS_SIZE)
     var loss_host = ctx.enqueue_create_host_buffer[dtype](1)
 
     # Snapshot initial params
@@ -305,9 +316,10 @@ def main() raises:
             ctx, grad_in_t, grad_out_t, params, state.model_state_view(), cache_t, grads, ws_buf
         )
 
-        # Snapshot grads + params
+        # Snapshot grads + params + state
         ctx.enqueue_copy(params_dl, state.params_buf)
         ctx.enqueue_copy(grads_dl, state.grads_buf)
+        ctx.enqueue_copy(state_dl, state.model_state_buf)
         ctx.synchronize()
 
         # Compact summary of L0 rvar, L0 dW, L11 grads, L11 params
@@ -325,7 +337,9 @@ def main() raises:
             + gpu_align(0)  # flatten
             + gpu_align(L10.PARAM_SIZE)
         )
-        var rvar_ptr = params_dl.unsafe_ptr() + off_L0 + L0.RVAR_OFF
+        # rvar lives in model_state (state-relative offsets), L0 state offset = 0.
+        var sof_L0 = 0
+        var rvar_ptr = state_dl.unsafe_ptr() + sof_L0 + L0.RVAR_OFF
         var max_rvar: Float64 = 0.0
         for i in range(L0.out_channels):
             var v = Float64(rvar_ptr[i])

@@ -37,6 +37,7 @@ def _bn_skip_relu_fwd_kernel[
     channels: Int,
     spatial: Int,
     BN_PS: Int,
+    BN_STATE_PS: Int,
     CACHE_SIZE: Int,
     GAMMA_OFF: Int,
     BETA_OFF: Int,
@@ -51,6 +52,7 @@ def _bn_skip_relu_fwd_kernel[
     output: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
     skip: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
     params: LayoutTensor[dtype, Layout.row_major(BN_PS), MutAnyOrigin],
+    state: LayoutTensor[dtype, Layout.row_major(BN_STATE_PS), MutAnyOrigin],
     cache: LayoutTensor[dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
 ):
     """Fused BN + skip-add + ReLU + cache. One block per channel.
@@ -141,14 +143,15 @@ def _bn_skip_relu_fwd_kernel[
         output.ptr[out_off] = val if val > Scalar[dtype](0.0) else Scalar[dtype](0.0)
         idx += TPB
 
-    # Running stats + inv_std cache (parallel across threads)
+    # Running stats + inv_std cache (parallel across threads).
+    # Running stats live in `state`, not `params`, post-Phase-3.
     if tid < BATCH:
         (cache.ptr + tid * CACHE_SIZE + INVSTD_OFF + c)[] = inv_std
     if tid == 0:
-        var rm = params.ptr[RMEAN_OFF + c]
-        var rv = params.ptr[RVAR_OFF + c]
-        params.ptr[RMEAN_OFF + c] = one_m * rm + mom * mean
-        params.ptr[RVAR_OFF + c] = one_m * rv + mom * var_
+        var rm = state.ptr[RMEAN_OFF + c]
+        var rv = state.ptr[RVAR_OFF + c]
+        state.ptr[RMEAN_OFF + c] = one_m * rm + mom * mean
+        state.ptr[RVAR_OFF + c] = one_m * rv + mom * var_
 
 
 def _bn_skip_relu_fwd_kernel_no_cache[
@@ -156,6 +159,7 @@ def _bn_skip_relu_fwd_kernel_no_cache[
     channels: Int,
     spatial: Int,
     BN_PS: Int,
+    BN_STATE_PS: Int,
     GAMMA_OFF: Int,
     BETA_OFF: Int,
     RMEAN_OFF: Int,
@@ -166,6 +170,7 @@ def _bn_skip_relu_fwd_kernel_no_cache[
     output: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
     skip: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
     params: LayoutTensor[dtype, Layout.row_major(BN_PS), ImmutAnyOrigin],
+    state: LayoutTensor[dtype, Layout.row_major(BN_STATE_PS), ImmutAnyOrigin],
 ):
     """Fused BN (running stats) + skip-add + ReLU. Inference, no cache, no update.
 
@@ -179,8 +184,8 @@ def _bn_skip_relu_fwd_kernel_no_cache[
     var eps = Scalar[dtype](BN_EPSILON)
     var gamma = rebind[Scalar[dtype]](params[GAMMA_OFF + c])
     var beta = rebind[Scalar[dtype]](params[BETA_OFF + c])
-    var rmean = rebind[Scalar[dtype]](params[RMEAN_OFF + c])
-    var rvar = rebind[Scalar[dtype]](params[RVAR_OFF + c])
+    var rmean = rebind[Scalar[dtype]](state[RMEAN_OFF + c])
+    var rvar = rebind[Scalar[dtype]](state[RVAR_OFF + c])
     var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
 
     comptime N = BATCH * spatial
@@ -379,18 +384,23 @@ struct ResBlockConv2DBN[
     comptime IN_DIM: Int = Self.DIM
     comptime OUT_DIM: Int = Self.DIM
 
-    # Params: Conv1 params + Conv2 params + BN2 params (gamma, beta, rmean, rvar)
+    # Params: Conv1 params + Conv2 params + BN2 gamma/beta (gradient-tracked)
     comptime CONV1_PS: Int = Self.Conv1.PARAM_SIZE
     comptime CONV2_PS: Int = Self.Conv2.PARAM_SIZE
-    comptime BN2_PS: Int = 4 * Self.channels
+    comptime BN2_PS: Int = 2 * Self.channels  # gamma, beta only
     comptime PARAM_SIZE: Int = Self.CONV1_PS + Self.CONV2_PS + Self.BN2_PS
 
     # BN2 param offsets (within params)
     comptime BN2_OFF: Int = Self.CONV1_PS + Self.CONV2_PS
     comptime BN2_GAMMA_OFF: Int = 0
     comptime BN2_BETA_OFF: Int = Self.channels
-    comptime BN2_RMEAN_OFF: Int = 2 * Self.channels
-    comptime BN2_RVAR_OFF: Int = 3 * Self.channels
+
+    # State: Conv1 state + Conv2 state + BN2 running stats (rmean, rvar)
+    comptime BN2_STATE_PS: Int = 2 * Self.channels  # running_mean, running_var
+    comptime BN2_STATE_OFF: Int = Self.Conv1.STATE_SIZE + Self.Conv2.STATE_SIZE
+    # BN2 state offsets (within BN2 state region)
+    comptime BN2_RMEAN_OFF: Int = 0
+    comptime BN2_RVAR_OFF: Int = Self.channels
 
     # Cache: Conv1 cache + Conv2 cache + BN2 cache
     # BN2 cache per sample: x_hat(DIM) + inv_std(channels) + pre_relu(DIM)
@@ -410,12 +420,13 @@ struct ResBlockConv2DBN[
     comptime MAX_CONV_WS: Int = Self.CONV1_WS if Self.CONV1_WS > Self.CONV2_WS else Self.CONV2_WS
     # conv ws + grad_conv2 buffer + temp_gi buffer + grad_inter buffer
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MAX_CONV_WS + Self.DIM + Self.DIM + Self.DIM
-    # TODO(phase 3): once BatchNorm2D / Conv2DBatchNormReLU migrate their running
-    # stats into state, this should become
-    #   Self.Conv1.STATE_SIZE + Self.Conv2.STATE_SIZE + (BN2 running stats size).
-    # For Phase 1 BN's STATE_SIZE is still 0 so a pure pass-through zero-size
-    # state is valid; sub-model state slices are zero-length views.
-    comptime STATE_SIZE: Int = 0
+    # Phase 3: aggregate sub-model state + BN2 running stats. Layout:
+    #   [0 : Conv1.STATE_SIZE)                          Conv1 (Conv2DBatchNormReLU) state
+    #   [Conv1.STATE_SIZE : +Conv2.STATE_SIZE)          Conv2 (AutoFused[Conv2D]) state (empty)
+    #   [BN2_STATE_OFF : +BN2_STATE_PS)                 BN2 running_mean, running_var
+    comptime STATE_SIZE: Int = (
+        Self.Conv1.STATE_SIZE + Self.Conv2.STATE_SIZE + Self.BN2_STATE_PS
+    )
 
     # ── Initialization ─────────────────────────────────────────────
 
@@ -430,12 +441,32 @@ struct ResBlockConv2DBN[
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
         Self.Conv1.initialize_params[INIT](p1)
         Self.Conv2.initialize_params[INIT](p2)
-        # BN2: gamma=1, beta=0, rmean=0, rvar=1
+        # BN2 gamma/beta only — running stats are owned by `state`.
         for c in range(Self.channels):
             params.ptr[Self.BN2_OFF + Self.BN2_GAMMA_OFF + c] = Scalar[dtype](1.0)
             params.ptr[Self.BN2_OFF + Self.BN2_BETA_OFF + c] = Scalar[dtype](0.0)
-            params.ptr[Self.BN2_OFF + Self.BN2_RMEAN_OFF + c] = Scalar[dtype](0.0)
-            params.ptr[Self.BN2_OFF + Self.BN2_RVAR_OFF + c] = Scalar[dtype](1.0)
+
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Recurse into Conv1/Conv2 + initialize BN2 running stats (mean=0, var=1)."""
+        comptime if Self.Conv1.STATE_SIZE > 0:
+            var s1 = LayoutTensor[
+                dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin
+            ](state.ptr)
+            Self.Conv1.initialize_state[dtype](s1)
+        comptime if Self.Conv2.STATE_SIZE > 0:
+            var s2 = LayoutTensor[
+                dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin
+            ](state.ptr + Self.Conv1.STATE_SIZE)
+            Self.Conv2.initialize_state[dtype](s2)
+        # BN2 running stats
+        for c in range(Self.channels):
+            state.ptr[Self.BN2_STATE_OFF + Self.BN2_RMEAN_OFF + c] = Scalar[dtype](0.0)
+            state.ptr[Self.BN2_STATE_OFF + Self.BN2_RVAR_OFF + c] = Scalar[dtype](1.0)
 
     # ── CPU Forward ────────────────────────────────────────────────
 
@@ -458,10 +489,9 @@ struct ResBlockConv2DBN[
         var c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
         var c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
         var bn2c = cache.ptr + BATCH * Self.BN2_CACHE_OFF
-        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
-        # are zero-length views; Phase 3 will split a real state buffer here.
+        # Sub-model state slices: Conv1 state then Conv2 state (BN2 lives at BN2_STATE_OFF).
         var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
-        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr + Self.Conv1.STATE_SIZE)
 
         # 1. Conv1BNReLU → inter
         var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
@@ -515,11 +545,11 @@ struct ResBlockConv2DBN[
                     (bn2c + b * Self.BN2_CS + Self.BN2_INVSTD_OFF + C + c * S + s)[] = val
                     output.ptr[idx] = val if Float64(val) > 0.0 else Scalar[dtype](0.0)
 
-            # Update running stats
-            var rm = params.ptr[Self.BN2_OFF + Self.BN2_RMEAN_OFF + c]
-            var rv = params.ptr[Self.BN2_OFF + Self.BN2_RVAR_OFF + c]
-            params.ptr[Self.BN2_OFF + Self.BN2_RMEAN_OFF + c] = one_m * rm + mom * mean
-            params.ptr[Self.BN2_OFF + Self.BN2_RVAR_OFF + c] = one_m * rv + mom * var_
+            # Update running stats (EMA) in the persistent state buffer.
+            var rm = state.ptr[Self.BN2_STATE_OFF + Self.BN2_RMEAN_OFF + c]
+            var rv = state.ptr[Self.BN2_STATE_OFF + Self.BN2_RVAR_OFF + c]
+            state.ptr[Self.BN2_STATE_OFF + Self.BN2_RMEAN_OFF + c] = one_m * rm + mom * mean
+            state.ptr[Self.BN2_STATE_OFF + Self.BN2_RVAR_OFF + c] = one_m * rv + mom * var_
 
         inter.free()
 
@@ -538,10 +568,9 @@ struct ResBlockConv2DBN[
 
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
-        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
-        # are zero-length views; Phase 3 will split a real state buffer here.
+        # Sub-model state slices: Conv1 state then Conv2 state (BN2 lives at BN2_STATE_OFF).
         var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
-        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr + Self.Conv1.STATE_SIZE)
 
         # 1. Conv1BNReLU inference → inter
         var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
@@ -562,8 +591,8 @@ struct ResBlockConv2DBN[
         for c in range(C):
             var gamma = params.ptr[Self.BN2_OFF + Self.BN2_GAMMA_OFF + c]
             var beta = params.ptr[Self.BN2_OFF + Self.BN2_BETA_OFF + c]
-            var rmean = params.ptr[Self.BN2_OFF + Self.BN2_RMEAN_OFF + c]
-            var rvar = params.ptr[Self.BN2_OFF + Self.BN2_RVAR_OFF + c]
+            var rmean = state.ptr[Self.BN2_STATE_OFF + Self.BN2_RMEAN_OFF + c]
+            var rvar = state.ptr[Self.BN2_STATE_OFF + Self.BN2_RVAR_OFF + c]
             var inv_std = Scalar[dtype](1.0 / msqrt(Float64(rvar + eps)))
 
             for b in range(BATCH):
@@ -600,10 +629,9 @@ struct ResBlockConv2DBN[
         var g1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
         var g2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
         var bn2c = cache.ptr + BATCH * Self.BN2_CACHE_OFF
-        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
-        # are zero-length views; Phase 3 will split a real state buffer here.
+        # Sub-model state slices: Conv1 state then Conv2 state (BN2 lives at BN2_STATE_OFF).
         var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
-        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr + Self.Conv1.STATE_SIZE)
 
         comptime C = Self.channels
         comptime S = Self.spatial
@@ -698,10 +726,9 @@ struct ResBlockConv2DBN[
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
         var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
         var c2_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
-        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
-        # are zero-length views; Phase 3 will split a real state buffer here.
+        # Sub-model state slices: Conv1 state then Conv2 state (BN2 lives at BN2_STATE_OFF).
         var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
-        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr + Self.Conv1.STATE_SIZE)
 
         var conv_ws_size = BATCH * Self.MAX_CONV_WS
         var conv_ws = DeviceBuffer[dtype](ctx, workspace.unsafe_ptr(), conv_ws_size if conv_ws_size > 0 else 1, owning=False)
@@ -719,17 +746,18 @@ struct ResBlockConv2DBN[
 
         # Fused BN2 + skip-add + ReLU (one kernel, one block per channel)
         var bn2_params = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), MutAnyOrigin](params.ptr + Self.BN2_OFF)
+        var bn2_state = LayoutTensor[dtype, Layout.row_major(Self.BN2_STATE_PS), MutAnyOrigin](state.ptr + Self.BN2_STATE_OFF)
         var bn2_cache = LayoutTensor[dtype, Layout.row_major(BATCH, Self.BN2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.BN2_CACHE_OFF)
         var skip_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](input.ptr)
 
         comptime fwd_k = _bn_skip_relu_fwd_kernel[
-            BATCH, Self.channels, Self.spatial, Self.BN2_PS, Self.BN2_CS,
+            BATCH, Self.channels, Self.spatial, Self.BN2_PS, Self.BN2_STATE_PS, Self.BN2_CS,
             Self.BN2_GAMMA_OFF, Self.BN2_BETA_OFF, Self.BN2_RMEAN_OFF, Self.BN2_RVAR_OFF,
             Self.BN2_XHAT_OFF, Self.BN2_INVSTD_OFF,
             Self.BN_EPSILON, Self.BN_MOMENTUM, dtype,
         ]
         ctx.enqueue_function[fwd_k, fwd_k](
-            output, skip_t, bn2_params, bn2_cache,
+            output, skip_t, bn2_params, bn2_state, bn2_cache,
             grid_dim=(Self.channels,), block_dim=(TPB,),
         )
 
@@ -753,10 +781,9 @@ struct ResBlockConv2DBN[
     ) raises:
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
-        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
-        # are zero-length views; Phase 3 will split a real state buffer here.
+        # Sub-model state slices: Conv1 state then Conv2 state (BN2 lives at BN2_STATE_OFF).
         var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
-        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr + Self.Conv1.STATE_SIZE)
 
         var conv_ws_size = BATCH * Self.MAX_CONV_WS
         var conv_ws = DeviceBuffer[dtype](ctx, workspace.unsafe_ptr(), conv_ws_size if conv_ws_size > 0 else 1, owning=False)
@@ -772,15 +799,16 @@ struct ResBlockConv2DBN[
 
         # BN2 (running stats) + skip + ReLU — inference, no cache, no stat update
         var bn2_params = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), ImmutAnyOrigin](params.ptr + Self.BN2_OFF)
+        var bn2_state = LayoutTensor[dtype, Layout.row_major(Self.BN2_STATE_PS), ImmutAnyOrigin](state.ptr + Self.BN2_STATE_OFF)
         var skip_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](input.ptr)
 
         comptime fwd_k = _bn_skip_relu_fwd_kernel_no_cache[
-            BATCH, Self.channels, Self.spatial, Self.BN2_PS,
+            BATCH, Self.channels, Self.spatial, Self.BN2_PS, Self.BN2_STATE_PS,
             Self.BN2_GAMMA_OFF, Self.BN2_BETA_OFF, Self.BN2_RMEAN_OFF, Self.BN2_RVAR_OFF,
             Self.BN_EPSILON, dtype,
         ]
         ctx.enqueue_function[fwd_k, fwd_k](
-            output, skip_t, bn2_params,
+            output, skip_t, bn2_params, bn2_state,
             grid_dim=(Self.channels,), block_dim=(TPB,),
         )
 
@@ -823,10 +851,9 @@ struct ResBlockConv2DBN[
     ) raises:
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
-        # Sub-model state slices. BN's STATE_SIZE is still 0 in Phase 1, so these
-        # are zero-length views; Phase 3 will split a real state buffer here.
+        # Sub-model state slices: Conv1 state then Conv2 state (BN2 lives at BN2_STATE_OFF).
         var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
-        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr + Self.Conv1.STATE_SIZE)
 
         var conv_ws_size = BATCH * Self.MAX_CONV_WS
         var conv_ws = DeviceBuffer[dtype](ctx, workspace.unsafe_ptr(), conv_ws_size if conv_ws_size > 0 else 1, owning=False)

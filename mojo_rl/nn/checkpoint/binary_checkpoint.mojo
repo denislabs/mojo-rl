@@ -138,6 +138,13 @@ struct BinaryCheckpoint[dtype: DType = DType.float32](Copyable, Movable):
     # Querying
     # =========================================================================
 
+    def has_section(self, name: String) -> Bool:
+        """Return True if a named float section exists in the checkpoint."""
+        for i in range(len(self.sections)):
+            if self.sections[i].name == name:
+                return True
+        return False
+
     def get_float_section(
         self, name: String, size: Int
     ) raises -> List[Scalar[Self.dtype]]:
