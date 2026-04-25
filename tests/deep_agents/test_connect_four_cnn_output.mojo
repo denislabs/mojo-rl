@@ -56,7 +56,7 @@ def test_output[Config: AlphaZeroConfig](name: String) raises:
     var obs_t = LayoutTensor[dtype, Layout.row_major(BATCH, PRED_IN), MutAnyOrigin](obs_data)
     var pred_t = LayoutTensor[dtype, Layout.row_major(BATCH, PRED_OUT), MutAnyOrigin](pred_data)
     var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin](cache_data)
-    Config.PredModel.forward[BATCH](obs_t, pred_t, state.params_view(), cache_t)
+    Config.PredModel.forward[BATCH](obs_t, pred_t, state.params_view(), state.model_state_view(), cache_t)
 
     for b in range(BATCH):
         print("  Sample", b, "logits:", end="")

@@ -8,6 +8,7 @@ Tests:
 5. Gradient correctness via finite differences
 """
 
+from std.memory import UnsafePointer
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import (
     Model,
@@ -133,7 +134,10 @@ def test_simple_chain() raises:
     var seq_cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, SeqModel.CACHE_SIZE), MutAnyOrigin
     ](seq_cache.unsafe_ptr())
-    SeqModel.forward[BATCH](input_t, seq_out_t, params_t, seq_cache_t)
+    var seq_state_t = LayoutTensor[
+        dtype, Layout.row_major(SeqModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    SeqModel.forward[BATCH](input_t, seq_out_t, params_t, seq_state_t, seq_cache_t)
 
     # Forward Graph
     var graph_out = InlineArray[Scalar[dtype], BATCH * OUT](uninitialized=True)
@@ -148,8 +152,11 @@ def test_simple_chain() raises:
         Layout.row_major(BATCH, GraphModel.CACHE_SIZE),
         MutAnyOrigin,
     ](graph_cache.unsafe_ptr())
+    var graph_state_t = LayoutTensor[
+        dtype, Layout.row_major(GraphModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
     GraphModel.forward[BATCH](
-        input_t, graph_out_t, graph_params_t, graph_cache_t
+        input_t, graph_out_t, graph_params_t, graph_state_t, graph_cache_t
     )
 
     # Compare outputs
@@ -185,7 +192,7 @@ def test_simple_chain() raises:
         dtype, Layout.row_major(SeqModel.PARAM_SIZE), MutAnyOrigin
     ](seq_grads.unsafe_ptr())
     SeqModel.backward[BATCH](
-        grad_out_t, seq_gi_t, params_t, seq_cache_t, seq_grads_t
+        grad_out_t, seq_gi_t, params_t, seq_state_t, seq_cache_t, seq_grads_t
     )
 
     # Graph backward
@@ -205,6 +212,7 @@ def test_simple_chain() raises:
         grad_out_t,
         graph_gi_t,
         graph_params_t,
+        graph_state_t,
         graph_cache_t,
         graph_grads_t,
     )
@@ -311,7 +319,10 @@ def test_fan_out() raises:
         MutAnyOrigin,
     ](cache_arr.unsafe_ptr())
 
-    FanOutGraph.forward[BATCH](input_t, output_t, params_t, cache_t)
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(FanOutGraph.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    FanOutGraph.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     print("  Forward output:", output_arr[0], output_arr[1])
 
@@ -337,7 +348,7 @@ def test_fan_out() raises:
     ](grads_arr.unsafe_ptr())
 
     FanOutGraph.backward[BATCH](
-        grad_out_t, grad_in_t, params_t, cache_t, grads_t
+        grad_out_t, grad_in_t, params_t, state_t, cache_t, grads_t
     )
 
     print(
@@ -428,7 +439,10 @@ def test_dual_input_concat() raises:
         MutAnyOrigin,
     ](cache_arr.unsafe_ptr())
 
-    DDPGGraph.forward[BATCH](input_t, output_t, params_t, cache_t)
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(DDPGGraph.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    DDPGGraph.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
     print("  Forward output:", output_arr[0], output_arr[1])
 
     # Backward
@@ -452,7 +466,7 @@ def test_dual_input_concat() raises:
         dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    DDPGGraph.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
+    DDPGGraph.backward[BATCH](grad_out_t, grad_in_t, params_t, state_t, cache_t, grads_t)
 
     print(
         "  Backward grad_input:", grad_in[0], grad_in[1], grad_in[2], grad_in[3]
@@ -515,12 +529,15 @@ def test_grad_check_simple_chain() raises:
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_arr.unsafe_ptr())
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
     var output_arr = InlineArray[Scalar[dtype], BATCH * 2](uninitialized=True)
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
     ](output_arr.unsafe_ptr())
 
-    M.forward[BATCH](input_t, output_t, params_t, cache_t)
+    M.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     var grad_in_arr = InlineArray[Scalar[dtype], BATCH * 3](uninitialized=True)
     var grad_in_t = LayoutTensor[
@@ -533,7 +550,7 @@ def test_grad_check_simple_chain() raises:
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    M.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
+    M.backward[BATCH](grad_out_t, grad_in_t, params_t, state_t, cache_t, grads_t)
 
     # Finite difference
     var eps = Float64(1e-4)
@@ -548,7 +565,7 @@ def test_grad_check_simple_chain() raises:
         var out_plus_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
         ](out_plus.unsafe_ptr())
-        M.forward[BATCH](input_t, out_plus_t, params_t)
+        M.forward[BATCH](input_t, out_plus_t, params_t, state_t)
 
         # f(p - eps)
         params_arr[p_idx] = orig - Scalar[dtype](eps)
@@ -558,7 +575,7 @@ def test_grad_check_simple_chain() raises:
         var out_minus_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 2), MutAnyOrigin
         ](out_minus.unsafe_ptr())
-        M.forward[BATCH](input_t, out_minus_t, params_t)
+        M.forward[BATCH](input_t, out_minus_t, params_t, state_t)
 
         params_arr[p_idx] = orig  # Restore
 
@@ -641,12 +658,15 @@ def test_grad_check_fan_out() raises:
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_arr.unsafe_ptr())
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
     var output_arr = InlineArray[Scalar[dtype], BATCH * 1](uninitialized=True)
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
     ](output_arr.unsafe_ptr())
 
-    M.forward[BATCH](input_t, output_t, params_t, cache_t)
+    M.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     var grad_in_arr = InlineArray[Scalar[dtype], BATCH * 3](uninitialized=True)
     var grad_in_t = LayoutTensor[
@@ -659,7 +679,7 @@ def test_grad_check_fan_out() raises:
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    M.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
+    M.backward[BATCH](grad_out_t, grad_in_t, params_t, state_t, cache_t, grads_t)
 
     # Finite difference
     var eps = Float64(1e-4)
@@ -673,7 +693,7 @@ def test_grad_check_fan_out() raises:
         var out_plus_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
         ](out_plus.unsafe_ptr())
-        M.forward[BATCH](input_t, out_plus_t, params_t)
+        M.forward[BATCH](input_t, out_plus_t, params_t, state_t)
 
         params_arr[p_idx] = orig - Scalar[dtype](eps)
         var out_minus = InlineArray[Scalar[dtype], BATCH * 1](
@@ -682,7 +702,7 @@ def test_grad_check_fan_out() raises:
         var out_minus_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
         ](out_minus.unsafe_ptr())
-        M.forward[BATCH](input_t, out_minus_t, params_t)
+        M.forward[BATCH](input_t, out_minus_t, params_t, state_t)
 
         params_arr[p_idx] = orig
 
@@ -750,12 +770,15 @@ def test_grad_check_dual_input() raises:
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_arr.unsafe_ptr())
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
     var output_arr = InlineArray[Scalar[dtype], BATCH * 1](uninitialized=True)
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
     ](output_arr.unsafe_ptr())
 
-    M.forward[BATCH](input_t, output_t, params_t, cache_t)
+    M.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     var grad_in_arr = InlineArray[Scalar[dtype], BATCH * 3](uninitialized=True)
     var grad_in_t = LayoutTensor[
@@ -768,7 +791,7 @@ def test_grad_check_dual_input() raises:
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    M.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
+    M.backward[BATCH](grad_out_t, grad_in_t, params_t, state_t, cache_t, grads_t)
 
     # Finite difference for params
     var eps = Float64(1e-4)
@@ -782,7 +805,7 @@ def test_grad_check_dual_input() raises:
         var out_plus_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
         ](out_plus.unsafe_ptr())
-        M.forward[BATCH](input_t, out_plus_t, params_t)
+        M.forward[BATCH](input_t, out_plus_t, params_t, state_t)
 
         params_arr[p_idx] = orig - Scalar[dtype](eps)
         var out_minus = InlineArray[Scalar[dtype], BATCH * 1](
@@ -791,7 +814,7 @@ def test_grad_check_dual_input() raises:
         var out_minus_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
         ](out_minus.unsafe_ptr())
-        M.forward[BATCH](input_t, out_minus_t, params_t)
+        M.forward[BATCH](input_t, out_minus_t, params_t, state_t)
 
         params_arr[p_idx] = orig
 
@@ -816,7 +839,7 @@ def test_grad_check_dual_input() raises:
         var out_plus_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
         ](out_plus.unsafe_ptr())
-        M.forward[BATCH](input_t, out_plus_t, params_t)
+        M.forward[BATCH](input_t, out_plus_t, params_t, state_t)
 
         input_arr[in_idx] = orig - Scalar[dtype](eps)
         var out_minus = InlineArray[Scalar[dtype], BATCH * 1](
@@ -825,7 +848,7 @@ def test_grad_check_dual_input() raises:
         var out_minus_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
         ](out_minus.unsafe_ptr())
-        M.forward[BATCH](input_t, out_minus_t, params_t)
+        M.forward[BATCH](input_t, out_minus_t, params_t, state_t)
 
         input_arr[in_idx] = orig
 

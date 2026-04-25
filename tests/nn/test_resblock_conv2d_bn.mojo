@@ -9,6 +9,7 @@ Run with:
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.memory import UnsafePointer
 from layout import Layout, LayoutTensor
 from std.random import random_float64
 from std.math import abs
@@ -120,8 +121,14 @@ def main() raises:
 
         # Forward
         print("Running forward...")
-        Fused.forward_gpu[BATCH](ctx, f_out_t, in_t, f_params_t, f_cache_t, fused_ws)
-        Decomp.forward_gpu[BATCH](ctx, d_out_t, in_t, d_params_t, d_cache_t, decomp_ws)
+        var f_state_t = LayoutTensor[dtype, Layout.row_major(Fused.STATE_SIZE), MutAnyOrigin](
+            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        )
+        var d_state_t = LayoutTensor[dtype, Layout.row_major(Decomp.STATE_SIZE), MutAnyOrigin](
+            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        )
+        Fused.forward_gpu[BATCH](ctx, f_out_t, in_t, f_params_t, f_state_t, f_cache_t, fused_ws)
+        Decomp.forward_gpu[BATCH](ctx, d_out_t, in_t, d_params_t, d_state_t, d_cache_t, decomp_ws)
         ctx.synchronize()
 
         # Compare forward outputs
@@ -147,8 +154,8 @@ def main() raises:
 
         # Backward
         print("\nRunning backward...")
-        Fused.backward_gpu[BATCH](ctx, f_gi_t, go_t, f_params_t, f_cache_t, f_grads_t, fused_ws)
-        Decomp.backward_gpu[BATCH](ctx, d_gi_t, go_t, d_params_t, d_cache_t, d_grads_t, decomp_ws)
+        Fused.backward_gpu[BATCH](ctx, f_gi_t, go_t, f_params_t, f_state_t, f_cache_t, f_grads_t, fused_ws)
+        Decomp.backward_gpu[BATCH](ctx, d_gi_t, go_t, d_params_t, d_state_t, d_cache_t, d_grads_t, decomp_ws)
         ctx.synchronize()
 
         # Compare grad_input

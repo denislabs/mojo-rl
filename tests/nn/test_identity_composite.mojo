@@ -1,5 +1,6 @@
 """Tests for Identity model and CompositeParams helper."""
 
+from std.memory import UnsafePointer
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import (
     Model,
@@ -45,8 +46,11 @@ def test_identity() raises:
     var params_t = LayoutTensor[
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](params.unsafe_ptr())
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    M.forward[BATCH](input_t, output_t, params_t)
+    M.forward[BATCH](input_t, output_t, params_t, state_t)
 
     for i in range(BATCH * DIM):
         if abs(Float64(output_arr[i] - input_arr[i])) > 1e-10:
@@ -74,7 +78,7 @@ def test_identity() raises:
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](grads.unsafe_ptr())
 
-    M.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
+    M.backward[BATCH](grad_out_t, grad_in_t, params_t, state_t, cache_t, grads_t)
 
     for i in range(BATCH * DIM):
         if abs(Float64(grad_in[i] - grad_out[i])) > 1e-10:
@@ -125,8 +129,11 @@ def test_identity_in_compute_graph() raises:
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, G.CACHE_SIZE), MutAnyOrigin
     ](cache_arr.unsafe_ptr())
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(G.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    G.forward[BATCH](input_t, output_t, params_t, cache_t)
+    G.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
     print("  Output:", output_arr[0], output_arr[1], "...", output_arr[5])
 
     # Gradient check
@@ -148,7 +155,7 @@ def test_identity_in_compute_graph() raises:
         dtype, Layout.row_major(G.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    G.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
+    G.backward[BATCH](grad_out_t, grad_in_t, params_t, state_t, cache_t, grads_t)
 
     # Grad_input should be non-zero (both branches contribute)
     var any_nz = False

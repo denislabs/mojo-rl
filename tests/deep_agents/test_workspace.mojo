@@ -1,6 +1,7 @@
 """Test workspace and critic group prototypes."""
 
 from std.testing import assert_equal, assert_true
+from std.memory import UnsafePointer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype
@@ -250,10 +251,14 @@ def test_workspace_with_critic_group() raises:
 
     # Forward all critics through workspace views — no comptime if NUM_CRITICS == 2!
     comptime CriticNet = CriticModel
+    # Zero-length model state (CriticGroup doesn't expose state views).
+    var critic_state_t = LayoutTensor[
+        dtype, Layout.row_major(CriticNet.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
     for i in range(NUM_CRITICS):
         var q_t = ws.q_out(i)
         var p = critics.online_params_view(i)
-        CriticNet.forward[BS](ci_t, q_t, p)
+        CriticNet.forward[BS](ci_t, q_t, p, critic_state_t)
 
     # Verify each critic produced output
     for i in range(NUM_CRITICS):

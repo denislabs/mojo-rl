@@ -94,13 +94,13 @@ def test_denseblock_gradcheck() raises:
     # Forward
     memset(out_ptr, 0, BS * OUT)
     memset(cache_ptr, 0, BS * CS if CS > 0 else 1)
-    M.forward[BS](inp_t, out_t, state.params_view(), cache_t)
+    M.forward[BS](inp_t, out_t, state.params_view(), state.model_state_view(), cache_t)
 
     # Backward
     state.zero_grads()
     memset(grad_in_ptr, 0, BS * IN)
     var grads_v = state.grads_view()
-    M.backward[BS](go_t, gi_t, state.params_view(), cache_t, grads_v)
+    M.backward[BS](go_t, gi_t, state.params_view(), state.model_state_view(), cache_t, grads_v)
 
     # FD check on input
     var eps_fd = Float64(1e-3)
@@ -118,7 +118,7 @@ def test_denseblock_gradcheck() raises:
         # the EMA drift across FD probes doesn't affect this check.
         var op_t = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](out_plus)
         var cp_t = LayoutTensor[dtype, Layout.row_major(BS, CS), MutAnyOrigin](cache_plus)
-        M.forward[BS](inp_t, op_t, state.params_view(), cp_t)
+        M.forward[BS](inp_t, op_t, state.params_view(), state.model_state_view(), cp_t)
         var lp: Float64 = 0.0
         for j in range(BS * OUT):
             lp += Float64(out_plus[j]) * Float64(grad_out_ptr[j])
@@ -130,7 +130,7 @@ def test_denseblock_gradcheck() raises:
         memset(cache_minus, 0, BS * CS if CS > 0 else 1)
         var om_t = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](out_minus)
         var cm_t = LayoutTensor[dtype, Layout.row_major(BS, CS), MutAnyOrigin](cache_minus)
-        M.forward[BS](inp_t, om_t, state.params_view(), cm_t)
+        M.forward[BS](inp_t, om_t, state.params_view(), state.model_state_view(), cm_t)
         var lm: Float64 = 0.0
         for j in range(BS * OUT):
             lm += Float64(out_minus[j]) * Float64(grad_out_ptr[j])
@@ -229,7 +229,7 @@ def test_ofenet_trains() raises:
     for step in range(STEPS):
         memset(output_ptr, 0, BS * OUT)
         memset(cache_ptr, 0, BS * CS)
-        M.forward[BS](inp_t, out_t, state.params_view(), cache_t)
+        M.forward[BS](inp_t, out_t, state.params_view(), state.model_state_view(), cache_t)
 
         # MSE loss + gradient
         var loss: Float64 = 0.0
@@ -248,7 +248,7 @@ def test_ofenet_trains() raises:
         state.zero_grads()
         memset(grad_in_ptr, 0, BS * IN)
         var grads_v = state.grads_view()
-        M.backward[BS](go_t, gi_t, state.params_view(), cache_t, grads_v)
+        M.backward[BS](go_t, gi_t, state.params_view(), state.model_state_view(), cache_t, grads_v)
         state.optimizer_step()
 
         if step == STEPS - 1:

@@ -15,7 +15,7 @@ Hypotheses tested (in order):
 """
 
 from std.math import sqrt
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
@@ -102,8 +102,11 @@ def test_bn_single_layer() raises:
     var cpu_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin](cpu_out)
     var cpu_p_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](cpu_params)
     var cpu_c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cpu_cache)
+    var cpu_s_t = LayoutTensor[dtype, Layout.row_major(Fused.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    Fused.forward[BATCH](cpu_in_t, cpu_out_t, cpu_p_t, cpu_c_t)
+    Fused.forward[BATCH](cpu_in_t, cpu_out_t, cpu_p_t, cpu_s_t, cpu_c_t)
 
     # Snapshot CPU running stats
     var cpu_rmean = alloc[Scalar[dtype]](OC)
@@ -139,8 +142,11 @@ def test_bn_single_layer() raises:
     var gpu_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin](gpu_output.unsafe_ptr())
     var gpu_p_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_params.unsafe_ptr())
     var gpu_c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](gpu_cache.unsafe_ptr())
+    var gpu_s_t = LayoutTensor[dtype, Layout.row_major(Fused.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    Fused.forward_gpu[BATCH](ctx, gpu_out_t, gpu_in_t, gpu_p_t, gpu_c_t, gpu_ws)
+    Fused.forward_gpu[BATCH](ctx, gpu_out_t, gpu_in_t, gpu_p_t, gpu_s_t, gpu_c_t, gpu_ws)
     ctx.synchronize()
 
     # Download GPU outputs + updated params + cache
@@ -260,7 +266,10 @@ def test_bn_single_layer() raises:
     var bn_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, BNRef.OUT_DIM), MutAnyOrigin](bn_out)
     var bn_p_t = LayoutTensor[dtype, Layout.row_major(BNRef.PARAM_SIZE), MutAnyOrigin](bn_params)
     var bn_c_t = LayoutTensor[dtype, Layout.row_major(BATCH, BNRef.CACHE_SIZE), MutAnyOrigin](bn_cache)
-    BNRef.forward[BATCH](ref_pre_t, bn_out_t, bn_p_t, bn_c_t)
+    var bn_s_t = LayoutTensor[dtype, Layout.row_major(BNRef.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    BNRef.forward[BATCH](ref_pre_t, bn_out_t, bn_p_t, bn_s_t, bn_c_t)
 
     # Step 3: apply ReLU
     var ref_out = alloc[Scalar[dtype]](BATCH * OUT_DIM)
@@ -320,7 +329,7 @@ def test_bn_single_layer() raises:
     var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin](grad_out_data)
     var cgi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin](cpu_grad_in)
     var cgp_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](cpu_grads)
-    Fused.backward[BATCH](go_t, cgi_t, cpu_p_t, cpu_c_t, cgp_t)
+    Fused.backward[BATCH](go_t, cgi_t, cpu_p_t, cpu_s_t, cpu_c_t, cgp_t)
 
     # ---- GPU backward ----
     var gpu_go = ctx.enqueue_create_buffer[dtype](BATCH * OUT_DIM)
@@ -339,7 +348,7 @@ def test_bn_single_layer() raises:
     var gpu_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin](gpu_gi.unsafe_ptr())
     var gpu_gp_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_gp.unsafe_ptr())
 
-    Fused.backward_gpu[BATCH](ctx, gpu_gi_t, gpu_go_t, gpu_p_t, gpu_c_t, gpu_gp_t, gpu_ws)
+    Fused.backward_gpu[BATCH](ctx, gpu_gi_t, gpu_go_t, gpu_p_t, gpu_s_t, gpu_c_t, gpu_gp_t, gpu_ws)
     ctx.synchronize()
 
     var gpu_gi_dl = ctx.enqueue_create_host_buffer[dtype](BATCH * IN_DIM)

@@ -4,7 +4,6 @@ from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
-from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from ..constants import TPB
 
@@ -34,7 +33,10 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     # Only need cache during training (to store mask)
     comptime CACHE_SIZE: Int = Self.dim if Self.training else 0
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
-    comptime STATE_SIZE: Int = 0  # Stateless
+    # One Float32 slot bit-patterning a UInt32 RNG counter (training only).
+    # Bumped on-device before each forward so each call (and each replay of a
+    # captured CUDA graph) sees a fresh seed without a host-side random_float64.
+    comptime STATE_SIZE: Int = 1 if Self.training else 0
 
     @staticmethod
     def initialize_params[
@@ -45,6 +47,17 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         ],
     ):
         pass
+
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Zero the GPU-resident RNG counter slot (only present in training)."""
+        comptime if Self.training:
+            # Float32(0.0) bit-pattern is also UInt32(0).
+            state.ptr[0] = Scalar[dtype](0.0)
 
     @staticmethod
     def forward[
@@ -167,17 +180,20 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
-        base_seed: Scalar[DType.uint64],
+        counter: LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ],
     ):
         """Training forward kernel: dropout with PhiloxRandom.
 
         Grid: ((BATCH * dim + TPB - 1) // TPB,)
         Block: (TPB,)
 
-        Mask = Philox(base_seed ^ SEED, idx). `base_seed` varies per call
-        (generated on CPU before enqueue) so each forward sees a fresh mask;
-        `SEED` is the comptime per-layer constant so stacked Dropouts stay
-        decorrelated.
+        Mask = Philox((counter[0] * mult) ^ SEED, idx). The counter is bumped
+        on-device by a preamble kernel before this one runs, so each forward
+        (including each replay of a captured CUDA graph) sees a fresh seed
+        without a host-side random_float64. `SEED` is the comptime per-layer
+        constant so stacked Dropouts stay decorrelated.
         """
 
         comptime if Self.training:
@@ -188,8 +204,10 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
             var row = idx // Self.dim
             var col = idx % Self.dim
 
+            # Knuth multiplier mixes low-bit counter values into a usable seed.
+            var bs = UInt64(counter.ptr[0]) * UInt64(2654435761)
             var rng = PhiloxRandom(
-                seed=UInt64(base_seed) ^ Self.SEED,
+                seed=bs ^ Self.SEED,
                 offset=UInt64(idx),
             )
             var rand = Scalar[dtype](rng.step_uniform()[0])
@@ -315,11 +333,28 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                 dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
             ](cache.ptr)
 
-            # Fresh seed per call so the mask varies across forward passes.
-            # Note: not CUDA-graph-capturable (baked at capture time).
-            var base_seed = Scalar[DType.uint64](
-                UInt64(random_float64(0.0, Float64(UInt32.MAX)))
-                * UInt64(2654435761)
+            # Bit-cast the float32 state slot into a UInt32 RNG counter view —
+            # the counter lives on-device, survives between forwards, and is
+            # bumped by the preamble kernel below so each forward (and each
+            # captured-graph replay) sees a different seed.
+            var counter_t = LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ](state.ptr.bitcast[Scalar[DType.uint32]]())
+
+            @parameter
+            @always_inline
+            def bump_kernel(
+                c: LayoutTensor[
+                    DType.uint32, Layout.row_major(1), MutAnyOrigin
+                ],
+            ):
+                if Int(thread_idx.x) == 0:
+                    c[0] = c[0] + UInt32(1)
+
+            ctx.enqueue_function[bump_kernel, bump_kernel](
+                counter_t,
+                grid_dim=(1,),
+                block_dim=(1,),
             )
 
             @parameter
@@ -334,17 +369,19 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
                 cache: LayoutTensor[
                     dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
                 ],
-                base_seed: Scalar[DType.uint64],
+                counter: LayoutTensor[
+                    DType.uint32, Layout.row_major(1), MutAnyOrigin
+                ],
             ):
                 Self.forward_kernel_impl[BATCH, dtype](
-                    output, input, cache, base_seed
+                    output, input, cache, counter
                 )
 
             ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
                 output,
                 input_immut,
                 cache_view,
-                base_seed,
+                counter_t,
                 grid_dim=(grid_x,),
                 block_dim=(TPB,),
             )

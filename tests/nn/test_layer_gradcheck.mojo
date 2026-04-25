@@ -126,7 +126,7 @@ def cpu_gradcheck[M: Model, BS: Int = 4](
     ](fd_cache_ptr)
 
     # Forward + analytical backward
-    M.forward[BS](input_t, output_t, state.params_view(), cache_t)
+    M.forward[BS](input_t, output_t, state.params_view(), state.model_state_view(), cache_t)
     state.zero_grads()
     memset(grad_in_ptr, 0, BS * IN)
     var grads = state.grads_view()
@@ -134,7 +134,7 @@ def cpu_gradcheck[M: Model, BS: Int = 4](
     for i in range(BS * OUT):
         (bwd_grad_out_ptr + i)[] = (grad_out_ptr + i)[]
     M.backward[BS](
-        bwd_grad_out_t, grad_in_t, state.params_view(), cache_t, grads
+        bwd_grad_out_t, grad_in_t, state.params_view(), state.model_state_view(), cache_t, grads
     )
 
     # === Check param gradients via finite differences ===
@@ -152,11 +152,11 @@ def cpu_gradcheck[M: Model, BS: Int = 4](
 
             # f(p + eps)
             (state.params + p_idx)[] = Scalar[dtype](Float64(orig) + eps)
-            M.forward[BS](input_t, out_plus_t, state.params_view(), fd_cache_t)
+            M.forward[BS](input_t, out_plus_t, state.params_view(), state.model_state_view(), fd_cache_t)
 
             # f(p - eps)
             (state.params + p_idx)[] = Scalar[dtype](Float64(orig) - eps)
-            M.forward[BS](input_t, out_minus_t, state.params_view(), fd_cache_t)
+            M.forward[BS](input_t, out_minus_t, state.params_view(), state.model_state_view(), fd_cache_t)
 
             # Restore
             (state.params + p_idx)[] = orig
@@ -208,11 +208,11 @@ def cpu_gradcheck[M: Model, BS: Int = 4](
 
         # f(x + eps)
         (input_ptr + i_idx)[] = Scalar[dtype](Float64(orig) + eps)
-        M.forward[BS](input_t, out_plus_t, state.params_view(), fd_cache_t)
+        M.forward[BS](input_t, out_plus_t, state.params_view(), state.model_state_view(), fd_cache_t)
 
         # f(x - eps)
         (input_ptr + i_idx)[] = Scalar[dtype](Float64(orig) - eps)
-        M.forward[BS](input_t, out_minus_t, state.params_view(), fd_cache_t)
+        M.forward[BS](input_t, out_minus_t, state.params_view(), state.model_state_view(), fd_cache_t)
 
         # Restore
         (input_ptr + i_idx)[] = orig

@@ -10,7 +10,7 @@ max|grad_beta|, max|grad_W|, max|grad_bias|. No fitness/training — just bound 
 
 from std.math import sqrt, log
 from std.random import seed, random_float64
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
@@ -139,8 +139,11 @@ def test_A_single_layer() raises:
     var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](
         gpu_cache.unsafe_ptr()
     )
+    var s_t = LayoutTensor[dtype, Layout.row_major(Layer.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    Layer.forward_gpu[BATCH](ctx, out_t, in_t, p_t, c_t, gpu_ws)
+    Layer.forward_gpu[BATCH](ctx, out_t, in_t, p_t, s_t, c_t, gpu_ws)
     ctx.synchronize()
 
     var out_dl = ctx.enqueue_create_host_buffer[dtype](BATCH * OUT_DIM)
@@ -171,7 +174,7 @@ def test_A_single_layer() raises:
         gpu_gp.unsafe_ptr()
     )
 
-    Layer.backward_gpu[BATCH](ctx, gi_t, go_t, p_t, c_t, gp_t, gpu_ws)
+    Layer.backward_gpu[BATCH](ctx, gi_t, go_t, p_t, s_t, c_t, gp_t, gpu_ws)
     ctx.synchronize()
 
     var gi_dl = ctx.enqueue_create_host_buffer[dtype](BATCH * IN_DIM)
@@ -268,8 +271,11 @@ def test_B_two_layer() raises:
     var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](
         gpu_cache.unsafe_ptr()
     )
+    var s_t = LayoutTensor[dtype, Layout.row_major(Net.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    Net.forward_gpu[BATCH](ctx, out_t, in_t, p_t, c_t, gpu_ws)
+    Net.forward_gpu[BATCH](ctx, out_t, in_t, p_t, s_t, c_t, gpu_ws)
     ctx.synchronize()
 
     var out_dl = ctx.enqueue_create_host_buffer[dtype](BATCH * OUT_DIM)
@@ -299,7 +305,7 @@ def test_B_two_layer() raises:
         gpu_gp.unsafe_ptr()
     )
 
-    Net.backward_gpu[BATCH](ctx, gi_t, go_t, p_t, c_t, gp_t, gpu_ws)
+    Net.backward_gpu[BATCH](ctx, gi_t, go_t, p_t, s_t, c_t, gp_t, gpu_ws)
     ctx.synchronize()
 
     var gi_dl = ctx.enqueue_create_host_buffer[dtype](BATCH * IN_DIM)
@@ -384,8 +390,11 @@ def test_C_deep_no_head() raises:
     var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](
         gpu_cache.unsafe_ptr()
     )
+    var s_t = LayoutTensor[dtype, Layout.row_major(Net.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    Net.forward_gpu[BATCH](ctx, out_t, in_t, p_t, c_t, gpu_ws)
+    Net.forward_gpu[BATCH](ctx, out_t, in_t, p_t, s_t, c_t, gpu_ws)
     ctx.synchronize()
 
     var out_dl = ctx.enqueue_create_host_buffer[dtype](BATCH * OUT_DIM)
@@ -423,7 +432,7 @@ def test_C_deep_no_head() raises:
     # gpu_ws.enqueue_fill(Scalar[dtype](0.0))
     # ctx.synchronize()
 
-    Net.backward_gpu[BATCH](ctx, gi_t, go_t, p_t, c_t, gp_t, gpu_ws)
+    Net.backward_gpu[BATCH](ctx, gi_t, go_t, p_t, s_t, c_t, gp_t, gpu_ws)
     ctx.synchronize()
 
     var gi_dl = ctx.enqueue_create_host_buffer[dtype](BATCH * IN_DIM)

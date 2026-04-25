@@ -145,7 +145,7 @@ def main() raises:
             dtype, Layout.row_major(N_ENVS, REP_OUT_DIM), MutAnyOrigin
         ](mcts.hidden_states.unsafe_ptr())
         RepNet.forward_gpu[N_ENVS](
-            ctx, rep_obs, rep_h, gpu_rep.params_view(), workspace
+            ctx, rep_obs, rep_h, gpu_rep.params_view(), gpu_rep.model_state_view(), workspace
         )
 
         # 1b. Prediction: hidden → policy + value
@@ -161,7 +161,7 @@ def main() raises:
             dtype, Layout.row_major(N_ENVS, PRED_OUT_DIM), MutAnyOrigin
         ](mcts.pred_output.unsafe_ptr())
         PredNet.forward_gpu[N_ENVS](
-            ctx, pred_obs, pred_out, gpu_pred.params_view(), workspace
+            ctx, pred_obs, pred_out, gpu_pred.params_view(), gpu_pred.model_state_view(), workspace
         )
 
         # 1c. Initialize root nodes
@@ -305,7 +305,7 @@ def main() raises:
                 dtype, Layout.row_major(N_ENVS, DYN_OUT_DIM), MutAnyOrigin
             ](mcts.dyn_output.unsafe_ptr())
             DynNet.forward_gpu[N_ENVS](
-                ctx, dyn_in_net, dyn_out_net, gpu_dyn.params_view(), workspace
+                ctx, dyn_in_net, dyn_out_net, gpu_dyn.params_view(), gpu_dyn.model_state_view(), workspace
             )
 
             # Extract hidden → pred input
@@ -340,6 +340,7 @@ def main() raises:
                 pred_in_lat,
                 pred_out_sim,
                 gpu_pred.params_view(),
+                gpu_pred.model_state_view(),
                 workspace,
             )
 

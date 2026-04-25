@@ -262,7 +262,7 @@ def main() raises:
         var grads = state.grads_view()
 
         CNN.forward_gpu[BATCH](
-            ctx, output_t, input_t, params, cache_t, ws_buf
+            ctx, output_t, input_t, params, state.model_state_view(), cache_t, ws_buf
         )
         ctx.enqueue_copy(out_host, output_buf)
 
@@ -302,7 +302,7 @@ def main() raises:
 
         # Model backward
         CNN.backward_gpu[BATCH](
-            ctx, grad_in_t, grad_out_t, params, cache_t, grads, ws_buf
+            ctx, grad_in_t, grad_out_t, params, state.model_state_view(), cache_t, grads, ws_buf
         )
 
         # Snapshot grads + params

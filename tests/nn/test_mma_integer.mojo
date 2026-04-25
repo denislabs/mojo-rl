@@ -647,7 +647,7 @@ def test_linear_pipeline[
     var ca_lt = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cpu_cache)
-    M.forward[BATCH](in_lt, out_lt, cpu_state.params_view(), ca_lt)
+    M.forward[BATCH](in_lt, out_lt, cpu_state.params_view(), cpu_state.model_state_view(), ca_lt)
 
     # GPU forward
     var in_buf = ctx.enqueue_create_buffer[dtype](BATCH * IN)
@@ -671,7 +671,7 @@ def test_linear_pipeline[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](ca_buf.unsafe_ptr())
 
-    M.forward_gpu[BATCH](ctx, out_g, in_g, gpu.params_view(), ca_g, ws_buf)
+    M.forward_gpu[BATCH](ctx, out_g, in_g, gpu.params_view(), gpu.model_state_view(), ca_g, ws_buf)
 
     var oh = ctx.enqueue_create_host_buffer[dtype](BATCH * OUT)
     ctx.enqueue_copy(oh, out_buf)

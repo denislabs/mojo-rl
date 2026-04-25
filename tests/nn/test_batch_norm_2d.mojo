@@ -4,7 +4,7 @@ Tests both standalone BatchNorm2D and Conv2D+BN+ReLU pipeline.
 """
 
 from std.math import exp, log, sqrt
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.training import NetworkState
@@ -59,8 +59,11 @@ def test_bn_gradient_check() raises:
     var out = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](output_data)
     var p = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var c = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_data)
+    var s = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    BN.forward[BATCH](inp, out, p, c)
+    BN.forward[BATCH](inp, out, p, s, c)
 
     print("Output sample 0 (first 8):", end="")
     for i in range(8):
@@ -81,7 +84,7 @@ def test_bn_gradient_check() raises:
     var gi = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_in)
     var gp = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grad_params)
 
-    BN.backward[BATCH](go, gi, p, c, gp)
+    BN.backward[BATCH](go, gi, p, s, c, gp)
 
     # Finite-difference check for grad_input
     var eps_fd = Float64(1e-3)
@@ -102,7 +105,7 @@ def test_bn_gradient_check() raises:
         # Reset running stats for clean forward
         params[2*C] = 0; params[2*C+1] = 0; params[2*C+2] = 0; params[2*C+3] = 0
         params[3*C] = 1; params[3*C+1] = 1; params[3*C+2] = 1; params[3*C+3] = 1
-        BN.forward[BATCH](inp_p, out_p, p, c_p)
+        BN.forward[BATCH](inp_p, out_p, p, s, c_p)
         var loss_plus: Float64 = 0.0
         for j in range(BATCH * DIM):
             loss_plus += Float64(out_plus[j])  # L = sum(output), so dL/dy = 1
@@ -118,7 +121,7 @@ def test_bn_gradient_check() raises:
         var c_m = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_minus)
         params[2*C] = 0; params[2*C+1] = 0; params[2*C+2] = 0; params[2*C+3] = 0
         params[3*C] = 1; params[3*C+1] = 1; params[3*C+2] = 1; params[3*C+3] = 1
-        BN.forward[BATCH](inp_m, out_m, p, c_m)
+        BN.forward[BATCH](inp_m, out_m, p, s, c_m)
         var loss_minus: Float64 = 0.0
         for j in range(BATCH * DIM):
             loss_minus += Float64(out_minus[j])
@@ -159,7 +162,7 @@ def test_bn_gradient_check() raises:
         memset(cache_pp, 0, BATCH * CS)
         var out_pp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_pp)
         var c_pp = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_pp)
-        BN.forward[BATCH](inp, out_pp_t, p, c_pp)
+        BN.forward[BATCH](inp, out_pp_t, p, s, c_pp)
         var lp: Float64 = 0.0
         for j in range(BATCH * DIM):
             lp += Float64(out_pp[j])
@@ -173,7 +176,7 @@ def test_bn_gradient_check() raises:
         memset(cache_pm, 0, BATCH * CS)
         var out_pm_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_pm)
         var c_pm = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_pm)
-        BN.forward[BATCH](inp, out_pm_t, p, c_pm)
+        BN.forward[BATCH](inp, out_pm_t, p, s, c_pm)
         var lm: Float64 = 0.0
         for j in range(BATCH * DIM):
             lm += Float64(out_pm[j])
@@ -269,7 +272,7 @@ def test_cnn_bn_learns() raises:
         memset(pred, 0, BATCH * OUT)
         memset(cache, 0, BATCH * SmallNet.CACHE_SIZE)
 
-        SmallNet.forward[BATCH](obs_t, pred_t, state.params_view(), cache_t)
+        SmallNet.forward[BATCH](obs_t, pred_t, state.params_view(), state.model_state_view(), cache_t)
 
         # Compute CE loss + gradient for policy
         var batch_loss: Float64 = 0.0
@@ -307,7 +310,7 @@ def test_cnn_bn_learns() raises:
         memset(grad_in, 0, BATCH * OBS)
         var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin](grad_in)
         var grads_v = state.grads_view()
-        SmallNet.backward[BATCH](go_t, gi_t, state.params_view(), cache_t, grads_v)
+        SmallNet.backward[BATCH](go_t, gi_t, state.params_view(), state.model_state_view(), cache_t, grads_v)
 
         state.optimizer_step()
 
@@ -316,7 +319,7 @@ def test_cnn_bn_learns() raises:
 
     # Final forward
     memset(pred, 0, BATCH * OUT)
-    SmallNet.forward[BATCH](obs_t, pred_t, state.params_view())
+    SmallNet.forward[BATCH](obs_t, pred_t, state.params_view(), state.model_state_view())
     var final_loss: Float64 = 0.0
     for b in range(BATCH):
         var max_l: Float64 = -1e18

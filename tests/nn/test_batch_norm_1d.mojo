@@ -13,7 +13,7 @@ Usage:
 """
 
 from std.math import sqrt
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
@@ -53,8 +53,11 @@ def test_cpu_gradcheck() raises:
     var out = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](output_data)
     var p = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var c = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_data)
+    var s = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    BN.forward[BATCH](inp, out, p, c)
+    BN.forward[BATCH](inp, out, p, s, c)
 
     # Backward with dL/dy = 1 (L = sum(output))
     var grad_out = alloc[Scalar[dtype]](BATCH * DIM)
@@ -70,7 +73,7 @@ def test_cpu_gradcheck() raises:
     var gi = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_in)
     var gp = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grad_params)
 
-    BN.backward[BATCH](go, gi, p, c, gp)
+    BN.backward[BATCH](go, gi, p, s, c, gp)
 
     # FD check for grad_input. Running stats are reset before each forward
     # so the EMA doesn't accumulate across FD probes.
@@ -89,7 +92,7 @@ def test_cpu_gradcheck() raises:
         memset(cache_plus, 0, BATCH * CS)
         var op_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_plus)
         var cp_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_plus)
-        BN.forward[BATCH](inp, op_t, p, cp_t)
+        BN.forward[BATCH](inp, op_t, p, s, cp_t)
         var loss_plus: Float64 = 0.0
         for j in range(BATCH * DIM):
             loss_plus += Float64(out_plus[j])
@@ -104,7 +107,7 @@ def test_cpu_gradcheck() raises:
         memset(cache_minus, 0, BATCH * CS)
         var om_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_minus)
         var cm_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_minus)
-        BN.forward[BATCH](inp, om_t, p, cm_t)
+        BN.forward[BATCH](inp, om_t, p, s, cm_t)
         var loss_minus: Float64 = 0.0
         for j in range(BATCH * DIM):
             loss_minus += Float64(out_minus[j])
@@ -145,7 +148,7 @@ def test_cpu_gradcheck() raises:
         memset(cache_pp, 0, BATCH * CS)
         var opp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_pp)
         var cpp_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_pp)
-        BN.forward[BATCH](inp, opp_t, p, cpp_t)
+        BN.forward[BATCH](inp, opp_t, p, s, cpp_t)
         var lp: Float64 = 0.0
         for j in range(BATCH * DIM):
             lp += Float64(out_pp[j])
@@ -160,7 +163,7 @@ def test_cpu_gradcheck() raises:
         memset(cache_pm, 0, BATCH * CS)
         var opm_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_pm)
         var cpm_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_pm)
-        BN.forward[BATCH](inp, opm_t, p, cpm_t)
+        BN.forward[BATCH](inp, opm_t, p, s, cpm_t)
         var lm: Float64 = 0.0
         for j in range(BATCH * DIM):
             lm += Float64(out_pm[j])
@@ -234,8 +237,11 @@ def test_cpu_vs_gpu() raises:
     var out_cpu = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](cpu_out)
     var pcpu_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](cpu_params)
     var ccpu_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cpu_cache)
+    var scpu_t = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    BN.forward[BATCH](inp_cpu, out_cpu, pcpu_t, ccpu_t)
+    BN.forward[BATCH](inp_cpu, out_cpu, pcpu_t, scpu_t, ccpu_t)
 
     # --- GPU forward (training) ---
     var gpu_input = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
@@ -253,8 +259,11 @@ def test_cpu_vs_gpu() raises:
     var gout_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_output.unsafe_ptr())
     var gpar_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_params.unsafe_ptr())
     var gcac_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](gpu_cache.unsafe_ptr())
+    var gsta_t = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    BN.forward_gpu[BATCH](ctx, gout_t, ginp_t, gpar_t, gcac_t, gpu_workspace)
+    BN.forward_gpu[BATCH](ctx, gout_t, ginp_t, gpar_t, gsta_t, gcac_t, gpu_workspace)
     ctx.synchronize()
 
     var gpu_out_h = alloc[Scalar[dtype]](BATCH * DIM)
@@ -302,7 +311,7 @@ def test_cpu_vs_gpu() raises:
     var go_cpu = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_out_data)
     var gi_cpu = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](cpu_gin)
     var gp_cpu = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](cpu_gp)
-    BN.backward[BATCH](go_cpu, gi_cpu, pcpu_t, ccpu_t, gp_cpu)
+    BN.backward[BATCH](go_cpu, gi_cpu, pcpu_t, scpu_t, ccpu_t, gp_cpu)
 
     # GPU backward (reuse gpu_cache + gpu_params from training forward)
     var gpu_grad_out = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
@@ -316,7 +325,7 @@ def test_cpu_vs_gpu() raises:
     var ggi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_grad_in.unsafe_ptr())
     var ggp_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_grad_params.unsafe_ptr())
 
-    BN.backward_gpu[BATCH](ctx, ggi_t, ggo_t, gpar_t, gcac_t, ggp_t, gpu_workspace)
+    BN.backward_gpu[BATCH](ctx, ggi_t, ggo_t, gpar_t, gsta_t, gcac_t, ggp_t, gpu_workspace)
     ctx.synchronize()
 
     var gpu_gin_h = alloc[Scalar[dtype]](BATCH * DIM)
@@ -397,7 +406,10 @@ def test_inference_mode_cpu_vs_gpu() raises:
     var inp_cpu = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](input_data)
     var oc_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](cpu_out)
     var pc_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
-    BN.forward[BATCH](inp_cpu, oc_t, pc_t)  # inference overload (no cache)
+    var sc_t = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    BN.forward[BATCH](inp_cpu, oc_t, pc_t, sc_t)  # inference overload (no cache)
 
     # GPU inference forward
     var gpu_in = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
@@ -411,8 +423,11 @@ def test_inference_mode_cpu_vs_gpu() raises:
     var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_in.unsafe_ptr())
     var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_out.unsafe_ptr())
     var gp_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_params.unsafe_ptr())
+    var gs_t = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    BN.forward_gpu_no_cache[BATCH](ctx, go_t, gi_t, gp_t, gpu_ws)
+    BN.forward_gpu_no_cache[BATCH](ctx, go_t, gi_t, gp_t, gs_t, gpu_ws)
     ctx.synchronize()
 
     var gpu_out_h = alloc[Scalar[dtype]](BATCH * DIM)
@@ -487,11 +502,14 @@ def test_running_stats_ema() raises:
     var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out)
     var p_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache)
+    var s_t = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
     for _ in range(N_STEPS):
         memset(out, 0, BATCH * DIM)
         memset(cache, 0, BATCH * CS)
-        BN.forward[BATCH](inp_t, out_t, p_t, c_t)
+        BN.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var max_rmean_err: Float64 = 0.0
     var max_rvar_err: Float64 = 0.0

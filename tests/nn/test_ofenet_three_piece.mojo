@@ -109,7 +109,7 @@ def test_three_piece_trains() raises:
         # ─── Forward chain ───
         memset(phi_s_ptr, 0, BS * PhiS)
         memset(sb_cache, 0, BS * SB.CACHE_SIZE)
-        SB.forward[BS](s_t, phi_s_t, sb.params_view(), sb_cache_t)
+        SB.forward[BS](s_t, phi_s_t, sb.params_view(), sb.model_state_view(), sb_cache_t)
 
         # Manual concat: phi_sa_in = [phi_s | a]
         for b in range(BS):
@@ -120,11 +120,11 @@ def test_three_piece_trains() raises:
 
         memset(phi_sa_ptr, 0, BS * PhiSA)
         memset(ab_cache, 0, BS * AB.CACHE_SIZE)
-        AB.forward[BS](phi_sa_in_t, phi_sa_t, ab.params_view(), ab_cache_t)
+        AB.forward[BS](phi_sa_in_t, phi_sa_t, ab.params_view(), ab.model_state_view(), ab_cache_t)
 
         memset(pred_ptr, 0, BS * SD)
         memset(pr_cache, 0, BS * PR.CACHE_SIZE)
-        PR.forward[BS](phi_sa_t, pred_t, pr.params_view(), pr_cache_t)
+        PR.forward[BS](phi_sa_t, pred_t, pr.params_view(), pr.model_state_view(), pr_cache_t)
 
         # ─── MSE loss + gradient ───
         var loss: Float64 = 0.0
@@ -145,12 +145,12 @@ def test_three_piece_trains() raises:
         # 1. Linear predictor backward → grad_phi_sa
         memset(grad_phi_sa_ptr, 0, BS * PhiSA)
         var pr_grads = pr.grads_view()
-        PR.backward[BS](grad_pred_t, grad_phi_sa_t, pr.params_view(), pr_cache_t, pr_grads)
+        PR.backward[BS](grad_pred_t, grad_phi_sa_t, pr.params_view(), pr.model_state_view(), pr_cache_t, pr_grads)
 
         # 2. ActionBranch backward → grad_phi_sa_in (split into grad_phi_s | grad_a)
         memset(grad_phi_sa_in_ptr, 0, BS * PhiSA_in)
         var ab_grads = ab.grads_view()
-        AB.backward[BS](grad_phi_sa_t, grad_phi_sa_in_t, ab.params_view(), ab_cache_t, ab_grads)
+        AB.backward[BS](grad_phi_sa_t, grad_phi_sa_in_t, ab.params_view(), ab.model_state_view(), ab_cache_t, ab_grads)
 
         # 3. Split: first PhiS dims are grad_phi_s, rest are grad_a (discarded)
         for b in range(BS):
@@ -160,7 +160,7 @@ def test_three_piece_trains() raises:
         # 4. StateBranch backward → grad_s (unused)
         memset(grad_s_ptr, 0, BS * SD)
         var sb_grads = sb.grads_view()
-        SB.backward[BS](grad_phi_s_t, grad_s_t, sb.params_view(), sb_cache_t, sb_grads)
+        SB.backward[BS](grad_phi_s_t, grad_s_t, sb.params_view(), sb.model_state_view(), sb_cache_t, sb_grads)
 
         # ─── Optimizer step (aux) ───
         sb.optimizer_step()

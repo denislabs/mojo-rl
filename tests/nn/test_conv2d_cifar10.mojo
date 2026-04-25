@@ -272,7 +272,7 @@ def main() raises:
 
         var params_eval = state.params_view()
         CNN.forward_gpu_no_cache[BATCH](
-            ctx, output_lt, batch_input, params_eval, workspace_buf
+            ctx, output_lt, batch_input, params_eval, state.model_state_view(), workspace_buf
         )
         ctx.enqueue_copy(output_host, output_buf)
         ctx.synchronize()

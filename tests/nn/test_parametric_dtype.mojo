@@ -2,7 +2,7 @@
 from mojo_rl.nn.model import ReLU
 from mojo_rl.nn.model.linear_act import LinearReLU
 from layout import LayoutTensor, Layout
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 
 
 def test_relu_float16():
@@ -34,9 +34,12 @@ def test_relu_float16():
     var params = rebind[LayoutTensor[DType.float16, Layout.row_major(0), MutAnyOrigin]](
         LayoutTensor[DType.float16, Layout.row_major(0)](pp)
     )
+    var state_view = LayoutTensor[
+        DType.float16, Layout.row_major(ReLU[DIM].STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[DType.float16], MutAnyOrigin](unsafe_from_address=0))
 
     # Call forward with explicit float16
-    ReLU[DIM].forward[BATCH, DType.float16](input, output, params)
+    ReLU[DIM].forward[BATCH, DType.float16](input, output, params, state_view)
 
     # Verify: ReLU([-1, 2, -3, 4]) = [0, 2, 0, 4]
     var pass_count = 0

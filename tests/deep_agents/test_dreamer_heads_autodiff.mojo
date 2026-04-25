@@ -11,6 +11,7 @@ from mojo_rl.nn.constants import dtype
 from mojo_rl.deep_agents.dreamer_v3.rssm import RSSM
 from layout import Layout, LayoutTensor
 from std.math import abs
+from std.memory import UnsafePointer
 
 
 def test_heads_forward() raises:
@@ -64,7 +65,7 @@ def test_heads_forward() raises:
         cont_out.unsafe_ptr()
     )
     RSSMType.ContNet.forward[BATCH](
-        feat_t, cont_t, rssm.continue_head.params_view()
+        feat_t, cont_t, rssm.continue_head.params_view(), rssm.continue_head.model_state_view()
     )
 
     # Forward via ComputeGraph heads
@@ -325,7 +326,12 @@ def test_heads_grad_check() raises:
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_arr.unsafe_ptr())
 
-    M.forward[BATCH](feat_t, output_t, params_t, cache_t)
+    # Zero-length model state (HeadsGraph is stateless).
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
+    M.forward[BATCH](feat_t, output_t, params_t, state_t, cache_t)
 
     var grad_out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, HEADS_OUT), MutAnyOrigin
@@ -343,7 +349,7 @@ def test_heads_grad_check() raises:
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    M.backward[BATCH](grad_out_t, grad_feat_t, params_t, cache_t, grads_t)
+    M.backward[BATCH](grad_out_t, grad_feat_t, params_t, state_t, cache_t, grads_t)
 
     # Finite difference — input gradients (most important for BPTT)
     var eps = Float64(1e-4)
@@ -359,7 +365,7 @@ def test_heads_grad_check() raises:
         var op_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, HEADS_OUT), MutAnyOrigin
         ](op.unsafe_ptr())
-        M.forward[BATCH](feat_t, op_t, params_t)
+        M.forward[BATCH](feat_t, op_t, params_t, state_t)
 
         feat_arr[in_idx] = orig - Scalar[dtype](eps)
         var om = InlineArray[Scalar[dtype], BATCH * HEADS_OUT](
@@ -368,7 +374,7 @@ def test_heads_grad_check() raises:
         var om_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, HEADS_OUT), MutAnyOrigin
         ](om.unsafe_ptr())
-        M.forward[BATCH](feat_t, om_t, params_t)
+        M.forward[BATCH](feat_t, om_t, params_t, state_t)
 
         feat_arr[in_idx] = orig
 

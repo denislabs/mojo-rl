@@ -67,7 +67,7 @@ def test_forward_backward[Config: AlphaZeroConfig](
     )
 
     M.forward_gpu[BS](
-        ctx, output_t, input_t, gpu.params_view(), cache_t, workspace
+        ctx, output_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_t, workspace
     )
 
     # Read output to host
@@ -126,6 +126,7 @@ def test_forward_backward[Config: AlphaZeroConfig](
         grad_in_t,
         grad_out_t,
         gpu.params_view(),
+        gpu.model_state_view(),
         cache_t,
         grads,
         workspace,
@@ -238,7 +239,7 @@ def gpu_finite_diff_check[
     ](cache_buf.unsafe_ptr())
 
     M.forward_gpu[BS](
-        ctx, output_t, input_t, gpu.params_view(), cache_t, workspace
+        ctx, output_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_t, workspace
     )
 
     var grad_in_buf = ctx.enqueue_create_buffer[dtype](BS * IN)
@@ -253,7 +254,7 @@ def gpu_finite_diff_check[
     gpu.zero_grads(ctx)
     var grads = gpu.grads_view()
     M.backward_gpu[BS](
-        ctx, grad_in_t, grad_out_t, gpu.params_view(), cache_t,
+        ctx, grad_in_t, grad_out_t, gpu.params_view(), gpu.model_state_view(), cache_t,
         grads, workspace,
     )
 
@@ -312,7 +313,7 @@ def gpu_finite_diff_check[
             dtype, Layout.row_major(BS, CS), MutAnyOrigin
         ](cache_tmp.unsafe_ptr())
         M.forward_gpu[BS](
-            ctx, out_plus_t, input_t, gpu.params_view(), cache_tmp_t, workspace
+            ctx, out_plus_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_tmp_t, workspace
         )
         ctx.enqueue_copy(out_plus_host, out_plus_buf)
 
@@ -329,7 +330,7 @@ def gpu_finite_diff_check[
             dtype, Layout.row_major(BS, CS), MutAnyOrigin
         ](cache_tmp.unsafe_ptr())
         M.forward_gpu[BS](
-            ctx, out_minus_t, input_t, gpu.params_view(), cache_minus_t, workspace
+            ctx, out_minus_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_minus_t, workspace
         )
         ctx.enqueue_copy(out_minus_host, out_minus_buf)
 
@@ -553,7 +554,7 @@ def test_forward_only[M: Model, BS: Int = 4](
     )
 
     M.forward_gpu[BS](
-        ctx, output_t, input_t, gpu.params_view(), cache_t, workspace
+        ctx, output_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_t, workspace
     )
     ctx.synchronize()
     print("  [PASS]")

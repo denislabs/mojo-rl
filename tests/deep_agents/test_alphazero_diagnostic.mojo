@@ -45,6 +45,16 @@ struct DiagConfig(AlphaZeroConfig):
     comptime num_simulations: Int = 25
     comptime max_nodes: Int = 64
     comptime temp_threshold: Int = 15
+    comptime temp_min: Float64 = 0.0
+    comptime batch_sims: Int = 8
+    comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 0.0
+    comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 9
+    comptime board_rows: Int = 3
+    comptime board_cols: Int = 3
+    comptime board_planes: Int = 3
+    comptime num_symmetries: Int = 2
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[1.0]
     comptime Players = SelfPlay
@@ -209,9 +219,29 @@ def test_gradient_descent() raises:
     var gpu = agent.GPUStateType(ctx)
     gpu.upload_from(agent.state, ctx)
 
+    # Pre-allocated diagnostic host buffers (reused every train step)
+    comptime _DIAG_BATCH = DiagConfig.batch_size
+    comptime _DIAG_POUT = DiagConfig.PredModel.OUT_DIM
+    comptime _DIAG_PS = DiagConfig.PredModel.PARAM_SIZE
+    var diag_pred_host = ctx.enqueue_create_host_buffer[dtype](
+        _DIAG_BATCH * _DIAG_POUT
+    )
+    var diag_go_host = ctx.enqueue_create_host_buffer[dtype](
+        _DIAG_BATCH * _DIAG_POUT
+    )
+    var diag_params_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
+    var diag_grads_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
+
     # Compute approximate loss at start and end by checking predictions
     for step in range(500):
-        agent.train_step_gpu(ctx, gpu)
+        agent.train_step_gpu(
+            ctx,
+            gpu,
+            diag_pred_host,
+            diag_go_host,
+            diag_params_host,
+            diag_grads_host,
+        )
 
     gpu.download_to(agent.state, ctx)
 
@@ -282,8 +312,29 @@ def test_value_signs() raises:
     # Train
     var gpu = agent.GPUStateType(ctx)
     gpu.upload_from(agent.state, ctx)
+
+    # Pre-allocated diagnostic host buffers (reused every train step)
+    comptime _DIAG_BATCH = DiagConfig.batch_size
+    comptime _DIAG_POUT = DiagConfig.PredModel.OUT_DIM
+    comptime _DIAG_PS = DiagConfig.PredModel.PARAM_SIZE
+    var diag_pred_host = ctx.enqueue_create_host_buffer[dtype](
+        _DIAG_BATCH * _DIAG_POUT
+    )
+    var diag_go_host = ctx.enqueue_create_host_buffer[dtype](
+        _DIAG_BATCH * _DIAG_POUT
+    )
+    var diag_params_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
+    var diag_grads_host = ctx.enqueue_create_host_buffer[dtype](_DIAG_PS)
+
     for _ in range(1000):
-        agent.train_step_gpu(ctx, gpu)
+        agent.train_step_gpu(
+            ctx,
+            gpu,
+            diag_pred_host,
+            diag_go_host,
+            diag_params_host,
+            diag_grads_host,
+        )
     gpu.download_to(agent.state, ctx)
 
     # Check via select_action — if actions differ for win/lose, policy learned

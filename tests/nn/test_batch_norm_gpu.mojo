@@ -5,7 +5,7 @@ This catches GPU-specific bugs (wrong kernel launch, stride issues, etc).
 """
 
 from std.math import sqrt
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
@@ -68,8 +68,11 @@ def test_bn_gpu_vs_cpu() raises:
     var cpu_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](cpu_output)
     var cpu_params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var cpu_cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cpu_cache)
+    var cpu_state_t = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    BN.forward[BATCH](inp_t, cpu_out_t, cpu_params_t, cpu_cache_t)
+    BN.forward[BATCH](inp_t, cpu_out_t, cpu_params_t, cpu_state_t, cpu_cache_t)
 
     # Save CPU running stats
     var cpu_rmean = alloc[Scalar[dtype]](C)
@@ -108,8 +111,11 @@ def test_bn_gpu_vs_cpu() raises:
     var gpu_out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_output.unsafe_ptr())
     var gpu_params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_params.unsafe_ptr())
     var gpu_cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](gpu_cache.unsafe_ptr())
+    var gpu_state_t = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
-    BN.forward_gpu[BATCH](ctx, gpu_out_t, gpu_inp_t, gpu_params_t, gpu_cache_t, gpu_ws)
+    BN.forward_gpu[BATCH](ctx, gpu_out_t, gpu_inp_t, gpu_params_t, gpu_state_t, gpu_cache_t, gpu_ws)
     ctx.synchronize()
 
     # Download GPU output
@@ -172,7 +178,7 @@ def test_bn_gpu_vs_cpu() raises:
     var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_out_data)
     var cpu_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](cpu_grad_in)
     var cpu_gp_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](cpu_grad_params)
-    BN.backward[BATCH](go_t, cpu_gi_t, cpu_params_t, cpu_cache_t, cpu_gp_t)
+    BN.backward[BATCH](go_t, cpu_gi_t, cpu_params_t, cpu_state_t, cpu_cache_t, cpu_gp_t)
 
     # GPU backward
     var gpu_grad_out = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
@@ -191,7 +197,7 @@ def test_bn_gpu_vs_cpu() raises:
     var gpu_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_grad_in.unsafe_ptr())
     var gpu_gp_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_grads.unsafe_ptr())
 
-    BN.backward_gpu[BATCH](ctx, gpu_gi_t, gpu_go_t, gpu_params_t, gpu_cache_t, gpu_gp_t, gpu_ws)
+    BN.backward_gpu[BATCH](ctx, gpu_gi_t, gpu_go_t, gpu_params_t, gpu_state_t, gpu_cache_t, gpu_gp_t, gpu_ws)
     ctx.synchronize()
 
     # Download and compare
@@ -237,11 +243,11 @@ def test_bn_gpu_vs_cpu() raises:
     var cpu_nc_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](cpu_nc_output)
     # Restore params for CPU
     var cpu_nc_params = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
-    BN.forward[BATCH](inp_t, cpu_nc_t, cpu_nc_params)
+    BN.forward[BATCH](inp_t, cpu_nc_t, cpu_nc_params, cpu_state_t)
 
     gpu_output.enqueue_fill(Scalar[dtype](0.0))
     ctx.synchronize()
-    BN.forward_gpu_no_cache[BATCH](ctx, gpu_out_t, gpu_inp_t, gpu_params_t, gpu_ws)
+    BN.forward_gpu_no_cache[BATCH](ctx, gpu_out_t, gpu_inp_t, gpu_params_t, gpu_state_t, gpu_ws)
     ctx.synchronize()
     ctx.enqueue_copy(gpu_out_host, gpu_output)
     ctx.synchronize()
@@ -355,13 +361,13 @@ def test_full_cnn_gpu_training() raises:
         # Forward with cache
         ctx.enqueue_memset(pred_buf, 0)
         ctx.enqueue_memset(cache_buf, 0)
-        Net.forward_gpu[BATCH](ctx, pred_t, obs_t, gpu.params_view(), cache_t, ws_buf)
+        Net.forward_gpu[BATCH](ctx, pred_t, obs_t, gpu.params_view(), gpu.model_state_view(), cache_t, ws_buf)
 
         # Backward
         gpu.zero_grads(ctx)
         ctx.enqueue_memset(grad_in_buf, 0)
         var grads_v = gpu.grads_view()
-        Net.backward_gpu[BATCH](ctx, gi_t, go_t, gpu.params_view(), cache_t, grads_v, ws_buf)
+        Net.backward_gpu[BATCH](ctx, gi_t, go_t, gpu.params_view(), gpu.model_state_view(), cache_t, grads_v, ws_buf)
 
         # Optimizer
         gpu.optimizer_step(ctx)
