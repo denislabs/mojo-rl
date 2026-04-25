@@ -80,7 +80,8 @@ def deterministic_select_action[
     ](act_arr.unsafe_ptr())
 
     var p = actor_online.params_view()
-    ActorNet.forward[1](obs_t, act_t, p)
+    var s = actor_online.model_state_view()
+    ActorNet.forward[1](obs_t, act_t, p, s)
 
     var result = List[Scalar[DTYPE]](capacity=ACTIONS)
     for i in range(ACTIONS):
@@ -137,7 +138,8 @@ def greedy_continuous_action[
     ](act_arr.unsafe_ptr())
 
     var p = actor_online.params_view()
-    ActorNet.forward[1](obs_t, act_t, p)
+    var s = actor_online.model_state_view()
+    ActorNet.forward[1](obs_t, act_t, p, s)
 
     var result = List[Float64](capacity=ACTIONS)
     for i in range(ACTIONS):

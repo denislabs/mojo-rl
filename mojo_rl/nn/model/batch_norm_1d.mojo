@@ -49,6 +49,7 @@ struct BatchNorm1D[
     comptime PARAM_SIZE: Int = 4 * Self.dim  # gamma, beta, running_mean, running_var
     comptime CACHE_SIZE: Int = 3 * Self.dim  # x_hat + batch_mean + batch_inv_std
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0
+    comptime STATE_SIZE: Int = 0  # Phase 1: stateless. Phase 3 moves running stats here.
 
     # Param offsets
     comptime GAMMA_OFF: Int = 0
@@ -96,7 +97,7 @@ struct BatchNorm1D[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -161,7 +162,7 @@ struct BatchNorm1D[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -199,7 +200,7 @@ struct BatchNorm1D[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -535,7 +536,7 @@ struct BatchNorm1D[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -591,7 +592,7 @@ struct BatchNorm1D[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -644,7 +645,7 @@ struct BatchNorm1D[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -666,7 +667,7 @@ struct BatchNorm1D[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

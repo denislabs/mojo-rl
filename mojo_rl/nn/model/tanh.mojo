@@ -19,6 +19,7 @@ struct Tanh[dim: Int](Model):
     comptime PARAM_SIZE: Int = 0
     comptime CACHE_SIZE: Int = Self.dim  # Cache tanh output for backward
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer, no workspace needed
+    comptime STATE_SIZE: Int = 0  # Stateless
 
     def __init__(out self):
         pass
@@ -54,7 +55,7 @@ struct Tanh[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -95,7 +96,7 @@ struct Tanh[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -129,7 +130,7 @@ struct Tanh[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -290,7 +291,7 @@ struct Tanh[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -345,7 +346,7 @@ struct Tanh[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -394,7 +395,7 @@ struct Tanh[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -416,7 +417,7 @@ struct Tanh[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

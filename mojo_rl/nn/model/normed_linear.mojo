@@ -110,7 +110,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -202,7 +202,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -272,7 +272,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -1944,7 +1944,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -2076,7 +2076,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -2195,7 +2195,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -2219,7 +2219,7 @@ struct NormedLinear[in_dim: Int, out_dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

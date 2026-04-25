@@ -70,6 +70,8 @@ struct Adam[
             params: Parameters to update.
             grads: Gradients.
             state: Optimizer state layout `(PARAM_SIZE, 2)`: m at col 0, v at col 1.
+            opt_global_state: Optimizer global state (zero-length for Adam in
+                Phase 1; will hold the on-device step counter in Phase 4).
             step_num: Current step (1-based), used for bias correction.
             lr_scale: Multiplicative LR scale (default 1.0). Set < 1.0 for LR annealing.
         """
@@ -176,6 +178,8 @@ struct Adam[
             params: Parameters [PARAM_SIZE] (modified in place).
             grads: Gradients [PARAM_SIZE].
             state: State [PARAM_SIZE, 2] (m and v moments).
+            opt_global_state: Optimizer global state (zero-length for Adam in
+                Phase 1; will hold the on-device step counter in Phase 4).
             step_num: Current step (1-based), used for bias correction.
             lr_scale: Multiplicative LR scale (default 1.0). Set < 1.0 for LR annealing.
         """

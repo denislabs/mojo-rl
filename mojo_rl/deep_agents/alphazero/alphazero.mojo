@@ -2697,6 +2697,7 @@ struct GenericAlphaZeroAgent[
                     e_pred_obs,
                     e_pred_out,
                     gpu.prediction.params_view(),
+                    gpu.prediction.model_state_view(),
                     mcts_ws,
                 )
 
@@ -3334,6 +3335,7 @@ struct GenericAlphaZeroAgent[
                         pred_obs,
                         pred_out,
                         gpu.prediction.params_view(),
+                        gpu.prediction.model_state_view(),
                         mcts_ws,
                     )
 

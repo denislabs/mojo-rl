@@ -63,7 +63,7 @@ struct Residual[Inner: Model](Model):
 
     @staticmethod
     def initialize_state[dtype: DType = DType.float32](
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -88,7 +88,7 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -116,7 +116,7 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -141,7 +141,7 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -175,7 +175,7 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -228,7 +228,7 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -275,7 +275,7 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -301,7 +301,7 @@ struct Residual[Inner: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

@@ -2281,11 +2281,18 @@ struct GenericOffPolicyAgent[
                 Layout.row_major(Self.Config.ActorModel.PARAM_SIZE),
                 MutAnyOrigin,
             ](actor_params_buf.unsafe_ptr())
+            # Zero-length state slice (eval-only path; no GPUNetworkState available here).
+            var eval_state_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.ActorModel.STATE_SIZE),
+                MutAnyOrigin,
+            ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
             Self.Config.ActorModel.forward_gpu_no_cache[N_EVAL_ENVS](
                 ctx,
                 eval_actor_out_t,
                 eval_obs_t,
                 eval_params_t,
+                eval_state_t,
                 actor_workspace_buf,
             )
 

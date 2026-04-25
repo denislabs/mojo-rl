@@ -31,6 +31,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     comptime PARAM_SIZE: Int = 2 * Self.dim  # gamma + beta
     comptime CACHE_SIZE: Int = Self.dim + 2  # normalized + inv_std + mean
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
+    comptime STATE_SIZE: Int = 0  # Stateless
 
     @staticmethod
     def initialize_params[
@@ -66,7 +67,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -126,7 +127,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -173,7 +174,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -513,7 +514,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -577,7 +578,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -635,7 +636,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -659,7 +660,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

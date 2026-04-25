@@ -2930,12 +2930,18 @@ struct TDMPC2Agent[
                     grid_dim=(Self.ENC_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
+                # Zero-length opt_global_state (Adam.GLOBAL_STATE_SIZE = 0 in Phase 1).
+                var _og_zero = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
+                    UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+                )
+
                 gpu_wm_step += 1
                 Adam[LR=Self.WM.ENC_LR].step_gpu[Self.ENC_P](
                     ctx,
                     enc_params_tensor,
                     enc_grads_tensor,
                     enc_state_tensor,
+                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
                     gpu_wm_step,
                     1.0,
                 )
@@ -2972,6 +2978,7 @@ struct TDMPC2Agent[
                     dyn_params_tensor,
                     dyn_grads_tensor,
                     dyn_state_tensor,
+                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
                     gpu_wm_step,
                     1.0,
                 )
@@ -3008,6 +3015,7 @@ struct TDMPC2Agent[
                     rew_params_tensor,
                     rew_grads_tensor,
                     rew_state_tensor,
+                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
                     gpu_wm_step,
                     1.0,
                 )
@@ -3044,6 +3052,7 @@ struct TDMPC2Agent[
                     term_params_tensor,
                     term_grads_tensor,
                     term_state_tensor,
+                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
                     gpu_wm_step,
                     1.0,
                 )
@@ -3482,6 +3491,7 @@ struct TDMPC2Agent[
                     pol_params_tensor,
                     pol_grads_tensor,
                     pol_state_tensor,
+                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
                     gpu_pi_step,
                     1.0,
                 )

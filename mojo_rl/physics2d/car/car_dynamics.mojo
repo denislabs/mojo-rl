@@ -709,7 +709,7 @@ struct CarDynamics:
         CONTROLS_OFFSET: Int,
         MAX_TILES: Int,
     ](
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,

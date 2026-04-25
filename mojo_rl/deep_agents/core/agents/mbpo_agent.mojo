@@ -443,6 +443,7 @@ struct DynamicsEnsemble[
                 MutAnyOrigin,
             ](cache_arr.unsafe_ptr())
             var p = self.members[member_idx].params_view()
+            var s = self.members[member_idx].model_state_view()
             Self.DynNet.forward_with_cache[1](in_t, out_t, p, s, cache_t)
 
             # Compute Gaussian NLL loss and gradient w.r.t. output
@@ -488,7 +489,7 @@ struct DynamicsEnsemble[
                 dtype, Layout.row_major(1, Self.DynModel.IN_DIM), MutAnyOrigin
             ](grad_in_arr.unsafe_ptr())
             var g = self.members[member_idx].grads_view()
-            Self.DynNet.backward[1](grad_out_t, grad_in_t, p, s, cache_t, g)
+            Self.DynNet.backward[1](grad_out_t, grad_in_t, p, s, cache_t, g)  # s declared at top of block
 
         # Optimizer step
         self.members[member_idx].optimizer_step()
@@ -1994,7 +1995,7 @@ struct MBPOAgent[
         # Forward all target critics
         # Zero-length model state slice (critic is stateless; CriticGroup has no model_state_view)
         var critic_state = LayoutTensor[
-            dtype, Layout.row_major(Self.CriticModel.STATE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
         ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         for i in range(Self.Config.NUM_CRITICS):
             var next_qi_t = ws.next_q(i)
@@ -2581,6 +2582,9 @@ struct MBPOAgent[
                 var p_dyn = gpu_dynamics.members[
                     elite_member_idx
                 ].params_view()
+                var s_dyn = gpu_dynamics.members[
+                    elite_member_idx
+                ].model_state_view()
                 # r_ws is shared across elites — safe because enqueue is FIFO
                 # on the stream and each forward finishes before the next
                 # starts (both use r_ws, so hardware serializes them).
@@ -2589,6 +2593,7 @@ struct MBPOAgent[
                     r_dyn_in_t,
                     r_dyn_out_slot_t,
                     p_dyn,
+                    s_dyn,
                     gpu_dynamics.r_ws,
                 )
 

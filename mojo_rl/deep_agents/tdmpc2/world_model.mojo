@@ -255,7 +255,7 @@ struct WorldModel[
             z: Output latent states [BATCH * LATENT_DIM] (written).
         """
 
-        Self.EncoderNet.forward[BATCH](obs, z, self.encoder.params_view())
+        Self.EncoderNet.forward[BATCH](obs, z, self.encoder.params_view(), self.encoder.model_state_view())
 
     def encode_with_cache[
         BATCH: Int
@@ -282,7 +282,7 @@ struct WorldModel[
         """
 
         Self.EncoderNet.forward_with_cache[BATCH](
-            obs, z, self.encoder.params_view(), cache
+            obs, z, self.encoder.params_view(), self.encoder.model_state_view(), cache
         )
 
     def dynamics_forward[
@@ -303,7 +303,7 @@ struct WorldModel[
             z_next: Output next latent state [BATCH * LATENT_DIM] (written).
         """
         Self.DynamicsNet.forward[BATCH](
-            z_a, z_next, self.dynamics.params_view()
+            z_a, z_next, self.dynamics.params_view(), self.dynamics.model_state_view()
         )
 
     def dynamics_forward_with_cache[
@@ -324,7 +324,7 @@ struct WorldModel[
     ):
         """Predict next latent state with cache for backprop."""
         Self.DynamicsNet.forward_with_cache[BATCH](
-            z_a, z_next, self.dynamics.params_view(), cache
+            z_a, z_next, self.dynamics.params_view(), self.dynamics.model_state_view(), cache
         )
 
     def reward_forward[
@@ -340,7 +340,7 @@ struct WorldModel[
     ):
         """Predict reward distribution logits (no cache)."""
         Self.RewardNet.forward[BATCH](
-            z_a, logits, self.reward_head.params_view()
+            z_a, logits, self.reward_head.params_view(), self.reward_head.model_state_view()
         )
 
     def reward_forward_with_cache[
@@ -361,7 +361,7 @@ struct WorldModel[
     ):
         """Predict reward distribution logits with cache."""
         Self.RewardNet.forward_with_cache[BATCH](
-            z_a, logits, self.reward_head.params_view(), cache
+            z_a, logits, self.reward_head.params_view(), self.reward_head.model_state_view(), cache
         )
 
     def termination_forward[
@@ -389,7 +389,7 @@ struct WorldModel[
         var out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, 1), MutAnyOrigin
         ](out.unsafe_ptr())
-        Self.TermNet.forward[BATCH](z, out_t, self.termination.params_view())
+        Self.TermNet.forward[BATCH](z, out_t, self.termination.params_view(), self.termination.model_state_view())
         for b in range(BATCH):
             term_prob[b, 0] = out[b]
 
@@ -422,7 +422,7 @@ struct WorldModel[
         var out_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, POL_OUT), MutAnyOrigin
         ](out.unsafe_ptr())
-        Self.PolicyNet.forward[BATCH](z, out_t, self.policy.params_view())
+        Self.PolicyNet.forward[BATCH](z, out_t, self.policy.params_view(), self.policy.model_state_view())
         for b in range(BATCH):
             for i in range(Self.ACTION_DIM):
                 mean[b, i] = out[b * POL_OUT + i]
@@ -452,7 +452,7 @@ struct WorldModel[
     ):
         """Predict policy output with cache for backprop."""
         Self.PolicyNet.forward_with_cache[BATCH](
-            z, out, self.policy.params_view(), cache
+            z, out, self.policy.params_view(), self.policy.model_state_view(), cache
         )
 
     def q_forward[
@@ -506,17 +506,17 @@ struct WorldModel[
         ](logits5.unsafe_ptr())
 
         if use_target:
-            Self.QNet.forward[BATCH](z_a, l1_t, self.q1_target.params_view())
-            Self.QNet.forward[BATCH](z_a, l2_t, self.q2_target.params_view())
-            Self.QNet.forward[BATCH](z_a, l3_t, self.q3_target.params_view())
-            Self.QNet.forward[BATCH](z_a, l4_t, self.q4_target.params_view())
-            Self.QNet.forward[BATCH](z_a, l5_t, self.q5_target.params_view())
+            Self.QNet.forward[BATCH](z_a, l1_t, self.q1_target.params_view(), self.q1_target.model_state_view())
+            Self.QNet.forward[BATCH](z_a, l2_t, self.q2_target.params_view(), self.q2_target.model_state_view())
+            Self.QNet.forward[BATCH](z_a, l3_t, self.q3_target.params_view(), self.q3_target.model_state_view())
+            Self.QNet.forward[BATCH](z_a, l4_t, self.q4_target.params_view(), self.q4_target.model_state_view())
+            Self.QNet.forward[BATCH](z_a, l5_t, self.q5_target.params_view(), self.q5_target.model_state_view())
         else:
-            Self.QNet.forward[BATCH](z_a, l1_t, self.q1.params_view())
-            Self.QNet.forward[BATCH](z_a, l2_t, self.q2.params_view())
-            Self.QNet.forward[BATCH](z_a, l3_t, self.q3.params_view())
-            Self.QNet.forward[BATCH](z_a, l4_t, self.q4.params_view())
-            Self.QNet.forward[BATCH](z_a, l5_t, self.q5.params_view())
+            Self.QNet.forward[BATCH](z_a, l1_t, self.q1.params_view(), self.q1.model_state_view())
+            Self.QNet.forward[BATCH](z_a, l2_t, self.q2.params_view(), self.q2.model_state_view())
+            Self.QNet.forward[BATCH](z_a, l3_t, self.q3.params_view(), self.q3.model_state_view())
+            Self.QNet.forward[BATCH](z_a, l4_t, self.q4.params_view(), self.q4.model_state_view())
+            Self.QNet.forward[BATCH](z_a, l5_t, self.q5.params_view(), self.q5.model_state_view())
 
         for b in range(BATCH * Self.NUM_BINS):
             q_logits[0 * BATCH * Self.NUM_BINS + b] = logits1[b]
@@ -545,15 +545,15 @@ struct WorldModel[
             logits: Output logits [BATCH * NUM_BINS] (written).
         """
         if q_idx == 0:
-            Self.QNet.forward[BATCH](z_a, logits, self.q1.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q1.params_view(), self.q1.model_state_view())
         elif q_idx == 1:
-            Self.QNet.forward[BATCH](z_a, logits, self.q2.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q2.params_view(), self.q2.model_state_view())
         elif q_idx == 2:
-            Self.QNet.forward[BATCH](z_a, logits, self.q3.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q3.params_view(), self.q3.model_state_view())
         elif q_idx == 3:
-            Self.QNet.forward[BATCH](z_a, logits, self.q4.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q4.params_view(), self.q4.model_state_view())
         else:
-            Self.QNet.forward[BATCH](z_a, logits, self.q5.params_view())
+            Self.QNet.forward[BATCH](z_a, logits, self.q5.params_view(), self.q5.model_state_view())
 
     def q_min_forward[
         BATCH: Int

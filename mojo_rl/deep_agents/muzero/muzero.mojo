@@ -2675,6 +2675,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                         dyn_in_b,
                         dyn_out_b,
                         gpu.dynamics.params_view(),
+                        gpu.dynamics.model_state_view(),
                         mcts_workspace,
                     )
 

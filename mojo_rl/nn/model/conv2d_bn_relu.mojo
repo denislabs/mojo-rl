@@ -83,6 +83,7 @@ struct Conv2DBatchNormReLU[
     # grad_pre_bn (backward): OUT_DIM (reuses temp conv cache region in forward)
     comptime CONV2D_WS: Int = Self.CONV_CACHE + Self.col_size * Self.out_channels
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.CONV2D_WS + Self.CONV_CACHE + Self.OUT_DIM
+    comptime STATE_SIZE: Int = 0  # Phase 1: stateless. Phase 3 moves running stats here.
 
     # =========================================================================
     # Initialization
@@ -133,7 +134,7 @@ struct Conv2DBatchNormReLU[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -227,7 +228,7 @@ struct Conv2DBatchNormReLU[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -285,7 +286,7 @@ struct Conv2DBatchNormReLU[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -681,7 +682,7 @@ struct Conv2DBatchNormReLU[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -780,7 +781,7 @@ struct Conv2DBatchNormReLU[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -842,7 +843,7 @@ struct Conv2DBatchNormReLU[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -864,7 +865,7 @@ struct Conv2DBatchNormReLU[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

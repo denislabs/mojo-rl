@@ -90,7 +90,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
 
     @staticmethod
     def initialize_state[dtype: DType = DType.float32](
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -114,7 +114,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -136,7 +136,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -155,7 +155,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -183,7 +183,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -207,7 +207,7 @@ trait GraphNode(Movable & ImplicitlyCopyable):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -267,7 +267,7 @@ struct GNode[
 
     @staticmethod
     def initialize_state[dtype: DType = DType.float32](
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -286,7 +286,7 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -308,7 +308,7 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -327,7 +327,7 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -353,7 +353,7 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -377,7 +377,7 @@ struct GNode[
         params: LayoutTensor[
             dtype, Layout.row_major(Self.OP_PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.OP_STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -598,7 +598,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
 
     @staticmethod
     def initialize_state[dtype: DType = DType.float32](
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -629,7 +629,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -767,7 +767,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -802,7 +802,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -968,7 +968,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -1264,7 +1264,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -1296,7 +1296,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -1322,7 +1322,7 @@ struct ComputeGraph[*NODES: GraphNode](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

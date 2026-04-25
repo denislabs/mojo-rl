@@ -34,6 +34,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
     # Only need cache during training (to store mask)
     comptime CACHE_SIZE: Int = Self.dim if Self.training else 0
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
+    comptime STATE_SIZE: Int = 0  # Stateless
 
     @staticmethod
     def initialize_params[
@@ -58,7 +59,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -101,7 +102,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -123,7 +124,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -291,7 +292,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -382,7 +383,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -431,7 +432,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -453,7 +454,7 @@ struct Dropout[dim: Int, p: Float64, SEED: UInt64, training: Bool](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

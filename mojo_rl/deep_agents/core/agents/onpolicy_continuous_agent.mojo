@@ -1012,7 +1012,8 @@ struct GenericOnPolicyContinuousAgent[
                     dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
                 ](actor_out.unsafe_ptr())
                 var p = eval_state.actor.params_view()
-                Self.ActorNet.forward[1](obs_t, actor_out_t, p)
+                var s = eval_state.actor.model_state_view()
+                Self.ActorNet.forward[1](obs_t, actor_out_t, p, s)
 
                 var action = List[Float64](capacity=Self.ACTIONS)
                 if stochastic:

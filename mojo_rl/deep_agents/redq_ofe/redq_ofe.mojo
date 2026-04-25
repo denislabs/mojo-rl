@@ -2748,6 +2748,16 @@ struct REDQOFEAgent[
         `self.cpu_ofe_{sb,ab,pr}`.
 
         Args:
+            ctx: GPU device context.
+            num_steps: Number of environment steps to train for.
+            warmup_steps: Steps of random-policy data collection before training begins.
+            verbose: Print per-step diagnostics if True.
+            print_every: Episode-stat reporting cadence (env steps).
+            environment_name: Display label for logs.
+            logger: Optional logger pointer (NULL = no logging).
+            rng_seed: Seed for env / exploration RNGs.
+            checkpoint_every: Save a checkpoint every N env steps (0 disables).
+            checkpoint_path: Destination path for checkpoint files.
             diag_every: If >= 0, override the `diag_every` set in __init__
                 for this run (log fine-grained metrics every N critic
                 updates). -1 keeps the constructor value.

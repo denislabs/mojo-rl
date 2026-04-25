@@ -84,7 +84,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -112,7 +112,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -147,7 +147,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -193,7 +193,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
         ],
         workspace_buf: DeviceBuffer[Self.dtype],
@@ -231,7 +231,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -272,7 +272,7 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

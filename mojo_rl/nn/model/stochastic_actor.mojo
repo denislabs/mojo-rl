@@ -216,7 +216,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -232,6 +232,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             input: Input features [BATCH, in_dim].
             output: Output tensor [BATCH, action_dim * 2] = [mean | log_std].
             params: Model parameters.
+            state: Persistent non-trainable state (unused — StochasticActor is stateless).
             cache: Cache buffer [BATCH, in_dim] for backward pass.
         """
         # Create view for mean weights
@@ -280,7 +281,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -330,7 +331,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -348,6 +349,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             grad_output: Gradient w.r.t. output [BATCH, action_dim * 2].
             grad_input: Gradient w.r.t. input [BATCH, in_dim] (written).
             params: Model parameters.
+            state: Persistent non-trainable state (unused — StochasticActor is stateless).
             cache: Cached input from forward pass [BATCH, in_dim].
             grads: Parameter gradients (accumulated).
         """
@@ -941,7 +943,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -1031,7 +1033,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -1107,7 +1109,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -1129,7 +1131,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

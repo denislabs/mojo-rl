@@ -453,7 +453,7 @@ struct WheelFriction:
         WHEELS_OFFSET: Int,
         CONTROLS_OFFSET: Int,
     ](
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,

@@ -90,6 +90,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     # Workspace stores noise_p [in_dim] + noise_q [out_dim] for GPU kernels.
     # Shared across batch but sized per-sample to ensure adequate allocation.
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.in_dim + Self.out_dim
+    comptime STATE_SIZE: Int = 0  # Stateless
 
     # Parameter offsets
     comptime MU_W_OFFSET: Int = 0
@@ -161,7 +162,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -222,7 +223,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
     ):
@@ -278,7 +279,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
@@ -368,7 +369,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
@@ -538,7 +539,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -683,7 +684,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         workspace: DeviceBuffer[dtype],
@@ -708,7 +709,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut state: LayoutTensor[
+        state: LayoutTensor[
             dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[

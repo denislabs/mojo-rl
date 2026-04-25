@@ -3548,6 +3548,7 @@ struct DreamerV3Agent[
                 imag_feat_2d,
                 actor_out_2d,
                 gpu_state.actor.params_view(),
+                gpu_state.actor.model_state_view(),
                 imag_actor_cache_h,
                 gpu_state.ws_actor,
             )

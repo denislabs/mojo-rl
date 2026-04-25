@@ -481,7 +481,10 @@ def _get_greedy_action(agent: AgentType, obs: List[Float64]) -> List[Float64]:
     var p = LayoutTensor[nn_dtype, Layout.row_major(PS), MutAnyOrigin](
         agent.state.actor.online.params
     )
-    Network[ActorModel, ActorOpt].forward[1](obs_t, out_t, p)
+    var s = LayoutTensor[
+        nn_dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+    ](agent.state.actor.online.model_state)
+    Network[ActorModel, ActorOpt].forward[1](obs_t, out_t, p, s)
     var result = List[Float64](capacity=ACTION_DIM)
     for i in range(ACTION_DIM):
         result.append(tanh(Float64(out_arr[i])) * agent.action_scale)
