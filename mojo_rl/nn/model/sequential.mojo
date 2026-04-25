@@ -1220,6 +1220,362 @@ struct Sequential[*LAYERS: Model](Model):
             perf.bitcast[PerfTimer[True]]()[]._mark = saved_mark
 
     # =========================================================================
+    # GPU Forward (inference-mode, with cache)
+    # =========================================================================
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """GPU inference-mode forward with cache; recurses into children's inference paths.
+
+        Mirrors `forward_gpu` but dispatches each child to its
+        `forward_gpu_inference_with_cache` so BN layers use frozen running stats.
+        """
+
+        # Save caller's _mark so L3 timing doesn't clobber L2's mark
+        var saved_mark: UInt = 0
+        if perf:
+            saved_mark = perf.bitcast[PerfTimer[True]]()[]._mark
+
+        comptime if Self.N == 1:
+            var p_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
+            var s_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
+            var c_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr)
+            var out_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].OUT_DIM),
+                    MutAnyOrigin,
+                ]
+            ](output)
+            var in_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](input)
+            if perf:
+                perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
+            Self.model_types[0].forward_gpu_inference_with_cache[BATCH, dtype](
+                ctx, out_rb, in_rb, p_v, s_v, c_v, workspace
+            )
+            if perf:
+                perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
+                    perf_slot, ctx
+                )
+        else:
+            var ws_ptr = workspace.unsafe_ptr()
+
+            comptime for i in range(Self.N):
+                var li_p = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                var li_s = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
+                var li_c = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr + BATCH * Self._cache_offset[i]())
+                var li_ws_size = (
+                    BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
+                )
+                var li_ws = DeviceBuffer[dtype](
+                    ctx,
+                    ws_ptr + BATCH * Self._ws_layer_offset[i](),
+                    li_ws_size if li_ws_size > 0 else 1,
+                    owning=False,
+                )
+
+                if perf:
+                    perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
+
+                comptime if i == 0:
+                    var inter_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr)
+                    var in_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](input)
+                    Self.model_types[i].forward_gpu_inference_with_cache[BATCH, dtype](
+                        ctx, inter_out, in_rb, li_p, li_s, li_c, li_ws
+                    )
+                elif i == Self.N - 1:
+                    var inter_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var out_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(
+                                BATCH, Self.model_types[i].OUT_DIM
+                            ),
+                            MutAnyOrigin,
+                        ]
+                    ](output)
+                    Self.model_types[i].forward_gpu_inference_with_cache[BATCH, dtype](
+                        ctx, out_rb, inter_in, li_p, li_s, li_c, li_ws
+                    )
+                else:
+                    var inter_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var inter_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i]())
+                    Self.model_types[i].forward_gpu_inference_with_cache[BATCH, dtype](
+                        ctx, inter_out, inter_in, li_p, li_s, li_c, li_ws
+                    )
+
+                if perf:
+                    perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
+                        perf_slot + i, ctx
+                    )
+
+        # Restore caller's _mark so L2 timing measures the full span
+        if perf:
+            perf.bitcast[PerfTimer[True]]()[]._mark = saved_mark
+
+    # =========================================================================
+    # GPU Backward (inference-mode)
+    # =========================================================================
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """GPU inference-mode backward; recurses into children's inference backward.
+
+        Mirrors `backward_gpu` but dispatches each child to its
+        `backward_gpu_inference` so BN layers use frozen running stats and skip
+        param-grad writes.
+        """
+
+        # Save caller's _mark so L3 timing doesn't clobber L2's mark
+        var saved_mark: UInt = 0
+        if perf:
+            saved_mark = perf.bitcast[PerfTimer[True]]()[]._mark
+
+        comptime if Self.N == 1:
+            var p_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
+            var s_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
+            var c_v = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.model_types[0].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr)
+            var g_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.model_types[0].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr)
+            var gi_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](grad_input)
+            var go_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[0].OUT_DIM),
+                    MutAnyOrigin,
+                ]
+            ](grad_output)
+            if perf:
+                perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
+            Self.model_types[0].backward_gpu_inference[BATCH, dtype](
+                ctx, gi_rb, go_rb, p_v, s_v, c_v, g_v, workspace
+            )
+            if perf:
+                perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
+                    perf_slot, ctx
+                )
+        else:
+            var ws_ptr = workspace.unsafe_ptr()
+
+            # Reverse iteration
+            comptime for _ri in range(Self.N):
+                comptime i = Self.N - 1 - _ri
+
+                var li_p = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                var li_s = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
+                var li_c = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.model_types[i].CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr + BATCH * Self._cache_offset[i]())
+                var li_g = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.model_types[i].PARAM_SIZE),
+                    MutAnyOrigin,
+                ](grads.ptr + Self._param_offset[i]())
+                var li_ws_size = (
+                    BATCH * Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
+                )
+                var li_ws = DeviceBuffer[dtype](
+                    ctx,
+                    ws_ptr + BATCH * Self._ws_layer_offset[i](),
+                    li_ws_size if li_ws_size > 0 else 1,
+                    owning=False,
+                )
+
+                if perf:
+                    perf.bitcast[PerfTimer[True]]()[].sync_and_mark(ctx)
+
+                comptime if i == Self.N - 1:
+                    # Last layer: grad_output -> grad_inter[i-1]
+                    var gi = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var go_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(
+                                BATCH, Self.model_types[i].OUT_DIM
+                            ),
+                            MutAnyOrigin,
+                        ]
+                    ](grad_output)
+                    Self.model_types[i].backward_gpu_inference[BATCH, dtype](
+                        ctx, gi, go_rb, li_p, li_s, li_c, li_g, li_ws
+                    )
+                elif i == 0:
+                    # First layer: grad_inter[0] -> grad_input
+                    var go = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr)
+                    var gi_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](grad_input)
+                    Self.model_types[i].backward_gpu_inference[BATCH, dtype](
+                        ctx, gi_rb, go, li_p, li_s, li_c, li_g, li_ws
+                    )
+                else:
+                    # Middle: grad_inter[i] -> grad_inter[i-1]
+                    var go = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i]())
+                    var gi = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.model_types[i].IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    Self.model_types[i].backward_gpu_inference[BATCH, dtype](
+                        ctx, gi, go, li_p, li_s, li_c, li_g, li_ws
+                    )
+
+                if perf:
+                    perf.bitcast[PerfTimer[True]]()[].sync_and_accumulate(
+                        perf_slot + _ri, ctx
+                    )
+
+        # Restore caller's _mark so L2 timing measures the full span
+        if perf:
+            perf.bitcast[PerfTimer[True]]()[]._mark = saved_mark
+
+    # =========================================================================
     # Slot Registration for L3 Profiling
     # =========================================================================
 

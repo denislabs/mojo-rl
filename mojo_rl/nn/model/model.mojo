@@ -368,3 +368,97 @@ trait Model(Movable & ImplicitlyCopyable):
             perf_slot: Base slot index in the timer for per-layer timing.
         """
         ...
+
+    # =========================================================================
+    # GPU forward + backward (inference-mode with cache)
+    # =========================================================================
+    # Used when running an evaluation/RL forward through a model containing BN
+    # but we want BN to use its frozen running stats instead of batch stats —
+    # the paper-faithful behavior for OFENet inside REDQ-OFE updates. Default
+    # implementations delegate to the training-mode kernels so non-BN layers
+    # need no override; BN variants (and their fused composites) override to
+    # use running stats and skip EMA updates / param-grad writes.
+    # =========================================================================
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """GPU inference-mode forward, populates `cache` for inference-mode backward.
+
+        Default = training-mode `forward_gpu`. BatchNorm1D / BatchNorm2D
+        override to use running stats from `state` (no batch-stat reduction,
+        no EMA update on `state`). Non-BN leaf layers (Linear, ReLU,
+        LayerNorm, ...) inherit the default since their training kernel has
+        no batch-stat dependency. Sequential and combinators override to
+        recurse into children's inference variants.
+
+        Caveat — fused BN composites (`Conv2DBatchNormReLU`,
+        `LinearBatchNormReLU`, `ResBlockConv2DBN`) currently inherit this
+        default, so calling inference-mode through them silently uses
+        batch-stat reductions and EMA updates inside their fused BN kernel.
+        REDQ-OFE doesn't hit this path (it uses raw `BatchNorm1D`); a proper
+        inference-mode override for the fused composites is a follow-up
+        once a use case requires it.
+        """
+        Self.forward_gpu[BATCH, dtype](
+            ctx, output, input, params, state, cache, workspace, perf, perf_slot
+        )
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """GPU inference-mode backward (consumes the inference-mode cache).
+
+        Default = training-mode `backward_gpu`. BN variants override to apply
+        the simpler `dx = γ·inv_std_r·dy` formula and skip writes to
+        `grad_params` (BN params are conceptually frozen in inference mode;
+        the caller — e.g. REDQ-OFE — zeros their gradient slots).
+        """
+        Self.backward_gpu[BATCH, dtype](
+            ctx, grad_input, grad_output, params, state, cache, grads, workspace, perf, perf_slot
+        )

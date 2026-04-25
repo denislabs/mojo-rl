@@ -793,3 +793,146 @@ struct BatchNorm2D[
             grid_dim=(Self.channels,),
             block_dim=(TPB,),
         )
+
+    # =========================================================================
+    # GPU inference-mode forward + backward (Phase 3.5)
+    # =========================================================================
+    # Forward uses running stats (no batch reduction, no EMA update). Backward
+    # applies `dx = γ·inv_std_r·dy` per channel, does NOT touch `grads`.
+    # =========================================================================
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """Inference forward: y = γ·(x−μ_r)·inv_std_r + β. No EMA, no cache writes."""
+        Self.forward_gpu_no_cache[BATCH, dtype](
+            ctx, output, input, params, state, workspace, perf, perf_slot
+        )
+
+    @always_inline
+    @staticmethod
+    def backward_inference_kernel_impl[
+        BATCH: Int, dtype: DType = DType.float32,
+    ](
+        grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+        ],
+    ):
+        """Inference-mode backward kernel. Grid: (channels,), Block: (TPB,)."""
+        var c = Int(block_idx.x)
+        if c >= Self.channels:
+            return
+        var tid = Int(thread_idx.x)
+
+        var c_off = c * Self.S
+        var eps = Scalar[dtype](Self.EPSILON)
+        var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
+        var rvar = rebind[Scalar[dtype]](state[Self.RVAR_OFF + c])
+        var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
+        var scale = gamma * inv_std
+
+        # Parallel scatter over BATCH × spatial
+        var idx = tid
+        while idx < BATCH * Self.S:
+            var b = idx // Self.S
+            var s = idx % Self.S
+            var dy = rebind[Scalar[dtype]](grad_output[b, c_off + s])
+            grad_input[b, c_off + s] = scale * dy
+            idx += TPB
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """Inference-mode GPU backward. Does NOT touch `grads`."""
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+        var state_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+        ](state.ptr)
+
+        @parameter
+        @always_inline
+        def kernel_wrapper(
+            grad_input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ],
+            params: LayoutTensor[
+                dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+            ],
+            state: LayoutTensor[
+                dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+            ],
+        ):
+            Self.backward_inference_kernel_impl[BATCH, dtype](
+                grad_input, grad_output, params, state
+            )
+
+        ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
+            grad_input,
+            grad_output_immut,
+            params_immut,
+            state_immut,
+            grid_dim=(Self.channels,),
+            block_dim=(TPB,),
+        )

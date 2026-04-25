@@ -759,3 +759,335 @@ struct Repeat[n: Int, Inner: Model, shared: Bool = True](Model):
                         main_grads_v, temp_grads_v,
                         grid_dim=(ACCUM_GRID,), block_dim=(TPB,),
                     )
+
+    # =========================================================================
+    # GPU Forward (inference-mode, with cache)
+    # =========================================================================
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        # Workspace: [inter_buf_0 | ... | inter_buf_{n-2} | Inner ws]
+        comptime if Self.n == 1:
+            var ci = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr)
+            var pi = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
+            var out_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.OUT_DIM),
+                    MutAnyOrigin,
+                ]
+            ](output)
+            var in_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](input)
+            Self.Inner.forward_gpu_inference_with_cache[BATCH, dtype](
+                ctx, out_rb, in_rb, pi, si, ci, workspace
+            )
+        else:
+            var ws_ptr = workspace.unsafe_ptr()
+            comptime INNER_WS_OFF = (Self.n - 1) * Self.Inner.OUT_DIM
+            var inner_ws_size = BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
+            var inner_ws = DeviceBuffer[dtype](
+                ctx,
+                ws_ptr + BATCH * INNER_WS_OFF,
+                inner_ws_size if inner_ws_size > 0 else 1,
+                owning=False,
+            )
+
+            comptime for i in range(Self.n):
+                var ci = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr + BATCH * Self._cache_offset[i]())
+                var pi = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                var si = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
+
+                comptime if i == 0:
+                    var inter_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.Inner.OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr)
+                    var in_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.Inner.IN_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](input)
+                    Self.Inner.forward_gpu_inference_with_cache[BATCH, dtype](
+                        ctx, inter_out, in_rb, pi, si, ci, inner_ws
+                    )
+                elif i == Self.n - 1:
+                    var inter_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.Inner.IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var out_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.Inner.OUT_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](output)
+                    Self.Inner.forward_gpu_inference_with_cache[BATCH, dtype](
+                        ctx, out_rb, inter_in, pi, si, ci, inner_ws
+                    )
+                else:
+                    var inter_in = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.Inner.IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var inter_out = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.Inner.OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i]())
+                    Self.Inner.forward_gpu_inference_with_cache[BATCH, dtype](
+                        ctx, inter_out, inter_in, pi, si, ci, inner_ws
+                    )
+
+    # =========================================================================
+    # GPU Backward (inference-mode)
+    # =========================================================================
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        comptime if Self.n == 1:
+            var ci = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr)
+            var pi = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr)
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr)
+            var gp = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr)
+            var gi_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](grad_input)
+            var go_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.OUT_DIM),
+                    MutAnyOrigin,
+                ]
+            ](grad_output)
+            Self.Inner.backward_gpu_inference[BATCH, dtype](
+                ctx, gi_rb, go_rb, pi, si, ci, gp, workspace
+            )
+        else:
+            var ws_ptr = workspace.unsafe_ptr()
+            comptime INNER_WS_OFF = (Self.n - 1) * Self.Inner.OUT_DIM
+            var inner_ws_size = BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
+            var inner_ws = DeviceBuffer[dtype](
+                ctx,
+                ws_ptr + BATCH * INNER_WS_OFF,
+                inner_ws_size if inner_ws_size > 0 else 1,
+                owning=False,
+            )
+
+            # For shared weights, Inner.backward_gpu may overwrite (not
+            # accumulate) grads. Use a temp buffer per iteration + manual
+            # accumulation into the main grads to guarantee correctness.
+            comptime TEMP_PS = Self.Inner.PARAM_SIZE if Self.shared and Self.Inner.PARAM_SIZE > 0 else 1
+            var temp_grads_buf = ctx.enqueue_create_buffer[dtype](TEMP_PS)
+
+            # Accumulate kernel: dst[i] += src[i]
+            @parameter
+            @always_inline
+            def _accum_kernel(
+                dst: LayoutTensor[dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin],
+                src: LayoutTensor[dtype, Layout.row_major(Self.Inner.PARAM_SIZE), MutAnyOrigin],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= Self.Inner.PARAM_SIZE:
+                    return
+                dst[idx] = dst[idx] + src[idx]
+
+            # Reverse iteration
+            comptime for _ri in range(Self.n):
+                comptime i = Self.n - 1 - _ri
+
+                var ci = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](cache.ptr + BATCH * Self._cache_offset[i]())
+                var pi = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.PARAM_SIZE),
+                    MutAnyOrigin,
+                ](params.ptr + Self._param_offset[i]())
+                var si = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
+
+                # For shared weights: zero temp, backward into temp
+                # For independent weights: backward into main grads directly
+                var gp_base = grads.ptr + Self._param_offset[i]()
+                comptime if Self.shared:
+                    ctx.enqueue_memset(temp_grads_buf, 0)
+                    gp_base = temp_grads_buf.unsafe_ptr()
+                var gp = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.Inner.PARAM_SIZE),
+                    MutAnyOrigin,
+                ](gp_base)
+
+                comptime if i == Self.n - 1:
+                    var gi = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.Inner.IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    var go_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.Inner.OUT_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](grad_output)
+                    Self.Inner.backward_gpu_inference[BATCH, dtype](
+                        ctx, gi, go_rb, pi, si, ci, gp, inner_ws
+                    )
+                elif i == 0:
+                    var go = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.Inner.OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr)
+                    var gi_rb = rebind[
+                        LayoutTensor[
+                            dtype,
+                            Layout.row_major(BATCH, Self.Inner.IN_DIM),
+                            MutAnyOrigin,
+                        ]
+                    ](grad_input)
+                    Self.Inner.backward_gpu_inference[BATCH, dtype](
+                        ctx, gi_rb, go, pi, si, ci, gp, inner_ws
+                    )
+                else:
+                    var go = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.Inner.OUT_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i]())
+                    var gi = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.Inner.IN_DIM),
+                        MutAnyOrigin,
+                    ](ws_ptr + BATCH * Self._inter_offset[i - 1]())
+                    Self.Inner.backward_gpu_inference[BATCH, dtype](
+                        ctx, gi, go, pi, si, ci, gp, inner_ws
+                    )
+
+                # Accumulate temp grads into main grads for shared weights
+                comptime if Self.shared and Self.Inner.PARAM_SIZE > 0:
+                    var main_grads_v = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.Inner.PARAM_SIZE),
+                        MutAnyOrigin,
+                    ](grads.ptr)
+                    var temp_grads_v = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.Inner.PARAM_SIZE),
+                        MutAnyOrigin,
+                    ](temp_grads_buf.unsafe_ptr())
+                    comptime ACCUM_GRID = (Self.Inner.PARAM_SIZE + TPB - 1) // TPB
+                    ctx.enqueue_function[_accum_kernel, _accum_kernel](
+                        main_grads_v, temp_grads_v,
+                        grid_dim=(ACCUM_GRID,), block_dim=(TPB,),
+                    )

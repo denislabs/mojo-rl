@@ -534,3 +534,214 @@ struct SkipConcat[Inner: Model](Model):
             grid_dim=(skip_grid,),
             block_dim=(TPB,),
         )
+
+    # =========================================================================
+    # GPU Forward (inference-mode, with cache)
+    # =========================================================================
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        comptime INNER_OUT = Self.Inner.OUT_DIM
+
+        # Slice workspace: [inner_out (BATCH * INNER_OUT) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var inner_out_ptr = ws_ptr  # BATCH * INNER_OUT
+        var child_ws_ptr = ws_ptr + BATCH * INNER_OUT
+        comptime CHILD_WS_SIZE = max(
+            1, BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
+        var inner_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
+        ](inner_out_ptr)
+
+        # Forward Inner (inference)
+        Self.Inner.forward_gpu_inference_with_cache[BATCH, dtype](
+            ctx, inner_out_t, input, params, state, cache, child_ws
+        )
+
+        # Copy input + inner_output → output (interleaved)
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ](input.ptr)
+        var inner_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, INNER_OUT), ImmutAnyOrigin
+        ](inner_out_ptr)
+        comptime TOTAL = BATCH * Self.OUT_DIM
+        var grid_x = (TOTAL + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def concat_kernel(
+            dst: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            src_skip: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ],
+            src_inner: LayoutTensor[
+                dtype, Layout.row_major(BATCH, INNER_OUT), ImmutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= TOTAL:
+                return
+            var b = idx // Self.OUT_DIM
+            var c = idx % Self.OUT_DIM
+            if c < Self.IN_DIM:
+                dst.ptr[idx] = src_skip.ptr[b * Self.IN_DIM + c]
+            else:
+                dst.ptr[idx] = src_inner.ptr[b * INNER_OUT + (c - Self.IN_DIM)]
+
+        ctx.enqueue_function[concat_kernel, concat_kernel](
+            output,
+            input_immut,
+            inner_immut,
+            grid_dim=(grid_x,),
+            block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # GPU Backward (inference-mode)
+    # =========================================================================
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        comptime INNER_OUT = Self.Inner.OUT_DIM
+
+        # Slice workspace: [grad_inner (BATCH * INNER_OUT) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var grad_inner_ptr = ws_ptr  # BATCH * INNER_OUT
+        var child_ws_ptr = ws_ptr + BATCH * INNER_OUT
+        comptime CHILD_WS_SIZE = max(
+            1, BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
+        # Extract grad_inner from grad_output[:, IN_DIM:]
+        var grad_inner_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
+        ](grad_inner_ptr)
+
+        comptime INNER_TOTAL = BATCH * INNER_OUT
+        var inner_grid = (INNER_TOTAL + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def extract_inner_grad(
+            dst: LayoutTensor[
+                dtype, Layout.row_major(BATCH, INNER_OUT), MutAnyOrigin
+            ],
+            src: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= INNER_TOTAL:
+                return
+            var b = idx // INNER_OUT
+            var i = idx % INNER_OUT
+            dst.ptr[idx] = src.ptr[b * Self.OUT_DIM + Self.IN_DIM + i]
+
+        var go_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+
+        ctx.enqueue_function[extract_inner_grad, extract_inner_grad](
+            grad_inner_t,
+            go_immut,
+            grid_dim=(inner_grid,),
+            block_dim=(TPB,),
+        )
+
+        # Backward through Inner (inference) → grad_input
+        Self.Inner.backward_gpu_inference[BATCH, dtype](
+            ctx,
+            grad_input,
+            grad_inner_t,
+            params,
+            state,
+            cache,
+            grads,
+            child_ws,
+        )
+
+        # Add skip gradient: grad_input += grad_output[:, :IN_DIM]
+        comptime SKIP_TOTAL = BATCH * Self.IN_DIM
+        var skip_grid = (SKIP_TOTAL + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def add_skip_grad(
+            gi: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+            ],
+            go: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= SKIP_TOTAL:
+                return
+            var b = idx // Self.IN_DIM
+            var i = idx % Self.IN_DIM
+            gi.ptr[idx] = gi.ptr[idx] + go.ptr[b * Self.OUT_DIM + i]
+
+        ctx.enqueue_function[add_skip_grad, add_skip_grad](
+            grad_input,
+            go_immut,
+            grid_dim=(skip_grid,),
+            block_dim=(TPB,),
+        )

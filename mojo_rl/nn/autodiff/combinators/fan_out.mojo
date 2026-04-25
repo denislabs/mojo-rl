@@ -601,3 +601,266 @@ struct FanOut[Inner: Model, N: Int](Model):
                     grid_dim=(gi_grid,),
                     block_dim=(TPB,),
                 )
+
+    # =========================================================================
+    # GPU Forward (inference-mode, with cache)
+    # =========================================================================
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        comptime I_OUT = Self.Inner.OUT_DIM
+
+        # Slice workspace: [i_out_buf (I_OUT) | gi_buf (IN_DIM) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var i_out_ptr = ws_ptr  # Reused each iteration
+        var child_ws_ptr = ws_ptr + BATCH * Self._OWN_WS
+        comptime CHILD_WS_SIZE = max(
+            1, BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
+        # Forward each copy (inference) — params at aligned offsets, direct pointer access
+        comptime for i in range(Self.N):
+            var i_out_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, I_OUT), MutAnyOrigin
+            ](i_out_ptr)
+
+            var input_i = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.Inner.IN_DIM), MutAnyOrigin
+            ](input.ptr)
+
+            # Params at aligned offset — safe for direct pointer access
+            var pi = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.PARAM_SIZE),
+                MutAnyOrigin,
+            ](
+                params.ptr + Self._param_offset[i]()
+            )  # Aligned!
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
+            var ci = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr + BATCH * Self._cache_offset[i]())
+            Self.Inner.forward_gpu_inference_with_cache[BATCH, dtype](
+                ctx, i_out_t, input_i, pi, si, ci, child_ws
+            )
+
+            # Scatter copy i's output into the concat output
+            var i_immut = LayoutTensor[
+                dtype, Layout.row_major(BATCH, I_OUT), ImmutAnyOrigin
+            ](i_out_ptr)
+            comptime I_TOTAL = BATCH * I_OUT
+            var i_grid = (I_TOTAL + TPB - 1) // TPB
+
+            @parameter
+            @always_inline
+            def scatter_k(
+                dst: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+                ],
+                src: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, I_OUT), ImmutAnyOrigin
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= I_TOTAL:
+                    return
+                var row = idx // I_OUT
+                var col = idx % I_OUT
+                dst.ptr[
+                    row * Self.OUT_DIM + Self._out_offset[i]() + col
+                ] = src.ptr[idx]
+
+            ctx.enqueue_function[scatter_k, scatter_k](
+                output, i_immut, grid_dim=(i_grid,), block_dim=(TPB,)
+            )
+
+    # =========================================================================
+    # GPU Backward (inference-mode)
+    # =========================================================================
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        comptime I_OUT = Self.Inner.OUT_DIM
+
+        # Slice workspace: [go_buf (I_OUT) | gi_buf (IN_DIM) | child_ws]
+        var ws_ptr = workspace.unsafe_ptr()
+        var go_ws_ptr = ws_ptr  # Reused each iteration
+        var gi_ws_ptr = ws_ptr + BATCH * I_OUT  # Reused each iteration
+        var child_ws_ptr = ws_ptr + BATCH * Self._OWN_WS
+        comptime CHILD_WS_SIZE = max(
+            1, BATCH * Self.Inner.WORKSPACE_SIZE_PER_SAMPLE
+        )
+        var child_ws = DeviceBuffer[dtype](
+            ctx, child_ws_ptr, CHILD_WS_SIZE, owning=False
+        )
+
+        var go_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+
+        comptime for i in range(Self.N):
+            # Extract grad_output slice for copy i
+            var go_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH, I_OUT), MutAnyOrigin
+            ](go_ws_ptr)
+
+            comptime I_TOTAL = BATCH * I_OUT
+            var i_grid = (I_TOTAL + TPB - 1) // TPB
+
+            @parameter
+            @always_inline
+            def extract_k(
+                dst: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, I_OUT), MutAnyOrigin
+                ],
+                src: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx >= I_TOTAL:
+                    return
+                var row = idx // I_OUT
+                var col = idx % I_OUT
+                dst.ptr[idx] = src.ptr[
+                    row * Self.OUT_DIM + Self._out_offset[i]() + col
+                ]
+
+            ctx.enqueue_function[extract_k, extract_k](
+                go_t, go_immut, grid_dim=(i_grid,), block_dim=(TPB,)
+            )
+
+            # Params/cache/grads at aligned offsets — direct pointer access
+            var pi = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.PARAM_SIZE),
+                MutAnyOrigin,
+            ](
+                params.ptr + Self._param_offset[i]()
+            )  # Aligned!
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
+            var ci = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Inner.CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr + BATCH * Self._cache_offset[i]())
+            var grads_i = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Inner.PARAM_SIZE),
+                MutAnyOrigin,
+            ](
+                grads.ptr + Self._param_offset[i]()
+            )  # Aligned!
+
+            comptime if i == 0:
+                # First copy: backward directly into grad_input
+                Self.Inner.backward_gpu_inference[BATCH, dtype](
+                    ctx, grad_input, go_t, pi, si, ci, grads_i, child_ws
+                )
+            else:
+                # Subsequent copies: backward into workspace temp, then accumulate
+                var gi_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Inner.IN_DIM),
+                    MutAnyOrigin,
+                ](gi_ws_ptr)
+                Self.Inner.backward_gpu_inference[BATCH, dtype](
+                    ctx, gi_t, go_t, pi, si, ci, grads_i, child_ws
+                )
+
+                # Add to grad_input
+                var gi_immut = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.IN_DIM),
+                    ImmutAnyOrigin,
+                ](gi_ws_ptr)
+                comptime GI_TOTAL = BATCH * Self.IN_DIM
+                var gi_grid = (GI_TOTAL + TPB - 1) // TPB
+
+                @parameter
+                @always_inline
+                def add_gi(
+                    a: LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.IN_DIM),
+                        MutAnyOrigin,
+                    ],
+                    b: LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, Self.IN_DIM),
+                        ImmutAnyOrigin,
+                    ],
+                ):
+                    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                    if idx >= GI_TOTAL:
+                        return
+                    a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
+
+                ctx.enqueue_function[add_gi, add_gi](
+                    grad_input,
+                    gi_immut,
+                    grid_dim=(gi_grid,),
+                    block_dim=(TPB,),
+                )
