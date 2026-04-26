@@ -1,4 +1,5 @@
 from .residual import Residual
+from .projected_residual import ProjectedResidual
 from .parallel import Parallel
 from .repeat import Repeat
 from .skip_concat import SkipConcat
