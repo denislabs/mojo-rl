@@ -270,6 +270,16 @@ struct REDQOFEGPUState[
     var diag_lp_host: HostBuffer[dtype]     # [BS]   last policy-step log_pi
     var diag_scalars_host: HostBuffer[dtype]  # [GPU_SCALARS_SIZE]
 
+    # --- OFE drift diagnostics (Phase-3.5 inference-mode validation) ---
+    # phi_s_batch lets us measure the inference-mode feature distribution that
+    # the actor / critic actually consume. ofe_sb_state contains the BN running
+    # mean / var slots — comparing them to the batch stats of the LINEAR INPUTS
+    # to each BN layer would be ideal, but the inputs aren't materialized as a
+    # single buffer.  As a proxy we report the running-stat magnitudes plus the
+    # phi_s output stats so we can spot pathological drift.
+    var diag_phi_s_host: HostBuffer[dtype]            # [BS * PHI_S]
+    var diag_ofe_sb_state_host: HostBuffer[dtype]     # [OFESBModel.STATE_SIZE]
+
     def __init__(out self, ctx: DeviceContext) raises:
         self.actor = GPUNetworkPair[
             Self.Config.ActorModel, Self.Config.ActorOpt
@@ -426,6 +436,12 @@ struct REDQOFEGPUState[
         self.diag_scalars_host = ctx.enqueue_create_host_buffer[dtype](
             Self.GPU_SCALARS_SIZE
         )
+        self.diag_phi_s_host = ctx.enqueue_create_host_buffer[dtype](
+            BS * Self.PHI_S
+        )
+        self.diag_ofe_sb_state_host = ctx.enqueue_create_host_buffer[dtype](
+            max(1, Self.OFESBModel.STATE_SIZE)
+        )
 
     def __init__(out self, *, deinit take: Self):
         self.actor = take.actor^
@@ -476,6 +492,8 @@ struct REDQOFEGPUState[
         self.diag_nq_host = take.diag_nq_host^
         self.diag_lp_host = take.diag_lp_host^
         self.diag_scalars_host = take.diag_scalars_host^
+        self.diag_phi_s_host = take.diag_phi_s_host^
+        self.diag_ofe_sb_state_host = take.diag_ofe_sb_state_host^
         self.ofe_sb = take.ofe_sb^
         self.ofe_ab = take.ofe_ab^
         self.ofe_pr = take.ofe_pr^
@@ -1187,6 +1205,12 @@ struct REDQOFEAgent[
         ctx.enqueue_copy(gpu_state.diag_act_host, gpu_state.s_act)
         ctx.enqueue_copy(gpu_state.diag_lp_host, gpu_state.curr_lp)
         ctx.enqueue_copy(gpu_state.diag_scalars_host, gpu_state.gpu_scalars)
+        # OFE drift signals: phi_s output (inference-mode features the actor
+        # / critic see) + OFE_SB BN running stats (drift from default 0/1).
+        ctx.enqueue_copy(gpu_state.diag_phi_s_host, gpu_state.phi_s_batch)
+        ctx.enqueue_copy(
+            gpu_state.diag_ofe_sb_state_host, gpu_state.ofe_sb.model_state_buf
+        )
 
         # First target critic (slice 0 of next_q_stack [N_ENS, BS]).
         var nq0_subbuf = DeviceBuffer[dtype](
@@ -1248,6 +1272,90 @@ struct REDQOFEAgent[
         logger[].log_scalar("mean_log_pi", mean_lp, step)
         logger[].log_scalar("alpha", alpha, step)
         logger[].log_scalar("log_alpha", log_alpha, step)
+
+        # ---------------------------------------------------------------------
+        # OFE drift diagnostics
+        # ---------------------------------------------------------------------
+        # Per-feature batch stats of phi_s (the inference-mode OFE_SB output
+        # consumed by actor / critic on the sampled minibatch).
+        comptime PHI_S = Self.PHI_S
+        var phi_var_min = Float64(1.0e30)
+        var phi_var_max = Float64(-1.0e30)
+        var phi_var_sum = Float64(0.0)
+        var phi_mean_abs_max = Float64(0.0)
+        for f in range(PHI_S):
+            var s = Float64(0.0)
+            for b in range(BS):
+                s += Float64(gpu_state.diag_phi_s_host[b * PHI_S + f])
+            var m = s / Float64(BS)
+            var v = Float64(0.0)
+            for b in range(BS):
+                var d = Float64(gpu_state.diag_phi_s_host[b * PHI_S + f]) - m
+                v += d * d
+            v /= Float64(BS)
+            if v < phi_var_min:
+                phi_var_min = v
+            if v > phi_var_max:
+                phi_var_max = v
+            phi_var_sum += v
+            var ma = m if m >= 0.0 else -m
+            if ma > phi_mean_abs_max:
+                phi_mean_abs_max = ma
+        var phi_var_mean = phi_var_sum / Float64(PHI_S)
+
+        # OFE_SB BN running stats. Layout per block (per_unit=PER):
+        #   [running_mean(PER) | running_var(PER)], blocks stacked contiguously.
+        # `initialize_state` seeds rmean=0, rvar=1; aux_train_step EMA-updates
+        # them via the BN1D training-mode kernel. If they haven't budged from
+        # 0/1 by the time RL kicks in, the inference forward is essentially
+        # bypassing BN, and the actor / critic see un-normalized features
+        # (the hypothesis we're testing).
+        comptime PER = Self.Config.OFE_PER_UNIT
+        comptime NL = Self.Config.OFE_NUM_LAYERS
+        var rmean_abs_max = Float64(0.0)
+        var rmean_abs_sum = Float64(0.0)
+        var rvar_min = Float64(1.0e30)
+        var rvar_max = Float64(-1.0e30)
+        var rvar_sum = Float64(0.0)
+        var rvar_dev_from_one_max = Float64(0.0)  # max |rvar - 1|
+        for blk in range(NL):
+            var blk_off = blk * 2 * PER
+            for j in range(PER):
+                var rm = Float64(
+                    gpu_state.diag_ofe_sb_state_host[blk_off + j]
+                )
+                var rv = Float64(
+                    gpu_state.diag_ofe_sb_state_host[blk_off + PER + j]
+                )
+                var rm_abs = rm if rm >= 0.0 else -rm
+                if rm_abs > rmean_abs_max:
+                    rmean_abs_max = rm_abs
+                rmean_abs_sum += rm_abs
+                if rv < rvar_min:
+                    rvar_min = rv
+                if rv > rvar_max:
+                    rvar_max = rv
+                rvar_sum += rv
+                var dv = rv - 1.0
+                var dv_abs = dv if dv >= 0.0 else -dv
+                if dv_abs > rvar_dev_from_one_max:
+                    rvar_dev_from_one_max = dv_abs
+        var n_features = Float64(NL * PER)
+        var rmean_abs_mean = rmean_abs_sum / n_features
+        var rvar_mean = rvar_sum / n_features
+
+        logger[].log_scalar("phi_s_var_mean", phi_var_mean, step)
+        logger[].log_scalar("phi_s_var_min", phi_var_min, step)
+        logger[].log_scalar("phi_s_var_max", phi_var_max, step)
+        logger[].log_scalar("phi_s_mean_abs_max", phi_mean_abs_max, step)
+        logger[].log_scalar("ofe_rmean_abs_max", rmean_abs_max, step)
+        logger[].log_scalar("ofe_rmean_abs_mean", rmean_abs_mean, step)
+        logger[].log_scalar("ofe_rvar_mean", rvar_mean, step)
+        logger[].log_scalar("ofe_rvar_min", rvar_min, step)
+        logger[].log_scalar("ofe_rvar_max", rvar_max, step)
+        logger[].log_scalar(
+            "ofe_rvar_dev_from_one_max", rvar_dev_from_one_max, step
+        )
 
     # -------------------------------------------------------------------------
     # Single REDQ training iteration (one of UTD_RATIO inner steps)
