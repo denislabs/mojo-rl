@@ -71,8 +71,8 @@ comptime REDQOFEHalfCheetahConfig = DefaultREDQOFEConfig6[
     0.0003,  # actor_lr
     0.0003,  # critic_lr
     0.0003,  # ofe_lr (aux Adam)
-    240,     # OFE_TOTAL_UNITS (paper's HalfCheetah.gin)
-    1.0,     # action_scale
+    240,  # OFE_TOTAL_UNITS (paper's HalfCheetah.gin)
+    1.0,  # action_scale
 ]
 
 
@@ -100,7 +100,7 @@ def main() raises:
             # If the agent stops collapsing under disable_aux=True, the aux
             # loss is destabilising the actor / critic; if it still collapses,
             # the bug is in the OFE forward / inference-backward path itself.
-            disable_aux=False,
+            disable_aux=True,
         )
 
         # To resume from a previous run, uncomment:
