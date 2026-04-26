@@ -311,3 +311,86 @@ struct Network[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_dtype]
             perf,
             perf_slot,
         )
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        input: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace_buf: DeviceBuffer[Self.dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """GPU inference-mode forward with cache (Phase 3.5).
+
+        BN layers inside the model use their frozen running stats (no batch
+        reduction, no EMA update). Non-BN layers fall through to their
+        training-mode kernel via the trait default. Used by REDQ-OFE to keep
+        the OFE feature distribution stable across RL updates while still
+        allowing the actor/critic backward to flow through OFE.
+        """
+        Self.MODEL.forward_gpu_inference_with_cache[BATCH](
+            ctx, output, input, params, state, cache, workspace_buf, perf, perf_slot
+        )
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int
+    ](
+        ctx: DeviceContext,
+        grad_output: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace_buf: DeviceBuffer[Self.dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """GPU inference-mode backward (Phase 3.5).
+
+        Pairs with `forward_gpu_inference_with_cache`. BN layers apply
+        `dx = γ·inv_std_r·dy` per feature and skip writes to `grads` (BN
+        params are frozen in this mode — caller is responsible for zeroing
+        their gradient slots, e.g. via `gpu_state.ofe_ab.zero_grads(ctx)`).
+        """
+        Self.MODEL.backward_gpu_inference[BATCH](
+            ctx,
+            grad_input,
+            grad_output,
+            params,
+            state,
+            cache,
+            grads,
+            workspace_buf,
+            perf,
+            perf_slot,
+        )

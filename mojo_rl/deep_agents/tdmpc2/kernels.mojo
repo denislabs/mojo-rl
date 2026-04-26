@@ -1708,23 +1708,33 @@ def tdmpc2_adam_step_5q_kernel[
     params5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
     grads5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
     state5: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE, 2), MutAnyOrigin],
+    counter: LayoutTensor[
+        DType.uint32, Layout.row_major(1), MutAnyOrigin
+    ],
     lr: Scalar[dtype],
     beta1: Scalar[dtype],
     beta2: Scalar[dtype],
     eps: Scalar[dtype],
-    bias_correction1: Scalar[dtype],
-    bias_correction2: Scalar[dtype],
+    log_beta1: Scalar[dtype],
+    log_beta2: Scalar[dtype],
 ):
     """Fused Adam update for 5 Q networks in one kernel launch.
 
     Replaces 5 sequential Adam.step_gpu calls. Each thread processes
-    the same parameter index across all 5 networks.
+    the same parameter index across all 5 networks. Bias correction is
+    computed inside the kernel from the device-side step counter (Phase 4
+    of docs/STATE_SIZE_DESIGN.md) so CUDA-graph replay stays correct — a
+    1-thread preamble kernel bumps `counter` once per launch.
     """
+    comptime assert dtype.is_floating_point(), "dtype must be floating point"
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= PARAM_SIZE:
         return
 
+    var step_f = rebind[Scalar[DType.uint32]](counter[0]).cast[dtype]()
     var one = Scalar[dtype](1.0)
+    var bias_correction1 = one - exp(log_beta1 * step_f)
+    var bias_correction2 = one - exp(log_beta2 * step_f)
     var one_minus_b1 = one - beta1
     var one_minus_b2 = one - beta2
 

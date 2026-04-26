@@ -282,18 +282,29 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         )
 
     def optimizer_step(mut self, ctx: DeviceContext) raises:
-        """One GPU optimizer step + increment step_num.
+        """One GPU optimizer step.
 
-        Applies self.lr_scale to the base LR (set via set_lr_scale()).
-        Creates lvalue views (params, state are mut in step_gpu).
+        Adam/AdamW maintain their step counter on-device (Phase 4 — see
+        docs/STATE_SIZE_DESIGN.md): a 1-thread preamble kernel inside
+        `step_gpu` bumps `opt_global_state[0]`, and the update kernel reads
+        the post-bump value to compute bias correction. The host-side
+        `self.step_num` mirror is left stale until `download_to` syncs it
+        back from the device counter — only Adam-style optimizers actually
+        consult the on-device counter, so for SGD/RMSprop/Muon (which still
+        ignore step_num) we still bump the host counter for compatibility.
 
         Args:
             ctx: GPU device context.
         """
-        self.step_num += 1
         var p = self.params_view()
         var s = self.opt_state_view()
         var og = self.opt_global_state_view()
+
+        comptime if Self.OPT_GLOBAL_SIZE == 0:
+            # Optimizer carries no on-device counter — fall back to the host
+            # mirror (Adam/AdamW take the GLOBAL_STATE_SIZE>=1 branch).
+            self.step_num += 1
+
         Self.OPTIMIZER.step_gpu[Self.PARAM_SIZE](
             ctx, p, self.grads_view(), s, og, self.step_num, self.lr_scale
         )
@@ -372,6 +383,17 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
 
         for i in range(Self.OPT_GLOBAL_SIZE):
             self.opt_global_state_host[i] = (cpu.opt_global_state + i)[]
+
+        # Phase 4: when the optimizer keeps an on-device step counter
+        # (Adam/AdamW), seed slot 0 from the CPU step_num so resume-from
+        # checkpoint preserves bias correction. The slot is a Float32 storing
+        # the bit pattern of a UInt32 counter.
+        comptime if Self.OPT_GLOBAL_SIZE >= 1:
+            var counter_host_ptr = self.opt_global_state_host.unsafe_ptr().bitcast[
+                Scalar[DType.uint32]
+            ]()
+            counter_host_ptr[0] = UInt32(cpu.step_num)
+
         ctx.enqueue_copy(self.opt_global_state_buf, self.opt_global_state_host)
 
         self.step_num = cpu.step_num
@@ -401,4 +423,14 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
             (cpu.model_state + i)[] = self.model_state_host[i]
         for i in range(Self.OPT_GLOBAL_SIZE):
             (cpu.opt_global_state + i)[] = self.opt_global_state_host[i]
+
+        # Phase 4: when the optimizer keeps an on-device step counter, the
+        # host mirror in `self.step_num` has been stale since the last
+        # optimizer_step. Reload it from slot 0 of opt_global_state.
+        comptime if Self.OPT_GLOBAL_SIZE >= 1:
+            var counter_host_ptr = self.opt_global_state_host.unsafe_ptr().bitcast[
+                Scalar[DType.uint32]
+            ]()
+            self.step_num = Int(counter_host_ptr[0])
+
         cpu.step_num = self.step_num

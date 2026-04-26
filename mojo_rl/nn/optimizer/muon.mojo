@@ -14,8 +14,9 @@ from ..constants import dtype, TPB
 from .optimizer import Optimizer
 from layout import LayoutTensor, Layout
 from std.math import sqrt
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.memory import AddressSpace
 
 
 struct Muon[
@@ -37,12 +38,18 @@ struct Muon[
     STATE_PER_PARAM = 1:
         - state[i, 0] = momentum buffer
 
+    GLOBAL_STATE_SIZE = 1: one slot holding `inv_norm = 1 / (||g_nesterov||₂ + eps)`.
+    Computed entirely on-device by `_compute_inv_norm_kernel` inside `step_gpu`
+    so the value is fresh on every CUDA-graph replay (Phase 5 of
+    docs/STATE_SIZE_DESIGN.md). The CPU `step()` path keeps the host-side
+    Frobenius reduction.
+
     All hyperparameters are compile-time struct parameters.
     For 2D weight matrices, use step_2d() for full Newton-Schulz orthogonalization.
     """
 
     comptime STATE_PER_PARAM: Int = 1
-    comptime GLOBAL_STATE_SIZE: Int = 0
+    comptime GLOBAL_STATE_SIZE: Int = 1
 
     # Newton-Schulz coefficients (tuned values from paper)
     comptime NS_A: Float64 = 3.4445
@@ -287,6 +294,64 @@ struct Muon[
 
     @always_inline
     @staticmethod
+    def _compute_inv_norm_kernel[
+        PARAM_SIZE: Int, BLOCK_SIZE: Int, dtype: DType = DType.float32
+    ](
+        grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(PARAM_SIZE, 1), MutAnyOrigin
+        ],
+        inv_norm_out: LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ],
+        beta: Scalar[dtype],
+        eps: Scalar[dtype],
+    ):
+        """Single-block reduction: compute inv_norm of the Nesterov gradient.
+
+        g_nesterov[i] = g[i] + β·(β·m[i] + g[i]) where m is the OLD momentum
+        (pre-step). This kernel writes
+            inv_norm_out[0] = 1 / (sqrt(Σ g_nesterov²) + eps)
+
+        Launched with `grid=(1,), block=(BLOCK_SIZE,)`. Each thread strides
+        through PARAM_SIZE accumulating its local partial sum, then a tree
+        reduction over shared memory collapses to a single value.
+        """
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        var thread_id = Int(thread_idx.x)
+        var shared = LayoutTensor[
+            dtype,
+            Layout.row_major(BLOCK_SIZE),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+
+        var local_sum = Scalar[dtype](0.0)
+        var idx = thread_id
+        while idx < PARAM_SIZE:
+            var g = rebind[Scalar[dtype]](grads[idx])
+            var m = rebind[Scalar[dtype]](state[idx, 0])
+            var g_nesterov = g + beta * (beta * m + g)
+            local_sum += g_nesterov * g_nesterov
+            idx += BLOCK_SIZE
+        shared[thread_id] = local_sum
+
+        barrier()
+
+        var stride = BLOCK_SIZE // 2
+        while stride > 0:
+            if thread_id < stride:
+                shared[thread_id] = shared[thread_id] + shared[thread_id + stride]
+            barrier()
+            stride = stride // 2
+
+        if thread_id == 0:
+            var sum = rebind[Scalar[dtype]](shared[0])
+            var norm = sqrt(sum)
+            inv_norm_out[0] = Scalar[dtype](1.0) / (norm + eps)
+
+    @always_inline
+    @staticmethod
     def step_kernel_impl[
         PARAM_SIZE: Int, dtype: DType = DType.float32
     ](
@@ -295,15 +360,22 @@ struct Muon[
         state: LayoutTensor[
             dtype, Layout.row_major(PARAM_SIZE, 1), MutAnyOrigin
         ],
+        inv_norm_in: LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ],
         lr: Scalar[dtype],
         beta: Scalar[dtype],
-        inv_norm: Scalar[dtype],
         scale_factor: Scalar[dtype],
     ):
+        """Apply the Muon update using `inv_norm` produced by the reduction
+        kernel. Reading from the device buffer (rather than a host-passed
+        scalar) keeps the value fresh under CUDA-graph replay.
+        """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= PARAM_SIZE:
             return
 
+        var inv_norm = rebind[Scalar[dtype]](inv_norm_in[0])
         var g = rebind[Scalar[dtype]](grads[idx])
         var m_val = rebind[Scalar[dtype]](state[idx, 0])
 
@@ -341,26 +413,51 @@ struct Muon[
         step_num: Int,
         lr_scale: Float64 = 1.0,
     ) raises:
-        """Launch Muon optimization step on GPU (simplified 1D version).
+        """Launch Muon optimization step on GPU.
 
-        Note: Norm is computed on CPU from device tensors (works on unified memory).
-        For non-unified memory, move norm computation to GPU reduction kernel.
-        step_num is unused.
+        Phase 5: the gradient norm is computed by an on-device reduction
+        kernel into `opt_global_state[0]`. The update kernel reads that slot
+        (no host-baked `inv_norm` scalar) so CUDA-graph replay produces a
+        fresh norm each time. `step_num` is unused.
         """
         var beta = Scalar[dtype](Self.BETA)
         var lr = Scalar[dtype](Self.LR * lr_scale)
         var eps = Scalar[dtype](Self.EPS)
         var scale_factor = Scalar[dtype](sqrt(Float64(PARAM_SIZE)))
 
-        # Compute Nesterov gradient norm on CPU (Apple Silicon unified memory)
-        var norm_sq = Scalar[dtype](0.0)
-        for i in range(PARAM_SIZE):
-            var g = rebind[Scalar[dtype]](grads[i])
-            var m = rebind[Scalar[dtype]](state[i, 0])
-            var g_nesterov = g + beta * (beta * m + g)
-            norm_sq += g_nesterov * g_nesterov
-        var inv_norm = Scalar[dtype](1.0) / (sqrt(norm_sq) + eps)
+        # Step 1: GPU reduction → opt_global_state[0] = inv_norm.
+        comptime REDUCE_BLOCK = TPB
 
+        @parameter
+        @always_inline
+        def reduce_wrapper(
+            grads: LayoutTensor[
+                dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
+            ],
+            state: LayoutTensor[
+                dtype, Layout.row_major(PARAM_SIZE, 1), MutAnyOrigin
+            ],
+            inv_norm_out: LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ],
+            beta: Scalar[dtype],
+            eps: Scalar[dtype],
+        ):
+            Self._compute_inv_norm_kernel[
+                PARAM_SIZE, REDUCE_BLOCK, dtype
+            ](grads, state, inv_norm_out, beta, eps)
+
+        ctx.enqueue_function[reduce_wrapper, reduce_wrapper](
+            grads,
+            state,
+            opt_global_state,
+            beta,
+            eps,
+            grid_dim=(1,),
+            block_dim=(REDUCE_BLOCK,),
+        )
+
+        # Step 2: apply Muon update reading `inv_norm` from opt_global_state[0].
         @parameter
         @always_inline
         def kernel_wrapper(
@@ -373,18 +470,20 @@ struct Muon[
             state: LayoutTensor[
                 dtype, Layout.row_major(PARAM_SIZE, 1), MutAnyOrigin
             ],
+            inv_norm_in: LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ],
             lr: Scalar[dtype],
             beta: Scalar[dtype],
-            inv_norm: Scalar[dtype],
             scale_factor: Scalar[dtype],
         ):
             Self.step_kernel_impl[PARAM_SIZE, dtype](
                 params,
                 grads,
                 state,
+                inv_norm_in,
                 lr,
                 beta,
-                inv_norm,
                 scale_factor,
             )
 
@@ -394,9 +493,9 @@ struct Muon[
             params,
             grads,
             state,
+            opt_global_state,
             lr,
             beta,
-            inv_norm,
             scale_factor,
             grid_dim=(grid_size,),
             block_dim=(TPB,),

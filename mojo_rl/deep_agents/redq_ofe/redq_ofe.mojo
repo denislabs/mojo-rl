@@ -1626,7 +1626,11 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFESBModel.CACHE_SIZE),
             MutAnyOrigin,
         ](gpu_state.ofe_sb_cache.unsafe_ptr())
-        Self.OFESBNet.forward_gpu_with_cache[BS](
+        # Inference-mode OFE forward: BN inside the state branch uses its
+        # frozen running stats (no batch-stat reduction, no EMA update),
+        # matching the paper's `training=False` for OFE during RL updates.
+        # `aux_train_step` is the sole writer to those running stats.
+        Self.OFESBNet.forward_gpu_inference_with_cache[BS](
             ctx,
             obs_sb_t,
             phi_s_t,
@@ -1635,7 +1639,7 @@ struct REDQOFEAgent[
             ofe_sb_cache_t,
             gpu_state.ofe_sb_ws,
         )
-        Self.OFESBNet.forward_gpu_with_cache[BS](
+        Self.OFESBNet.forward_gpu_inference_with_cache[BS](
             ctx,
             nobs_sb_t,
             phi_s_next_t,
@@ -1746,7 +1750,8 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFEABModel.CACHE_SIZE),
             MutAnyOrigin,
         ](gpu_state.ofe_ab_cache.unsafe_ptr())
-        Self.OFEABNet.forward_gpu_with_cache[BS](
+        # Inference-mode (running stats only) — same rationale as OFESBNet above.
+        Self.OFEABNet.forward_gpu_inference_with_cache[BS](
             ctx,
             phi_sa_in_tgt_t,
             phi_sa_tgt_t,
@@ -1828,7 +1833,8 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFEABModel.OUT_DIM),
             MutAnyOrigin,
         ](gpu_state.phi_sa_online.unsafe_ptr())
-        Self.OFEABNet.forward_gpu_with_cache[BS](
+        # Inference-mode (running stats only).
+        Self.OFEABNet.forward_gpu_inference_with_cache[BS](
             ctx,
             phi_sa_in_online_t,
             phi_sa_online_t,
@@ -2026,7 +2032,9 @@ struct REDQOFEAgent[
             Layout.row_major(BS, Self.OFEABModel.CACHE_SIZE),
             MutAnyOrigin,
         ](gpu_state.ofe_ab_cache.unsafe_ptr())
-        Self.OFEABNet.forward_gpu_with_cache[BS](
+        # Inference-mode (running stats only) — `aux_train_step` is the sole
+        # writer to OFE running stats.
+        Self.OFEABNet.forward_gpu_inference_with_cache[BS](
             ctx,
             phi_sa_in_sampled_t,
             phi_sa_sampled_t,
@@ -2146,7 +2154,12 @@ struct REDQOFEAgent[
         ](gpu_state.aux_grad_phi_sa_in.unsafe_ptr())
         gpu_state.ofe_ab.zero_grads(ctx)
         var ab_grads_actor = gpu_state.ofe_ab.grads_view()
-        Self.OFEABNet.backward_gpu[BS](
+        # Inference-mode backward: BN inside OFE applies dx = γ·inv_std_r·dy
+        # and skips writes to OFE BN gamma/beta grads. Conv/Linear portions
+        # of OFE still write their grads, but `zero_grads` above zeroed the
+        # whole OFE-AB grad buffer; we only need d_phi_sa_in_t (the action
+        # portion of which becomes `grad_curr_act` for the actor).
+        Self.OFEABNet.backward_gpu_inference[BS](
             ctx,
             d_phi_sa_ab_t,
             d_phi_sa_in_t,

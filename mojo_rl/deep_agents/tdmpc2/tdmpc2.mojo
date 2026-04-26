@@ -26,6 +26,7 @@ Reference: Hansen et al., 2023 — TD-MPC2: Scalable, Robust World Models
 """
 
 from std.math import exp, log, sqrt
+from std.gpu import thread_idx
 from std.random import random_float64, seed
 from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
@@ -2353,8 +2354,13 @@ struct TDMPC2Agent[
 
         # CPU-side per-env episode reward accumulators
         var cpu_ep_rewards = InlineArray[Float64, n_envs](fill=0.0)
-        var gpu_wm_step: Int = 0  # Adam step counter for world model networks
-        var gpu_pi_step: Int = 0  # Adam step counter for policy network
+        # Phase 4 (docs/STATE_SIZE_DESIGN.md): every Adam-style optimizer
+        # keeps its step counter on-device in `opt_global_state[0]` — no host
+        # counters needed. For the encoder/dynamics/reward/term/policy nets,
+        # `Adam.step_gpu` bumps each network's own counter via its preamble
+        # kernel. For the fused 5Q kernel, we use `gs.q1.opt_global_state[0]`
+        # as the canonical counter (all 5 Qs are stepped in lockstep) with a
+        # local 1-thread bump kernel before the fused launch.
 
         # Diagnostics (captured from RunningScale Q-value download)
         var diag_q_mean: Float64 = 0.0
@@ -2930,19 +2936,14 @@ struct TDMPC2Agent[
                     grid_dim=(Self.ENC_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                # Zero-length opt_global_state (Adam.GLOBAL_STATE_SIZE = 0 in Phase 1).
-                var _og_zero = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-                    UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
-                )
-
-                gpu_wm_step += 1
+                var enc_og = gs.enc.opt_global_state_view()
                 Adam[LR=Self.WM.ENC_LR].step_gpu[Self.ENC_P](
                     ctx,
                     enc_params_tensor,
                     enc_grads_tensor,
                     enc_state_tensor,
-                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
-                    gpu_wm_step,
+                    enc_og,
+                    0,  # ignored — device counter is authoritative
                     1.0,
                 )
 
@@ -2973,13 +2974,14 @@ struct TDMPC2Agent[
                     grid_dim=(Self.DYN_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
+                var dyn_og = gs.dyn.opt_global_state_view()
                 Adam[LR=Self.WM.WM_LR].step_gpu[Self.DYN_P](
                     ctx,
                     dyn_params_tensor,
                     dyn_grads_tensor,
                     dyn_state_tensor,
-                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
-                    gpu_wm_step,
+                    dyn_og,
+                    0,  # ignored — device counter is authoritative
                     1.0,
                 )
 
@@ -3010,13 +3012,14 @@ struct TDMPC2Agent[
                     grid_dim=(Self.REW_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
+                var rew_og = gs.rew.opt_global_state_view()
                 Adam[LR=Self.WM.WM_LR].step_gpu[Self.REW_P](
                     ctx,
                     rew_params_tensor,
                     rew_grads_tensor,
                     rew_state_tensor,
-                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
-                    gpu_wm_step,
+                    rew_og,
+                    0,  # ignored — device counter is authoritative
                     1.0,
                 )
 
@@ -3047,13 +3050,14 @@ struct TDMPC2Agent[
                     grid_dim=(Self.TERM_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
+                var term_og = gs.term.opt_global_state_view()
                 Adam[LR=Self.WM.WM_LR].step_gpu[Self.TERM_P](
                     ctx,
                     term_params_tensor,
                     term_grads_tensor,
                     term_state_tensor,
-                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
-                    gpu_wm_step,
+                    term_og,
+                    0,  # ignored — device counter is authoritative
                     1.0,
                 )
 
@@ -3094,13 +3098,40 @@ struct TDMPC2Agent[
                     block_dim=(TPB,),
                 )
 
-                # Fused Adam step for all 5 Q networks
+                # Fused Adam step for all 5 Q networks. Phase 4: q1's
+                # `opt_global_state[0]` is the canonical step counter for the
+                # 5-Q group (all five Qs are stepped in lockstep, so they
+                # share a single counter). A 1-thread preamble bump kernel
+                # increments it on-device, and the fused kernel computes
+                # bias correction from the post-bump value — CUDA-graph
+                # replay safe.
                 var wm_lr = Scalar[dtype](Self.WM.WM_LR)
                 var adam_beta1 = Scalar[dtype](0.9)
                 var adam_beta2 = Scalar[dtype](0.999)
                 var adam_eps = Scalar[dtype](1e-8)
-                var adam_bc1 = Scalar[dtype](1.0 - (0.9**gpu_wm_step))
-                var adam_bc2 = Scalar[dtype](1.0 - (0.999**gpu_wm_step))
+                var adam_log_b1 = Scalar[dtype](log(0.9))
+                var adam_log_b2 = Scalar[dtype](log(0.999))
+
+                var q1_og = gs.q1.opt_global_state_view()
+                var q1_counter = LayoutTensor[
+                    DType.uint32, Layout.row_major(1), MutAnyOrigin
+                ](q1_og.ptr.bitcast[Scalar[DType.uint32]]())
+
+                @parameter
+                @always_inline
+                def q1_bump_kernel(
+                    c: LayoutTensor[
+                        DType.uint32, Layout.row_major(1), MutAnyOrigin
+                    ],
+                ):
+                    if Int(thread_idx.x) == 0:
+                        c[0] = c[0] + UInt32(1)
+
+                ctx.enqueue_function[q1_bump_kernel, q1_bump_kernel](
+                    q1_counter,
+                    grid_dim=(1,),
+                    block_dim=(1,),
+                )
 
                 @parameter
                 @always_inline
@@ -3150,12 +3181,15 @@ struct TDMPC2Agent[
                     state5: LayoutTensor[
                         dtype, Layout.row_major(Self.Q_P, 2), MutAnyOrigin
                     ],
+                    counter: LayoutTensor[
+                        DType.uint32, Layout.row_major(1), MutAnyOrigin
+                    ],
                     lr: Scalar[dtype],
                     beta1: Scalar[dtype],
                     beta2: Scalar[dtype],
                     eps: Scalar[dtype],
-                    bias_correction1: Scalar[dtype],
-                    bias_correction2: Scalar[dtype],
+                    log_beta1: Scalar[dtype],
+                    log_beta2: Scalar[dtype],
                 ):
                     tdmpc2_adam_step_5q_kernel[dtype, Self.Q_P](
                         params1,
@@ -3173,12 +3207,13 @@ struct TDMPC2Agent[
                         params5,
                         grads5,
                         state5,
+                        counter,
                         lr,
                         beta1,
                         beta2,
                         eps,
-                        bias_correction1,
-                        bias_correction2,
+                        log_beta1,
+                        log_beta2,
                     )
 
                 ctx.enqueue_function[adam_5q_wrapper, adam_5q_wrapper](
@@ -3197,12 +3232,13 @@ struct TDMPC2Agent[
                     q5_params_tensor,
                     q5_grads_tensor,
                     q5_state_tensor,
+                    q1_counter,
                     wm_lr,
                     adam_beta1,
                     adam_beta2,
                     adam_eps,
-                    adam_bc1,
-                    adam_bc2,
+                    adam_log_b1,
+                    adam_log_b2,
                     grid_dim=(Self.Q_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
@@ -3485,14 +3521,14 @@ struct TDMPC2Agent[
                     grid_dim=(Self.POL_GRAD_BLOCKS,),
                     block_dim=(TPB,),
                 )
-                gpu_pi_step += 1
+                var pol_og = gs.pol.opt_global_state_view()
                 Adam[LR=Self.WM.PI_LR].step_gpu[Self.POL_P](
                     ctx,
                     pol_params_tensor,
                     pol_grads_tensor,
                     pol_state_tensor,
-                    _og_zero,  # zero-length (Adam.GLOBAL_STATE_SIZE=0)
-                    gpu_pi_step,
+                    pol_og,
+                    0,  # ignored — device counter is authoritative
                     1.0,
                 )
 

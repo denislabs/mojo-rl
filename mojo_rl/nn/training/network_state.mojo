@@ -230,6 +230,14 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
 
         Applies self.lr_scale to the base LR (set via set_lr_scale()).
         Creates lvalue views internally (params and state are mut in step()).
+
+        Phase 6 (docs/STATE_SIZE_DESIGN.md): when the optimizer keeps an
+        on-device step counter (Adam/AdamW with `GLOBAL_STATE_SIZE >= 1`),
+        also mirror the bumped step into `opt_global_state[0]` as a UInt32
+        bit-pattern. The CPU `step()` kernels don't read this slot, but a
+        subsequent `GPUNetworkState.upload_from(self, ...)` will, so this
+        keeps CPU↔GPU resume coherent without forcing the caller to set
+        `cpu.step_num` manually.
         """
         self.step_num += 1
         var p = self.params_view()
@@ -238,6 +246,12 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         Self.OPTIMIZER.step[Self.PARAM_SIZE](
             p, self.grads_view(), s, og, self.step_num, self.lr_scale
         )
+
+        comptime if Self.OPT_GLOBAL_SIZE >= 1:
+            var counter_ptr = self.opt_global_state.bitcast[
+                Scalar[DType.uint32]
+            ]()
+            counter_ptr[0] = UInt32(self.step_num)
 
     # =========================================================================
     # Target Network Operations

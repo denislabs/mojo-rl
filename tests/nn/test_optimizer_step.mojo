@@ -124,9 +124,12 @@ def test_adam() raises:
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var grads_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grads)
     var state_t = LayoutTensor[dtype, Layout.row_major(PS, 2), MutAnyOrigin](state)
-    var og_t = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
-    )
+    # Phase 4: Adam.GLOBAL_STATE_SIZE = 1 (Float32 slot bit-patterning a UInt32
+    # device step counter). The CPU `step()` path doesn't consult it, but the
+    # signature still requires a 1-element tensor.
+    var og_buf = alloc[Scalar[dtype]](1)
+    (og_buf + 0)[] = Scalar[dtype](0.0)
+    var og_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](og_buf)
 
     # Step 1
     Adam[LR, B1, B2, EPS].step[PS](params_t, grads_t, state_t, og_t, step_num=1)
@@ -193,6 +196,7 @@ def test_adam() raises:
     params.free()
     grads.free()
     state.free()
+    og_buf.free()
     p.free()
     m.free()
     v.free()
@@ -228,9 +232,10 @@ def test_adamw() raises:
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var grads_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grads)
     var state_t = LayoutTensor[dtype, Layout.row_major(PS, 2), MutAnyOrigin](state)
-    var og_t = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
-    )
+    # Phase 4: AdamW.GLOBAL_STATE_SIZE = 1 — see test_adam.
+    var og_buf = alloc[Scalar[dtype]](1)
+    (og_buf + 0)[] = Scalar[dtype](0.0)
+    var og_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](og_buf)
 
     # Step 1
     AdamW[LR, B1, B2, EPS, WD].step[PS](params_t, grads_t, state_t, og_t, step_num=1)
@@ -273,6 +278,7 @@ def test_adamw() raises:
     params.free()
     grads.free()
     state.free()
+    og_buf.free()
     p.free()
     g.free()
     print()
