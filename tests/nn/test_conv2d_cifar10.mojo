@@ -54,7 +54,7 @@ from mojo_rl.nn.datasets.cifar10 import CIFAR10
 
 
 comptime BATCH = 128
-comptime EPOCHS = 30
+comptime EPOCHS = 50
 
 
 def _cifar_augment_kernel[
@@ -123,7 +123,7 @@ comptime CNN = Sequential[
     # Classifier head
     FlattenLayer[128 * 4 * 4],
     LinearReLU[128 * 4 * 4, 128],
-    Dropout[128, 0.5, 404, True],
+    Dropout[128, 0.25, 404, True],
     Linear[128, 10],
 ]
 
