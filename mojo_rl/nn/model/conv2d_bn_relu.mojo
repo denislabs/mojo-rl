@@ -982,3 +982,312 @@ struct Conv2DBatchNormReLU[
         ConvOp.vjp_gpu[BATCH](
             ctx, grad_pre_bn, grad_input, conv_params, conv_cache, conv_grads, workspace.unsafe_ptr()
         )
+
+    # =========================================================================
+    # Inference-mode forward + backward (Phase 3.5b)
+    #
+    # Forward uses BN running stats (no batch reductions, no EMA update on
+    # state). Backward reads the same cache layout as training but uses
+    # running-stat `inv_std` and the simpler `dx_BN = γ · inv_std_r · dy_pre_relu`
+    # formula (no batch sums). BN param grads (γ/β) are NOT written, mirroring
+    # `BatchNorm1D` / `BatchNorm2D` `backward_gpu_inference`. Conv params
+    # (W, b) are still updated — diverges from the BN1D/BN2D "skip all
+    # grad_params writes" contract because the composite owns non-BN
+    # trainable params; callers wanting full freeze must zero conv grads
+    # themselves (matches REDQ-OFE's `zero_grads` pattern).
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    def bn_relu_kernel_impl_inference_with_cache[
+        BATCH: Int, dtype: DType = DType.float32,
+    ](
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+        ],
+    ):
+        """Inference fused BN+ReLU: running stats, populates `cache` for
+        inference-mode backward. Single-pass (no batch reduction)."""
+        var c = Int(block_idx.x)
+        if c >= Self.out_channels:
+            return
+        var tid = Int(thread_idx.x)
+
+        var c_off = c * Self.spatial_out
+        var eps = Scalar[dtype](Self.BN_EPSILON)
+        comptime N = BATCH * Self.spatial_out
+        var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
+        var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
+        var rmean = rebind[Scalar[dtype]](state[Self.RMEAN_OFF + c])
+        var rvar = rebind[Scalar[dtype]](state[Self.RVAR_OFF + c])
+        var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
+        comptime OUT_STRIDE = Self.OUT_DIM
+
+        var idx = tid
+        while idx < N:
+            var b = idx // Self.spatial_out
+            var s = idx - b * Self.spatial_out
+            var out_off = b * OUT_STRIDE + c_off + s
+            var x = output.ptr[out_off]
+            var x_hat = (x - rmean) * inv_std
+            (cache.ptr + b * Self.CACHE_SIZE + Self.XHAT_OFF + c_off + s)[] = x_hat
+            var pre_relu = gamma * x_hat + beta
+            output.ptr[out_off] = pre_relu if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+            idx += TPB
+
+        # Cache inv_std for inference backward
+        if tid < BATCH:
+            (cache.ptr + tid * Self.CACHE_SIZE + Self.INVSTD_OFF + c)[] = inv_std
+
+    @always_inline
+    @staticmethod
+    def relu_bn_backward_kernel_impl_inference[
+        BATCH: Int, dtype: DType = DType.float32,
+    ](
+        grad_pre_bn: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ],
+    ):
+        """Inference ReLU+BN backward: `dx = γ·inv_std_r·dy_pre_relu`, no reductions, no BN param grads."""
+        var c = Int(block_idx.x)
+        if c >= Self.out_channels:
+            return
+        var tid = Int(thread_idx.x)
+
+        var c_off = c * Self.spatial_out
+        var gamma = rebind[Scalar[dtype]](params[Self.GAMMA_OFF + c])
+        var beta = rebind[Scalar[dtype]](params[Self.BETA_OFF + c])
+        var inv_std = rebind[Scalar[dtype]](cache[0, Self.INVSTD_OFF + c])
+        var scale = gamma * inv_std
+
+        var idx = tid
+        while idx < BATCH * Self.spatial_out:
+            var b = idx // Self.spatial_out
+            var s = idx % Self.spatial_out
+            var x_hat = rebind[Scalar[dtype]](cache[b, Self.XHAT_OFF + c_off + s])
+            var pre_relu = gamma * x_hat + beta
+            var dy = rebind[Scalar[dtype]](grad_output[b, c_off + s])
+            if pre_relu <= Scalar[dtype](0.0):
+                dy = Scalar[dtype](0.0)
+            grad_pre_bn[b, c_off + s] = scale * dy
+            idx += TPB
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int,
+        dtype: DType = DType.float32,
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """Inference forward: Conv → BN(running stats) → ReLU. Populates cache for inference backward."""
+        from ..autodiff import Conv2D
+        comptime ConvOp = Conv2D[
+            Self.in_channels, Self.out_channels,
+            Self.kernel_size, Self.stride, Self.padding,
+            Self.in_h, Self.in_w,
+        ]
+
+        var conv_params = LayoutTensor[
+            dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
+        ](params.ptr)
+
+        comptime CONV_CS = ConvOp.CACHE_SIZE
+        comptime TEMP_CACHE_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels
+        var conv_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
+        ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
+
+        ConvOp.eval_gpu[BATCH](ctx, output, input, conv_params, conv_cache, workspace.unsafe_ptr())
+
+        # Copy im2col into our cache (Conv backward needs it)
+        comptime COPY_SIZE = BATCH * CONV_CS
+        @parameter
+        @always_inline
+        def copy_im2col_inf(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // CONV_CS
+            var i = tid % CONV_CS
+            dst.ptr[b * Self.CACHE_SIZE + i] = src.ptr[tid]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        ctx.enqueue_function[copy_im2col_inf, copy_im2col_inf](
+            cache, conv_cache,
+            grid_dim=(COPY_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+        var state_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin
+        ](state.ptr)
+
+        @parameter
+        @always_inline
+        def bn_relu_inf_wrapper(
+            output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+            cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+            params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+            state: LayoutTensor[dtype, Layout.row_major(Self.STATE_SIZE), ImmutAnyOrigin],
+        ):
+            Self.bn_relu_kernel_impl_inference_with_cache[BATCH, dtype](output, cache, params, state)
+
+        ctx.enqueue_function[bn_relu_inf_wrapper, bn_relu_inf_wrapper](
+            output, cache, params_immut, state_immut,
+            grid_dim=(Self.out_channels,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int,
+        dtype: DType = DType.float32,
+    ](
+        ctx: DeviceContext,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        """Inference backward: dx_BN = γ·inv_std_r·dy_pre_relu → Conv backward.
+
+        Skips BN param-grad writes (γ/β). Conv param grads (W, b) are still
+        accumulated via `Conv2D.vjp_gpu` — see header comment.
+        """
+        from ..autodiff import Conv2D
+        comptime ConvOp = Conv2D[
+            Self.in_channels, Self.out_channels,
+            Self.kernel_size, Self.stride, Self.padding,
+            Self.in_h, Self.in_w,
+        ]
+
+        comptime GRAD_PRE_BN_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels + BATCH * Self.CONV_CACHE
+        var grad_pre_bn = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ](workspace.unsafe_ptr() + GRAD_PRE_BN_OFF)
+
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var params_immut = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
+        ](params.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ](cache.ptr)
+
+        @parameter
+        @always_inline
+        def relu_bn_bwd_inf_wrapper(
+            grad_pre_bn: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+            grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin],
+            params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin],
+            cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin],
+        ):
+            Self.relu_bn_backward_kernel_impl_inference[BATCH, dtype](
+                grad_pre_bn, grad_output, params, cache
+            )
+
+        ctx.enqueue_function[relu_bn_bwd_inf_wrapper, relu_bn_bwd_inf_wrapper](
+            grad_pre_bn, grad_output_immut, params_immut, cache_immut,
+            grid_dim=(Self.out_channels,),
+            block_dim=(TPB,),
+        )
+
+        # Conv backward — same as training-mode (writes conv grads, grad_input).
+        var conv_params = LayoutTensor[
+            dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
+        ](params.ptr)
+        var conv_grads = LayoutTensor[
+            dtype, Layout.row_major(Self.CONV_PARAM_SIZE), MutAnyOrigin
+        ](grads.ptr)
+
+        comptime CONV_CS = ConvOp.CACHE_SIZE
+        comptime TEMP_CACHE_OFF = BATCH * Self.CONV_CACHE + Self.col_size * Self.out_channels
+        var conv_cache = LayoutTensor[
+            dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin
+        ](workspace.unsafe_ptr() + TEMP_CACHE_OFF)
+
+        comptime COPY_SIZE = BATCH * CONV_CS
+        @parameter
+        @always_inline
+        def copy_im2col_bwd_inf(
+            dst: LayoutTensor[dtype, Layout.row_major(BATCH, CONV_CS), MutAnyOrigin],
+            src: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= COPY_SIZE:
+                return
+            var b = tid // CONV_CS
+            var i = tid % CONV_CS
+            dst.ptr[tid] = src.ptr[b * Self.CACHE_SIZE + i]
+
+        comptime COPY_BLOCKS = (COPY_SIZE + TPB - 1) // TPB
+        ctx.enqueue_function[copy_im2col_bwd_inf, copy_im2col_bwd_inf](
+            conv_cache, cache,
+            grid_dim=(COPY_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        ConvOp.vjp_gpu[BATCH](
+            ctx, grad_pre_bn, grad_input, conv_params, conv_cache, conv_grads, workspace.unsafe_ptr()
+        )

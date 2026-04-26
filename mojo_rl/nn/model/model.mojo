@@ -413,13 +413,10 @@ trait Model(Movable & ImplicitlyCopyable):
         no batch-stat dependency. Sequential and combinators override to
         recurse into children's inference variants.
 
-        Caveat — fused BN composites (`Conv2DBatchNormReLU`,
-        `LinearBatchNormReLU`, `ResBlockConv2DBN`) currently inherit this
-        default, so calling inference-mode through them silently uses
-        batch-stat reductions and EMA updates inside their fused BN kernel.
-        REDQ-OFE doesn't hit this path (it uses raw `BatchNorm1D`); a proper
-        inference-mode override for the fused composites is a follow-up
-        once a use case requires it.
+        Fused BN composites (`Conv2DBatchNormReLU`, `LinearBatchNormReLU`,
+        `ResBlockConv2DBN`) override this with real inference kernels (Phase
+        3.5b) — they read running stats and skip EMA updates, so AlphaZero
+        rollout/eval/arena paths can use them safely.
         """
         Self.forward_gpu[BATCH, dtype](
             ctx, output, input, params, state, cache, workspace, perf, perf_slot

@@ -2078,6 +2078,7 @@ struct GenericAlphaZeroAgent[
         ctx: DeviceContext,
         p0_params: DeviceBuffer[dtype],
         p1_params: DeviceBuffer[dtype],
+        mut active_model_state: DeviceBuffer[dtype],
         mut gpu_mcts: GPUMCTSState[
             N_ENVS,
             Self.Config.max_nodes,
@@ -2105,6 +2106,12 @@ struct GenericAlphaZeroAgent[
         num_games: Int = 0,
     ) raises -> Tuple[Int, Int, Int]:
         """Play n_envs games on GPU. P0 uses p0_params, P1 uses p1_params.
+
+        Both nets share `active_model_state` (BN running stats etc.). After
+        Phase 3.5b the per-step forwards run inference-mode and read state
+        without writing, so sharing is correctness-neutral; before that, this
+        matches current selfplay behavior (training-mode forward updates EMA
+        on the live buffer).
 
         Uses pre-allocated buffers (no per-call GPU allocation).
         num_games: number of games to count (0 = use all n_envs).
@@ -2146,10 +2153,12 @@ struct GenericAlphaZeroAgent[
             var active_params = LayoutTensor[
                 dtype, Layout.row_major(_PS), MutAnyOrigin
             ](p0_params.unsafe_ptr() if p0_turn else p1_params.unsafe_ptr())
-            # Zero-length model state slice (stateless PredModel; no GPUNetworkState)
+            # Real model-state slice over the caller's buffer. Conv2D+BN /
+            # ResBlockConv2DBN dereference state.ptr for running stats; a
+            # zero-length placeholder NULL'd out address 0.
             var active_state = LayoutTensor[
                 dtype, Layout.row_major(Self.Config.PredModel.STATE_SIZE), MutAnyOrigin
-            ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+            ](active_model_state.unsafe_ptr())
 
             # LayoutTensor views over MCTS buffers
             var pred_obs = LayoutTensor[
@@ -2482,6 +2491,9 @@ struct GenericAlphaZeroAgent[
         mut arena_new_params: DeviceBuffer[dtype],
         mut arena_old_params: DeviceBuffer[dtype],
         mut arena_params_host: HostBuffer[dtype],
+        # Live model_state buffer (BN running stats, RNG counters). Shared
+        # by both players in arena (see _gpu_play_games docstring).
+        mut active_model_state: DeviceBuffer[dtype],
         # Pre-allocated eval/arena buffers
         mut gpu_mcts: GPUMCTSState[
             N_ENVS,
@@ -2534,6 +2546,7 @@ struct GenericAlphaZeroAgent[
             ctx,
             arena_new_params,
             arena_old_params,
+            active_model_state,
             gpu_mcts,
             mcts_ws,
             states_buf,
@@ -2561,6 +2574,7 @@ struct GenericAlphaZeroAgent[
             ctx,
             arena_old_params,
             arena_new_params,
+            active_model_state,
             gpu_mcts,
             mcts_ws,
             states_buf,
@@ -4075,6 +4089,7 @@ struct GenericAlphaZeroAgent[
                     arena_new_params,
                     arena_old_params,
                     arena_params_host,
+                    gpu.prediction.model_state_buf,
                     eval_gpu_mcts,
                     eval_mcts_ws,
                     eval_states_buf,

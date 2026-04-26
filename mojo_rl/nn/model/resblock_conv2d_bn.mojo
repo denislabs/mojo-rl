@@ -350,6 +350,112 @@ def _add_kernel_flat[
     a[idx] = rebind[Scalar[dtype]](a[idx]) + rebind[Scalar[dtype]](b[idx])
 
 
+def _bn_skip_relu_fwd_kernel_inference_with_cache[
+    BATCH: Int,
+    channels: Int,
+    spatial: Int,
+    BN_PS: Int,
+    BN_STATE_PS: Int,
+    CACHE_SIZE: Int,
+    GAMMA_OFF: Int,
+    BETA_OFF: Int,
+    RMEAN_OFF: Int,
+    RVAR_OFF: Int,
+    XHAT_OFF: Int,
+    INVSTD_OFF: Int,
+    BN_EPSILON: Float64,
+    dtype: DType = DType.float32,
+](
+    output: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
+    skip: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
+    params: LayoutTensor[dtype, Layout.row_major(BN_PS), ImmutAnyOrigin],
+    state: LayoutTensor[dtype, Layout.row_major(BN_STATE_PS), ImmutAnyOrigin],
+    cache: LayoutTensor[dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
+):
+    """Inference fused BN + skip-add + ReLU; populates cache for inference backward.
+
+    Uses BN running stats. No batch reduction, no EMA update on `state`.
+    Cache layout matches training kernel — x_hat (running-stat normalized),
+    inv_std, pre_relu — so the inference backward kernel can reuse all three.
+    """
+    var c = Int(block_idx.x)
+    if c >= channels:
+        return
+    var tid = Int(thread_idx.x)
+    var c_off = c * spatial
+    var eps = Scalar[dtype](BN_EPSILON)
+    comptime N = BATCH * spatial
+    comptime OUT_STRIDE = channels * spatial
+
+    var gamma = rebind[Scalar[dtype]](params[GAMMA_OFF + c])
+    var beta = rebind[Scalar[dtype]](params[BETA_OFF + c])
+    var rmean = rebind[Scalar[dtype]](state[RMEAN_OFF + c])
+    var rvar = rebind[Scalar[dtype]](state[RVAR_OFF + c])
+    var inv_std: Scalar[dtype] = 1.0 / sqrt(rvar + eps)
+
+    var skip_base = skip.ptr + c_off
+    var idx = tid
+    while idx < N:
+        var b = idx // spatial
+        var s = idx - b * spatial
+        var out_off = b * OUT_STRIDE + c_off + s
+        var x = output.ptr[out_off]
+        var x_hat = (x - rmean) * inv_std
+        (cache.ptr + b * CACHE_SIZE + XHAT_OFF + c_off + s)[] = x_hat
+        var bn_out = gamma * x_hat + beta
+        var val = bn_out + (skip_base + b * OUT_STRIDE + s)[]
+        (cache.ptr + b * CACHE_SIZE + INVSTD_OFF + channels + c_off + s)[] = val
+        output.ptr[out_off] = val if val > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+        idx += TPB
+
+    if tid < BATCH:
+        (cache.ptr + tid * CACHE_SIZE + INVSTD_OFF + c)[] = inv_std
+
+
+def _bn_skip_relu_bwd_kernel_inference[
+    BATCH: Int,
+    channels: Int,
+    spatial: Int,
+    BN_PS: Int,
+    CACHE_SIZE: Int,
+    GAMMA_OFF: Int,
+    XHAT_OFF: Int,
+    INVSTD_OFF: Int,
+    dtype: DType = DType.float32,
+](
+    grad_conv2: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
+    grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
+    grad_skip: LayoutTensor[dtype, Layout.row_major(BATCH, channels * spatial), MutAnyOrigin],
+    params: LayoutTensor[dtype, Layout.row_major(BN_PS), ImmutAnyOrigin],
+    cache: LayoutTensor[dtype, Layout.row_major(BATCH, CACHE_SIZE), ImmutAnyOrigin],
+):
+    """Inference fused ReLU + BN + skip backward.
+
+    `dx_conv2 = γ · inv_std_r · dy_pre_relu` (no batch reductions, no
+    sum_dy_g / sum_dy_g_xh terms). `grad_skip = dy_pre_relu`.
+    Skips BN param-grad writes (γ/β).
+    """
+    var c = Int(block_idx.x)
+    if c >= channels:
+        return
+    var tid = Int(thread_idx.x)
+    var c_off = c * spatial
+    var gamma = rebind[Scalar[dtype]](params[GAMMA_OFF + c])
+    var inv_std = rebind[Scalar[dtype]](cache[0, INVSTD_OFF + c])
+    var scale = gamma * inv_std
+
+    var idx = tid
+    while idx < BATCH * spatial:
+        var b = idx // spatial
+        var s = idx % spatial
+        var pre_relu = rebind[Scalar[dtype]](cache[b, INVSTD_OFF + channels + c_off + s])
+        var go = rebind[Scalar[dtype]](grad_output[b, c_off + s])
+        var dy = go if pre_relu > Scalar[dtype](0.0) else Scalar[dtype](0.0)
+        grad_skip[b, c_off + s] = dy
+        grad_conv2[b, c_off + s] = scale * dy
+        idx += TPB
+
+
 # ─── Struct ───────────────────────────────────────────────────────────────
 
 
@@ -916,6 +1022,153 @@ struct ResBlockConv2DBN[
 
         var temp_flat = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](temp_gi_ptr)
         ctx.enqueue_function[add_wrapper, add_wrapper](
+            grad_input, temp_flat,
+            grid_dim=(BLOCKS,), block_dim=(TPB,),
+        )
+
+    # ── GPU Inference-mode forward + backward (Phase 3.5b) ───────
+    #
+    # Conv1's BN runs in inference (`Conv1.forward_gpu_inference_with_cache`).
+    # Conv2 has no BN — its training-mode forward/backward are correct in an
+    # inference context. BN2 + skip + ReLU run via inference-mode kernels
+    # (running stats, no EMA, no BN grad writes). Conv1/Conv2 param grads ARE
+    # written by their respective backward kernels — see `Conv2DBatchNormReLU`
+    # header for the rationale on diverging from BN1D/BN2D's strict
+    # "no grad_params" contract.
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int,
+        dtype: DType = DType.float32,
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
+        var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+        var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
+        var c2_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr + Self.Conv1.STATE_SIZE)
+
+        var conv_ws_size = BATCH * Self.MAX_CONV_WS
+        var conv_ws = DeviceBuffer[dtype](ctx, workspace.unsafe_ptr(), conv_ws_size if conv_ws_size > 0 else 1, owning=False)
+
+        # Conv1: inference (BN running stats). Cache populated for inference backward.
+        var inter_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
+        var inter_out = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter_ptr)
+        var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
+        Self.Conv1.forward_gpu_inference_with_cache[BATCH](ctx, inter_out, in_rb, p1, s1, c1_v, conv_ws)
+
+        # Conv2: no BN, training-mode forward (== inference for BN-free layer)
+        var inter_in = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](inter_ptr)
+        var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
+        Self.Conv2.forward_gpu[BATCH](ctx, out_rb, inter_in, p2, s2, c2_v, conv_ws)
+
+        # Fused BN2 (running stats) + skip + ReLU + cache
+        var bn2_params = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), ImmutAnyOrigin](params.ptr + Self.BN2_OFF)
+        var bn2_state = LayoutTensor[dtype, Layout.row_major(Self.BN2_STATE_PS), ImmutAnyOrigin](state.ptr + Self.BN2_STATE_OFF)
+        var bn2_cache = LayoutTensor[dtype, Layout.row_major(BATCH, Self.BN2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.BN2_CACHE_OFF)
+        var skip_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](input.ptr)
+
+        comptime fwd_k = _bn_skip_relu_fwd_kernel_inference_with_cache[
+            BATCH, Self.channels, Self.spatial, Self.BN2_PS, Self.BN2_STATE_PS, Self.BN2_CS,
+            Self.BN2_GAMMA_OFF, Self.BN2_BETA_OFF, Self.BN2_RMEAN_OFF, Self.BN2_RVAR_OFF,
+            Self.BN2_XHAT_OFF, Self.BN2_INVSTD_OFF,
+            Self.BN_EPSILON, dtype,
+        ]
+        ctx.enqueue_function[fwd_k, fwd_k](
+            output, skip_t, bn2_params, bn2_state, bn2_cache,
+            grid_dim=(Self.channels,), block_dim=(TPB,),
+        )
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int,
+        dtype: DType = DType.float32,
+    ](
+        ctx: DeviceContext,
+        mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
+        grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
+        params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
+        mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
+        var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr + Self.Conv1.STATE_SIZE)
+
+        var conv_ws_size = BATCH * Self.MAX_CONV_WS
+        var conv_ws = DeviceBuffer[dtype](ctx, workspace.unsafe_ptr(), conv_ws_size if conv_ws_size > 0 else 1, owning=False)
+
+        comptime TOTAL = BATCH * Self.DIM
+        comptime BLOCKS = ceildiv(TOTAL, TPB)
+
+        var grad_conv2_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
+        var temp_gi_ptr = grad_conv2_ptr + BATCH * Self.DIM
+        var grad_inter_ptr = temp_gi_ptr + BATCH * Self.DIM
+
+        # 1. Inference BN2+skip+ReLU backward → grad_conv2 + grad_skip (no BN grad writes)
+        var bn2_params = LayoutTensor[dtype, Layout.row_major(Self.BN2_PS), ImmutAnyOrigin](params.ptr + Self.BN2_OFF)
+        var bn2_cache = LayoutTensor[dtype, Layout.row_major(BATCH, Self.BN2_CS), ImmutAnyOrigin](cache.ptr + BATCH * Self.BN2_CACHE_OFF)
+        var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](grad_output.ptr)
+        var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](grad_input.ptr)
+        var grad_conv2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](grad_conv2_ptr)
+
+        comptime bwd_k = _bn_skip_relu_bwd_kernel_inference[
+            BATCH, Self.channels, Self.spatial, Self.BN2_PS, Self.BN2_CS,
+            Self.BN2_GAMMA_OFF, Self.BN2_XHAT_OFF, Self.BN2_INVSTD_OFF,
+            dtype,
+        ]
+        ctx.enqueue_function[bwd_k, bwd_k](
+            grad_conv2, go_t, gi_t, bn2_params, bn2_cache,
+            grid_dim=(Self.channels,), block_dim=(TPB,),
+        )
+
+        # 2. Conv2 backward (no BN inside; same as training): grad_conv2 → grad_inter
+        var grad_inter = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](grad_inter_ptr)
+        var go_c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin](grad_conv2_ptr)
+        var c2_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
+        var g2_v = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
+        Self.Conv2.backward_gpu[BATCH](ctx, grad_inter, go_c2, p2, s2, c2_v, g2_v, conv_ws)
+
+        # 3. Conv1 inference backward: grad_inter → temp_gi (no BN grad writes; conv grads written)
+        var go_c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](grad_inter_ptr)
+        var temp_gi = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](temp_gi_ptr)
+        var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
+        var g1_v = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
+        Self.Conv1.backward_gpu_inference[BATCH](ctx, temp_gi, go_c1, p1, s1, c1_v, g1_v, conv_ws)
+
+        # 4. Add Conv1's grad_input to skip grad already in grad_input
+        @parameter
+        @always_inline
+        def add_wrapper_inf(
+            a: LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin],
+            b: LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= TOTAL:
+                return
+            a.ptr[idx] = a.ptr[idx] + b.ptr[idx]
+
+        var temp_flat = LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin](temp_gi_ptr)
+        ctx.enqueue_function[add_wrapper_inf, add_wrapper_inf](
             grad_input, temp_flat,
             grid_dim=(BLOCKS,), block_dim=(TPB,),
         )
