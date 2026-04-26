@@ -655,6 +655,13 @@ struct REDQOFEAgent[
     # independent of `print_every` (which is in env-transition units).
     var diag_every: Int
 
+    # Debug toggle: when True, the training loop skips `aux_train_step`
+    # entirely — OFE params and BN running stats stay frozen at init for the
+    # whole run, and every RL update goes through the same fixed Xavier-init
+    # OFE forward / inference backward. Used to isolate whether the aux loss
+    # is destabilising the actor / critic. Default False = paper behaviour.
+    var disable_aux: Bool
+
     def __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -668,6 +675,7 @@ struct REDQOFEAgent[
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
         diag_every: Int = 0,
+        disable_aux: Bool = False,
     ):
         self.cpu_actor = NetworkPair[
             Self.Config.ActorModel, Self.Config.ActorOpt
@@ -705,6 +713,7 @@ struct REDQOFEAgent[
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
         self.diag_every = diag_every
+        self.disable_aux = disable_aux
 
     def __init__(out self, *, deinit take: Self):
         self.cpu_actor = take.cpu_actor^
@@ -729,6 +738,7 @@ struct REDQOFEAgent[
         self.checkpoint_every = take.checkpoint_every
         self.checkpoint_path = take.checkpoint_path^
         self.diag_every = take.diag_every
+        self.disable_aux = take.disable_aux
 
     # -------------------------------------------------------------------------
     # Checkpointable — save/load CPU networks + scalar training state

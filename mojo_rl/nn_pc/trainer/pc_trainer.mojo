@@ -1204,3 +1204,100 @@ struct PCTrainer[*LAYERS: PCLayer, dtype: DType = default_dtype]:
         Self.MODEL.layer_types[R].predict_gpu[BATCH, Self.dtype](
             ctx, top_latent, W_R_p, y_hat, a_R
         )
+
+    @staticmethod
+    def supervised_inference_gpu[BATCH: Int](
+        ctx: DeviceContext,
+        params: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(Self.MODEL.PARAM_SIZE),
+            MutAnyOrigin,
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.LATENT_SIZE_PER_SAMPLE),
+            MutAnyOrigin,
+        ],
+        x_input: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ],
+        y_target: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut y_hat: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
+        ],
+        T_infer: Int,
+        eta_infer: Scalar[Self.dtype],
+    ) raises:
+        """Supervised PCN inference (matches the paper's `test_pcn` protocol).
+
+        Identical to `inference_gpu` but the supervised pull-back
+        `eps_L = (y_hat - y_target) @ W_R` is recomputed each step instead of
+        being held at zero. The label drives the top latent dynamics during
+        settling — this is the protocol the arxiv 2506.06332 paper uses to
+        report 99.92% on CIFAR-10. NOT a generalization metric: y_target is
+        from the test set.
+        """
+        comptime SCRATCH = BATCH * Self.MODEL.LAYER_SCRATCH_PER_SAMPLE
+        comptime EPSL_SIZE = BATCH * Self.MODEL.TOP_LATENT_DIM
+
+        var max_lat_dim = 0
+        comptime for i in range(Self.MODEL.N_LATENTS):
+            var d = Self.MODEL.layer_types[i].OUT_DIM
+            if d > max_lat_dim:
+                max_lat_dim = d
+
+        var a_dbuf = ctx.enqueue_create_buffer[Self.dtype](SCRATCH)
+        var xh_dbuf = ctx.enqueue_create_buffer[Self.dtype](SCRATCH)
+        var eps_dbuf = ctx.enqueue_create_buffer[Self.dtype](SCRATCH)
+        var h_dbuf = ctx.enqueue_create_buffer[Self.dtype](SCRATCH)
+        var epsL_dbuf = ctx.enqueue_create_buffer[Self.dtype](EPSL_SIZE)
+        var pb_dbuf = ctx.enqueue_create_buffer[Self.dtype](BATCH * max_lat_dim)
+
+        for _ in range(T_infer):
+            Self._snapshot_gpu[BATCH](
+                ctx, latents, x_input, params,
+                a_dbuf.unsafe_ptr(), xh_dbuf.unsafe_ptr(),
+                eps_dbuf.unsafe_ptr(), h_dbuf.unsafe_ptr(),
+            )
+            Self._readout_snapshot_gpu[BATCH](
+                ctx, latents, y_target, params,
+                a_dbuf.unsafe_ptr(), xh_dbuf.unsafe_ptr(),
+                eps_dbuf.unsafe_ptr(), h_dbuf.unsafe_ptr(),
+                epsL_dbuf.unsafe_ptr(),
+            )
+            Self._update_latents_gpu[BATCH](
+                ctx, latents, params,
+                eps_dbuf.unsafe_ptr(), h_dbuf.unsafe_ptr(),
+                epsL_dbuf.unsafe_ptr(), pb_dbuf.unsafe_ptr(), eta_infer,
+            )
+
+        # Final readout
+        comptime R = Self.MODEL.N_LINEARS - 1
+        comptime IN_R = Self.MODEL.layer_types[R].IN_DIM
+        comptime OUT_R = Self.MODEL.layer_types[R].OUT_DIM
+        comptime PSZ_R = Self.MODEL.layer_types[R].PARAM_SIZE
+        comptime SCR_OFF_R = Self.MODEL._layer_scratch_offset[R]()
+        comptime PAR_OFF_R = Self.MODEL._param_offset[R]()
+        comptime TOP_LAT_OFF = Self.MODEL._latent_offset[R - 1]()
+
+        var top_latent = LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, OUT_R), MutAnyOrigin
+        ](latents.ptr + BATCH * TOP_LAT_OFF)
+        var W_R_p = LayoutTensor[
+            Self.dtype, Layout.row_major(PSZ_R), MutAnyOrigin
+        ](params.ptr + PAR_OFF_R)
+        var a_R = LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, IN_R), MutAnyOrigin
+        ](a_dbuf.unsafe_ptr() + BATCH * SCR_OFF_R)
+
+        Self.MODEL.layer_types[R].predict_gpu[BATCH, Self.dtype](
+            ctx, top_latent, W_R_p, y_hat, a_R
+        )
