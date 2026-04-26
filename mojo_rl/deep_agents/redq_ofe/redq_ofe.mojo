@@ -2710,9 +2710,13 @@ struct REDQOFEAgent[
                 comptime UTD = Self.Config.UTD_RATIO
                 # Aux step: train OFE via next-state MSE once per env step
                 # (paper: aux update frequency = env step rate, not UTD rate).
-                for _ in range(n_envs):
-                    if self.gpu_buffer_is_ready(gpu_state):
-                        self.aux_train_step(ctx, gpu_state)
+                # Skipped entirely when `disable_aux=True` — OFE then stays at
+                # Xavier init and BN running stats stay at 0/1 forever, which
+                # isolates whether aux training is destabilising the actor.
+                if not self.disable_aux:
+                    for _ in range(n_envs):
+                        if self.gpu_buffer_is_ready(gpu_state):
+                            self.aux_train_step(ctx, gpu_state)
                 var n_updates = UTD * n_envs
                 for _ in range(n_updates):
                     self.do_gpu_train_step(ctx, gpu_state)
