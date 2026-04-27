@@ -8,11 +8,12 @@ inputs — OFE params are updated ONLY by the aux loss, matching the
 paper's `teflon/policy/SAC.py:train_for_batch` which computes gradients
 against critic.trainable_variables only.
 
-Architecture (DenseNet variant, REDQ-OFE convention):
+Architecture (DenseNet variant with LayerNorm):
   - num_layers blocks in state branch, num_layers in action branch
   - per_unit = total_units / num_layers new features per block
-  - block = Linear(per_unit) -> Swish -> concat(input, .)
-    (BN was dropped — see composites_ofenet.mojo for rationale.)
+  - block = Linear(per_unit) -> LayerNorm -> Swish -> concat(input, .)
+    (LayerNorm replaces the paper's BN — see composites_ofenet.mojo
+     docstring for the rationale.)
 
 Configs from `references/OFENet-main/gins/`:
   - HalfCheetah, Hopper, Walker2d: total_units=240, num_layers=6 -> per_unit=40

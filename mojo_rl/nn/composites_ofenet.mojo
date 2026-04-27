@@ -8,26 +8,45 @@ OFENet builds a DenseNet-style feature extractor trained with an
 auxiliary next-state prediction loss, providing a rich representation
 that the actor/critic consume instead of raw observations.
 
-Architecture (DenseNet variant — REDQ-OFE convention, no BN):
+Architecture (DenseNet variant with LayerNorm):
     - num_layers blocks in state branch, num_layers in action branch
     - per_unit = total_units / num_layers new features per block
-    - block = Linear(per_unit) → Swish → concat(input, ·)
+    - block = Linear(per_unit) → LayerNorm → Swish → concat(input, ·)
+
+Why LayerNorm and not BatchNorm:
 
 The original OFENet (Ota et al., TF2) sandwiches BatchNorm1D between
-Linear and Swish, but the REDQ-OFE PyTorch port (Chen et al., 2021)
-found that BN destabilises training under REDQ's high UTD ratio:
+Linear and Swish. The REDQ-OFE PyTorch port (Chen et al., 2021) reported:
 
     > "for some reason adding PyTorch batch norm to OFENet will lead
     >  to divergence. So in the end we did not use batch norm in our
     >  code." — references/REDQ-main/README.md:127
 
-Empirically reproduced in this codebase: with BN, REDQ-OFE diverges on
-HalfCheetah (Q-overestimation, entropy collapse, episode reward dropping
-to ~-1400 by 20k env steps), independent of inference-mode plumbing or
-aux-loss pretraining (10k pretraining aux steps did not fix it). The
-DenseNet skip-concat structure already provides most of OFENet's
-representational benefit; dropping BN matches the REDQ-OFE paper's
-actual implementation.
+Empirically reproduced in this codebase:
+  - BN on:  REDQ-OFE diverges on HalfCheetah (Q ≈ 1500, episode reward
+            dropping to -1400 by 20k env steps). Aux pretraining +
+            inference-mode plumbing did not fix it. Root cause: BN's
+            train-mode (batch stats) vs eval-mode (running stats)
+            forward pass produce different outputs, and aux training
+            (training-mode) optimises gamma / beta against batch stats
+            while RL forwards (inference-mode) use running stats. In
+            an off-policy non-stationary buffer, the two modes never
+            agree.
+  - BN off: catastrophic numerical explosion (Q ≈ 10^7, critic loss
+            ≈ 10^21 by 20k env steps). Feature scales grow unbounded
+            through Swish + skip-concat without per-layer normalisation.
+
+LayerNorm sidesteps both failure modes:
+  - Normalises per-sample across features (no batch dimension)
+  - No running stats, no train/eval split — same forward in aux and RL
+  - Bounds per-block output magnitude, so feature scale stays sane
+    through the 6-block stack
+
+This is a deviation from both the OFENet paper (which uses BN) and the
+REDQ-OFE PyTorch port (which uses no normalisation). It's the pragmatic
+choice that keeps OFENet's DenseNet structure while avoiding both BN's
+distribution-mismatch problem and unnormalised activations' runaway
+scaling.
 
 Full prediction chain (for aux loss):
     concat(s, a) of dim (state_dim + action_dim)
@@ -48,6 +67,7 @@ Typical instantiations from `references/OFENet-main/gins/`:
 from .model import (
     Sequential,
     Linear,
+    LayerNorm,
     Swish,
     Identity,
     SkipConcat,
@@ -59,14 +79,14 @@ from .autodiff.combinators import SplitApply
 # DenseBlock — one DenseNet-style feature-expanding block
 # =============================================================================
 
-# SkipConcat[Sequential[Linear, Swish]] produces:
-#   forward: y = concat(x, Swish(Linear(x)))
+# SkipConcat[Sequential[Linear, LayerNorm, Swish]] produces:
+#   forward: y = concat(x, Swish(LayerNorm(Linear(x))))
 #   OUT_DIM = IN + per_unit
-# Matches teflon/ofe/blocks.py:DensenetBlock with batchnorm=False, which
-# is the REDQ-OFE configuration (see file docstring).
+# See file docstring for the LayerNorm-vs-BN-vs-no-norm rationale.
 comptime DenseBlock[IN: Int, per_unit: Int] = SkipConcat[
     Sequential[
         Linear[IN, per_unit],
+        LayerNorm[per_unit],
         Swish[per_unit],
     ]
 ]
