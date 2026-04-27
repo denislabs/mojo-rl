@@ -1335,41 +1335,49 @@ struct REDQOFEAgent[
         # `initialize_state` seeds rmean=0, rvar=1; aux_train_step EMA-updates
         # them via the BN1D training-mode kernel. If they haven't budged from
         # 0/1 by the time RL kicks in, the inference forward is essentially
-        # bypassing BN, and the actor / critic see un-normalized features
-        # (the hypothesis we're testing).
+        # bypassing BN, and the actor / critic see un-normalized features.
+        #
+        # Skipped at compile time when OFE_SB has no BN layers (STATE_SIZE=0)
+        # — REDQ-OFE drops BN per Chen et al. 2021, but a future
+        # configuration could re-enable it.
         comptime PER = Self.Config.OFE_PER_UNIT
         comptime NL = Self.Config.OFE_NUM_LAYERS
         var rmean_abs_max = Float64(0.0)
         var rmean_abs_sum = Float64(0.0)
-        var rvar_min = Float64(1.0e30)
-        var rvar_max = Float64(-1.0e30)
+        var rvar_min = Float64(0.0)
+        var rvar_max = Float64(0.0)
         var rvar_sum = Float64(0.0)
         var rvar_dev_from_one_max = Float64(0.0)  # max |rvar - 1|
-        for blk in range(NL):
-            var blk_off = blk * 2 * PER
-            for j in range(PER):
-                var rm = Float64(
-                    gpu_state.diag_ofe_sb_state_host[blk_off + j]
-                )
-                var rv = Float64(
-                    gpu_state.diag_ofe_sb_state_host[blk_off + PER + j]
-                )
-                var rm_abs = rm if rm >= 0.0 else -rm
-                if rm_abs > rmean_abs_max:
-                    rmean_abs_max = rm_abs
-                rmean_abs_sum += rm_abs
-                if rv < rvar_min:
-                    rvar_min = rv
-                if rv > rvar_max:
-                    rvar_max = rv
-                rvar_sum += rv
-                var dv = rv - 1.0
-                var dv_abs = dv if dv >= 0.0 else -dv
-                if dv_abs > rvar_dev_from_one_max:
-                    rvar_dev_from_one_max = dv_abs
-        var n_features = Float64(NL * PER)
-        var rmean_abs_mean = rmean_abs_sum / n_features
-        var rvar_mean = rvar_sum / n_features
+        var rmean_abs_mean = Float64(0.0)
+        var rvar_mean = Float64(0.0)
+        comptime if Self.OFESBModel.STATE_SIZE > 0:
+            rvar_min = Float64(1.0e30)
+            rvar_max = Float64(-1.0e30)
+            for blk in range(NL):
+                var blk_off = blk * 2 * PER
+                for j in range(PER):
+                    var rm = Float64(
+                        gpu_state.diag_ofe_sb_state_host[blk_off + j]
+                    )
+                    var rv = Float64(
+                        gpu_state.diag_ofe_sb_state_host[blk_off + PER + j]
+                    )
+                    var rm_abs = rm if rm >= 0.0 else -rm
+                    if rm_abs > rmean_abs_max:
+                        rmean_abs_max = rm_abs
+                    rmean_abs_sum += rm_abs
+                    if rv < rvar_min:
+                        rvar_min = rv
+                    if rv > rvar_max:
+                        rvar_max = rv
+                    rvar_sum += rv
+                    var dv = rv - 1.0
+                    var dv_abs = dv if dv >= 0.0 else -dv
+                    if dv_abs > rvar_dev_from_one_max:
+                        rvar_dev_from_one_max = dv_abs
+            var n_features = Float64(NL * PER)
+            rmean_abs_mean = rmean_abs_sum / n_features
+            rvar_mean = rvar_sum / n_features
 
         logger[].log_scalar("phi_s_var_mean", phi_var_mean, step)
         logger[].log_scalar("phi_s_var_min", phi_var_min, step)

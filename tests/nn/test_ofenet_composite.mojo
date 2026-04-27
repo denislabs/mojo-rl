@@ -1,8 +1,9 @@
 """Dimension check + smoke gradcheck for the OFENet composite.
 
 Verifies the DenseNet-style two-branch OFENet predictor composes cleanly
-from Linear + BatchNorm1D + Swish + SkipConcat + SplitApply + Identity,
-and that its backward pass matches finite differences for small dims.
+from Linear + Swish + SkipConcat + SplitApply + Identity, and that its
+backward pass matches finite differences for small dims. (BN was dropped
+from DenseBlock per the REDQ-OFE paper — see composites_ofenet.mojo.)
 
 We use a tiny state_dim=4, action_dim=2, per_unit=3, num_layers=6 config
 to keep the gradcheck fast (PARAM_SIZE still grows quickly due to the

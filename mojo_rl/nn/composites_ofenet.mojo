@@ -8,10 +8,26 @@ OFENet builds a DenseNet-style feature extractor trained with an
 auxiliary next-state prediction loss, providing a rich representation
 that the actor/critic consume instead of raw observations.
 
-Architecture (paper defaults, DenseNet variant):
+Architecture (DenseNet variant — REDQ-OFE convention, no BN):
     - num_layers blocks in state branch, num_layers in action branch
     - per_unit = total_units / num_layers new features per block
-    - block = Linear(per_unit) → BatchNorm1D → Swish → concat(input, ·)
+    - block = Linear(per_unit) → Swish → concat(input, ·)
+
+The original OFENet (Ota et al., TF2) sandwiches BatchNorm1D between
+Linear and Swish, but the REDQ-OFE PyTorch port (Chen et al., 2021)
+found that BN destabilises training under REDQ's high UTD ratio:
+
+    > "for some reason adding PyTorch batch norm to OFENet will lead
+    >  to divergence. So in the end we did not use batch norm in our
+    >  code." — references/REDQ-main/README.md:127
+
+Empirically reproduced in this codebase: with BN, REDQ-OFE diverges on
+HalfCheetah (Q-overestimation, entropy collapse, episode reward dropping
+to ~-1400 by 20k env steps), independent of inference-mode plumbing or
+aux-loss pretraining (10k pretraining aux steps did not fix it). The
+DenseNet skip-concat structure already provides most of OFENet's
+representational benefit; dropping BN matches the REDQ-OFE paper's
+actual implementation.
 
 Full prediction chain (for aux loss):
     concat(s, a) of dim (state_dim + action_dim)
@@ -32,7 +48,6 @@ Typical instantiations from `references/OFENet-main/gins/`:
 from .model import (
     Sequential,
     Linear,
-    BatchNorm1D,
     Swish,
     Identity,
     SkipConcat,
@@ -44,14 +59,14 @@ from .autodiff.combinators import SplitApply
 # DenseBlock — one DenseNet-style feature-expanding block
 # =============================================================================
 
-# SkipConcat[Sequential[Linear, BN, Swish]] produces:
-#   forward: y = concat(x, Swish(BN(Linear(x))))
+# SkipConcat[Sequential[Linear, Swish]] produces:
+#   forward: y = concat(x, Swish(Linear(x)))
 #   OUT_DIM = IN + per_unit
-# Matches teflon/ofe/blocks.py:DensenetBlock.
+# Matches teflon/ofe/blocks.py:DensenetBlock with batchnorm=False, which
+# is the REDQ-OFE configuration (see file docstring).
 comptime DenseBlock[IN: Int, per_unit: Int] = SkipConcat[
     Sequential[
         Linear[IN, per_unit],
-        BatchNorm1D[per_unit],
         Swish[per_unit],
     ]
 ]
