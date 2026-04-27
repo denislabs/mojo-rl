@@ -35,7 +35,7 @@ from .fused import (
     SwishActivation,
 )
 from .auto_fused import AutoFused
-from .combinators import Residual, ProjectedResidual, Parallel, Repeat
+from .combinators import Residual, ProjectedResidual, Parallel, Repeat, Tokenwise
 from .compute_graph import ComputeGraph, GNode, GraphNode
 from .composite_params import CompositeParams
 
