@@ -91,7 +91,7 @@ def main() raises:
             auto_alpha=True,
             alpha=0.2,
             alpha_lr=0.0003,
-            target_entropy=-8,  # -ACTION_DIM
+            target_entropy=-4,  # -ACTION_DIM/2 (matches HalfCheetah convention)
             max_grad_norm=0.0,
             checkpoint_every=50_000,
             checkpoint_path="redq_ofe_ant.ckpt",
