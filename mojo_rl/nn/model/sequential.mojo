@@ -88,10 +88,14 @@ struct Sequential[*LAYERS: Model](Model):
 
     @staticmethod
     def _sum_ws() -> Int:
+        # Must match the per-layer alignment used in _ws_layer_offset, otherwise
+        # WORKSPACE_SIZE_PER_SAMPLE under-counts by the alignment padding and
+        # the last layer writes past the workspace into the next allocated buffer.
         var total = 0
 
         comptime for i in range(Self.N):
-            total += Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            var ws = Self.model_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            total += _seq_align4(ws) if ws > 0 else 0
         return total
 
     @staticmethod
