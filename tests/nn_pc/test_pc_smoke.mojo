@@ -22,7 +22,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn_pc import (
+from mojo_rl.experimental.nn_pc import (
     PCLinear, PCSequential, PCIdentity, PCTrainer
 )
 

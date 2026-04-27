@@ -29,7 +29,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.initializer import Xavier
 from mojo_rl.nn.datasets.mnist import MNIST
-from mojo_rl.nn_pc import PCLinear, PCIdentity, PCTrainer
+from mojo_rl.experimental.nn_pc import PCLinear, PCIdentity, PCTrainer
 
 
 comptime BATCH = 100

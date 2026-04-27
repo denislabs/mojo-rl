@@ -33,7 +33,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.initializer import Xavier
 from mojo_rl.nn.datasets.cifar10 import CIFAR10
-from mojo_rl.nn_pc import PCLinear, PCIdentity, PCTrainer
+from mojo_rl.experimental.nn_pc import PCLinear, PCIdentity, PCTrainer
 
 
 def _shuffle_indices(mut idx: List[Int], seed_val: UInt64) raises:
