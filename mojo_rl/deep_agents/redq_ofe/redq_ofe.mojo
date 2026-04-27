@@ -16,6 +16,7 @@ Reference: Chen et al., "Randomized Ensembled Double Q-Learning" (ICLR 2021).
 
 from std.random import random_float64
 from std.math import exp, log, sqrt
+from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 from std.memory import UnsafePointer
 from std.gpu import thread_idx, block_idx, block_dim
@@ -662,6 +663,19 @@ struct REDQOFEAgent[
     # is destabilising the actor / critic. Default False = paper behaviour.
     var disable_aux: Bool
 
+    # Aux pretraining: number of `aux_train_step` calls to run on the
+    # random-policy replay buffer at the moment env-collection warmup ends,
+    # *before* the first RL update fires. Mirrors OFENet's reference
+    # (`teflon/tool/eager_main.py:256-261`):
+    #     for i in range(random_collect):
+    #         extractor.train(sample_states, sample_actions, ...)
+    # Pretraining converges OFE features and BN running stats on the
+    # stationary random-policy distribution before the actor / critic start
+    # chasing them. Default 0 = no pretraining (legacy behaviour). Paper-
+    # faithful value is `random_collect` (= 10000 in the reference).
+    # Ignored when `disable_aux=True`.
+    var aux_warmup_steps: Int
+
     def __init__(
         out self,
         gamma: Float64 = 0.99,
@@ -676,6 +690,7 @@ struct REDQOFEAgent[
         checkpoint_path: String = "",
         diag_every: Int = 0,
         disable_aux: Bool = False,
+        aux_warmup_steps: Int = 0,
     ):
         self.cpu_actor = NetworkPair[
             Self.Config.ActorModel, Self.Config.ActorOpt
@@ -714,6 +729,7 @@ struct REDQOFEAgent[
         self.checkpoint_path = checkpoint_path
         self.diag_every = diag_every
         self.disable_aux = disable_aux
+        self.aux_warmup_steps = aux_warmup_steps
 
     def __init__(out self, *, deinit take: Self):
         self.cpu_actor = take.cpu_actor^
@@ -739,6 +755,7 @@ struct REDQOFEAgent[
         self.checkpoint_path = take.checkpoint_path^
         self.diag_every = take.diag_every
         self.disable_aux = take.disable_aux
+        self.aux_warmup_steps = take.aux_warmup_steps
 
     # -------------------------------------------------------------------------
     # Checkpointable — save/load CPU networks + scalar training state
@@ -2614,6 +2631,10 @@ struct REDQOFEAgent[
         var alg_name = String("REDQ")
         var alpha_host = ctx.enqueue_create_host_buffer[dtype](1)
 
+        # Set when the env-collection warmup completes and the OFE
+        # pretraining loop has been run (so it only fires once per call).
+        var aux_pretrain_done = False
+
         while total_steps < num_steps:
             ctx.enqueue_copy(prev_obs_buf, obs_buf)
             if total_steps < warmup_steps:
@@ -2708,6 +2729,40 @@ struct REDQOFEAgent[
 
             if total_steps >= warmup_steps:
                 comptime UTD = Self.Config.UTD_RATIO
+
+                # First crossing of `warmup_steps`: run the OFE pretraining
+                # loop on the random-policy data we just collected, before
+                # the first RL update fires. Mirrors OFENet's reference
+                # (`teflon/tool/eager_main.py:256-261`). Burns OFE BN running
+                # stats and feature predictor in on a stationary distribution
+                # so the actor / critic don't have to chase a moving target.
+                if (
+                    not aux_pretrain_done
+                    and not self.disable_aux
+                    and self.aux_warmup_steps > 0
+                ):
+                    if verbose:
+                        print(
+                            "Pretraining OFE for "
+                            + String(self.aux_warmup_steps)
+                            + " aux steps before RL ..."
+                        )
+                    var pretrain_t0 = perf_counter_ns()
+                    for _ in range(self.aux_warmup_steps):
+                        if self.gpu_buffer_is_ready(gpu_state):
+                            self.aux_train_step(ctx, gpu_state)
+                    ctx.synchronize()
+                    if verbose:
+                        var pretrain_dt = (
+                            Float64(perf_counter_ns() - pretrain_t0) / 1e9
+                        )
+                        print(
+                            "OFE pretraining done in "
+                            + String(pretrain_dt)[byte=:6]
+                            + " s"
+                        )
+                aux_pretrain_done = True
+
                 # Aux step: train OFE via next-state MSE once per env step
                 # (paper: aux update frequency = env step rate, not UTD rate).
                 # Skipped entirely when `disable_aux=True` — OFE then stays at

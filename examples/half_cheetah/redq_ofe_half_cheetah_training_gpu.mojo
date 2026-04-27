@@ -100,7 +100,13 @@ def main() raises:
             # If the agent stops collapsing under disable_aux=True, the aux
             # loss is destabilising the actor / critic; if it still collapses,
             # the bug is in the OFE forward / inference-backward path itself.
-            disable_aux=True,
+            disable_aux=False,
+            # OFENet pretraining (paper-faithful): run this many aux_train_step
+            # calls on the random-policy buffer right after env-collection
+            # warmup ends, before the first RL update. Mirrors OFENet's
+            # `for i in range(random_collect): extractor.train(...)`. The
+            # paper uses random_collect = 10000.
+            aux_warmup_steps=10_000,
         )
 
         # To resume from a previous run, uncomment:
