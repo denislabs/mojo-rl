@@ -1233,11 +1233,16 @@ struct REDQOFEAgent[
         ctx.enqueue_copy(gpu_state.diag_lp_host, gpu_state.curr_lp)
         ctx.enqueue_copy(gpu_state.diag_scalars_host, gpu_state.gpu_scalars)
         # OFE drift signals: phi_s output (inference-mode features the actor
-        # / critic see) + OFE_SB BN running stats (drift from default 0/1).
+        # / critic see) is always meaningful. OFE_SB BN running-stat copy is
+        # only useful when OFE actually has BN layers (STATE_SIZE > 0); with
+        # LayerNorm-based DenseBlocks the buffer is a 1-byte placeholder and
+        # the copy is dead code, so we skip it at compile time.
         ctx.enqueue_copy(gpu_state.diag_phi_s_host, gpu_state.phi_s_batch)
-        ctx.enqueue_copy(
-            gpu_state.diag_ofe_sb_state_host, gpu_state.ofe_sb.model_state_buf
-        )
+        comptime if Self.OFESBModel.STATE_SIZE > 0:
+            ctx.enqueue_copy(
+                gpu_state.diag_ofe_sb_state_host,
+                gpu_state.ofe_sb.model_state_buf,
+            )
 
         # First target critic (slice 0 of next_q_stack [N_ENS, BS]).
         var nq0_subbuf = DeviceBuffer[dtype](
@@ -1383,14 +1388,18 @@ struct REDQOFEAgent[
         logger[].log_scalar("phi_s_var_min", phi_var_min, step)
         logger[].log_scalar("phi_s_var_max", phi_var_max, step)
         logger[].log_scalar("phi_s_mean_abs_max", phi_mean_abs_max, step)
-        logger[].log_scalar("ofe_rmean_abs_max", rmean_abs_max, step)
-        logger[].log_scalar("ofe_rmean_abs_mean", rmean_abs_mean, step)
-        logger[].log_scalar("ofe_rvar_mean", rvar_mean, step)
-        logger[].log_scalar("ofe_rvar_min", rvar_min, step)
-        logger[].log_scalar("ofe_rvar_max", rvar_max, step)
-        logger[].log_scalar(
-            "ofe_rvar_dev_from_one_max", rvar_dev_from_one_max, step
-        )
+        # OFE BN running stats — only meaningful when OFE_SB has BN layers.
+        # With LayerNorm-based DenseBlocks (STATE_SIZE=0) these are constant 0
+        # and would just add noise to the dashboard, so skip the log emit.
+        comptime if Self.OFESBModel.STATE_SIZE > 0:
+            logger[].log_scalar("ofe_rmean_abs_max", rmean_abs_max, step)
+            logger[].log_scalar("ofe_rmean_abs_mean", rmean_abs_mean, step)
+            logger[].log_scalar("ofe_rvar_mean", rvar_mean, step)
+            logger[].log_scalar("ofe_rvar_min", rvar_min, step)
+            logger[].log_scalar("ofe_rvar_max", rvar_max, step)
+            logger[].log_scalar(
+                "ofe_rvar_dev_from_one_max", rvar_dev_from_one_max, step
+            )
 
     # -------------------------------------------------------------------------
     # Single REDQ training iteration (one of UTD_RATIO inner steps)

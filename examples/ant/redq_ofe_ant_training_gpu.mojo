@@ -96,6 +96,11 @@ def main() raises:
             checkpoint_every=50_000,
             checkpoint_path="redq_ofe_ant.ckpt",
             diag_every=1_000,
+            # OFENet pretraining: run this many aux_train_step calls on the
+            # random-policy buffer right after env-collection warmup ends,
+            # before the first RL update. Mirrors `references/OFENet-main/
+            # teflon/tool/eager_main.py:256-261`.
+            aux_warmup_steps=10_000,
         )
 
         # To resume from a previous run, uncomment:
