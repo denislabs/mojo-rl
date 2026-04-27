@@ -39,6 +39,7 @@ struct OpID:
     # Reduction (30-39)
     comptime REDUCE_SUM = OpID(30)
     comptime REDUCE_MEAN = OpID(31)
+    comptime TOKEN_MEAN = OpID(32)
 
     # Regularization (40-49)
     comptime DROPOUT = OpID(40)
@@ -48,6 +49,7 @@ struct OpID:
     comptime MAX_POOL2D = OpID(51)
     comptime AVG_POOL2D = OpID(52)
     comptime FLATTEN = OpID(53)
+    comptime TRANSPOSE_2D = OpID(54)
 
     # Embedding (60-69)
     comptime EMBEDDING = OpID(60)

@@ -21,6 +21,9 @@ from .model import (
     LinearReLU,
     LayerNorm,
     GELU,
+    Transpose2D,
+    TokenMean,
+    Conv2DLayer,
     Conv2DReLU,
     MaxPoolLayer,
     FlattenLayer,
@@ -216,4 +219,73 @@ comptime GPT[
     ],
     Tokenwise[seq_len, LayerNorm[embed_dim]],
     Tokenwise[seq_len, Linear[embed_dim, vocab]],
+]
+
+# =============================================================================
+# ViT — Vision Transformer (encoder, non-causal)
+# =============================================================================
+#
+# Reference: Dosovitskiy et al., "An Image Is Worth 16x16 Words" (2020).
+#
+# Image (BATCH, in_channels, img_h, img_w) flattened to (BATCH, in_channels *
+# img_h * img_w) is processed:
+#
+#   1. PatchEmbed:
+#        Conv2DLayer[in_channels, embed_dim, k=patch, s=patch, p=0, img_h, img_w]
+#         → (BATCH, embed_dim * n_patches)  with channel-major layout
+#           [emb0_p0, emb0_p1, ..., emb1_p0, ...]
+#        Transpose2D[embed_dim, n_patches]
+#         → (BATCH, n_patches * embed_dim) patch-major layout, matching the
+#           attention op's expected (BATCH, seq_len * dim).
+#   2. AddPosEmbed:  BiasAdd[n_patches * embed_dim] (a learnable broadcast
+#      bias, exactly the same trick GPT uses for its position embedding).
+#   3. n_layers × TransformerBlock(causal=False).
+#   4. Final per-token LayerNorm.
+#   5. TokenMean — mean-pool patches → (BATCH, embed_dim).
+#   6. Linear[embed_dim, n_classes] — classification head.
+#
+# `n_patches` must equal (img_h / patch_size) * (img_w / patch_size). Caller
+# passes it explicitly so the type system can validate the layout chain.
+
+# PatchEmbed: image → patch tokens. (BATCH, in_channels * img_h * img_w) →
+#                                    (BATCH, n_patches * embed_dim).
+comptime PatchEmbed[
+    in_channels: Int,
+    img_h: Int,
+    img_w: Int,
+    patch_size: Int,
+    embed_dim: Int,
+    n_patches: Int,
+] = Sequential[
+    # Conv2D output: (BATCH, embed_dim * (img_h/patch) * (img_w/patch))
+    # in channel-major layout.
+    Conv2DLayer[in_channels, embed_dim, patch_size, patch_size, 0, img_h, img_w],
+    # Channel-major (embed_dim, n_patches) → patch-major (n_patches, embed_dim).
+    Transpose2D[embed_dim, n_patches],
+]
+
+# ViT: Vision Transformer encoder + classification head.
+# Defaults: ff_mult=4 matches the canonical ViT recipe.
+comptime ViT[
+    in_channels: Int,
+    img_h: Int,
+    img_w: Int,
+    patch_size: Int,
+    embed_dim: Int,
+    n_heads: Int,
+    n_layers: Int,
+    n_patches: Int,
+    n_classes: Int,
+    ff_mult: Int = 4,
+] = Sequential[
+    PatchEmbed[in_channels, img_h, img_w, patch_size, embed_dim, n_patches],
+    AutoDiffChain[BiasAdd[n_patches * embed_dim]],
+    Repeat[
+        n_layers,
+        TransformerBlock[embed_dim, n_heads, n_patches, ff_mult * embed_dim, False],
+        False,
+    ],
+    Tokenwise[n_patches, LayerNorm[embed_dim]],
+    TokenMean[n_patches, embed_dim],
+    Linear[embed_dim, n_classes],
 ]
