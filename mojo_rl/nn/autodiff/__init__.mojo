@@ -8,6 +8,7 @@ from .primitives import (
     SigmoidOp,
     MishOp,
     SwishOp,
+    GELUOp,
     Scale,
     ElemMul,
     ReduceSum,

@@ -1,6 +1,6 @@
 from .matmul import MatMul
 from .bias import BiasAdd
-from .activations import ReLUOp, TanhOp, SigmoidOp, MishOp, SwishOp
+from .activations import ReLUOp, TanhOp, SigmoidOp, MishOp, SwishOp, GELUOp
 from .scale import Scale
 from .elem_mul import ElemMul
 from .reduce import ReduceSum, ReduceMean

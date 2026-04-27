@@ -23,7 +23,7 @@ from .swish import Swish
 from .simnorm import SimNorm
 from .normed_linear import NormedLinear
 from .noisy_linear import NoisyLinear
-from .autodiff_layers import RSample, Min, Slice, Negate, Gather, CategoricalLogProb, Ratio, ClipSurrogate, GaussianLogProb, MSELoss, HuberLoss, Identity
+from .autodiff_layers import RSample, Min, Slice, Negate, Gather, CategoricalLogProb, Ratio, ClipSurrogate, GaussianLogProb, MSELoss, HuberLoss, Identity, GELU
 from .conv2d_layer import (
     Conv2DLayer,
     Conv2DReLU,

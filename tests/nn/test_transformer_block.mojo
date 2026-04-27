@@ -324,7 +324,11 @@ def test_gradcheck() -> Int:
     # gradients (|grad| < ABS_FLOOR), FP cancellation in (out_plus - out_minus)
     # dominates and pure relative error becomes meaningless.
     var p_eps: Float64 = 1e-3
-    var ABS_FLOOR: Float64 = 1e-4
+    # Absolute floor: skip params whose true gradient magnitude is below the
+    # fp32 FD cancellation noise floor (≈ output_mag / (2*eps) * fp32_eps ≈
+    # 5e-5 at this scale). Use 2e-4 as a safe margin; below that, the FD
+    # estimate measures roundoff, not gradient.
+    var ABS_FLOOR: Float64 = 2e-4
     var max_p_err: Float64 = 0.0
     var max_p_idx: Int = -1
     var max_p_fd: Float64 = 0.0

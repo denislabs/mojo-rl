@@ -234,6 +234,8 @@ def generate_text(
     # Single mutable token-id buffer: prompt + generated tokens, in order.
     var all_ids = tok.encode(prompt)
     var prompt_len = len(all_ids)
+    if prompt_len == 0:
+        raise Error("generate_text: prompt is empty after tokenization")
 
     # Reusable forward buffers. Sampling uses BATCH=1.
     var inp_data = List[Scalar[dtype]](capacity=Model.IN_DIM)
@@ -257,29 +259,43 @@ def generate_text(
     ](cache_data.unsafe_ptr())
 
     for _ in range(n_tokens):
-        # Build the SEQ-length context window: last SEQ ids, front-padded.
-        # This is `all_ids[-SEQ:]` with pad_id repeated at the front when
-        # we don't have enough history yet.
+        # Build the context window. Two cases:
+        #   n_have >= SEQ: standard sliding window — last SEQ tokens at
+        #                  positions 0..SEQ-1, read logits at position SEQ-1.
+        #   n_have <  SEQ: place prompt at positions 0..n_have-1, pad the
+        #                  rest with pad_id, read logits at position
+        #                  n_have-1. Causal attention at n_have-1 only sees
+        #                  positions 0..n_have-1 (the actual prompt), so the
+        #                  padding past it is masked out and OOD never leaks
+        #                  into the prediction.
+        var n_have = len(all_ids)
+        var n_real: Int
+        var first_real: Int
+        if n_have < SEQ:
+            n_real = n_have
+            first_real = 0
+        else:
+            n_real = SEQ
+            first_real = n_have - SEQ
+        var read_pos = n_real - 1
+
         for i in range(Model.IN_DIM):
             inp_data[i] = 0
-        var n_have = len(all_ids)
-        var pad_n = SEQ - n_have if n_have < SEQ else 0
-        var first_real = 0 if n_have <= SEQ else n_have - SEQ
         for t in range(SEQ):
             var tid: Int
-            if t < pad_n:
-                tid = pad_id
+            if t < n_real:
+                tid = all_ids[first_real + t]
             else:
-                tid = all_ids[first_real + (t - pad_n)]
+                tid = pad_id  # masked out by causal attention at read_pos
             if tid < 0 or tid >= VOCAB:
                 continue
             inp_data[t * VOCAB + tid] = Scalar[dtype](1.0)
 
         Model.forward[1, dtype](inp_t, out_t, p_view, s_view, cache_t)
 
-        # Logits row at position SEQ-1: layout per sample is
+        # Logits row at position read_pos: layout per sample is
         # [pos_0[0..V], pos_1[0..V], ..., pos_{S-1}[0..V]].
-        var last_pos_ptr = out_data.unsafe_ptr() + (SEQ - 1) * VOCAB
+        var last_pos_ptr = out_data.unsafe_ptr() + read_pos * VOCAB
         var next_id = _sample_categorical(last_pos_ptr, VOCAB, temperature)
         all_ids.append(next_id)
 

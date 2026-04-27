@@ -1277,3 +1277,291 @@ struct SwishOp[dim: Int](DiffOp):
             grid_dim=(grid_x,),
             block_dim=(TPB,),
         )
+
+
+# =============================================================================
+# GELU (tanh approximation — GPT-2 / BERT canonical)
+# =============================================================================
+#   gelu(x) = 0.5 * x * (1 + tanh( sqrt(2/π) * (x + 0.044715 * x^3) ))
+#
+# Backward (recomputes u, t from cached x):
+#   c = sqrt(2/π),  a = 0.044715
+#   u  = c * (x + a * x^3)
+#   t  = tanh(u)
+#   du/dx = c * (1 + 3 * a * x^2)
+#   d gelu/dx = 0.5 * (1 + t) + 0.5 * x * (1 - t^2) * du/dx
+#
+# This is the activation used by GPT-2/3, BERT, and most transformer-stack
+# papers. The exact form (using erf) differs by ~1e-4 and is not provided
+# here — to add it, parameterize with a comptime `approximate: Bool` and
+# branch the forward / backward bodies.
+struct GELUOp[dim: Int](DiffOp):
+    """GELUOp (tanh approximation): y = 0.5 * x * (1 + tanh(c * (x + a * x^3))).
+
+    PARAM_SIZE = 0
+    CACHE_SIZE = dim (caches input x for backward — backward re-derives u, t)
+    """
+
+    comptime OP_ID: Int = OpID.GELU._value
+    comptime IN_DIM: Int = Self.dim
+    comptime OUT_DIM: Int = Self.dim
+    comptime PARAM_SIZE: Int = 0
+    comptime CACHE_SIZE: Int = Self.dim
+    comptime OP_WORKSPACE_PER_SAMPLE: Int = 0
+
+    def __init__(out self):
+        pass
+
+    def __init__(out self, *, deinit take: Self):
+        pass
+
+    def __init__(out self, *, copy: Self):
+        pass
+
+    # =========================================================================
+    # CPU eval / vjp
+    # =========================================================================
+
+    @staticmethod
+    def eval[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+    ):
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        # Constants kept in Float32 — Metal does not support Float64.
+        var c = Scalar[dtype](Float32(0.7978845608028654))   # sqrt(2/π)
+        var a = Scalar[dtype](Float32(0.044715))
+        var half = Scalar[dtype](Float32(0.5))
+        var one = Scalar[dtype](Float32(1.0))
+        for b in range(BATCH):
+            for i in range(Self.dim):
+                var x = rebind[Scalar[dtype]](input[b, i])
+                cache[b, i] = x
+                var u = c * (x + a * x * x * x)
+                var t = tanh(u)
+                output[b, i] = half * x * (one + t)
+
+    @staticmethod
+    def vjp[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grad_params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+    ):
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        var c = Scalar[dtype](Float32(0.7978845608028654))
+        var a = Scalar[dtype](Float32(0.044715))
+        var half = Scalar[dtype](Float32(0.5))
+        var one = Scalar[dtype](Float32(1.0))
+        var three_a = Scalar[dtype](Float32(3.0 * 0.044715))
+        for b in range(BATCH):
+            for i in range(Self.dim):
+                var x = rebind[Scalar[dtype]](cache[b, i])
+                var dy = rebind[Scalar[dtype]](grad_output[b, i])
+                var x_sq = x * x
+                var u = c * (x + a * x_sq * x)
+                var t = tanh(u)
+                var du_dx = c * (one + three_a * x_sq)
+                var d_gelu = half * (one + t) + half * x * (one - t * t) * du_dx
+                grad_input[b, i] = dy * d_gelu
+
+    # =========================================================================
+    # GPU kernels — 1 thread per (batch, dim) element.
+    # =========================================================================
+
+    @always_inline
+    @staticmethod
+    def eval_kernel_impl[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+        ],
+    ):
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * Self.dim:
+            return
+        var row = idx // Self.dim
+        var col = idx % Self.dim
+        var x = rebind[Scalar[dtype]](input[row, col])
+        cache[row, col] = x
+        var c = Scalar[dtype](Float32(0.7978845608028654))
+        var a = Scalar[dtype](Float32(0.044715))
+        var half = Scalar[dtype](Float32(0.5))
+        var one = Scalar[dtype](Float32(1.0))
+        var u = c * (x + a * x * x * x)
+        var t = tanh(u)
+        output[row, col] = half * x * (one + t)
+
+    @always_inline
+    @staticmethod
+    def backward_kernel_impl[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ],
+    ):
+        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * Self.dim:
+            return
+        var row = idx // Self.dim
+        var col = idx % Self.dim
+        var x = rebind[Scalar[dtype]](cache[row, col])
+        var dy = rebind[Scalar[dtype]](grad_output[row, col])
+        var c = Scalar[dtype](Float32(0.7978845608028654))
+        var a = Scalar[dtype](Float32(0.044715))
+        var half = Scalar[dtype](Float32(0.5))
+        var one = Scalar[dtype](Float32(1.0))
+        var three_a = Scalar[dtype](Float32(3.0 * 0.044715))
+        var x_sq = x * x
+        var u = c * (x + a * x_sq * x)
+        var t = tanh(u)
+        var du_dx = c * (one + three_a * x_sq)
+        var d_gelu = half * (one + t) + half * x * (one - t * t) * du_dx
+        grad_input[row, col] = dy * d_gelu
+
+    # =========================================================================
+    # GPU launchers
+    # =========================================================================
+
+    @staticmethod
+    def eval_gpu[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        var input_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ](input.ptr)
+        var total_elements = BATCH * Self.dim
+        var grid_x = (total_elements + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+            ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+            ],
+        ):
+            Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
+
+        ctx.enqueue_function[wrapper, wrapper](
+            output,
+            input_immut,
+            cache,
+            grid_dim=(grid_x,),
+            block_dim=(TPB,),
+        )
+
+    @staticmethod
+    def vjp_gpu[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grad_params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    ) raises:
+        var grad_output_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ](grad_output.ptr)
+        var cache_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+        ](cache.ptr)
+        var total_elements = BATCH * Self.dim
+        var grid_x = (total_elements + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def wrapper(
+            grad_input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
+            ],
+        ):
+            Self.backward_kernel_impl[BATCH, dtype](grad_input, grad_output, cache)
+
+        ctx.enqueue_function[wrapper, wrapper](
+            grad_input,
+            grad_output_immut,
+            cache_immut,
+            grid_dim=(grid_x,),
+            block_dim=(TPB,),
+        )

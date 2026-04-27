@@ -30,6 +30,7 @@ struct OpID:
     comptime SOFTMAX = OpID(14)
     comptime SWISH = OpID(15)
     comptime SYMLOG = OpID(16)
+    comptime GELU = OpID(17)
 
     # Normalization (20-29)
     comptime LAYER_NORM = OpID(20)

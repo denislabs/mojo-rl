@@ -29,6 +29,7 @@ from ..autodiff.primitives.gather import GatherOp
 from ..autodiff.primitives.ppo_ops import CategoricalLogProbOp, RatioOp, ClipSurrogateOp
 from ..autodiff.primitives.gaussian_log_prob import GaussianLogProbOp
 from ..autodiff.primitives.mse_op import MSEOp
+from ..autodiff.primitives.activations import GELUOp
 
 
 comptime RSample[
@@ -66,3 +67,7 @@ from ..autodiff.primitives.identity import IdentityOp
 comptime HuberLoss[delta: Float64 = 1.0] = AutoDiffChain[HuberOp[delta]]
 
 comptime Identity[dim: Int] = AutoDiffChain[IdentityOp[dim]]
+
+# GELU (tanh approximation, GPT-2 / BERT canonical) wrapped as a Model so it
+# can be dropped into Sequential / Tokenwise. See autodiff/primitives/activations.mojo.
+comptime GELU[dim: Int] = AutoDiffChain[GELUOp[dim]]

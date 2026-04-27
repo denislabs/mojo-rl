@@ -20,6 +20,7 @@ from .model import (
     Linear,
     LinearReLU,
     LayerNorm,
+    GELU,
     Conv2DReLU,
     MaxPoolLayer,
     FlattenLayer,
@@ -131,10 +132,17 @@ comptime MultiHeadAttention[
 ]
 
 # TransformerFFN: per-token feed-forward network for use inside a transformer.
-# Same as FFN[dim, ff_dim] but applied tokenwise (shared weights across positions).
-# IN_DIM = OUT_DIM = seq_len * dim.
+# Same as FFN[dim, ff_dim] but applied tokenwise (shared weights across
+# positions) and using GELU activation (tanh approximation, GPT-2/BERT
+# canonical) between the two Linears. IN_DIM = OUT_DIM = seq_len * dim.
+#
+# GELU is pointwise so it doesn't need to be wrapped in Tokenwise — applying
+# it to the flat (BATCH, seq_len * ff_dim) tensor is bitwise-identical to
+# applying it per-token. Keeping it standalone also avoids the Tokenwise
+# overhead of a redundant cache slice.
 comptime TransformerFFN[seq_len: Int, dim: Int, ff_dim: Int] = Sequential[
-    Tokenwise[seq_len, LinearReLU[dim, ff_dim]],
+    Tokenwise[seq_len, Linear[dim, ff_dim]],
+    GELU[seq_len * ff_dim],
     Tokenwise[seq_len, Linear[ff_dim, dim]],
 ]
 

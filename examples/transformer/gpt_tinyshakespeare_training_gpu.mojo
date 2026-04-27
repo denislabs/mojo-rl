@@ -301,6 +301,8 @@ def _generate_text_gpu(
 
     var all_ids = tok.encode(prompt)
     var prompt_len = len(all_ids)
+    if prompt_len == 0:
+        raise Error("generate_text: prompt is empty after tokenization")
 
     # BATCH=1 forward buffers.
     var inp_host = ctx.enqueue_create_host_buffer[dtype](Model.IN_DIM)
@@ -323,18 +325,31 @@ def _generate_text_gpu(
     ](cache_dev.unsafe_ptr())
 
     for _ in range(n_tokens):
-        # Build the SEQ-token context window with front-padding.
+        # Build the context window. For short prompts (n_have < SEQ) we
+        # FRONT-anchor the prompt at positions 0..n_have-1 and read logits
+        # at position n_have-1. Causal attention at that position only sees
+        # the real prompt — padding past n_have is masked out, so the model
+        # never sees the OOD "long run of pad tokens" that back-anchored
+        # padding would create.
+        var n_have = len(all_ids)
+        var n_real: Int
+        var first_real: Int
+        if n_have < SEQ:
+            n_real = n_have
+            first_real = 0
+        else:
+            n_real = SEQ
+            first_real = n_have - SEQ
+        var read_pos = n_real - 1
+
         for i in range(Model.IN_DIM):
             inp_host[i] = 0
-        var n_have = len(all_ids)
-        var pad_n = SEQ - n_have if n_have < SEQ else 0
-        var first_real = 0 if n_have <= SEQ else n_have - SEQ
         for t in range(SEQ):
             var tid: Int
-            if t < pad_n:
-                tid = pad_id
+            if t < n_real:
+                tid = all_ids[first_real + t]
             else:
-                tid = all_ids[first_real + (t - pad_n)]
+                tid = pad_id  # masked out by causal attention at read_pos
             if tid < 0 or tid >= VOCAB:
                 continue
             inp_host[t * VOCAB + tid] = Scalar[dtype](1.0)
@@ -346,10 +361,10 @@ def _generate_text_gpu(
         ctx.enqueue_copy(out_host, out_dev)
         ctx.synchronize()
 
-        # Pull the last-position logits to host, sample.
+        # Pull the read_pos-row logits to host, sample.
         var last_row = List[Scalar[dtype]](capacity=VOCAB)
         for v in range(VOCAB):
-            last_row.append(out_host[(SEQ - 1) * VOCAB + v])
+            last_row.append(out_host[read_pos * VOCAB + v])
         var next_id = _sample_categorical_host(last_row, VOCAB, temperature)
         all_ids.append(next_id)
 
