@@ -60,14 +60,6 @@ struct Parallel[*BRANCHES: Model](Model):
         return total
 
     @staticmethod
-    def _sum_ws() -> Int:
-        var total = 0
-
-        comptime for i in range(Self.N):
-            total += Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
-        return total
-
-    @staticmethod
     def _sum_state_size() -> Int:
         """Unaligned sum of state sizes (state is scalar-indexed)."""
         var total = 0
