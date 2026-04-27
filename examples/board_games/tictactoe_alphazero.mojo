@@ -61,7 +61,9 @@ def main() raises:
 
     var agent = GenericAlphaZeroAgent[Config, 64, 64, RemoteLogger]()
 
-    _ = agent.train_selfplay_gpu[TTT, RandomOpponent, GPUMinimaxTicTacToe](
+    _ = agent.train_selfplay_gpu[
+        TTT, RandomOpponent, GPUMinimaxTicTacToe, USE_CUDA_GRAPH=False
+    ](
         ctx,
         num_iters=100,
         steps_per_iter=1000,
