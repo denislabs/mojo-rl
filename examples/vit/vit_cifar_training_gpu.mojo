@@ -5,19 +5,21 @@ TransformerBlock × N + final LN + TokenMean + LM head) against CIFAR-10
 classification. Doc target (Phase B): ≥ 70 % top-1 with the default config
 (D=192, H=6, N=6, patch=4, n_patches=64).
 
-Default config is sized for NVIDIA GPUs. On the M1 Pro development hardware
-the config OOMs — for local iteration shrink EMBED, LAYERS, and N_STEPS to
-the values commented in the constants block.
+Mirrors the structure of `tests/nn/test_resnet20_cifar10.mojo` so results are
+directly comparable:
+  - Same per-epoch augmentation kernel (random crop pad-4 + horizontal flip).
+  - Same `Trainer.train_gpu_minibatch[BATCH, N_TRAIN]` driver (Fisher-Yates
+    shuffle, CUDA-graph-captured).
+  - One-pass training image upload, in-place re-augmentation each epoch.
+  - One-hot target upload once, reused every epoch.
+Differences vs resnet20 test:
+  - AdamW (with weight decay) instead of plain Adam — standard ViT recipe.
+  - Cosine LR schedule with warmup, applied per-epoch via `state.set_lr_scale`.
+  - Per-epoch test top-1 evaluation so progress is visible before the run ends.
 
-All compute lives on device:
-- Native GPU kernels for Conv2D (PatchEmbed), Transpose2DOp, BiasAdd
-  (position embedding), MatMul/BiasAdd (AutoFused), LayerNorm, GELU,
-  ScaledDotProductAttention (forward + 4-stage backward), TokenMean.
-- Per-image cross-entropy via `CrossEntropyLoss.forward_gpu` /
-  `.backward_gpu` over (BATCH, n_classes) logits + (BATCH, n_classes)
-  one-hot targets.
-- AdamW step + on-device step counter, gradient clipping.
-- Eval = top-1 accuracy on the test set.
+Default config is sized for NVIDIA GPUs. On the M1 Pro development hardware
+the config OOMs — for local iteration shrink EMBED, LAYERS, BATCH, and EPOCHS
+to the values commented in the constants block.
 
 Run on NVIDIA (production target):
     pixi run -e nvidia mojo run -I . examples/vit/vit_cifar_training_gpu.mojo
@@ -25,13 +27,16 @@ Run on Apple Metal (dev iteration only — shrink config first):
     pixi run -e apple mojo run -I . examples/vit/vit_cifar_training_gpu.mojo
 """
 
+from std.gpu import thread_idx, block_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from std.random import seed, random_si64, random_float64
-from std.math import cos, log
+from std.random import seed
+from std.random.philox import Random as PhiloxRandom
+from std.time import perf_counter_ns
+from std.math import cos, log, exp
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.constants import dtype, TPB
 from mojo_rl.nn.composites import ViT
-from mojo_rl.nn.training import NetworkState, GPUNetworkState
+from mojo_rl.nn.training import GPUNetworkState, Trainer
 from mojo_rl.nn.optimizer import AdamW
 from mojo_rl.nn.loss import CrossEntropyLoss
 from mojo_rl.nn.initializer import Xavier
@@ -39,36 +44,10 @@ from mojo_rl.nn.datasets import CIFAR10
 from layout import Layout, LayoutTensor
 
 
-struct EvalResult(Movable):
-    var loss: Float64
-    var top1: Float64
-
-    def __init__(out self, loss: Float64, top1: Float64):
-        self.loss = loss
-        self.top1 = top1
-
-    def __init__(out self, deinit existing: Self):
-        self.loss = existing.loss
-        self.top1 = existing.top1
-
-
-struct SampledBatch(Movable):
-    var inputs: List[Scalar[dtype]]
-    var labels: List[Int]
-
-    def __init__(out self, var inputs: List[Scalar[dtype]], var labels: List[Int]):
-        self.inputs = inputs^
-        self.labels = labels^
-
-    def __init__(out self, deinit existing: Self):
-        self.inputs = existing.inputs^
-        self.labels = existing.labels^
-
-
 # =============================================================================
 # Hyperparameters — full ViT config targeting ≥70% top-1 on CIFAR-10.
 # Matches docs/TRANSFORMER_VIT.md Phase B defaults. Designed for NVIDIA GPUs;
-# on Apple M1 Pro shrink EMBED→64, LAYERS→4, BATCH→32, N_STEPS→2000.
+# on Apple M1 Pro shrink EMBED→64, LAYERS→4, BATCH→32, EPOCHS→10.
 # =============================================================================
 comptime IN_CHANNELS = 3
 comptime IMG_H = 32
@@ -85,25 +64,102 @@ comptime BATCH = 128
 
 comptime BASE_LR = 3e-4
 comptime BETA1 = 0.9
-comptime BETA2 = 0.999             # vision: 0.999 is canonical (vs 0.95 for LM)
+comptime BETA2 = 0.999             # vision: canonical 0.999 (vs 0.95 for LM)
 comptime WD = 0.05
-comptime GRAD_CLIP = 1.0
 
 # 50k train images / 128 batch = 391 iters/epoch. 50 epochs ≈ 19500 steps.
-comptime N_STEPS = 20000
-comptime WARMUP_STEPS = 500
-comptime PRINT_EVERY = 100
-comptime EVAL_EVERY = 1000
-comptime EVAL_BATCHES = 16
+comptime EPOCHS = 50
+comptime WARMUP_EPOCHS = 5         # ~5 epochs of linear warmup
+comptime EVAL_BATCHES = 32          # ~32 * 128 = 4096 test samples per eval
 
 
 # =============================================================================
-# LR schedule: linear warmup then cosine decay to 10 % of peak
+# Aliases for readability.
 # =============================================================================
-def lr_scale(step: Int, warmup: Int, total: Int) -> Float64:
-    if step < warmup:
-        return Float64(step + 1) / Float64(warmup)
-    var progress = Float64(step - warmup) / Float64(max(1, total - warmup))
+comptime VIT_MODEL = ViT[
+    IN_CHANNELS, IMG_H, IMG_W, PATCH, EMBED, HEADS, LAYERS, N_PATCHES,
+    N_CLASSES, FF_MULT,
+]
+comptime VIT_OPT = AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD]
+comptime VIT_TRAINER = Trainer[VIT_MODEL, VIT_OPT, CrossEntropyLoss]
+
+
+struct EvalResult(Movable):
+    """Test-set evaluation result — average CE loss + top-1 accuracy."""
+    var loss: Float64
+    var top1: Float64
+
+    def __init__(out self, loss: Float64, top1: Float64):
+        self.loss = loss
+        self.top1 = top1
+
+    def __init__(out self, deinit existing: Self):
+        self.loss = existing.loss
+        self.top1 = existing.top1
+
+
+# =============================================================================
+# CIFAR augmentation kernel — random crop pad-4 + horizontal flip per sample.
+# Identical recipe to tests/nn/test_resnet20_cifar10.mojo so the numbers can
+# be compared apples-to-apples between ViT and ResNet-20.
+# =============================================================================
+def _cifar_augment_kernel[
+    N: Int,
+    dtype: DType = DType.float32,
+](
+    aug: LayoutTensor[dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin],
+    raw: LayoutTensor[dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin],
+    epoch_seed: Scalar[DType.uint64],
+):
+    """Random crop (pad 4) + random horizontal flip, per sample.
+
+    Grid: (N,), Block: (TPB,). One block per sample; threads parallelize
+    the 3072 output pixels. All threads in a block derive dx/dy/flip from
+    PhiloxRandom(epoch_seed, b) identically — out-of-bounds pixels get 0.
+    """
+    var b = Int(block_idx.x)
+    if b >= N:
+        return
+    var tid = Int(thread_idx.x)
+
+    comptime C = 3
+    comptime H = 32
+    comptime W = 32
+    comptime CHAN = H * W
+    comptime IMG_SIZE = C * CHAN
+
+    var rng = PhiloxRandom(seed=UInt64(epoch_seed), offset=UInt64(b))
+    var r = rng.step_uniform()
+    var dx = Int(Scalar[DType.float32](r[0]) * 9.0) - 4  # [-4, 4]
+    var dy = Int(Scalar[DType.float32](r[1]) * 9.0) - 4  # [-4, 4]
+    var flip = Scalar[DType.float32](r[2]) > 0.5
+
+    var idx = tid
+    while idx < IMG_SIZE:
+        var c = idx // CHAN
+        var yx = idx % CHAN
+        var oy = yx // W
+        var ox = yx % W
+        var src_y = oy + dy
+        var vx = ox + dx
+        var val = Scalar[dtype](0.0)
+        if src_y >= 0 and src_y < H and vx >= 0 and vx < W:
+            var src_x = (W - 1 - vx) if flip else vx
+            val = rebind[Scalar[dtype]](raw[b, c * CHAN + src_y * W + src_x])
+        aug[b, idx] = val
+        idx += TPB
+
+
+# =============================================================================
+# LR schedule (per-epoch granularity, applied via state.set_lr_scale before
+# train_gpu_minibatch).
+# =============================================================================
+def lr_scale(epoch: Int, warmup_epochs: Int, total_epochs: Int) -> Float64:
+    if epoch < warmup_epochs:
+        return Float64(epoch + 1) / Float64(warmup_epochs)
+    var progress = Float64(epoch - warmup_epochs) / Float64(
+        max(1, total_epochs - warmup_epochs)
+    )
     if progress > 1.0:
         progress = 1.0
     var c = 0.5 * (1.0 + cos(progress * 3.141592653589793))
@@ -111,226 +167,69 @@ def lr_scale(step: Int, warmup: Int, total: Int) -> Float64:
 
 
 # =============================================================================
-# Sample a minibatch by random indices (with replacement). Returns flat input
-# (BATCH * IMG_SIZE) and label list (BATCH).
+# Test-set evaluation: top-1 accuracy + average CE loss on `n_batches`
+# contiguous batches starting at offset 0.
 # =============================================================================
-def _sample_batch(
-    images: List[Scalar[dtype]],
-    labels: List[Int32],
-    n_samples: Int,
-    batch_size: Int,
-    img_size: Int,
-) raises -> SampledBatch:
-    var inp = List[Scalar[dtype]](
-        length=batch_size * img_size, fill=Scalar[dtype](0)
-    )
-    var lbl = List[Int](length=batch_size, fill=0)
-    var max_idx = Int64(n_samples - 1)
-    for b in range(batch_size):
-        var idx = Int(random_si64(Int64(0), max_idx))
-        for k in range(img_size):
-            inp[b * img_size + k] = images[idx * img_size + k]
-        lbl[b] = Int(labels[idx])
-    return SampledBatch(inp^, lbl^)
-
-
-def _labels_to_one_hot(
-    labels: List[Int], batch_size: Int, n_classes: Int
-) -> List[Scalar[dtype]]:
-    var oh = List[Scalar[dtype]](
-        length=batch_size * n_classes, fill=Scalar[dtype](0)
-    )
-    for b in range(batch_size):
-        var c = labels[b]
-        if 0 <= c and c < n_classes:
-            oh[b * n_classes + c] = Scalar[dtype](1.0)
-    return oh^
-
-
-# =============================================================================
-# Cross-entropy on (BATCH, n_classes). Standard form — averaged across batch.
-# =============================================================================
-def _ce_loss_and_grad_gpu(
+def _eval_topk(
     ctx: DeviceContext,
-    output_dev: DeviceBuffer[dtype],
-    target_dev: DeviceBuffer[dtype],
-    grad_dev: DeviceBuffer[dtype],
-    loss_dev: DeviceBuffer[dtype],
-) raises:
-    var output_v = LayoutTensor[
-        dtype, Layout.row_major(BATCH, N_CLASSES), MutAnyOrigin
-    ](output_dev.unsafe_ptr())
-    var target_v = LayoutTensor[
-        dtype, Layout.row_major(BATCH, N_CLASSES), MutAnyOrigin
-    ](target_dev.unsafe_ptr())
-    var grad_v = LayoutTensor[
-        dtype, Layout.row_major(BATCH, N_CLASSES), MutAnyOrigin
-    ](grad_dev.unsafe_ptr())
-    var loss_t = LayoutTensor[
-        dtype, Layout.row_major(1), MutAnyOrigin
-    ](loss_dev.unsafe_ptr())
-    CrossEntropyLoss.forward_gpu[BATCH, N_CLASSES, dtype](
-        ctx, loss_t, output_v, target_v
-    )
-    CrossEntropyLoss.backward_gpu[BATCH, N_CLASSES, dtype](
-        ctx, grad_v, output_v, target_v
-    )
-
-
-# =============================================================================
-# Training step: forward → CE → backward → grad clip → AdamW step
-# =============================================================================
-def _train_step_gpu(
-    ctx: DeviceContext,
-    mut state: GPUNetworkState[
-        ViT[
-            IN_CHANNELS, IMG_H, IMG_W, PATCH, EMBED, HEADS, LAYERS, N_PATCHES,
-            N_CLASSES, FF_MULT,
-        ],
-        AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD],
-    ],
-    inp_dev: DeviceBuffer[dtype],
-    tgt_dev: DeviceBuffer[dtype],
-    out_dev: DeviceBuffer[dtype],
-    cache_dev: DeviceBuffer[dtype],
-    gin_dev: DeviceBuffer[dtype],
-    gout_dev: DeviceBuffer[dtype],
-    ws_dev: DeviceBuffer[dtype],
-    loss_dev: DeviceBuffer[dtype],
-    loss_host: HostBuffer[dtype],
-) raises -> Float64:
-    comptime Model = ViT[
-        IN_CHANNELS, IMG_H, IMG_W, PATCH, EMBED, HEADS, LAYERS, N_PATCHES,
-        N_CLASSES, FF_MULT,
-    ]
-    var p_view = state.params_view()
-    var s_view = state.model_state_view()
-
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.IN_DIM), MutAnyOrigin
-    ](inp_dev.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.OUT_DIM), MutAnyOrigin
-    ](out_dev.unsafe_ptr())
-    var cache_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.CACHE_SIZE), MutAnyOrigin
-    ](cache_dev.unsafe_ptr())
-    var gin_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.IN_DIM), MutAnyOrigin
-    ](gin_dev.unsafe_ptr())
-    var gout_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.OUT_DIM), MutAnyOrigin
-    ](gout_dev.unsafe_ptr())
-
-    Model.forward_gpu[BATCH, dtype](
-        ctx, out_t, inp_t, p_view, s_view, cache_t, ws_dev
-    )
-    _ce_loss_and_grad_gpu(ctx, out_dev, tgt_dev, gout_dev, loss_dev)
-
-    state.zero_grads(ctx)
-    var grads_view = state.grads_view()
-    Model.backward_gpu[BATCH, dtype](
-        ctx, gin_t, gout_t, p_view, s_view, cache_t, grads_view, ws_dev
-    )
-    state.clip_grads(ctx, Scalar[dtype](GRAD_CLIP))
-    state.optimizer_step(ctx)
-
-    ctx.enqueue_copy(loss_host, loss_dev)
-    ctx.synchronize()
-    return Float64(loss_host[0])
-
-
-# =============================================================================
-# Evaluation: top-1 accuracy + average CE on a sampled subset of test data.
-# =============================================================================
-def _eval_gpu(
-    ctx: DeviceContext,
-    state: GPUNetworkState[
-        ViT[
-            IN_CHANNELS, IMG_H, IMG_W, PATCH, EMBED, HEADS, LAYERS, N_PATCHES,
-            N_CLASSES, FF_MULT,
-        ],
-        AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD],
-    ],
-    test_images: List[Scalar[dtype]],
+    state: GPUNetworkState[VIT_MODEL, VIT_OPT],
+    test_img_buf: DeviceBuffer[dtype],
     test_labels: List[Int32],
-    n_test: Int,
     n_batches: Int,
-    inp_dev: DeviceBuffer[dtype],
-    tgt_dev: DeviceBuffer[dtype],
-    out_dev: DeviceBuffer[dtype],
-    cache_dev: DeviceBuffer[dtype],
-    ws_dev: DeviceBuffer[dtype],
-    loss_dev: DeviceBuffer[dtype],
-    inp_host: HostBuffer[dtype],
-    tgt_host: HostBuffer[dtype],
-    loss_host: HostBuffer[dtype],
-    out_host: HostBuffer[dtype],
+    output_buf: DeviceBuffer[dtype],
+    workspace_buf: DeviceBuffer[dtype],
+    output_host: HostBuffer[dtype],
 ) raises -> EvalResult:
-    """Returns avg_loss + top-1 accuracy over n_batches sampled test batches."""
-    comptime Model = ViT[
-        IN_CHANNELS, IMG_H, IMG_W, PATCH, EMBED, HEADS, LAYERS, N_PATCHES,
-        N_CLASSES, FF_MULT,
-    ]
+    """avg CE loss + top-1 over n_batches consecutive test batches."""
     var p_view = state.params_view()
     var s_view = state.model_state_view()
-    var img_size = IN_CHANNELS * IMG_H * IMG_W
 
-    var total_loss: Float64 = 0
-    var n_correct: Int = 0
-    var n_total: Int = 0
-    for _ in range(n_batches):
-        var batch = _sample_batch(test_images, test_labels, n_test, BATCH, img_size)
-        var tgt_data = _labels_to_one_hot(batch.labels, BATCH, N_CLASSES)
-        for i in range(BATCH * img_size):
-            inp_host[i] = batch.inputs[i]
-        for i in range(BATCH * N_CLASSES):
-            tgt_host[i] = tgt_data[i]
-        ctx.enqueue_copy(inp_dev, inp_host)
-        ctx.enqueue_copy(tgt_dev, tgt_host)
+    var output_lt = LayoutTensor[
+        dtype, Layout.row_major(BATCH, N_CLASSES), MutAnyOrigin
+    ](output_buf.unsafe_ptr())
 
-        var inp_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Model.IN_DIM), MutAnyOrigin
-        ](inp_dev.unsafe_ptr())
-        var out_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Model.OUT_DIM), MutAnyOrigin
-        ](out_dev.unsafe_ptr())
-        var cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Model.CACHE_SIZE), MutAnyOrigin
-        ](cache_dev.unsafe_ptr())
+    var n_correct = 0
+    var n_total = 0
+    var total_logloss: Float64 = 0
+    for batch_idx in range(n_batches):
+        var batch_input = LayoutTensor[
+            dtype, Layout.row_major(BATCH, VIT_MODEL.IN_DIM), MutAnyOrigin
+        ](test_img_buf.unsafe_ptr() + batch_idx * BATCH * VIT_MODEL.IN_DIM)
 
-        Model.forward_gpu[BATCH, dtype](
-            ctx, out_t, inp_t, p_view, s_view, cache_t, ws_dev
+        VIT_MODEL.forward_gpu_no_cache[BATCH](
+            ctx, output_lt, batch_input, p_view, s_view, workspace_buf,
         )
-        var out_v = LayoutTensor[
-            dtype, Layout.row_major(BATCH, N_CLASSES), MutAnyOrigin
-        ](out_dev.unsafe_ptr())
-        var tgt_v = LayoutTensor[
-            dtype, Layout.row_major(BATCH, N_CLASSES), MutAnyOrigin
-        ](tgt_dev.unsafe_ptr())
-        var loss_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](loss_dev.unsafe_ptr())
-        CrossEntropyLoss.forward_gpu[BATCH, N_CLASSES, dtype](
-            ctx, loss_t, out_v, tgt_v
-        )
-        ctx.enqueue_copy(loss_host, loss_dev)
-        ctx.enqueue_copy(out_host, out_dev)
+        ctx.enqueue_copy(output_host, output_buf)
         ctx.synchronize()
 
-        total_loss += Float64(loss_host[0])
         for b in range(BATCH):
-            var best_v = Float64(out_host[b * N_CLASSES + 0])
-            var best_c = 0
+            var best_idx = 0
+            var best_val = Float64(output_host.unsafe_ptr()[b * N_CLASSES + 0])
+            var max_val = best_val
             for c in range(1, N_CLASSES):
-                var v = Float64(out_host[b * N_CLASSES + c])
-                if v > best_v:
-                    best_v = v
-                    best_c = c
-            if best_c == batch.labels[b]:
+                var v = Float64(output_host.unsafe_ptr()[b * N_CLASSES + c])
+                if v > best_val:
+                    best_val = v
+                    best_idx = c
+                if v > max_val:
+                    max_val = v
+            # Negative log-likelihood at the true class (numerically stable).
+            var true_label = Int(test_labels[batch_idx * BATCH + b])
+            var sum_exp: Float64 = 0
+            for c in range(N_CLASSES):
+                var v = Float64(output_host.unsafe_ptr()[b * N_CLASSES + c])
+                sum_exp += exp(v - max_val)
+            var true_logit = Float64(
+                output_host.unsafe_ptr()[b * N_CLASSES + true_label]
+            )
+            total_logloss += (max_val + log(sum_exp)) - true_logit
+            if best_idx == true_label:
                 n_correct += 1
             n_total += 1
-    return EvalResult(total_loss / Float64(n_batches), Float64(n_correct) / Float64(n_total))
+    return EvalResult(
+        total_logloss / Float64(n_total),
+        Float64(n_correct) / Float64(n_total),
+    )
 
 
 # =============================================================================
@@ -338,14 +237,9 @@ def _eval_gpu(
 # =============================================================================
 def main() raises:
     seed(42)
-    comptime Model = ViT[
-        IN_CHANNELS, IMG_H, IMG_W, PATCH, EMBED, HEADS, LAYERS, N_PATCHES,
-        N_CLASSES, FF_MULT,
-    ]
-    comptime Opt = AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD]
 
     print("=" * 70)
-    print("ViT CIFAR-10 training (GPU)")
+    print("ViT CIFAR-10 training (GPU) — Phase B target ≥70% top-1")
     print("=" * 70)
     print(
         "  in_ch="
@@ -378,71 +272,97 @@ def main() raises:
         + String(BASE_LR)
         + " wd="
         + String(WD)
-        + " grad_clip="
-        + String(GRAD_CLIP)
-    )
-    print(
-        "  steps="
-        + String(N_STEPS)
-        + " warmup="
-        + String(WARMUP_STEPS)
+        + " epochs="
+        + String(EPOCHS)
+        + " warmup_ep="
+        + String(WARMUP_EPOCHS)
     )
     print(
         "  PARAM_SIZE="
-        + String(Model.PARAM_SIZE)
+        + String(VIT_MODEL.PARAM_SIZE)
         + " CACHE/sample="
-        + String(Model.CACHE_SIZE)
+        + String(VIT_MODEL.CACHE_SIZE)
         + " WS/sample="
-        + String(Model.WORKSPACE_SIZE_PER_SAMPLE)
+        + String(VIT_MODEL.WORKSPACE_SIZE_PER_SAMPLE)
     )
 
     # ---------- Data ----------
     print("\n[data] loading CIFAR-10...")
     var ds = CIFAR10()
-    print(
-        "  train="
-        + String(ds.num_train)
-        + " test="
-        + String(ds.num_test)
-    )
-
-    # ---------- Device + state ----------
     var ctx = DeviceContext()
-    var state = GPUNetworkState[Model, Opt](ctx)
 
-    var cpu = NetworkState[Model, Opt]()
-    cpu.initialize[Xavier[]]()
-    state.upload_from(cpu, ctx)
+    # ---------- Initialize network on GPU ----------
+    var state = VIT_TRAINER.init_state_gpu[Xavier[]](ctx)
 
-    # ---------- Pre-allocated buffers ----------
-    var inp_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.IN_DIM)
-    var tgt_dev = ctx.enqueue_create_buffer[dtype](BATCH * N_CLASSES)
-    var out_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.OUT_DIM)
-    var cache_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.CACHE_SIZE)
-    var gin_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.IN_DIM)
-    var gout_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.OUT_DIM)
-    var ws_dev = ctx.enqueue_create_buffer[dtype](
-        max(1, BATCH * Model.WORKSPACE_SIZE_PER_SAMPLE)
+    # ---------- Upload full train set (raw images + one-hot targets) ----------
+    var train_img_host = ctx.enqueue_create_host_buffer[dtype](
+        CIFAR10.N_TRAIN * CIFAR10.IMG_SIZE
     )
-    var loss_dev = ctx.enqueue_create_buffer[dtype](1)
-    var inp_host = ctx.enqueue_create_host_buffer[dtype](BATCH * Model.IN_DIM)
-    var tgt_host = ctx.enqueue_create_host_buffer[dtype](BATCH * N_CLASSES)
-    var loss_host = ctx.enqueue_create_host_buffer[dtype](1)
-    var out_host = ctx.enqueue_create_host_buffer[dtype](BATCH * Model.OUT_DIM)
+    var train_tgt_host = ctx.enqueue_create_host_buffer[dtype](
+        CIFAR10.N_TRAIN * CIFAR10.NUM_CLASSES
+    )
+    for i in range(CIFAR10.N_TRAIN * CIFAR10.IMG_SIZE):
+        train_img_host.unsafe_ptr()[i] = ds.train_images[i]
+    for i in range(CIFAR10.N_TRAIN * CIFAR10.NUM_CLASSES):
+        train_tgt_host.unsafe_ptr()[i] = 0
+    for i in range(CIFAR10.N_TRAIN):
+        train_tgt_host.unsafe_ptr()[
+            i * CIFAR10.NUM_CLASSES + Int(ds.train_labels[i])
+        ] = 1
 
-    var img_size = Model.IN_DIM
+    var raw_img_buf = ctx.enqueue_create_buffer[dtype](
+        CIFAR10.N_TRAIN * CIFAR10.IMG_SIZE
+    )
+    var aug_img_buf = ctx.enqueue_create_buffer[dtype](
+        CIFAR10.N_TRAIN * CIFAR10.IMG_SIZE
+    )
+    var train_tgt_buf = ctx.enqueue_create_buffer[dtype](
+        CIFAR10.N_TRAIN * CIFAR10.NUM_CLASSES
+    )
+    ctx.enqueue_copy(raw_img_buf, train_img_host)
+    ctx.enqueue_copy(train_tgt_buf, train_tgt_host)
 
-    # ---------- Initial eval (random init baseline) ----------
-    var eval0 = _eval_gpu(
-        ctx, state, ds.test_images, ds.test_labels, ds.num_test, EVAL_BATCHES,
-        inp_dev, tgt_dev, out_dev, cache_dev, ws_dev, loss_dev,
-        inp_host, tgt_host, loss_host, out_host,
+    var raw_img_lt = LayoutTensor[
+        dtype, Layout.row_major(CIFAR10.N_TRAIN, CIFAR10.IMG_SIZE), MutAnyOrigin
+    ](raw_img_buf)
+    var aug_img_lt = LayoutTensor[
+        dtype, Layout.row_major(CIFAR10.N_TRAIN, CIFAR10.IMG_SIZE), MutAnyOrigin
+    ](aug_img_buf)
+    var train_tgt_lt = LayoutTensor[
+        dtype, Layout.row_major(CIFAR10.N_TRAIN, CIFAR10.NUM_CLASSES),
+        MutAnyOrigin,
+    ](train_tgt_buf)
+
+    # ---------- Upload test set (no augmentation, no labels here) ----------
+    var test_img_host = ctx.enqueue_create_host_buffer[dtype](
+        CIFAR10.N_TEST * CIFAR10.IMG_SIZE
+    )
+    for i in range(CIFAR10.N_TEST * CIFAR10.IMG_SIZE):
+        test_img_host.unsafe_ptr()[i] = ds.test_images[i]
+    var test_img_buf = ctx.enqueue_create_buffer[dtype](
+        CIFAR10.N_TEST * CIFAR10.IMG_SIZE
+    )
+    ctx.enqueue_copy(test_img_buf, test_img_host)
+
+    # ---------- Eval scratch buffers (reused per epoch) ----------
+    var out_buf = ctx.enqueue_create_buffer[dtype](BATCH * VIT_MODEL.OUT_DIM)
+    var ws_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * VIT_MODEL.WORKSPACE_SIZE_PER_SAMPLE)
+    )
+    var out_host = ctx.enqueue_create_host_buffer[dtype](
+        BATCH * VIT_MODEL.OUT_DIM
+    )
+
+    # ---------- Initial test eval (random init baseline) ----------
+    var ev0 = _eval_topk(
+        ctx, state, test_img_buf, ds.test_labels, EVAL_BATCHES,
+        out_buf, ws_buf, out_host,
     )
     print(
-        "\n[step 0] initial test_loss="
-        + String(eval0.loss)
+        "\n[epoch 0] initial test_loss="
+        + String(ev0.loss)
         + " top1="
-        + String(eval0.top1)
+        + String(ev0.top1)
         + "  (random ≈ ln(C)="
         + String(log(Float64(N_CLASSES)))
         + " / 1/C="
@@ -451,68 +371,81 @@ def main() raises:
     )
 
     # ---------- Training loop ----------
-    var loss_running: Float64 = 0
-    var loss_count: Int = 0
-    for step in range(N_STEPS):
-        var s = lr_scale(step, WARMUP_STEPS, N_STEPS)
-        state.set_lr_scale(s)
+    print("\n── Training ──")
+    var t_start = perf_counter_ns()
+    comptime aug_k = _cifar_augment_kernel[CIFAR10.N_TRAIN, dtype]
+    for epoch in range(EPOCHS):
+        # Per-epoch LR scale (linear warmup → cosine decay to 10% of peak).
+        var lr_s = lr_scale(epoch, WARMUP_EPOCHS, EPOCHS)
+        state.set_lr_scale(lr_s)
 
-        var batch = _sample_batch(ds.train_images, ds.train_labels, ds.num_train, BATCH, img_size)
-        var tgt_data = _labels_to_one_hot(batch.labels, BATCH, N_CLASSES)
-        for i in range(BATCH * img_size):
-            inp_host[i] = batch.inputs[i]
-        for i in range(BATCH * N_CLASSES):
-            tgt_host[i] = tgt_data[i]
-        ctx.enqueue_copy(inp_dev, inp_host)
-        ctx.enqueue_copy(tgt_dev, tgt_host)
-
-        var loss = _train_step_gpu(
-            ctx, state, inp_dev, tgt_dev, out_dev, cache_dev,
-            gin_dev, gout_dev, ws_dev, loss_dev, loss_host,
+        # Re-augment the training set (fresh crop+flip seeds per epoch).
+        var aug_seed = Scalar[DType.uint64](UInt64(1000) + UInt64(epoch))
+        ctx.enqueue_function[aug_k, aug_k](
+            aug_img_lt, raw_img_lt, aug_seed,
+            grid_dim=(CIFAR10.N_TRAIN,),
+            block_dim=(TPB,),
         )
-        loss_running += loss
-        loss_count += 1
 
-        if (step + 1) % PRINT_EVERY == 0:
-            var avg = loss_running / Float64(loss_count)
-            print(
-                "[step "
-                + String(step + 1)
-                + "] train_loss="
-                + String(avg)
-                + " lr_scale="
-                + String(s)
-            )
-            loss_running = 0
-            loss_count = 0
+        # One full pass over augmented training set, shuffled.
+        var result = VIT_TRAINER.train_gpu_minibatch[
+            BATCH, CIFAR10.N_TRAIN, USE_CUDA_GRAPH=False
+        ](
+            state, ctx, aug_img_lt, train_tgt_lt,
+            epochs=1, print_every_batches=0, shuffle=True,
+            rng_seed=UInt64(42 + epoch),
+        )
+        ctx.synchronize()
 
-        if (step + 1) % EVAL_EVERY == 0:
-            var ev = _eval_gpu(
-                ctx, state, ds.test_images, ds.test_labels, ds.num_test, EVAL_BATCHES,
-                inp_dev, tgt_dev, out_dev, cache_dev, ws_dev, loss_dev,
-                inp_host, tgt_host, loss_host, out_host,
-            )
-            print("           test_loss=" + String(ev.loss) + " top1=" + String(ev.top1))
+        # Test eval every epoch.
+        var ev = _eval_topk(
+            ctx, state, test_img_buf, ds.test_labels, EVAL_BATCHES,
+            out_buf, ws_buf, out_host,
+        )
+        print(
+            "  epoch "
+            + String(epoch + 1)
+            + "/"
+            + String(EPOCHS)
+            + "  train_loss="
+            + String(Float32(result.final_loss))
+            + "  test_loss="
+            + String(ev.loss)
+            + "  top1="
+            + String(ev.top1)
+            + "  lr_scale="
+            + String(lr_s)
+        )
+    var t_end = perf_counter_ns()
+    print(
+        "\n  training time: "
+        + String(Float64(t_end - t_start) / 1e9)[byte=:6]
+        + " s"
+    )
 
-    # ---------- Final eval on a larger subset ----------
-    var ev_final = _eval_gpu(
-        ctx, state, ds.test_images, ds.test_labels, ds.num_test, EVAL_BATCHES * 4,
-        inp_dev, tgt_dev, out_dev, cache_dev, ws_dev, loss_dev,
-        inp_host, tgt_host, loss_host, out_host,
+    # ---------- Final eval on the entire test set ----------
+    print("\n── Final evaluation (full test set) ──")
+    comptime FULL_TEST_BATCHES = CIFAR10.N_TEST // BATCH
+    var ev_final = _eval_topk(
+        ctx, state, test_img_buf, ds.test_labels, FULL_TEST_BATCHES,
+        out_buf, ws_buf, out_host,
     )
     print(
-        "\n[final] test_loss="
+        "  test_loss="
         + String(ev_final.loss)
         + " top1="
         + String(ev_final.top1)
         + "  (start "
-        + String(eval0.top1)
+        + String(ev0.top1)
         + ")"
     )
     if ev_final.top1 >= 0.70:
         print("  PASS: top-1 accuracy ≥ 70 % — Phase B target hit")
-    elif ev_final.top1 > 0.5:
-        print("  PARTIAL: top-1 > 50 % — clearly learning, may need more steps or aug for 70 %")
+    elif ev_final.top1 > 0.55:
+        print(
+            "  PARTIAL: top-1 > 55 % — clearly learning, may need more"
+            + " epochs / stronger aug for 70 %"
+        )
     else:
-        print("  WARN: top-1 ≤ 50 % — increase N_STEPS or check")
+        print("  WARN: top-1 ≤ 55 % — increase EPOCHS or check")
     print("=" * 70)
