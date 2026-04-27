@@ -665,6 +665,15 @@ struct GPUDynamicsEnsemble[
     # bnn.py:328-336. Initialized with distinct seeds [1..num_ensemble].
     var rng_counters: List[DeviceBuffer[DType.uint32]]
 
+    # Per-member GPU-side step counters for the learnable-logvar-bounds Adam
+    # optimizer. Bumped on-device by a 1-thread kernel inside _enqueue_train_batch
+    # so the bias correction stays correct under CUDA-graph replay (mirrors the
+    # opt_global_state pattern in nn/optimizer/adam.mojo). The pre-refactor code
+    # read self.members[m].step_num on the host, but Adam/AdamW now keep their
+    # counter on-device only — the host mirror stays at 0 and bias_correction
+    # collapsed to 0, producing NaN bounds.
+    var bounds_step_counters: List[DeviceBuffer[DType.uint32]]
+
     # Input scaler state (MBPO TensorStandardScaler equivalent).
     # Per-dim mean/std over concatenated [obs, act] inputs. Re-fit at the
     # start of each train_on_buffer() call over the populated real buffer,
@@ -787,6 +796,18 @@ struct GPUDynamicsEnsemble[
             rc.enqueue_fill(UInt32((m + 1) * 2654435761))
             self.rng_counters.append(rc^)
 
+        # Per-member bounds-Adam step counters, all zero-initialized. They
+        # are bumped to 1 on the first _enqueue_train_batch call before the
+        # bounds kernel reads them, matching the post-increment semantics of
+        # the previous host-side `members[m].step_num` read.
+        self.bounds_step_counters = List[DeviceBuffer[DType.uint32]](
+            capacity=Self.num_ensemble
+        )
+        for _ in range(Self.num_ensemble):
+            var bc = ctx.enqueue_create_buffer[DType.uint32](1)
+            bc.enqueue_fill(UInt32(0))
+            self.bounds_step_counters.append(bc^)
+
         # Scaler state: identity (mean=0, std=1) until first fit_scaler_gpu.
         self.input_mean = ctx.enqueue_create_buffer[dtype](Self.DYN_IN)
         self.input_std = ctx.enqueue_create_buffer[dtype](Self.DYN_IN)
@@ -835,6 +856,7 @@ struct GPUDynamicsEnsemble[
         self.s_done = take.s_done^
         self.s_idx = take.s_idx^
         self.rng_counters = take.rng_counters^
+        self.bounds_step_counters = take.bounds_step_counters^
         self.input_mean = take.input_mean^
         self.input_std = take.input_std^
 
@@ -1080,16 +1102,31 @@ struct GPUDynamicsEnsemble[
         ](self.min_lv_v.unsafe_ptr() + m * Self.DYN_PRED)
 
         # Adam hyperparams — mirror Adam defaults, reuse DynOpt's lr so bounds
-        # and weights update at the same step size. Bias correction uses the
-        # dynamics network's step counter (already incremented above).
+        # and weights update at the same step size.
+        #
+        # Bias correction uses a device-side step counter bumped by the kernel
+        # below, mirroring the opt_global_state pattern in nn/optimizer/adam.mojo.
+        # The previous host-side read (`self.members[m].step_num`) silently
+        # returned 0 after the state-buffer refactor (Adam/AdamW now keep their
+        # counter on-device only), making bc1=bc2=0 → m_hat=v_hat=NaN → NaN
+        # bounds → every NLL evaluated against those bounds came back NaN.
         var lv_lr = Scalar[dtype](Self.bounds_lr)
         var lv_beta1 = Scalar[dtype](0.9)
         var lv_beta2 = Scalar[dtype](0.999)
         var lv_eps = Scalar[dtype](1e-8)
-        var step_n = self.members[m].step_num
-        var bc1 = Scalar[dtype](1.0 - 0.9 ** step_n)
-        var bc2 = Scalar[dtype](1.0 - 0.999 ** step_n)
+        var lv_log_beta1 = Scalar[dtype](log(Float64(0.9)))
+        var lv_log_beta2 = Scalar[dtype](log(Float64(0.999)))
         var l2_coef = Scalar[dtype](0.01)
+
+        # Bump the per-member bounds-Adam counter on-device. Reuses the same
+        # 1-thread `c[0] += 1` kernel as the RNG counter — both are uint32
+        # device counters that need to advance under CUDA-graph replay.
+        var bounds_counter_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](self.bounds_step_counters[m].unsafe_ptr())
+        ctx.enqueue_function[incr_k, incr_k](
+            bounds_counter_t, grid_dim=(1,), block_dim=(1,),
+        )
 
         ctx.enqueue_function[bounds_k, bounds_k](
             max_lv_t,
@@ -1105,8 +1142,9 @@ struct GPUDynamicsEnsemble[
             lv_beta1,
             lv_beta2,
             lv_eps,
-            bc1,
-            bc2,
+            lv_log_beta1,
+            lv_log_beta2,
+            bounds_counter_t,
             grid_dim=(Self.DYN_PRED,),
             block_dim=(1,),
         )

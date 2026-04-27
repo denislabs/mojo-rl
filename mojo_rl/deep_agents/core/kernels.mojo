@@ -3582,8 +3582,9 @@ def reduce_bounds_grad_l2_adam_kernel[
     beta1: Scalar[dtype],
     beta2: Scalar[dtype],
     eps: Scalar[dtype],
-    bias_correction1: Scalar[dtype],
-    bias_correction2: Scalar[dtype],
+    log_beta1: Scalar[dtype],
+    log_beta2: Scalar[dtype],
+    counter: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
 ):
     """Reduce per-batch bounds grads, add L2, and Adam-update bounds.
 
@@ -3596,6 +3597,11 @@ def reduce_bounds_grad_l2_adam_kernel[
       2. Adds the L2 contribution.
       3. Applies one Adam step in place.
     PRED_DIM is small (~18) so the serial BATCH sum per thread is fine.
+
+    Bias correction reads the per-member step counter from device memory
+    (mirroring nn/optimizer/adam.mojo) so the value advances correctly across
+    CUDA-graph replays. log_beta1/log_beta2 are passed as static scalars to
+    avoid an integer pow loop inside the kernel.
     """
     var d = Int(block_idx.x)
     if d >= PRED_DIM:
@@ -3614,6 +3620,11 @@ def reduce_bounds_grad_l2_adam_kernel[
     g_min -= l2_coef
 
     var one = Scalar[dtype](1.0)
+
+    # Bias correction from device counter — graph-replay safe.
+    var step_f = rebind[Scalar[DType.uint32]](counter[0]).cast[dtype]()
+    var bias_correction1 = one - exp(log_beta1 * step_f)
+    var bias_correction2 = one - exp(log_beta2 * step_f)
 
     # Adam update on max_lv[d]
     var m_max = rebind[Scalar[dtype]](max_lv_m[d])
