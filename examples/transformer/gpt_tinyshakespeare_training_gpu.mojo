@@ -456,7 +456,7 @@ def main() raises:
     var loss_count: Int = 0
     for step in range(N_STEPS):
         var s = lr_scale(step, WARMUP_STEPS, N_STEPS)
-        state.set_lr_scale(s)
+        state.set_lr_scale(s, ctx)
 
         # Sample minibatch on host, upload one-hots.
         var batch = make_batch(split.train, BATCH, SEQ)

@@ -1,4 +1,4 @@
-from .trainer import Trainer, TrainResult, TrainResultFull
+from .trainer import Trainer, TrainResult, TrainResultFull, EvalResult
 from .network import Network
 from .network_state import NetworkState
 from .gpu_network_state import GPUNetworkState

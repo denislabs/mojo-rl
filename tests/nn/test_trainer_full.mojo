@@ -27,6 +27,7 @@ from mojo_rl.nn.training import (
     GPUNetworkState,
     CosineWarmupSchedule,
     IdentityAugmenter,
+    EvalResult,
 )
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.loss import CrossEntropyLoss
@@ -231,6 +232,30 @@ def main() raises:
     check(
         last_vloss < first_vloss * 0.5,
         "val loss decreased to <50% of first eval",
+        fails,
+    )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Standalone evaluate_gpu should agree with the trainer's last in-loop
+    # eval (same batch order, same buffers, same kernels).
+    # ──────────────────────────────────────────────────────────────────────
+    var standalone = TRAINER_T.evaluate_gpu[BATCH, N_VAL](
+        state, ctx, val_in_lt, val_lb_lt
+    )
+    print(
+        "  standalone eval: loss="
+        + String(Float32(standalone.loss))
+        + "  top1="
+        + String(Float32(standalone.top1))
+    )
+    check(
+        math_abs(standalone.top1 - final_top1) < 1e-6,
+        "evaluate_gpu top1 matches train_gpu_minibatch_full final eval",
+        fails,
+    )
+    check(
+        math_abs(standalone.loss - last_vloss) < 1e-4,
+        "evaluate_gpu loss matches train_gpu_minibatch_full final eval",
         fails,
     )
 

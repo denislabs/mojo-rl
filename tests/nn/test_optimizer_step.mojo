@@ -43,10 +43,11 @@ def test_sgd() raises:
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var grads_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grads)
     var state_t = LayoutTensor[dtype, Layout.row_major(PS, 1), MutAnyOrigin](state)
-    # Zero-length opt_global_state (SGD doesn't use it).
-    var og_t = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
-    )
+    # SGD.GLOBAL_STATE_SIZE = 1 (slot 0 = lr_scale). The CPU `step()` path
+    # doesn't read it, but the trait signature requires a 1-element tensor.
+    var og_buf = alloc[Scalar[dtype]](1)
+    (og_buf + 0)[] = Scalar[dtype](0.0)
+    var og_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](og_buf)
 
     # Step 1
     SGD[LR].step[PS](params_t, grads_t, state_t, og_t, step_num=1)
@@ -86,6 +87,7 @@ def test_sgd() raises:
     params.free()
     grads.free()
     state.free()
+    og_buf.free()
     p0.free()
     g.free()
     print()
@@ -124,12 +126,14 @@ def test_adam() raises:
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var grads_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grads)
     var state_t = LayoutTensor[dtype, Layout.row_major(PS, 2), MutAnyOrigin](state)
-    # Phase 4: Adam.GLOBAL_STATE_SIZE = 1 (Float32 slot bit-patterning a UInt32
-    # device step counter). The CPU `step()` path doesn't consult it, but the
-    # signature still requires a 1-element tensor.
-    var og_buf = alloc[Scalar[dtype]](1)
+    # Adam.GLOBAL_STATE_SIZE = 2: slot 0 bit-patterns a UInt32 device step
+    # counter (consulted only by step_gpu), slot 1 is `lr_scale`. The CPU
+    # `step()` path doesn't read either, but the signature requires a
+    # 2-element tensor.
+    var og_buf = alloc[Scalar[dtype]](2)
     (og_buf + 0)[] = Scalar[dtype](0.0)
-    var og_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](og_buf)
+    (og_buf + 1)[] = Scalar[dtype](1.0)
+    var og_t = LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin](og_buf)
 
     # Step 1
     Adam[LR, B1, B2, EPS].step[PS](params_t, grads_t, state_t, og_t, step_num=1)
@@ -232,10 +236,11 @@ def test_adamw() raises:
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var grads_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grads)
     var state_t = LayoutTensor[dtype, Layout.row_major(PS, 2), MutAnyOrigin](state)
-    # Phase 4: AdamW.GLOBAL_STATE_SIZE = 1 — see test_adam.
-    var og_buf = alloc[Scalar[dtype]](1)
+    # AdamW.GLOBAL_STATE_SIZE = 2 — see test_adam.
+    var og_buf = alloc[Scalar[dtype]](2)
     (og_buf + 0)[] = Scalar[dtype](0.0)
-    var og_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](og_buf)
+    (og_buf + 1)[] = Scalar[dtype](1.0)
+    var og_t = LayoutTensor[dtype, Layout.row_major(2), MutAnyOrigin](og_buf)
 
     # Step 1
     AdamW[LR, B1, B2, EPS, WD].step[PS](params_t, grads_t, state_t, og_t, step_num=1)

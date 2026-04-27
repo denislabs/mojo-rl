@@ -2944,7 +2944,6 @@ struct TDMPC2Agent[
                     enc_state_tensor,
                     enc_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -2982,7 +2981,6 @@ struct TDMPC2Agent[
                     dyn_state_tensor,
                     dyn_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -3020,7 +3018,6 @@ struct TDMPC2Agent[
                     rew_state_tensor,
                     rew_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 ctx.enqueue_function[
@@ -3058,7 +3055,6 @@ struct TDMPC2Agent[
                     term_state_tensor,
                     term_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 # Q1..Q5 fused grad clip + Adam (15 launches → 3)
@@ -3529,7 +3525,6 @@ struct TDMPC2Agent[
                     pol_state_tensor,
                     pol_og,
                     0,  # ignored — device counter is authoritative
-                    1.0,
                 )
 
                 # ──────────────────────────────────────────────────────────────

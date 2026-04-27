@@ -140,6 +140,18 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         ctx.enqueue_memset(self.opt_state_buf, 0)
         ctx.enqueue_memset(self.model_state_buf, 0)
         ctx.enqueue_memset(self.opt_global_state_buf, 0)
+        # Seed lr_scale = 1.0 at the optimizer's `LR_SLOT = OPT_GLOBAL_SIZE - 1`
+        # (per-trait convention). Every trained optimizer reads this slot in
+        # its kernel; without seeding, slot value 0.0 would zero-out the LR.
+        comptime if Self.OPT_GLOBAL_SIZE >= 1:
+            for i in range(Self.OPT_GLOBAL_SIZE):
+                self.opt_global_state_host[i] = 0
+            self.opt_global_state_host[Self.OPT_GLOBAL_SIZE - 1] = Scalar[
+                Self.dtype
+            ](1.0)
+            ctx.enqueue_copy(
+                self.opt_global_state_buf, self.opt_global_state_host
+            )
 
     def __init__(out self, *, copy: Self):
         self.step_num = copy.step_num
@@ -236,13 +248,41 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         """Zero the gradients buffer on device (async)."""
         ctx.enqueue_memset(self.grads_buf, 0)
 
-    def set_lr_scale(mut self, scale: Float64):
+    def set_lr_scale(mut self, scale: Float64, ctx: DeviceContext) raises:
         """Set the LR multiplier applied at each optimizer step.
+
+        Updates both the host shadow `self.lr_scale` and the device-side
+        `opt_global_state[OPT_GLOBAL_SIZE - 1]` slot via a 1-thread kernel.
+        Call OUTSIDE any CUDA-graph capture so the new value is visible to
+        subsequent replays — kernels capture a pointer to the lr_scale slot,
+        and re-read its contents on every replay.
 
         Args:
             scale: Multiplier applied to the compile-time base LR (default 1.0).
+            ctx: GPU device context (used to enqueue the device-side write).
         """
         self.lr_scale = scale
+        comptime if Self.OPT_GLOBAL_SIZE >= 1:
+            comptime LR_SLOT = Self.OPT_GLOBAL_SIZE - 1
+            var og = self.opt_global_state_view()
+            var val = Scalar[Self.dtype](scale)
+
+            @parameter
+            @always_inline
+            def write_lr_kernel(
+                og: LayoutTensor[
+                    Self.dtype,
+                    Layout.row_major(Self.OPT_GLOBAL_SIZE),
+                    MutAnyOrigin,
+                ],
+                val: Scalar[Self.dtype],
+            ):
+                if Int(thread_idx.x) == 0:
+                    og[LR_SLOT] = val
+
+            ctx.enqueue_function[write_lr_kernel, write_lr_kernel](
+                og, val, grid_dim=(1,), block_dim=(1,),
+            )
 
     def clip_grads(self, ctx: DeviceContext, max_val: Scalar[Self.dtype]) raises:
         """Clamp all gradient values to [-max_val, max_val] on GPU.
@@ -290,8 +330,9 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         the post-bump value to compute bias correction. The host-side
         `self.step_num` mirror is left stale until `download_to` syncs it
         back from the device counter — only Adam-style optimizers actually
-        consult the on-device counter, so for SGD/RMSprop/Muon (which still
-        ignore step_num) we still bump the host counter for compatibility.
+        consult the on-device counter, so for SGD/RMSprop (which only
+        declare `lr_scale` in their global state) we bump the host counter
+        for compatibility.
 
         Args:
             ctx: GPU device context.
@@ -300,13 +341,14 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         var s = self.opt_state_view()
         var og = self.opt_global_state_view()
 
-        comptime if Self.OPT_GLOBAL_SIZE == 0:
-            # Optimizer carries no on-device counter — fall back to the host
-            # mirror (Adam/AdamW take the GLOBAL_STATE_SIZE>=1 branch).
+        # Optimizers declare GLOBAL_STATE_SIZE >= 1 (slot LR_SLOT = lr_scale).
+        # Adam/AdamW additionally use slot 0 for an on-device step counter,
+        # in which case the host counter is informational only.
+        comptime if Self.OPT_GLOBAL_SIZE <= 1:
             self.step_num += 1
 
         Self.OPTIMIZER.step_gpu[Self.PARAM_SIZE](
-            ctx, p, self.grads_view(), s, og, self.step_num, self.lr_scale
+            ctx, p, self.grads_view(), s, og, self.step_num
         )
 
     def soft_update_from_gpu(
@@ -387,12 +429,20 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         # Phase 4: when the optimizer keeps an on-device step counter
         # (Adam/AdamW), seed slot 0 from the CPU step_num so resume-from
         # checkpoint preserves bias correction. The slot is a Float32 storing
-        # the bit pattern of a UInt32 counter.
+        # the bit pattern of a UInt32 counter. Harmless for Muon/SGD/RMSprop:
+        # Muon recomputes slot 0 (inv_norm) every step, and SGD/RMSprop have
+        # `LR_SLOT = 0` whose lr_scale write below overwrites this value.
         comptime if Self.OPT_GLOBAL_SIZE >= 1:
             var counter_host_ptr = self.opt_global_state_host.unsafe_ptr().bitcast[
                 Scalar[DType.uint32]
             ]()
             counter_host_ptr[0] = UInt32(cpu.step_num)
+
+        # Seed `lr_scale` at the trait-level LR_SLOT = OPT_GLOBAL_SIZE - 1.
+        comptime if Self.OPT_GLOBAL_SIZE >= 1:
+            self.opt_global_state_host[Self.OPT_GLOBAL_SIZE - 1] = Scalar[
+                Self.dtype
+            ](self.lr_scale)
 
         ctx.enqueue_copy(self.opt_global_state_buf, self.opt_global_state_host)
 

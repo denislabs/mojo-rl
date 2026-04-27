@@ -32,25 +32,29 @@ def test_muon_gpu_matches_cpu(ctx: DeviceContext) raises:
     comptime LR = 0.02
     comptime BETA = 0.95
     comptime EPS = 1e-7
+    # Muon.GLOBAL_STATE_SIZE = 2: slot 0 = inv_norm (filled by reduction
+    # kernel), slot 1 = lr_scale (seeded to 1.0 below).
+    comptime OG = 2
 
     # CPU reference state.
     var cpu_params = alloc[Scalar[dtype]](PS)
     var cpu_grads = alloc[Scalar[dtype]](PS)
     var cpu_state = alloc[Scalar[dtype]](PS)
     memset(cpu_state, 0, PS)
-    var cpu_og = alloc[Scalar[dtype]](1)
+    var cpu_og = alloc[Scalar[dtype]](OG)
     (cpu_og + 0)[] = Scalar[dtype](0.0)
+    (cpu_og + 1)[] = Scalar[dtype](1.0)
 
     # GPU buffers (host-side mirrors are these CPU allocations; we'll
     # download GPU state at the end and compare).
     var gpu_params_buf = ctx.enqueue_create_buffer[dtype](PS)
     var gpu_grads_buf = ctx.enqueue_create_buffer[dtype](PS)
     var gpu_state_buf = ctx.enqueue_create_buffer[dtype](PS)
-    var gpu_og_buf = ctx.enqueue_create_buffer[dtype](1)
+    var gpu_og_buf = ctx.enqueue_create_buffer[dtype](OG)
     var gpu_params_host = ctx.enqueue_create_host_buffer[dtype](PS)
     var gpu_grads_host = ctx.enqueue_create_host_buffer[dtype](PS)
     var gpu_state_host = ctx.enqueue_create_host_buffer[dtype](PS)
-    var gpu_og_host = ctx.enqueue_create_host_buffer[dtype](1)
+    var gpu_og_host = ctx.enqueue_create_host_buffer[dtype](OG)
 
     var params_t_cpu = LayoutTensor[
         dtype, Layout.row_major(PS), MutAnyOrigin
@@ -62,7 +66,7 @@ def test_muon_gpu_matches_cpu(ctx: DeviceContext) raises:
         dtype, Layout.row_major(PS, 1), MutAnyOrigin
     ](cpu_state)
     var og_t_cpu = LayoutTensor[
-        dtype, Layout.row_major(1), MutAnyOrigin
+        dtype, Layout.row_major(OG), MutAnyOrigin
     ](cpu_og)
 
     var params_t_gpu = LayoutTensor[
@@ -75,7 +79,7 @@ def test_muon_gpu_matches_cpu(ctx: DeviceContext) raises:
         dtype, Layout.row_major(PS, 1), MutAnyOrigin
     ](gpu_state_buf.unsafe_ptr())
     var og_t_gpu = LayoutTensor[
-        dtype, Layout.row_major(1), MutAnyOrigin
+        dtype, Layout.row_major(OG), MutAnyOrigin
     ](gpu_og_buf.unsafe_ptr())
 
     # Seed params and grads with structured non-zero values so each element
@@ -88,7 +92,8 @@ def test_muon_gpu_matches_cpu(ctx: DeviceContext) raises:
         gpu_params_host[i] = p_init
         gpu_grads_host[i] = g_init
         gpu_state_host[i] = Scalar[dtype](0.0)
-    gpu_og_host[0] = Scalar[dtype](0.0)
+    gpu_og_host[0] = Scalar[dtype](0.0)  # slot 0: inv_norm (filled by kernel)
+    gpu_og_host[1] = Scalar[dtype](1.0)  # slot 1: lr_scale
     ctx.enqueue_copy(gpu_params_buf, gpu_params_host)
     ctx.enqueue_copy(gpu_grads_buf, gpu_grads_host)
     ctx.enqueue_copy(gpu_state_buf, gpu_state_host)
@@ -112,7 +117,6 @@ def test_muon_gpu_matches_cpu(ctx: DeviceContext) raises:
             state_t_gpu,
             og_t_gpu,
             step_num=step,
-            lr_scale=1.0,
         )
 
         ctx.enqueue_copy(gpu_params_host, gpu_params_buf)

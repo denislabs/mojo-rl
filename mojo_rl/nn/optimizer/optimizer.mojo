@@ -26,10 +26,18 @@ trait Optimizer(Movable & ImplicitlyCopyable):
     comptime STATE_PER_PARAM: Int
 
     # Global (non-per-parameter) optimizer state — e.g. Adam step counter,
-    # Muon gradient norm. Lives in its own GPU buffer so CUDA graph capture
-    # doesn't bake host-side counters at capture time. Default 0. See
-    # docs/STATE_SIZE_DESIGN.md.
-    comptime GLOBAL_STATE_SIZE: Int = 0
+    # Muon gradient norm, plus an `lr_scale` slot read by every optimizer.
+    # Lives in its own GPU buffer so CUDA graph capture doesn't bake
+    # host-side counters at capture time. See docs/STATE_SIZE_DESIGN.md.
+    #
+    # Convention: slot `GLOBAL_STATE_SIZE - 1` of `opt_global_state` is
+    # `lr_scale: Scalar[dtype]`. GPUNetworkState owns this slot — it
+    # initialises it to 1.0 and updates it via `set_lr_scale`. Each
+    # optimizer's GPU kernel multiplies `Self.LR * opt_global_state[LR_SLOT]`
+    # internally, so an LR change between epochs (or between CUDA-graph
+    # replays) is picked up without re-capture. Optimizers MUST set
+    # GLOBAL_STATE_SIZE >= 1 to reserve this slot.
+    comptime GLOBAL_STATE_SIZE: Int = 1
 
     @staticmethod
     def step[
@@ -86,9 +94,13 @@ trait Optimizer(Movable & ImplicitlyCopyable):
             dtype, Layout.row_major(Self.GLOBAL_STATE_SIZE), MutAnyOrigin
         ],
         step_num: Int,
-        lr_scale: Float64 = 1.0,
     ) raises:
         """Perform one optimization step on GPU.
+
+        The LR multiplier lives in `opt_global_state[GLOBAL_STATE_SIZE - 1]`
+        (Scalar[dtype]) — written by GPUNetworkState.set_lr_scale, read by
+        the kernel. No host-side `lr_scale` argument is taken so the value
+        survives CUDA-graph replay.
 
         Args:
             ctx: GPU device context.
@@ -96,7 +108,8 @@ trait Optimizer(Movable & ImplicitlyCopyable):
             grads: Gradients [PARAM_SIZE].
             state: Optimizer state [PARAM_SIZE, STATE_PER_PARAM].
             opt_global_state: Global optimizer state [GLOBAL_STATE_SIZE].
-            step_num: Global step counter (1-based).
-            lr_scale: Multiplicative LR scale (default 1.0). Set < 1.0 for LR annealing.
+                Last slot is `lr_scale`; preceding slots are optimizer-specific.
+            step_num: Global step counter (1-based, host-only — unused on
+                graph-safe optimizers that keep their own device counter).
         """
         ...

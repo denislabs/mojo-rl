@@ -60,6 +60,21 @@ struct TrainResult(ImplicitlyCopyable, Movable):
         self.epochs_trained = epochs_trained
 
 
+struct EvalResult(ImplicitlyCopyable, Movable):
+    """Result of an `evaluate_gpu` pass.
+
+    Both metrics are averaged over `N_VAL_BATCHES = N_VAL // BATCH` batches
+    (the trailing partial batch is dropped).
+    """
+
+    var loss: Float64
+    var top1: Float64
+
+    def __init__(out self, loss: Float64, top1: Float64):
+        self.loss = loss
+        self.top1 = top1
+
+
 struct TrainResultFull(Movable):
     """Result of a `train_gpu_minibatch_full` run.
 
@@ -1178,9 +1193,11 @@ struct Trainer[
 
         # ── Per-epoch loop ────────────────────────────────────────────────
         for epoch in range(epochs):
-            # 1. LR schedule (host scalar; baked into this epoch's kernels)
+            # 1. LR schedule. Writes the new scale to a device slot via a
+            # 1-thread kernel — outside any CUDA-graph capture, so subsequent
+            # captured optimizer-step kernels read the updated value at replay.
             var lr_s = SCHEDULER.lr_scale_at(epoch, epochs)
-            state.set_lr_scale(lr_s)
+            state.set_lr_scale(lr_s, ctx)
             lr_scale_history.append(lr_s)
 
             # 2. Augmentation (no-op for IdentityAugmenter)
@@ -1328,4 +1345,150 @@ struct Trainer[
             val_loss_history^,
             val_top1_history^,
             lr_scale_history^,
+        )
+
+    # =========================================================================
+    # GPU Standalone Evaluation
+    # =========================================================================
+
+    @staticmethod
+    def evaluate_gpu[
+        BATCH: Int,
+        N_VAL: Int,
+    ](
+        mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
+        ctx: DeviceContext,
+        val_input: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(N_VAL, Self.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ],
+        val_labels: LayoutTensor[
+            DType.int32, Layout.row_major(N_VAL), MutAnyOrigin
+        ],
+    ) raises -> EvalResult:
+        """Run a forward-only pass over the validation set on GPU.
+
+        Iterates `N_VAL // BATCH` batches, computing per-batch top-1 and
+        CE loss via the same kernels used inside `train_gpu_minibatch_full`,
+        then host-reduces both arrays after a single `synchronize()`.
+
+        Useful for one-off eval calls (initial baseline, post-training
+        full-test eval, debugging snapshots) where the buffer-reuse savings
+        of the integrated trainer-loop eval don't matter.
+
+        Parameters:
+            BATCH: Samples per forward pass.
+            N_VAL: Validation set size (compile-time). Trailing partial batch
+                (`N_VAL % BATCH`) is skipped.
+
+        Args:
+            state: GPU network state (read; `params_view` requires `mut self`
+                on the trait, but no field is mutated).
+            ctx: GPU device context.
+            val_input: Device tensor [N_VAL, IN_DIM].
+            val_labels: Device int32 tensor [N_VAL] of class indices.
+
+        Returns:
+            EvalResult with averaged CE loss and top-1 accuracy across the
+            BATCH-aligned prefix.
+        """
+        comptime N_VAL_BATCHES = N_VAL // BATCH
+        comptime EVAL_OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
+        comptime EVAL_WS_SIZE = BATCH * Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
+
+        var output_buf = ctx.enqueue_create_buffer[Self.dtype](EVAL_OUT_SIZE)
+        var ws_buf = ctx.enqueue_create_buffer[Self.dtype](
+            EVAL_WS_SIZE if EVAL_WS_SIZE > 0 else 1
+        )
+        var per_batch_loss_buf = ctx.enqueue_create_buffer[Self.dtype](
+            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
+        )
+        var per_batch_correct_buf = ctx.enqueue_create_buffer[Self.dtype](
+            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
+        )
+        var per_batch_loss_host = ctx.enqueue_create_host_buffer[Self.dtype](
+            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
+        )
+        var per_batch_correct_host = ctx.enqueue_create_host_buffer[
+            Self.dtype
+        ](N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1)
+
+        var output_lt = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
+        ](output_buf.unsafe_ptr())
+        var per_batch_loss_lt = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1),
+            MutAnyOrigin,
+        ](per_batch_loss_buf.unsafe_ptr())
+        var per_batch_correct_lt = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1),
+            MutAnyOrigin,
+        ](per_batch_correct_buf.unsafe_ptr())
+
+        if N_VAL_BATCHES == 0:
+            return EvalResult(0.0, 0.0)
+
+        var p_view = state.params_view()
+        var s_view = state.model_state_view()
+        for batch_idx in range(N_VAL_BATCHES):
+            var batch_input = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.MODEL.IN_DIM),
+                MutAnyOrigin,
+            ](val_input.ptr + batch_idx * BATCH * Self.MODEL.IN_DIM)
+            var batch_labels = LayoutTensor[
+                DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+            ](val_labels.ptr + batch_idx * BATCH)
+
+            Self.MODEL.forward_gpu_no_cache[BATCH](
+                ctx, output_lt, batch_input, p_view, s_view, ws_buf
+            )
+            ctx.enqueue_function[
+                argmax_match_kernel[
+                    BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
+                ],
+                argmax_match_kernel[
+                    BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
+                ],
+            ](
+                per_batch_correct_lt,
+                output_lt,
+                batch_labels,
+                batch_idx,
+                grid_dim=(1,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[
+                ce_loss_from_labels_kernel[
+                    BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
+                ],
+                ce_loss_from_labels_kernel[
+                    BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
+                ],
+            ](
+                per_batch_loss_lt,
+                output_lt,
+                batch_labels,
+                batch_idx,
+                grid_dim=(1,),
+                block_dim=(TPB,),
+            )
+
+        ctx.enqueue_copy(per_batch_loss_host, per_batch_loss_buf)
+        ctx.enqueue_copy(per_batch_correct_host, per_batch_correct_buf)
+        ctx.synchronize()
+
+        var loss_sum: Float64 = 0
+        var correct_sum: Float64 = 0
+        for i in range(N_VAL_BATCHES):
+            loss_sum += Float64(per_batch_loss_host[i])
+            correct_sum += Float64(per_batch_correct_host[i])
+        return EvalResult(
+            loss_sum / Float64(N_VAL_BATCHES),
+            correct_sum / Float64(N_VAL_BATCHES * BATCH),
         )

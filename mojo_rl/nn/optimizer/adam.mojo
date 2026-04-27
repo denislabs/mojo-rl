@@ -29,17 +29,20 @@ struct Adam[
         - state[i, 0] = m (first moment)
         - state[i, 1] = v (second moment)
 
-    GLOBAL_STATE_SIZE = 1: one Float32 slot bit-patterning a UInt32 step counter.
-    On GPU, a preamble kernel bumps the device counter inside `step_gpu` so
-    Adam's bias correction stays correct under CUDA-graph replay (Phase 4 of
-    docs/STATE_SIZE_DESIGN.md). The CPU `step()` path keeps using the host
-    `step_num` parameter directly.
+    GLOBAL_STATE_SIZE = 2:
+        - slot 0: UInt32 step counter (bit-patterned). A preamble kernel
+          bumps it on-device inside `step_gpu` so bias correction survives
+          CUDA-graph replay (Phase 4 of docs/STATE_SIZE_DESIGN.md).
+        - slot 1: Scalar[dtype] lr_scale, written by GPUNetworkState.set_lr_scale
+          and read by the kernel each step so LR schedules survive
+          CUDA-graph replay.
+    The CPU `step()` path keeps using the host `step_num` parameter directly.
 
     Hyperparameters are compile-time struct parameters.
     """
 
     comptime STATE_PER_PARAM: Int = 2
-    comptime GLOBAL_STATE_SIZE: Int = 1
+    comptime GLOBAL_STATE_SIZE: Int = 2
 
     def __init__(out self):
         pass
@@ -122,7 +125,10 @@ struct Adam[
         counter: LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ],
-        lr: Scalar[dtype],
+        lr_scale_view: LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ],
+        base_lr: Scalar[dtype],
         beta1: Scalar[dtype],
         beta2: Scalar[dtype],
         eps: Scalar[dtype],
@@ -133,8 +139,8 @@ struct Adam[
 
         state layout: (PARAM_SIZE, 2) where state[i, 0] = m, state[i, 1] = v.
 
-        Bias corrections are computed inside the kernel from the post-bump
-        device counter so they stay correct under CUDA-graph replay.
+        Both the bias-correction step counter and `lr_scale` are read from
+        device-side views so they stay fresh under CUDA-graph replay.
         """
         comptime assert dtype.is_floating_point(), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -145,6 +151,7 @@ struct Adam[
         var one = Scalar[dtype](1.0)
         var bc1 = one - exp(log_beta1 * step_f)
         var bc2 = one - exp(log_beta2 * step_f)
+        var lr = base_lr * rebind[Scalar[dtype]](lr_scale_view[0])
 
         var g = rebind[Scalar[dtype]](grads[idx])
         var m_val = rebind[Scalar[dtype]](state[idx, 0])
@@ -185,42 +192,42 @@ struct Adam[
             dtype, Layout.row_major(Self.GLOBAL_STATE_SIZE), MutAnyOrigin
         ],
         step_num: Int,
-        lr_scale: Float64 = 1.0,
     ) raises:
         """Launch Adam optimization step on GPU.
 
         Bumps the device-side step counter (preamble kernel) and then runs the
-        Adam update kernel, which reads the post-bump counter to compute the
-        bias correction. This keeps bias correction correct under CUDA-graph
-        replay (the host `step_num` argument is preserved as a bridge but is
-        unused on this path).
+        Adam update kernel, which reads the post-bump counter for bias
+        correction and `lr_scale` from `opt_global_state[1]`. Both reads
+        survive CUDA-graph replay; the host `step_num` argument is preserved
+        as a bridge but unused on this path.
 
         Args:
             ctx: GPU device context.
             params: Parameters [PARAM_SIZE] (modified in place).
             grads: Gradients [PARAM_SIZE].
             state: State [PARAM_SIZE, 2] (m and v moments).
-            opt_global_state: One Float32 slot bit-patterning a UInt32 step
-                counter. Bumped by a 1-thread preamble kernel before the main
-                update.
+            opt_global_state: Two-slot global state.
+                Slot 0 bit-patterns a UInt32 step counter (bumped by the
+                preamble kernel). Slot 1 holds `lr_scale: Scalar[dtype]`
+                (managed by GPUNetworkState).
             step_num: Unused on the GPU path (kept for trait-signature compat
                 with optimizers that still rely on a host counter).
-            lr_scale: Multiplicative LR scale (default 1.0). Set < 1.0 for LR annealing.
         """
-        var lr = Scalar[dtype](Self.LR * lr_scale)
+        var base_lr = Scalar[dtype](Self.LR)
         var beta1 = Scalar[dtype](Self.BETA1)
         var beta2 = Scalar[dtype](Self.BETA2)
         var eps = Scalar[dtype](Self.EPS)
         var log_beta1 = Scalar[dtype](log(Self.BETA1))
         var log_beta2 = Scalar[dtype](log(Self.BETA2))
 
-        # Bit-cast the Float32 opt_global_state slot into a UInt32 step counter
-        # view. The counter persists across calls (and CUDA-graph replays) and
-        # is bumped by the preamble kernel below so each launch sees a fresh
-        # step value.
+        # Slot 0 (Float32) → bit-cast UInt32 step counter view.
         var counter_t = LayoutTensor[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](opt_global_state.ptr.bitcast[Scalar[DType.uint32]]())
+        # Slot 1 → lr_scale view.
+        var lr_scale_view = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](opt_global_state.ptr + 1)
 
         @parameter
         @always_inline
@@ -253,7 +260,10 @@ struct Adam[
             counter: LayoutTensor[
                 DType.uint32, Layout.row_major(1), MutAnyOrigin
             ],
-            lr: Scalar[dtype],
+            lr_scale_view: LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ],
+            base_lr: Scalar[dtype],
             beta1: Scalar[dtype],
             beta2: Scalar[dtype],
             eps: Scalar[dtype],
@@ -265,7 +275,8 @@ struct Adam[
                 grads,
                 state,
                 counter,
-                lr,
+                lr_scale_view,
+                base_lr,
                 beta1,
                 beta2,
                 eps,
@@ -280,7 +291,8 @@ struct Adam[
             grads,
             state,
             counter_t,
-            lr,
+            lr_scale_view,
+            base_lr,
             beta1,
             beta2,
             eps,
