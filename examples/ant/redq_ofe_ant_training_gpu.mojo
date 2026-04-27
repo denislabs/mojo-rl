@@ -70,7 +70,7 @@ comptime REDQOFEAntConfig = DefaultREDQOFEConfig8[
     REDQ_TARGET_MIN,
     0.0003,  # actor_lr
     0.0003,  # critic_lr
-    0.0003,  # ofe_lr (aux Adam)
+    0.00003, # ofe_lr (aux Adam) — 10x lower than paper to slow OFE drift
     240,     # OFE_TOTAL_UNITS
     1.0,     # action_scale
 ]
@@ -154,7 +154,7 @@ def main() raises:
         logger.set_config("actor_lr", "3e-4")
         logger.set_config("critic_lr", "3e-4")
         logger.set_config("alpha_lr", "3e-4")
-        logger.set_config("ofe_lr", "3e-4")
+        logger.set_config("ofe_lr", "3e-5")
         logger.set_config("ofe_num_layers", "8")
         logger.set_config("ofe_total_units", "240")
         logger.set_config("batch_size", String(BATCH_SIZE))
