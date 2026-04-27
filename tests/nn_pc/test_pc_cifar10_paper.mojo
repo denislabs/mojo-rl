@@ -227,17 +227,13 @@ def main() raises:
                     l2_sq += v * v
                 var l2 = sqrt(l2_sq)
 
-                # Train-subset accuracy + sup_loss via free inference
-                var d_correct: Int = 0
+                # Train-subset accuracy via BOTH protocols (free + supervised)
+                # so we can see if training is producing useful weights at all.
+                var dfree_correct: Int = 0
+                var dsup_correct: Int = 0
                 var d_sup_loss: Float64 = 0.0
                 var d_total: Int = 0
                 for di in range(N_DIAG_BATCHES):
-                    TRAINER.randn_init_latents[BATCH](
-                        lat_init_view,
-                        seed=UInt64(80000) + UInt64(di),
-                        offset=UInt64(0),
-                    )
-                    ctx.enqueue_copy(lat_dbuf, lat_host_init)
                     var diag_x = LayoutTensor[
                         dtype,
                         Layout.row_major(BATCH, CIFAR10.IMG_SIZE),
@@ -246,6 +242,22 @@ def main() raises:
                         train_img_dbuf.unsafe_ptr()
                         + di * BATCH * CIFAR10.IMG_SIZE
                     )
+                    var diag_y = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH, CIFAR10.NUM_CLASSES),
+                        MutAnyOrigin,
+                    ](
+                        train_tgt_dbuf.unsafe_ptr()
+                        + di * BATCH * CIFAR10.NUM_CLASSES
+                    )
+
+                    # ── (a) FREE inference ──
+                    TRAINER.randn_init_latents[BATCH](
+                        lat_init_view,
+                        seed=UInt64(80000) + UInt64(di),
+                        offset=UInt64(0),
+                    )
+                    ctx.enqueue_copy(lat_dbuf, lat_host_init)
                     TRAINER.inference_gpu[BATCH](
                         ctx, params_t, lat_t, diag_x, y_hat_t,
                         T_infer=T_INFER,
@@ -253,10 +265,8 @@ def main() raises:
                     )
                     ctx.enqueue_copy(y_hat_host, y_hat_dbuf)
                     ctx.synchronize()
-
                     for sb in range(BATCH):
                         var sample_idx = di * BATCH + sb
-                        # argmax + sup_loss
                         var best_idx = 0
                         var best_val = y_hat_host.unsafe_ptr()[
                             sb * CIFAR10.NUM_CLASSES + 0
@@ -269,7 +279,8 @@ def main() raises:
                                 best_val = v
                                 best_idx = c
                         if best_idx == Int(ds.train_labels[sample_idx]):
-                            d_correct += 1
+                            dfree_correct += 1
+                        # sup_loss tracked from FREE inference (consistent with above)
                         for c in range(CIFAR10.NUM_CLASSES):
                             var yh = Float64(
                                 y_hat_host.unsafe_ptr()[
@@ -285,15 +296,48 @@ def main() raises:
                             d_sup_loss += d * d
                         d_total += 1
 
-                var d_acc = Float64(d_correct) / Float64(d_total)
+                    # ── (b) SUPERVISED inference (same latent init seed) ──
+                    TRAINER.randn_init_latents[BATCH](
+                        lat_init_view,
+                        seed=UInt64(80000) + UInt64(di),
+                        offset=UInt64(0),
+                    )
+                    ctx.enqueue_copy(lat_dbuf, lat_host_init)
+                    TRAINER.supervised_inference_gpu[BATCH](
+                        ctx, params_t, lat_t, diag_x, diag_y, y_hat_t,
+                        T_infer=T_INFER,
+                        eta_infer=Scalar[dtype](ETA_INFER),
+                    )
+                    ctx.enqueue_copy(y_hat_host, y_hat_dbuf)
+                    ctx.synchronize()
+                    for sb in range(BATCH):
+                        var sample_idx = di * BATCH + sb
+                        var best_idx = 0
+                        var best_val = y_hat_host.unsafe_ptr()[
+                            sb * CIFAR10.NUM_CLASSES + 0
+                        ]
+                        for c in range(1, CIFAR10.NUM_CLASSES):
+                            var v = y_hat_host.unsafe_ptr()[
+                                sb * CIFAR10.NUM_CLASSES + c
+                            ]
+                            if v > best_val:
+                                best_val = v
+                                best_idx = c
+                        if best_idx == Int(ds.train_labels[sample_idx]):
+                            dsup_correct += 1
+
+                var dfree_acc = Float64(dfree_correct) / Float64(d_total)
+                var dsup_acc = Float64(dsup_correct) / Float64(d_total)
                 var d_loss_per_sample = 0.5 * d_sup_loss / Float64(d_total)
-                print(
-                    "  [diag", String(epoch + 1) + "." + String(b + 1) + "]",
-                    " |W|2=", String(l2)[byte=:8],
-                    " train_acc=",
-                    String(d_acc * 100.0)[byte=:6] + "%",
-                    " sup_loss=", String(d_loss_per_sample)[byte=:8],
+                var diag_line = (
+                    "  [diag "
+                    + String(epoch + 1) + "." + String(b + 1) + "]"
+                    + " |W|2=" + String(l2)[byte=:8]
+                    + " sup_acc=" + String(dsup_acc * 100.0)[byte=:6] + "%"
+                    + " free_acc=" + String(dfree_acc * 100.0)[byte=:6] + "%"
+                    + " sup_loss=" + String(d_loss_per_sample)[byte=:8]
                 )
+                print(diag_line)
         ctx.synchronize()
         var t_epoch_end = perf_counter_ns()
         print(
@@ -431,30 +475,26 @@ def main() raises:
     var sup_acc3 = Float64(sup_top3) / Float64(total_eval)
     var free_acc1 = Float64(free_top1) / Float64(total_eval)
     var free_acc3 = Float64(free_top3) / Float64(total_eval)
-    print(
-        "  eval time:",
-        String(Float64(t_eval_end - t_eval_start) / 1e9)[byte=:6], "s",
-    )
+    var eval_time_s = Float64(t_eval_end - t_eval_start) / 1e9
+    print("  eval time: " + String(eval_time_s)[byte=:6] + " s")
 
     print("=" * 65)
-    print("Paper reports (supervised inference):  top-1 99.92%   top-3 99.99%")
-    print("─" * 65)
-    print(
-        "Supervised inference (paper protocol):  top-1",
-        String(sup_acc1 * 100.0)[byte=:6] + "%",
-        " top-3", String(sup_acc3 * 100.0)[byte=:6] + "%",
+    print("Paper claim (supervised protocol): top-1 99.92%, top-3 99.99%")
+    print("-" * 65)
+    var sup_line = (
+        "SUPERVISED inference (paper protocol)  top1="
+        + String(sup_acc1 * 100.0)[byte=:6] + "%"
+        + "  top3="
+        + String(sup_acc3 * 100.0)[byte=:6] + "%"
     )
-    print(
-        "  ↳ NOT a generalization metric — y_target leaks into inference.",
+    var free_line = (
+        "FREE       inference (honest generalize) top1="
+        + String(free_acc1 * 100.0)[byte=:6] + "%"
+        + "  top3="
+        + String(free_acc3 * 100.0)[byte=:6] + "%"
     )
-    print(
-        "Free inference (honest generalization): top-1",
-        String(free_acc1 * 100.0)[byte=:6] + "%",
-        " top-3", String(free_acc3 * 100.0)[byte=:6] + "%",
-    )
-    print(
-        "  ↳ Comparable to ViT, backprop baseline, etc.",
-    )
+    print(sup_line)
+    print(free_line)
     print("=" * 65)
 
     # Pass criterion: free-inference must clear random baseline by a wide margin
