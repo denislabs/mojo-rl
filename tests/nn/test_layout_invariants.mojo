@@ -68,7 +68,28 @@ def test_sequential():
     # Workspace: _total_inter + _sum_ws
     comptime assert ThreeLayer.WORKSPACE_SIZE_PER_SAMPLE == ThreeLayer._total_inter() + ThreeLayer._sum_ws()
     comptime assert ThreeLayer._total_inter() == 16 + 16
-    comptime assert ThreeLayer._ws_layer_offset[2]() + Linear[16, 3].WORKSPACE_SIZE_PER_SAMPLE == ThreeLayer.WORKSPACE_SIZE_PER_SAMPLE
+    # Safety: last layer must fit at its aligned offset.
+    comptime assert ThreeLayer._ws_layer_offset[2]() + Linear[16, 3].WORKSPACE_SIZE_PER_SAMPLE <= ThreeLayer.WORKSPACE_SIZE_PER_SAMPLE
+
+    # --- Regression: layer with non-4-aligned WORKSPACE_SIZE_PER_SAMPLE ---
+    # LinearReLU[H, K] has WS = H + K (CACHE only). For (27, 128) → WS=155, (3, 7) → WS=10, etc.
+    # Pre-fix bug: _sum_ws used unaligned per-layer WS while _ws_layer_offset aligned each, so
+    # the last layer wrote past the workspace into the next allocated buffer (corrupting
+    # states_buf in AlphaZero TTT). Catches the off-by-one if anyone touches _sum_ws again.
+    comptime OddWS = Sequential[LinearReLU[3, 7], LinearReLU[7, 7], Linear[7, 2]]
+    # LinearReLU[3,7] WS = 10 (not 4-aligned), align4 = 12
+    # LinearReLU[7,7] WS = 14 (not 4-aligned), align4 = 16
+    # Linear[7,2] WS = 7 (not 4-aligned)
+    comptime assert OddWS._ws_layer_offset[2]() + Linear[7, 2].WORKSPACE_SIZE_PER_SAMPLE <= OddWS.WORKSPACE_SIZE_PER_SAMPLE
+
+    # Actual AlphaZero TicTacToe MLP architecture (the exact case the bug manifested on)
+    comptime TTT_MLP = Sequential[
+        LinearReLU[27, 128],
+        LinearReLU[128, 128],
+        Parallel[Linear[128, 9], Linear[128, 1]],
+    ]
+    # LinearReLU[27,128] WS = 155 (not 4-aligned), align4 = 156
+    comptime assert TTT_MLP._ws_layer_offset[2]() + Parallel[Linear[128, 9], Linear[128, 1]].WORKSPACE_SIZE_PER_SAMPLE <= TTT_MLP.WORKSPACE_SIZE_PER_SAMPLE
 
     print("  PASS: Sequential")
 
@@ -79,10 +100,14 @@ def test_sequential():
 
 def test_parallel():
     comptime Par = Parallel[Linear[8, 3], LinearTanh[8, 3]]
-    # Linear[8,3]: PS = 27, LinearTanh[8,3]: PS = 27 — no alignment between branches
-    comptime assert Par.PARAM_SIZE == 27 + 27
-    comptime assert Par.PARAM_SIZE == Par._param_offset[1]() + 27
-    comptime assert Par.CACHE_SIZE == Linear[8, 3].CACHE_SIZE + LinearTanh[8, 3].CACHE_SIZE
+    # Linear[8,3]: PS = 27, LinearTanh[8,3]: PS = 27.
+    # Parallel._aligned_param_size cumulative-aligns each branch's PS:
+    #   align4(0+27) = 28; align4(28+27) = align4(55) = 56.
+    comptime assert Par.PARAM_SIZE == _align4(_align4(27) + 27)
+    # Last branch starts at the previous cumulative aligned offset.
+    comptime assert Par._param_offset[1]() + 27 <= Par.PARAM_SIZE
+    # Parallel._sum_cache_size also cumulative-aligns each branch.
+    comptime assert Par.CACHE_SIZE == _align4(_align4(Linear[8, 3].CACHE_SIZE) + LinearTanh[8, 3].CACHE_SIZE)
 
     print("  PASS: Parallel")
 
@@ -227,14 +252,9 @@ def _check_sac[OBS: Int, ACT: Int, H: Int, BS: Int]():
     ]()
     comptime assert WS_EST >= ACTUAL_NEEDED
 
-    # WORKSPACE cross-check: exact formula vs graph computation
-    comptime FORMULA_WS = (
-        3 * OBS + 7 * ACT + ActorModel.OUT_DIM
-        + ActorModel.WORKSPACE_SIZE_PER_SAMPLE
-        + 6 * CriticModel.OUT_DIM
-        + 2 * CriticModel.WORKSPACE_SIZE_PER_SAMPLE + 4
-    )
-    comptime assert SACGraph.WORKSPACE_SIZE_PER_SAMPLE == FORMULA_WS
+    # WORKSPACE self-consistency: last layer must fit at its aligned offset.
+    # Catches the kind of off-by-one Sequential._sum_ws had before 2026-04-27.
+    comptime assert SACGraph._ws_layer_offset[1]() + SACOutput.WORKSPACE_SIZE_PER_SAMPLE <= SACGraph.WORKSPACE_SIZE_PER_SAMPLE
 
 
 def test_sac_layouts():
@@ -285,15 +305,9 @@ def _check_ddpg[OBS: Int, ACT: Int, H: Int, BS: Int]():
     comptime CRITIC_OFF = _align4(APS)
     comptime assert CRITIC_OFF + CPS <= DDPGGraph.PARAM_SIZE
 
-    # WORKSPACE cross-check: exact formula vs graph computation
-    # DDPGGraph = Sequential[SkipConcat[Actor], Critic, Negate[1]]
-    # WS = (OBS+ACTIONS+CRITIC_OUT) + (ACTIONS+ACTOR_WS) + CRITIC_WS
-    comptime EXPECTED_WS = (
-        OBS + 2 * ACT + CriticModel.OUT_DIM
-        + ActorModel.WORKSPACE_SIZE_PER_SAMPLE
-        + CriticModel.WORKSPACE_SIZE_PER_SAMPLE
-    )
-    comptime assert DDPGGraph.WORKSPACE_SIZE_PER_SAMPLE == EXPECTED_WS
+    # WORKSPACE self-consistency: last layer must fit at its aligned offset.
+    # Catches the kind of off-by-one Sequential._sum_ws had before 2026-04-27.
+    comptime assert DDPGGraph._ws_layer_offset[2]() + Negate[1].WORKSPACE_SIZE_PER_SAMPLE <= DDPGGraph.WORKSPACE_SIZE_PER_SAMPLE
 
     # CACHE cross-check
     comptime assert DDPGGraph.CACHE_SIZE == ActorModel.CACHE_SIZE + CriticModel.CACHE_SIZE
@@ -358,23 +372,11 @@ def _check_td3[OBS: Int, ACT: Int, H: Int, BS: Int]():
     comptime assert CRITIC1_OFF + CPS <= TD3Graph.PARAM_SIZE
     comptime assert CRITIC2_OFF + CPS <= TD3Graph.PARAM_SIZE
 
-    # WORKSPACE cross-check: exact formula vs graph computation
-    # TD3Graph = Sequential[SkipConcat[Actor], Sequential[DualPath[C,C], Min[1]], Negate[1]]
-    # WS = intermediates + SkipConcat.WS + TwinCriticMin.WS
-    comptime EXPECTED_WS = (
-        # Sequential intermediates: ActorSkip.OUT + TwinCriticMin.OUT
-        (OBS + ACT) + 1
-        # SkipConcat[Actor]: inner_out + inner_ws
-        + ACT + ActorModel.WORKSPACE_SIZE_PER_SAMPLE
-        # TwinCriticMin = Sequential[DualPath, Min]:
-        #   inter: DualPath.OUT = 2*CO
-        #   DualPath.WS = (2*CO + OBS+ACT) + 2*CRITIC_WS
-        #   Min.WS = CO (AutoDiffChain cache)
-        + 2 * CriticModel.OUT_DIM
-        + (2 * CriticModel.OUT_DIM + OBS + ACT + 2 * CriticModel.WORKSPACE_SIZE_PER_SAMPLE)
-        + CriticModel.OUT_DIM
-    )
-    comptime assert TD3Graph.WORKSPACE_SIZE_PER_SAMPLE == EXPECTED_WS
+    # WORKSPACE self-consistency: last layer must fit at its aligned offset.
+    # Catches the kind of off-by-one Sequential._sum_ws had before 2026-04-27,
+    # where unaligned per-layer sums under-counted the workspace by alignment
+    # padding and the last layer wrote past the buffer into adjacent allocations.
+    comptime assert TD3Graph._ws_layer_offset[2]() + Negate[1].WORKSPACE_SIZE_PER_SAMPLE <= TD3Graph.WORKSPACE_SIZE_PER_SAMPLE
 
     # CACHE cross-check
     comptime assert TD3Graph.CACHE_SIZE == (

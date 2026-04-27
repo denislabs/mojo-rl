@@ -3255,31 +3255,6 @@ struct GenericAlphaZeroAgent[
         ep_count_buf.enqueue_fill(Scalar[dtype](0.0))
         ctx.synchronize()
 
-        # ── DEBUG: dump env-0 state right after initial reset ──
-        var _dbg_init_states = ctx.enqueue_create_host_buffer[dtype](
-            Self.n_envs * E.STATE_SIZE
-        )
-        ctx.enqueue_copy(_dbg_init_states, states_buf)
-        ctx.synchronize()
-        print(
-            "[DBG-INIT] env0 state after reset:",
-            _dbg_init_states[0],
-            _dbg_init_states[1],
-            _dbg_init_states[2],
-            _dbg_init_states[3],
-            _dbg_init_states[4],
-            _dbg_init_states[5],
-            _dbg_init_states[6],
-            _dbg_init_states[7],
-            _dbg_init_states[8],
-            "| player=",
-            _dbg_init_states[9],
-            "result=",
-            _dbg_init_states[10],
-            "stepc=",
-            _dbg_init_states[11],
-        )
-
         # Set logger for diagnostics
         self.logger = logger
         self.diag_every = diag_every
@@ -3856,89 +3831,6 @@ struct GenericAlphaZeroAgent[
                         st_len_t,
                         grid_dim=(ENV_BLOCKS,),
                         block_dim=(TPB,),
-                    )
-
-                # ── DEBUG: dump env-0 state for first 3 outer steps of iter 0 and iter 1 ──
-                if iter <= warmup_iters and iter_steps < 3 * Self.n_envs:
-                    var _dbg_states = ctx.enqueue_create_host_buffer[dtype](
-                        Self.n_envs * E.STATE_SIZE
-                    )
-                    var _dbg_dones = ctx.enqueue_create_host_buffer[dtype](
-                        Self.n_envs
-                    )
-                    var _dbg_rewards = ctx.enqueue_create_host_buffer[dtype](
-                        Self.n_envs
-                    )
-                    var _dbg_actions = ctx.enqueue_create_host_buffer[dtype](
-                        Self.n_envs
-                    )
-                    var _dbg_obs = ctx.enqueue_create_host_buffer[dtype](
-                        Self.n_envs * OBS
-                    )
-                    var _dbg_lm = ctx.enqueue_create_host_buffer[dtype](
-                        Self.n_envs * ACT
-                    )
-                    ctx.enqueue_copy(_dbg_states, states_buf)
-                    ctx.enqueue_copy(_dbg_dones, dones_buf)
-                    ctx.enqueue_copy(_dbg_rewards, rewards_buf)
-                    ctx.enqueue_copy(_dbg_actions, actions_buf)
-                    ctx.enqueue_copy(_dbg_obs, obs_buf)
-                    ctx.enqueue_copy(_dbg_lm, legal_masks_buf)
-                    ctx.synchronize()
-                    var _b = 0  # env 0
-                    print(
-                        "[DBG iter=",
-                        iter,
-                        "step=",
-                        iter_steps,
-                        "] env0 board:",
-                        _dbg_states[_b * E.STATE_SIZE + 0],
-                        _dbg_states[_b * E.STATE_SIZE + 1],
-                        _dbg_states[_b * E.STATE_SIZE + 2],
-                        _dbg_states[_b * E.STATE_SIZE + 3],
-                        _dbg_states[_b * E.STATE_SIZE + 4],
-                        _dbg_states[_b * E.STATE_SIZE + 5],
-                        _dbg_states[_b * E.STATE_SIZE + 6],
-                        _dbg_states[_b * E.STATE_SIZE + 7],
-                        _dbg_states[_b * E.STATE_SIZE + 8],
-                        "| player=",
-                        _dbg_states[_b * E.STATE_SIZE + 9],
-                        "result=",
-                        _dbg_states[_b * E.STATE_SIZE + 10],
-                        "stepc=",
-                        _dbg_states[_b * E.STATE_SIZE + 11],
-                    )
-                    print(
-                        "[DBG iter=",
-                        iter,
-                        "step=",
-                        iter_steps,
-                        "] env0 obs[0..9]:",
-                        _dbg_obs[_b * OBS + 0],
-                        _dbg_obs[_b * OBS + 1],
-                        _dbg_obs[_b * OBS + 2],
-                        _dbg_obs[_b * OBS + 3],
-                        _dbg_obs[_b * OBS + 4],
-                        _dbg_obs[_b * OBS + 5],
-                        _dbg_obs[_b * OBS + 6],
-                        _dbg_obs[_b * OBS + 7],
-                        _dbg_obs[_b * OBS + 8],
-                        "| legal:",
-                        _dbg_lm[_b * ACT + 0],
-                        _dbg_lm[_b * ACT + 1],
-                        _dbg_lm[_b * ACT + 2],
-                        _dbg_lm[_b * ACT + 3],
-                        _dbg_lm[_b * ACT + 4],
-                        _dbg_lm[_b * ACT + 5],
-                        _dbg_lm[_b * ACT + 6],
-                        _dbg_lm[_b * ACT + 7],
-                        _dbg_lm[_b * ACT + 8],
-                        "| action=",
-                        _dbg_actions[_b],
-                        "reward=",
-                        _dbg_rewards[_b],
-                        "done=",
-                        _dbg_dones[_b],
                     )
 
                 # Selective reset (rng_seed=0: deterministic, graph-safe)
