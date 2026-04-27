@@ -90,6 +90,37 @@ def main() raises:
     print()
 
     # =========================================================================
+    # Diagnostic: STATE_SIZE per submodel
+    #
+    # Hypothesis: after the state-buffer NN refactor, some MBPO submodel might
+    # report STATE_SIZE > 0 unexpectedly. mbpo_agent.mojo passes a NULL pointer
+    # for the critic's `state` view assuming "critic is stateless"; if any
+    # composed layer now declares state, that NULL becomes a live garbage read.
+    #
+    # Expected (no bug): all four numbers below print 0.
+    # If any line prints > 0, we've found state coming in unexpectedly.
+    # =========================================================================
+    print("--- STATE_SIZE diagnostic ---")
+    print("ActorModel.STATE_SIZE     =", MBPOHalfCheetahConfig.ActorModel.STATE_SIZE)
+    print("CriticModel.STATE_SIZE    =", MBPOHalfCheetahConfig.CriticModel.STATE_SIZE)
+    print("DynamicsModel.STATE_SIZE  =", MBPOHalfCheetahConfig.DynamicsModel.STATE_SIZE)
+    # Also break down each LinearSwish + final Linear inside DynamicsModel —
+    # if the Sequential sum is 0 but a child is non-zero, that's its own bug.
+    print(
+        "  DynamicsModel.model_types[0].STATE_SIZE (LinearSwish[23,200]) =",
+        MBPOHalfCheetahConfig.DynamicsModel.model_types[0].STATE_SIZE,
+    )
+    print(
+        "  DynamicsModel.model_types[1].STATE_SIZE (LinearSwish[200,200]) =",
+        MBPOHalfCheetahConfig.DynamicsModel.model_types[1].STATE_SIZE,
+    )
+    print(
+        "  DynamicsModel.model_types[4].STATE_SIZE (Linear[200,36])      =",
+        MBPOHalfCheetahConfig.DynamicsModel.model_types[4].STATE_SIZE,
+    )
+    print()
+
+    # =========================================================================
     # Create GPU context and agent
     # =========================================================================
 
