@@ -36,12 +36,17 @@ from ..initializer import Initializer, Xavier
 from ..constants import dtype as default_dtype, TPB
 from .network_state import NetworkState
 from .gpu_network_state import GPUNetworkState
+from .scheduler import Scheduler, ConstantSchedule
+from .augmenter import Augmenter, IdentityAugmenter
+from .eval_kernels import argmax_match_kernel, ce_loss_from_labels_kernel
 
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu import block_dim, block_idx, thread_idx
 from std.random.philox import Random as PhiloxRandom
 from std.sys import has_nvidia_gpu_accelerator
+
+from mojo_rl.utils.progress import print_progress_bar, clear_progress_bar
 
 
 struct TrainResult(ImplicitlyCopyable, Movable):
@@ -53,6 +58,68 @@ struct TrainResult(ImplicitlyCopyable, Movable):
     def __init__(out self, final_loss: Float64, epochs_trained: Int):
         self.final_loss = final_loss
         self.epochs_trained = epochs_trained
+
+
+struct TrainResultFull(Movable):
+    """Result of a `train_gpu_minibatch_full` run.
+
+    Holds the same scalars as `TrainResult` plus per-epoch validation
+    history (loss, top-1 accuracy) and the LR-scale schedule that was
+    actually applied. History lists have one entry per evaluation pass
+    — typically `ceil(epochs / eval_every_epochs)`. The `lr_scale_history`
+    has exactly `epochs` entries.
+    """
+
+    var final_loss: Float64
+    var epochs_trained: Int
+    var val_loss_history: List[Float64]
+    var val_top1_history: List[Float64]
+    var lr_scale_history: List[Float64]
+
+    def __init__(
+        out self,
+        final_loss: Float64,
+        epochs_trained: Int,
+        var val_loss_history: List[Float64],
+        var val_top1_history: List[Float64],
+        var lr_scale_history: List[Float64],
+    ):
+        self.final_loss = final_loss
+        self.epochs_trained = epochs_trained
+        self.val_loss_history = val_loss_history^
+        self.val_top1_history = val_top1_history^
+        self.lr_scale_history = lr_scale_history^
+
+    def __init__(out self, deinit existing: Self):
+        self.final_loss = existing.final_loss
+        self.epochs_trained = existing.epochs_trained
+        self.val_loss_history = existing.val_loss_history^
+        self.val_top1_history = existing.val_top1_history^
+        self.lr_scale_history = existing.lr_scale_history^
+
+
+# =============================================================================
+# Trainer-internal helper: device-to-device 2D copy (for one-time raw→aug
+# initialization in train_gpu_minibatch_full)
+# =============================================================================
+
+
+@always_inline
+def _copy_2d_kernel[
+    N: Int,
+    DIM: Int,
+    dtype: DType,
+](
+    dst: LayoutTensor[dtype, Layout.row_major(N, DIM), MutAnyOrigin],
+    src: LayoutTensor[dtype, Layout.row_major(N, DIM), MutAnyOrigin],
+):
+    """Element-wise device-to-device copy. Parallel over N*DIM threads."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= N * DIM:
+        return
+    var row = i // DIM
+    var col = i % DIM
+    dst[row, col] = src[row, col]
 
 
 # =============================================================================
@@ -953,3 +1020,312 @@ struct Trainer[
         final_loss = Float64(loss_host[0])
 
         return TrainResult(final_loss, epochs)
+
+    # =========================================================================
+    # GPU Mini-batch Training with LR scheduling, augmentation, and validation
+    # =========================================================================
+
+    @staticmethod
+    def train_gpu_minibatch_full[
+        BATCH: Int,
+        N_TRAIN: Int,
+        N_VAL: Int,
+        SCHEDULER: Scheduler = ConstantSchedule,
+        AUGMENTER: Augmenter = IdentityAugmenter,
+    ](
+        mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
+        ctx: DeviceContext,
+        train_input: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(N_TRAIN, Self.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ],
+        train_target: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(N_TRAIN, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
+        ],
+        val_input: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(N_VAL, Self.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ],
+        val_labels: LayoutTensor[
+            DType.int32, Layout.row_major(N_VAL), MutAnyOrigin
+        ],
+        epochs: Int = 1,
+        shuffle: Bool = True,
+        rng_seed: UInt64 = 42,
+        aug_seed: UInt64 = 1000,
+        show_progress: Bool = True,
+        eval_every_epochs: Int = 1,
+        progress_label: String = "Training",
+    ) raises -> TrainResultFull:
+        """Train on GPU with LR scheduling, augmentation, and per-epoch eval.
+
+        Wraps `train_gpu_minibatch` with three host-side concerns:
+          - LR scaling: `SCHEDULER.lr_scale_at(epoch, epochs)` is applied
+            via `state.set_lr_scale` before each epoch's training step.
+          - Data augmentation: `AUGMENTER.augment` is invoked once per
+            epoch, writing into a Trainer-owned `aug_buf` (initialized
+            with a one-time device-side copy of `train_input`).
+            `IdentityAugmenter` is a no-op so the no-aug case has zero
+            per-epoch GPU cost beyond training itself.
+          - Validation: every `eval_every_epochs` epochs (and on the final
+            epoch), runs `forward_gpu_no_cache` over `val_input`,
+            computes top-1 accuracy and CE loss directly from int32
+            labels via two slot-write kernels, syncs once, reduces on host.
+
+        Internally calls `train_gpu_minibatch[..., USE_CUDA_GRAPH=False]`
+        per epoch since the LR scalar changes between epochs. CUDA graph
+        capture spanning multiple epochs would require moving `lr_scale`
+        into a device buffer — left for a follow-up.
+
+        Parameters:
+            BATCH: Samples per gradient step.
+            N_TRAIN: Training set size (compile-time).
+            N_VAL: Validation set size (compile-time).
+            SCHEDULER: LR schedule (default: ConstantSchedule, scale=1.0).
+            AUGMENTER: Per-epoch augmentation (default: IdentityAugmenter).
+
+        Args:
+            state: GPU network state — updated in place.
+            ctx: GPU device context.
+            train_input: Device tensor [N_TRAIN, IN_DIM] (raw, untouched).
+            train_target: Device tensor [N_TRAIN, OUT_DIM] (one-hot or soft).
+            val_input: Device tensor [N_VAL, IN_DIM].
+            val_labels: Device int32 tensor [N_VAL] of class indices.
+            epochs: Number of full passes.
+            shuffle: Re-shuffle training order each epoch.
+            rng_seed: Base seed for the per-epoch shuffle PRNG.
+            aug_seed: Base seed forwarded to AUGMENTER.augment per epoch.
+            show_progress: Render an in-place CLI progress bar + per-eval lines.
+            eval_every_epochs: Run validation every N epochs (final epoch
+                always evaluated).
+            progress_label: Progress-bar prefix label.
+
+        Returns:
+            TrainResultFull with final-batch loss, epochs trained, and
+            per-eval / per-epoch history lists.
+        """
+        comptime IN_SIZE = N_TRAIN * Self.MODEL.IN_DIM
+        comptime N_VAL_BATCHES = N_VAL // BATCH
+        comptime EVAL_OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
+        comptime EVAL_WS_SIZE = BATCH * Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
+        comptime BATCHES_PER_EPOCH = N_TRAIN // BATCH
+
+        # ── Augmentation buffer + one-time raw → aug device copy ──────────
+        var aug_buf = ctx.enqueue_create_buffer[Self.dtype](IN_SIZE)
+        var aug_lt = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(N_TRAIN, Self.MODEL.IN_DIM),
+            MutAnyOrigin,
+        ](aug_buf.unsafe_ptr())
+
+        comptime copy_blocks = (IN_SIZE + TPB - 1) // TPB
+        ctx.enqueue_function[
+            _copy_2d_kernel[N_TRAIN, Self.MODEL.IN_DIM, Self.dtype],
+            _copy_2d_kernel[N_TRAIN, Self.MODEL.IN_DIM, Self.dtype],
+        ](
+            aug_lt,
+            train_input,
+            grid_dim=(copy_blocks,),
+            block_dim=(TPB,),
+        )
+
+        # ── Validation scratch buffers (allocated once, reused each eval) ──
+        var eval_output_buf = ctx.enqueue_create_buffer[Self.dtype](
+            EVAL_OUT_SIZE
+        )
+        var eval_ws_buf = ctx.enqueue_create_buffer[Self.dtype](
+            EVAL_WS_SIZE if EVAL_WS_SIZE > 0 else 1
+        )
+        var per_batch_loss_buf = ctx.enqueue_create_buffer[Self.dtype](
+            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
+        )
+        var per_batch_correct_buf = ctx.enqueue_create_buffer[Self.dtype](
+            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
+        )
+        var per_batch_loss_host = ctx.enqueue_create_host_buffer[Self.dtype](
+            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
+        )
+        var per_batch_correct_host = ctx.enqueue_create_host_buffer[
+            Self.dtype
+        ](N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1)
+
+        var eval_output_lt = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+            MutAnyOrigin,
+        ](eval_output_buf.unsafe_ptr())
+        var per_batch_loss_lt = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1),
+            MutAnyOrigin,
+        ](per_batch_loss_buf.unsafe_ptr())
+        var per_batch_correct_lt = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1),
+            MutAnyOrigin,
+        ](per_batch_correct_buf.unsafe_ptr())
+
+        # ── Histories ─────────────────────────────────────────────────────
+        var val_loss_history = List[Float64]()
+        var val_top1_history = List[Float64]()
+        var lr_scale_history = List[Float64]()
+
+        var final_loss: Float64 = 0.0
+
+        # ── Per-epoch loop ────────────────────────────────────────────────
+        for epoch in range(epochs):
+            # 1. LR schedule (host scalar; baked into this epoch's kernels)
+            var lr_s = SCHEDULER.lr_scale_at(epoch, epochs)
+            state.set_lr_scale(lr_s)
+            lr_scale_history.append(lr_s)
+
+            # 2. Augmentation (no-op for IdentityAugmenter)
+            AUGMENTER.augment[N_TRAIN, Self.MODEL.IN_DIM, Self.dtype](
+                ctx, aug_lt, train_input, epoch, aug_seed
+            )
+
+            # 3. One epoch of training on the (possibly) augmented input
+            var result = Self.train_gpu_minibatch[
+                BATCH, N_TRAIN, USE_CUDA_GRAPH=False
+            ](
+                state,
+                ctx,
+                aug_lt,
+                train_target,
+                epochs=1,
+                print_every_batches=0,
+                shuffle=shuffle,
+                rng_seed=rng_seed + UInt64(epoch),
+            )
+            final_loss = result.final_loss
+
+            # 4. Validation pass
+            var is_eval_epoch = (
+                eval_every_epochs > 0
+                and (
+                    (epoch + 1) % eval_every_epochs == 0
+                    or epoch == epochs - 1
+                )
+            )
+            if is_eval_epoch and N_VAL_BATCHES > 0:
+                var p_view = state.params_view()
+                var s_view = state.model_state_view()
+                for batch_idx in range(N_VAL_BATCHES):
+                    var batch_input = LayoutTensor[
+                        Self.dtype,
+                        Layout.row_major(BATCH, Self.MODEL.IN_DIM),
+                        MutAnyOrigin,
+                    ](
+                        val_input.ptr + batch_idx * BATCH * Self.MODEL.IN_DIM
+                    )
+                    var batch_labels = LayoutTensor[
+                        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+                    ](val_labels.ptr + batch_idx * BATCH)
+
+                    Self.MODEL.forward_gpu_no_cache[BATCH](
+                        ctx,
+                        eval_output_lt,
+                        batch_input,
+                        p_view,
+                        s_view,
+                        eval_ws_buf,
+                    )
+                    ctx.enqueue_function[
+                        argmax_match_kernel[
+                            BATCH,
+                            Self.MODEL.OUT_DIM,
+                            N_VAL_BATCHES,
+                            Self.dtype,
+                        ],
+                        argmax_match_kernel[
+                            BATCH,
+                            Self.MODEL.OUT_DIM,
+                            N_VAL_BATCHES,
+                            Self.dtype,
+                        ],
+                    ](
+                        per_batch_correct_lt,
+                        eval_output_lt,
+                        batch_labels,
+                        batch_idx,
+                        grid_dim=(1,),
+                        block_dim=(TPB,),
+                    )
+                    ctx.enqueue_function[
+                        ce_loss_from_labels_kernel[
+                            BATCH,
+                            Self.MODEL.OUT_DIM,
+                            N_VAL_BATCHES,
+                            Self.dtype,
+                        ],
+                        ce_loss_from_labels_kernel[
+                            BATCH,
+                            Self.MODEL.OUT_DIM,
+                            N_VAL_BATCHES,
+                            Self.dtype,
+                        ],
+                    ](
+                        per_batch_loss_lt,
+                        eval_output_lt,
+                        batch_labels,
+                        batch_idx,
+                        grid_dim=(1,),
+                        block_dim=(TPB,),
+                    )
+
+                ctx.enqueue_copy(per_batch_loss_host, per_batch_loss_buf)
+                ctx.enqueue_copy(
+                    per_batch_correct_host, per_batch_correct_buf
+                )
+                ctx.synchronize()
+
+                var loss_sum: Float64 = 0
+                var correct_sum: Float64 = 0
+                for i in range(N_VAL_BATCHES):
+                    loss_sum += Float64(per_batch_loss_host[i])
+                    correct_sum += Float64(per_batch_correct_host[i])
+                var avg_loss = loss_sum / Float64(N_VAL_BATCHES)
+                var top1 = correct_sum / Float64(N_VAL_BATCHES * BATCH)
+                val_loss_history.append(avg_loss)
+                val_top1_history.append(top1)
+
+                if show_progress:
+                    clear_progress_bar()
+                    print(
+                        "  epoch "
+                        + String(epoch + 1)
+                        + "/"
+                        + String(epochs)
+                        + "  train_loss="
+                        + String(Float32(final_loss))
+                        + "  val_loss="
+                        + String(avg_loss)
+                        + "  top1="
+                        + String(top1)
+                        + "  lr_scale="
+                        + String(lr_s)
+                    )
+
+            # 5. Progress bar (after eval so the eval line is above it)
+            if show_progress:
+                print_progress_bar(
+                    epoch + 1,
+                    epochs,
+                    (epoch + 1) * BATCHES_PER_EPOCH,
+                    progress_label,
+                )
+
+        if show_progress:
+            clear_progress_bar()
+
+        return TrainResultFull(
+            final_loss,
+            epochs,
+            val_loss_history^,
+            val_top1_history^,
+            lr_scale_history^,
+        )
