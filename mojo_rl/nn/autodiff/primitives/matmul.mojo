@@ -1100,6 +1100,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
         comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -1170,6 +1171,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         comptime dx_grid_x = (Self.in_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
         comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+        @parameter
         @always_inline
         def dx_wrapper(
             grad_input: LayoutTensor[
@@ -1201,6 +1203,7 @@ struct MatMul[in_dim: Int, out_dim: Int](DiffOp):
         comptime dW_grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
         comptime dW_grid_y = (Self.in_dim + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+        @parameter
         @always_inline
         def dW_wrapper(
             dW: LayoutTensor[

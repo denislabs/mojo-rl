@@ -17,7 +17,6 @@ from ...initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
-from std.builtin.variadics import Variadic
 
 
 @fieldwise_init
@@ -28,8 +27,8 @@ struct Parallel[*BRANCHES: Model](Model):
     along the feature dimension (per row).
     """
 
-    comptime branch_types = Variadic.types[T=Model, *Self.BRANCHES]
-    comptime N = TypeList[*Self.branch_types].size
+    comptime branch_types = Self.BRANCHES
+    comptime N = Self.branch_types.size
 
     comptime IN_DIM: Int = Self.branch_types[0].IN_DIM
 
@@ -61,11 +60,12 @@ struct Parallel[*BRANCHES: Model](Model):
         return total
 
     @staticmethod
-    def _sum_ws() -> Int:
+    def _sum_state_size() -> Int:
+        """Unaligned sum of state sizes (state is scalar-indexed)."""
         var total = 0
 
         comptime for i in range(Self.N):
-            total += Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            total += Self.branch_types[i].STATE_SIZE
         return total
 
     comptime OUT_DIM: Int = Self._sum_out_dim()
@@ -81,6 +81,7 @@ struct Parallel[*BRANCHES: Model](Model):
 
     comptime PARAM_SIZE: Int = Self._aligned_param_size()
     comptime CACHE_SIZE: Int = Self._sum_cache_size()
+    comptime STATE_SIZE: Int = Self._sum_state_size()
     # Own scratch: N * IN_DIM for per-branch grad_input buffers in backward
     comptime _OWN_WS: Int = Self.N * Self.IN_DIM
 
@@ -177,6 +178,15 @@ struct Parallel[*BRANCHES: Model](Model):
             )
         return total
 
+    @staticmethod
+    def _state_offset[idx: Int]() -> Int:
+        """Unaligned state offset for branch idx (scalar-indexed)."""
+        var total = 0
+
+        comptime for j in range(idx):
+            total += Self.branch_types[j].STATE_SIZE
+        return total
+
     # =========================================================================
     # Initialization
     # =========================================================================
@@ -215,6 +225,22 @@ struct Parallel[*BRANCHES: Model](Model):
                 ](params.ptr + Self._param_offset[i]())
                 Self.branch_types[i].zero_biases[dtype](branch_params)
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Recurse into each branch's initialize_state."""
+        comptime for i in range(Self.N):
+            comptime if Self.branch_types[i].STATE_SIZE > 0:
+                var branch_state = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.branch_types[i].STATE_SIZE),
+                    MutAnyOrigin,
+                ](state.ptr + Self._state_offset[i]())
+                Self.branch_types[i].initialize_state[dtype](branch_state)
+
     # =========================================================================
     # CPU Forward (with cache)
     # =========================================================================
@@ -231,6 +257,9 @@ struct Parallel[*BRANCHES: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -253,6 +282,11 @@ struct Parallel[*BRANCHES: Model](Model):
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var ci = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].CACHE_SIZE),
@@ -266,7 +300,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            Self.branch_types[i].forward[BATCH, dtype](inp_i, buf_i, pi, ci)
+            Self.branch_types[i].forward[BATCH, dtype](inp_i, buf_i, pi, si, ci)
 
         # Interleave: for each row, copy each branch's output into correct columns
         for b in range(BATCH):
@@ -297,6 +331,9 @@ struct Parallel[*BRANCHES: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         var buf_storage = List[Scalar[dtype]](capacity=BATCH * Self.OUT_DIM)
         for _ in range(BATCH * Self.OUT_DIM):
@@ -314,6 +351,11 @@ struct Parallel[*BRANCHES: Model](Model):
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
 
             var inp_i = rebind[
                 LayoutTensor[
@@ -322,7 +364,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     MutAnyOrigin,
                 ]
             ](input)
-            Self.branch_types[i].forward[BATCH, dtype](inp_i, buf_i, pi)
+            Self.branch_types[i].forward[BATCH, dtype](inp_i, buf_i, pi, si)
 
         for b in range(BATCH):
             comptime for i in range(Self.N):
@@ -351,6 +393,9 @@ struct Parallel[*BRANCHES: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -400,6 +445,11 @@ struct Parallel[*BRANCHES: Model](Model):
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var ci = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].CACHE_SIZE),
@@ -419,7 +469,7 @@ struct Parallel[*BRANCHES: Model](Model):
                     MutAnyOrigin,
                 ]
             ](gi_i)
-            Self.branch_types[i].backward[BATCH, dtype](grad_i, gi_rb, pi, ci, gp_i)
+            Self.branch_types[i].backward[BATCH, dtype](grad_i, gi_rb, pi, si, ci, gp_i)
 
         # Sum all grad_input contributions
         for k in range(BATCH * Self.IN_DIM):
@@ -446,6 +496,9 @@ struct Parallel[*BRANCHES: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -467,6 +520,11 @@ struct Parallel[*BRANCHES: Model](Model):
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var ci = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].CACHE_SIZE),
@@ -491,7 +549,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 ]
             ](input)
             Self.branch_types[i].forward_gpu[BATCH, dtype](
-                ctx, buf_i, inp_i, pi, ci, ws_i
+                ctx, buf_i, inp_i, pi, si, ci, ws_i
             )
 
         # Interleave all branch outputs into final output via per-branch copy kernels
@@ -506,6 +564,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 ImmutAnyOrigin,
             ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
 
+            @parameter
             @always_inline
             def copy_branch_fwd(
                 dst: LayoutTensor[
@@ -552,6 +611,9 @@ struct Parallel[*BRANCHES: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -569,6 +631,11 @@ struct Parallel[*BRANCHES: Model](Model):
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
 
             var ws_i_size = (
                 BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
@@ -588,7 +655,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 ]
             ](input)
             Self.branch_types[i].forward_gpu_no_cache[BATCH, dtype](
-                ctx, buf_i, inp_i, pi, ws_i
+                ctx, buf_i, inp_i, pi, si, ws_i
             )
 
         comptime for i in range(Self.N):
@@ -602,6 +669,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 ImmutAnyOrigin,
             ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
 
+            @parameter
             @always_inline
             def copy_branch_fwd_nc(
                 dst: LayoutTensor[
@@ -645,10 +713,13 @@ struct Parallel[*BRANCHES: Model](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -667,6 +738,9 @@ struct Parallel[*BRANCHES: Model](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -696,6 +770,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 MutAnyOrigin,
             ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
 
+            @parameter
             @always_inline
             def split_branch(
                 gi: LayoutTensor[
@@ -744,6 +819,11 @@ struct Parallel[*BRANCHES: Model](Model):
                 Layout.row_major(Self.branch_types[i].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
             var ci = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.branch_types[i].CACHE_SIZE),
@@ -773,7 +853,7 @@ struct Parallel[*BRANCHES: Model](Model):
                 ]
             ](gi_i)
             Self.branch_types[i].backward_gpu[BATCH, dtype](
-                ctx, gi_rb, grad_i, pi, ci, gp_i, ws_i
+                ctx, gi_rb, grad_i, pi, si, ci, gp_i, ws_i
             )
 
         # Sum all N grad_input contributions
@@ -786,6 +866,297 @@ struct Parallel[*BRANCHES: Model](Model):
         comptime GI_TOTAL = BATCH * Self.IN_DIM
         comptime N_BRANCHES = Self.N
 
+        @parameter
+        @always_inline
+        def sum_gi_wrapper(
+            dst: LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.IN_DIM),
+                MutAnyOrigin,
+            ],
+            all_gi: LayoutTensor[
+                dtype,
+                Layout.row_major(Self.N * BATCH, Self.IN_DIM),
+                ImmutAnyOrigin,
+            ],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= GI_TOTAL:
+                return
+            var s = all_gi.ptr[tid]
+            for b in range(1, N_BRANCHES):
+                s += all_gi.ptr[b * GI_TOTAL + tid]
+            dst.ptr[tid] = s
+
+        var grid_sum = (BATCH * Self.IN_DIM + TPB - 1) // TPB
+        ctx.enqueue_function[sum_gi_wrapper, sum_gi_wrapper](
+            grad_input,
+            gi_immut,
+            grid_dim=(grid_sum,),
+            block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # GPU Forward (inference-mode, with cache)
+    # =========================================================================
+
+    @staticmethod
+    def forward_gpu_inference_with_cache[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        var ws_ptr = workspace.unsafe_ptr()
+
+        # Run each branch forward (inference) into its workspace output buffer
+        comptime for i in range(Self.N):
+            var buf_i = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
+            var pi = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
+            var ci = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr + BATCH * Self._cache_offset[i]())
+
+            var ws_i_size = (
+                BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            )
+            var ws_i = DeviceBuffer[dtype](
+                ctx,
+                ws_ptr + BATCH * Self._ws_branch_offset[i](),
+                ws_i_size if ws_i_size > 0 else 1,
+                owning=False,
+            )
+
+            var inp_i = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.branch_types[i].IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](input)
+            Self.branch_types[i].forward_gpu_inference_with_cache[BATCH, dtype](
+                ctx, buf_i, inp_i, pi, si, ci, ws_i
+            )
+
+        # Interleave all branch outputs into final output via per-branch copy kernels
+        comptime for i in range(Self.N):
+            comptime BRANCH_OUT = Self.branch_types[i].OUT_DIM
+            comptime BRANCH_OFF = Self._out_offset[i]()
+            comptime TOTAL_OUT = Self.OUT_DIM
+
+            var buf_i_immut = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                ImmutAnyOrigin,
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
+
+            @parameter
+            @always_inline
+            def copy_branch_fwd(
+                dst: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                src: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if tid >= BATCH * BRANCH_OUT:
+                    return
+                var row = tid // BRANCH_OUT
+                var col = tid % BRANCH_OUT
+                dst.ptr[row * TOTAL_OUT + BRANCH_OFF + col] = src.ptr[tid]
+
+            var grid_x = (BATCH * BRANCH_OUT + TPB - 1) // TPB
+            ctx.enqueue_function[copy_branch_fwd, copy_branch_fwd](
+                output,
+                buf_i_immut,
+                grid_dim=(grid_x,),
+                block_dim=(TPB,),
+            )
+
+    # =========================================================================
+    # GPU Backward (inference-mode)
+    # =========================================================================
+
+    @staticmethod
+    def backward_gpu_inference[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        workspace: DeviceBuffer[dtype],
+        perf: PerfTimerPtr = NULL_PERF,
+        perf_slot: Int = 0,
+    ) raises:
+        var ws_ptr = workspace.unsafe_ptr()
+
+        # De-interleave grad_output into per-branch grad buffers (reuse workspace output region)
+        var go_immut = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ](grad_output.ptr)
+
+        comptime for i in range(Self.N):
+            comptime BRANCH_OUT = Self.branch_types[i].OUT_DIM
+            comptime BRANCH_OFF = Self._out_offset[i]()
+            comptime TOTAL_OUT = Self.OUT_DIM
+
+            var grad_i = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
+
+            @parameter
+            @always_inline
+            def split_branch(
+                gi: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                    MutAnyOrigin,
+                ],
+                go: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if tid >= BATCH * BRANCH_OUT:
+                    return
+                var row = tid // BRANCH_OUT
+                var col = tid % BRANCH_OUT
+                gi.ptr[tid] = go.ptr[row * TOTAL_OUT + BRANCH_OFF + col]
+
+            var grid_x = (BATCH * BRANCH_OUT + TPB - 1) // TPB
+            ctx.enqueue_function[split_branch, split_branch](
+                grad_i,
+                go_immut,
+                grid_dim=(grid_x,),
+                block_dim=(TPB,),
+            )
+
+        # Slice N grad_input buffers from workspace (at offset 0)
+        var gi_buf_ptr = ws_ptr
+
+        # Run backward (inference) for each branch
+        comptime for i in range(Self.N):
+            var grad_i = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](ws_ptr + BATCH * (Self._OWN_WS + Self._ws_out_offset[i]()))
+            var gi_i = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.IN_DIM),
+                MutAnyOrigin,
+            ](gi_buf_ptr + i * BATCH * Self.IN_DIM)
+            var pi = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr + Self._param_offset[i]())
+            var si = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].STATE_SIZE),
+                MutAnyOrigin,
+            ](state.ptr + Self._state_offset[i]())
+            var ci = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.branch_types[i].CACHE_SIZE),
+                MutAnyOrigin,
+            ](cache.ptr + BATCH * Self._cache_offset[i]())
+            var gp_i = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.branch_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr + Self._param_offset[i]())
+
+            var ws_i_size = (
+                BATCH * Self.branch_types[i].WORKSPACE_SIZE_PER_SAMPLE
+            )
+            var ws_i = DeviceBuffer[dtype](
+                ctx,
+                ws_ptr + BATCH * Self._ws_branch_offset[i](),
+                ws_i_size if ws_i_size > 0 else 1,
+                owning=False,
+            )
+
+            var gi_rb = rebind[
+                LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.branch_types[i].IN_DIM),
+                    MutAnyOrigin,
+                ]
+            ](gi_i)
+            Self.branch_types[i].backward_gpu_inference[BATCH, dtype](
+                ctx, gi_rb, grad_i, pi, si, ci, gp_i, ws_i
+            )
+
+        # Sum all N grad_input contributions
+        var gi_immut = LayoutTensor[
+            dtype,
+            Layout.row_major(Self.N * BATCH, Self.IN_DIM),
+            ImmutAnyOrigin,
+        ](gi_buf_ptr)
+
+        comptime GI_TOTAL = BATCH * Self.IN_DIM
+        comptime N_BRANCHES = Self.N
+
+        @parameter
         @always_inline
         def sum_gi_wrapper(
             dst: LayoutTensor[

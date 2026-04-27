@@ -189,7 +189,7 @@ struct PerfTimer[ENABLED: Bool]:
 
             print(sep)
             var total_ms = Float64(total_ns) / 1_000_000.0
-            print("  Total:" + _pad_to(24 - len("Total:")) + _fmt_ms(total_ms))
+            print("  Total:" + _pad_to(24 - "Total:".byte_length()) + _fmt_ms(total_ms))
             print(sep)
 
     def _print_children(self, parent: Int, ref_ns: UInt, depth: Int):
@@ -231,7 +231,7 @@ def _print_slot(label: String, ns: UInt, ref_ns: UInt, indent: Int):
     if ref_ns > 0:
         pct = Float64(ns) / Float64(ref_ns) * 100.0
 
-    var pad_len = 24 - len(label)
+    var pad_len = 24 - label.byte_length()
     if pad_len < 1:
         pad_len = 1
 

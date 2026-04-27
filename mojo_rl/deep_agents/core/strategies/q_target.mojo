@@ -110,6 +110,7 @@ struct StandardQTarget(QTarget):
 
         var gamma_s = Scalar[dtype](gamma)
 
+        @parameter
         @always_inline
         def td_wrapper(
             tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
@@ -195,6 +196,7 @@ struct DoubleQTarget(QTarget):
 
         var gamma_s = Scalar[dtype](gamma)
 
+        @parameter
         @always_inline
         def double_td_wrapper(
             tgt: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],

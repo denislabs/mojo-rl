@@ -8,6 +8,7 @@ Tests the ComputeGraph with graph topologies matching:
 All use concrete (small) dimensions and verify gradient correctness.
 """
 
+from std.memory import UnsafePointer
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import (
     Model,
@@ -60,7 +61,10 @@ def grad_check[
     var cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_arr.unsafe_ptr())
-    M.forward[BATCH](input_t, output_t, params_t, cache_t)
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    M.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     var grad_out_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
@@ -78,7 +82,7 @@ def grad_check[
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    M.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
+    M.backward[BATCH](grad_out_t, grad_in_t, params_t, state_t, cache_t, grads_t)
 
     # Param gradient check
     var max_rel_p: Float64 = 0.0
@@ -96,7 +100,7 @@ def grad_check[
         var op_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
         ](out_plus.unsafe_ptr())
-        M.forward[BATCH](input_t, op_t, params_t)
+        M.forward[BATCH](input_t, op_t, params_t, state_t)
 
         params_ptr[p_idx] = orig - Scalar[dtype](eps)
         var out_minus = InlineArray[Scalar[dtype], BATCH * M.OUT_DIM](
@@ -105,7 +109,7 @@ def grad_check[
         var om_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
         ](out_minus.unsafe_ptr())
-        M.forward[BATCH](input_t, om_t, params_t)
+        M.forward[BATCH](input_t, om_t, params_t, state_t)
 
         params_ptr[p_idx] = orig
 
@@ -138,7 +142,7 @@ def grad_check[
         var op_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
         ](out_plus.unsafe_ptr())
-        M.forward[BATCH](input_t, op_t, params_t)
+        M.forward[BATCH](input_t, op_t, params_t, state_t)
 
         input_ptr[in_idx] = orig - Scalar[dtype](eps)
         var out_minus = InlineArray[Scalar[dtype], BATCH * M.OUT_DIM](
@@ -147,7 +151,7 @@ def grad_check[
         var om_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, M.OUT_DIM), MutAnyOrigin
         ](out_minus.unsafe_ptr())
-        M.forward[BATCH](input_t, om_t, params_t)
+        M.forward[BATCH](input_t, om_t, params_t, state_t)
 
         input_ptr[in_idx] = orig
 
@@ -294,7 +298,10 @@ def test_tdmpc2_single_step() raises:
         dtype, Layout.row_major(BATCH, ZA), MutAnyOrigin
     ](input_arr.unsafe_ptr())
 
-    TDMPC2Step.forward[BATCH](input_t, output_t, params_t, cache_t)
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(TDMPC2Step.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    TDMPC2Step.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     # Print output structure
     print("  Output [z_pred(8), rew(5), q1(5), q2(5), term(1)]:")
@@ -419,7 +426,10 @@ def test_dreamer_heads() raises:
         dtype, Layout.row_major(BATCH, FEAT), MutAnyOrigin
     ](input_arr.unsafe_ptr())
 
-    DreamerHeads.forward[BATCH](input_t, output_t, params_t, cache_t)
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(DreamerHeads.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    DreamerHeads.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     print("  Output [obs_hat(6), rew(5), cont(1)]:")
     print("    obs_hat[0:3]:", output_arr[0], output_arr[1], output_arr[2])
@@ -559,7 +569,10 @@ def test_sac_actor_loss() raises:
         dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin
     ](input_arr.unsafe_ptr())
 
-    SACGraph.forward[BATCH](input_t, output_t, params_t, cache_t)
+    var state_t = LayoutTensor[
+        dtype, Layout.row_major(SACGraph.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    SACGraph.forward[BATCH](input_t, output_t, params_t, state_t, cache_t)
 
     print("  Output [min_Q, log_prob]:", output_arr[0], output_arr[1])
 
@@ -584,7 +597,7 @@ def test_sac_actor_loss() raises:
         dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
     ](grads_arr.unsafe_ptr())
 
-    SACGraph.backward[BATCH](grad_out_t, grad_in_t, params_t, cache_t, grads_t)
+    SACGraph.backward[BATCH](grad_out_t, grad_in_t, params_t, state_t, cache_t, grads_t)
 
     print(
         "  Backward grad_input:",

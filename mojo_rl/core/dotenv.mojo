@@ -19,7 +19,7 @@ def _split_lines(content: String) -> List[String]:
             current = String("")
         else:
             current += chr(Int(bytes[i]))
-    if len(current) > 0:
+    if current.byte_length() > 0:
         lines.append(current)
     return lines^
 
@@ -46,7 +46,7 @@ def load_dotenv(path: String = ".env") raises -> Dict[String, String]:
         var line = String(lines[i])
 
         # Skip empty lines and comments
-        if len(line) == 0 or line.startswith("#"):
+        if line.byte_length() == 0 or line.startswith("#"):
             continue
 
         # Skip export prefix
@@ -62,11 +62,11 @@ def load_dotenv(path: String = ".env") raises -> Dict[String, String]:
         var val = String(line[byte=eq_pos + 1 :])
 
         # Strip surrounding quotes
-        if len(val) >= 2:
+        if val.byte_length() >= 2:
             if (val.startswith('"') and val.endswith('"')) or (
                 val.startswith("'") and val.endswith("'")
             ):
-                val = String(val[byte=1 : len(val) - 1])
+                val = String(val[byte=1 : val.byte_length() - 1])
 
         result[key] = val
 

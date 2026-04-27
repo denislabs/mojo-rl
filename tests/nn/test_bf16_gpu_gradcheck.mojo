@@ -92,7 +92,7 @@ def gpu_gradcheck_bf16[M: Model, BS: Int = 4](
     )
 
     M.forward_gpu[BS, BF16](
-        ctx, output_t, input_t, gpu.params_view(), cache_t, workspace
+        ctx, output_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_t, workspace
     )
 
     var grad_in_buf = ctx.enqueue_create_buffer[BF16](BS * IN)
@@ -107,7 +107,7 @@ def gpu_gradcheck_bf16[M: Model, BS: Int = 4](
     gpu.zero_grads(ctx)
     var grads = gpu.grads_view()
     M.backward_gpu[BS, BF16](
-        ctx, grad_in_t, grad_out_t, gpu.params_view(), cache_t, grads, workspace,
+        ctx, grad_in_t, grad_out_t, gpu.params_view(), gpu.model_state_view(), cache_t, grads, workspace,
     )
 
     var ana_grads_host = ctx.enqueue_create_host_buffer[BF16](PS)
@@ -151,7 +151,7 @@ def gpu_gradcheck_bf16[M: Model, BS: Int = 4](
             BF16, Layout.row_major(BS, CS), MutAnyOrigin
         ](cache_tmp.unsafe_ptr())
         M.forward_gpu[BS, BF16](
-            ctx, out_plus_t, input_t, gpu.params_view(), cache_tmp_t, workspace
+            ctx, out_plus_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_tmp_t, workspace
         )
         ctx.enqueue_copy(out_plus_host, out_plus_buf)
 
@@ -165,7 +165,7 @@ def gpu_gradcheck_bf16[M: Model, BS: Int = 4](
             BF16, Layout.row_major(BS, CS), MutAnyOrigin
         ](cache_tmp.unsafe_ptr())
         M.forward_gpu[BS, BF16](
-            ctx, out_minus_t, input_t, gpu.params_view(), cache_m_t, workspace
+            ctx, out_minus_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_m_t, workspace
         )
         ctx.enqueue_copy(out_minus_host, out_minus_buf)
 

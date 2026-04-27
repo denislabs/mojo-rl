@@ -16,7 +16,7 @@ Usage:
 """
 
 from std.math import abs
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.training import NetworkState
@@ -98,14 +98,14 @@ def test_residual() raises:
     var res_cache = alloc[Scalar[dtype]](BS * Res.CACHE_SIZE if Res.CACHE_SIZE > 0 else 1)
     var res_out_t = LayoutTensor[dtype, Layout.row_major(BS, DIM), MutAnyOrigin](res_out)
     var res_cache_t = LayoutTensor[dtype, Layout.row_major(BS, Res.CACHE_SIZE), MutAnyOrigin](res_cache)
-    Res.forward[BS](input_t, res_out_t, state.params_view(), res_cache_t)
+    Res.forward[BS](input_t, res_out_t, state.params_view(), state.model_state_view(), res_cache_t)
 
     # Forward through Inner alone (same params -- Residual.PARAM_SIZE == Inner.PARAM_SIZE)
     var inner_out = alloc[Scalar[dtype]](BS * DIM)
     var inner_cache = alloc[Scalar[dtype]](BS * Inner.CACHE_SIZE if Inner.CACHE_SIZE > 0 else 1)
     var inner_out_t = LayoutTensor[dtype, Layout.row_major(BS, DIM), MutAnyOrigin](inner_out)
     var inner_cache_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.CACHE_SIZE), MutAnyOrigin](inner_cache)
-    Inner.forward[BS](input_t, inner_out_t, state.params_view(), inner_cache_t)
+    Inner.forward[BS](input_t, inner_out_t, state.params_view(), state.model_state_view(), inner_cache_t)
 
     # Check: res_out == input + inner_out
     var expected = alloc[Scalar[dtype]](BS * DIM)
@@ -146,14 +146,14 @@ def test_skip_concat() raises:
     var sc_cache = alloc[Scalar[dtype]](BS * SC.CACHE_SIZE if SC.CACHE_SIZE > 0 else 1)
     var sc_out_t = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](sc_out)
     var sc_cache_t = LayoutTensor[dtype, Layout.row_major(BS, SC.CACHE_SIZE), MutAnyOrigin](sc_cache)
-    SC.forward[BS](input_t, sc_out_t, state.params_view(), sc_cache_t)
+    SC.forward[BS](input_t, sc_out_t, state.params_view(), state.model_state_view(), sc_cache_t)
 
     # Inner forward (same params)
     var inner_out = alloc[Scalar[dtype]](BS * INNER_OUT)
     var inner_cache = alloc[Scalar[dtype]](BS * Inner.CACHE_SIZE if Inner.CACHE_SIZE > 0 else 1)
     var inner_out_t = LayoutTensor[dtype, Layout.row_major(BS, INNER_OUT), MutAnyOrigin](inner_out)
     var inner_cache_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.CACHE_SIZE), MutAnyOrigin](inner_cache)
-    Inner.forward[BS](input_t, inner_out_t, state.params_view(), inner_cache_t)
+    Inner.forward[BS](input_t, inner_out_t, state.params_view(), state.model_state_view(), inner_cache_t)
 
     # Check: sc_out == cat(x, inner_out) per row
     var expected = alloc[Scalar[dtype]](BS * OUT)
@@ -195,14 +195,14 @@ def test_repeat_1() raises:
     var rep_cache = alloc[Scalar[dtype]](BS * Rep.CACHE_SIZE if Rep.CACHE_SIZE > 0 else 1)
     var rep_out_t = LayoutTensor[dtype, Layout.row_major(BS, DIM), MutAnyOrigin](rep_out)
     var rep_cache_t = LayoutTensor[dtype, Layout.row_major(BS, Rep.CACHE_SIZE), MutAnyOrigin](rep_cache)
-    Rep.forward[BS](input_t, rep_out_t, state.params_view(), rep_cache_t)
+    Rep.forward[BS](input_t, rep_out_t, state.params_view(), state.model_state_view(), rep_cache_t)
 
     # Inner forward (same params)
     var inner_out = alloc[Scalar[dtype]](BS * DIM)
     var inner_cache = alloc[Scalar[dtype]](BS * Inner.CACHE_SIZE if Inner.CACHE_SIZE > 0 else 1)
     var inner_out_t = LayoutTensor[dtype, Layout.row_major(BS, DIM), MutAnyOrigin](inner_out)
     var inner_cache_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.CACHE_SIZE), MutAnyOrigin](inner_cache)
-    Inner.forward[BS](input_t, inner_out_t, state.params_view(), inner_cache_t)
+    Inner.forward[BS](input_t, inner_out_t, state.params_view(), state.model_state_view(), inner_cache_t)
 
     _compare("y == Inner(x)", rep_out, inner_out, BS * DIM)
 
@@ -235,20 +235,20 @@ def test_repeat_2() raises:
     var rep_cache = alloc[Scalar[dtype]](BS * Rep.CACHE_SIZE if Rep.CACHE_SIZE > 0 else 1)
     var rep_out_t = LayoutTensor[dtype, Layout.row_major(BS, DIM), MutAnyOrigin](rep_out)
     var rep_cache_t = LayoutTensor[dtype, Layout.row_major(BS, Rep.CACHE_SIZE), MutAnyOrigin](rep_cache)
-    Rep.forward[BS](input_t, rep_out_t, state.params_view(), rep_cache_t)
+    Rep.forward[BS](input_t, rep_out_t, state.params_view(), state.model_state_view(), rep_cache_t)
 
     # Manual: inter = Inner(x), then output = Inner(inter) -- same params (shared)
     var inter = alloc[Scalar[dtype]](BS * DIM)
     var c1 = alloc[Scalar[dtype]](BS * Inner.CACHE_SIZE if Inner.CACHE_SIZE > 0 else 1)
     var inter_t = LayoutTensor[dtype, Layout.row_major(BS, DIM), MutAnyOrigin](inter)
     var c1_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.CACHE_SIZE), MutAnyOrigin](c1)
-    Inner.forward[BS](input_t, inter_t, state.params_view(), c1_t)
+    Inner.forward[BS](input_t, inter_t, state.params_view(), state.model_state_view(), c1_t)
 
     var manual_out = alloc[Scalar[dtype]](BS * DIM)
     var c2 = alloc[Scalar[dtype]](BS * Inner.CACHE_SIZE if Inner.CACHE_SIZE > 0 else 1)
     var manual_out_t = LayoutTensor[dtype, Layout.row_major(BS, DIM), MutAnyOrigin](manual_out)
     var c2_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.CACHE_SIZE), MutAnyOrigin](c2)
-    Inner.forward[BS](inter_t, manual_out_t, state.params_view(), c2_t)
+    Inner.forward[BS](inter_t, manual_out_t, state.params_view(), state.model_state_view(), c2_t)
 
     _compare("y == Inner(Inner(x))", rep_out, manual_out, BS * DIM)
 
@@ -283,7 +283,7 @@ def test_sequential() raises:
     var seq_cache = alloc[Scalar[dtype]](BS * Seq.CACHE_SIZE if Seq.CACHE_SIZE > 0 else 1)
     var seq_out_t = LayoutTensor[dtype, Layout.row_major(BS, Seq.OUT_DIM), MutAnyOrigin](seq_out)
     var seq_cache_t = LayoutTensor[dtype, Layout.row_major(BS, Seq.CACHE_SIZE), MutAnyOrigin](seq_cache)
-    Seq.forward[BS](input_t, seq_out_t, state.params_view(), seq_cache_t)
+    Seq.forward[BS](input_t, seq_out_t, state.params_view(), state.model_state_view(), seq_cache_t)
 
     # Extract sub-params: A at offset 0, B at offset align4(A.PS)
     comptime A_OFF = 0
@@ -296,13 +296,19 @@ def test_sequential() raises:
     var ca = alloc[Scalar[dtype]](BS * A.CACHE_SIZE if A.CACHE_SIZE > 0 else 1)
     var inter_t = LayoutTensor[dtype, Layout.row_major(BS, A.OUT_DIM), MutAnyOrigin](inter)
     var ca_t = LayoutTensor[dtype, Layout.row_major(BS, A.CACHE_SIZE), MutAnyOrigin](ca)
-    A.forward[BS](input_t, inter_t, pa, ca_t)
+    var sa_t = LayoutTensor[dtype, Layout.row_major(A.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    A.forward[BS](input_t, inter_t, pa, sa_t, ca_t)
 
     var manual_out = alloc[Scalar[dtype]](BS * B.OUT_DIM)
     var cb = alloc[Scalar[dtype]](BS * B.CACHE_SIZE if B.CACHE_SIZE > 0 else 1)
     var manual_out_t = LayoutTensor[dtype, Layout.row_major(BS, B.OUT_DIM), MutAnyOrigin](manual_out)
     var cb_t = LayoutTensor[dtype, Layout.row_major(BS, B.CACHE_SIZE), MutAnyOrigin](cb)
-    B.forward[BS](inter_t, manual_out_t, pb, cb_t)
+    var sb_t = LayoutTensor[dtype, Layout.row_major(B.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    B.forward[BS](inter_t, manual_out_t, pb, sb_t, cb_t)
 
     _compare("y == B(A(x))", seq_out, manual_out, BS * Seq.OUT_DIM)
 
@@ -338,7 +344,7 @@ def test_parallel() raises:
     var par_cache = alloc[Scalar[dtype]](BS * Par.CACHE_SIZE if Par.CACHE_SIZE > 0 else 1)
     var par_out_t = LayoutTensor[dtype, Layout.row_major(BS, Par.OUT_DIM), MutAnyOrigin](par_out)
     var par_cache_t = LayoutTensor[dtype, Layout.row_major(BS, Par.CACHE_SIZE), MutAnyOrigin](par_cache)
-    Par.forward[BS](input_t, par_out_t, state.params_view(), par_cache_t)
+    Par.forward[BS](input_t, par_out_t, state.params_view(), state.model_state_view(), par_cache_t)
 
     # Extract sub-params: Parallel uses align4 accumulation
     # offset[0] = 0, offset[1] = align4(0 + A.PS) = align4(A.PS)
@@ -352,13 +358,19 @@ def test_parallel() raises:
     var a_cache = alloc[Scalar[dtype]](BS * A.CACHE_SIZE if A.CACHE_SIZE > 0 else 1)
     var a_out_t = LayoutTensor[dtype, Layout.row_major(BS, A.OUT_DIM), MutAnyOrigin](a_out)
     var a_cache_t = LayoutTensor[dtype, Layout.row_major(BS, A.CACHE_SIZE), MutAnyOrigin](a_cache)
-    A.forward[BS](input_t, a_out_t, pa, a_cache_t)
+    var a_state_t = LayoutTensor[dtype, Layout.row_major(A.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    A.forward[BS](input_t, a_out_t, pa, a_state_t, a_cache_t)
 
     var b_out = alloc[Scalar[dtype]](BS * B.OUT_DIM)
     var b_cache = alloc[Scalar[dtype]](BS * B.CACHE_SIZE if B.CACHE_SIZE > 0 else 1)
     var b_out_t = LayoutTensor[dtype, Layout.row_major(BS, B.OUT_DIM), MutAnyOrigin](b_out)
     var b_cache_t = LayoutTensor[dtype, Layout.row_major(BS, B.CACHE_SIZE), MutAnyOrigin](b_cache)
-    B.forward[BS](input_t, b_out_t, pb, b_cache_t)
+    var b_state_t = LayoutTensor[dtype, Layout.row_major(B.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    B.forward[BS](input_t, b_out_t, pb, b_state_t, b_cache_t)
 
     # Check: par_out[b, :] == cat(a_out[b, :], b_out[b, :])
     var expected = alloc[Scalar[dtype]](BS * Par.OUT_DIM)
@@ -404,7 +416,7 @@ def test_split_apply() raises:
     var sa_cache = alloc[Scalar[dtype]](BS * SA.CACHE_SIZE if SA.CACHE_SIZE > 0 else 1)
     var sa_out_t = LayoutTensor[dtype, Layout.row_major(BS, SA.OUT_DIM), MutAnyOrigin](sa_out)
     var sa_cache_t = LayoutTensor[dtype, Layout.row_major(BS, SA.CACHE_SIZE), MutAnyOrigin](sa_cache)
-    SA.forward[BS](input_t, sa_out_t, state.params_view(), sa_cache_t)
+    SA.forward[BS](input_t, sa_out_t, state.params_view(), state.model_state_view(), sa_cache_t)
 
     # Extract sub-params
     comptime L_OFF = 0
@@ -426,14 +438,20 @@ def test_split_apply() raises:
     var lc = alloc[Scalar[dtype]](BS * L.CACHE_SIZE if L.CACHE_SIZE > 0 else 1)
     var l_out_t = LayoutTensor[dtype, Layout.row_major(BS, L.OUT_DIM), MutAnyOrigin](l_out)
     var lc_t = LayoutTensor[dtype, Layout.row_major(BS, L.CACHE_SIZE), MutAnyOrigin](lc)
-    L.forward[BS](left_in_t, l_out_t, pl, lc_t)
+    var ls_t = LayoutTensor[dtype, Layout.row_major(L.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    L.forward[BS](left_in_t, l_out_t, pl, ls_t, lc_t)
 
     var right_in_t = LayoutTensor[dtype, Layout.row_major(BS, IN - SPLIT), MutAnyOrigin](right_in)
     var r_out = alloc[Scalar[dtype]](BS * R.OUT_DIM)
     var rc = alloc[Scalar[dtype]](BS * R.CACHE_SIZE if R.CACHE_SIZE > 0 else 1)
     var r_out_t = LayoutTensor[dtype, Layout.row_major(BS, R.OUT_DIM), MutAnyOrigin](r_out)
     var rc_t = LayoutTensor[dtype, Layout.row_major(BS, R.CACHE_SIZE), MutAnyOrigin](rc)
-    R.forward[BS](right_in_t, r_out_t, pr, rc_t)
+    var rs_t = LayoutTensor[dtype, Layout.row_major(R.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    R.forward[BS](right_in_t, r_out_t, pr, rs_t, rc_t)
 
     # Expected: cat(l_out, r_out) per row
     var expected = alloc[Scalar[dtype]](BS * SA.OUT_DIM)
@@ -479,7 +497,7 @@ def test_fanout() raises:
     var fo_cache = alloc[Scalar[dtype]](BS * FO.CACHE_SIZE if FO.CACHE_SIZE > 0 else 1)
     var fo_out_t = LayoutTensor[dtype, Layout.row_major(BS, FO.OUT_DIM), MutAnyOrigin](fo_out)
     var fo_cache_t = LayoutTensor[dtype, Layout.row_major(BS, FO.CACHE_SIZE), MutAnyOrigin](fo_cache)
-    FO.forward[BS](input_t, fo_out_t, state.params_view(), fo_cache_t)
+    FO.forward[BS](input_t, fo_out_t, state.params_view(), state.model_state_view(), fo_cache_t)
 
     # Extract params for copy 0 and copy 1
     # FanOut: (N-1) * aligned(PS) + PS = align4(PS) + PS for N=2
@@ -493,13 +511,19 @@ def test_fanout() raises:
     var c0 = alloc[Scalar[dtype]](BS * Inner.CACHE_SIZE if Inner.CACHE_SIZE > 0 else 1)
     var out0_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.OUT_DIM), MutAnyOrigin](out0)
     var c0_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.CACHE_SIZE), MutAnyOrigin](c0)
-    Inner.forward[BS](input_t, out0_t, p0, c0_t)
+    var s0_t = LayoutTensor[dtype, Layout.row_major(Inner.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    Inner.forward[BS](input_t, out0_t, p0, s0_t, c0_t)
 
     var out1 = alloc[Scalar[dtype]](BS * Inner.OUT_DIM)
     var c1 = alloc[Scalar[dtype]](BS * Inner.CACHE_SIZE if Inner.CACHE_SIZE > 0 else 1)
     var out1_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.OUT_DIM), MutAnyOrigin](out1)
     var c1_t = LayoutTensor[dtype, Layout.row_major(BS, Inner.CACHE_SIZE), MutAnyOrigin](c1)
-    Inner.forward[BS](input_t, out1_t, p1, c1_t)
+    var s1_t = LayoutTensor[dtype, Layout.row_major(Inner.STATE_SIZE), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
+    Inner.forward[BS](input_t, out1_t, p1, s1_t, c1_t)
 
     var expected = alloc[Scalar[dtype]](BS * FO.OUT_DIM)
     for b in range(BS):

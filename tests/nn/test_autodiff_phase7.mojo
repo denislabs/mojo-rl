@@ -11,6 +11,7 @@ Run with:
 
 from std.random import seed, random_float64
 from std.math import abs as math_abs
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.autodiff import (
@@ -856,8 +857,11 @@ def test_conv_pool_dense_composition() -> Int:
     var cch_lt = LayoutTensor[
         dtype, Layout.row_major(BATCH, Chain.CACHE_SIZE), MutAnyOrigin
     ](cache.unsafe_ptr())
+    var sta_lt = LayoutTensor[
+        dtype, Layout.row_major(Chain.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    Chain.forward[BATCH](inp_lt, out_lt, par_lt, cch_lt)
+    Chain.forward[BATCH](inp_lt, out_lt, par_lt, sta_lt, cch_lt)
 
     var all_finite = True
     for i in range(BATCH * Chain.OUT_DIM):
@@ -882,7 +886,7 @@ def test_conv_pool_dense_composition() -> Int:
         dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin
     ](grad_params.unsafe_ptr())
 
-    Chain.backward[BATCH](go_lt, gi_lt, par_lt, cch_lt, gp_lt)
+    Chain.backward[BATCH](go_lt, gi_lt, par_lt, sta_lt, cch_lt, gp_lt)
 
     var grad_finite = True
     for i in range(BATCH * Chain.IN_DIM):

@@ -17,12 +17,11 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.core.configs.redq_config import (
+from mojo_rl.deep_agents.redq import (
     DefaultREDQConfig,
     REDQ_TARGET_MIN,
 )
-from mojo_rl.deep_agents.core.agents.redq_agent import REDQAgent
-from mojo_rl.deep_agents.core.training.redq_train import run_redq_train_gpu
+from mojo_rl.deep_agents.redq import REDQAgent
 from mojo_rl.envs.half_cheetah import (
     HalfCheetah,
     HalfCheetahConfig,
@@ -87,7 +86,7 @@ def main() raises:
             auto_alpha=True,
             alpha=0.2,
             alpha_lr=0.0003,
-            target_entropy=-Float64(ACTION_DIM),
+            target_entropy=-3,
             max_grad_norm=0.0,  # paper does not clip
             checkpoint_every=50_000,
             checkpoint_path="redq_half_cheetah.ckpt",
@@ -116,7 +115,7 @@ def main() raises:
         print("    - Alpha LR: 3e-4")
         print("    - Tau (soft update): 0.005")
         print("    - Initial alpha: 0.2 (auto-tuned)")
-        print("    - Target entropy: -" + String(ACTION_DIM))
+        print("    - Target entropy: -3")
         print()
 
         # =====================================================================
@@ -152,13 +151,10 @@ def main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var metrics = run_redq_train_gpu[
+            var metrics = agent.train_gpu[
                 HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
-                REDQHalfCheetahConfig,
                 RemoteLogger,
-                N_ENVS,
             ](
-                agent,
                 ctx,
                 num_steps=NUM_STEPS,
                 warmup_steps=WARMUP_STEPS,

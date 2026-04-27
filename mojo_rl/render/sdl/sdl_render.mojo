@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Render
+"""Render.
 
 Header file for SDL 2D rendering functions.
 
@@ -179,7 +179,7 @@ def get_num_render_drivers() raises -> c_int:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetNumRenderDrivers", def() -> c_int
+        lib, "SDL_GetNumRenderDrivers", def() thin -> c_int
     ]()()
 
 
@@ -211,7 +211,7 @@ def get_render_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetRenderDriver",
-        def(index: c_int) -> Ptr[c_char, ImmutAnyOrigin],
+        def(index: c_int) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(index)
 
 
@@ -254,7 +254,7 @@ def create_window_and_renderer(
             window_flags: WindowFlags,
             window: Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
             renderer: Ptr[Ptr[Renderer, MutAnyOrigin], MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         title.as_c_string_slice().unsafe_ptr(),
         width,
@@ -306,7 +306,7 @@ def create_renderer(
         def(
             window: Ptr[Window, MutAnyOrigin],
             name: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Ptr[Renderer, MutAnyOrigin],
+        ) thin -> Ptr[Renderer, MutAnyOrigin],
     ]()(window, name.as_c_string_slice().unsafe_ptr())
 
 
@@ -365,7 +365,7 @@ def create_renderer_with_properties(
     return _get_dylib_function[
         lib,
         "SDL_CreateRendererWithProperties",
-        def(props: PropertiesID) -> Ptr[Renderer, MutAnyOrigin],
+        def(props: PropertiesID) thin -> Ptr[Renderer, MutAnyOrigin],
     ]()(props)
 
 
@@ -396,7 +396,7 @@ def create_software_renderer(
     return _get_dylib_function[
         lib,
         "SDL_CreateSoftwareRenderer",
-        def(surface: Ptr[Surface, MutAnyOrigin]) -> Ptr[Renderer, MutAnyOrigin],
+        def(surface: Ptr[Surface, MutAnyOrigin]) thin -> Ptr[Renderer, MutAnyOrigin],
     ]()(surface)
 
 
@@ -422,7 +422,7 @@ def get_renderer(
     ret = _get_dylib_function[
         lib,
         "SDL_GetRenderer",
-        def(window: Ptr[Window, MutAnyOrigin]) -> Ptr[Renderer, MutAnyOrigin],
+        def(window: Ptr[Window, MutAnyOrigin]) thin -> Ptr[Renderer, MutAnyOrigin],
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -450,7 +450,7 @@ def get_render_window(
     ret = _get_dylib_function[
         lib,
         "SDL_GetRenderWindow",
-        def(renderer: Ptr[Renderer, MutAnyOrigin]) -> Ptr[Window, MutAnyOrigin],
+        def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Ptr[Window, MutAnyOrigin],
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -480,7 +480,7 @@ def get_renderer_name(
         "SDL_GetRendererName",
         def(
             renderer: Ptr[Renderer, MutAnyOrigin]
-        ) -> Ptr[c_char, ImmutAnyOrigin],
+        ) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -580,7 +580,7 @@ def get_renderer_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetRendererProperties",
-        def(renderer: Ptr[Renderer, MutAnyOrigin]) -> PropertiesID,
+        def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> PropertiesID,
     ]()(renderer)
 
 
@@ -619,7 +619,7 @@ def get_render_output_size(
             renderer: Ptr[Renderer, MutAnyOrigin],
             w: Ptr[c_int, MutAnyOrigin],
             h: Ptr[c_int, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -660,7 +660,7 @@ def get_current_render_output_size(
             renderer: Ptr[Renderer, MutAnyOrigin],
             w: Ptr[c_int, MutAnyOrigin],
             h: Ptr[c_int, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -704,7 +704,7 @@ def create_texture(
             access: TextureAccess,
             w: c_int,
             h: c_int,
-        ) -> Ptr[Texture, MutAnyOrigin],
+        ) thin -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer, format, access, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -747,7 +747,7 @@ def create_texture_from_surface(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             surface: Ptr[Surface, MutAnyOrigin],
-        ) -> Ptr[Texture, MutAnyOrigin],
+        ) thin -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer, surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -870,7 +870,7 @@ def create_texture_with_properties(
         "SDL_CreateTextureWithProperties",
         def(
             renderer: Ptr[Renderer, MutAnyOrigin], props: PropertiesID
-        ) -> Ptr[Texture, MutAnyOrigin],
+        ) thin -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer, props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -972,7 +972,7 @@ def get_texture_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetTextureProperties",
-        def(texture: Ptr[Texture, MutAnyOrigin]) -> PropertiesID,
+        def(texture: Ptr[Texture, MutAnyOrigin]) thin -> PropertiesID,
     ]()(texture)
 
 
@@ -997,7 +997,7 @@ def get_renderer_from_texture(
     return _get_dylib_function[
         lib,
         "SDL_GetRendererFromTexture",
-        def(texture: Ptr[Texture, MutAnyOrigin]) -> Ptr[Renderer, MutAnyOrigin],
+        def(texture: Ptr[Texture, MutAnyOrigin]) thin -> Ptr[Renderer, MutAnyOrigin],
     ]()(texture)
 
 
@@ -1032,7 +1032,7 @@ def get_texture_size(
             texture: Ptr[Texture, MutAnyOrigin],
             w: Ptr[c_float, MutAnyOrigin],
             h: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, w, h)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1073,7 +1073,7 @@ def set_texture_color_mod(
         "SDL_SetTextureColorMod",
         def(
             texture: Ptr[Texture, MutAnyOrigin], r: UInt8, g: UInt8, b: UInt8
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, r, g, b)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1117,7 +1117,7 @@ def set_texture_color_mod_float(
             r: c_float,
             g: c_float,
             b: c_float,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, r, g, b)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1155,7 +1155,7 @@ def get_texture_color_mod(
             r: Ptr[UInt8, MutAnyOrigin],
             g: Ptr[UInt8, MutAnyOrigin],
             b: Ptr[UInt8, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, r, g, b)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1193,7 +1193,7 @@ def get_texture_color_mod_float(
             r: Ptr[c_float, MutAnyOrigin],
             g: Ptr[c_float, MutAnyOrigin],
             b: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, r, g, b)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1229,7 +1229,7 @@ def set_texture_alpha_mod(
     ret = _get_dylib_function[
         lib,
         "SDL_SetTextureAlphaMod",
-        def(texture: Ptr[Texture, MutAnyOrigin], alpha: UInt8) -> Bool,
+        def(texture: Ptr[Texture, MutAnyOrigin], alpha: UInt8) thin -> Bool,
     ]()(texture, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1265,7 +1265,7 @@ def set_texture_alpha_mod_float(
     ret = _get_dylib_function[
         lib,
         "SDL_SetTextureAlphaModFloat",
-        def(texture: Ptr[Texture, MutAnyOrigin], alpha: c_float) -> Bool,
+        def(texture: Ptr[Texture, MutAnyOrigin], alpha: c_float) thin -> Bool,
     ]()(texture, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1296,7 +1296,7 @@ def get_texture_alpha_mod(
         def(
             texture: Ptr[Texture, MutAnyOrigin],
             alpha: Ptr[UInt8, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1327,7 +1327,7 @@ def get_texture_alpha_mod_float(
         def(
             texture: Ptr[Texture, MutAnyOrigin],
             alpha: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, alpha)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1358,7 +1358,7 @@ def set_texture_blend_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_SetTextureBlendMode",
-        def(texture: Ptr[Texture, MutAnyOrigin], blend_mode: BlendMode) -> Bool,
+        def(texture: Ptr[Texture, MutAnyOrigin], blend_mode: BlendMode) thin -> Bool,
     ]()(texture, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1390,7 +1390,7 @@ def get_texture_blend_mode(
         def(
             texture: Ptr[Texture, MutAnyOrigin],
             blend_mode: Ptr[BlendMode, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1422,7 +1422,7 @@ def set_texture_scale_mode(
     ret = _get_dylib_function[
         lib,
         "SDL_SetTextureScaleMode",
-        def(texture: Ptr[Texture, MutAnyOrigin], scale_mode: ScaleMode) -> Bool,
+        def(texture: Ptr[Texture, MutAnyOrigin], scale_mode: ScaleMode) thin -> Bool,
     ]()(texture, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1454,7 +1454,7 @@ def get_texture_scale_mode(
         def(
             texture: Ptr[Texture, MutAnyOrigin],
             scale_mode: Ptr[ScaleMode, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1505,7 +1505,7 @@ def update_texture(
             rect: Ptr[Rect, ImmutAnyOrigin],
             pixels: Ptr[NoneType, ImmutAnyOrigin],
             pitch: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, rect, pixels, pitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1564,7 +1564,7 @@ def update_yuv_texture(
             upitch: c_int,
             vplane: Ptr[UInt8, ImmutAnyOrigin],
             vpitch: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, rect, y_plane, y_pitch, uplane, upitch, vplane, vpitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1615,7 +1615,7 @@ def update_nv_texture(
             y_pitch: c_int,
             uv_plane: Ptr[UInt8, ImmutAnyOrigin],
             uv_pitch: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, rect, y_plane, y_pitch, uv_plane, uv_pitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1666,7 +1666,7 @@ def lock_texture(
             rect: Ptr[Rect, ImmutAnyOrigin],
             pixels: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
             pitch: Ptr[c_int, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, rect, pixels, pitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1719,7 +1719,7 @@ def lock_texture_to_surface(
             texture: Ptr[Texture, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
             surface: Ptr[Ptr[Surface, MutAnyOrigin], MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(texture, rect, surface)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1748,7 +1748,7 @@ def unlock_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_UnlockTexture",
-        def(texture: Ptr[Texture, MutAnyOrigin]) -> None,
+        def(texture: Ptr[Texture, MutAnyOrigin]) thin -> None,
     ]()(texture)
 
 
@@ -1789,7 +1789,7 @@ def set_render_target(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             texture: Ptr[Texture, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, texture)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1820,7 +1820,7 @@ def get_render_target(
         "SDL_GetRenderTarget",
         def(
             renderer: Ptr[Renderer, MutAnyOrigin]
-        ) -> Ptr[Texture, MutAnyOrigin],
+        ) thin -> Ptr[Texture, MutAnyOrigin],
     ]()(renderer)
 
 
@@ -1891,7 +1891,7 @@ def set_render_logical_presentation(
             w: c_int,
             h: c_int,
             mode: RendererLogicalPresentation,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, w, h, mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1935,7 +1935,7 @@ def get_render_logical_presentation(
             w: Ptr[c_int, MutAnyOrigin],
             h: Ptr[c_int, MutAnyOrigin],
             mode: Ptr[RendererLogicalPresentation, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, w, h, mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1975,7 +1975,7 @@ def get_render_logical_presentation_rect(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[FRect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2023,7 +2023,7 @@ def render_coordinates_from_window(
             window_y: c_float,
             x: Ptr[c_float, MutAnyOrigin],
             y: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, window_x, window_y, x, y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2073,7 +2073,7 @@ def render_coordinates_to_window(
             y: c_float,
             window_x: Ptr[c_float, MutAnyOrigin],
             window_y: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, x, y, window_x, window_y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2124,7 +2124,7 @@ def convert_event_to_render_coordinates(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             event: Ptr[Event, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, event)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2165,7 +2165,7 @@ def set_render_viewport(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2199,7 +2199,7 @@ def get_render_viewport(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[Rect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2230,7 +2230,7 @@ def render_viewport_set(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_RenderViewportSet",
-        def(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
+        def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
     ]()(renderer)
 
 
@@ -2267,7 +2267,7 @@ def get_render_safe_area(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[Rect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2302,7 +2302,7 @@ def set_render_clip_rect(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2337,7 +2337,7 @@ def get_render_clip_rect(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[Rect, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2365,7 +2365,7 @@ def render_clip_enabled(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_RenderClipEnabled",
-        def(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
+        def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
     ]()(renderer)
 
 
@@ -2407,7 +2407,7 @@ def set_render_scale(
             renderer: Ptr[Renderer, MutAnyOrigin],
             scale_x: c_float,
             scale_y: c_float,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, scale_x, scale_y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2445,7 +2445,7 @@ def get_render_scale(
             renderer: Ptr[Renderer, MutAnyOrigin],
             scale_x: Ptr[c_float, MutAnyOrigin],
             scale_y: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, scale_x, scale_y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2491,7 +2491,7 @@ def set_render_draw_color(
             g: UInt8,
             b: UInt8,
             a: UInt8,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2537,7 +2537,7 @@ def set_render_draw_color_float(
             g: c_float,
             b: c_float,
             a: c_float,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2582,7 +2582,7 @@ def get_render_draw_color(
             g: Ptr[UInt8, MutAnyOrigin],
             b: Ptr[UInt8, MutAnyOrigin],
             a: Ptr[UInt8, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2627,7 +2627,7 @@ def get_render_draw_color_float(
             g: Ptr[c_float, MutAnyOrigin],
             b: Ptr[c_float, MutAnyOrigin],
             a: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2663,7 +2663,7 @@ def set_render_color_scale(
     ret = _get_dylib_function[
         lib,
         "SDL_SetRenderColorScale",
-        def(renderer: Ptr[Renderer, MutAnyOrigin], scale: c_float) -> Bool,
+        def(renderer: Ptr[Renderer, MutAnyOrigin], scale: c_float) thin -> Bool,
     ]()(renderer, scale)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2695,7 +2695,7 @@ def get_render_color_scale(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             scale: Ptr[c_float, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, scale)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2727,7 +2727,7 @@ def set_render_draw_blend_mode(
         "SDL_SetRenderDrawBlendMode",
         def(
             renderer: Ptr[Renderer, MutAnyOrigin], blend_mode: BlendMode
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2759,7 +2759,7 @@ def get_render_draw_blend_mode(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             blend_mode: Ptr[BlendMode, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, blend_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2789,7 +2789,7 @@ def render_clear(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_RenderClear",
-        def(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
+        def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2820,7 +2820,7 @@ def render_point(
         "SDL_RenderPoint",
         def(
             renderer: Ptr[Renderer, MutAnyOrigin], x: c_float, y: c_float
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, x, y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2855,7 +2855,7 @@ def render_points(
             renderer: Ptr[Renderer, MutAnyOrigin],
             points: Ptr[FPoint, ImmutAnyOrigin],
             count: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, points, count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2896,7 +2896,7 @@ def render_line(
             y1: c_float,
             x2: c_float,
             y2: c_float,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, x1, y1, x2, y2)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2932,7 +2932,7 @@ def render_lines(
             renderer: Ptr[Renderer, MutAnyOrigin],
             points: Ptr[FPoint, ImmutAnyOrigin],
             count: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, points, count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -2964,7 +2964,7 @@ def render_rect(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[FRect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3000,7 +3000,7 @@ def render_rects(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rects: Ptr[FRect, ImmutAnyOrigin],
             count: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rects, count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3033,7 +3033,7 @@ def render_fill_rect(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[FRect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3069,7 +3069,7 @@ def render_fill_rects(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rects: Ptr[FRect, ImmutAnyOrigin],
             count: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, rects, count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3110,7 +3110,7 @@ def render_texture(
             texture: Ptr[Texture, MutAnyOrigin],
             srcrect: Ptr[FRect, ImmutAnyOrigin],
             dstrect: Ptr[FRect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, texture, srcrect, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3164,7 +3164,7 @@ def render_texture_rotated(
             angle: c_double,
             center: Ptr[FPoint, ImmutAnyOrigin],
             flip: FlipMode,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, texture, srcrect, dstrect, angle, center, flip)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3216,7 +3216,7 @@ def render_texture_affine(
             origin: Ptr[FPoint, ImmutAnyOrigin],
             right: Ptr[FPoint, ImmutAnyOrigin],
             down: Ptr[FPoint, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, texture, srcrect, origin, right, down)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3265,7 +3265,7 @@ def render_texture_tiled(
             srcrect: Ptr[FRect, ImmutAnyOrigin],
             scale: c_float,
             dstrect: Ptr[FRect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, texture, srcrect, scale, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3329,7 +3329,7 @@ def render_texture_9grid(
             bottom_height: c_float,
             scale: c_float,
             dstrect: Ptr[FRect, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         renderer,
         texture,
@@ -3387,7 +3387,7 @@ def render_geometry(
             num_vertices: c_int,
             indices: Ptr[c_int, ImmutAnyOrigin],
             num_indices: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, texture, vertices, num_vertices, indices, num_indices)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3452,7 +3452,7 @@ def render_geometry_raw(
             indices: Ptr[NoneType, ImmutAnyOrigin],
             num_indices: c_int,
             size_indices: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         renderer,
         texture,
@@ -3511,7 +3511,7 @@ def render_read_pixels(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
-        ) -> Ptr[Surface, MutAnyOrigin],
+        ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(renderer, rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3560,7 +3560,7 @@ def render_present(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_RenderPresent",
-        def(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
+        def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3584,7 +3584,7 @@ def destroy_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyTexture",
-        def(texture: Ptr[Texture, MutAnyOrigin]) -> None,
+        def(texture: Ptr[Texture, MutAnyOrigin]) thin -> None,
     ]()(texture)
 
 
@@ -3606,7 +3606,7 @@ def destroy_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> None:
     return _get_dylib_function[
         lib,
         "SDL_DestroyRenderer",
-        def(renderer: Ptr[Renderer, MutAnyOrigin]) -> None,
+        def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> None,
     ]()(renderer)
 
 
@@ -3649,7 +3649,7 @@ def flush_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_FlushRenderer",
-        def(renderer: Ptr[Renderer, MutAnyOrigin]) -> Bool,
+        def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
     ]()(renderer)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3681,7 +3681,7 @@ def get_render_metal_layer(
         "SDL_GetRenderMetalLayer",
         def(
             renderer: Ptr[Renderer, MutAnyOrigin]
-        ) -> Ptr[NoneType, MutAnyOrigin],
+        ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(renderer)
 
 
@@ -3716,7 +3716,7 @@ def get_render_metal_command_encoder(
         "SDL_GetRenderMetalCommandEncoder",
         def(
             renderer: Ptr[Renderer, MutAnyOrigin]
-        ) -> Ptr[NoneType, MutAnyOrigin],
+        ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(renderer)
 
 
@@ -3766,7 +3766,7 @@ def add_vulkan_render_semaphores(
             wait_stage_mask: UInt32,
             wait_semaphore: Int64,
             signal_semaphore: Int64,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, wait_stage_mask, wait_semaphore, signal_semaphore)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3803,7 +3803,7 @@ def set_render_vsync(
     ret = _get_dylib_function[
         lib,
         "SDL_SetRenderVSync",
-        def(renderer: Ptr[Renderer, MutAnyOrigin], vsync: c_int) -> Bool,
+        def(renderer: Ptr[Renderer, MutAnyOrigin], vsync: c_int) thin -> Bool,
     ]()(renderer, vsync)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3835,7 +3835,7 @@ def get_render_vsync(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin],
             vsync: Ptr[c_int, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, vsync)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -3895,7 +3895,7 @@ def render_debug_text(
             x: c_float,
             y: c_float,
             str: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(renderer, x, y, str.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

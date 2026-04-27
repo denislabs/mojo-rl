@@ -48,6 +48,16 @@ struct InspectConfig(AlphaZeroConfig):
     comptime num_simulations: Int = 25
     comptime max_nodes: Int = 64
     comptime temp_threshold: Int = 15
+    comptime temp_min: Float64 = 0.0
+    comptime batch_sims: Int = 8
+    comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 0.0
+    comptime value_target_q_weight: Float64 = 0.0
+    comptime max_episode_length: Int = 9
+    comptime board_rows: Int = 3
+    comptime board_cols: Int = 3
+    comptime board_planes: Int = 3
+    comptime num_symmetries: Int = 2
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[1.0]
     comptime Players = SelfPlay
@@ -122,7 +132,7 @@ def main() raises:
         dtype, Layout.row_major(N_ENVS, PRED_OUT_DIM), MutAnyOrigin
     ](gpu_mcts.pred_output.unsafe_ptr())
     PredNet.forward_gpu[N_ENVS](
-        ctx, pred_obs, pred_out, gpu_net.params_view(), mcts_ws
+        ctx, pred_obs, pred_out, gpu_net.params_view(), gpu_net.model_state_view(), mcts_ws
     )
 
     # Download and print raw prediction
@@ -311,7 +321,7 @@ def main() raises:
             dtype, Layout.row_major(TOTAL_EXPAND, PRED_OUT_DIM), MutAnyOrigin
         ](gpu_mcts.pred_output.unsafe_ptr())
         PredNet.forward_gpu[TOTAL_EXPAND](
-            ctx, p_in, p_out, gpu_net.params_view(), mcts_ws
+            ctx, p_in, p_out, gpu_net.params_view(), gpu_net.model_state_view(), mcts_ws
         )
 
         # 4. Expand + backup

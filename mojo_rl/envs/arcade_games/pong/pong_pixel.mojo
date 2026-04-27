@@ -442,6 +442,7 @@ struct PongPixelEnv[
         # ── Kernel 1: Physics + Render (1 thread per env) ──
         # With FRAME_SKIP > 1, physics runs N times per action, rewards accumulate,
         # and only the final frame is rendered.
+        @parameter
         @always_inline
         def physics_render_wrapper(
             states: LayoutTensor[
@@ -521,6 +522,7 @@ struct PongPixelEnv[
         comptime RESIZE_BLOCKS = (RESIZE_TOTAL + RESIZE_TPB - 1) // RESIZE_TPB
         var obs_ptr = obs_buf.unsafe_ptr()
 
+        @parameter
         @always_inline
         def resize_stack_wrapper(
             ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
@@ -583,6 +585,7 @@ struct PongPixelEnv[
         # ── Kernel 3: Advance frame index (1 thread per env) ──
         comptime WS_FRAME_IDX_OFF = FRAME_BUF_F32_SIZE + FRAME_STACK_F32_SIZE
 
+        @parameter
         @always_inline
         def advance_frame_idx_wrapper(
             ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
@@ -621,6 +624,7 @@ struct PongPixelEnv[
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
+        @parameter
         @always_inline
         def reset_wrapper(
             states: LayoutTensor[
@@ -668,6 +672,7 @@ struct PongPixelEnv[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ](rng_counter_ptr)
 
+            @parameter
             @always_inline
             def selective_reset_counter_wrapper(
                 states: LayoutTensor[
@@ -716,6 +721,7 @@ struct PongPixelEnv[
         else:
             var seed = Scalar[DType.uint64](rng_seed)
 
+            @parameter
             @always_inline
             def selective_reset_wrapper(
                 states: LayoutTensor[
@@ -767,6 +773,7 @@ struct PongPixelEnv[
 
         var ws_ptr = workspace_buf.unsafe_ptr()
 
+        @parameter
         @always_inline
         def init_ws_wrapper(
             ws: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],

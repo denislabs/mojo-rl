@@ -390,6 +390,7 @@ struct SemiImplicitEuler(Integrator):
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             state: LayoutTensor[
@@ -440,6 +441,7 @@ struct SemiImplicitEuler(Integrator):
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             state: LayoutTensor[

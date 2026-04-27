@@ -91,6 +91,7 @@ def compute_cfrc_ext_gpu[
     comptime CFRC_OFF = cfrc_ext_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
     comptime EPS = Scalar[DTYPE](1e-10)
 
+    @parameter
     @always_inline
     def cfrc_ext_kernel(
         states: LayoutTensor[

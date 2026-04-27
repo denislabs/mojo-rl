@@ -623,8 +623,8 @@ struct Joints[*J: JointSpec](JointsLike):
     for computing qpos/qvel addresses of each joint.
     """
 
-    comptime joint_types = Variadic.types[T=JointSpec, *Self.J]
-    comptime N: Int = TypeList[*Self.joint_types].size
+    comptime joint_types = Self.J
+    comptime N: Int = Self.joint_types.size
 
     # Explicit trait members (required by JointsLike)
     comptime NQ: Int = Self._sum_nq()
@@ -1114,6 +1114,7 @@ struct Joints[*J: JointSpec](JointsLike):
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel(
             states: LayoutTensor[
@@ -1162,6 +1163,7 @@ struct Joints[*J: JointSpec](JointsLike):
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel(
             states: LayoutTensor[
@@ -1202,6 +1204,7 @@ struct Joints[*J: JointSpec](JointsLike):
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel(
             states: LayoutTensor[

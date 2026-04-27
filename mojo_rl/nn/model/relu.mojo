@@ -18,6 +18,7 @@ struct ReLU[dim: Int](Model):
     comptime PARAM_SIZE: Int = 0
     comptime CACHE_SIZE: Int = Self.dim  # Cache pre-activation for backward
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer, no workspace needed
+    comptime STATE_SIZE: Int = 0  # Stateless
 
     def __init__(out self):
         pass
@@ -53,6 +54,9 @@ struct ReLU[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -60,7 +64,7 @@ struct ReLU[dim: Int](Model):
         """Forward: y = max(0, x).
 
         Caches pre-activation values for backward pass.
-        Note: params is unused (ReLU has no parameters).
+        Note: params, state are unused (ReLU has no parameters/state).
         """
         for batch in range(BATCH):
             for i in range(Self.dim):
@@ -81,10 +85,13 @@ struct ReLU[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (for inference).
 
-        Note: params is unused (ReLU has no parameters).
+        Note: params, state are unused (ReLU has no parameters/state).
         """
         Self.forward_impl[BATCH, dtype](input, output)
 
@@ -118,6 +125,9 @@ struct ReLU[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -128,7 +138,7 @@ struct ReLU[dim: Int](Model):
         """Backward: dx = dy * (x > 0).
 
         Uses cached pre-activation values from forward pass.
-        Note: params and grads are unused (ReLU has no parameters).
+        Note: params, state, grads are unused (ReLU has no parameters/state).
         """
         Self.backward_impl[BATCH, dtype](grad_output, grad_input, params, cache, grads)
 
@@ -253,6 +263,9 @@ struct ReLU[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -268,6 +281,7 @@ struct ReLU[dim: Int](Model):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -304,6 +318,9 @@ struct ReLU[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -316,6 +333,7 @@ struct ReLU[dim: Int](Model):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -349,10 +367,13 @@ struct ReLU[dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     @staticmethod
     def backward_gpu[
@@ -367,6 +388,9 @@ struct ReLU[dim: Int](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -389,6 +413,7 @@ struct ReLU[dim: Int](Model):
         var total_elements = BATCH * Self.dim
         var grid_x = (total_elements + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_input: LayoutTensor[

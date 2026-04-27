@@ -31,6 +31,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     comptime PARAM_SIZE: Int = 2 * Self.dim  # gamma + beta
     comptime CACHE_SIZE: Int = Self.dim + 2  # normalized + inv_std + mean
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
+    comptime STATE_SIZE: Int = 0  # Stateless
 
     @staticmethod
     def initialize_params[
@@ -65,6 +66,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -123,6 +127,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (for inference)."""
         var eps = Scalar[dtype](Self.EPSILON)
@@ -166,6 +173,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -235,7 +245,8 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -279,9 +290,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         var my_var = Scalar[dtype](0)
         idx = local_i
         while idx < Self.dim:
-            var diff = (
-                rebind[Scalar[dtype]](input[b, idx]) - mean_val
-            )
+            var diff = rebind[Scalar[dtype]](input[b, idx]) - mean_val
             my_var += diff * diff
             idx += TPB
         var var_val = (
@@ -310,7 +319,8 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def forward_kernel_impl_no_cache[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -348,9 +358,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         var my_var = Scalar[dtype](0)
         idx = local_i
         while idx < Self.dim:
-            var diff = (
-                rebind[Scalar[dtype]](input[b, idx]) - mean_val
-            )
+            var diff = rebind[Scalar[dtype]](input[b, idx]) - mean_val
             my_var += diff * diff
             idx += TPB
         var var_val = (
@@ -372,7 +380,8 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def backward_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         grad_input: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
@@ -442,7 +451,8 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
     @always_inline
     @staticmethod
     def backward_param_kernel_impl[
-        BATCH: Int, dtype: DType = DType.float32,
+        BATCH: Int,
+        dtype: DType = DType.float32,
     ](
         grad_output: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), ImmutAnyOrigin
@@ -454,7 +464,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(2 * Self.dim), MutAnyOrigin
         ],
     ):
-        """dgamma/dbeta reduction across batch.
+        """Dgamma/dbeta reduction across batch.
 
         Grid: (dim,), Block: (TPB,). One block per output feature column,
         block-parallel sum over the BATCH rows. Replaces the previous
@@ -504,6 +514,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -520,6 +533,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         ](params.ptr)
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -536,7 +550,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             ],
             eps: Scalar[dtype],
         ):
-            Self.forward_kernel_impl[BATCH, dtype](output, input, params, cache, eps)
+            Self.forward_kernel_impl[BATCH, dtype](
+                output, input, params, cache, eps
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -562,6 +578,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -575,6 +594,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         ](params.ptr)
         var eps_scalar = Scalar[dtype](Self.EPSILON)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -588,7 +608,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             ],
             eps: Scalar[dtype],
         ):
-            Self.forward_kernel_impl_no_cache[BATCH, dtype](output, input, params, eps)
+            Self.forward_kernel_impl_no_cache[BATCH, dtype](
+                output, input, params, eps
+            )
 
         ctx.enqueue_function[kernel_wrapper, kernel_wrapper](
             output,
@@ -614,10 +636,15 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](
+            ctx, output, input, params, state, workspace
+        )
 
     @staticmethod
     def backward_gpu[
@@ -632,6 +659,9 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -654,6 +684,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
             dtype, Layout.row_major(BATCH, Self.dim + 2), ImmutAnyOrigin
         ](cache.ptr)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_input: LayoutTensor[
@@ -687,6 +718,7 @@ struct LayerNorm[dim: Int, EPSILON: Float64 = 1e-5](Model):
         )
 
         # Param gradients: dgamma, dbeta accumulated over batch (single thread)
+        @parameter
         @always_inline
         def param_kernel_wrapper(
             grad_output: LayoutTensor[

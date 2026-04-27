@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Sensor
+"""Sensor.
 
 SDL sensor management.
 
@@ -177,7 +177,9 @@ def get_sensors(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSensors",
-        def(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[SensorID, MutAnyOrigin],
+        def(
+            count: Ptr[c_int, MutAnyOrigin]
+        ) thin -> Ptr[SensorID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -202,7 +204,7 @@ def get_sensor_name_for_id(
     return _get_dylib_function[
         lib,
         "SDL_GetSensorNameForID",
-        def(instance_id: SensorID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(instance_id: SensorID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
 
 
@@ -222,7 +224,9 @@ def get_sensor_type_for_id(instance_id: SensorID) raises -> SensorType:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetSensorTypeForID", def(instance_id: SensorID) -> SensorType
+        lib,
+        "SDL_GetSensorTypeForID",
+        def(instance_id: SensorID) thin -> SensorType,
     ]()(instance_id)
 
 
@@ -244,7 +248,7 @@ def get_sensor_non_portable_type_for_id(instance_id: SensorID) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_GetSensorNonPortableTypeForID",
-        def(instance_id: SensorID) -> c_int,
+        def(instance_id: SensorID) thin -> c_int,
     ]()(instance_id)
 
 
@@ -266,7 +270,7 @@ def open_sensor(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenSensor",
-        def(instance_id: SensorID) -> Ptr[Sensor, MutAnyOrigin],
+        def(instance_id: SensorID) thin -> Ptr[Sensor, MutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -290,7 +294,7 @@ def get_sensor_from_id(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSensorFromID",
-        def(instance_id: SensorID) -> Ptr[Sensor, MutAnyOrigin],
+        def(instance_id: SensorID) thin -> Ptr[Sensor, MutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -314,7 +318,7 @@ def get_sensor_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetSensorProperties",
-        def(sensor: Ptr[Sensor, MutAnyOrigin]) -> PropertiesID,
+        def(sensor: Ptr[Sensor, MutAnyOrigin]) thin -> PropertiesID,
     ]()(sensor)
 
 
@@ -336,7 +340,7 @@ def get_sensor_name(
     ret = _get_dylib_function[
         lib,
         "SDL_GetSensorName",
-        def(sensor: Ptr[Sensor, MutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(sensor: Ptr[Sensor, MutAnyOrigin]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(sensor)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -358,7 +362,7 @@ def get_sensor_type(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorType:
     return _get_dylib_function[
         lib,
         "SDL_GetSensorType",
-        def(sensor: Ptr[Sensor, MutAnyOrigin]) -> SensorType,
+        def(sensor: Ptr[Sensor, MutAnyOrigin]) thin -> SensorType,
     ]()(sensor)
 
 
@@ -379,7 +383,7 @@ def get_sensor_non_portable_type(
     return _get_dylib_function[
         lib,
         "SDL_GetSensorNonPortableType",
-        def(sensor: Ptr[Sensor, MutAnyOrigin]) -> c_int,
+        def(sensor: Ptr[Sensor, MutAnyOrigin]) thin -> c_int,
     ]()(sensor)
 
 
@@ -399,7 +403,7 @@ def get_sensor_id(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> SensorID:
     return _get_dylib_function[
         lib,
         "SDL_GetSensorID",
-        def(sensor: Ptr[Sensor, MutAnyOrigin]) -> SensorID,
+        def(sensor: Ptr[Sensor, MutAnyOrigin]) thin -> SensorID,
     ]()(sensor)
 
 
@@ -431,7 +435,7 @@ def get_sensor_data(
             sensor: Ptr[Sensor, MutAnyOrigin],
             data: Ptr[c_float, MutAnyOrigin],
             num_values: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(sensor, data, num_values)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -447,7 +451,7 @@ def close_sensor(sensor: Ptr[Sensor, MutAnyOrigin]) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_CloseSensor", def(sensor: Ptr[Sensor, MutAnyOrigin]) -> None
+        lib, "SDL_CloseSensor", def(sensor: Ptr[Sensor, MutAnyOrigin]) thin -> None
     ]()(sensor)
 
 
@@ -463,4 +467,4 @@ def update_sensors() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_UpdateSensors.
     """
 
-    return _get_dylib_function[lib, "SDL_UpdateSensors", def() -> None]()()
+    return _get_dylib_function[lib, "SDL_UpdateSensors", def() thin -> None]()()

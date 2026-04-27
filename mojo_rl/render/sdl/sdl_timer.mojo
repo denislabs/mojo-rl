@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Timer
+"""Timer.
 
 SDL provides time management functionality. It is useful for dealing with
 (usually) small durations of time.
@@ -53,7 +53,7 @@ def get_ticks() raises -> UInt64:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTicks.
     """
 
-    return _get_dylib_function[lib, "SDL_GetTicks", def() -> UInt64]()()
+    return _get_dylib_function[lib, "SDL_GetTicks", def() thin -> UInt64]()()
 
 
 def get_ticks_ns() raises -> UInt64:
@@ -69,7 +69,7 @@ def get_ticks_ns() raises -> UInt64:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetTicksNS.
     """
 
-    return _get_dylib_function[lib, "SDL_GetTicksNS", def() -> UInt64]()()
+    return _get_dylib_function[lib, "SDL_GetTicksNS", def() thin -> UInt64]()()
 
 
 def get_performance_counter() raises -> UInt64:
@@ -91,7 +91,7 @@ def get_performance_counter() raises -> UInt64:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetPerformanceCounter", def() -> UInt64
+        lib, "SDL_GetPerformanceCounter", def() thin -> UInt64
     ]()()
 
 
@@ -108,7 +108,7 @@ def get_performance_frequency() raises -> UInt64:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetPerformanceFrequency", def() -> UInt64
+        lib, "SDL_GetPerformanceFrequency", def() thin -> UInt64
     ]()()
 
 
@@ -128,7 +128,9 @@ def delay(ms: UInt32) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_Delay.
     """
 
-    return _get_dylib_function[lib, "SDL_Delay", def(ms: UInt32) -> None]()(ms)
+    return _get_dylib_function[
+        lib, "SDL_Delay", def(ms: UInt32) thin -> None
+    ]()(ms)
 
 
 def delay_ns(ns: UInt64) raises -> None:
@@ -147,7 +149,7 @@ def delay_ns(ns: UInt64) raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_DelayNS.
     """
 
-    return _get_dylib_function[lib, "SDL_DelayNS", def(ns: UInt64) -> None]()(
+    return _get_dylib_function[lib, "SDL_DelayNS", def(ns: UInt64) thin -> None]()(
         ns
     )
 
@@ -169,7 +171,7 @@ def delay_precise(ns: UInt64) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_DelayPrecise", def(ns: UInt64) -> None
+        lib, "SDL_DelayPrecise", def(ns: UInt64) thin -> None
     ]()(ns)
 
 
@@ -198,7 +200,7 @@ comptime TimerCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     timer_id: TimerID,
     interval: UInt32,
-) -> UInt32
+) thin -> UInt32
 """Function prototype for the millisecond timer callback function.
     
     The callback function is passed the current timer interval and returns the
@@ -273,7 +275,7 @@ def add_timer(
             interval: UInt32,
             callback: TimerCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> TimerID,
+        ) thin -> TimerID,
     ]()(interval, callback, userdata)
 
 
@@ -281,7 +283,7 @@ comptime NSTimerCallback = def(
     userdata: Ptr[NoneType, MutAnyOrigin],
     timer_id: TimerID,
     interval: UInt64,
-) -> UInt64
+) thin -> UInt64
 """Function prototype for the nanosecond timer callback function.
     
     The callback function is passed the current timer interval and returns the
@@ -356,7 +358,7 @@ def add_timer_ns(
             interval: UInt64,
             callback: NSTimerCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> TimerID,
+        ) thin -> TimerID,
     ]()(interval, callback, userdata)
 
 
@@ -377,7 +379,7 @@ def remove_timer(id: TimerID) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_RemoveTimer", def(id: TimerID) -> Bool
+        lib, "SDL_RemoveTimer", def(id: TimerID) thin -> Bool
     ]()(id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

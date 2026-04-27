@@ -17,6 +17,7 @@ Run with:
 
 from std.random import seed, random_float64
 from std.math import exp, tanh as math_tanh, abs as math_abs
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model.model import Model
@@ -601,8 +602,11 @@ def test_chain_forward_matches_sequential() -> Int:
     var ad_cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, ADC.CACHE_SIZE), MutAnyOrigin
     ](ad_cache.unsafe_ptr())
+    var ad_state_t = LayoutTensor[
+        dtype, Layout.row_major(ADC.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    ADC.forward[BATCH](inp_t, ad_out_t, params_t, ad_cache_t)
+    ADC.forward[BATCH](inp_t, ad_out_t, params_t, ad_state_t, ad_cache_t)
 
     # SEQ forward (same params — Linear stores [W, b] same as MatMul+BiasAdd)
     var seq_out = List[Scalar[dtype]](capacity=BATCH * H)
@@ -622,8 +626,11 @@ def test_chain_forward_matches_sequential() -> Int:
     var seq_cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, SEQ.CACHE_SIZE), MutAnyOrigin
     ](seq_cache.unsafe_ptr())
+    var seq_state_t = LayoutTensor[
+        dtype, Layout.row_major(SEQ.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    SEQ.forward[BATCH](inp_t, seq_out_t, seq_params_t, seq_cache_t)
+    SEQ.forward[BATCH](inp_t, seq_out_t, seq_params_t, seq_state_t, seq_cache_t)
 
     # Compare
     var max_diff: Float64 = 0.0
@@ -688,8 +695,11 @@ def test_chain_backward_matches_sequential() -> Int:
     var ad_cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, ADC.CACHE_SIZE), MutAnyOrigin
     ](ad_cache.unsafe_ptr())
+    var ad_state_t = LayoutTensor[
+        dtype, Layout.row_major(ADC.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    ADC.forward[BATCH](inp_t, ad_out_t, ad_params_t, ad_cache_t)
+    ADC.forward[BATCH](inp_t, ad_out_t, ad_params_t, ad_state_t, ad_cache_t)
 
     var go = List[Scalar[dtype]](capacity=BATCH * H)
     for _ in range(BATCH * H):
@@ -711,7 +721,7 @@ def test_chain_backward_matches_sequential() -> Int:
         dtype, Layout.row_major(ADC.PARAM_SIZE), MutAnyOrigin
     ](ad_gp.unsafe_ptr())
 
-    ADC.backward[BATCH](go_t, ad_gi_t, ad_params_t, ad_cache_t, ad_gp_t)
+    ADC.backward[BATCH](go_t, ad_gi_t, ad_params_t, ad_state_t, ad_cache_t, ad_gp_t)
 
     # --- SEQ forward + backward ---
     var seq_out = List[Scalar[dtype]](capacity=BATCH * H)
@@ -730,8 +740,11 @@ def test_chain_backward_matches_sequential() -> Int:
     var seq_cache_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, SEQ.CACHE_SIZE), MutAnyOrigin
     ](seq_cache.unsafe_ptr())
+    var seq_state_t = LayoutTensor[
+        dtype, Layout.row_major(SEQ.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    SEQ.forward[BATCH](inp_t, seq_out_t, seq_params_t, seq_cache_t)
+    SEQ.forward[BATCH](inp_t, seq_out_t, seq_params_t, seq_state_t, seq_cache_t)
 
     # Reset grad_output to ones
     for i in range(BATCH * H):
@@ -751,7 +764,7 @@ def test_chain_backward_matches_sequential() -> Int:
         dtype, Layout.row_major(SEQ.PARAM_SIZE), MutAnyOrigin
     ](seq_gp.unsafe_ptr())
 
-    SEQ.backward[BATCH](go_t, seq_gi_t, seq_params_t, seq_cache_t, seq_gp_t)
+    SEQ.backward[BATCH](go_t, seq_gi_t, seq_params_t, seq_state_t, seq_cache_t, seq_gp_t)
 
     # Compare grad_input
     var max_gi: Float64 = 0.0
@@ -859,8 +872,11 @@ def test_training_convergence() -> Int:
         var cache_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, MLP.CACHE_SIZE), MutAnyOrigin
         ](cache.unsafe_ptr())
+        var state_t = LayoutTensor[
+            dtype, Layout.row_major(MLP.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-        MLP.forward[BATCH](inp_t, out_t, params_t, cache_t)
+        MLP.forward[BATCH](inp_t, out_t, params_t, state_t, cache_t)
 
         # MSE loss
         var loss: Float64 = 0.0
@@ -900,7 +916,7 @@ def test_training_convergence() -> Int:
             dtype, Layout.row_major(MLP.PARAM_SIZE), MutAnyOrigin
         ](gp.unsafe_ptr())
 
-        MLP.backward[BATCH](go_t, gi_t, params_t, cache_t, gp_t)
+        MLP.backward[BATCH](go_t, gi_t, params_t, state_t, cache_t, gp_t)
 
         # SGD update
         for i in range(PS):

@@ -77,17 +77,31 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
     """
 
     comptime PARAM_SIZE: Int = Self.MODEL.PARAM_SIZE
-    comptime STATE_SIZE: Int = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+    # Optimizer state buffer size (e.g. Adam m/v). Distinct from Model.STATE_SIZE
+    # (persistent non-trainable model state — BN running stats, RNG counters, etc.)
+    comptime OPT_STATE_SIZE: Int = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+    # Model persistent non-trainable state (BN running stats, RNG counters).
+    comptime MODEL_STATE_SIZE: Int = Self.MODEL.STATE_SIZE
+    # Optimizer global (non-per-param) state — step counter, Muon grad norm.
+    comptime OPT_GLOBAL_SIZE: Int = Self.OPTIMIZER.GLOBAL_STATE_SIZE
 
     var params_buf: DeviceBuffer[Self.dtype]  # device: model weights
     var grads_buf: DeviceBuffer[Self.dtype]  # device: parameter gradients
-    var state_buf: DeviceBuffer[
+    var opt_state_buf: DeviceBuffer[
         Self.dtype
     ]  # device: optimizer state (e.g. Adam m/v)
+    var model_state_buf: DeviceBuffer[
+        Self.dtype
+    ]  # device: persistent model state (BN running stats, RNG counters, ...)
+    var opt_global_state_buf: DeviceBuffer[
+        Self.dtype
+    ]  # device: optimizer global state (step counter, grad norm, ...)
     var params_host: HostBuffer[
         Self.dtype
     ]  # pinned host mirror — fast DMA for params
-    var state_host: HostBuffer[Self.dtype]  # pinned host mirror — fast DMA for state
+    var opt_state_host: HostBuffer[Self.dtype]  # pinned host mirror — fast DMA for opt state
+    var model_state_host: HostBuffer[Self.dtype]  # pinned host mirror — fast DMA for model state
+    var opt_global_state_host: HostBuffer[Self.dtype]  # pinned host mirror — fast DMA for opt global
     var step_num: Int
     var lr_scale: Float64
 
@@ -101,33 +115,57 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         self.lr_scale = 1.0
         self.params_buf = ctx.enqueue_create_buffer[Self.dtype](Self.PARAM_SIZE)
         self.grads_buf = ctx.enqueue_create_buffer[Self.dtype](Self.PARAM_SIZE)
-        self.state_buf = ctx.enqueue_create_buffer[Self.dtype](Self.STATE_SIZE)
+        self.opt_state_buf = ctx.enqueue_create_buffer[Self.dtype](Self.OPT_STATE_SIZE)
+        # Allocate at least 1 element even when SIZE=0 — avoids zero-size
+        # DeviceBuffer allocation pitfalls and keeps unsafe_ptr() non-null.
+        self.model_state_buf = ctx.enqueue_create_buffer[Self.dtype](
+            max(1, Self.MODEL_STATE_SIZE)
+        )
+        self.opt_global_state_buf = ctx.enqueue_create_buffer[Self.dtype](
+            max(1, Self.OPT_GLOBAL_SIZE)
+        )
         self.params_host = ctx.enqueue_create_host_buffer[Self.dtype](
             Self.PARAM_SIZE
         )
-        self.state_host = ctx.enqueue_create_host_buffer[Self.dtype](Self.STATE_SIZE)
+        self.opt_state_host = ctx.enqueue_create_host_buffer[Self.dtype](Self.OPT_STATE_SIZE)
+        self.model_state_host = ctx.enqueue_create_host_buffer[Self.dtype](
+            max(1, Self.MODEL_STATE_SIZE)
+        )
+        self.opt_global_state_host = ctx.enqueue_create_host_buffer[Self.dtype](
+            max(1, Self.OPT_GLOBAL_SIZE)
+        )
         # Zero-initialize device buffers
         ctx.enqueue_memset(self.params_buf, 0)
         ctx.enqueue_memset(self.grads_buf, 0)
-        ctx.enqueue_memset(self.state_buf, 0)
+        ctx.enqueue_memset(self.opt_state_buf, 0)
+        ctx.enqueue_memset(self.model_state_buf, 0)
+        ctx.enqueue_memset(self.opt_global_state_buf, 0)
 
     def __init__(out self, *, copy: Self):
         self.step_num = copy.step_num
         self.lr_scale = copy.lr_scale
         self.params_buf = copy.params_buf.copy()
         self.grads_buf = copy.grads_buf.copy()
-        self.state_buf = copy.state_buf.copy()
+        self.opt_state_buf = copy.opt_state_buf.copy()
+        self.model_state_buf = copy.model_state_buf.copy()
+        self.opt_global_state_buf = copy.opt_global_state_buf.copy()
         self.params_host = copy.params_host.copy()
-        self.state_host = copy.state_host.copy()
+        self.opt_state_host = copy.opt_state_host.copy()
+        self.model_state_host = copy.model_state_host.copy()
+        self.opt_global_state_host = copy.opt_global_state_host.copy()
 
     def __init__(out self, *, deinit take: Self):
         self.step_num = take.step_num
         self.lr_scale = take.lr_scale
         self.params_buf = take.params_buf^
         self.grads_buf = take.grads_buf^
-        self.state_buf = take.state_buf^
+        self.opt_state_buf = take.opt_state_buf^
+        self.model_state_buf = take.model_state_buf^
+        self.opt_global_state_buf = take.opt_global_state_buf^
         self.params_host = take.params_host^
-        self.state_host = take.state_host^
+        self.opt_state_host = take.opt_state_host^
+        self.model_state_host = take.model_state_host^
+        self.opt_global_state_host = take.opt_global_state_host^
 
     # =========================================================================
     # LayoutTensor Views over device memory (zero-copy)
@@ -149,7 +187,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
             Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.grads_buf.unsafe_ptr())
 
-    def state_view(
+    def opt_state_view(
         self,
     ) -> LayoutTensor[
         Self.dtype,
@@ -161,7 +199,34 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
             Self.dtype,
             Layout.row_major(Self.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM),
             MutAnyOrigin,
-        ](self.state_buf.unsafe_ptr())
+        ](self.opt_state_buf.unsafe_ptr())
+
+    def model_state_view(
+        self,
+    ) -> LayoutTensor[
+        Self.dtype, Layout.row_major(Self.MODEL_STATE_SIZE), MutAnyOrigin
+    ]:
+        """LayoutTensor view over device model state buffer.
+
+        Zero-length when the model declares no persistent state.
+        """
+        return LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL_STATE_SIZE), MutAnyOrigin
+        ](self.model_state_buf.unsafe_ptr())
+
+    def opt_global_state_view(
+        self,
+    ) -> LayoutTensor[
+        Self.dtype, Layout.row_major(Self.OPT_GLOBAL_SIZE), MutAnyOrigin
+    ]:
+        """LayoutTensor view over the optimizer's global state
+        (step counter, grad norm, etc.).
+
+        Zero-length when the optimizer declares no global state.
+        """
+        return LayoutTensor[
+            Self.dtype, Layout.row_major(Self.OPT_GLOBAL_SIZE), MutAnyOrigin
+        ](self.opt_global_state_buf.unsafe_ptr())
 
     # =========================================================================
     # Core GPU Operations
@@ -191,6 +256,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         """
         var g = self.grads_view()
 
+        @parameter
         @always_inline
         def _clip_kernel(
             grads: LayoutTensor[
@@ -216,19 +282,31 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         )
 
     def optimizer_step(mut self, ctx: DeviceContext) raises:
-        """One GPU optimizer step + increment step_num.
+        """One GPU optimizer step.
 
-        Applies self.lr_scale to the base LR (set via set_lr_scale()).
-        Creates lvalue views (params, state are mut in step_gpu).
+        Adam/AdamW maintain their step counter on-device (Phase 4 — see
+        docs/STATE_SIZE_DESIGN.md): a 1-thread preamble kernel inside
+        `step_gpu` bumps `opt_global_state[0]`, and the update kernel reads
+        the post-bump value to compute bias correction. The host-side
+        `self.step_num` mirror is left stale until `download_to` syncs it
+        back from the device counter — only Adam-style optimizers actually
+        consult the on-device counter, so for SGD/RMSprop/Muon (which still
+        ignore step_num) we still bump the host counter for compatibility.
 
         Args:
             ctx: GPU device context.
         """
-        self.step_num += 1
         var p = self.params_view()
-        var s = self.state_view()
+        var s = self.opt_state_view()
+        var og = self.opt_global_state_view()
+
+        comptime if Self.OPT_GLOBAL_SIZE == 0:
+            # Optimizer carries no on-device counter — fall back to the host
+            # mirror (Adam/AdamW take the GLOBAL_STATE_SIZE>=1 branch).
+            self.step_num += 1
+
         Self.OPTIMIZER.step_gpu[Self.PARAM_SIZE](
-            ctx, p, self.grads_view(), s, self.step_num, self.lr_scale
+            ctx, p, self.grads_view(), s, og, self.step_num, self.lr_scale
         )
 
     def soft_update_from_gpu(
@@ -252,6 +330,7 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
         var source_t = source.params_view()
         var tau_s = Scalar[Self.dtype](tau)
 
+        @parameter
         @always_inline
         def soft_update_wrapper(
             tgt: LayoutTensor[
@@ -294,9 +373,28 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
             self.params_host[i] = (cpu.params + i)[]
         ctx.enqueue_copy(self.params_buf, self.params_host)
 
-        for i in range(Self.STATE_SIZE):
-            self.state_host[i] = (cpu.optimizer_state + i)[]
-        ctx.enqueue_copy(self.state_buf, self.state_host)
+        for i in range(Self.OPT_STATE_SIZE):
+            self.opt_state_host[i] = (cpu.optimizer_state + i)[]
+        ctx.enqueue_copy(self.opt_state_buf, self.opt_state_host)
+
+        for i in range(Self.MODEL_STATE_SIZE):
+            self.model_state_host[i] = (cpu.model_state + i)[]
+        ctx.enqueue_copy(self.model_state_buf, self.model_state_host)
+
+        for i in range(Self.OPT_GLOBAL_SIZE):
+            self.opt_global_state_host[i] = (cpu.opt_global_state + i)[]
+
+        # Phase 4: when the optimizer keeps an on-device step counter
+        # (Adam/AdamW), seed slot 0 from the CPU step_num so resume-from
+        # checkpoint preserves bias correction. The slot is a Float32 storing
+        # the bit pattern of a UInt32 counter.
+        comptime if Self.OPT_GLOBAL_SIZE >= 1:
+            var counter_host_ptr = self.opt_global_state_host.unsafe_ptr().bitcast[
+                Scalar[DType.uint32]
+            ]()
+            counter_host_ptr[0] = UInt32(cpu.step_num)
+
+        ctx.enqueue_copy(self.opt_global_state_buf, self.opt_global_state_host)
 
         self.step_num = cpu.step_num
 
@@ -312,11 +410,27 @@ struct GPUNetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = defaul
             ctx: GPU device context.
         """
         ctx.enqueue_copy(self.params_host, self.params_buf)
-        ctx.enqueue_copy(self.state_host, self.state_buf)
+        ctx.enqueue_copy(self.opt_state_host, self.opt_state_buf)
+        ctx.enqueue_copy(self.model_state_host, self.model_state_buf)
+        ctx.enqueue_copy(self.opt_global_state_host, self.opt_global_state_buf)
         ctx.synchronize()
 
         for i in range(Self.PARAM_SIZE):
             (cpu.params + i)[] = self.params_host[i]
-        for i in range(Self.STATE_SIZE):
-            (cpu.optimizer_state + i)[] = self.state_host[i]
+        for i in range(Self.OPT_STATE_SIZE):
+            (cpu.optimizer_state + i)[] = self.opt_state_host[i]
+        for i in range(Self.MODEL_STATE_SIZE):
+            (cpu.model_state + i)[] = self.model_state_host[i]
+        for i in range(Self.OPT_GLOBAL_SIZE):
+            (cpu.opt_global_state + i)[] = self.opt_global_state_host[i]
+
+        # Phase 4: when the optimizer keeps an on-device step counter, the
+        # host mirror in `self.step_num` has been stale since the last
+        # optimizer_step. Reload it from slot 0 of opt_global_state.
+        comptime if Self.OPT_GLOBAL_SIZE >= 1:
+            var counter_host_ptr = self.opt_global_state_host.unsafe_ptr().bitcast[
+                Scalar[DType.uint32]
+            ]()
+            self.step_num = Int(counter_host_ptr[0])
+
         cpu.step_num = self.step_num

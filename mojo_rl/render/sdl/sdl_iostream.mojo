@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""IOStream
+"""IOStream.
 
 SDL provides an abstract interface for reading and writing data streams. It
 offers implementations for files, memory, etc, and the app can provide
@@ -122,7 +122,7 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
     var version: UInt32
     """The version of this interface."""
 
-    var size: def(userdata: Ptr[NoneType, MutAnyOrigin]) -> Int64
+    var size: def(userdata: Ptr[NoneType, MutAnyOrigin]) thin -> Int64
     """Return the number of bytes in this SDL_IOStream.
     
      \\return the total size of the data stream, or -1 on error."""
@@ -131,7 +131,7 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
         userdata: Ptr[NoneType, MutAnyOrigin],
         offset: Int64,
         whence: IOWhence,
-    ) -> Int64
+    ) thin -> Int64
     """Seek to `offset` relative to `whence`, one of stdio's whence values:
      SDL_IO_SEEK_SET, SDL_IO_SEEK_CUR, SDL_IO_SEEK_END.
     
@@ -142,7 +142,7 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
         ptr: Ptr[NoneType, MutAnyOrigin],
         size: c_size_t,
         status: Ptr[IOStatus, MutAnyOrigin],
-    ) -> c_size_t
+    ) thin -> c_size_t
     """Read up to `size` bytes from the data stream to the area pointed
      at by `ptr`.
     
@@ -157,7 +157,7 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
         ptr: Ptr[NoneType, ImmutAnyOrigin],
         size: c_size_t,
         status: Ptr[IOStatus, MutAnyOrigin],
-    ) -> c_size_t
+    ) thin -> c_size_t
     """Write exactly `size` bytes from the area pointed at by `ptr`
      to data stream.
     
@@ -170,7 +170,7 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
     var flush: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         status: Ptr[IOStatus, MutAnyOrigin],
-    ) -> Bool
+    ) thin -> Bool
     """If the stream is buffering, make sure the data is written out.
     
      On failure, you should set `*status` to a value from the
@@ -179,7 +179,7 @@ struct IOStreamInterface(ImplicitlyCopyable, Movable):
     
      \\return true if successful or false on write error when flushing data."""
 
-    var close: def(userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool
+    var close: def(userdata: Ptr[NoneType, MutAnyOrigin]) thin -> Bool
     """Close and free any allocated resources.
     
      This does not guarantee file writes will sync to physical media; they
@@ -294,7 +294,7 @@ def io_from_file(
         def(
             file: Ptr[c_char, ImmutAnyOrigin],
             mode: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Ptr[IOStream, MutAnyOrigin],
+        ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(
         file.as_c_string_slice().unsafe_ptr(),
         mode.as_c_string_slice().unsafe_ptr(),
@@ -346,7 +346,7 @@ def io_from_mem(
         "SDL_IOFromMem",
         def(
             mem: Ptr[NoneType, MutAnyOrigin], size: c_size_t
-        ) -> Ptr[IOStream, MutAnyOrigin],
+        ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(mem, size)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -399,7 +399,7 @@ def io_from_const_mem(
         "SDL_IOFromConstMem",
         def(
             mem: Ptr[NoneType, ImmutAnyOrigin], size: c_size_t
-        ) -> Ptr[IOStream, MutAnyOrigin],
+        ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(mem, size)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -431,7 +431,7 @@ def io_from_dynamic_mem(out ret: Ptr[IOStream, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_IOFromDynamicMem", def() -> Ptr[IOStream, MutAnyOrigin]
+        lib, "SDL_IOFromDynamicMem", def() thin -> Ptr[IOStream, MutAnyOrigin]
     ]()()
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -473,7 +473,7 @@ def open_io(
         def(
             iface: Ptr[IOStreamInterface, ImmutAnyOrigin],
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> Ptr[IOStream, MutAnyOrigin],
+        ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(iface, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -513,7 +513,7 @@ def close_io(context: Ptr[IOStream, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_CloseIO", def(context: Ptr[IOStream, MutAnyOrigin]) -> Bool
+        lib, "SDL_CloseIO", def(context: Ptr[IOStream, MutAnyOrigin]) thin -> Bool
     ]()(context)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -540,7 +540,7 @@ def get_io_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetIOProperties",
-        def(context: Ptr[IOStream, MutAnyOrigin]) -> PropertiesID,
+        def(context: Ptr[IOStream, MutAnyOrigin]) thin -> PropertiesID,
     ]()(context)
 
 
@@ -570,7 +570,7 @@ def get_io_status(context: Ptr[IOStream, MutAnyOrigin]) raises -> IOStatus:
     return _get_dylib_function[
         lib,
         "SDL_GetIOStatus",
-        def(context: Ptr[IOStream, MutAnyOrigin]) -> IOStatus,
+        def(context: Ptr[IOStream, MutAnyOrigin]) thin -> IOStatus,
     ]()(context)
 
 
@@ -594,7 +594,7 @@ def get_io_size(context: Ptr[IOStream, MutAnyOrigin]) raises -> Int64:
     return _get_dylib_function[
         lib,
         "SDL_GetIOSize",
-        def(context: Ptr[IOStream, MutAnyOrigin]) -> Int64,
+        def(context: Ptr[IOStream, MutAnyOrigin]) thin -> Int64,
     ]()(context)
 
 
@@ -637,7 +637,7 @@ def seek_io(
             context: Ptr[IOStream, MutAnyOrigin],
             offset: Int64,
             whence: IOWhence,
-        ) -> Int64,
+        ) thin -> Int64,
     ]()(context, offset, whence)
 
 
@@ -663,7 +663,7 @@ def tell_io(context: Ptr[IOStream, MutAnyOrigin]) raises -> Int64:
     """
 
     return _get_dylib_function[
-        lib, "SDL_TellIO", def(context: Ptr[IOStream, MutAnyOrigin]) -> Int64
+        lib, "SDL_TellIO", def(context: Ptr[IOStream, MutAnyOrigin]) thin -> Int64
     ]()(context)
 
 
@@ -704,7 +704,7 @@ def read_io(
             context: Ptr[IOStream, MutAnyOrigin],
             ptr: Ptr[NoneType, MutAnyOrigin],
             size: c_size_t,
-        ) -> c_size_t,
+        ) thin -> c_size_t,
     ]()(context, ptr, size)
 
 
@@ -748,7 +748,7 @@ def write_io(
             context: Ptr[IOStream, MutAnyOrigin],
             ptr: Ptr[NoneType, ImmutAnyOrigin],
             size: c_size_t,
-        ) -> c_size_t,
+        ) thin -> c_size_t,
     ]()(context, ptr, size)
 
 
@@ -773,7 +773,7 @@ def flush_io(context: Ptr[IOStream, MutAnyOrigin]) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_FlushIO", def(context: Ptr[IOStream, MutAnyOrigin]) -> Bool
+        lib, "SDL_FlushIO", def(context: Ptr[IOStream, MutAnyOrigin]) thin -> Bool
     ]()(context)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -817,7 +817,7 @@ def load_file_io(
             src: Ptr[IOStream, MutAnyOrigin],
             datasize: Ptr[c_size_t, MutAnyOrigin],
             closeio: Bool,
-        ) -> Ptr[NoneType, MutAnyOrigin],
+        ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(src, datasize, closeio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -856,7 +856,7 @@ def load_file(
         def(
             file: Ptr[c_char, ImmutAnyOrigin],
             datasize: Ptr[c_size_t, MutAnyOrigin],
-        ) -> Ptr[NoneType, MutAnyOrigin],
+        ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr(), datasize)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -896,7 +896,7 @@ def save_file_io(
             data: Ptr[NoneType, ImmutAnyOrigin],
             datasize: c_size_t,
             closeio: Bool,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, data, datasize, closeio)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -930,7 +930,7 @@ def save_file(
             file: Ptr[c_char, ImmutAnyOrigin],
             data: Ptr[NoneType, ImmutAnyOrigin],
             datasize: c_size_t,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(file.as_c_string_slice().unsafe_ptr(), data, datasize)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -966,7 +966,7 @@ def read_u8(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[UInt8, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1002,7 +1002,7 @@ def read_s8(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[Int8, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1042,7 +1042,7 @@ def read_u16_le(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[UInt16, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1082,7 +1082,7 @@ def read_s16_le(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[Int16, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1122,7 +1122,7 @@ def read_u16_be(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[UInt16, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1162,7 +1162,7 @@ def read_s16_be(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[Int16, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1202,7 +1202,7 @@ def read_u32_le(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[UInt32, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1242,7 +1242,7 @@ def read_s32_le(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[Int32, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1282,7 +1282,7 @@ def read_u32_be(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[UInt32, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1322,7 +1322,7 @@ def read_s32_be(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[Int32, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1362,7 +1362,7 @@ def read_u64_le(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[UInt64, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1402,7 +1402,7 @@ def read_s64_le(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[Int64, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1442,7 +1442,7 @@ def read_u64_be(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[UInt64, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1482,7 +1482,7 @@ def read_s64_be(
         def(
             src: Ptr[IOStream, MutAnyOrigin],
             value: Ptr[Int64, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(src, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1508,7 +1508,7 @@ def write_u8(dst: Ptr[IOStream, MutAnyOrigin], value: UInt8) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteU8",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt8) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt8) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1534,7 +1534,7 @@ def write_s8(dst: Ptr[IOStream, MutAnyOrigin], value: Int8) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteS8",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int8) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int8) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1565,7 +1565,7 @@ def write_u16_le(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteU16LE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1596,7 +1596,7 @@ def write_s16_le(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteS16LE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1626,7 +1626,7 @@ def write_u16_be(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteU16BE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt16) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1656,7 +1656,7 @@ def write_s16_be(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteS16BE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int16) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1687,7 +1687,7 @@ def write_u32_le(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteU32LE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1718,7 +1718,7 @@ def write_s32_le(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteS32LE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1748,7 +1748,7 @@ def write_u32_be(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteU32BE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt32) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1778,7 +1778,7 @@ def write_s32_be(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteS32BE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int32) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1809,7 +1809,7 @@ def write_u64_le(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteU64LE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1840,7 +1840,7 @@ def write_s64_le(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteS64LE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1870,7 +1870,7 @@ def write_u64_be(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteU64BE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: UInt64) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -1900,7 +1900,7 @@ def write_s64_be(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_WriteS64BE",
-        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) -> Bool,
+        def(dst: Ptr[IOStream, MutAnyOrigin], value: Int64) thin -> Bool,
     ]()(dst, value)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

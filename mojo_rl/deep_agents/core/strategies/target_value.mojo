@@ -131,6 +131,7 @@ struct SingleQTarget(TargetValue):
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
         var gamma_s = Scalar[dtype](gamma)
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             td_targets: LayoutTensor[
@@ -214,6 +215,7 @@ struct TwinQTarget(TargetValue):
             dtype, Layout.row_major(1), MutAnyOrigin
         ](alpha_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             td_targets: LayoutTensor[
@@ -306,6 +308,7 @@ struct EntropicTwinQTarget(TargetValue):
             dtype, Layout.row_major(1), MutAnyOrigin
         ](alpha_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             td_targets: LayoutTensor[

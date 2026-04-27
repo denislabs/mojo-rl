@@ -28,7 +28,6 @@ The alignment padding between models matches Sequential/DualPath conventions
 from ..constants import dtype, gpu_align
 from ..model.model import Model
 from layout import LayoutTensor, Layout
-from std.builtin.variadics import Variadic
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
@@ -54,8 +53,8 @@ struct CompositeParams[*MODELS: Model]:
         scatter_add(...): Add combined grads to N separate buffers (accumulate)
     """
 
-    comptime model_types = Variadic.types[T=Model, *Self.MODELS]
-    comptime N = TypeList[*Self.model_types].size
+    comptime model_types = Self.MODELS
+    comptime N = Self.model_types.size
 
     @staticmethod
     def _total() -> Int:
@@ -155,6 +154,7 @@ struct CompositeParams[*MODELS: Model]:
         comptime for m in range(Self.N):
             comptime SZ = Self.model_types[m].PARAM_SIZE
 
+            @parameter
             @always_inline
             def _cp_assemble_kernel(
                 d: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],
@@ -198,6 +198,7 @@ struct CompositeParams[*MODELS: Model]:
         comptime for m in range(Self.N):
             comptime SZ = Self.model_types[m].PARAM_SIZE
 
+            @parameter
             @always_inline
             def _cp_scatter_add_kernel(
                 d: LayoutTensor[dtype, Layout.row_major(SZ), MutAnyOrigin],

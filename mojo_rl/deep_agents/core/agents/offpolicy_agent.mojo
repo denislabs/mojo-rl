@@ -891,7 +891,8 @@ struct GenericOffPolicyAgent[
                 dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
             ](out_arr.unsafe_ptr())
             var p = cpu_state.actor.online.params_view()
-            Self.ActorNet.forward[1](obs_t, out_t, p)
+            var s = cpu_state.actor.online.model_state_view()
+            Self.ActorNet.forward[1](obs_t, out_t, p, s)
 
             # Extract mean + log_std
             var mean_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
@@ -957,7 +958,8 @@ struct GenericOffPolicyAgent[
                 dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
             ](act_arr.unsafe_ptr())
             var p = cpu_state.actor.online.params_view()
-            Self.ActorNet.forward[1](obs_t, act_t, p)
+            var s = cpu_state.actor.online.model_state_view()
+            Self.ActorNet.forward[1](obs_t, act_t, p, s)
             var raw = List[Scalar[d]](capacity=Self.ACTIONS)
             for i in range(Self.ACTIONS):
                 raw.append(Scalar[d](Float64(act_arr[i]) * self.action_scale))
@@ -1048,10 +1050,14 @@ struct GenericOffPolicyAgent[
         var next_ci_t = ws.next_ci()
 
         # Forward all target critics
+        # Zero-length model state slice (critic is stateless; CriticGroup has no model_state_view)
+        var critic_state = LayoutTensor[
+            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         for i in range(Self.Config.NUM_CRITICS):
             var next_qi_t = ws.next_q(i)
             var p_ct = cpu_state.critics.target_params_view(i)
-            Self.CriticNet.forward[Self.BATCH](next_ci_t, next_qi_t, p_ct)
+            Self.CriticNet.forward[Self.BATCH](next_ci_t, next_qi_t, p_ct, critic_state)
 
         # Phase 2c: TD targets -- delegate to Config.TargetValue
         var q1_tv = LayoutTensor[
@@ -1098,7 +1104,7 @@ struct GenericOffPolicyAgent[
             var qi_cache_t = ws.q_cache(i)
             var p_ci = cpu_state.critics.online_params_view(i)
             Self.CriticNet.forward_with_cache[Self.BATCH](
-                ci_t, qi_t, p_ci, qi_cache_t
+                ci_t, qi_t, p_ci, critic_state, qi_cache_t
             )
 
             var qio_p = ws.q_out(i).ptr
@@ -1114,7 +1120,7 @@ struct GenericOffPolicyAgent[
             var g_ci = cpu_state.critics.online_grads_view(i)
             cpu_state.critics.pairs[i].zero_grads()
             Self.CriticNet.backward[Self.BATCH](
-                q_grad_t, d_ci_t, p_ci, qi_cache_t, g_ci
+                q_grad_t, d_ci_t, p_ci, critic_state, qi_cache_t, g_ci
             )
             cpu_state.critics.pairs[i].optimizer_step()
 
@@ -1242,7 +1248,8 @@ struct GenericOffPolicyAgent[
                 dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
             ](out_arr.unsafe_ptr())
             var p = cpu_state.actor.online.params_view()
-            Self.ActorNet.forward[1](obs_t, out_t, p)
+            var s = cpu_state.actor.online.model_state_view()
+            Self.ActorNet.forward[1](obs_t, out_t, p, s)
 
             # Extract mean and apply tanh
             var mean_arr = InlineArray[Scalar[dtype], Self.ACTIONS](
@@ -1279,7 +1286,8 @@ struct GenericOffPolicyAgent[
                 dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
             ](act_arr.unsafe_ptr())
             var p = cpu_state.actor.online.params_view()
-            Self.ActorNet.forward[1](obs_t, act_t, p)
+            var s = cpu_state.actor.online.model_state_view()
+            Self.ActorNet.forward[1](obs_t, act_t, p, s)
             var result = List[Float64](capacity=Self.ACTIONS)
             for i in range(Self.ACTIONS):
                 var a = Float64(act_arr[i]) * self.action_scale
@@ -1381,9 +1389,10 @@ struct GenericOffPolicyAgent[
         ](obs_buf.unsafe_ptr())
         var raw_t = gpu_state.explore.raw_act[N_ENVS]()
         var p = gpu_state.actor.online.params_view()
+        var s = gpu_state.actor.online.model_state_view()
 
         Self.ActorNet.forward_gpu[N_ENVS](
-            ctx, obs_t, raw_t, p, gpu_state.explore_buf
+            ctx, obs_t, raw_t, p, s, gpu_state.explore_buf
         )
 
         var act_t = LayoutTensor[
@@ -1487,9 +1496,15 @@ struct GenericOffPolicyAgent[
         var rew_t = gpu_state.rew_view[BS]()
         var done_t = gpu_state.done_view[BS]()
         var p_actor_t = gpu_state.actor.target.params_view()
+        var s_actor_t = gpu_state.actor.target.model_state_view()
         var p_critic_t = gpu_state.critics.target_params_view(0)
         var p_actor = gpu_state.actor.online.params_view()
+        var s_actor = gpu_state.actor.online.model_state_view()
         var p_critic = gpu_state.critics.online_params_view(0)
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        var s_critic = LayoutTensor[
+            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
         # Phase 2: Target actions — delegate to Config.TargetAction
         # Increment RNG counter before target action (separate seed from sample)
@@ -1547,13 +1562,13 @@ struct GenericOffPolicyAgent[
 
         var next_q_t = gpu_state.next_q_view[BS]()
         Self.CriticNet.forward_gpu[BS](
-            ctx, next_ci_t, next_q_t, p_critic_t, gpu_state.critic_ws
+            ctx, next_ci_t, next_q_t, p_critic_t, s_critic, gpu_state.critic_ws
         )
         comptime if Self.Config.NUM_CRITICS == 2:
             var nq2_t = gpu_state.nq2_view[BS]()
             var p_c2t = gpu_state.critics.target_params_view(1)
             Self.CriticNet.forward_gpu[BS](
-                ctx, next_ci_t, nq2_t, p_c2t, gpu_state.critic2_ws
+                ctx, next_ci_t, nq2_t, p_c2t, s_critic, gpu_state.critic2_ws
             )
 
         # Phase 2c: TD targets — delegate to Config.TargetValue
@@ -1595,6 +1610,7 @@ struct GenericOffPolicyAgent[
             ci_t,
             q_t,
             p_critic,
+            s_critic,
             q_cache_t,
             gpu_state.critic_ws,
         )
@@ -1612,6 +1628,7 @@ struct GenericOffPolicyAgent[
             q_grad_t,
             d_ci_t,
             p_critic,
+            s_critic,
             q_cache_t,
             g_critic,
             gpu_state.critic_ws,
@@ -1653,6 +1670,7 @@ struct GenericOffPolicyAgent[
                 ci_t,
                 q2_out_t,
                 p_c2,
+                s_critic,
                 q2_cache_t,
                 gpu_state.critic2_ws,
             )
@@ -1670,6 +1688,7 @@ struct GenericOffPolicyAgent[
                 q_grad_t,
                 d_ci_t,
                 p_c2,
+                s_critic,
                 q2_cache_t,
                 g_c2,
                 gpu_state.critic2_ws,
@@ -1804,6 +1823,7 @@ struct GenericOffPolicyAgent[
                     dtype, Layout.row_major(1), MutAnyOrigin
                 ](gpu_state.gpu_scalars.unsafe_ptr())
 
+                @parameter
                 @always_inline
                 def alpha_wrapper(
                     sc: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -2212,6 +2232,7 @@ struct GenericOffPolicyAgent[
             )
 
         # Deterministic action extraction kernel (takes mean only, no noise)
+        @parameter
         @always_inline
         def extract_deterministic_actions(
             actions: LayoutTensor[
@@ -2260,11 +2281,18 @@ struct GenericOffPolicyAgent[
                 Layout.row_major(Self.Config.ActorModel.PARAM_SIZE),
                 MutAnyOrigin,
             ](actor_params_buf.unsafe_ptr())
+            # Zero-length state slice (eval-only path; no GPUNetworkState available here).
+            var eval_state_t = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.ActorModel.STATE_SIZE),
+                MutAnyOrigin,
+            ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
             Self.Config.ActorModel.forward_gpu_no_cache[N_EVAL_ENVS](
                 ctx,
                 eval_actor_out_t,
                 eval_obs_t,
                 eval_params_t,
+                eval_state_t,
                 actor_workspace_buf,
             )
 

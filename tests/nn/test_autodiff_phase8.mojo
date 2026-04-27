@@ -8,6 +8,7 @@ Run with:
 
 from std.random import seed, random_float64
 from std.math import abs as math_abs, sqrt, exp
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.autodiff import (
@@ -480,8 +481,11 @@ def test_chain_with_attention() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, Chain.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(Chain.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    Chain.forward[BATCH](inp_t, out_t, p_t, c_t)
+    Chain.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var has_nonzero = False
     for i in range(BATCH * Chain.OUT_DIM):
@@ -505,7 +509,7 @@ def test_chain_with_attention() -> Int:
         dtype, Layout.row_major(Chain.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    Chain.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    Chain.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_nonzero_gi = False
     for i in range(BATCH * Chain.IN_DIM):
@@ -576,8 +580,11 @@ def test_residual_attention() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, ResAttn.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(ResAttn.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    ResAttn.forward[BATCH](inp_t, out_t, p_t, c_t)
+    ResAttn.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     # output should differ from input (inner block adds something)
     var diff: Float64 = 0
@@ -604,7 +611,7 @@ def test_residual_attention() -> Int:
         dtype, Layout.row_major(ResAttn.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    ResAttn.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    ResAttn.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_gi = False
     for i in range(BATCH * ResAttn.IN_DIM):
@@ -684,8 +691,11 @@ def test_transformer_composites() -> Int:
         Layout.row_major(BATCH, TransformerLayer.CACHE_SIZE),
         MutAnyOrigin,
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(TransformerLayer.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    TransformerLayer.forward[BATCH](inp_t, out_t, p_t, c_t)
+    TransformerLayer.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var has_output = False
     for i in range(BATCH * TransformerLayer.OUT_DIM):
@@ -709,7 +719,7 @@ def test_transformer_composites() -> Int:
         dtype, Layout.row_major(TransformerLayer.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    TransformerLayer.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    TransformerLayer.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_gi = False
     for i in range(BATCH * TransformerLayer.IN_DIM):
@@ -797,8 +807,11 @@ def test_stacked_transformer() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, Encoder.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(Encoder.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    Encoder.forward[BATCH](inp_t, out_t, p_t, c_t)
+    Encoder.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var has_output = False
     for i in range(BATCH * Encoder.OUT_DIM):
@@ -826,7 +839,7 @@ def test_stacked_transformer() -> Int:
         dtype, Layout.row_major(Encoder.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    Encoder.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    Encoder.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_gi = False
     for i in range(BATCH * Encoder.IN_DIM):

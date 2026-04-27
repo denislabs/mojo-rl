@@ -42,7 +42,7 @@ Example usage:
     var next_features = features.get_features_simd4(next_obs)
     buffer.push(state_features, action, reward, next_features, done)
 
-    if buffer.len() >= batch_size:
+    if buffer.byte_length() >= batch_size:
         var batch = buffer.sample(batch_size)
         agent.update(batch)
 """
@@ -235,7 +235,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             Raw linear output w · φ(s)
         """
         var output: Float64 = 0.0
-        var n = min(len(features), len(weights))
+        var n = min(features.byte_length(), weights.byte_length())
         for i in range(n):
             output += weights[i] * features[i]
         return output
@@ -316,7 +316,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
         var critic_features = List[Float64](capacity=self.num_critic_features)
 
         # Add state features
-        for i in range(len(state_features)):
+        for i in range(state_features.byte_length()):
             critic_features.append(state_features[i])
 
         # Add action features: [a, a²]
@@ -336,7 +336,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             action: Action value
         """
         # Copy state features
-        var n = len(state_features)
+        var n = state_features.byte_length()
         for i in range(n):
             self._critic_features[i] = state_features[i]
 
@@ -369,7 +369,9 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             state_features, action
         )
         var q_value: Float64 = 0.0
-        var n = min(len(critic_features), len(self.critic_weights))
+        var n = min(
+            critic_features.byte_length(), self.critic_weights.byte_length()
+        )
         for i in range(n):
             q_value += self.critic_weights[i] * critic_features[i]
         return q_value
@@ -382,7 +384,10 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             state_features, action
         )
         var q_value: Float64 = 0.0
-        var n = min(len(critic_features), len(self.target_critic_weights))
+        var n = min(
+            critic_features.byte_length(),
+            self.target_critic_weights.byte_length(),
+        )
         for i in range(n):
             q_value += self.target_critic_weights[i] * critic_features[i]
         return q_value
@@ -401,7 +406,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
         Args:
             batch: List of ContinuousTransition objects.
         """
-        if len(batch) == 0:
+        if batch.byte_length() == 0:
             return
 
         # Update critic
@@ -424,7 +429,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
         Uses semi-gradient update:
         w += α * (y - Q(s,a)) * ∇Q(s,a)
         """
-        var batch_size = len(batch)
+        var batch_size = batch.byte_length()
         var step_size = self.critic_lr / Float64(batch_size)
 
         for i in range(batch_size):
@@ -455,8 +460,8 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             var td_error = target - current_q
 
             # Update critic weights: w += α * δ * φ
-            for j in range(len(critic_features)):
-                if j < len(self.critic_weights):
+            for j in range(critic_features.byte_length()):
+                if j < self.critic_weights.byte_length():
                     self.critic_weights[j] += (
                         step_size * td_error * critic_features[j]
                     )
@@ -475,7 +480,7 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
         For linear actor μ(s) = tanh(w_actor · φ(s)) * scale:
         ∇_θ μ(s) = scale * (1 - tanh²(w_actor · φ(s))) * φ(s)
         """
-        var batch_size = len(batch)
+        var batch_size = batch.byte_length()
         var step_size = self.actor_lr / Float64(batch_size)
 
         for i in range(batch_size):
@@ -493,12 +498,12 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             # ∇_a Q = (1/scale) * (w_n + 2 * w_{n+1} * a_norm)
             var a_norm = action / self.action_scale
             var grad_a_q: Float64 = 0.0
-            if self.num_state_features < len(self.critic_weights):
+            if self.num_state_features < self.critic_weights.byte_length():
                 grad_a_q = (
                     self.critic_weights[self.num_state_features]
                     / self.action_scale
                 )
-            if self.num_state_features + 1 < len(self.critic_weights):
+            if self.num_state_features + 1 < self.critic_weights.byte_length():
                 grad_a_q += (
                     2.0
                     * self.critic_weights[self.num_state_features + 1]
@@ -513,8 +518,8 @@ struct DDPGAgent[DTYPE: DType where DTYPE.is_floating_point()](
             var grad_mu_scale = self.action_scale * (1.0 - tanh_h * tanh_h)
 
             # Update actor weights using chain rule: ∇_θ J = ∇_a Q * ∇_θ μ
-            for j in range(len(transition.state)):
-                if j < len(self.actor_weights):
+            for j in range(transition.state.byte_length()):
+                if j < self.actor_weights.byte_length():
                     var grad_theta = (
                         grad_a_q * grad_mu_scale * transition.state[j]
                     )
@@ -808,7 +813,7 @@ def _list_to_simd4_f64[
     Casts each element to Float64.
     """
     var result = SIMD[DType.float64, 4](0.0)
-    var n = min(len(obs), 4)
+    var n = min(obs.byte_length(), 4)
     for i in range(n):
         result[i] = Float64(obs[i])
     return result

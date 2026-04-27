@@ -14,7 +14,6 @@ Usage:
 """
 
 from ..types import TendonDef, ConeType, Model
-from std.builtin.variadics import Variadic
 
 
 trait TendonSpec:
@@ -93,8 +92,8 @@ struct Tendons[*T: TendonSpec]:
     Provides N (tendon count) for MAX_TENDON sizing.
     """
 
-    comptime tendon_types = Variadic.types[T=TendonSpec, *Self.T]
-    comptime N: Int = TypeList[*Self.tendon_types].size
+    comptime tendon_types = Self.T
+    comptime N: Int = Self.tendon_types.size
 
     @staticmethod
     def setup_model[

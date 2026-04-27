@@ -31,6 +31,8 @@ from mojo_rl.nn.model import (
     Tanh,
     Sigmoid,
     LayerNorm,
+    SimNorm,
+    NormedLinear,
     Conv2DReLU,
     Conv2DLayer,
     Conv2DBatchNormReLU,
@@ -89,7 +91,8 @@ def cpu_vs_gpu_check[M: Model, BS: Int = 4](
         dtype, Layout.row_major(BS, CS), MutAnyOrigin
     ](cpu_cache_ptr)
 
-    M.forward[BS](cpu_input_t, cpu_output_t, cpu_state.params_view(), cpu_cache_t)
+    var cpu_model_state = cpu_state.model_state_view()
+    M.forward[BS](cpu_input_t, cpu_output_t, cpu_state.params_view(), cpu_model_state, cpu_cache_t)
 
     # ── GPU forward ──────────────────────────────────────────
     var gpu_input_host = ctx.enqueue_create_host_buffer[dtype](BS * IN)
@@ -116,11 +119,13 @@ def cpu_vs_gpu_check[M: Model, BS: Int = 4](
         dtype, Layout.row_major(BS, CS), MutAnyOrigin
     ](gpu_cache_buf.unsafe_ptr())
 
+    var gpu_model_state = gpu.model_state_view()
     M.forward_gpu[BS](
         ctx,
         gpu_output_t,
         gpu_input_t,
         gpu.params_view(),
+        gpu_model_state,
         gpu_cache_t,
         workspace,
     )
@@ -187,12 +192,18 @@ def cpu_vs_gpu_check[M: Model, BS: Int = 4](
         )
 
     # ── CPU backward ─────────────────────────────────────────
+    # Copy grad_out into a scratch buffer — some layers (e.g. NormedLinear)
+    # reuse grad_output as scratch, so we must preserve the original for
+    # the GPU upload below.
     cpu_state.zero_grads()
     var cpu_grad_in_ptr = alloc[Scalar[dtype]](BS * IN)
     memset(cpu_grad_in_ptr, 0, BS * IN)
+    var cpu_bwd_grad_out_ptr = alloc[Scalar[dtype]](BS * OUT)
+    for i in range(BS * OUT):
+        (cpu_bwd_grad_out_ptr + i)[] = (grad_out_ptr + i)[]
     var cpu_grad_out_t = LayoutTensor[
         dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](grad_out_ptr)
+    ](cpu_bwd_grad_out_ptr)
     var cpu_grad_in_t = LayoutTensor[
         dtype, Layout.row_major(BS, IN), MutAnyOrigin
     ](cpu_grad_in_ptr)
@@ -202,6 +213,7 @@ def cpu_vs_gpu_check[M: Model, BS: Int = 4](
         cpu_grad_out_t,
         cpu_grad_in_t,
         cpu_state.params_view(),
+        cpu_model_state,
         cpu_cache_t,
         cpu_grads,
     )
@@ -230,6 +242,7 @@ def cpu_vs_gpu_check[M: Model, BS: Int = 4](
         gpu_grad_in_t,
         gpu_grad_out_t,
         gpu.params_view(),
+        gpu_model_state,
         gpu_cache_t,
         gpu_grads,
         workspace,
@@ -380,6 +393,23 @@ def main() raises:
     cpu_vs_gpu_check[Tanh[8]](ctx, "Tanh[8]")
     cpu_vs_gpu_check[Sigmoid[8]](ctx, "Sigmoid[8]")
 
+    # ── TDMPC2 normalization layers ──────────────────────────
+    # NormedLinear: matmul reduction order + LayerNorm reduction differ CPU vs GPU.
+    # SimNorm: group-wise softmax, reduction is per-group so very tight.
+    print("--- TDMPC2 layers (NormedLinear / SimNorm) ---")
+    cpu_vs_gpu_check[NormedLinear[8, 16]](
+        ctx, "NormedLinear[8,16]", fwd_tol=1e-3, bwd_tol=5e-3,
+    )
+    cpu_vs_gpu_check[NormedLinear[16, 8]](
+        ctx, "NormedLinear[16,8]", fwd_tol=1e-3, bwd_tol=5e-3,
+    )
+    cpu_vs_gpu_check[NormedLinear[32, 32]](
+        ctx, "NormedLinear[32,32]", fwd_tol=1e-3, bwd_tol=5e-3,
+    )
+    cpu_vs_gpu_check[SimNorm[16, 8]](ctx, "SimNorm[16, simplex=8]")
+    cpu_vs_gpu_check[SimNorm[24, 8]](ctx, "SimNorm[24, simplex=8]")
+    cpu_vs_gpu_check[SimNorm[32, 4]](ctx, "SimNorm[32, simplex=4]")
+
     # ── Combinators ──────────────────────────────────────────
     print("--- Combinators ---")
     cpu_vs_gpu_check[Sequential[LinearReLU[8, 6], Linear[6, 4]]](
@@ -445,6 +475,33 @@ def main() raises:
     ]
     cpu_vs_gpu_check[Conv_DualHead](
         ctx, "Conv+Parallel FC dual-head (AlphaZero-like)"
+    )
+
+    # TDMPC2 dynamics head (NormedLinear MLP + projection + SimNorm)
+    comptime TDMPC2_DynamicsHead = Sequential[
+        NormedLinear[12, 16],
+        NormedLinear[16, 16],
+        Linear[16, 16],
+        SimNorm[16, 8],
+    ]
+    cpu_vs_gpu_check[TDMPC2_DynamicsHead](
+        ctx,
+        "TDMPC2 dynamics head (NormedLinear x2 + Linear + SimNorm)",
+        fwd_tol=1e-3,
+        bwd_tol=5e-3,
+    )
+
+    # TDMPC2 encoder (stacked NormedLinear)
+    comptime TDMPC2_Encoder = Sequential[
+        NormedLinear[8, 16],
+        NormedLinear[16, 16],
+        NormedLinear[16, 8],
+    ]
+    cpu_vs_gpu_check[TDMPC2_Encoder](
+        ctx,
+        "TDMPC2 encoder (NormedLinear x3)",
+        fwd_tol=1e-3,
+        bwd_tol=5e-3,
     )
 
     print("=== Done ===")

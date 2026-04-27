@@ -70,7 +70,7 @@ def gradcheck[M: Model, BS: Int = 4](
         cache_buf.unsafe_ptr()
     )
 
-    M.forward_gpu[BS](ctx, output_t, input_t, gpu.params_view(), cache_t, workspace)
+    M.forward_gpu[BS](ctx, output_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_t, workspace)
 
     var grad_in_buf = ctx.enqueue_create_buffer[dtype](BS * IN)
     ctx.enqueue_memset(grad_in_buf, 0)
@@ -84,7 +84,7 @@ def gradcheck[M: Model, BS: Int = 4](
     gpu.zero_grads(ctx)
     var grads = gpu.grads_view()
     M.backward_gpu[BS](
-        ctx, grad_in_t, grad_out_t, gpu.params_view(), cache_t, grads, workspace,
+        ctx, grad_in_t, grad_out_t, gpu.params_view(), gpu.model_state_view(), cache_t, grads, workspace,
     )
 
     var ana_grads_host = ctx.enqueue_create_host_buffer[dtype](PS)
@@ -134,7 +134,7 @@ def gradcheck[M: Model, BS: Int = 4](
             dtype, Layout.row_major(BS, CS), MutAnyOrigin
         ](cache_tmp.unsafe_ptr())
         M.forward_gpu[BS](
-            ctx, out_plus_t, input_t, gpu.params_view(), cache_tmp_t, workspace
+            ctx, out_plus_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_tmp_t, workspace
         )
         ctx.enqueue_copy(out_plus_host, out_plus_buf)
 
@@ -148,7 +148,7 @@ def gradcheck[M: Model, BS: Int = 4](
             dtype, Layout.row_major(BS, CS), MutAnyOrigin
         ](cache_tmp.unsafe_ptr())
         M.forward_gpu[BS](
-            ctx, out_minus_t, input_t, gpu.params_view(), cache_minus_t, workspace
+            ctx, out_minus_t, input_t, gpu.params_view(), gpu.model_state_view(), cache_minus_t, workspace
         )
         ctx.enqueue_copy(out_minus_host, out_minus_buf)
 
@@ -336,7 +336,7 @@ def cpu_vs_gpu_forward[M: Model, BS: Int = 4](
         cpu_cache.unsafe_ptr()
     )
 
-    M.forward[BS](input_t, cpu_out_t, cpu_state.params_view(), cpu_cache_t)
+    M.forward[BS](input_t, cpu_out_t, cpu_state.params_view(), cpu_state.model_state_view(), cpu_cache_t)
 
     # GPU forward with same params
     var gpu = GPUNetworkState[M, Adam[], dtype](ctx)
@@ -363,7 +363,7 @@ def cpu_vs_gpu_forward[M: Model, BS: Int = 4](
     )
 
     M.forward_gpu[BS](
-        ctx, gpu_out_t, gpu_input_t, gpu.params_view(), gpu_cache_t, workspace
+        ctx, gpu_out_t, gpu_input_t, gpu.params_view(), gpu.model_state_view(), gpu_cache_t, workspace
     )
 
     var gpu_out_host = ctx.enqueue_create_host_buffer[dtype](BS * OUT)

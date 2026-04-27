@@ -1,6 +1,7 @@
 """Debug: compare intermediate values in ResBlockConv2DBN vs decomposed."""
 
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.memory import UnsafePointer
 from layout import Layout, LayoutTensor
 from std.random import random_float64
 from std.math import abs, ceildiv
@@ -77,7 +78,10 @@ def main() raises:
         var f_p_t = LayoutTensor[dtype, Layout.row_major(Fused.PARAM_SIZE), MutAnyOrigin](f_params)
         var f_c_t = LayoutTensor[dtype, Layout.row_major(BATCH, Fused.CACHE_SIZE), MutAnyOrigin](f_cache)
 
-        Fused.forward_gpu[BATCH](ctx, f_out_t, f_in_t, f_p_t, f_c_t, f_ws)
+        var f_s_t = LayoutTensor[dtype, Layout.row_major(Fused.STATE_SIZE), MutAnyOrigin](
+            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        )
+        Fused.forward_gpu[BATCH](ctx, f_out_t, f_in_t, f_p_t, f_s_t, f_c_t, f_ws)
         ctx.synchronize()
 
         # Run ONLY the BN backward kernel (step 1)
@@ -131,7 +135,10 @@ def main() raises:
         var d_g_t = LayoutTensor[dtype, Layout.row_major(Decomp.PARAM_SIZE), MutAnyOrigin](d_grads)
         var d_gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, Decomp.IN_DIM), MutAnyOrigin](d_grad_in)
 
-        Decomp.forward_gpu[BATCH](ctx, d_out_t, d_in_t, d_p_t, d_c_t, d_ws)
+        var d_s_t = LayoutTensor[dtype, Layout.row_major(Decomp.STATE_SIZE), MutAnyOrigin](
+            UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        )
+        Decomp.forward_gpu[BATCH](ctx, d_out_t, d_in_t, d_p_t, d_s_t, d_c_t, d_ws)
         ctx.synchronize()
 
         # Full decomposed backward
@@ -145,7 +152,7 @@ def main() raises:
         var d_go_t2 = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Decomp.OUT_DIM), MutAnyOrigin]](
             LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_out_copy)
         )
-        Decomp.backward_gpu[BATCH](ctx, d_gi_t, d_go_t2, d_p_t, d_c_t, d_g_t, d_ws)
+        Decomp.backward_gpu[BATCH](ctx, d_gi_t, d_go_t2, d_p_t, d_s_t, d_c_t, d_g_t, d_ws)
         ctx.synchronize()
 
         # Compare fused grad_conv2 vs decomposed grad_input (full backward result)

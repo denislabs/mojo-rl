@@ -106,8 +106,8 @@ struct Lights[*L: LightSpec](LightsLike):
     Lights are purely visual — no setup_model needed.
     """
 
-    comptime light_types = Variadic.types[T=LightSpec, *Self.L]
-    comptime N: Int = TypeList[*Self.light_types].size
+    comptime light_types = Self.L
+    comptime N: Int = Self.light_types.size
 
     @staticmethod
     def setup_lights() -> List[Light]:

@@ -224,7 +224,7 @@ def demonstrate_per_sampling():
     for _ in range(num_samples):
         var result = buffer.sample(batch_size=1)
         var indices = result[0].copy()
-        if len(indices) > 0:
+        if indices.byte_length() > 0:
             if indices[0] >= 10:
                 cliff_count += 1
             else:

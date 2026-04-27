@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Keycode
+"""Keycode.
 
 Defines constants which identify keyboard keys and modifiers.
 

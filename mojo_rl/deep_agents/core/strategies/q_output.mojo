@@ -129,6 +129,7 @@ struct DirectQ(QOutput):
     ) raises -> None:
         """Identity: copy raw output to q_values on GPU."""
 
+        @parameter
         @always_inline
         def copy_kernel(
             src: LayoutTensor[
@@ -167,6 +168,7 @@ struct DirectQ(QOutput):
     ) raises -> None:
         """Identity: copy dq to d_raw on GPU."""
 
+        @parameter
         @always_inline
         def copy_kernel(
             src: LayoutTensor[
@@ -267,6 +269,7 @@ struct DuelingQ(QOutput):
         """Compute Q = V + (A - mean(A)) on GPU. One thread per batch sample."""
         from mojo_rl.deep_agents.core.kernels import dueling_combine_kernel
 
+        @parameter
         @always_inline
         def combine_wrapper(
             q_out: LayoutTensor[
@@ -301,6 +304,7 @@ struct DuelingQ(QOutput):
         """
         from mojo_rl.deep_agents.core.kernels import dueling_grad_kernel
 
+        @parameter
         @always_inline
         def grad_wrapper(
             d_out: LayoutTensor[

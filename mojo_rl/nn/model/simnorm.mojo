@@ -67,6 +67,9 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -115,6 +118,9 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (inference)."""
         for batch in range(BATCH):
@@ -153,6 +159,9 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -335,6 +344,9 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -350,6 +362,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -386,6 +399,9 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -398,6 +414,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -431,6 +448,9 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """Launch forward pass on GPU without caching — on DeviceStream."""
@@ -441,6 +461,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -475,6 +496,9 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -496,6 +520,7 @@ struct SimNorm[dim: Int, simplex_dim: Int = 8](Model):
         var total = BATCH * Self.N_GROUPS
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_input: LayoutTensor[

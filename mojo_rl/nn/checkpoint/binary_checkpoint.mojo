@@ -138,6 +138,13 @@ struct BinaryCheckpoint[dtype: DType = DType.float32](Copyable, Movable):
     # Querying
     # =========================================================================
 
+    def has_section(self, name: String) -> Bool:
+        """Return True if a named float section exists in the checkpoint."""
+        for i in range(len(self.sections)):
+            if self.sections[i].name == name:
+                return True
+        return False
+
     def get_float_section(
         self, name: String, size: Int
     ) raises -> List[Scalar[Self.dtype]]:
@@ -187,7 +194,7 @@ struct BinaryCheckpoint[dtype: DType = DType.float32](Copyable, Movable):
         var prefix = key + "="
         for i in range(len(self.metadata)):
             if self.metadata[i].startswith(prefix):
-                return String(self.metadata[i][byte = len(prefix) :])
+                return String(self.metadata[i][byte = prefix.byte_length() :])
         return String("")
 
     def get_metadata_list(self) -> List[String]:
@@ -343,9 +350,9 @@ struct BinaryCheckpoint[dtype: DType = DType.float32](Copyable, Movable):
         for i in range(len(self.sections)):
             ref section = self.sections[i]
             # ~12 bytes per float in text (e.g. "-0.123456\n")
-            size += len(section.name) + 2 + len(section.data) * 12
+            size += section.name.byte_length() + 2 + len(section.data) * 12
         for i in range(len(self.metadata)):
-            size += len(self.metadata[i]) + 1
+            size += self.metadata[i].byte_length() + 1
         return size
 
     # =========================================================================

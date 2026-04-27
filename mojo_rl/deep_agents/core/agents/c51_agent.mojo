@@ -558,7 +558,8 @@ struct GenericC51Agent[
             dtype, Layout.row_major(1, Self.RAW_OUT), MutAnyOrigin
         ](raw_arr.unsafe_ptr())
         var p = cpu_state.online.params_view()
-        Self.QNet.forward[1](obs_t, raw_t, p)
+        var s = cpu_state.online.model_state_view()
+        Self.QNet.forward[1](obs_t, raw_t, p, s)
 
         # Compute expected Q from distributional output
         var q_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
@@ -638,8 +639,9 @@ struct GenericC51Agent[
             dtype, Layout.row_major(Self.BATCH, Self.Q_CS), MutAnyOrigin
         ](cache_arr.unsafe_ptr())
         var p_online = cpu_state.online.params_view()
+        var s_online = cpu_state.online.model_state_view()
         Self.QNet.forward_with_cache[Self.BATCH](
-            obs_t, raw_t, p_online, cache_t
+            obs_t, raw_t, p_online, s_online, cache_t
         )
 
         # Target forward on next_obs
@@ -650,7 +652,8 @@ struct GenericC51Agent[
             dtype, Layout.row_major(Self.BATCH, Self.RAW_OUT), MutAnyOrigin
         ](target_raw_arr.unsafe_ptr())
         var p_target = cpu_state.target.params_view()
-        Self.QNet.forward[Self.BATCH](next_obs_t, target_raw_t, p_target)
+        var s_target = cpu_state.target.model_state_view()
+        Self.QNet.forward[Self.BATCH](next_obs_t, target_raw_t, p_target, s_target)
 
         # Online forward on next_obs (Double DQN: online selects action)
         var online_next_raw_arr = InlineArray[
@@ -659,7 +662,7 @@ struct GenericC51Agent[
         var online_next_raw_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.RAW_OUT), MutAnyOrigin
         ](online_next_raw_arr.unsafe_ptr())
-        Self.QNet.forward[Self.BATCH](next_obs_t, online_next_raw_t, p_online)
+        Self.QNet.forward[Self.BATCH](next_obs_t, online_next_raw_t, p_online, s_online)
 
         # Compute expected Q from online_next for action selection (Double DQN)
         var online_next_q = InlineArray[
@@ -783,7 +786,7 @@ struct GenericC51Agent[
         ](d_obs.unsafe_ptr())
         var g = cpu_state.online.grads_view()
         cpu_state.online.zero_grads()
-        Self.QNet.backward[Self.BATCH](grad_t, d_obs_t, p_online, cache_t, g)
+        Self.QNet.backward[Self.BATCH](grad_t, d_obs_t, p_online, s_online, cache_t, g)
         cpu_state.online.optimizer_step()
 
         self.train_step_count += 1
@@ -889,7 +892,8 @@ struct GenericC51Agent[
             dtype, Layout.row_major(1, Self.RAW_OUT), MutAnyOrigin
         ](raw_arr.unsafe_ptr())
         var p = cpu_state.online.params_view()
-        Self.QNet.forward[1](obs_t, raw_t, p)
+        var s = cpu_state.online.model_state_view()
+        Self.QNet.forward[1](obs_t, raw_t, p, s)
 
         var q_arr = InlineArray[Scalar[dtype], Self.ACTIONS](uninitialized=True)
         _expected_q_from_logits[1, Self.ACTIONS, Self.NUM_ATOMS, Self.RAW_OUT](
@@ -939,27 +943,27 @@ struct GenericC51Agent[
         var metadata = read_metadata_section(content)
 
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
 
         var tau_str = get_metadata_value(metadata, "tau")
-        if len(tau_str) > 0:
+        if tau_str.byte_length() > 0:
             self.tau = atof(tau_str)
 
         var epsilon_str = get_metadata_value(metadata, "epsilon")
-        if len(epsilon_str) > 0:
+        if epsilon_str.byte_length() > 0:
             self.epsilon = atof(epsilon_str)
 
         var epsilon_min_str = get_metadata_value(metadata, "epsilon_min")
-        if len(epsilon_min_str) > 0:
+        if epsilon_min_str.byte_length() > 0:
             self.epsilon_min = atof(epsilon_min_str)
 
         var epsilon_decay_str = get_metadata_value(metadata, "epsilon_decay")
-        if len(epsilon_decay_str) > 0:
+        if epsilon_decay_str.byte_length() > 0:
             self.epsilon_decay = atof(epsilon_decay_str)
 
         var train_step_str = get_metadata_value(metadata, "train_step_count")
-        if len(train_step_str) > 0:
+        if train_step_str.byte_length() > 0:
             self.train_step_count = Int(atol(train_step_str))
 
     # =========================================================================
@@ -1095,7 +1099,8 @@ struct GenericC51Agent[
             dtype, Layout.row_major(N_ENVS, Self.RAW_OUT), MutAnyOrigin
         ](gpu_state.env_raw_buf.unsafe_ptr())
         var p = gpu_state.online.params_view()
-        Self.QNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_ws)
+        var s = gpu_state.online.model_state_view()
+        Self.QNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, s, gpu_state.inf_ws)
 
         # Compute expected Q from logits + epsilon-greedy argmax
         var q_t = LayoutTensor[
@@ -1112,6 +1117,7 @@ struct GenericC51Agent[
             UInt64(self.get_total_steps()) * UInt64(2654435761)
         )
 
+        @parameter
         @always_inline
         def c51_select_kernel(
             eps: Scalar[dtype],
@@ -1258,7 +1264,9 @@ struct GenericC51Agent[
         ](gpu_state.grad_input.unsafe_ptr())
 
         var p_online = gpu_state.online.params_view()
+        var s_online = gpu_state.online.model_state_view()
         var p_target = gpu_state.target.params_view()
+        var s_target = gpu_state.target.model_state_view()
 
         # ---- Phase 2: Online forward with cache ----
         Self.QNet.forward_gpu_with_cache[BATCH](
@@ -1266,6 +1274,7 @@ struct GenericC51Agent[
             obs_t,
             q_raw_t,
             p_online,
+            s_online,
             cache_t,
             gpu_state.train_ws,
         )
@@ -1276,6 +1285,7 @@ struct GenericC51Agent[
             next_obs_t,
             next_q_raw_t,
             p_target,
+            s_target,
             gpu_state.train_ws,
         )
 
@@ -1285,10 +1295,12 @@ struct GenericC51Agent[
             next_obs_t,
             online_next_q_raw_t,
             p_online,
+            s_online,
             gpu_state.train_ws,
         )
 
         # ---- Phase 4: Compute expected Q from online_next for action selection ----
+        @parameter
         @always_inline
         def expected_q_kernel(
             raw: LayoutTensor[
@@ -1339,6 +1351,7 @@ struct GenericC51Agent[
             (Self.Config.v_max - Self.Config.v_min) / Float64(ATOMS - 1)
         )
 
+        @parameter
         @always_inline
         def c51_project_grad_kernel(
             online_raw: LayoutTensor[
@@ -1470,6 +1483,7 @@ struct GenericC51Agent[
             grad_raw_t,
             grad_in_t,
             p_online,
+            s_online,
             cache_t,
             g,
             gpu_state.train_ws,

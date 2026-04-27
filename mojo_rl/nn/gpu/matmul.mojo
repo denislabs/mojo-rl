@@ -485,6 +485,7 @@ def gpu_matmul[
     comptime grid_x = (N + MMA_BLOCK_N - 1) // MMA_BLOCK_N
     comptime grid_y = (M + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+    @parameter
     @always_inline
     def kernel(
         output: LayoutTensor[dtype, Layout.row_major(M, N), MutAnyOrigin],

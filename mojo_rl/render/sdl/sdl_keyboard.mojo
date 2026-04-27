@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Keyboard
+"""Keyboard.
 
 SDL keyboard management.
 
@@ -70,7 +70,7 @@ def has_keyboard() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_HasKeyboard.
     """
 
-    return _get_dylib_function[lib, "SDL_HasKeyboard", def() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_HasKeyboard", def() thin -> Bool]()()
 
 
 def get_keyboards(
@@ -102,7 +102,7 @@ def get_keyboards(
     ret = _get_dylib_function[
         lib,
         "SDL_GetKeyboards",
-        def(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[KeyboardID, MutAnyOrigin],
+        def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[KeyboardID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -131,7 +131,7 @@ def get_keyboard_name_for_id(
     ret = _get_dylib_function[
         lib,
         "SDL_GetKeyboardNameForID",
-        def(instance_id: KeyboardID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(instance_id: KeyboardID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -150,7 +150,7 @@ def get_keyboard_focus() raises -> Ptr[Window, MutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetKeyboardFocus", def() -> Ptr[Window, MutAnyOrigin]
+        lib, "SDL_GetKeyboardFocus", def() thin -> Ptr[Window, MutAnyOrigin]
     ]()()
 
 
@@ -192,7 +192,7 @@ def get_keyboard_state(
     return _get_dylib_function[
         lib,
         "SDL_GetKeyboardState",
-        def(numkeys: Ptr[c_int, MutAnyOrigin]) -> Ptr[Bool, ImmutAnyOrigin],
+        def(numkeys: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[Bool, ImmutAnyOrigin],
     ]()(numkeys)
 
 
@@ -207,7 +207,7 @@ def reset_keyboard() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_ResetKeyboard.
     """
 
-    return _get_dylib_function[lib, "SDL_ResetKeyboard", def() -> None]()()
+    return _get_dylib_function[lib, "SDL_ResetKeyboard", def() thin -> None]()()
 
 
 def get_mod_state() raises -> Keymod:
@@ -223,7 +223,7 @@ def get_mod_state() raises -> Keymod:
     Docs: https://wiki.libsdl.org/SDL3/SDL_GetModState.
     """
 
-    return _get_dylib_function[lib, "SDL_GetModState", def() -> Keymod]()()
+    return _get_dylib_function[lib, "SDL_GetModState", def() thin -> Keymod]()()
 
 
 def set_mod_state(modstate: Keymod) raises -> None:
@@ -247,7 +247,7 @@ def set_mod_state(modstate: Keymod) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_SetModState", def(modstate: Keymod) -> None
+        lib, "SDL_SetModState", def(modstate: Keymod) thin -> None
     ]()(modstate)
 
 
@@ -280,7 +280,7 @@ def get_key_from_scancode(
     return _get_dylib_function[
         lib,
         "SDL_GetKeyFromScancode",
-        def(scancode: Scancode, modstate: Keymod, key_event: Bool) -> Keycode,
+        def(scancode: Scancode, modstate: Keymod, key_event: Bool) thin -> Keycode,
     ]()(scancode, modstate, key_event)
 
 
@@ -310,7 +310,7 @@ def get_scancode_from_key(
     return _get_dylib_function[
         lib,
         "SDL_GetScancodeFromKey",
-        def(key: Keycode, modstate: Ptr[Keymod, MutAnyOrigin]) -> Scancode,
+        def(key: Keycode, modstate: Ptr[Keymod, MutAnyOrigin]) thin -> Scancode,
     ]()(key, modstate)
 
 
@@ -336,7 +336,7 @@ def set_scancode_name(scancode: Scancode, var name: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetScancodeName",
-        def(scancode: Scancode, name: Ptr[c_char, ImmutAnyOrigin]) -> Bool,
+        def(scancode: Scancode, name: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
     ]()(scancode, name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -372,7 +372,7 @@ def get_scancode_name(
     return _get_dylib_function[
         lib,
         "SDL_GetScancodeName",
-        def(scancode: Scancode) -> Ptr[c_char, ImmutAnyOrigin],
+        def(scancode: Scancode) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(scancode)
 
 
@@ -395,7 +395,7 @@ def get_scancode_from_name(var name: String) raises -> Scancode:
     return _get_dylib_function[
         lib,
         "SDL_GetScancodeFromName",
-        def(name: Ptr[c_char, ImmutAnyOrigin]) -> Scancode,
+        def(name: Ptr[c_char, ImmutAnyOrigin]) thin -> Scancode,
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
@@ -419,7 +419,7 @@ def get_key_name(key: Keycode) raises -> Ptr[c_char, ImmutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetKeyName", def(key: Keycode) -> Ptr[c_char, ImmutAnyOrigin]
+        lib, "SDL_GetKeyName", def(key: Keycode) thin -> Ptr[c_char, ImmutAnyOrigin]
     ]()(key)
 
 
@@ -442,7 +442,7 @@ def get_key_from_name(var name: String) raises -> Keycode:
     return _get_dylib_function[
         lib,
         "SDL_GetKeyFromName",
-        def(name: Ptr[c_char, ImmutAnyOrigin]) -> Keycode,
+        def(name: Ptr[c_char, ImmutAnyOrigin]) thin -> Keycode,
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
@@ -475,7 +475,7 @@ def start_text_input(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_StartTextInput",
-        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -622,7 +622,7 @@ def start_text_input_with_properties(
     ret = _get_dylib_function[
         lib,
         "SDL_StartTextInputWithProperties",
-        def(window: Ptr[Window, MutAnyOrigin], props: PropertiesID) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin], props: PropertiesID) thin -> Bool,
     ]()(window, props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -646,7 +646,7 @@ def text_input_active(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_TextInputActive",
-        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
     ]()(window)
 
 
@@ -672,7 +672,7 @@ def stop_text_input(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_StopTextInput",
-        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -697,7 +697,7 @@ def clear_composition(window: Ptr[Window, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_ClearComposition",
-        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
     ]()(window)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -737,7 +737,7 @@ def set_text_input_area(
             window: Ptr[Window, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
             cursor: c_int,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(window, rect, cursor)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -776,7 +776,7 @@ def get_text_input_area(
             window: Ptr[Window, MutAnyOrigin],
             rect: Ptr[Rect, MutAnyOrigin],
             cursor: Ptr[c_int, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(window, rect, cursor)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -796,7 +796,7 @@ def has_screen_keyboard_support() raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_HasScreenKeyboardSupport", def() -> Bool
+        lib, "SDL_HasScreenKeyboardSupport", def() thin -> Bool
     ]()()
 
 
@@ -818,5 +818,5 @@ def screen_keyboard_shown(window: Ptr[Window, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_ScreenKeyboardShown",
-        def(window: Ptr[Window, MutAnyOrigin]) -> Bool,
+        def(window: Ptr[Window, MutAnyOrigin]) thin -> Bool,
     ]()(window)

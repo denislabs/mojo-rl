@@ -188,24 +188,40 @@ struct MaxPool2D[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """One thread per output element, atomically routes gradient to argmax.
+        """One thread per input element: write grad_output at the argmax,
+        zero elsewhere.
+
+        Input-indexed (not output-indexed) so every grad_input position is
+        unconditionally written. Pools are non-overlapping (stride == pool_size),
+        so each input belongs to exactly one output window.
         """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        var total = BATCH * Self.OUT_DIM
+        var total = BATCH * Self.IN_DIM
         if idx >= total:
             return
 
-        var b = idx // Self.OUT_DIM
-        var out_pos = idx % Self.OUT_DIM
-        var max_idx = Int(rebind[Scalar[dtype]](cache[b, out_pos]))
+        var b = idx // Self.IN_DIM
+        var in_pos = idx % Self.IN_DIM
 
-        # Note: potential race condition if two output positions share same argmax.
-        # For non-overlapping pools (stride == pool_size), each input maps to at most
-        # one output, so no race.
-        var cur = rebind[Scalar[dtype]](grad_input[b, max_idx])
-        grad_input[b, max_idx] = cur + rebind[Scalar[dtype]](
-            grad_output[b, out_pos]
-        )
+        var c = in_pos // (Self.in_h * Self.in_w)
+        var rem = in_pos % (Self.in_h * Self.in_w)
+        var ih = rem // Self.in_w
+        var iw = rem % Self.in_w
+
+        var oh = ih // Self.pool_size
+        var ow = iw // Self.pool_size
+
+        if oh < Self.out_h and ow < Self.out_w:
+            var out_idx = c * Self.spatial_out + oh * Self.out_w + ow
+            var max_idx = Int(rebind[Scalar[dtype]](cache[b, out_idx]))
+            if max_idx == in_pos:
+                grad_input[b, in_pos] = rebind[Scalar[dtype]](
+                    grad_output[b, out_idx]
+                )
+            else:
+                grad_input[b, in_pos] = 0
+        else:
+            grad_input[b, in_pos] = 0
 
     # =========================================================================
     # GPU launchers
@@ -237,6 +253,7 @@ struct MaxPool2D[
         var total = BATCH * Self.OUT_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -288,9 +305,10 @@ struct MaxPool2D[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ](cache.ptr)
 
-        var total = BATCH * Self.OUT_DIM
+        var total = BATCH * Self.IN_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[
@@ -556,6 +574,7 @@ struct AvgPool2D[
         var total = BATCH * Self.OUT_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -603,6 +622,7 @@ struct AvgPool2D[
         var total = BATCH * Self.IN_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[

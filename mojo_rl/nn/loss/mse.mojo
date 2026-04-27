@@ -163,6 +163,7 @@ struct MSELoss(LossFunction):
     ) raises:
         """Launch forward pass on GPU to compute MSE loss."""
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             loss: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -202,6 +203,7 @@ struct MSELoss(LossFunction):
     ) raises:
         """Launch backward pass on GPU to compute loss gradient."""
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             grad_output: LayoutTensor[

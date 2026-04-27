@@ -40,7 +40,7 @@ struct CUDAGraph(Movable):
     All CUDA driver calls go through the interceptor library wrappers.
     """
 
-    var _state: Int       # 0=init, 1=capturing, 2=captured
+    var _state: Int  # 0=init, 1=capturing, 2=captured
     var _num_nodes: Int
     var _graph: _CUptr
     var _exec: _CUptr
@@ -64,14 +64,12 @@ struct CUDAGraph(Movable):
 
         comptime if has_nvidia_gpu_accelerator():
             ctx.synchronize()
-            self._lib = OwnedDLHandle(
-                "./mojo_rl/cuda/libcuda_intercept.so"
-            )
+            self._lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
 
             # Get Mojo's internal stream
-            var get_stream = self._lib.get_function[
-                def () -> _CUptr
-            ]("intercept_get_mojo_stream")
+            var get_stream = self._lib.get_function[def() thin -> _CUptr](
+                "intercept_get_mojo_stream"
+            )
             self._mojo_stream = get_stream()
 
             if Int(self._mojo_stream) == 0:
@@ -82,7 +80,7 @@ struct CUDAGraph(Movable):
             else:
                 # Create replay stream
                 var stream_create = self._lib.get_function[
-                    def (UnsafePointer[_CUptr, MutAnyOrigin]) -> c_int
+                    def(UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
                 ]("intercept_stream_create")
                 var stream_buf = alloc[_CUptr](1)
                 stream_buf[] = _CUptr()
@@ -107,22 +105,20 @@ struct CUDAGraph(Movable):
 
         # Destroy previous graph if re-capturing
         if self._state == 2:
-            _ = self._lib.get_function[
-                def (_CUptr) -> c_int
-            ]("intercept_graph_exec_destroy")(self._exec)
-            _ = self._lib.get_function[
-                def (_CUptr) -> c_int
-            ]("intercept_graph_destroy")(self._graph)
+            _ = self._lib.get_function[def(_CUptr) thin -> c_int](
+                "intercept_graph_exec_destroy"
+            )(self._exec)
+            _ = self._lib.get_function[def(_CUptr) thin -> c_int](
+                "intercept_graph_destroy"
+            )(self._graph)
             self._exec = _CUptr()
             self._graph = _CUptr()
 
-        var r = self._lib.get_function[
-            def (_CUptr) -> c_int
-        ]("intercept_stream_begin_capture")(self._mojo_stream)
+        var r = self._lib.get_function[def(_CUptr) thin -> c_int](
+            "intercept_stream_begin_capture"
+        )(self._mojo_stream)
         if r != 0:
-            raise Error(
-                "[CUDAGraph] cuStreamBeginCapture failed: " + String(r)
-            )
+            raise Error("[CUDAGraph] cuStreamBeginCapture failed: " + String(r))
         self._state = 1
 
     def end_capture(mut self) raises:
@@ -137,7 +133,7 @@ struct CUDAGraph(Movable):
         var graph_buf = alloc[_CUptr](1)
         graph_buf[] = _CUptr()
         var r_end = self._lib.get_function[
-            def (_CUptr, UnsafePointer[_CUptr, MutAnyOrigin]) -> c_int
+            def(_CUptr, UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
         ]("intercept_stream_end_capture")(self._mojo_stream, graph_buf)
         self._graph = graph_buf[]
         graph_buf.free()
@@ -152,7 +148,7 @@ struct CUDAGraph(Movable):
         var num_buf = alloc[UInt64](1)
         num_buf[] = UInt64(0)
         _ = self._lib.get_function[
-            def (_CUptr, UnsafePointer[UInt64, MutAnyOrigin]) -> c_int
+            def(_CUptr, UnsafePointer[UInt64, MutAnyOrigin]) thin -> c_int
         ]("intercept_graph_get_nodes")(self._graph, num_buf)
         self._num_nodes = Int(num_buf[])
         num_buf.free()
@@ -168,7 +164,7 @@ struct CUDAGraph(Movable):
         var exec_buf = alloc[_CUptr](1)
         exec_buf[] = _CUptr()
         var r_inst = self._lib.get_function[
-            def (UnsafePointer[_CUptr, MutAnyOrigin], _CUptr) -> c_int
+            def(UnsafePointer[_CUptr, MutAnyOrigin], _CUptr) thin -> c_int
         ]("intercept_graph_instantiate")(exec_buf, self._graph)
         self._exec = exec_buf[]
         exec_buf.free()
@@ -189,25 +185,26 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._lib.get_function[
-            def (_CUptr, _CUptr) -> c_int
-        ]("intercept_graph_launch")(self._exec, self._replay_stream)
+        _ = self._lib.get_function[def(_CUptr, _CUptr) thin -> c_int](
+            "intercept_graph_launch"
+        )(self._exec, self._replay_stream)
 
-        _ = self._lib.get_function[
-            def (_CUptr) -> c_int
-        ]("intercept_stream_synchronize")(self._replay_stream)
+        _ = self._lib.get_function[def(_CUptr) thin -> c_int](
+            "intercept_stream_synchronize"
+        )(self._replay_stream)
 
     def replay_async(self) raises:
-        """Replay without sync on replay stream. Call sync() later. No-op on non-NVIDIA."""
+        """Replay without sync on replay stream. Call sync() later. No-op on non-NVIDIA.
+        """
         comptime if not has_nvidia_gpu_accelerator():
             return
 
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._lib.get_function[
-            def (_CUptr, _CUptr) -> c_int
-        ]("intercept_graph_launch")(self._exec, self._replay_stream)
+        _ = self._lib.get_function[def(_CUptr, _CUptr) thin -> c_int](
+            "intercept_graph_launch"
+        )(self._exec, self._replay_stream)
 
     def replay_on_mojo_stream(self) raises:
         """Replay on Mojo's main stream (implicit ordering with other kernels).
@@ -227,18 +224,18 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._lib.get_function[
-            def (_CUptr, _CUptr) -> c_int
-        ]("intercept_graph_launch")(self._exec, self._mojo_stream)
+        _ = self._lib.get_function[def(_CUptr, _CUptr) thin -> c_int](
+            "intercept_graph_launch"
+        )(self._exec, self._mojo_stream)
 
     def sync(self) raises:
         """Synchronize the replay stream. No-op on non-NVIDIA."""
         comptime if not has_nvidia_gpu_accelerator():
             return
 
-        _ = self._lib.get_function[
-            def (_CUptr) -> c_int
-        ]("intercept_stream_synchronize")(self._replay_stream)
+        _ = self._lib.get_function[def(_CUptr) thin -> c_int](
+            "intercept_stream_synchronize"
+        )(self._replay_stream)
 
     def is_captured(self) -> Bool:
         """Whether a graph is ready for replay."""

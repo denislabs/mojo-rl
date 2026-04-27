@@ -72,6 +72,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
     )
     comptime CACHE_SIZE: Int = Self.in_dim  # Cache input for backward pass
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = 0  # Leaf layer
+    comptime STATE_SIZE: Int = 0  # Stateless (no running stats)
 
     def __init__(out self):
         """Initialize StochasticActor."""
@@ -215,6 +216,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -228,6 +232,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             input: Input features [BATCH, in_dim].
             output: Output tensor [BATCH, action_dim * 2] = [mean | log_std].
             params: Model parameters.
+            state: Persistent non-trainable state (unused — StochasticActor is stateless).
             cache: Cache buffer [BATCH, in_dim] for backward pass.
         """
         # Create view for mean weights
@@ -276,6 +281,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward pass without caching (for inference)."""
         var W_mean = LayoutTensor[
@@ -323,6 +331,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -338,6 +349,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
             grad_output: Gradient w.r.t. output [BATCH, action_dim * 2].
             grad_input: Gradient w.r.t. input [BATCH, in_dim] (written).
             params: Model parameters.
+            state: Persistent non-trainable state (unused — StochasticActor is stateless).
             cache: Cached input from forward pass [BATCH, in_dim].
             grads: Parameter gradients (accumulated).
         """
@@ -931,6 +943,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -960,6 +975,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime grid_x = (Self.action_dim + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -1017,6 +1033,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -1040,6 +1059,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime grid_x = (Self.action_dim + TILE - 1) // TILE
         comptime grid_y = (BATCH + TILE - 1) // TILE
 
+        @parameter
         @always_inline
         def kernel_wrapper(
             output: LayoutTensor[
@@ -1089,10 +1109,13 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         """GPU forward on stream — delegates to default stream."""
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     @staticmethod
     def backward_gpu[
@@ -1107,6 +1130,9 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -1141,6 +1167,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime dx_total = BATCH * Self.IN_DIM
         comptime dx_grid = (dx_total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def dx_fused_kernel_wrapper(
             grad_input: LayoutTensor[
@@ -1175,6 +1202,7 @@ struct StochasticActor[in_dim: Int, action_dim: Int](
         comptime dW_size = Self.in_dim * Self.action_dim
         comptime dW_db_grid = dW_size + 2 * Self.action_dim
 
+        @parameter
         @always_inline
         def dW_db_fused_kernel_wrapper(
             grads: LayoutTensor[
@@ -1687,6 +1715,7 @@ def rsample_backward_gpu[
     comptime total_size = BATCH * action_dim
     comptime grid_size = (total_size + TPB - 1) // TPB
 
+    @parameter
     @always_inline
     def kernel_wrapper(
         grad_action: LayoutTensor[

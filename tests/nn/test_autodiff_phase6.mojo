@@ -10,6 +10,7 @@ Run with:
 
 from std.random import seed, random_float64
 from std.math import abs as math_abs
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.autodiff import (
@@ -675,7 +676,10 @@ def test_dropout_chain() -> Int:
     var c_t1 = LayoutTensor[
         dtype, Layout.row_major(BATCH, Chain.CACHE_SIZE), MutAnyOrigin
     ](cache1.unsafe_ptr())
-    Chain.forward[BATCH](inp_t1, out_t1, p_t1, c_t1)
+    var s_t1 = LayoutTensor[
+        dtype, Layout.row_major(Chain.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    Chain.forward[BATCH](inp_t1, out_t1, p_t1, s_t1, c_t1)
 
     # Forward without dropout
     var out2 = make_list(BATCH * OUT)
@@ -692,7 +696,10 @@ def test_dropout_chain() -> Int:
     var c_t2 = LayoutTensor[
         dtype, Layout.row_major(BATCH, ChainNoDrop.CACHE_SIZE), MutAnyOrigin
     ](cache2.unsafe_ptr())
-    ChainNoDrop.forward[BATCH](inp_t2, out_t2, p_t2, c_t2)
+    var s_t2 = LayoutTensor[
+        dtype, Layout.row_major(ChainNoDrop.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    ChainNoDrop.forward[BATCH](inp_t2, out_t2, p_t2, s_t2, c_t2)
 
     var md = max_diff(out1, out2, BATCH * OUT)
     print("  Forward diff (rate 0 dropout vs no dropout): " + String(md))

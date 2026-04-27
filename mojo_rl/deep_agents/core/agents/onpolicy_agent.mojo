@@ -9,6 +9,7 @@ run_onpolicy_discrete_train_gpu.
 """
 
 from std.math import exp, log, sqrt
+from std.memory import UnsafePointer
 from std.random import random_float64
 from layout import Layout, LayoutTensor
 
@@ -500,6 +501,7 @@ struct PPOGPUStateGeneric[
         # Scalar store: actions, log_probs, values (tiny kernel)
         comptime blocks = (N_ENVS + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def store_scalars_wrapper(
             r_a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -800,7 +802,8 @@ struct GenericOnPolicyAgent[
                 dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
             ](logits_arr.unsafe_ptr())
             var p_a = cpu_state.actor.params_view()
-            Self.ActorNet.forward[1](obs_t, logits_t, p_a)
+            var s_a = cpu_state.actor.model_state_view()
+            Self.ActorNet.forward[1](obs_t, logits_t, p_a, s_a)
 
             # Softmax → probs → sample
             var probs = softmax_inline[dtype, Self.ACTIONS](logits_arr)
@@ -823,7 +826,8 @@ struct GenericOnPolicyAgent[
                 dtype, Layout.row_major(1, Self.CRITIC_OUT), MutAnyOrigin
             ](val_arr.unsafe_ptr())
             var p_c = cpu_state.critic.params_view()
-            Self.CriticNet.forward[1](c_obs_t, val_t, p_c)
+            var s_c = cpu_state.critic.model_state_view()
+            Self.CriticNet.forward[1](c_obs_t, val_t, p_c, s_c)
             var value = val_arr[0]
 
             # Step env
@@ -872,7 +876,8 @@ struct GenericOnPolicyAgent[
             dtype, Layout.row_major(1, Self.CRITIC_OUT), MutAnyOrigin
         ](val_arr.unsafe_ptr())
         var p_c = cpu_state.critic.params_view()
-        Self.CriticNet.forward[1](c_obs_t, val_t, p_c)
+        var s_c = cpu_state.critic.model_state_view()
+        Self.CriticNet.forward[1](c_obs_t, val_t, p_c, s_c)
         var next_value = val_arr[0]
 
         compute_gae_list[dtype](
@@ -963,8 +968,9 @@ struct GenericOnPolicyAgent[
                         dtype, Layout.row_major(1, Self.ACTOR_CS), MutAnyOrigin
                     ](actor_cache.unsafe_ptr())
                     var p_a = cpu_state.actor.params_view()
+                    var s_a = cpu_state.actor.model_state_view()
                     Self.ActorNet.forward_with_cache[1](
-                        obs_t, logits_t, p_a, actor_cache_t
+                        obs_t, logits_t, p_a, s_a, actor_cache_t
                     )
 
                     var probs = softmax_inline[dtype, Self.ACTIONS](logits_arr)
@@ -1039,10 +1045,16 @@ struct GenericOnPolicyAgent[
                             MutAnyOrigin,
                         ](loss_params_arr.unsafe_ptr())
 
+                        # Zero-length model state slice (LossGraph is stateless)
+                        var loss_state_t = LayoutTensor[
+                            dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
+                        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
                         LossGraph.forward[1](
                             loss_in_t,
                             loss_out_t,
                             loss_params_t,
+                            loss_state_t,
                             loss_cache_t,
                         )
 
@@ -1077,6 +1089,7 @@ struct GenericOnPolicyAgent[
                             loss_go_t,
                             loss_gi_t,
                             loss_params_t,
+                            loss_state_t,
                             loss_cache_t,
                             loss_grads_t,
                         )
@@ -1118,7 +1131,7 @@ struct GenericOnPolicyAgent[
                     ](d_obs.unsafe_ptr())
                     var g_a = cpu_state.actor.grads_view()
                     Self.ActorNet.backward[1](
-                        d_logits_t, d_obs_t, p_a, actor_cache_t, g_a
+                        d_logits_t, d_obs_t, p_a, s_a, actor_cache_t, g_a
                     )
                     cpu_state.actor.optimizer_step()
 
@@ -1146,8 +1159,9 @@ struct GenericOnPolicyAgent[
                         dtype, Layout.row_major(1, Self.CRITIC_CS), MutAnyOrigin
                     ](critic_cache.unsafe_ptr())
                     var p_c = cpu_state.critic.params_view()
+                    var s_c = cpu_state.critic.model_state_view()
                     Self.CriticNet.forward_with_cache[1](
-                        c_obs_t, val_out_t, p_c, critic_cache_t
+                        c_obs_t, val_out_t, p_c, s_c, critic_cache_t
                     )
                     var value = val_out[0]
 
@@ -1172,7 +1186,7 @@ struct GenericOnPolicyAgent[
                     ](d_obs_c.unsafe_ptr())
                     var g_c = cpu_state.critic.grads_view()
                     Self.CriticNet.backward[1](
-                        d_value_t, d_obs_c_t, p_c, critic_cache_t, g_c
+                        d_value_t, d_obs_c_t, p_c, s_c, critic_cache_t, g_c
                     )
                     cpu_state.critic.optimizer_step()
 
@@ -1202,7 +1216,8 @@ struct GenericOnPolicyAgent[
             dtype, Layout.row_major(1, Self.ACTIONS), MutAnyOrigin
         ](logits_arr.unsafe_ptr())
         var p = cpu_state.actor.params_view()
-        Self.ActorNet.forward[1](obs_t, logits_t, p)
+        var s = cpu_state.actor.model_state_view()
+        Self.ActorNet.forward[1](obs_t, logits_t, p, s)
 
         var probs = softmax_inline[dtype, Self.ACTIONS](logits_arr)
         var action = argmax_probs_inline[dtype, Self.ACTIONS](probs)
@@ -1264,23 +1279,23 @@ struct GenericOnPolicyAgent[
         var metadata = read_metadata_section(content)
 
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
 
         var gae_str = get_metadata_value(metadata, "gae_lambda")
-        if len(gae_str) > 0:
+        if gae_str.byte_length() > 0:
             self.gae_lambda = atof(gae_str)
 
         var entropy_str = get_metadata_value(metadata, "entropy_coef")
-        if len(entropy_str) > 0:
+        if entropy_str.byte_length() > 0:
             self.entropy_coef = atof(entropy_str)
 
         var clip_str = get_metadata_value(metadata, "clip_epsilon")
-        if len(clip_str) > 0:
+        if clip_str.byte_length() > 0:
             self.clip_epsilon = atof(clip_str)
 
         var step_str = get_metadata_value(metadata, "train_step_count")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.train_step_count = Int(atol(step_str))
 
     # =========================================================================
@@ -1471,7 +1486,9 @@ struct GenericOnPolicyAgent[
         comptime blocks = (N_ENVS + TPB - 1) // TPB
 
         var actor_params_t = gpu_state.gpu_actor.params_view()
+        var actor_state_t = gpu_state.gpu_actor.model_state_view()
         var critic_params_t = gpu_state.gpu_critic.params_view()
+        var critic_state_t = gpu_state.gpu_critic.model_state_view()
 
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
@@ -1497,6 +1514,7 @@ struct GenericOnPolicyAgent[
             logits_t,
             obs_t,
             actor_params_t,
+            actor_state_t,
             gpu_state.actor_env_workspace_buf,
         )
 
@@ -1509,6 +1527,7 @@ struct GenericOnPolicyAgent[
             values_t,
             c_obs_t,
             critic_params_t,
+            critic_state_t,
             gpu_state.critic_env_workspace_buf,
         )
 
@@ -1535,6 +1554,7 @@ struct GenericOnPolicyAgent[
         comptime ROLLOUT_TOTAL = Self.TOTAL_ROLLOUT_SIZE
 
         var critic_params_t = gpu_state.gpu_critic.params_view()
+        var critic_state_t = gpu_state.gpu_critic.model_state_view()
         var final_obs_t = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.CRITIC_IN), MutAnyOrigin
         ](final_obs_buf.unsafe_ptr())
@@ -1550,6 +1570,7 @@ struct GenericOnPolicyAgent[
             bootstrap_t,
             final_obs_t,
             critic_params_t,
+            critic_state_t,
             gpu_state.critic_env_workspace_buf,
         )
 
@@ -1638,8 +1659,10 @@ struct GenericOnPolicyAgent[
 
         # Typed workspace views (replace 20+ ad-hoc LayoutTensor constructions)
         var actor_params_t = gpu_state.gpu_actor.params_view()
+        var actor_state_t = gpu_state.gpu_actor.model_state_view()
         var actor_grads_t = gpu_state.gpu_actor.grads_view()
         var critic_params_t = gpu_state.gpu_critic.params_view()
+        var critic_state_t = gpu_state.gpu_critic.model_state_view()
         var critic_grads_t = gpu_state.gpu_critic.grads_view()
 
         var rws = gpu_state.rollout_ws()
@@ -1796,6 +1819,7 @@ struct GenericOnPolicyAgent[
                 )
 
                 # Scalar gather: actions, advantages, returns, log_probs, values
+                @parameter
                 @always_inline
                 def gather_scalars_mb_wrapper(
                     mb_a: LayoutTensor[
@@ -1908,6 +1932,7 @@ struct GenericOnPolicyAgent[
                     actor_logits_t,
                     mb_obs_t,
                     actor_params_t,
+                    actor_state_t,
                     actor_cache_t,
                     gpu_state.actor_mb_workspace_buf,
                 )
@@ -1971,6 +1996,7 @@ struct GenericOnPolicyAgent[
                         MutAnyOrigin,
                     ](loss_input_ptr)
 
+                    @parameter
                     @always_inline
                     def pack_discrete_loss_input_k(
                         dst: LayoutTensor[
@@ -2064,11 +2090,17 @@ struct GenericOnPolicyAgent[
                         MutAnyOrigin,
                     ](loss_params_ptr)
 
+                    # Zero-length model state slice (LossGraph is stateless)
+                    var loss_state_t = LayoutTensor[
+                        dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
+                    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
                     LossGraph.forward_gpu[MINIBATCH](
                         ctx,
                         loss_output_t,
                         loss_input_t,
                         loss_params_t,
+                        loss_state_t,
                         loss_cache_t,
                         loss_workspace_buf,
                     )
@@ -2081,6 +2113,7 @@ struct GenericOnPolicyAgent[
                         MutAnyOrigin,
                     ](loss_grad_output_ptr)
 
+                    @parameter
                     @always_inline
                     def seed_discrete_grad_k(
                         go: LayoutTensor[
@@ -2121,6 +2154,7 @@ struct GenericOnPolicyAgent[
                         loss_grad_input_t,
                         loss_grad_output_t,
                         loss_params_t,
+                        loss_state_t,
                         loss_cache_t,
                         loss_grads_t,
                         loss_workspace_buf,
@@ -2134,6 +2168,7 @@ struct GenericOnPolicyAgent[
                         ImmutAnyOrigin,
                     ](loss_grad_input_ptr)
 
+                    @parameter
                     @always_inline
                     def extract_entropy_diag_k(
                         dst: LayoutTensor[
@@ -2314,6 +2349,7 @@ struct GenericOnPolicyAgent[
                     actor_grad_input_t,
                     actor_grad_output_t,
                     actor_params_t,
+                    actor_state_t,
                     actor_cache_t,
                     actor_grads_t,
                     gpu_state.actor_mb_workspace_buf,
@@ -2362,6 +2398,7 @@ struct GenericOnPolicyAgent[
                     critic_values_t,
                     mb_c_obs_t,
                     critic_params_t,
+                    critic_state_t,
                     critic_cache_t,
                     gpu_state.critic_mb_workspace_buf,
                 )
@@ -2401,6 +2438,7 @@ struct GenericOnPolicyAgent[
                     critic_grad_input_t,
                     critic_grad_output_t,
                     critic_params_t,
+                    critic_state_t,
                     critic_cache_t,
                     critic_grads_t,
                     gpu_state.critic_mb_workspace_buf,

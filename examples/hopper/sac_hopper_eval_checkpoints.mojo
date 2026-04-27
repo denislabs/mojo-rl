@@ -86,7 +86,7 @@ def main() raises:
     )
     print("-" * 85)
 
-    for i in range(len(checkpoints)):
+    for i in range(checkpoints.byte_length()):
         try:
             agent.load_checkpoint(checkpoints[i])
 
@@ -116,7 +116,7 @@ def main() raises:
 
             print(
                 labels[i]
-                + " " * (19 - len(labels[i]))
+                + " " * (19 - labels[i].byte_length())
                 + "| "
                 + String(cpu_reward)[byte=:10]
                 + " | "

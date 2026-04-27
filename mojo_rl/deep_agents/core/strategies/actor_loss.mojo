@@ -291,8 +291,16 @@ struct DPGLoss(ActorLoss):
             Layout.row_major(BATCH, ActorModel.CACHE_SIZE),
             MutAnyOrigin,
         ](ws + W_ACACHE)
+        # Zero-length model state slices (stateless models)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        var critic_state = LayoutTensor[
+            dtype, Layout.row_major(CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         Network[ActorModel, ActorOpt].forward_with_cache[BATCH](
-            obs, act_t, actor_params, actor_cache_t
+            obs, act_t, actor_params, actor_state, actor_cache_t
         )
 
         # 2. Concat obs + actions -> critic_input
@@ -313,7 +321,7 @@ struct DPGLoss(ActorLoss):
             MutAnyOrigin,
         ](ws + W_CCACHE)
         Network[CriticModel, CriticOpt].forward_with_cache[BATCH](
-            ci_t, q_t, critic_params, critic_cache_t
+            ci_t, q_t, critic_params, critic_state, critic_cache_t
         )
 
         # 4. Gradient seed: dQ = -1/batch (maximize Q)
@@ -332,7 +340,7 @@ struct DPGLoss(ActorLoss):
         for i in range(CriticModel.PARAM_SIZE):
             critic_grads.ptr[i] = Scalar[dtype](0)
         Network[CriticModel, CriticOpt].backward[BATCH](
-            dq_t, dci_t, critic_params, critic_cache_t, critic_grads
+            dq_t, dci_t, critic_params, critic_state, critic_cache_t, critic_grads
         )
 
         # 6. Extract d_actions from d_critic_input
@@ -351,7 +359,7 @@ struct DPGLoss(ActorLoss):
         for i in range(ActorModel.PARAM_SIZE):
             actor_grads.ptr[i] = Scalar[dtype](0)
         Network[ActorModel, ActorOpt].backward[BATCH](
-            da_t, dobs_t, actor_params, actor_cache_t, actor_grads
+            da_t, dobs_t, actor_params, actor_state, actor_cache_t, actor_grads
         )
 
         return 0.0  # No log_probs for DPG
@@ -440,8 +448,16 @@ struct DPGLoss(ActorLoss):
             Layout.row_major(BATCH, ActorModel.CACHE_SIZE),
             MutAnyOrigin,
         ](ws_ptr + W_ACACHE)
+        # Zero-length model state slices (stateless models)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        var critic_state = LayoutTensor[
+            dtype, Layout.row_major(CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         Network[ActorModel, ActorOpt].forward_gpu_with_cache[BATCH](
-            ctx, obs, actor_act_t, actor_params, actor_cache_t, actor_ws
+            ctx, obs, actor_act_t, actor_params, actor_state, actor_cache_t, actor_ws
         )
 
         # 2. Concat(obs, actor_actions) -> new_ci
@@ -452,6 +468,7 @@ struct DPGLoss(ActorLoss):
             dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
         ](ws_ptr + W_ACT)
 
+        @parameter
         @always_inline
         def concat_new_ci(
             d: LayoutTensor[
@@ -482,7 +499,7 @@ struct DPGLoss(ActorLoss):
             MutAnyOrigin,
         ](ws_ptr + W_CCACHE)
         Network[CriticModel, CriticOpt].forward_gpu_with_cache[BATCH](
-            ctx, new_ci_t, new_q_t, critic_params, critic_cache_t, critic_ws
+            ctx, new_ci_t, new_q_t, critic_params, critic_state, critic_cache_t, critic_ws
         )
 
         # 4. dq seed = -1/batch from pre-filled GPU buffer (maximize Q)
@@ -499,6 +516,7 @@ struct DPGLoss(ActorLoss):
             dq_t,
             d_ci_t,
             critic_params,
+            critic_state,
             critic_cache_t,
             critic_grads,
             critic_ws,
@@ -509,6 +527,7 @@ struct DPGLoss(ActorLoss):
             dtype, Layout.row_major(BATCH, ActorModel.OUT_DIM), MutAnyOrigin
         ](ws_ptr + W_DACT)
 
+        @parameter
         @always_inline
         def extract_act_grad(
             da: LayoutTensor[
@@ -538,6 +557,7 @@ struct DPGLoss(ActorLoss):
             d_act_t,
             d_obs_t,
             actor_params,
+            actor_state,
             actor_cache_t,
             actor_grads,
             actor_ws,
@@ -697,8 +717,16 @@ struct MaxEntLoss[
             Layout.row_major(BATCH, ActorModel.CACHE_SIZE),
             MutAnyOrigin,
         ](ws + W_ACACHE)
+        # Zero-length model state slices (stateless models)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        var critic_state = LayoutTensor[
+            dtype, Layout.row_major(CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         Network[ActorModel, ActorOpt].forward_with_cache[BATCH](
-            obs, raw_out_t, actor_params, actor_cache_t
+            obs, raw_out_t, actor_params, actor_state, actor_cache_t
         )
 
         # 2. Extract mean + log_std from Parallel output
@@ -762,7 +790,7 @@ struct MaxEntLoss[
             MutAnyOrigin,
         ](ws + W_CCACHE)
         Network[CriticModel, CriticOpt].forward_with_cache[BATCH](
-            ci_t, q_t, critic_params, critic_cache_t
+            ci_t, q_t, critic_params, critic_state, critic_cache_t
         )
 
         var q2_t = LayoutTensor[
@@ -774,7 +802,7 @@ struct MaxEntLoss[
             MutAnyOrigin,
         ](ws + W_C2CACHE)
         Network[CriticModel, CriticOpt].forward_with_cache[BATCH](
-            ci_t, q2_t, critic2_params, critic2_cache_t
+            ci_t, q2_t, critic2_params, critic_state, critic2_cache_t
         )
 
         # 7. min(Q1, Q2) masked gradient seeds
@@ -801,7 +829,7 @@ struct MaxEntLoss[
         for i in range(CriticModel.PARAM_SIZE):
             critic_grads.ptr[i] = Scalar[dtype](0)
         Network[CriticModel, CriticOpt].backward[BATCH](
-            dq_t, dci_t, critic_params, critic_cache_t, critic_grads
+            dq_t, dci_t, critic_params, critic_state, critic_cache_t, critic_grads
         )
 
         var dci2_t = LayoutTensor[
@@ -810,7 +838,7 @@ struct MaxEntLoss[
         for i in range(CriticModel.PARAM_SIZE):
             critic2_grads.ptr[i] = Scalar[dtype](0)
         Network[CriticModel, CriticOpt].backward[BATCH](
-            dq2_t, dci2_t, critic2_params, critic2_cache_t, critic2_grads
+            dq2_t, dci2_t, critic2_params, critic_state, critic2_cache_t, critic2_grads
         )
 
         # 8b. Combine d_ci from both critics
@@ -875,7 +903,7 @@ struct MaxEntLoss[
         for i in range(ActorModel.PARAM_SIZE):
             actor_grads.ptr[i] = Scalar[dtype](0)
         Network[ActorModel, ActorOpt].backward[BATCH](
-            actor_grad_t, dobs_t, actor_params, actor_cache_t, actor_grads
+            actor_grad_t, dobs_t, actor_params, actor_state, actor_cache_t, actor_grads
         )
 
         # Return mean log_prob for alpha update by agent
@@ -989,8 +1017,16 @@ struct MaxEntLoss[
             Layout.row_major(BATCH, ActorModel.CACHE_SIZE),
             MutAnyOrigin,
         ](ws_ptr + W_ACACHE)
+        # Zero-length model state slices (stateless models)
+        var actor_state = LayoutTensor[
+            dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        var critic_state = LayoutTensor[
+            dtype, Layout.row_major(CriticModel.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         Network[ActorModel, ActorOpt].forward_gpu_with_cache[BATCH](
-            ctx, obs, actor_out_t, actor_params, actor_cache_t, actor_ws
+            ctx, obs, actor_out_t, actor_params, actor_state, actor_cache_t, actor_ws
         )
 
         # 2. sac_rsample with cache -> curr_act, curr_lp, eps_cache
@@ -1010,6 +1046,7 @@ struct MaxEntLoss[
             DType.uint32, Layout.row_major(1), MutAnyOrigin
         ](rng_counter.unsafe_ptr())
 
+        @parameter
         @always_inline
         def curr_rsample(
             acts: LayoutTensor[
@@ -1054,6 +1091,7 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CriticModel.IN_DIM), MutAnyOrigin
         ](ws_ptr + W_CI)
 
+        @parameter
         @always_inline
         def concat_new_ci(
             d: LayoutTensor[
@@ -1084,7 +1122,7 @@ struct MaxEntLoss[
             MutAnyOrigin,
         ](ws_ptr + W_CCACHE)
         Network[CriticModel, CriticOpt].forward_gpu_with_cache[BATCH](
-            ctx, new_ci_t, new_q_t, critic_params, critic_cache_t, critic_ws
+            ctx, new_ci_t, new_q_t, critic_params, critic_state, critic_cache_t, critic_ws
         )
 
         var new_q2_t = LayoutTensor[
@@ -1096,7 +1134,7 @@ struct MaxEntLoss[
             MutAnyOrigin,
         ](ws_ptr + W_C2CACHE)
         Network[CriticModel, CriticOpt].forward_gpu_with_cache[BATCH](
-            ctx, new_ci_t, new_q2_t, critic2_params, critic2_cache_t, critic2_ws
+            ctx, new_ci_t, new_q2_t, critic2_params, critic_state, critic2_cache_t, critic2_ws
         )
 
         # 5. min(Q1, Q2) masked gradient seeds
@@ -1107,6 +1145,7 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, CRITIC_OUT), MutAnyOrigin
         ](ws_ptr + W_DQ2)
 
+        @parameter
         @always_inline
         def min_q_mask(
             dq1: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
@@ -1134,6 +1173,7 @@ struct MaxEntLoss[
             dq_t,
             d_ci_t,
             critic_params,
+            critic_state,
             critic_cache_t,
             critic_grads,
             critic_ws,
@@ -1147,12 +1187,14 @@ struct MaxEntLoss[
             dq2_t,
             d_ci2_t,
             critic2_params,
+            critic_state,
             critic2_cache_t,
             critic2_grads,
             critic2_ws,
         )
 
         # 6b. Combine d_ci from both critics: d_ci += d_ci2
+        @parameter
         @always_inline
         def add_grads(
             dst: LayoutTensor[
@@ -1176,6 +1218,7 @@ struct MaxEntLoss[
             dtype, Layout.row_major(BATCH, ACTIONS), MutAnyOrigin
         ](ws_ptr + W_DACT)
 
+        @parameter
         @always_inline
         def extract_act_grad(
             da: LayoutTensor[
@@ -1202,6 +1245,7 @@ struct MaxEntLoss[
             alpha_buf.unsafe_ptr()
         )
 
+        @parameter
         @always_inline
         def rsample_bwd(
             agrad: LayoutTensor[
@@ -1257,6 +1301,7 @@ struct MaxEntLoss[
             actor_grad_t,
             d_obs_t,
             actor_params,
+            actor_state,
             actor_cache_t,
             actor_grads,
             actor_ws,
@@ -1449,7 +1494,12 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(BATCH, SACGraph.CACHE_SIZE), MutAnyOrigin
         ](cache.unsafe_ptr())
 
-        SACGraph.forward[BATCH](obs, output_t, params_t, cache_t)
+        # Zero-length model state slice (SACGraph is stateless)
+        var sac_state = LayoutTensor[
+            dtype, Layout.row_major(SACGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
+        SACGraph.forward[BATCH](obs, output_t, params_t, sac_state, cache_t)
 
         # =====================================================================
         # Backward: gradient seed = [-1/BS, alpha/BS] per sample
@@ -1484,7 +1534,7 @@ struct AutodiffMaxEntLoss[
         ](combined_grads.unsafe_ptr())
 
         SACGraph.backward[BATCH](
-            grad_out_t, grad_obs_t, params_t, cache_t, grads_t
+            grad_out_t, grad_obs_t, params_t, sac_state, cache_t, grads_t
         )
 
         # =====================================================================
@@ -1617,6 +1667,7 @@ struct AutodiffMaxEntLoss[
 
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_params_kernel(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -1684,6 +1735,7 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](ws_ptr + W_WORKSPACE + BATCH * RSAMPLE_WS_PER_SAMPLE)
 
+        @parameter
         @always_inline
         def copy_rng_to_ws_k(
             dst: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
@@ -1712,11 +1764,17 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(BATCH, SACGraph.IN_DIM), MutAnyOrigin
         ](obs.ptr)
 
+        # Zero-length model state slice (SACGraph is stateless)
+        var sac_state = LayoutTensor[
+            dtype, Layout.row_major(SACGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         SACGraph.forward_gpu[BATCH](
             ctx,
             output_t,
             graph_obs,
             graph_params,
+            sac_state,
             graph_cache,
             workspace_buf,
         )
@@ -1735,6 +1793,7 @@ struct AutodiffMaxEntLoss[
 
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def fill_seed_k(
             seed: LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin],
@@ -1763,6 +1822,7 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(SACGraph.PARAM_SIZE), MutAnyOrigin
         ](ws_ptr + W_GRADS)
 
+        @parameter
         @always_inline
         def zero_grads_k(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -1782,6 +1842,7 @@ struct AutodiffMaxEntLoss[
             graph_grad_obs,
             grad_out_t,
             graph_params,
+            sac_state,
             graph_cache,
             graph_grads,
             workspace_buf,
@@ -1797,6 +1858,7 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
         ](critic2_grads.ptr)
 
+        @parameter
         @always_inline
         def scatter_grads_kernel(
             src: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -1835,6 +1897,7 @@ struct AutodiffMaxEntLoss[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ](strat_ws.unsafe_ptr() + LP_OFF)
 
+        @parameter
         @always_inline
         def extract_lp_k(
             dst: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
@@ -1994,7 +2057,12 @@ struct AutodiffDPGLoss(ActorLoss):
             dtype, Layout.row_major(BATCH, DDPGGraph.CACHE_SIZE), MutAnyOrigin
         ](cache.unsafe_ptr())
 
-        DDPGGraph.forward[BATCH](obs, output_t, params_t, cache_t)
+        # Zero-length model state slice (DDPGGraph is stateless)
+        var ddpg_state = LayoutTensor[
+            dtype, Layout.row_major(DDPGGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
+        DDPGGraph.forward[BATCH](obs, output_t, params_t, ddpg_state, cache_t)
 
         # =================================================================
         # Backward: gradient seed = 1/BS (minimize -Q = maximize Q)
@@ -2025,7 +2093,7 @@ struct AutodiffDPGLoss(ActorLoss):
         ](combined_grads.unsafe_ptr())
 
         DDPGGraph.backward[BATCH](
-            grad_out_t, grad_obs_t, params_t, cache_t, grads_t
+            grad_out_t, grad_obs_t, params_t, ddpg_state, cache_t, grads_t
         )
 
         # =================================================================
@@ -2134,6 +2202,7 @@ struct AutodiffDPGLoss(ActorLoss):
 
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_params_kernel(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2183,11 +2252,17 @@ struct AutodiffDPGLoss(ActorLoss):
             dtype, Layout.row_major(BATCH, DDPGGraph.IN_DIM), MutAnyOrigin
         ](obs.ptr)
 
+        # Zero-length model state slice (DDPGGraph is stateless)
+        var ddpg_state = LayoutTensor[
+            dtype, Layout.row_major(DDPGGraph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         DDPGGraph.forward_gpu[BATCH](
             ctx,
             output_t,
             graph_obs,
             graph_params,
+            ddpg_state,
             graph_cache,
             workspace_buf,
         )
@@ -2203,6 +2278,7 @@ struct AutodiffDPGLoss(ActorLoss):
 
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def fill_seed_k(
             seed: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
@@ -2228,6 +2304,7 @@ struct AutodiffDPGLoss(ActorLoss):
             dtype, Layout.row_major(DDPGGraph.PARAM_SIZE), MutAnyOrigin
         ](ws_ptr + W_GRADS)
 
+        @parameter
         @always_inline
         def zero_grads_k(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2247,6 +2324,7 @@ struct AutodiffDPGLoss(ActorLoss):
             graph_grad_obs,
             grad_out_t,
             graph_params,
+            ddpg_state,
             graph_cache,
             graph_grads,
             workspace_buf,
@@ -2259,6 +2337,7 @@ struct AutodiffDPGLoss(ActorLoss):
             dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin
         ](ws_ptr + W_GRADS)
 
+        @parameter
         @always_inline
         def scatter_grads_kernel(
             src: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2431,7 +2510,12 @@ struct AutodiffTD3Loss(ActorLoss):
             dtype, Layout.row_major(BATCH, TD3Graph.CACHE_SIZE), MutAnyOrigin
         ](cache.unsafe_ptr())
 
-        TD3Graph.forward[BATCH](obs, output_t, params_t, cache_t)
+        # Zero-length model state slice (TD3Graph is stateless)
+        var td3_state = LayoutTensor[
+            dtype, Layout.row_major(TD3Graph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
+        TD3Graph.forward[BATCH](obs, output_t, params_t, td3_state, cache_t)
 
         # =================================================================
         # Backward: gradient seed = 1/BS (minimize -min_Q = maximize min_Q)
@@ -2462,7 +2546,7 @@ struct AutodiffTD3Loss(ActorLoss):
         ](combined_grads.unsafe_ptr())
 
         TD3Graph.backward[BATCH](
-            grad_out_t, grad_obs_t, params_t, cache_t, grads_t
+            grad_out_t, grad_obs_t, params_t, td3_state, cache_t, grads_t
         )
 
         # =================================================================
@@ -2577,6 +2661,7 @@ struct AutodiffTD3Loss(ActorLoss):
 
         comptime PARAM_BLOCKS = (TOTAL_PS + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def concat_params_kernel(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2634,11 +2719,17 @@ struct AutodiffTD3Loss(ActorLoss):
             dtype, Layout.row_major(BATCH, TD3Graph.IN_DIM), MutAnyOrigin
         ](obs.ptr)
 
+        # Zero-length model state slice (TD3Graph is stateless)
+        var td3_state = LayoutTensor[
+            dtype, Layout.row_major(TD3Graph.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
         TD3Graph.forward_gpu[BATCH](
             ctx,
             output_t,
             graph_obs,
             graph_params,
+            td3_state,
             graph_cache,
             workspace_buf,
         )
@@ -2654,6 +2745,7 @@ struct AutodiffTD3Loss(ActorLoss):
 
         comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def fill_seed_k(
             seed: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
@@ -2679,6 +2771,7 @@ struct AutodiffTD3Loss(ActorLoss):
             dtype, Layout.row_major(TD3Graph.PARAM_SIZE), MutAnyOrigin
         ](ws_ptr + W_GRADS)
 
+        @parameter
         @always_inline
         def zero_grads_k(
             dst: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],
@@ -2698,6 +2791,7 @@ struct AutodiffTD3Loss(ActorLoss):
             graph_grad_obs,
             grad_out_t,
             graph_params,
+            td3_state,
             graph_cache,
             graph_grads,
             workspace_buf,
@@ -2713,6 +2807,7 @@ struct AutodiffTD3Loss(ActorLoss):
             dtype, Layout.row_major(CRITIC_PS), MutAnyOrigin
         ](critic2_grads.ptr)
 
+        @parameter
         @always_inline
         def scatter_grads_kernel(
             src: LayoutTensor[dtype, Layout.row_major(TOTAL_PS), MutAnyOrigin],

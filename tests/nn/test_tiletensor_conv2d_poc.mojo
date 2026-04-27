@@ -25,12 +25,12 @@ from mojo_rl.nn.autodiff.primitives.conv2d import Conv2D
 # ─────────────────────────────────────────────────────────────────────
 
 
-fn fill_random(ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin], n: Int):
+def fill_random(ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin], n: Int):
     for i in range(n):
         ptr[i] = Scalar[dtype](random_float64(-1.0, 1.0).cast[dtype]())
 
 
-fn max_abs_diff(
+def max_abs_diff(
     a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     b: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
@@ -71,11 +71,9 @@ def im2col_kernel_tiletensor[
     cache: LayoutTensor[
         dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
     ],
-    input: LayoutTensor[
-        dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin
-    ],
+    input: LayoutTensor[dtype, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
 ):
-    """im2col: extract input patches into column matrix for matmul.
+    """Function im2col: extract input patches into column matrix for matmul.
 
     Each thread handles one element of the output column matrix.
     cache[b, s * col_size + k] = input patch value at (s, k) for batch b.
@@ -117,9 +115,7 @@ def im2col_kernel_tiletensor[
 
     var val: Scalar[dtype] = 0
     if ih >= 0 and ih < in_h and iw >= 0 and iw < in_w:
-        val = rebind[Scalar[dtype]](
-            input[b, ch * in_h * in_w + ih * in_w + iw]
-        )
+        val = rebind[Scalar[dtype]](input[b, ch * in_h * in_w + ih * in_w + iw])
 
     # ── TileTensor: write using 3D indexing instead of flat arithmetic ──
     cache_3d[b, s, k] = val
@@ -147,12 +143,8 @@ def conv_forward_tiletensor[
     PARAM_SIZE: Int,
     CACHE_SIZE: Int,
 ](
-    output: LayoutTensor[
-        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
-    ],
-    params: LayoutTensor[
-        dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin
-    ],
+    output: LayoutTensor[dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
     cache: LayoutTensor[
         dtype, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin
     ],
@@ -180,9 +172,7 @@ def conv_forward_tiletensor[
 
     # ── TileTensor views of W and output ──
     var W = TileTensor(params.ptr, row_major[out_channels, col_size]())
-    var bias = TileTensor(
-        params.ptr + W_SIZE, row_major[out_channels]()
-    )
+    var bias = TileTensor(params.ptr + W_SIZE, row_major[out_channels]())
 
     # View col for this batch as (col_size, spatial_out) — transposed im2col
     # cache is (BATCH, spatial_out * col_size), we need (col_size, spatial_out) per batch
@@ -249,18 +239,14 @@ def conv_forward_tiletensor[
         var k_idx0 = k_off + b_r0
         var s_idx0 = block_s + b_c0
         if k_idx0 < col_size and s_idx0 < spatial_out:
-            b_smem[b_r0, b_c0] = cache[
-                batch, s_idx0 * col_size + k_idx0
-            ]
+            b_smem[b_r0, b_c0] = cache[batch, s_idx0 * col_size + k_idx0]
         else:
             b_smem[b_r0, b_c0] = 0
 
         var k_idx1 = k_off + b_r1
         var s_idx1 = block_s + b_c1
         if k_idx1 < col_size and s_idx1 < spatial_out:
-            b_smem[b_r1, b_c1] = cache[
-                batch, s_idx1 * col_size + k_idx1
-            ]
+            b_smem[b_r1, b_c1] = cache[batch, s_idx1 * col_size + k_idx1]
         else:
             b_smem[b_r1, b_c1] = 0
 
@@ -343,10 +329,14 @@ def test_im2col_tiletensor[
     var cache_cpu = List[Scalar[dtype]](capacity=BATCH * C.CACHE_SIZE)
     var output_cpu = List[Scalar[dtype]](capacity=BATCH * C.OUT_DIM)
 
-    for i in range(BATCH * C.IN_DIM):
-        input_host.append(Scalar[dtype](random_float64(-1.0, 1.0).cast[dtype]()))
-    for i in range(C.PARAM_SIZE):
-        params_host.append(Scalar[dtype](random_float64(-0.5, 0.5).cast[dtype]()))
+    for _ in range(BATCH * C.IN_DIM):
+        input_host.append(
+            Scalar[dtype](random_float64(-1.0, 1.0).cast[dtype]())
+        )
+    for _ in range(C.PARAM_SIZE):
+        params_host.append(
+            Scalar[dtype](random_float64(-0.5, 0.5).cast[dtype]())
+        )
     for _ in range(BATCH * C.CACHE_SIZE):
         cache_cpu.append(0)
     for _ in range(BATCH * C.OUT_DIM):
@@ -394,6 +384,7 @@ def test_im2col_tiletensor[
     ](input_buf)
 
     @always_inline
+    @parameter
     def im2col_wrapper(
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
@@ -478,10 +469,14 @@ def test_forward_tiletensor[
     var input_host = List[Scalar[dtype]](capacity=BATCH * C.IN_DIM)
     var params_host = List[Scalar[dtype]](capacity=C.PARAM_SIZE)
 
-    for i in range(BATCH * C.IN_DIM):
-        input_host.append(Scalar[dtype](random_float64(-1.0, 1.0).cast[dtype]()))
-    for i in range(C.PARAM_SIZE):
-        params_host.append(Scalar[dtype](random_float64(-0.5, 0.5).cast[dtype]()))
+    for _ in range(BATCH * C.IN_DIM):
+        input_host.append(
+            Scalar[dtype](random_float64(-1.0, 1.0).cast[dtype]())
+        )
+    for _ in range(C.PARAM_SIZE):
+        params_host.append(
+            Scalar[dtype](random_float64(-0.5, 0.5).cast[dtype]())
+        )
 
     # ── CPU reference ──
     var cache_cpu = List[Scalar[dtype]](capacity=BATCH * C.CACHE_SIZE)
@@ -544,6 +539,7 @@ def test_forward_tiletensor[
     ](input_buf)
 
     @always_inline
+    @parameter
     def im2col_w(
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
@@ -553,9 +549,19 @@ def test_forward_tiletensor[
         ],
     ):
         im2col_kernel_tiletensor[
-            BATCH, IC, IN_H, IN_W, KS, STRIDE, PAD,
-            C.out_h, C.out_w, C.col_size, C.spatial_out,
-            C.CACHE_SIZE, C.IN_DIM,
+            BATCH,
+            IC,
+            IN_H,
+            IN_W,
+            KS,
+            STRIDE,
+            PAD,
+            C.out_h,
+            C.out_w,
+            C.col_size,
+            C.spatial_out,
+            C.CACHE_SIZE,
+            C.IN_DIM,
         ](cache, input)
 
     ctx.enqueue_function[im2col_w, im2col_w](
@@ -577,6 +583,7 @@ def test_forward_tiletensor[
     ](params_buf)
 
     @always_inline
+    @parameter
     def fwd_wrapper(
         output: LayoutTensor[
             dtype, Layout.row_major(BATCH, C.OUT_DIM), MutAnyOrigin
@@ -589,8 +596,13 @@ def test_forward_tiletensor[
         ],
     ):
         conv_forward_tiletensor[
-            BATCH, OC, C.col_size, C.spatial_out,
-            C.OUT_DIM, C.PARAM_SIZE, C.CACHE_SIZE,
+            BATCH,
+            OC,
+            C.col_size,
+            C.spatial_out,
+            C.OUT_DIM,
+            C.PARAM_SIZE,
+            C.CACHE_SIZE,
         ](output, params, cache)
 
     ctx.enqueue_function[fwd_wrapper, fwd_wrapper](
@@ -622,7 +634,9 @@ def test_forward_tiletensor[
                 d = -d
             if d > 1e-2 and count < 5:
                 print(
-                    "      [" + String(i) + "] cpu="
+                    "      ["
+                    + String(i)
+                    + "] cpu="
                     + String(output_cpu[i])
                     + " gpu="
                     + String(output_hb.unsafe_ptr()[i])

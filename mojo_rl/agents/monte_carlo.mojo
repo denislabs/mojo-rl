@@ -99,7 +99,7 @@ struct MonteCarloAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
 
     def _update_from_episode(mut self):
         """First-visit MC update from completed episode."""
-        var num_steps = len(self.episode_states)
+        var num_steps = self.episode_states.byte_length()
         if num_steps == 0:
             return
 
@@ -119,7 +119,7 @@ struct MonteCarloAgent(Copyable, ImplicitlyCopyable, Movable, TabularAgent):
             var pair_id = state_idx * self.num_actions + action
 
             var is_first_visit = True
-            for j in range(len(visited)):
+            for j in range(visited.byte_length()):
                 if visited[j] == pair_id:
                     is_first_visit = False
                     break

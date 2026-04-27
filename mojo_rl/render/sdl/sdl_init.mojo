@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Init
+"""Init.
 
 All SDL programs need to initialize the library before starting to work
 with it.
@@ -138,7 +138,7 @@ comptime AppInit_func = def(
     appstate: Ptr[Ptr[NoneType, MutAnyOrigin], MutAnyOrigin],
     argc: c_int,
     argv: Ptr[c_char, MutAnyOrigin],
-) -> AppResult
+) thin -> AppResult
 """Function pointer typedef for SDL_AppInit.
     
     These are used by SDL_EnterAppMainCallbacks. This mechanism operates behind
@@ -162,7 +162,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppInit_func.
 
 comptime AppIterate_func = def(
     appstate: Ptr[NoneType, MutAnyOrigin]
-) -> AppResult
+) thin -> AppResult
 """Function pointer typedef for SDL_AppIterate.
     
     These are used by SDL_EnterAppMainCallbacks. This mechanism operates behind
@@ -182,7 +182,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppIterate_func.
 
 comptime AppEvent_func = def(
     appstate: Ptr[NoneType, MutAnyOrigin], event: Ptr[Event, MutAnyOrigin]
-) -> AppResult
+) thin -> AppResult
 """Function pointer typedef for SDL_AppEvent.
     
     These are used by SDL_EnterAppMainCallbacks. This mechanism operates behind
@@ -203,7 +203,7 @@ Docs: https://wiki.libsdl.org/SDL3/SDL_AppEvent_func.
 
 comptime AppQuit_func = def(
     appstate: Ptr[NoneType, MutAnyOrigin], result: AppResult
-) -> None
+) thin -> None
 """Function pointer typedef for SDL_AppQuit.
     
     These are used by SDL_EnterAppMainCallbacks. This mechanism operates behind
@@ -270,9 +270,9 @@ def init(flags: InitFlags) raises:
     Docs: https://wiki.libsdl.org/SDL3/SDL_Init.
     """
 
-    ret = _get_dylib_function[lib, "SDL_Init", def(flags: InitFlags) -> Bool]()(
-        flags
-    )
+    ret = _get_dylib_function[
+        lib, "SDL_Init", def(flags: InitFlags) thin -> Bool
+    ]()(flags)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -293,7 +293,7 @@ def init_sub_system(flags: InitFlags) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_InitSubSystem", def(flags: InitFlags) -> Bool
+        lib, "SDL_InitSubSystem", def(flags: InitFlags) thin -> Bool
     ]()(flags)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -312,7 +312,7 @@ def quit_sub_system(flags: InitFlags) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_QuitSubSystem", def(flags: InitFlags) -> None
+        lib, "SDL_QuitSubSystem", def(flags: InitFlags) thin -> None
     ]()(flags)
 
 
@@ -330,7 +330,7 @@ def was_init(flags: InitFlags) raises -> InitFlags:
     """
 
     return _get_dylib_function[
-        lib, "SDL_WasInit", def(flags: InitFlags) -> InitFlags
+        lib, "SDL_WasInit", def(flags: InitFlags) thin -> InitFlags
     ]()(flags)
 
 
@@ -348,7 +348,7 @@ def quit() raises -> None:
     Docs: https://wiki.libsdl.org/SDL3/SDL_Quit.
     """
 
-    return _get_dylib_function[lib, "SDL_Quit", def() -> None]()()
+    return _get_dylib_function[lib, "SDL_Quit", def() thin -> None]()()
 
 
 def is_main_thread() raises -> Bool:
@@ -370,10 +370,10 @@ def is_main_thread() raises -> Bool:
     Docs: https://wiki.libsdl.org/SDL3/SDL_IsMainThread.
     """
 
-    return _get_dylib_function[lib, "SDL_IsMainThread", def() -> Bool]()()
+    return _get_dylib_function[lib, "SDL_IsMainThread", def() thin -> Bool]()()
 
 
-comptime MainThreadCallback = def(userdata: Ptr[NoneType, MutAnyOrigin]) -> None
+comptime MainThreadCallback = def(userdata: Ptr[NoneType, MutAnyOrigin]) thin -> None
 """Callback run on the main thread.
     
     Args:
@@ -421,7 +421,7 @@ def run_on_main_thread(
             callback: MainThreadCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
             wait_complete: Bool,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(callback, userdata, wait_complete)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -475,7 +475,7 @@ def set_app_metadata(
             appname: Ptr[c_char, ImmutAnyOrigin],
             appversion: Ptr[c_char, ImmutAnyOrigin],
             appidentifier: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         appname.as_c_string_slice().unsafe_ptr(),
         appversion.as_c_string_slice().unsafe_ptr(),
@@ -554,7 +554,7 @@ def set_app_metadata_property(var name: String, var value: String) raises:
         def(
             name: Ptr[c_char, ImmutAnyOrigin],
             value: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         name.as_c_string_slice().unsafe_ptr(),
         value.as_c_string_slice().unsafe_ptr(),
@@ -591,5 +591,5 @@ def get_app_metadata_property(
     return _get_dylib_function[
         lib,
         "SDL_GetAppMetadataProperty",
-        def(name: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[c_char, ImmutAnyOrigin],
+        def(name: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(name.as_c_string_slice().unsafe_ptr())

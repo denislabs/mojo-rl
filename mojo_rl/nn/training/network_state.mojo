@@ -11,7 +11,7 @@ Usage:
     # LayoutTensor views (zero-copy pointer casts)
     var p = state.params_view()
     var g = state.grads_view()
-    var s = state.state_view()
+    var s = state.opt_state_view()
 
     # Zeroing / stepping
     state.zero_grads()
@@ -36,6 +36,8 @@ from ..checkpoint import (
     read_metadata_section,
     get_metadata_value,
     save_checkpoint_file,
+    split_lines,
+    find_section_start,
     BinaryCheckpoint,
 )
 
@@ -64,11 +66,19 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
     """
 
     comptime PARAM_SIZE: Int = Self.MODEL.PARAM_SIZE
-    comptime STATE_SIZE: Int = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+    # Optimizer state buffer size (e.g. Adam m/v). Distinct from Model.STATE_SIZE
+    # (persistent non-trainable model state — BN running stats, RNG counters, etc.)
+    comptime OPT_STATE_SIZE: Int = Self.MODEL.PARAM_SIZE * Self.OPTIMIZER.STATE_PER_PARAM
+    # Model persistent non-trainable state (BN running stats, RNG counters).
+    comptime MODEL_STATE_SIZE: Int = Self.MODEL.STATE_SIZE
+    # Optimizer global (non-per-param) state — step counter, Muon grad norm, etc.
+    comptime OPT_GLOBAL_SIZE: Int = Self.OPTIMIZER.GLOBAL_STATE_SIZE
 
     var params: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
     var grads: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
     var optimizer_state: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    var model_state: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    var opt_global_state: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
     var step_num: Int
     var lr_scale: Float64
 
@@ -83,8 +93,15 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         self.grads = alloc[Scalar[Self.dtype]](Self.PARAM_SIZE)
         memset(self.grads, 0, Self.PARAM_SIZE)
 
-        self.optimizer_state = alloc[Scalar[Self.dtype]](Self.STATE_SIZE)
-        memset(self.optimizer_state, 0, Self.STATE_SIZE)
+        self.optimizer_state = alloc[Scalar[Self.dtype]](Self.OPT_STATE_SIZE)
+        memset(self.optimizer_state, 0, Self.OPT_STATE_SIZE)
+
+        # Allocate at least 1 byte even for SIZE=0 so unsafe_ptr() is non-null.
+        self.model_state = alloc[Scalar[Self.dtype]](max(1, Self.MODEL_STATE_SIZE))
+        memset(self.model_state, 0, max(1, Self.MODEL_STATE_SIZE))
+
+        self.opt_global_state = alloc[Scalar[Self.dtype]](max(1, Self.OPT_GLOBAL_SIZE))
+        memset(self.opt_global_state, 0, max(1, Self.OPT_GLOBAL_SIZE))
 
     def __init__(out self, *, copy: Self):
         self.step_num = copy.step_num
@@ -92,6 +109,8 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         self.params = copy.params.copy()
         self.grads = copy.grads.copy()
         self.optimizer_state = copy.optimizer_state.copy()
+        self.model_state = copy.model_state.copy()
+        self.opt_global_state = copy.opt_global_state.copy()
 
     def __init__(out self, *, deinit take: Self):
         self.step_num = take.step_num
@@ -99,17 +118,18 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         self.params = take.params
         self.grads = take.grads
         self.optimizer_state = take.optimizer_state
+        self.model_state = take.model_state
+        self.opt_global_state = take.opt_global_state
 
     # =========================================================================
     # Initialization
     # =========================================================================
 
     def initialize[INITIALIZER: Initializer = Xavier[]](mut self):
-        """Initialize params using the given initializer strategy.
+        """Initialize params and non-trainable model state.
 
-        Delegates to MODEL.initialize_params which handles per-layer fan
-        dimensions for Sequential models. Leaf layers use their own
-        IN_DIM/OUT_DIM directly.
+        Delegates to MODEL.initialize_params (weights) and
+        MODEL.initialize_state (BN running stats, RNG counters, etc.).
 
         Parameters:
             INITIALIZER: Weight initialization strategy (Xavier, Kaiming, etc.).
@@ -120,6 +140,8 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         """
         var t = self.params_view()
         Self.MODEL.initialize_params[INITIALIZER](t)
+        var s = self.model_state_view()
+        Self.MODEL.initialize_state[Self.dtype](s)
 
     # =========================================================================
     # LayoutTensor Views (zero-copy)
@@ -142,7 +164,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
             Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ](self.grads)
 
-    def state_view(
+    def opt_state_view(
         self,
     ) -> LayoutTensor[
         Self.dtype,
@@ -155,6 +177,33 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
             Layout.row_major(Self.PARAM_SIZE, Self.OPTIMIZER.STATE_PER_PARAM),
             MutAnyOrigin,
         ](self.optimizer_state)
+
+    def model_state_view(
+        self,
+    ) -> LayoutTensor[
+        Self.dtype, Layout.row_major(Self.MODEL_STATE_SIZE), MutAnyOrigin
+    ]:
+        """Return a LayoutTensor view over model_state (zero-copy).
+
+        Zero-length when the model declares no persistent state.
+        """
+        return LayoutTensor[
+            Self.dtype, Layout.row_major(Self.MODEL_STATE_SIZE), MutAnyOrigin
+        ](self.model_state)
+
+    def opt_global_state_view(
+        self,
+    ) -> LayoutTensor[
+        Self.dtype, Layout.row_major(Self.OPT_GLOBAL_SIZE), MutAnyOrigin
+    ]:
+        """Return a LayoutTensor view over the optimizer's global state
+        (step counter, grad norm, etc.).
+
+        Zero-length when the optimizer declares no global state.
+        """
+        return LayoutTensor[
+            Self.dtype, Layout.row_major(Self.OPT_GLOBAL_SIZE), MutAnyOrigin
+        ](self.opt_global_state)
 
     # =========================================================================
     # Core Mutation
@@ -181,13 +230,28 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
 
         Applies self.lr_scale to the base LR (set via set_lr_scale()).
         Creates lvalue views internally (params and state are mut in step()).
+
+        Phase 6 (docs/STATE_SIZE_DESIGN.md): when the optimizer keeps an
+        on-device step counter (Adam/AdamW with `GLOBAL_STATE_SIZE >= 1`),
+        also mirror the bumped step into `opt_global_state[0]` as a UInt32
+        bit-pattern. The CPU `step()` kernels don't read this slot, but a
+        subsequent `GPUNetworkState.upload_from(self, ...)` will, so this
+        keeps CPU↔GPU resume coherent without forcing the caller to set
+        `cpu.step_num` manually.
         """
         self.step_num += 1
         var p = self.params_view()
-        var s = self.state_view()
+        var s = self.opt_state_view()
+        var og = self.opt_global_state_view()
         Self.OPTIMIZER.step[Self.PARAM_SIZE](
-            p, self.grads_view(), s, self.step_num, self.lr_scale
+            p, self.grads_view(), s, og, self.step_num, self.lr_scale
         )
+
+        comptime if Self.OPT_GLOBAL_SIZE >= 1:
+            var counter_ptr = self.opt_global_state.bitcast[
+                Scalar[DType.uint32]
+            ]()
+            counter_ptr[0] = UInt32(self.step_num)
 
     # =========================================================================
     # Target Network Operations
@@ -223,7 +287,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
     # =========================================================================
 
     def write_sections(self, prefix: String) -> String:
-        """Serialize params and optimizer_state as prefixed sections.
+        """Serialize params, optimizer_state, and model_state as prefixed sections.
 
         Used by agents to build a single checkpoint file containing multiple
         networks. Example prefix "actor_" produces sections:
@@ -233,12 +297,18 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
             actor_optimizer_state:
             0.0
             ...
+            actor_model_state:
+            0.0
+            ...
+
+        The `model_state` section is only emitted when the model declares
+        STATE_SIZE > 0 (Phase 3+ — BN running stats, RNG counters, etc.).
 
         Args:
             prefix: Section name prefix (e.g. "actor_", "critic_").
 
         Returns:
-            String with two sections ready to append to a checkpoint file.
+            String with the sections ready to append to a checkpoint file.
         """
         var content = write_float_section_ptr(
             prefix + "params:", self.params, Self.PARAM_SIZE
@@ -246,15 +316,27 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         content += write_float_section_ptr(
             prefix + "optimizer_state:",
             self.optimizer_state,
-            Self.STATE_SIZE,
+            Self.OPT_STATE_SIZE,
         )
+        if Self.MODEL_STATE_SIZE > 0:
+            content += write_float_section_ptr(
+                prefix + "model_state:",
+                self.model_state,
+                Self.MODEL_STATE_SIZE,
+            )
         return content
 
     def read_sections(mut self, content: String, prefix: String) raises:
-        """Load params and optimizer_state from prefixed sections.
+        """Load params, optimizer_state, and model_state from prefixed sections.
 
-        Counterpart of write_sections — reads "{prefix}params:" and
-        "{prefix}optimizer_state:" from a combined checkpoint file.
+        Counterpart of write_sections — reads "{prefix}params:",
+        "{prefix}optimizer_state:", and (when present) "{prefix}model_state:"
+        from a combined checkpoint file.
+
+        Backward compat: legacy checkpoints lacking the model_state section
+        are detected and `MODEL.initialize_state` is invoked to populate the
+        running-stat slots with their defaults (running_mean=0, running_var=1
+        for BN), with a warning printed.
 
         Args:
             content: Full checkpoint file content.
@@ -267,10 +349,28 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
             (self.params + i)[] = loaded_params[i]
 
         var loaded_state = read_float_section_list[Self.dtype](
-            content, prefix + "optimizer_state:", Self.STATE_SIZE
+            content, prefix + "optimizer_state:", Self.OPT_STATE_SIZE
         )
-        for i in range(Self.STATE_SIZE):
+        for i in range(Self.OPT_STATE_SIZE):
             (self.optimizer_state + i)[] = loaded_state[i]
+
+        if Self.MODEL_STATE_SIZE > 0:
+            var lines = split_lines(content)
+            var ms_idx = find_section_start(lines, prefix + "model_state:")
+            if ms_idx < 0:
+                # Legacy v1 checkpoint — re-initialize running stats to defaults.
+                print(
+                    "Warning: checkpoint missing '"
+                    + prefix
+                    + "model_state:' section — running stats will be re-initialized to defaults."
+                )
+                Self.MODEL.initialize_state[Self.dtype](self.model_state_view())
+            else:
+                var loaded_ms = read_float_section_list[Self.dtype](
+                    content, prefix + "model_state:", Self.MODEL_STATE_SIZE
+                )
+                for i in range(Self.MODEL_STATE_SIZE):
+                    (self.model_state + i)[] = loaded_ms[i]
 
     # =========================================================================
     # Checkpoint Save / Load (single-network file)
@@ -283,7 +383,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
             filepath: Destination path for the checkpoint file.
         """
         var content = write_checkpoint_header(
-            "network_state", Self.PARAM_SIZE, Self.STATE_SIZE
+            "network_state", Self.PARAM_SIZE, Self.OPT_STATE_SIZE
         )
         content += self.write_sections("")
         var metadata = List[String]()
@@ -313,7 +413,7 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
 
         var metadata = read_metadata_section(content)
         var step_str = get_metadata_value(metadata, "step_num")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.step_num = Int(atol(step_str))
 
     # =========================================================================
@@ -321,7 +421,10 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
     # =========================================================================
 
     def write_sections_binary(self, mut ckpt: BinaryCheckpoint[Self.dtype], prefix: String):
-        """Add params and optimizer_state as named sections to a binary checkpoint.
+        """Add params, optimizer_state, and model_state as named sections to a binary checkpoint.
+
+        The model_state section is only emitted when the model declares
+        STATE_SIZE > 0 (Phase 3+).
 
         Args:
             ckpt: BinaryCheckpoint to add sections to.
@@ -331,13 +434,21 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
             prefix + "params", self.params, Self.PARAM_SIZE
         )
         ckpt.add_float_section_ptr(
-            prefix + "optimizer_state", self.optimizer_state, Self.STATE_SIZE
+            prefix + "optimizer_state", self.optimizer_state, Self.OPT_STATE_SIZE
         )
+        if Self.MODEL_STATE_SIZE > 0:
+            ckpt.add_float_section_ptr(
+                prefix + "model_state", self.model_state, Self.MODEL_STATE_SIZE
+            )
 
     def read_sections_binary(
         mut self, ckpt: BinaryCheckpoint[Self.dtype], prefix: String
     ) raises:
-        """Load params and optimizer_state from a binary checkpoint.
+        """Load params, optimizer_state, and model_state from a binary checkpoint.
+
+        Backward compat: legacy checkpoints lacking model_state are detected
+        and `MODEL.initialize_state` is invoked to populate the running-stat
+        slots with defaults (with a warning).
 
         Args:
             ckpt: BinaryCheckpoint to read sections from.
@@ -350,10 +461,25 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
             (self.params + i)[] = loaded_params[i]
 
         var loaded_state = ckpt.get_float_section(
-            prefix + "optimizer_state", Self.STATE_SIZE
+            prefix + "optimizer_state", Self.OPT_STATE_SIZE
         )
-        for i in range(Self.STATE_SIZE):
+        for i in range(Self.OPT_STATE_SIZE):
             (self.optimizer_state + i)[] = loaded_state[i]
+
+        if Self.MODEL_STATE_SIZE > 0:
+            if not ckpt.has_section(prefix + "model_state"):
+                print(
+                    "Warning: binary checkpoint missing '"
+                    + prefix
+                    + "model_state' section — running stats will be re-initialized to defaults."
+                )
+                Self.MODEL.initialize_state[Self.dtype](self.model_state_view())
+            else:
+                var loaded_ms = ckpt.get_float_section(
+                    prefix + "model_state", Self.MODEL_STATE_SIZE
+                )
+                for i in range(Self.MODEL_STATE_SIZE):
+                    (self.model_state + i)[] = loaded_ms[i]
 
     def save_checkpoint_binary(self, filepath: String) raises:
         """Save params, optimizer state, and step_num to a binary checkpoint.
@@ -378,5 +504,5 @@ struct NetworkState[MODEL: Model, OPTIMIZER: Optimizer, dtype: DType = default_d
         self.read_sections_binary(ckpt, "")
 
         var step_str = ckpt.get_metadata_value("step_num")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.step_num = Int(atol(step_str))

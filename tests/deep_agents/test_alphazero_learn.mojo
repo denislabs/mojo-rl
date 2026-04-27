@@ -211,7 +211,7 @@ def test_cpu_training() raises:
             unique_count += 1
     print("Unique values in first 128 weights:", unique_count, "(expect ~128, got", unique_count, ")")
 
-    PredModel.forward[BATCH](obs_t, pred_t, state.params_view(), cache_t)
+    PredModel.forward[BATCH](obs_t, pred_t, state.params_view(), state.model_state_view(), cache_t)
 
     # Print hidden features for samples 0 and 1 to check feature collapse
     print("First 8 hidden features (layer 0 ReLU output):")
@@ -287,7 +287,7 @@ def test_cpu_training() raises:
         memset(cache_data, 0, BATCH * PredModel.CACHE_SIZE)
 
         # Forward with cache
-        PredModel.forward[BATCH](obs_t, pred_t, state.params_view(), cache_t)
+        PredModel.forward[BATCH](obs_t, pred_t, state.params_view(), state.model_state_view(), cache_t)
 
         # Compute output gradient (same as az_policy_value_grad_kernel)
         var inv_batch = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
@@ -322,7 +322,7 @@ def test_cpu_training() raises:
         memset(grad_in_data, 0, BATCH * OBS)
         var grad_in_t = LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin](grad_in_data)
         var grads_v = state.grads_view()
-        PredModel.backward[BATCH](grad_out_t, grad_in_t, state.params_view(), cache_t, grads_v)
+        PredModel.backward[BATCH](grad_out_t, grad_in_t, state.params_view(), state.model_state_view(), cache_t, grads_v)
         grad_in_data.free()
 
         # Check grad norms per layer
@@ -373,7 +373,7 @@ def test_cpu_training() raises:
 
     # Final check
     memset(pred_data, 0, BATCH * PRED_OUT)
-    PredModel.forward[BATCH](obs_t, pred_t, state.params_view())
+    PredModel.forward[BATCH](obs_t, pred_t, state.params_view(), state.model_state_view())
     var final_loss = compute_loss(pred_data, policy_data, value_data)
     var final_entropy = compute_policy_entropy(pred_data)
     print()

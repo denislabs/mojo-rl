@@ -174,6 +174,7 @@ struct SliceOp[in_dim: Int, start: Int, end: Int](DiffOp):
         comptime total = BATCH * Self.OUT_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -221,6 +222,7 @@ struct SliceOp[in_dim: Int, start: Int, end: Int](DiffOp):
         comptime total = BATCH * Self.IN_DIM
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             gi: LayoutTensor[

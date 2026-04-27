@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Storage
+"""Storage.
 
 The storage API is a high-level API designed to abstract away the
 portability issues that come up when using something lower-level (in SDL's
@@ -261,10 +261,10 @@ struct StorageInterface(ImplicitlyCopyable, Movable):
     var version: UInt32
     """The version of this interface."""
 
-    var close: def(userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool
+    var close: def(userdata: Ptr[NoneType, MutAnyOrigin]) thin -> Bool
     """Called when the storage is closed."""
 
-    var ready: def(userdata: Ptr[NoneType, MutAnyOrigin]) -> Bool
+    var ready: def(userdata: Ptr[NoneType, MutAnyOrigin]) thin -> Bool
     """Optional, returns whether the storage is currently ready for access."""
 
     var enumerate: def(
@@ -272,14 +272,14 @@ struct StorageInterface(ImplicitlyCopyable, Movable):
         path: Ptr[c_char, ImmutAnyOrigin],
         callback: EnumerateDirectoryCallback,
         callback_userdata: Ptr[NoneType, MutAnyOrigin],
-    ) -> Bool
+    ) thin -> Bool
     """Enumerate a directory, optional for write-only storage."""
 
     var info: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         path: Ptr[c_char, ImmutAnyOrigin],
         info: Ptr[PathInfo, MutAnyOrigin],
-    ) -> Bool
+    ) thin -> Bool
     """Get path information, optional for write-only storage."""
 
     var read_file: def(
@@ -287,7 +287,7 @@ struct StorageInterface(ImplicitlyCopyable, Movable):
         path: Ptr[c_char, ImmutAnyOrigin],
         destination: Ptr[NoneType, MutAnyOrigin],
         length: UInt64,
-    ) -> Bool
+    ) thin -> Bool
     """Read a file from storage, optional for write-only storage."""
 
     var write_file: def(
@@ -295,36 +295,36 @@ struct StorageInterface(ImplicitlyCopyable, Movable):
         path: Ptr[c_char, ImmutAnyOrigin],
         source: Ptr[NoneType, ImmutAnyOrigin],
         length: UInt64,
-    ) -> Bool
+    ) thin -> Bool
     """Write a file to storage, optional for read-only storage."""
 
     var mkdir: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         path: Ptr[c_char, ImmutAnyOrigin],
-    ) -> Bool
+    ) thin -> Bool
     """Create a directory, optional for read-only storage."""
 
     var remove: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         path: Ptr[c_char, ImmutAnyOrigin],
-    ) -> Bool
+    ) thin -> Bool
     """Remove a file or empty directory, optional for read-only storage."""
 
     var rename: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         oldpath: Ptr[c_char, ImmutAnyOrigin],
         newpath: Ptr[c_char, ImmutAnyOrigin],
-    ) -> Bool
+    ) thin -> Bool
     """Rename a path, optional for read-only storage."""
 
     var copy_file: def(
         userdata: Ptr[NoneType, MutAnyOrigin],
         oldpath: Ptr[c_char, ImmutAnyOrigin],
         newpath: Ptr[c_char, ImmutAnyOrigin],
-    ) -> Bool
+    ) thin -> Bool
     """Copy a file, optional for read-only storage."""
 
-    var space_remaining: def(userdata: Ptr[NoneType, MutAnyOrigin]) -> UInt64
+    var space_remaining: def(userdata: Ptr[NoneType, MutAnyOrigin]) thin -> UInt64
     """Get the space remaining, optional for read-only storage."""
 
 
@@ -365,7 +365,7 @@ def open_title_storage(
         "SDL_OpenTitleStorage",
         def(
             override: Ptr[c_char, ImmutAnyOrigin], props: PropertiesID
-        ) -> Ptr[Storage, MutAnyOrigin],
+        ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(override.as_c_string_slice().unsafe_ptr(), props)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -403,7 +403,7 @@ def open_user_storage(
             org: Ptr[c_char, ImmutAnyOrigin],
             app: Ptr[c_char, ImmutAnyOrigin],
             props: PropertiesID,
-        ) -> Ptr[Storage, MutAnyOrigin],
+        ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(
         org.as_c_string_slice().unsafe_ptr(),
         app.as_c_string_slice().unsafe_ptr(),
@@ -436,7 +436,7 @@ def open_file_storage(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenFileStorage",
-        def(path: Ptr[c_char, ImmutAnyOrigin]) -> Ptr[Storage, MutAnyOrigin],
+        def(path: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -475,7 +475,7 @@ def open_storage(
         def(
             iface: Ptr[StorageInterface, ImmutAnyOrigin],
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> Ptr[Storage, MutAnyOrigin],
+        ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(iface, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -499,7 +499,7 @@ def close_storage(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_CloseStorage",
-        def(storage: Ptr[Storage, MutAnyOrigin]) -> Bool,
+        def(storage: Ptr[Storage, MutAnyOrigin]) thin -> Bool,
     ]()(storage)
 
 
@@ -523,7 +523,7 @@ def storage_ready(storage: Ptr[Storage, MutAnyOrigin]) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_StorageReady",
-        def(storage: Ptr[Storage, MutAnyOrigin]) -> Bool,
+        def(storage: Ptr[Storage, MutAnyOrigin]) thin -> Bool,
     ]()(storage)
 
 
@@ -553,7 +553,7 @@ def get_storage_file_size(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
             length: Ptr[UInt64, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), length)
 
 
@@ -591,7 +591,7 @@ def read_storage_file(
             path: Ptr[c_char, ImmutAnyOrigin],
             destination: Ptr[NoneType, MutAnyOrigin],
             length: UInt64,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), destination, length)
 
 
@@ -624,7 +624,7 @@ def write_storage_file(
             path: Ptr[c_char, ImmutAnyOrigin],
             source: Ptr[NoneType, ImmutAnyOrigin],
             length: UInt64,
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), source, length)
 
 
@@ -650,7 +650,7 @@ def create_storage_directory(
         def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -698,7 +698,7 @@ def enumerate_storage_directory(
             path: Ptr[c_char, ImmutAnyOrigin],
             callback: EnumerateDirectoryCallback,
             userdata: Ptr[NoneType, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), callback, userdata)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -726,7 +726,7 @@ def remove_storage_path(
         def(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -758,7 +758,7 @@ def rename_storage_path(
             storage: Ptr[Storage, MutAnyOrigin],
             oldpath: Ptr[c_char, ImmutAnyOrigin],
             newpath: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         storage,
         oldpath.as_c_string_slice().unsafe_ptr(),
@@ -794,7 +794,7 @@ def copy_storage_file(
             storage: Ptr[Storage, MutAnyOrigin],
             oldpath: Ptr[c_char, ImmutAnyOrigin],
             newpath: Ptr[c_char, ImmutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(
         storage,
         oldpath.as_c_string_slice().unsafe_ptr(),
@@ -831,7 +831,7 @@ def get_storage_path_info(
             storage: Ptr[Storage, MutAnyOrigin],
             path: Ptr[c_char, ImmutAnyOrigin],
             info: Ptr[PathInfo, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), info)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -854,7 +854,7 @@ def get_storage_space_remaining(
     return _get_dylib_function[
         lib,
         "SDL_GetStorageSpaceRemaining",
-        def(storage: Ptr[Storage, MutAnyOrigin]) -> UInt64,
+        def(storage: Ptr[Storage, MutAnyOrigin]) thin -> UInt64,
     ]()(storage)
 
 
@@ -917,7 +917,7 @@ def glob_storage_directory(
             pattern: Ptr[c_char, ImmutAnyOrigin],
             flags: GlobFlags,
             count: Ptr[c_int, MutAnyOrigin],
-        ) -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
+        ) thin -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
     ]()(
         storage,
         path.as_c_string_slice().unsafe_ptr(),

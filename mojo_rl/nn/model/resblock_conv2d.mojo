@@ -117,6 +117,8 @@ struct ResBlockConv2D[
     comptime MAX_CONV_WS: Int = Self.CONV1_WS if Self.CONV1_WS > Self.CONV2_WS else Self.CONV2_WS
     # conv ws + inter buffer + temp_gi buffer (no grad_output reuse in backward)
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.MAX_CONV_WS + Self.DIM + Self.DIM
+    # No stateful submodules (Conv1/Conv2 are AutoFused Conv2D, stateless).
+    comptime STATE_SIZE: Int = 0
 
     # ── Initialization ─────────────────────────────────────────────
 
@@ -139,6 +141,9 @@ struct ResBlockConv2D[
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
     ):
         from std.memory import alloc
@@ -146,15 +151,18 @@ struct ResBlockConv2D[
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
         var c1 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV1_CS), MutAnyOrigin](cache.ptr)
         var c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
+        # Sub-model state slices (Conv1/Conv2 both stateless → STATE_SIZE == 0).
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
         var inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1, c1)
+        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1, s1, c1)
 
         var inter_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin]](inter_t)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2, c2)
+        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2, s2, c2)
 
         # Skip add + ReLU + cache pre-relu
         var pre_off = BATCH * (Self.CONV1_CS + Self.CONV2_CS)
@@ -172,19 +180,25 @@ struct ResBlockConv2D[
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         from std.memory import alloc
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+        # Sub-model state slices (Conv1/Conv2 both stateless → STATE_SIZE == 0).
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         var inter = alloc[Scalar[dtype]](BATCH * Self.DIM)
         var inter_t = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1)
+        Self.Conv1.forward[BATCH, dtype](in_rb, inter_t, p1, s1)
 
         var inter_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin]](inter_t)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2)
+        Self.Conv2.forward[BATCH, dtype](inter_rb, out_rb, p2, s2)
 
         for i in range(BATCH * Self.DIM):
             var val = output.ptr[i] + input.ptr[i]
@@ -199,6 +213,9 @@ struct ResBlockConv2D[
         grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
         mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
     ):
@@ -218,6 +235,9 @@ struct ResBlockConv2D[
         var c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.CONV2_CS), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
         var g1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
         var g2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
+        # Sub-model state slices (Conv1/Conv2 both stateless → STATE_SIZE == 0).
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
         var pre_off = BATCH * (Self.CONV1_CS + Self.CONV2_CS)
 
         # 1. ReLU backward + skip gradient
@@ -239,7 +259,7 @@ struct ResBlockConv2D[
         var grad_inter_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin
         ](grad_inter)
-        Self.Conv2.backward[BATCH, dtype](grad_masked_t, grad_inter_t, p2, c2, g2)
+        Self.Conv2.backward[BATCH, dtype](grad_masked_t, grad_inter_t, p2, s2, c2, g2)
 
         # 3. Conv1 backward
         var temp_gi = alloc[Scalar[dtype]](BATCH * Self.DIM)
@@ -251,7 +271,7 @@ struct ResBlockConv2D[
         var temp_gi_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin
         ](temp_gi)
-        Self.Conv1.backward[BATCH, dtype](go_c1, temp_gi_t, p1, c1, g1)
+        Self.Conv1.backward[BATCH, dtype](go_c1, temp_gi_t, p1, s1, c1, g1)
 
         # 4. grad_input += conv1's grad_input
         for i in range(BATCH * Self.DIM):
@@ -272,6 +292,9 @@ struct ResBlockConv2D[
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
@@ -282,6 +305,10 @@ struct ResBlockConv2D[
         var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.CACHE_SIZE), MutAnyOrigin](cache.ptr)
         var c2_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.CACHE_SIZE), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
 
+        # Sub-model state slices (Conv1/Conv2 both stateless → STATE_SIZE == 0).
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
+
         # Workspace layout: [conv_workspace (MAX_CONV_WS per sample) | inter (DIM per sample)]
         var conv_ws_size = BATCH * Self.MAX_CONV_WS
         var conv_ws = DeviceBuffer[dtype](ctx, workspace.unsafe_ptr(), conv_ws_size if conv_ws_size > 0 else 1, owning=False)
@@ -289,11 +316,11 @@ struct ResBlockConv2D[
         var inter_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
         var inter_out = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter_ptr)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward_gpu[BATCH, dtype](ctx, inter_out, in_rb, p1, c1_v, conv_ws)
+        Self.Conv1.forward_gpu[BATCH, dtype](ctx, inter_out, in_rb, p1, s1, c1_v, conv_ws)
 
         var inter_in = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](inter_ptr)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward_gpu[BATCH, dtype](ctx, out_rb, inter_in, p2, c2_v, conv_ws)
+        Self.Conv2.forward_gpu[BATCH, dtype](ctx, out_rb, inter_in, p2, s2, c2_v, conv_ws)
 
         comptime TOTAL = BATCH * Self.DIM
         comptime BLOCKS = ceildiv(TOTAL, TPB)
@@ -316,12 +343,19 @@ struct ResBlockConv2D[
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
     ) raises:
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+
+        # Sub-model state slices (Conv1/Conv2 both stateless → STATE_SIZE == 0).
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         # Workspace layout: [conv_workspace (MAX_CONV_WS per sample) | inter (DIM per sample)]
         var conv_ws_size = BATCH * Self.MAX_CONV_WS
@@ -330,11 +364,11 @@ struct ResBlockConv2D[
         var inter_ptr = workspace.unsafe_ptr() + BATCH * Self.MAX_CONV_WS
         var inter_out = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.OUT_DIM), MutAnyOrigin](inter_ptr)
         var in_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin]](input)
-        Self.Conv1.forward_gpu_no_cache[BATCH, dtype](ctx, inter_out, in_rb, p1, conv_ws)
+        Self.Conv1.forward_gpu_no_cache[BATCH, dtype](ctx, inter_out, in_rb, p1, s1, conv_ws)
 
         var inter_in = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.IN_DIM), MutAnyOrigin](inter_ptr)
         var out_rb = rebind[LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin]](output)
-        Self.Conv2.forward_gpu_no_cache[BATCH, dtype](ctx, out_rb, inter_in, p2, conv_ws)
+        Self.Conv2.forward_gpu_no_cache[BATCH, dtype](ctx, out_rb, inter_in, p2, s2, conv_ws)
 
         comptime TOTAL = BATCH * Self.DIM
         comptime BLOCKS = ceildiv(TOTAL, TPB)
@@ -355,10 +389,13 @@ struct ResBlockConv2D[
         mut output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
         # Default: delegate to forward_gpu_no_cache (default stream)
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # ── GPU Backward ───────────────────────────────────────────────
 
@@ -371,6 +408,9 @@ struct ResBlockConv2D[
         mut grad_input: LayoutTensor[dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin],
         grad_output: LayoutTensor[dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin],
         params: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin],
         mut grads: LayoutTensor[dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin],
         workspace: DeviceBuffer[dtype],
@@ -379,6 +419,10 @@ struct ResBlockConv2D[
     ) raises:
         var p1 = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](params.ptr)
         var p2 = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](params.ptr + Self.CONV1_PS)
+
+        # Sub-model state slices (Conv1/Conv2 both stateless → STATE_SIZE == 0).
+        var s1 = LayoutTensor[dtype, Layout.row_major(Self.Conv1.STATE_SIZE), MutAnyOrigin](state.ptr)
+        var s2 = LayoutTensor[dtype, Layout.row_major(Self.Conv2.STATE_SIZE), MutAnyOrigin](state.ptr)
 
         # Workspace layout: [conv_workspace (MAX_CONV_WS per sample) | inter (DIM per sample)]
         var conv_ws_size = BATCH * Self.MAX_CONV_WS
@@ -402,7 +446,7 @@ struct ResBlockConv2D[
         var go_c2 = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.OUT_DIM), MutAnyOrigin](grad_output.ptr)
         var c2_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv2.CACHE_SIZE), MutAnyOrigin](cache.ptr + BATCH * Self.CONV1_CS)
         var g2_v = LayoutTensor[dtype, Layout.row_major(Self.CONV2_PS), MutAnyOrigin](grads.ptr + Self.CONV1_PS)
-        Self.Conv2.backward_gpu[BATCH, dtype](ctx, grad_inter, go_c2, p2, c2_v, g2_v, conv_ws)
+        Self.Conv2.backward_gpu[BATCH, dtype](ctx, grad_inter, go_c2, p2, s2, c2_v, g2_v, conv_ws)
 
         # 3. Conv1 backward: grad_inter → temp_gi (separate workspace region)
         var temp_gi_ptr = workspace.unsafe_ptr() + BATCH * (Self.MAX_CONV_WS + Self.DIM)
@@ -410,7 +454,7 @@ struct ResBlockConv2D[
         var temp_gi = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.IN_DIM), MutAnyOrigin](temp_gi_ptr)
         var c1_v = LayoutTensor[dtype, Layout.row_major(BATCH, Self.Conv1.CACHE_SIZE), MutAnyOrigin](cache.ptr)
         var g1_v = LayoutTensor[dtype, Layout.row_major(Self.CONV1_PS), MutAnyOrigin](grads.ptr)
-        Self.Conv1.backward_gpu[BATCH, dtype](ctx, temp_gi, go_c1, p1, c1_v, g1_v, conv_ws)
+        Self.Conv1.backward_gpu[BATCH, dtype](ctx, temp_gi, go_c1, p1, s1, c1_v, g1_v, conv_ws)
 
         # 4. Add conv1's grad_input to skip grad
         comptime add_k = _add_kernel[TOTAL, dtype]

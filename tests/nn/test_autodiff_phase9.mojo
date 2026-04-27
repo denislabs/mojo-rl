@@ -15,6 +15,7 @@ Run with:
 
 from std.random import seed, random_float64
 from std.math import abs as math_abs, sqrt, exp
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.autodiff import (
@@ -171,8 +172,11 @@ def test_resnet_forward_backward() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    M.forward[BATCH](inp_t, out_t, p_t, c_t)
+    M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var has_output = False
     for i in range(BATCH * M.OUT_DIM):
@@ -196,7 +200,7 @@ def test_resnet_forward_backward() -> Int:
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    M.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_gi = False
     for i in range(BATCH * M.IN_DIM):
@@ -269,8 +273,11 @@ def test_resnet_xor_training() -> Int:
         var c_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
         ](cache_data.unsafe_ptr())
+        var s_t = LayoutTensor[
+            dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-        M.forward[BATCH](inp_t, out_t, p_t, c_t)
+        M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
         var loss: Float64 = 0.0
         var go_data = make_list(BATCH * M.OUT_DIM)
@@ -291,7 +298,7 @@ def test_resnet_xor_training() -> Int:
             dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
         ](grads.unsafe_ptr())
 
-        M.backward[BATCH](go_t, gi_t, p_t, c_t, g_t)
+        M.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, g_t)
 
         for i in range(M.PARAM_SIZE):
             params[i] = params[i] - Scalar[dtype](LR) * grads[i]
@@ -338,8 +345,11 @@ def test_resnet_gradient_flow() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, DeepResNet.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(DeepResNet.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    DeepResNet.forward[BATCH](inp_t, out_t, p_t, c_t)
+    DeepResNet.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var go_data = make_rand_list(BATCH * DeepResNet.OUT_DIM)
     var gi_data = make_list(BATCH * DeepResNet.IN_DIM)
@@ -355,7 +365,7 @@ def test_resnet_gradient_flow() -> Int:
         dtype, Layout.row_major(DeepResNet.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    DeepResNet.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    DeepResNet.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     # Check gradient magnitude at input (should NOT vanish through 4 residual blocks)
     var gi_norm: Float64 = 0.0
@@ -442,8 +452,11 @@ def test_multihead_forward_backward() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    M.forward[BATCH](inp_t, out_t, p_t, c_t)
+    M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var has_output = False
     for i in range(BATCH * M.OUT_DIM):
@@ -467,7 +480,7 @@ def test_multihead_forward_backward() -> Int:
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    M.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_gi = False
     for i in range(BATCH * M.IN_DIM):
@@ -542,8 +555,11 @@ def test_multihead_xor_training() -> Int:
         var c_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
         ](cache_data.unsafe_ptr())
+        var s_t = LayoutTensor[
+            dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-        M.forward[BATCH](inp_t, out_t, p_t, c_t)
+        M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
         var loss: Float64 = 0.0
         var go_data = make_list(BATCH * M.OUT_DIM)
@@ -564,7 +580,7 @@ def test_multihead_xor_training() -> Int:
             dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
         ](grads.unsafe_ptr())
 
-        M.backward[BATCH](go_t, gi_t, p_t, c_t, g_t)
+        M.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, g_t)
 
         for i in range(M.PARAM_SIZE):
             params[i] = params[i] - Scalar[dtype](LR) * grads[i]
@@ -613,8 +629,11 @@ def test_multihead_3branch() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    M.forward[BATCH](inp_t, out_t, p_t, c_t)
+    M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var has_output = False
     for i in range(BATCH * M.OUT_DIM):
@@ -636,7 +655,7 @@ def test_multihead_3branch() -> Int:
     var gp_t = LayoutTensor[
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
-    M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    M.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_gi = False
     for i in range(BATCH * M.IN_DIM):
@@ -729,8 +748,11 @@ def test_cnn_forward_backward() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    M.forward[BATCH](inp_t, out_t, p_t, c_t)
+    M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var has_output = False
     for i in range(BATCH * M.OUT_DIM):
@@ -754,7 +776,7 @@ def test_cnn_forward_backward() -> Int:
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    M.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_gi = False
     for i in range(BATCH * M.IN_DIM):
@@ -801,8 +823,11 @@ def test_lenet_forward_backward() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    M.forward[BATCH](inp_t, out_t, p_t, c_t)
+    M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var has_output = False
     for i in range(BATCH * M.OUT_DIM):
@@ -826,7 +851,7 @@ def test_lenet_forward_backward() -> Int:
         dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    M.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    M.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_gp = False
     for i in range(M.PARAM_SIZE):
@@ -903,8 +928,11 @@ def test_cnn_synthetic_training() -> Int:
         var c_t = LayoutTensor[
             dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
         ](cache_data.unsafe_ptr())
+        var s_t = LayoutTensor[
+            dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-        M.forward[BATCH](inp_t, out_t, p_t, c_t)
+        M.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
         # MSE loss
         var loss: Float64 = 0.0
@@ -930,7 +958,7 @@ def test_cnn_synthetic_training() -> Int:
             dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
         ](grads.unsafe_ptr())
 
-        M.backward[BATCH](go_t, gi_t, p_t, c_t, g_t)
+        M.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, g_t)
 
         for i in range(M.PARAM_SIZE):
             params[i] = params[i] - Scalar[dtype](LR) * grads[i]
@@ -1060,8 +1088,11 @@ def test_tiny_gpt() -> Int:
     var c_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, GPT.CACHE_SIZE), MutAnyOrigin
     ](cache_data.unsafe_ptr())
+    var s_t = LayoutTensor[
+        dtype, Layout.row_major(GPT.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
-    GPT.forward[BATCH](inp_t, out_t, p_t, c_t)
+    GPT.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
 
     var has_output = False
     for i in range(BATCH * GPT.OUT_DIM):
@@ -1085,7 +1116,7 @@ def test_tiny_gpt() -> Int:
         dtype, Layout.row_major(GPT.PARAM_SIZE), MutAnyOrigin
     ](gp_data.unsafe_ptr())
 
-    GPT.backward[BATCH](go_t, gi_t, p_t, c_t, gp_t)
+    GPT.backward[BATCH](go_t, gi_t, p_t, s_t, c_t, gp_t)
 
     var has_gp = False
     for i in range(GPT.PARAM_SIZE):

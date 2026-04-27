@@ -4,6 +4,7 @@ from mojo_rl.render import Renderer3D, Camera3D, Color
 from mojo_rl.render.light import Light
 from mojo_rl.render.stl_loader import load_stl
 from mojo_rl.math3d import Vec3 as V3, Quat as Q4
+
 comptime Vec3 = V3[DType.float64]
 comptime Quat = Q4[DType.float64]
 
@@ -11,12 +12,26 @@ comptime Quat = Q4[DType.float64]
 def main() raises:
     # Step 1: just load the STL files
     print("Loading tablebody.stl...")
-    var mesh1 = load_stl("mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl")
-    print("  vertices:", len(mesh1.vertices), " indices:", len(mesh1.indices))
+    var mesh1 = load_stl(
+        "mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl"
+    )
+    print(
+        "  vertices:",
+        mesh1.vertices.byte_length(),
+        " indices:",
+        mesh1.indices.byte_length(),
+    )
 
     print("Loading tabletop.stl...")
-    var mesh2 = load_stl("mojo_rl/envs/metaworld/assets/meshes/table/tabletop.stl")
-    print("  vertices:", len(mesh2.vertices), " indices:", len(mesh2.indices))
+    var mesh2 = load_stl(
+        "mojo_rl/envs/metaworld/assets/meshes/table/tabletop.stl"
+    )
+    print(
+        "  vertices:",
+        mesh2.vertices.byte_length(),
+        " indices:",
+        mesh2.indices.byte_length(),
+    )
 
     print("STL loading OK!")
 
@@ -31,15 +46,28 @@ def main() raises:
         screen_height=720,
     )
     var lights = List[Light]()
-    lights.append(Light(
-        mode=0, dir_x=0.5, dir_y=0.5, dir_z=-1.0,
-        color_r=0.7, color_g=0.7, color_b=0.7,
-        ambient=0.3, specular_intensity=0.3,
-        specular_exponent=10.0, cast_shadow=True,
-    ))
+    lights.append(
+        Light(
+            mode=0,
+            dir_x=0.5,
+            dir_y=0.5,
+            dir_z=-1.0,
+            color_r=0.7,
+            color_g=0.7,
+            color_b=0.7,
+            ambient=0.3,
+            specular_intensity=0.3,
+            specular_exponent=10.0,
+            cast_shadow=True,
+        )
+    )
     var renderer = Renderer3D(
-        width=1280, height=720, camera=cam,
-        draw_grid=True, draw_axes=True, lights=lights,
+        width=1280,
+        height=720,
+        camera=cam,
+        draw_grid=True,
+        draw_axes=True,
+        lights=lights,
     )
     var title = String("MetaWorld Table Mesh Test")
     renderer.init(title)
@@ -53,7 +81,9 @@ def main() raises:
         # Draw tablebody mesh at the MetaWorld table position
         renderer.draw_mesh(
             name="tablebody",
-            file_path="mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl",
+            file_path=(
+                "mojo_rl/envs/metaworld/assets/meshes/table/tablebody.stl"
+            ),
             center=Vec3(0.0, 0.6, -0.65),
             orientation=Quat(0.0, 0.0, 0.0, 1.0),
             color=Color(150, 100, 50, 255),

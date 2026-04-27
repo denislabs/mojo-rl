@@ -759,7 +759,8 @@ struct GenericRainbowAgent[
             dtype, Layout.row_major(1, Self.RAW_OUT), MutAnyOrigin
         ](raw_arr.unsafe_ptr())
         var p = cpu_state.online.params_view()
-        Self.QNet.forward[1](obs_t, raw_t, p)
+        var s = cpu_state.online.model_state_view()
+        Self.QNet.forward[1](obs_t, raw_t, p, s)
 
         # Dueling combine
         var combined = InlineArray[Scalar[dtype], Self.COMBINED](
@@ -858,8 +859,9 @@ struct GenericRainbowAgent[
             dtype, Layout.row_major(Self.BATCH, Self.Q_CS), MutAnyOrigin
         ](cache_arr.unsafe_ptr())
         var p_online = cpu_state.online.params_view()
+        var s_online = cpu_state.online.model_state_view()
         Self.QNet.forward_with_cache[Self.BATCH](
-            obs_t, raw_t, p_online, cache_t
+            obs_t, raw_t, p_online, s_online, cache_t
         )
 
         # Dueling combine online
@@ -878,7 +880,8 @@ struct GenericRainbowAgent[
             dtype, Layout.row_major(Self.BATCH, Self.RAW_OUT), MutAnyOrigin
         ](target_raw_arr.unsafe_ptr())
         var p_target = cpu_state.target.params_view()
-        Self.QNet.forward[Self.BATCH](next_obs_t, target_raw_t, p_target)
+        var s_target = cpu_state.target.model_state_view()
+        Self.QNet.forward[Self.BATCH](next_obs_t, target_raw_t, p_target, s_target)
         var target_combined = InlineArray[Scalar[dtype], Self.BATCH * COMB](
             uninitialized=True
         )
@@ -893,7 +896,7 @@ struct GenericRainbowAgent[
         var online_next_raw_t = LayoutTensor[
             dtype, Layout.row_major(Self.BATCH, Self.RAW_OUT), MutAnyOrigin
         ](online_next_raw_arr.unsafe_ptr())
-        Self.QNet.forward[Self.BATCH](next_obs_t, online_next_raw_t, p_online)
+        Self.QNet.forward[Self.BATCH](next_obs_t, online_next_raw_t, p_online, s_online)
         var online_next_combined = InlineArray[
             Scalar[dtype], Self.BATCH * COMB
         ](uninitialized=True)
@@ -1034,7 +1037,7 @@ struct GenericRainbowAgent[
         ](d_obs.unsafe_ptr())
         var g = cpu_state.online.grads_view()
         cpu_state.online.zero_grads()
-        Self.QNet.backward[Self.BATCH](grad_t, d_obs_t, p_online, cache_t, g)
+        Self.QNet.backward[Self.BATCH](grad_t, d_obs_t, p_online, s_online, cache_t, g)
         cpu_state.online.optimizer_step()
 
         # Update PER priorities (using CE loss as TD error proxy)
@@ -1187,7 +1190,8 @@ struct GenericRainbowAgent[
             dtype, Layout.row_major(1, Self.RAW_OUT), MutAnyOrigin
         ](raw_arr.unsafe_ptr())
         var p = cpu_state.online.params_view()
-        Self.QNet.forward[1](obs_t, raw_t, p)
+        var s = cpu_state.online.model_state_view()
+        Self.QNet.forward[1](obs_t, raw_t, p, s)
 
         var combined = InlineArray[Scalar[dtype], Self.COMBINED](
             uninitialized=True
@@ -1234,10 +1238,10 @@ struct GenericRainbowAgent[
         self.state.target.read_sections(content, "target_")
         var metadata = read_metadata_section(content)
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
         var step_str = get_metadata_value(metadata, "train_step_count")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.train_step_count = Int(atol(step_str))
 
     # =========================================================================
@@ -1367,7 +1371,8 @@ struct GenericRainbowAgent[
             dtype, Layout.row_major(N_ENVS, Self.RAW_OUT), MutAnyOrigin
         ](gpu_state.env_raw_buf.unsafe_ptr())
         var p = gpu_state.online.params_view()
-        Self.QNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, gpu_state.inf_ws)
+        var s = gpu_state.online.model_state_view()
+        Self.QNet.forward_gpu[N_ENVS](ctx, obs_t, raw_t, p, s, gpu_state.inf_ws)
 
         # Dueling combine + expected Q + argmax in one kernel
         var q_t = LayoutTensor[
@@ -1380,6 +1385,7 @@ struct GenericRainbowAgent[
             dtype, Layout.row_major(Self.NUM_ATOMS), MutAnyOrigin
         ](gpu_state.bins_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def rainbow_select_kernel(
             raw: LayoutTensor[
@@ -1552,20 +1558,23 @@ struct GenericRainbowAgent[
         )
 
         var p_online = gpu_state.online.params_view()
+        var s_online = gpu_state.online.model_state_view()
         var p_target = gpu_state.target.params_view()
+        var s_target = gpu_state.target.model_state_view()
 
         # ---- Phase 2: Forward passes ----
         Self.QNet.forward_gpu_with_cache[BATCH](
-            ctx, obs_t, q_raw_t, p_online, cache_t, gpu_state.train_ws
+            ctx, obs_t, q_raw_t, p_online, s_online, cache_t, gpu_state.train_ws
         )
         Self.QNet.forward_gpu[BATCH](
-            ctx, next_obs_t, next_q_raw_t, p_target, gpu_state.train_ws
+            ctx, next_obs_t, next_q_raw_t, p_target, s_target, gpu_state.train_ws
         )
         Self.QNet.forward_gpu[BATCH](
-            ctx, next_obs_t, online_next_q_raw_t, p_online, gpu_state.train_ws
+            ctx, next_obs_t, online_next_q_raw_t, p_online, s_online, gpu_state.train_ws
         )
 
         # ---- Phase 3: Dueling combine (3 kernels) ----
+        @parameter
         @always_inline
         def dueling_combine_kernel(
             raw: LayoutTensor[
@@ -1614,6 +1623,7 @@ struct GenericRainbowAgent[
         )
 
         # ---- Phase 4: Expected Q from online-next (for Double DQN action selection) ----
+        @parameter
         @always_inline
         def expected_q_kernel(
             comb: LayoutTensor[
@@ -1666,6 +1676,7 @@ struct GenericRainbowAgent[
             (Self.Config.v_max - Self.Config.v_min) / Float64(ATOMS - 1)
         )
 
+        @parameter
         @always_inline
         def rainbow_project_grad_kernel(
             online_comb: LayoutTensor[
@@ -1846,6 +1857,7 @@ struct GenericRainbowAgent[
             grad_raw_t,
             grad_in_t,
             p_online,
+            s_online,
             cache_t,
             g,
             gpu_state.train_ws,

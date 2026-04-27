@@ -316,8 +316,8 @@ comptime DeepPPOCNNAgent[
 # =============================================================================
 
 from .mbpo_agent import MBPOAgent
-from ..configs.mbpo_config import DefaultMBPOConfig
-from ..strategies.termination import NeverTerminate
+from mojo_rl.deep_agents.core.configs.mbpo_config import DefaultMBPOConfig
+from mojo_rl.deep_agents.core.strategies.termination import NeverTerminate
 
 comptime MBPOSACAgent[
     obs_dim: Int,

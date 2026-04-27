@@ -350,6 +350,7 @@ struct RSampleOp[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
         ](workspace)
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -462,6 +463,7 @@ struct RSampleOp[
         comptime total = BATCH * Self.action_dim
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             gi: LayoutTensor[

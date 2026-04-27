@@ -11,7 +11,7 @@ Usage:
 """
 
 from std.math import abs, sqrt
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.optimizer import SGD, Adam, AdamW
@@ -43,9 +43,13 @@ def test_sgd() raises:
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var grads_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grads)
     var state_t = LayoutTensor[dtype, Layout.row_major(PS, 1), MutAnyOrigin](state)
+    # Zero-length opt_global_state (SGD doesn't use it).
+    var og_t = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
+        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+    )
 
     # Step 1
-    SGD[LR].step[PS](params_t, grads_t, state_t, step_num=1)
+    SGD[LR].step[PS](params_t, grads_t, state_t, og_t, step_num=1)
 
     var max_err: Float64 = 0.0
     for i in range(PS):
@@ -65,7 +69,7 @@ def test_sgd() raises:
         (grads + i)[] = Scalar[dtype](0.1)
 
     comptime SCALE = 0.5
-    SGD[LR].step[PS](params_t, grads_t, state_t, step_num=2, lr_scale=SCALE)
+    SGD[LR].step[PS](params_t, grads_t, state_t, og_t, step_num=2, lr_scale=SCALE)
 
     max_err = 0.0
     for i in range(PS):
@@ -120,9 +124,15 @@ def test_adam() raises:
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var grads_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grads)
     var state_t = LayoutTensor[dtype, Layout.row_major(PS, 2), MutAnyOrigin](state)
+    # Phase 4: Adam.GLOBAL_STATE_SIZE = 1 (Float32 slot bit-patterning a UInt32
+    # device step counter). The CPU `step()` path doesn't consult it, but the
+    # signature still requires a 1-element tensor.
+    var og_buf = alloc[Scalar[dtype]](1)
+    (og_buf + 0)[] = Scalar[dtype](0.0)
+    var og_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](og_buf)
 
     # Step 1
-    Adam[LR, B1, B2, EPS].step[PS](params_t, grads_t, state_t, step_num=1)
+    Adam[LR, B1, B2, EPS].step[PS](params_t, grads_t, state_t, og_t, step_num=1)
 
     var bc1 = 1.0 - B1   # 0.1
     var bc2 = 1.0 - B2   # 0.001
@@ -163,7 +173,7 @@ def test_adam() raises:
     for i in range(PS):
         (grads + i)[] = Scalar[dtype]((g2 + i)[])
 
-    Adam[LR, B1, B2, EPS].step[PS](params_t, grads_t, state_t, step_num=2)
+    Adam[LR, B1, B2, EPS].step[PS](params_t, grads_t, state_t, og_t, step_num=2)
 
     var bc1_2 = 1.0 - B1 * B1    # 1 - 0.9^2 = 0.19
     var bc2_2 = 1.0 - B2 * B2    # 1 - 0.999^2 = 0.001999
@@ -186,6 +196,7 @@ def test_adam() raises:
     params.free()
     grads.free()
     state.free()
+    og_buf.free()
     p.free()
     m.free()
     v.free()
@@ -221,9 +232,13 @@ def test_adamw() raises:
     var params_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
     var grads_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grads)
     var state_t = LayoutTensor[dtype, Layout.row_major(PS, 2), MutAnyOrigin](state)
+    # Phase 4: AdamW.GLOBAL_STATE_SIZE = 1 — see test_adam.
+    var og_buf = alloc[Scalar[dtype]](1)
+    (og_buf + 0)[] = Scalar[dtype](0.0)
+    var og_t = LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](og_buf)
 
     # Step 1
-    AdamW[LR, B1, B2, EPS, WD].step[PS](params_t, grads_t, state_t, step_num=1)
+    AdamW[LR, B1, B2, EPS, WD].step[PS](params_t, grads_t, state_t, og_t, step_num=1)
 
     var bc1 = 1.0 - B1
     var bc2 = 1.0 - B2
@@ -263,6 +278,7 @@ def test_adamw() raises:
     params.free()
     grads.free()
     state.free()
+    og_buf.free()
     p.free()
     g.free()
     print()

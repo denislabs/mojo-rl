@@ -126,9 +126,11 @@ def train_mountain_car_poly(
         # Print progress
         if verbose and (episode + 1) % 100 == 0:
             var avg_reward: Float64 = 0.0
-            var count = min(100, len(episode_rewards))
+            var count = min(100, episode_rewards.byte_length())
             for i in range(count):
-                avg_reward += episode_rewards[len(episode_rewards) - count + i]
+                avg_reward += episode_rewards[
+                    episode_rewards.byte_length() - count + i
+                ]
             avg_reward /= Float64(count)
 
             print(
@@ -254,9 +256,11 @@ def train_mountain_car_rbf(
         # Print progress
         if verbose and (episode + 1) % 100 == 0:
             var avg_reward: Float64 = 0.0
-            var count = min(100, len(episode_rewards))
+            var count = min(100, episode_rewards.byte_length())
             for i in range(count):
-                avg_reward += episode_rewards[len(episode_rewards) - count + i]
+                avg_reward += episode_rewards[
+                    episode_rewards.byte_length() - count + i
+                ]
             avg_reward /= Float64(count)
 
             print(
@@ -370,9 +374,11 @@ def train_mountain_car_linear_sarsa_lambda(
         # Print progress
         if verbose and (episode + 1) % 100 == 0:
             var avg_reward: Float64 = 0.0
-            var count = min(100, len(episode_rewards))
+            var count = min(100, episode_rewards.byte_length())
             for i in range(count):
-                avg_reward += episode_rewards[len(episode_rewards) - count + i]
+                avg_reward += episode_rewards[
+                    episode_rewards.byte_length() - count + i
+                ]
             avg_reward /= Float64(count)
 
             print(

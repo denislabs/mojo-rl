@@ -277,6 +277,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             ](self.actions_buf.unsafe_ptr())
 
             # Parallel obs store: 2D grid (OBS_BLOCKS, N_ENVS)
+            @parameter
             @always_inline
             def store_obs_wrapper(
                 s: LayoutTensor[
@@ -312,6 +313,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             )
 
             # Scalar store: actions/rewards/dones (tiny, 1 thread per env)
+            @parameter
             @always_inline
             def store_scalars_wrapper(
                 a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -359,6 +361,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 MutAnyOrigin,
             ](self.actions_buf.unsafe_ptr())
 
+            @parameter
             @always_inline
             def store_nd_wrapper(
                 s: LayoutTensor[
@@ -496,6 +499,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
             ](self.actions_buf.unsafe_ptr())
 
+            @parameter
             @always_inline
             def store_obs_graph_wrapper(
                 s: LayoutTensor[
@@ -530,6 +534,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 block_dim=(TPB,),
             )
 
+            @parameter
             @always_inline
             def store_scalars_graph_wrapper(
                 a: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
@@ -579,6 +584,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 MutAnyOrigin,
             ](self.actions_buf.unsafe_ptr())
 
+            @parameter
             @always_inline
             def store_nd_graph_wrapper(
                 s: LayoutTensor[
@@ -727,6 +733,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 block_dim=(1,),
             )
 
+            @parameter
             @always_inline
             def sample_ere_wrapper(
                 idx: LayoutTensor[
@@ -760,6 +767,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
             )
         else:
 
+            @parameter
             @always_inline
             def sample_wrapper(
                 idx: LayoutTensor[
@@ -813,6 +821,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
         comptime if True:
             comptime OBS_BLOCKS = (Self.OBS_DIM + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def gather_obs_wrapper(
                 bs: LayoutTensor[
@@ -862,6 +871,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
                 ](self.actions_buf.unsafe_ptr())
 
+                @parameter
                 @always_inline
                 def gather_sc_wrapper(
                     ba: LayoutTensor[
@@ -913,6 +923,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                     MutAnyOrigin,
                 ](self.actions_buf.unsafe_ptr())
 
+                @parameter
                 @always_inline
                 def gather_sc_nd_wrapper(
                     ba: LayoutTensor[
@@ -968,6 +979,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 dtype, Layout.row_major(Self.CAPACITY), MutAnyOrigin
             ](self.actions_buf.unsafe_ptr())
 
+            @parameter
             @always_inline
             def gather_wrapper(
                 bs: LayoutTensor[
@@ -1037,6 +1049,7 @@ struct GPUReplayBuffer[CAPACITY: Int, OBS_DIM: Int, ACTION_DIM: Int = 1](
                 MutAnyOrigin,
             ](self.actions_buf.unsafe_ptr())
 
+            @parameter
             @always_inline
             def gather_nd_wrapper(
                 bs: LayoutTensor[

@@ -149,7 +149,7 @@ def test_sac_graph_forward_backward() raises:
         dtype, Layout.row_major(BS, SACGraph.CACHE_SIZE), MutAnyOrigin
     ](cache_arr.unsafe_ptr())
 
-    SACGraph.forward[BS](obs_t, output_t, params, cache_t)
+    SACGraph.forward[BS](obs_t, output_t, params, state.model_state_view(), cache_t)
 
     # Check output: [min_Q, log_prob] per sample
     var fwd_ok = True
@@ -188,7 +188,7 @@ def test_sac_graph_forward_backward() raises:
     ](grad_obs_arr.unsafe_ptr())
 
     state.zero_grads()
-    SACGraph.backward[BS](grad_out_t, grad_obs_t, params, cache_t, grads)
+    SACGraph.backward[BS](grad_out_t, grad_obs_t, params, state.model_state_view(), cache_t, grads)
 
     # Check gradients are finite and non-zero
     var grad_ok = True

@@ -41,8 +41,8 @@ def abs_f64(x: Float64) -> Float64:
 
 def format_float(val: Float64, width: Int = 10) -> String:
     var s = String(val)
-    if len(s) > width:
-        return String(s[:width])
+    if s.byte_length() > width:
+        return String(s[byte= :width])
     return s
 
 

@@ -32,6 +32,8 @@ from mojo_rl.nn.model import (
     Softmax,
     Mish,
     LayerNorm,
+    SimNorm,
+    NormedLinear,
     Conv2DReLU,
     Conv2DLayer,
     Conv2DBatchNormReLU,
@@ -74,6 +76,9 @@ def cpu_gradcheck[M: Model, BS: Int = 4](
     # Allocate buffers (heap -- works for any size)
     var input_ptr = alloc[Scalar[dtype]](BS * IN)
     var grad_out_ptr = alloc[Scalar[dtype]](BS * OUT)
+    # Separate buffer passed to backward() — some layers (e.g. NormedLinear)
+    # reuse grad_output as scratch. Keep grad_out_ptr pristine for FD below.
+    var bwd_grad_out_ptr = alloc[Scalar[dtype]](BS * OUT)
     var output_ptr = alloc[Scalar[dtype]](BS * OUT)
     var cache_ptr = alloc[Scalar[dtype]](BS * CS if CS > 0 else 1)
     var grad_in_ptr = alloc[Scalar[dtype]](BS * IN)
@@ -104,6 +109,9 @@ def cpu_gradcheck[M: Model, BS: Int = 4](
     var grad_out_t = LayoutTensor[
         dtype, Layout.row_major(BS, OUT), MutAnyOrigin
     ](grad_out_ptr)
+    var bwd_grad_out_t = LayoutTensor[
+        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
+    ](bwd_grad_out_ptr)
     var grad_in_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
         grad_in_ptr
     )
@@ -118,12 +126,15 @@ def cpu_gradcheck[M: Model, BS: Int = 4](
     ](fd_cache_ptr)
 
     # Forward + analytical backward
-    M.forward[BS](input_t, output_t, state.params_view(), cache_t)
+    M.forward[BS](input_t, output_t, state.params_view(), state.model_state_view(), cache_t)
     state.zero_grads()
     memset(grad_in_ptr, 0, BS * IN)
     var grads = state.grads_view()
+    # Copy grad_out into a scratch buffer — backward may mutate it.
+    for i in range(BS * OUT):
+        (bwd_grad_out_ptr + i)[] = (grad_out_ptr + i)[]
     M.backward[BS](
-        grad_out_t, grad_in_t, state.params_view(), cache_t, grads
+        bwd_grad_out_t, grad_in_t, state.params_view(), state.model_state_view(), cache_t, grads
     )
 
     # === Check param gradients via finite differences ===
@@ -141,11 +152,11 @@ def cpu_gradcheck[M: Model, BS: Int = 4](
 
             # f(p + eps)
             (state.params + p_idx)[] = Scalar[dtype](Float64(orig) + eps)
-            M.forward[BS](input_t, out_plus_t, state.params_view(), fd_cache_t)
+            M.forward[BS](input_t, out_plus_t, state.params_view(), state.model_state_view(), fd_cache_t)
 
             # f(p - eps)
             (state.params + p_idx)[] = Scalar[dtype](Float64(orig) - eps)
-            M.forward[BS](input_t, out_minus_t, state.params_view(), fd_cache_t)
+            M.forward[BS](input_t, out_minus_t, state.params_view(), state.model_state_view(), fd_cache_t)
 
             # Restore
             (state.params + p_idx)[] = orig
@@ -197,11 +208,11 @@ def cpu_gradcheck[M: Model, BS: Int = 4](
 
         # f(x + eps)
         (input_ptr + i_idx)[] = Scalar[dtype](Float64(orig) + eps)
-        M.forward[BS](input_t, out_plus_t, state.params_view(), fd_cache_t)
+        M.forward[BS](input_t, out_plus_t, state.params_view(), state.model_state_view(), fd_cache_t)
 
         # f(x - eps)
         (input_ptr + i_idx)[] = Scalar[dtype](Float64(orig) - eps)
-        M.forward[BS](input_t, out_minus_t, state.params_view(), fd_cache_t)
+        M.forward[BS](input_t, out_minus_t, state.params_view(), state.model_state_view(), fd_cache_t)
 
         # Restore
         (input_ptr + i_idx)[] = orig
@@ -336,6 +347,22 @@ def main() raises:
         "FanOut[Linear[8,4], N=2]"
     )
 
+    # ── Group C2: TDMPC2 normalization layers ────────────────
+    # LayerNorm + Mish combo has higher FD noise than smooth activations.
+    print("--- TDMPC2 layers (NormedLinear / SimNorm) ---")
+    cpu_gradcheck[NormedLinear[8, 16]]("NormedLinear[8,16]", tol=0.02)
+    cpu_gradcheck[NormedLinear[16, 8]]("NormedLinear[16,8]", tol=0.02)
+    cpu_gradcheck[NormedLinear[12, 24]]("NormedLinear[12,24]", tol=0.02)
+    cpu_gradcheck[SimNorm[16, 8]]("SimNorm[16, simplex=8]")
+    cpu_gradcheck[SimNorm[24, 8]]("SimNorm[24, simplex=8]")
+    cpu_gradcheck[SimNorm[32, 4]]("SimNorm[32, simplex=4]")
+
+    # Stacked NormedLinear (TDMPC2 MLP trunk pattern).
+    # Deeper chain compounds FD noise — tol relaxed to 5%.
+    cpu_gradcheck[Sequential[NormedLinear[8, 16], NormedLinear[16, 8]]](
+        "Sequential[NormedLinear, NormedLinear]", tol=0.05,
+    )
+
     # ── Group D: ResBlocks ─────────────────────────────────────
     print("--- ResBlocks ---")
     cpu_gradcheck[ResBlockConv2D[4, 3, 1, 5, 5]](
@@ -365,5 +392,28 @@ def main() raises:
         ],
     ]
     cpu_gradcheck[Conv_DualHead]("Conv+FC dual-head (AlphaZero-like)")
+
+    # TDMPC2 dynamics head (NormedLinear MLP + projection + SimNorm).
+    # SimNorm divides by softmax partition → tiny param grads + compounding
+    # FD noise on the deep chain. Tol relaxed to 10%.
+    comptime TDMPC2_DynamicsHead = Sequential[
+        NormedLinear[12, 16],
+        NormedLinear[16, 16],
+        Linear[16, 16],
+        SimNorm[16, 8],
+    ]
+    cpu_gradcheck[TDMPC2_DynamicsHead](
+        "TDMPC2 dynamics head (NormedLinear x2 + Linear + SimNorm)", tol=0.10,
+    )
+
+    # TDMPC2 encoder (stacked NormedLinear). Tol 5% for FD compounding.
+    comptime TDMPC2_Encoder = Sequential[
+        NormedLinear[8, 16],
+        NormedLinear[16, 16],
+        NormedLinear[16, 8],
+    ]
+    cpu_gradcheck[TDMPC2_Encoder](
+        "TDMPC2 encoder (NormedLinear x3)", tol=0.05,
+    )
 
     print("=== Done ===")

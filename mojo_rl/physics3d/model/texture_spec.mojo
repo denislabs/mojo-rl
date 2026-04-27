@@ -146,8 +146,8 @@ struct Textures[*T: TextureSpec](TexturesLike):
     Textures are purely visual assets — no setup_model needed.
     """
 
-    comptime tex_types = Variadic.types[T=TextureSpec, *Self.T]
-    comptime N: Int = TypeList[*Self.tex_types].size
+    comptime tex_types = Self.T
+    comptime N: Int = Self.tex_types.size
 
     @staticmethod
     def get_skybox_colors() -> List[Float64]:

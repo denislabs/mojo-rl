@@ -125,22 +125,22 @@ def _parse_option(xml: String) -> Tuple[Float64, Float64, Float64, Float64, Floa
     var tag = _extract_opening_tag(xml, pos)
 
     var gravity_str = _extract_attr(tag, "gravity")
-    if len(gravity_str) > 0:
+    if gravity_str.byte_length() > 0:
         var gvec = _parse_vec3(gravity_str)
         gx = gvec[0]
         gy = gvec[1]
         gz = gvec[2]
 
     var ts_str = _extract_attr(tag, "timestep")
-    if len(ts_str) > 0:
+    if ts_str.byte_length() > 0:
         ts = _parse_float(ts_str)
 
     var dens_str = _extract_attr(tag, "density")
-    if len(dens_str) > 0:
+    if dens_str.byte_length() > 0:
         dens = _parse_float(dens_str)
 
     var visc_str = _extract_attr(tag, "viscosity")
-    if len(visc_str) > 0:
+    if visc_str.byte_length() > 0:
         visc = _parse_float(visc_str)
 
     return (gx, gy, gz, ts, dens, visc)
@@ -161,15 +161,15 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var jtag = _extract_opening_tag(defaults_sec, jpos)
 
         var arm_s = _extract_attr(jtag, "armature")
-        if len(arm_s) > 0:
+        if arm_s.byte_length() > 0:
             d.joint_armature = _parse_float(arm_s)
 
         var damp_s = _extract_attr(jtag, "damping")
-        if len(damp_s) > 0:
+        if damp_s.byte_length() > 0:
             d.joint_damping = _parse_float(damp_s)
 
         var stiff_s = _extract_attr(jtag, "stiffness")
-        if len(stiff_s) > 0:
+        if stiff_s.byte_length() > 0:
             d.joint_stiffness = _parse_float(stiff_s)
 
         var lim_s = _extract_attr(jtag, "limited")
@@ -179,21 +179,21 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
             d.joint_limited = False
 
         var fl_s = _extract_attr(jtag, "frictionloss")
-        if len(fl_s) > 0:
+        if fl_s.byte_length() > 0:
             d.joint_frictionloss = _parse_float(fl_s)
 
         var sr_s = _extract_attr(jtag, "springref")
-        if len(sr_s) > 0:
+        if sr_s.byte_length() > 0:
             d.joint_springref = _parse_float(sr_s)
 
         var srl_s = _extract_attr(jtag, "solreflimit")
-        if len(srl_s) > 0:
+        if srl_s.byte_length() > 0:
             var sv = _parse_vec3(srl_s)
             d.joint_solref_limit_0 = sv[0]
             d.joint_solref_limit_1 = sv[1]
 
         var sil_s = _extract_attr(jtag, "solimplimit")
-        if len(sil_s) > 0:
+        if sil_s.byte_length() > 0:
             var parts = List[String]()
 
             _split_spaces(sil_s, parts)
@@ -214,36 +214,36 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
         var gtag = _extract_opening_tag(defaults_sec, gpos)
 
         var dens_s = _extract_attr(gtag, "density")
-        if len(dens_s) > 0:
+        if dens_s.byte_length() > 0:
             d.geom_density = _parse_float(dens_s)
 
         var fric_s = _extract_attr(gtag, "friction")
-        if len(fric_s) > 0:
+        if fric_s.byte_length() > 0:
             var fvec = _parse_vec3(fric_s)
             d.geom_friction = fvec[0]
             d.geom_friction_spin = fvec[1]
             d.geom_friction_roll = fvec[2]
 
         var ct_s = _extract_attr(gtag, "contype")
-        if len(ct_s) > 0:
+        if ct_s.byte_length() > 0:
             d.geom_contype = _parse_int_str(ct_s)
 
         var ca_s = _extract_attr(gtag, "conaffinity")
-        if len(ca_s) > 0:
+        if ca_s.byte_length() > 0:
             d.geom_conaffinity = _parse_int_str(ca_s)
 
         var cd_s = _extract_attr(gtag, "condim")
-        if len(cd_s) > 0:
+        if cd_s.byte_length() > 0:
             d.geom_condim = _parse_int_str(cd_s)
 
         var sr0_s = _extract_attr(gtag, "solref")
-        if len(sr0_s) > 0:
+        if sr0_s.byte_length() > 0:
             var sv = _parse_vec3(sr0_s)
             d.geom_solref_0 = sv[0]
             d.geom_solref_1 = sv[1]
 
         var si0_s = _extract_attr(gtag, "solimp")
-        if len(si0_s) > 0:
+        if si0_s.byte_length() > 0:
             var parts = List[String]()
 
             _split_spaces(si0_s, parts)
@@ -259,11 +259,11 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
                 d.geom_solimp_4 = _parse_float(parts[4])
 
         var mg_s = _extract_attr(gtag, "margin")
-        if len(mg_s) > 0:
+        if mg_s.byte_length() > 0:
             d.geom_margin = _parse_float(mg_s)
 
         var rgba_s = _extract_attr(gtag, "rgba")
-        if len(rgba_s) > 0:
+        if rgba_s.byte_length() > 0:
             var cv = _parse_rgba4(rgba_s)
             d.geom_rgba_r = cv[0]
             d.geom_rgba_g = cv[1]
@@ -280,7 +280,7 @@ def _parse_one_default_block(defaults_sec: String, parent: DefaultsData) -> Defa
             d.motor_ctrl_limited = True
 
         var cr_s = _extract_attr(mtag, "ctrlrange")
-        if len(cr_s) > 0:
+        if cr_s.byte_length() > 0:
             var cvec = _parse_vec3(cr_s)
             d.motor_ctrl_min = cvec[0]
             d.motor_ctrl_max = cvec[1]
@@ -297,7 +297,7 @@ def _parse_defaults(
     Named defaults inherit from the top-level defaults and override specific attrs.
     """
     var defaults_sec = _extract_section(xml, "default")
-    if len(defaults_sec) == 0:
+    if defaults_sec.byte_length() == 0:
         return (DefaultsData(), NamedDefaultsList())
 
     # Parse top-level (unnamed) defaults from the section
@@ -306,14 +306,14 @@ def _parse_defaults(
     # Parse named <default class="..."> sub-blocks
     var named = NamedDefaultsList()
     var scan_pos = 0
-    var dlen = len(defaults_sec)
+    var dlen = defaults_sec.byte_length()
     while scan_pos < dlen:
         var dt = defaults_sec.find("<default", scan_pos)
         if dt == -1:
             break
         var tag = _extract_opening_tag(defaults_sec, dt)
         var class_name = _extract_attr(tag, "class")
-        if len(class_name) > 0:
+        if class_name.byte_length() > 0:
             # Extract the inner content of this named default block
             var tag_end = defaults_sec.find(">", dt)
             if tag_end == -1:
@@ -605,36 +605,36 @@ def _fill_assets[
         td.mark = _tex_mark_from_str(mark_s)
 
         var rgb1_s = _extract_attr(tag, "rgb1")
-        if len(rgb1_s) > 0:
+        if rgb1_s.byte_length() > 0:
             var c = _parse_rgb3(rgb1_s)
             td.rgb1_r = c[0]
             td.rgb1_g = c[1]
             td.rgb1_b = c[2]
 
         var rgb2_s = _extract_attr(tag, "rgb2")
-        if len(rgb2_s) > 0:
+        if rgb2_s.byte_length() > 0:
             var c = _parse_rgb3(rgb2_s)
             td.rgb2_r = c[0]
             td.rgb2_g = c[1]
             td.rgb2_b = c[2]
 
         var markrgb_s = _extract_attr(tag, "markrgb")
-        if len(markrgb_s) > 0:
+        if markrgb_s.byte_length() > 0:
             var c = _parse_rgb3(markrgb_s)
             td.markrgb_r = c[0]
             td.markrgb_g = c[1]
             td.markrgb_b = c[2]
 
         var w_s = _extract_attr(tag, "width")
-        if len(w_s) > 0:
+        if w_s.byte_length() > 0:
             td.width = _parse_int_str(w_s)
 
         var h_s = _extract_attr(tag, "height")
-        if len(h_s) > 0:
+        if h_s.byte_length() > 0:
             td.height = _parse_int_str(h_s)
 
         var rand_s = _extract_attr(tag, "random")
-        if len(rand_s) > 0:
+        if rand_s.byte_length() > 0:
             td.random = _parse_float(rand_s)
 
         result.textures[tex_count] = td
@@ -657,11 +657,11 @@ def _fill_assets[
 
         # texture reference → index
         var tex_name = _extract_attr(tag, "texture")
-        if len(tex_name) > 0:
+        if tex_name.byte_length() > 0:
             md.tex_id = _find_texture_index_by_name(asset_sec, tex_name)
 
         var rgba_s = _extract_attr(tag, "rgba")
-        if len(rgba_s) > 0:
+        if rgba_s.byte_length() > 0:
             var c = _parse_rgba4(rgba_s)
             md.rgba_r = c[0]
             md.rgba_g = c[1]
@@ -669,19 +669,19 @@ def _fill_assets[
             md.rgba_a = c[3]
 
         var shin_s = _extract_attr(tag, "shininess")
-        if len(shin_s) > 0:
+        if shin_s.byte_length() > 0:
             md.shininess = _parse_float(shin_s)
 
         var spec_s = _extract_attr(tag, "specular")
-        if len(spec_s) > 0:
+        if spec_s.byte_length() > 0:
             md.specular = _parse_float(spec_s)
 
         var refl_s = _extract_attr(tag, "reflectance")
-        if len(refl_s) > 0:
+        if refl_s.byte_length() > 0:
             md.reflectance = _parse_float(refl_s)
 
         var tr_s = _extract_attr(tag, "texrepeat")
-        if len(tr_s) > 0:
+        if tr_s.byte_length() > 0:
             var tv = _parse_vec3(tr_s)
             md.texrepeat_u = tv[0]
             md.texrepeat_v = tv[1]
@@ -708,7 +708,7 @@ def _fill_assets[
         var tag = String(asset_sec[byte = t : tag_end + 1])
         var mesh_name = _extract_attr(tag, "name")
         var mesh_file = _extract_attr(tag, "file")
-        if len(mesh_name) > 0 and len(mesh_file) > 0:
+        if mesh_name.byte_length() > 0 and mesh_file.byte_length() > 0:
             result.mesh_asset_names[mesh_count] = mesh_name
             result.mesh_asset_files[mesh_count] = mesh_file
             mesh_count += 1
@@ -767,7 +767,7 @@ def _fill_model[
     var site_count = 0
 
     var scan_pos = 0
-    var wlen = len(worldbody)
+    var wlen = worldbody.byte_length()
 
     while scan_pos < wlen:
         var next_body_open = worldbody.find("<body", scan_pos)
@@ -817,7 +817,7 @@ def _fill_model[
 
                 # pos
                 var pos_s = _extract_attr(tag, "pos")
-                if len(pos_s) > 0:
+                if pos_s.byte_length() > 0:
                     var pv = _parse_vec3(pos_s)
                     b.pos_x = pv[0]
                     b.pos_y = pv[1]
@@ -825,7 +825,7 @@ def _fill_model[
 
                 # quat / axisangle / euler orientation
                 var quat_s = _extract_attr(tag, "quat")
-                if len(quat_s) > 0:
+                if quat_s.byte_length() > 0:
                     var qv = _parse_quat(quat_s)
                     b.quat_x = qv[0]
                     b.quat_y = qv[1]
@@ -833,7 +833,7 @@ def _fill_model[
                     b.quat_w = qv[3]
                 else:
                     var aa_s = _extract_attr(tag, "axisangle")
-                    if len(aa_s) > 0:
+                    if aa_s.byte_length() > 0:
                         var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
                         b.quat_x = aq[0]
                         b.quat_y = aq[1]
@@ -842,14 +842,14 @@ def _fill_model[
 
                 # inertial pos/quat (ipos, iquat)
                 var ipos_s = _extract_attr(tag, "ipos")
-                if len(ipos_s) > 0:
+                if ipos_s.byte_length() > 0:
                     var iv = _parse_vec3(ipos_s)
                     b.ipos_x = iv[0]
                     b.ipos_y = iv[1]
                     b.ipos_z = iv[2]
 
                 var iquat_s = _extract_attr(tag, "iquat")
-                if len(iquat_s) > 0:
+                if iquat_s.byte_length() > 0:
                     var iq = _parse_quat(iquat_s)
                     b.iquat_x = iq[0]
                     b.iquat_y = iq[1]
@@ -858,13 +858,13 @@ def _fill_model[
 
                 # mass (may be absent — inertia computed from geoms)
                 var mass_s = _extract_attr(tag, "mass")
-                if len(mass_s) > 0:
+                if mass_s.byte_length() > 0:
                     b.mass = _parse_float(mass_s)
                     b.has_explicit_inertia = True
 
                 # diaginertia
                 var di_s = _extract_attr(tag, "diaginertia")
-                if len(di_s) > 0:
+                if di_s.byte_length() > 0:
                     var dv = _parse_vec3(di_s)
                     b.ixx = dv[0]
                     b.iyy = dv[1]
@@ -919,7 +919,7 @@ def _fill_model[
 
                 # pos
                 var pos_s = _extract_attr(tag, "pos")
-                if len(pos_s) > 0:
+                if pos_s.byte_length() > 0:
                     var pv = _parse_vec3(pos_s)
                     jd.pos_x = pv[0]
                     jd.pos_y = pv[1]
@@ -927,7 +927,7 @@ def _fill_model[
 
                 # axis (MuJoCo normalizes joint axes during compilation)
                 var axis_s = _extract_attr(tag, "axis")
-                if len(axis_s) > 0:
+                if axis_s.byte_length() > 0:
                     var av = _parse_vec3(axis_s)
                     var ax = av[0]
                     var ay = av[1]
@@ -944,7 +944,7 @@ def _fill_model[
 
                 # range (convert deg→rad when deg_factor != 1.0)
                 var range_s = _extract_attr(tag, "range")
-                if len(range_s) > 0:
+                if range_s.byte_length() > 0:
                     var rv = _parse_vec3(range_s)
                     jd.range_min = rv[0] * deg_factor
                     jd.range_max = rv[1] * deg_factor
@@ -961,49 +961,49 @@ def _fill_model[
 
                 # armature (explicit or default)
                 var arm_s = _extract_attr(tag, "armature")
-                if len(arm_s) > 0:
+                if arm_s.byte_length() > 0:
                     jd.armature = _parse_float(arm_s)
                 else:
                     jd.armature = defaults.joint_armature
 
                 # damping
                 var damp_s = _extract_attr(tag, "damping")
-                if len(damp_s) > 0:
+                if damp_s.byte_length() > 0:
                     jd.damping = _parse_float(damp_s)
                 else:
                     jd.damping = defaults.joint_damping
 
                 # stiffness
                 var stiff_s = _extract_attr(tag, "stiffness")
-                if len(stiff_s) > 0:
+                if stiff_s.byte_length() > 0:
                     jd.stiffness = _parse_float(stiff_s)
                 else:
                     jd.stiffness = defaults.joint_stiffness
 
                 # springref
                 var sr_s = _extract_attr(tag, "springref")
-                if len(sr_s) > 0:
+                if sr_s.byte_length() > 0:
                     jd.springref = _parse_float(sr_s)
                 else:
                     jd.springref = defaults.joint_springref
 
                 # ref (MuJoCo joint reference position → qpos0)
                 var ref_s = _extract_attr(tag, "ref")
-                if len(ref_s) > 0:
+                if ref_s.byte_length() > 0:
                     jd.ref_val = _parse_float(ref_s)
                 else:
                     jd.ref_val = 0.0
 
                 # frictionloss
                 var fl_s = _extract_attr(tag, "frictionloss")
-                if len(fl_s) > 0:
+                if fl_s.byte_length() > 0:
                     jd.frictionloss = _parse_float(fl_s)
                 else:
                     jd.frictionloss = defaults.joint_frictionloss
 
                 # solreflimit (per-joint or default)
                 var srl_s = _extract_attr(tag, "solreflimit")
-                if len(srl_s) > 0:
+                if srl_s.byte_length() > 0:
                     var sv = _parse_vec3(srl_s)
                     jd.solref_limit_0 = sv[0]
                     jd.solref_limit_1 = sv[1]
@@ -1013,7 +1013,7 @@ def _fill_model[
 
                 # solimplimit (per-joint or default)
                 var sil_s = _extract_attr(tag, "solimplimit")
-                if len(sil_s) > 0:
+                if sil_s.byte_length() > 0:
                     var parts2 = List[String]()
 
                     _split_spaces(sil_s, parts2)
@@ -1049,35 +1049,35 @@ def _fill_model[
                 ld.body_id = current_body
 
                 var pos_s = _extract_attr(tag, "pos")
-                if len(pos_s) > 0:
+                if pos_s.byte_length() > 0:
                     var pv = _parse_vec3(pos_s)
                     ld.pos_x = pv[0]
                     ld.pos_y = pv[1]
                     ld.pos_z = pv[2]
 
                 var dir_s = _extract_attr(tag, "dir")
-                if len(dir_s) > 0:
+                if dir_s.byte_length() > 0:
                     var dv = _parse_vec3(dir_s)
                     ld.dir_x = dv[0]
                     ld.dir_y = dv[1]
                     ld.dir_z = dv[2]
 
                 var diff_s = _extract_attr(tag, "diffuse")
-                if len(diff_s) > 0:
+                if diff_s.byte_length() > 0:
                     var c = _parse_rgb3(diff_s)
                     ld.diffuse_r = c[0]
                     ld.diffuse_g = c[1]
                     ld.diffuse_b = c[2]
 
                 var spec_s = _extract_attr(tag, "specular")
-                if len(spec_s) > 0:
+                if spec_s.byte_length() > 0:
                     var c = _parse_rgb3(spec_s)
                     ld.specular_r = c[0]
                     ld.specular_g = c[1]
                     ld.specular_b = c[2]
 
                 var amb_s = _extract_attr(tag, "ambient")
-                if len(amb_s) > 0:
+                if amb_s.byte_length() > 0:
                     var c = _parse_rgb3(amb_s)
                     ld.ambient_r = c[0]
                     ld.ambient_g = c[1]
@@ -1091,15 +1091,15 @@ def _fill_model[
                     ld.castshadow = False
 
                 var cutoff_s = _extract_attr(tag, "cutoff")
-                if len(cutoff_s) > 0:
+                if cutoff_s.byte_length() > 0:
                     ld.cutoff = _parse_float(cutoff_s)
 
                 var exp_s = _extract_attr(tag, "exponent")
-                if len(exp_s) > 0:
+                if exp_s.byte_length() > 0:
                     ld.exponent = _parse_float(exp_s)
 
                 var mode_s = _extract_attr(tag, "mode")
-                if len(mode_s) > 0:
+                if mode_s.byte_length() > 0:
                     ld.mode = _light_mode_from_str(mode_s)
 
                 result.lights[light_count] = ld
@@ -1117,7 +1117,7 @@ def _fill_model[
                 cd.body_id = current_body
 
                 var pos_s = _extract_attr(tag, "pos")
-                if len(pos_s) > 0:
+                if pos_s.byte_length() > 0:
                     var pv = _parse_vec3(pos_s)
                     cd.pos_x = pv[0]
                     cd.pos_y = pv[1]
@@ -1125,7 +1125,7 @@ def _fill_model[
 
                 # Orientation: quat > axisangle > xyaxes
                 var quat_s = _extract_attr(tag, "quat")
-                if len(quat_s) > 0:
+                if quat_s.byte_length() > 0:
                     var qv = _parse_quat(quat_s)
                     cd.quat_x = qv[0]
                     cd.quat_y = qv[1]
@@ -1133,7 +1133,7 @@ def _fill_model[
                     cd.quat_w = qv[3]
                 else:
                     var aa_s = _extract_attr(tag, "axisangle")
-                    if len(aa_s) > 0:
+                    if aa_s.byte_length() > 0:
                         var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
                         cd.quat_x = aq[0]
                         cd.quat_y = aq[1]
@@ -1141,7 +1141,7 @@ def _fill_model[
                         cd.quat_w = aq[3]
                     else:
                         var xy_s = _extract_attr(tag, "xyaxes")
-                        if len(xy_s) > 0:
+                        if xy_s.byte_length() > 0:
                             var xq = _xyaxes_to_quat(xy_s)
                             cd.quat_x = xq[0]
                             cd.quat_y = xq[1]
@@ -1149,15 +1149,15 @@ def _fill_model[
                             cd.quat_w = xq[3]
 
                 var fovy_s = _extract_attr(tag, "fovy")
-                if len(fovy_s) > 0:
+                if fovy_s.byte_length() > 0:
                     cd.fovy = _parse_float(fovy_s)
 
                 var ipd_s = _extract_attr(tag, "ipd")
-                if len(ipd_s) > 0:
+                if ipd_s.byte_length() > 0:
                     cd.ipd = _parse_float(ipd_s)
 
                 var mode_s = _extract_attr(tag, "mode")
-                if len(mode_s) > 0:
+                if mode_s.byte_length() > 0:
                     cd.mode = _cam_mode_from_str(mode_s)
 
                 result.cameras[cam_count] = cd
@@ -1178,14 +1178,14 @@ def _fill_model[
                 sd.site_type = _geom_type_from_str(type_s)
 
                 var pos_s = _extract_attr(tag, "pos")
-                if len(pos_s) > 0:
+                if pos_s.byte_length() > 0:
                     var pv = _parse_vec3(pos_s)
                     sd.pos_x = pv[0]
                     sd.pos_y = pv[1]
                     sd.pos_z = pv[2]
 
                 var quat_s = _extract_attr(tag, "quat")
-                if len(quat_s) > 0:
+                if quat_s.byte_length() > 0:
                     var qv = _parse_quat(quat_s)
                     sd.quat_x = qv[0]
                     sd.quat_y = qv[1]
@@ -1193,7 +1193,7 @@ def _fill_model[
                     sd.quat_w = qv[3]
                 else:
                     var aa_s = _extract_attr(tag, "axisangle")
-                    if len(aa_s) > 0:
+                    if aa_s.byte_length() > 0:
                         var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
                         sd.quat_x = aq[0]
                         sd.quat_y = aq[1]
@@ -1201,7 +1201,7 @@ def _fill_model[
                         sd.quat_w = aq[3]
 
                 var size_s = _extract_attr(tag, "size")
-                if len(size_s) > 0:
+                if size_s.byte_length() > 0:
                     var parts = List[String]()
 
                     _split_spaces(size_s, parts)
@@ -1229,7 +1229,7 @@ def _fill_model[
                 # Resolve effective defaults: class="..." overrides top-level
                 var geom_class = _extract_attr(tag, "class")
                 var eff_defaults = defaults
-                if len(geom_class) > 0:
+                if geom_class.byte_length() > 0:
                     eff_defaults = named_defaults.find(geom_class)
 
                 # type
@@ -1239,7 +1239,7 @@ def _fill_model[
                 # mesh reference: mesh="name" → resolve to file path from asset section
                 if gd.geom_type == _GEOM_MESH:
                     var mesh_attr = _extract_attr(tag, "mesh")
-                    if len(mesh_attr) > 0:
+                    if mesh_attr.byte_length() > 0:
                         for mi in range(result.num_mesh_assets):
                             if result.mesh_asset_names[mi] == mesh_attr:
                                 gd.mesh_id = mi
@@ -1248,7 +1248,7 @@ def _fill_model[
 
                 # fromto — overrides pos and quat for capsule
                 var fromto_s = _extract_attr(tag, "fromto")
-                if len(fromto_s) > 0:
+                if fromto_s.byte_length() > 0:
                     var ft = _fromto_to_pos_quat(fromto_s)
                     gd.pos_x = ft[0]
                     gd.pos_y = ft[1]
@@ -1262,7 +1262,7 @@ def _fill_model[
                 else:
                     # pos
                     var pos_s = _extract_attr(tag, "pos")
-                    if len(pos_s) > 0:
+                    if pos_s.byte_length() > 0:
                         var pv = _parse_vec3(pos_s)
                         gd.pos_x = pv[0]
                         gd.pos_y = pv[1]
@@ -1270,7 +1270,7 @@ def _fill_model[
 
                     # orientation: quat or axisangle
                     var quat_s = _extract_attr(tag, "quat")
-                    if len(quat_s) > 0:
+                    if quat_s.byte_length() > 0:
                         var qv = _parse_quat(quat_s)
                         gd.quat_x = qv[0]
                         gd.quat_y = qv[1]
@@ -1278,7 +1278,7 @@ def _fill_model[
                         gd.quat_w = qv[3]
                     else:
                         var aa_s = _extract_attr(tag, "axisangle")
-                        if len(aa_s) > 0:
+                        if aa_s.byte_length() > 0:
                             var aq = _parse_axisangle_to_quat(aa_s, deg_factor)
                             gd.quat_x = aq[0]
                             gd.quat_y = aq[1]
@@ -1289,7 +1289,7 @@ def _fill_model[
 
                 # size — interpretation depends on geom_type
                 var size_s = _extract_attr(tag, "size")
-                if len(size_s) > 0:
+                if size_s.byte_length() > 0:
                     var size_parts = List[String]()
 
                     _split_spaces(size_s, size_parts)
@@ -1312,7 +1312,7 @@ def _fill_model[
                         gd.radius = s0
                         # Only use size[1] as half-length if no fromto
                         # (fromto already computed the correct value).
-                        if len(size_parts) >= 2 and len(fromto_s) == 0:
+                        if len(size_parts) >= 2 and fromto_s.byte_length() == 0:
                             gd.half_length = s1
                     elif gd.geom_type == _GEOM_BOX:
                         gd.half_x = s0
@@ -1321,7 +1321,7 @@ def _fill_model[
                         gd.radius = _sqrt_f64(s0 * s0 + s1 * s1 + s2 * s2)
                     elif gd.geom_type == _GEOM_CYLINDER:
                         gd.radius = s0
-                        if len(fromto_s) == 0:
+                        if fromto_s.byte_length() == 0:
                             gd.half_length = s1
                     elif gd.geom_type == _GEOM_PLANE:
                         gd.half_x = s0
@@ -1332,7 +1332,7 @@ def _fill_model[
 
                 # friction (explicit or default)
                 var fric_s = _extract_attr(tag, "friction")
-                if len(fric_s) > 0:
+                if fric_s.byte_length() > 0:
                     var fvec = _parse_vec3(fric_s)
                     gd.friction = fvec[0]
                     gd.friction_spin = fvec[1]
@@ -1345,25 +1345,25 @@ def _fill_model[
                 # contype / conaffinity / condim
                 var ct_s = _extract_attr(tag, "contype")
                 gd.contype = (
-                    _parse_int_str(ct_s) if len(ct_s)
+                    _parse_int_str(ct_s) if ct_s.byte_length()
                     > 0 else eff_defaults.geom_contype
                 )
 
                 var ca_s = _extract_attr(tag, "conaffinity")
                 gd.conaffinity = (
-                    _parse_int_str(ca_s) if len(ca_s)
+                    _parse_int_str(ca_s) if ca_s.byte_length()
                     > 0 else eff_defaults.geom_conaffinity
                 )
 
                 var cd_s = _extract_attr(tag, "condim")
                 gd.condim = (
-                    _parse_int_str(cd_s) if len(cd_s)
+                    _parse_int_str(cd_s) if cd_s.byte_length()
                     > 0 else eff_defaults.geom_condim
                 )
 
                 # solref / solimp
                 var sr_s = _extract_attr(tag, "solref")
-                if len(sr_s) > 0:
+                if sr_s.byte_length() > 0:
                     var sv = _parse_vec3(sr_s)
                     gd.solref_0 = sv[0]
                     gd.solref_1 = sv[1]
@@ -1372,7 +1372,7 @@ def _fill_model[
                     gd.solref_1 = eff_defaults.geom_solref_1
 
                 var si_s = _extract_attr(tag, "solimp")
-                if len(si_s) > 0:
+                if si_s.byte_length() > 0:
                     var sip = List[String]()
 
                     _split_spaces(si_s, sip)
@@ -1396,20 +1396,20 @@ def _fill_model[
                 # margin
                 var mg_s = _extract_attr(tag, "margin")
                 gd.margin = (
-                    _parse_float(mg_s) if len(mg_s)
+                    _parse_float(mg_s) if mg_s.byte_length()
                     > 0 else eff_defaults.geom_margin
                 )
 
                 # density (per-geom overrides default; used when mass is absent)
                 var dens_s = _extract_attr(tag, "density")
                 gd.density = (
-                    _parse_float(dens_s) if len(dens_s)
+                    _parse_float(dens_s) if dens_s.byte_length()
                     > 0 else eff_defaults.geom_density
                 )
 
                 # mass: explicit if provided, else compute from density * volume
                 var ms_s = _extract_attr(tag, "mass")
-                if len(ms_s) > 0:
+                if ms_s.byte_length() > 0:
                     gd.mass = _parse_float(ms_s)
                 else:
                     # Compute mass = density * volume based on geom type and size
@@ -1455,12 +1455,12 @@ def _fill_model[
 
                 # group (visual/collision grouping, 0-5)
                 var grp_s = _extract_attr(tag, "group")
-                if len(grp_s) > 0:
+                if grp_s.byte_length() > 0:
                     gd.group = _parse_int_str(grp_s)
 
                 # rgba colour: per-geom > default > GeomData fallback (0.7 grey)
                 var rgba_s = _extract_attr(tag, "rgba")
-                if len(rgba_s) > 0:
+                if rgba_s.byte_length() > 0:
                     var cv = _parse_rgba4(rgba_s)
                     gd.rgba_r = cv[0]
                     gd.rgba_g = cv[1]
@@ -1515,7 +1515,7 @@ def _fill_actuators[
     """Parse <actuator> section and populate result.actuators[]."""
     var act_count = 0
     var scan_pos = 0
-    var alen = len(actuator_sec)
+    var alen = actuator_sec.byte_length()
 
     while scan_pos < alen and act_count < NACT:
         # Find next actuator tag: motor, position, velocity, general
@@ -1534,17 +1534,17 @@ def _fill_actuators[
 
         # gear
         var gear_s = _extract_attr(tag, "gear")
-        if len(gear_s) > 0:
+        if gear_s.byte_length() > 0:
             ad.gear = _parse_float(gear_s)
 
         # joint name → joint index
         var jname = _extract_attr(tag, "joint")
-        if len(jname) > 0:
+        if jname.byte_length() > 0:
             ad.joint_id = _find_joint_index_by_name(worldbody, jname)
 
         # ctrlrange / ctrllimited
         var cr_s = _extract_attr(tag, "ctrlrange")
-        if len(cr_s) > 0:
+        if cr_s.byte_length() > 0:
             var cv = _parse_vec3(cr_s)
             ad.ctrl_min = cv[0]
             ad.ctrl_max = cv[1]
@@ -1597,7 +1597,7 @@ def _fill_equality[
     """Parse <equality> section: fill result.equalities[] with weld/connect data."""
     var eq_count = 0
     var scan_pos = 0
-    var elen = len(equality_sec)
+    var elen = equality_sec.byte_length()
 
     while scan_pos < elen and eq_count < NEQ:
         # Find next <weld or <connect tag
@@ -1619,16 +1619,16 @@ def _fill_equality[
 
         # body1 / body2 — resolve names to indices
         var b1_name = _extract_attr(tag, "body1")
-        if len(b1_name) > 0:
+        if b1_name.byte_length() > 0:
             ed.body_a = _find_body_index_by_name(worldbody, b1_name)
 
         var b2_name = _extract_attr(tag, "body2")
-        if len(b2_name) > 0:
+        if b2_name.byte_length() > 0:
             ed.body_b = _find_body_index_by_name(worldbody, b2_name)
 
         # anchor (connect) — point in body1 frame
         var anchor_s = _extract_attr(tag, "anchor")
-        if len(anchor_s) > 0:
+        if anchor_s.byte_length() > 0:
             var av = _parse_vec3(anchor_s)
             ed.anchor_a_x = av[0]
             ed.anchor_a_y = av[1]
@@ -1636,7 +1636,7 @@ def _fill_equality[
 
         # relpose (weld) — relative position + quaternion (7 values: x y z qw qx qy qz)
         var relpose_s = _extract_attr(tag, "relpose")
-        if len(relpose_s) > 0:
+        if relpose_s.byte_length() > 0:
             var parts = List[String]()
             _split_spaces(relpose_s, parts)
             if len(parts) >= 3:
@@ -1652,14 +1652,14 @@ def _fill_equality[
 
         # solref
         var sr_s = _extract_attr(tag, "solref")
-        if len(sr_s) > 0:
+        if sr_s.byte_length() > 0:
             var sv = _parse_vec3(sr_s)
             ed.solref_0 = sv[0]
             ed.solref_1 = sv[1]
 
         # solimp
         var si_s = _extract_attr(tag, "solimp")
-        if len(si_s) > 0:
+        if si_s.byte_length() > 0:
             var parts = List[String]()
             _split_spaces(si_s, parts)
             if len(parts) >= 1:
@@ -1735,7 +1735,7 @@ def _fill_excludes[
     """Parse <contact> section: fill result.excludes[] with body pair exclusions."""
     var ex_count = 0
     var scan_pos = 0
-    var clen = len(contact_sec)
+    var clen = contact_sec.byte_length()
 
     while scan_pos < clen and ex_count < NEXCLUDE:
         var ne = contact_sec.find("<exclude", scan_pos)
@@ -1786,7 +1786,7 @@ def _resolve_geom_materials[
     """Resolve material="name" on geoms → material index; copy material rgba."""
     var scan_pos = 0
     var geom_idx = 0
-    var wlen = len(worldbody)
+    var wlen = worldbody.byte_length()
 
     while scan_pos < wlen and geom_idx < NGEOM:
         var t = worldbody.find("<geom", scan_pos)
@@ -1797,11 +1797,11 @@ def _resolve_geom_materials[
             break
         var tag = String(worldbody[byte = t : tag_end + 1])
         var mat_name = _extract_attr(tag, "material")
-        if len(mat_name) > 0:
+        if mat_name.byte_length() > 0:
             var mid = _find_material_index_by_name(asset_sec, mat_name)
             result.geoms[geom_idx].material_id = mid
             # Only inherit material rgba when the geom has no explicit rgba attr
-            var has_explicit_rgba = len(_extract_attr(tag, "rgba")) > 0
+            var has_explicit_rgba = _extract_attr(tag, "rgba").byte_length() > 0
             if not has_explicit_rgba and mid >= 0 and mid < NMAT:
                 var md = result.materials[mid]
                 result.geoms[geom_idx].rgba_r = md.rgba_r

@@ -829,8 +829,8 @@ def _linear_obs_to_f64[
     DTYPE: DType
 ](obs: List[Scalar[DTYPE]]) -> List[Scalar[DType.float64]]:
     """Convert observation list to Float64."""
-    var result = List[Scalar[DType.float64]](capacity=len(obs))
-    for i in range(len(obs)):
+    var result = List[Scalar[DType.float64]](capacity=obs.byte_length())
+    for i in range(obs.byte_length()):
         result.append(obs[i].cast[DType.float64]())
     return result^
 

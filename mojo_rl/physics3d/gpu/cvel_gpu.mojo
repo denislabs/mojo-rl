@@ -60,6 +60,7 @@ def compute_cvel_gpu[
     comptime XIPOS_OFF = xipos_offset[NQ, NV, NBODY]()
     comptime CVEL_OFF = cvel_offset[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
 
+    @parameter
     @always_inline
     def cvel_kernel(
         states: LayoutTensor[

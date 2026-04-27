@@ -20,9 +20,9 @@ from mojo_rl.deep_agents.alphazero import (
 )
 
 
-def test_forward_backward[Config: AlphaZeroConfig](
-    ctx: DeviceContext, name: String
-) raises:
+def test_forward_backward[
+    Config: AlphaZeroConfig
+](ctx: DeviceContext, name: String) raises:
     """Test forward + backward on GPU for an AlphaZero config."""
     comptime M = Config.PredModel
     comptime BS = 4  # Small batch for testing
@@ -32,7 +32,9 @@ def test_forward_backward[Config: AlphaZeroConfig](
     comptime CS = M.CACHE_SIZE
 
     print("Testing:", name)
-    print("  IN_DIM:", IN, "OUT_DIM:", OUT, "PARAM_SIZE:", PS, "CACHE_SIZE:", CS)
+    print(
+        "  IN_DIM:", IN, "OUT_DIM:", OUT, "PARAM_SIZE:", PS, "CACHE_SIZE:", CS
+    )
 
     # Initialize on CPU, then upload to GPU
     var cpu_state = NetworkState[M, Config.OptType]()
@@ -67,7 +69,13 @@ def test_forward_backward[Config: AlphaZeroConfig](
     )
 
     M.forward_gpu[BS](
-        ctx, output_t, input_t, gpu.params_view(), cache_t, workspace
+        ctx,
+        output_t,
+        input_t,
+        gpu.params_view(),
+        gpu.model_state_view(),
+        cache_t,
+        workspace,
     )
 
     # Read output to host
@@ -126,6 +134,7 @@ def test_forward_backward[Config: AlphaZeroConfig](
         grad_in_t,
         grad_out_t,
         gpu.params_view(),
+        gpu.model_state_view(),
         cache_t,
         grads,
         workspace,
@@ -230,22 +239,28 @@ def gpu_finite_diff_check[
     # 1. Analytical backward: forward → backward → read gradients
     var cache_buf = ctx.enqueue_create_buffer[dtype](BS * CS)
     var output_buf = ctx.enqueue_create_buffer[dtype](BS * OUT)
-    var output_t = LayoutTensor[
-        dtype, Layout.row_major(BS, OUT), MutAnyOrigin
-    ](output_buf.unsafe_ptr())
-    var cache_t = LayoutTensor[
-        dtype, Layout.row_major(BS, CS), MutAnyOrigin
-    ](cache_buf.unsafe_ptr())
+    var output_t = LayoutTensor[dtype, Layout.row_major(BS, OUT), MutAnyOrigin](
+        output_buf.unsafe_ptr()
+    )
+    var cache_t = LayoutTensor[dtype, Layout.row_major(BS, CS), MutAnyOrigin](
+        cache_buf.unsafe_ptr()
+    )
 
     M.forward_gpu[BS](
-        ctx, output_t, input_t, gpu.params_view(), cache_t, workspace
+        ctx,
+        output_t,
+        input_t,
+        gpu.params_view(),
+        gpu.model_state_view(),
+        cache_t,
+        workspace,
     )
 
     var grad_in_buf = ctx.enqueue_create_buffer[dtype](BS * IN)
     ctx.enqueue_memset(grad_in_buf, 0)
-    var grad_in_t = LayoutTensor[
-        dtype, Layout.row_major(BS, IN), MutAnyOrigin
-    ](grad_in_buf.unsafe_ptr())
+    var grad_in_t = LayoutTensor[dtype, Layout.row_major(BS, IN), MutAnyOrigin](
+        grad_in_buf.unsafe_ptr()
+    )
     var grad_out_t = LayoutTensor[
         dtype, Layout.row_major(BS, OUT), MutAnyOrigin
     ](grad_out_buf.unsafe_ptr())
@@ -253,8 +268,14 @@ def gpu_finite_diff_check[
     gpu.zero_grads(ctx)
     var grads = gpu.grads_view()
     M.backward_gpu[BS](
-        ctx, grad_in_t, grad_out_t, gpu.params_view(), cache_t,
-        grads, workspace,
+        ctx,
+        grad_in_t,
+        grad_out_t,
+        gpu.params_view(),
+        gpu.model_state_view(),
+        cache_t,
+        grads,
+        workspace,
     )
 
     # Read analytical gradients + params to host
@@ -286,6 +307,7 @@ def gpu_finite_diff_check[
     from std.gpu import thread_idx
 
     @always_inline
+    @parameter
     def _write_one_param(
         buf: LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin],
         val: Scalar[dtype],
@@ -301,8 +323,11 @@ def gpu_finite_diff_check[
 
         # f(p + eps) — sync after write to flush GPU cache before cuBLAS reads
         ctx.enqueue_function[_write_one_param, _write_one_param](
-            params_t, Scalar[dtype](Float64(orig) + eps), p_idx,
-            grid_dim=(1,), block_dim=(1,),
+            params_t,
+            Scalar[dtype](Float64(orig) + eps),
+            p_idx,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
         ctx.synchronize()
         var out_plus_t = LayoutTensor[
@@ -312,14 +337,23 @@ def gpu_finite_diff_check[
             dtype, Layout.row_major(BS, CS), MutAnyOrigin
         ](cache_tmp.unsafe_ptr())
         M.forward_gpu[BS](
-            ctx, out_plus_t, input_t, gpu.params_view(), cache_tmp_t, workspace
+            ctx,
+            out_plus_t,
+            input_t,
+            gpu.params_view(),
+            gpu.model_state_view(),
+            cache_tmp_t,
+            workspace,
         )
         ctx.enqueue_copy(out_plus_host, out_plus_buf)
 
         # f(p - eps)
         ctx.enqueue_function[_write_one_param, _write_one_param](
-            params_t, Scalar[dtype](Float64(orig) - eps), p_idx,
-            grid_dim=(1,), block_dim=(1,),
+            params_t,
+            Scalar[dtype](Float64(orig) - eps),
+            p_idx,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
         ctx.synchronize()
         var out_minus_t = LayoutTensor[
@@ -329,14 +363,23 @@ def gpu_finite_diff_check[
             dtype, Layout.row_major(BS, CS), MutAnyOrigin
         ](cache_tmp.unsafe_ptr())
         M.forward_gpu[BS](
-            ctx, out_minus_t, input_t, gpu.params_view(), cache_minus_t, workspace
+            ctx,
+            out_minus_t,
+            input_t,
+            gpu.params_view(),
+            gpu.model_state_view(),
+            cache_minus_t,
+            workspace,
         )
         ctx.enqueue_copy(out_minus_host, out_minus_buf)
 
         # Restore + sync
         ctx.enqueue_function[_write_one_param, _write_one_param](
-            params_t, orig, p_idx,
-            grid_dim=(1,), block_dim=(1,),
+            params_t,
+            orig,
+            p_idx,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
         ctx.synchronize()
 
@@ -363,18 +406,23 @@ def gpu_finite_diff_check[
             num_fail += 1
             if num_fail <= 5:
                 print(
-                    "    MISMATCH param[", p_idx, "]: analytical=",
-                    ana_grad, "numerical=", num_grad,
-                    "rel_err=", rel,
+                    "    MISMATCH param[",
+                    p_idx,
+                    "]: analytical=",
+                    ana_grad,
+                    "numerical=",
+                    num_grad,
+                    "rel_err=",
+                    rel,
                 )
         num_checked += 1
 
     return (max_abs, max_rel, num_checked, num_fail)
 
 
-def test_gradcheck[Config: AlphaZeroConfig](
-    ctx: DeviceContext, name: String
-) raises:
+def test_gradcheck[
+    Config: AlphaZeroConfig
+](ctx: DeviceContext, name: String) raises:
     """GPU numerical gradient check for an AlphaZero config."""
     comptime M = Config.PredModel
     comptime BS = 4
@@ -412,7 +460,11 @@ def test_gradcheck[Config: AlphaZeroConfig](
     ctx.synchronize()
 
     var result = gpu_finite_diff_check[M, BS](
-        ctx, gpu, input_buf, grad_out_buf, workspace,
+        ctx,
+        gpu,
+        input_buf,
+        grad_out_buf,
+        workspace,
         eps=1e-3,
         max_params_to_check=300,
     )
@@ -424,19 +476,30 @@ def test_gradcheck[Config: AlphaZeroConfig](
 
     if num_fail == 0 and max_rel < 0.02:
         print(
-            "  [PASS] max_rel_err=", max_rel,
-            "max_abs_err=", max_abs,
-            "(", num_checked, "params checked)",
+            "  [PASS] max_rel_err=",
+            max_rel,
+            "max_abs_err=",
+            max_abs,
+            "(",
+            num_checked,
+            "params checked)",
         )
     elif num_fail == 0:
         print(
-            "  [WARN] max_rel_err=", max_rel,
-            "(", num_checked, "params checked) — slightly high but no hard failures",
+            "  [WARN] max_rel_err=",
+            max_rel,
+            "(",
+            num_checked,
+            "params checked) — slightly high but no hard failures",
         )
     else:
         print(
-            "  [FAIL]", num_fail, "params with rel_err > 1% out of", num_checked,
-            "checked. max_rel=", max_rel,
+            "  [FAIL]",
+            num_fail,
+            "params with rel_err > 1% out of",
+            num_checked,
+            "checked. max_rel=",
+            max_rel,
         )
     print()
 
@@ -445,7 +508,8 @@ def test_gradcheck_model[
     M: Model,
     BS: Int = 4,
 ](
-    ctx: DeviceContext, name: String,
+    ctx: DeviceContext,
+    name: String,
     eps: Float64 = 1e-3,
     max_params: Int = 300,
 ) raises:
@@ -480,8 +544,13 @@ def test_gradcheck_model[
     ctx.synchronize()
 
     var result = gpu_finite_diff_check[M, BS](
-        ctx, gpu, input_buf, grad_out_buf, workspace,
-        eps=eps, max_params_to_check=max_params,
+        ctx,
+        gpu,
+        input_buf,
+        grad_out_buf,
+        workspace,
+        eps=eps,
+        max_params_to_check=max_params,
     )
 
     var max_abs = result[0]
@@ -491,33 +560,51 @@ def test_gradcheck_model[
 
     if num_fail == 0 and max_rel < 0.02:
         print(
-            "  [PASS] max_rel_err=", max_rel,
-            "max_abs_err=", max_abs,
-            "(", num_checked, "params checked)",
+            "  [PASS] max_rel_err=",
+            max_rel,
+            "max_abs_err=",
+            max_abs,
+            "(",
+            num_checked,
+            "params checked)",
         )
     elif num_fail == 0:
         print(
-            "  [WARN] max_rel_err=", max_rel,
-            "(", num_checked, "params checked) — slightly high but no hard failures",
+            "  [WARN] max_rel_err=",
+            max_rel,
+            "(",
+            num_checked,
+            "params checked) — slightly high but no hard failures",
         )
     else:
         print(
-            "  [FAIL]", num_fail, "params with rel_err > 1% out of", num_checked,
-            "checked. max_rel=", max_rel,
+            "  [FAIL]",
+            num_fail,
+            "params with rel_err > 1% out of",
+            num_checked,
+            "checked. max_rel=",
+            max_rel,
         )
     print()
 
 
 from mojo_rl.deep_agents.alphazero.configs import AlphaZeroConfig
 from mojo_rl.nn.model import (
-    Model, Sequential, Parallel, Linear, LinearReLU,
-    FlattenLayer, Conv2DReLU, Conv2DBatchNormReLU, ReLU,
+    Model,
+    Sequential,
+    Parallel,
+    Linear,
+    LinearReLU,
+    FlattenLayer,
+    Conv2DReLU,
+    Conv2DBatchNormReLU,
+    ReLU,
 )
 
 
-def test_forward_only[M: Model, BS: Int = 4](
-    ctx: DeviceContext, name: String
-) raises:
+def test_forward_only[
+    M: Model, BS: Int = 4
+](ctx: DeviceContext, name: String) raises:
     """Minimal forward-only test to isolate crash location."""
     comptime IN = M.IN_DIM
     comptime OUT = M.OUT_DIM
@@ -525,7 +612,19 @@ def test_forward_only[M: Model, BS: Int = 4](
     comptime CS = M.CACHE_SIZE
     comptime WS = M.WORKSPACE_SIZE_PER_SAMPLE
 
-    print("Forward-only:", name, "(IN=", IN, "OUT=", OUT, "PS=", PS, "WS=", WS, ")")
+    print(
+        "Forward-only:",
+        name,
+        "(IN=",
+        IN,
+        "OUT=",
+        OUT,
+        "PS=",
+        PS,
+        "WS=",
+        WS,
+        ")",
+    )
 
     var cpu_state = NetworkState[M, Adam[]]()
     cpu_state.initialize[Kaiming[]]()
@@ -553,7 +652,13 @@ def test_forward_only[M: Model, BS: Int = 4](
     )
 
     M.forward_gpu[BS](
-        ctx, output_t, input_t, gpu.params_view(), cache_t, workspace
+        ctx,
+        output_t,
+        input_t,
+        gpu.params_view(),
+        gpu.model_state_view(),
+        cache_t,
+        workspace,
     )
     ctx.synchronize()
     print("  [PASS]")
@@ -582,7 +687,9 @@ def main() raises:
         FlattenLayer[32 * 6 * 7],
         Linear[32 * 6 * 7, 7],
     ]
-    test_forward_only[SingleHead](ctx, "Sequential[Conv1x1+BN+ReLU, Flatten, Linear]")
+    test_forward_only[SingleHead](
+        ctx, "Sequential[Conv1x1+BN+ReLU, Flatten, Linear]"
+    )
 
     # C2. ValueHead Sequential alone (4 layers with LinearReLU)
     comptime ValueHead = Sequential[
@@ -624,14 +731,18 @@ def main() raises:
             Linear[32 * 6 * 7, 7],
         ],
     ]
-    test_forward_only[TwoPolicyPar](ctx, "Parallel[PolicyHead, PolicyHead] (identical branches)")
+    test_forward_only[TwoPolicyPar](
+        ctx, "Parallel[PolicyHead, PolicyHead] (identical branches)"
+    )
 
     # E_FC. Parallel with different FC Sequential branches (no Conv at all)
     comptime FC_DualHead = Parallel[
         Sequential[LinearReLU[5376, 256], Linear[256, 7]],
         Sequential[LinearReLU[5376, 128], LinearReLU[128, 64], Linear[64, 1]],
     ]
-    test_forward_only[FC_DualHead](ctx, "Parallel[FC 2-layer, FC 3-layer] (different FC branches)")
+    test_forward_only[FC_DualHead](
+        ctx, "Parallel[FC 2-layer, FC 3-layer] (different FC branches)"
+    )
 
     # E_Mix. Parallel with one Conv branch + one FC branch
     comptime MixedPar = Parallel[
@@ -659,7 +770,9 @@ def main() raises:
         ],
         ValueHeadPadded,
     ]
-    test_forward_only[ConvParPadded](ctx, "Parallel[PolicyHead, ValueHead(padded to 8)] — tests BS*8 theory")
+    test_forward_only[ConvParPadded](
+        ctx, "Parallel[PolicyHead, ValueHead(padded to 8)] — tests BS*8 theory"
+    )
 
     # E. Parallel with conv heads (policy + value, original)
     comptime ConvPar = Parallel[
@@ -670,7 +783,9 @@ def main() raises:
         ],
         ValueHead,
     ]
-    test_forward_only[ConvPar](ctx, "Parallel[PolicyHead, ValueHead] (the dual-head)")
+    test_forward_only[ConvPar](
+        ctx, "Parallel[PolicyHead, ValueHead] (the dual-head)"
+    )
 
     print("\n--- Full tests ---")
 

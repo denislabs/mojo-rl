@@ -192,6 +192,7 @@ struct GatherOp[dim: Int](DiffOp):
         var total = BATCH
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             output: LayoutTensor[
@@ -245,6 +246,7 @@ struct GatherOp[dim: Int](DiffOp):
         var total = BATCH
         var grid_x = (total + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             grad_input: LayoutTensor[

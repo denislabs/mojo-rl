@@ -5,6 +5,7 @@ Run: cd mojo-rl && pixi run mojo run -I . tests/test_auto_fused.mojo
 
 from std.random import seed, random_float64
 from std.math import abs as math_abs
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.autodiff import (
@@ -160,7 +161,10 @@ def test_forward_5op() -> Int:
     var af_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
     ](af_cache.unsafe_ptr())
-    AF.forward[BATCH](af_inp, af_o, af_p, af_c)
+    var af_state = LayoutTensor[
+        dtype, Layout.row_major(AF.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    AF.forward[BATCH](af_inp, af_o, af_p, af_state, af_c)
 
     # Reference forward
     var ref_out = make_list(BATCH * OUT_D)
@@ -177,7 +181,10 @@ def test_forward_5op() -> Int:
     var ref_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
     ](ref_cache.unsafe_ptr())
-    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
+    var ref_state = LayoutTensor[
+        dtype, Layout.row_major(Ref.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_state, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * OUT_D)
     print("  Max forward diff:", md)
@@ -231,7 +238,10 @@ def test_backward_5op() -> Int:
     var af_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
     ](af_cache.unsafe_ptr())
-    AF.forward[BATCH](af_inp, af_o, af_p, af_c)
+    var af_state = LayoutTensor[
+        dtype, Layout.row_major(AF.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    AF.forward[BATCH](af_inp, af_o, af_p, af_state, af_c)
 
     var ref_out = make_list(BATCH * OUT_D)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
@@ -247,7 +257,10 @@ def test_backward_5op() -> Int:
     var ref_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
     ](ref_cache.unsafe_ptr())
-    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
+    var ref_state = LayoutTensor[
+        dtype, Layout.row_major(Ref.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_state, ref_c)
 
     # Backward pass
     var grad_out_data = make_rand_list(BATCH * OUT_D)
@@ -263,7 +276,7 @@ def test_backward_5op() -> Int:
     var af_g = LayoutTensor[
         dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
     ](af_grads.unsafe_ptr())
-    AF.backward[BATCH](af_go, af_gi_t, af_p, af_c, af_g)
+    AF.backward[BATCH](af_go, af_gi_t, af_p, af_state, af_c, af_g)
 
     var ref_gi = make_list(BATCH * IN_D)
     var ref_grads = make_list(Ref.PARAM_SIZE)
@@ -276,7 +289,7 @@ def test_backward_5op() -> Int:
     var ref_g = LayoutTensor[
         dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
     ](ref_grads.unsafe_ptr())
-    Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_c, ref_g)
+    Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_state, ref_c, ref_g)
 
     var gi_diff = max_diff(af_gi, ref_gi, BATCH * IN_D)
     var gp_diff = max_diff(af_grads, ref_grads, AF.PARAM_SIZE)
@@ -340,7 +353,10 @@ def test_forward_8op() -> Int:
     var af_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
     ](af_cache.unsafe_ptr())
-    AF.forward[BATCH](af_inp, af_o, af_p, af_c)
+    var af_state = LayoutTensor[
+        dtype, Layout.row_major(AF.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    AF.forward[BATCH](af_inp, af_o, af_p, af_state, af_c)
 
     var ref_out = make_list(BATCH * OUT_D)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
@@ -356,7 +372,10 @@ def test_forward_8op() -> Int:
     var ref_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
     ](ref_cache.unsafe_ptr())
-    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
+    var ref_state = LayoutTensor[
+        dtype, Layout.row_major(Ref.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_state, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * OUT_D)
     print("  Max forward diff:", md)
@@ -415,7 +434,10 @@ def test_backward_8op() -> Int:
     var af_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
     ](af_cache.unsafe_ptr())
-    AF.forward[BATCH](af_inp, af_o, af_p, af_c)
+    var af_state = LayoutTensor[
+        dtype, Layout.row_major(AF.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    AF.forward[BATCH](af_inp, af_o, af_p, af_state, af_c)
 
     var ref_out = make_list(BATCH * OUT_D)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
@@ -431,7 +453,10 @@ def test_backward_8op() -> Int:
     var ref_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
     ](ref_cache.unsafe_ptr())
-    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
+    var ref_state = LayoutTensor[
+        dtype, Layout.row_major(Ref.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_state, ref_c)
 
     # Backward
     var grad_out_data = make_rand_list(BATCH * OUT_D)
@@ -447,7 +472,7 @@ def test_backward_8op() -> Int:
     var af_g = LayoutTensor[
         dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
     ](af_grads.unsafe_ptr())
-    AF.backward[BATCH](af_go, af_gi_t, af_p, af_c, af_g)
+    AF.backward[BATCH](af_go, af_gi_t, af_p, af_state, af_c, af_g)
 
     var ref_gi = make_list(BATCH * IN_D)
     var ref_grads = make_list(Ref.PARAM_SIZE)
@@ -460,7 +485,7 @@ def test_backward_8op() -> Int:
     var ref_g = LayoutTensor[
         dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
     ](ref_grads.unsafe_ptr())
-    Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_c, ref_g)
+    Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_state, ref_c, ref_g)
 
     var gi_diff = max_diff(af_gi, ref_gi, BATCH * IN_D)
     var gp_diff = max_diff(af_grads, ref_grads, AF.PARAM_SIZE)
@@ -538,7 +563,10 @@ def test_xor_training() -> Int:
         var cch = LayoutTensor[
             dtype, Layout.row_major(BATCH, M.CACHE_SIZE), MutAnyOrigin
         ](cache.unsafe_ptr())
-        M.forward[BATCH](inp, out, par, cch)
+        var state = LayoutTensor[
+            dtype, Layout.row_major(M.STATE_SIZE), MutAnyOrigin
+        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        M.forward[BATCH](inp, out, par, state, cch)
 
         # MSE loss + grad
         var loss: Float64 = 0
@@ -561,7 +589,7 @@ def test_xor_training() -> Int:
         var g = LayoutTensor[
             dtype, Layout.row_major(M.PARAM_SIZE), MutAnyOrigin
         ](grads.unsafe_ptr())
-        M.backward[BATCH](go, gi, par, cch, g)
+        M.backward[BATCH](go, gi, par, state, cch, g)
 
         # SGD update
         for i in range(M.PARAM_SIZE):
@@ -611,7 +639,10 @@ def test_single_op() -> Int:
     var af_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
     ](af_cache.unsafe_ptr())
-    AF.forward[BATCH](af_inp, af_o, af_p, af_c)
+    var af_state = LayoutTensor[
+        dtype, Layout.row_major(AF.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    AF.forward[BATCH](af_inp, af_o, af_p, af_state, af_c)
 
     var ref_out = make_list(BATCH * 5)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
@@ -627,7 +658,10 @@ def test_single_op() -> Int:
     var ref_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
     ](ref_cache.unsafe_ptr())
-    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
+    var ref_state = LayoutTensor[
+        dtype, Layout.row_major(Ref.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_state, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * 5)
     print("  Max forward diff:", md)
@@ -671,7 +705,10 @@ def test_sigmoid_fusion() -> Int:
     var af_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
     ](af_cache.unsafe_ptr())
-    AF.forward[BATCH](af_inp, af_o, af_p, af_c)
+    var af_state = LayoutTensor[
+        dtype, Layout.row_major(AF.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    AF.forward[BATCH](af_inp, af_o, af_p, af_state, af_c)
 
     var ref_out = make_list(BATCH * 2)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
@@ -687,7 +724,10 @@ def test_sigmoid_fusion() -> Int:
     var ref_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
     ](ref_cache.unsafe_ptr())
-    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
+    var ref_state = LayoutTensor[
+        dtype, Layout.row_major(Ref.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_state, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * 2)
     print("  Max forward diff:", md)
@@ -732,7 +772,10 @@ def test_mish_fusion() -> Int:
     var af_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
     ](af_cache.unsafe_ptr())
-    AF.forward[BATCH](af_inp, af_o, af_p, af_c)
+    var af_state = LayoutTensor[
+        dtype, Layout.row_major(AF.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    AF.forward[BATCH](af_inp, af_o, af_p, af_state, af_c)
 
     var ref_out = make_list(BATCH * 2)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
@@ -748,7 +791,10 @@ def test_mish_fusion() -> Int:
     var ref_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
     ](ref_cache.unsafe_ptr())
-    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
+    var ref_state = LayoutTensor[
+        dtype, Layout.row_major(Ref.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_state, ref_c)
 
     var md = max_diff(af_out, ref_out, BATCH * 2)
     print("  Max forward diff:", md)
@@ -770,7 +816,7 @@ def test_mish_fusion() -> Int:
     var af_g = LayoutTensor[
         dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
     ](af_grads.unsafe_ptr())
-    AF.backward[BATCH](af_go, af_gi_t, af_p, af_c, af_g)
+    AF.backward[BATCH](af_go, af_gi_t, af_p, af_state, af_c, af_g)
 
     var ref_go = LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin](
         grad_out_data.unsafe_ptr()
@@ -781,7 +827,7 @@ def test_mish_fusion() -> Int:
     var ref_g = LayoutTensor[
         dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
     ](ref_grads.unsafe_ptr())
-    Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_c, ref_g)
+    Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_state, ref_c, ref_g)
 
     var gi_diff = max_diff(af_gi, ref_gi, BATCH * 4)
     var gp_diff = max_diff(af_grads, ref_grads, AF.PARAM_SIZE)
@@ -845,7 +891,10 @@ def test_deep_chain() -> Int:
     var af_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, AF.CACHE_SIZE), MutAnyOrigin
     ](af_cache.unsafe_ptr())
-    AF.forward[BATCH](af_inp, af_o, af_p, af_c)
+    var af_state = LayoutTensor[
+        dtype, Layout.row_major(AF.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    AF.forward[BATCH](af_inp, af_o, af_p, af_state, af_c)
 
     var ref_out = make_list(BATCH * 2)
     var ref_cache = make_list(BATCH * Ref.CACHE_SIZE)
@@ -861,7 +910,10 @@ def test_deep_chain() -> Int:
     var ref_c = LayoutTensor[
         dtype, Layout.row_major(BATCH, Ref.CACHE_SIZE), MutAnyOrigin
     ](ref_cache.unsafe_ptr())
-    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_c)
+    var ref_state = LayoutTensor[
+        dtype, Layout.row_major(Ref.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    Ref.forward[BATCH](ref_inp, ref_o, ref_p, ref_state, ref_c)
 
     var fwd_md = max_diff(af_out, ref_out, BATCH * 2)
     print("  Max forward diff:", fwd_md)
@@ -880,7 +932,7 @@ def test_deep_chain() -> Int:
     var af_g = LayoutTensor[
         dtype, Layout.row_major(AF.PARAM_SIZE), MutAnyOrigin
     ](af_grads.unsafe_ptr())
-    AF.backward[BATCH](af_go, af_gi_t, af_p, af_c, af_g)
+    AF.backward[BATCH](af_go, af_gi_t, af_p, af_state, af_c, af_g)
 
     var ref_gi = make_list(BATCH * 3)
     var ref_grads = make_list(Ref.PARAM_SIZE)
@@ -893,7 +945,7 @@ def test_deep_chain() -> Int:
     var ref_g = LayoutTensor[
         dtype, Layout.row_major(Ref.PARAM_SIZE), MutAnyOrigin
     ](ref_grads.unsafe_ptr())
-    Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_c, ref_g)
+    Ref.backward[BATCH](ref_go, ref_gi_t, ref_p, ref_state, ref_c, ref_g)
 
     var gi_diff = max_diff(af_gi, ref_gi, BATCH * 3)
     var gp_diff = max_diff(af_grads, ref_grads, AF.PARAM_SIZE)

@@ -21,7 +21,7 @@
 # | 3. This notice may not be removed or altered from any source distribution.
 # x--------------------------------------------------------------------------x #
 
-"""Camera
+"""Camera.
 
 Video capture for the SDL library.
 
@@ -179,7 +179,7 @@ def get_num_camera_drivers() raises -> c_int:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetNumCameraDrivers", def() -> c_int
+        lib, "SDL_GetNumCameraDrivers", def() thin -> c_int
     ]()()
 
 
@@ -211,7 +211,7 @@ def get_camera_driver(index: c_int) raises -> Ptr[c_char, ImmutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetCameraDriver",
-        def(index: c_int) -> Ptr[c_char, ImmutAnyOrigin],
+        def(index: c_int) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(index)
 
 
@@ -233,7 +233,7 @@ def get_current_camera_driver() raises -> Ptr[c_char, ImmutAnyOrigin]:
     """
 
     return _get_dylib_function[
-        lib, "SDL_GetCurrentCameraDriver", def() -> Ptr[c_char, ImmutAnyOrigin]
+        lib, "SDL_GetCurrentCameraDriver", def() thin -> Ptr[c_char, ImmutAnyOrigin]
     ]()()
 
 
@@ -260,7 +260,7 @@ def get_cameras(
     ret = _get_dylib_function[
         lib,
         "SDL_GetCameras",
-        def(count: Ptr[c_int, MutAnyOrigin]) -> Ptr[CameraID, MutAnyOrigin],
+        def(count: Ptr[c_int, MutAnyOrigin]) thin -> Ptr[CameraID, MutAnyOrigin],
     ]()(count)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -312,7 +312,7 @@ def get_camera_supported_formats(
         "SDL_GetCameraSupportedFormats",
         def(
             instance_id: CameraID, count: Ptr[c_int, MutAnyOrigin]
-        ) -> Ptr[Ptr[CameraSpec, MutAnyOrigin], MutAnyOrigin],
+        ) thin -> Ptr[Ptr[CameraSpec, MutAnyOrigin], MutAnyOrigin],
     ]()(instance_id, count)
 
 
@@ -337,7 +337,7 @@ def get_camera_name(
     ret = _get_dylib_function[
         lib,
         "SDL_GetCameraName",
-        def(instance_id: CameraID) -> Ptr[c_char, ImmutAnyOrigin],
+        def(instance_id: CameraID) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(instance_id)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -366,7 +366,7 @@ def get_camera_position(instance_id: CameraID) raises -> CameraPosition:
     return _get_dylib_function[
         lib,
         "SDL_GetCameraPosition",
-        def(instance_id: CameraID) -> CameraPosition,
+        def(instance_id: CameraID) thin -> CameraPosition,
     ]()(instance_id)
 
 
@@ -426,7 +426,7 @@ def open_camera(
         "SDL_OpenCamera",
         def(
             instance_id: CameraID, spec: Ptr[CameraSpec, ImmutAnyOrigin]
-        ) -> Ptr[Camera, MutAnyOrigin],
+        ) thin -> Ptr[Camera, MutAnyOrigin],
     ]()(instance_id, spec)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -470,7 +470,7 @@ def get_camera_permission_state(
     return _get_dylib_function[
         lib,
         "SDL_GetCameraPermissionState",
-        def(camera: Ptr[Camera, MutAnyOrigin]) -> c_int,
+        def(camera: Ptr[Camera, MutAnyOrigin]) thin -> c_int,
     ]()(camera)
 
 
@@ -493,7 +493,7 @@ def get_camera_id(camera: Ptr[Camera, MutAnyOrigin]) raises -> CameraID:
     return _get_dylib_function[
         lib,
         "SDL_GetCameraID",
-        def(camera: Ptr[Camera, MutAnyOrigin]) -> CameraID,
+        def(camera: Ptr[Camera, MutAnyOrigin]) thin -> CameraID,
     ]()(camera)
 
 
@@ -518,7 +518,7 @@ def get_camera_properties(
     return _get_dylib_function[
         lib,
         "SDL_GetCameraProperties",
-        def(camera: Ptr[Camera, MutAnyOrigin]) -> PropertiesID,
+        def(camera: Ptr[Camera, MutAnyOrigin]) thin -> PropertiesID,
     ]()(camera)
 
 
@@ -557,7 +557,7 @@ def get_camera_format(
         def(
             camera: Ptr[Camera, MutAnyOrigin],
             spec: Ptr[CameraSpec, MutAnyOrigin],
-        ) -> Bool,
+        ) thin -> Bool,
     ]()(camera, spec)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -616,7 +616,7 @@ def acquire_camera_frame(
         def(
             camera: Ptr[Camera, MutAnyOrigin],
             timestamp_ns: Ptr[UInt64, MutAnyOrigin],
-        ) -> Ptr[Surface, MutAnyOrigin],
+        ) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(camera, timestamp_ns)
 
 
@@ -655,7 +655,7 @@ def release_camera_frame(
         def(
             camera: Ptr[Camera, MutAnyOrigin],
             frame: Ptr[Surface, MutAnyOrigin],
-        ) -> None,
+        ) thin -> None,
     ]()(camera, frame)
 
 
@@ -674,5 +674,5 @@ def close_camera(camera: Ptr[Camera, MutAnyOrigin]) raises -> None:
     """
 
     return _get_dylib_function[
-        lib, "SDL_CloseCamera", def(camera: Ptr[Camera, MutAnyOrigin]) -> None
+        lib, "SDL_CloseCamera", def(camera: Ptr[Camera, MutAnyOrigin]) thin -> None
     ]()(camera)

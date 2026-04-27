@@ -7,6 +7,7 @@ GPU support via GPUOnPolicyContinuousAgent trait + run_onpolicy_continuous_train
 """
 
 from std.math import exp, log, sqrt, cos
+from std.memory import UnsafePointer
 from std.random import random_float64
 from layout import Layout, LayoutTensor
 
@@ -291,7 +292,8 @@ struct GenericOnPolicyContinuousAgent[
                 dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
             ](actor_out.unsafe_ptr())
             var a_p = cpu_state.actor.params_view()
-            Self.ActorNet.forward[1](obs_t, actor_out_t, a_p)
+            var a_s = cpu_state.actor.model_state_view()
+            Self.ActorNet.forward[1](obs_t, actor_out_t, a_p, a_s)
 
             # Extract mean and log_std, sample action
             var action = List[Scalar[dtype]](capacity=Self.ACTIONS)
@@ -334,7 +336,8 @@ struct GenericOnPolicyContinuousAgent[
                 dtype, Layout.row_major(1, Self.CRITIC_IN), MutAnyOrigin
             ](obs_arr.unsafe_ptr())
             var c_p = cpu_state.critic.params_view()
-            Self.CriticNet.forward[1](c_obs_t, val_t, c_p)
+            var c_s = cpu_state.critic.model_state_view()
+            Self.CriticNet.forward[1](c_obs_t, val_t, c_p, c_s)
 
             # Store step
             var obs_list = List[Scalar[dtype]](capacity=Self.OBS)
@@ -387,7 +390,8 @@ struct GenericOnPolicyContinuousAgent[
             dtype, Layout.row_major(1, Self.CRITIC_OUT), MutAnyOrigin
         ](val_arr.unsafe_ptr())
         var c_p = cpu_state.critic.params_view()
-        Self.CriticNet.forward[1](c_obs_t, val_t, c_p)
+        var c_s = cpu_state.critic.model_state_view()
+        Self.CriticNet.forward[1](c_obs_t, val_t, c_p, c_s)
         var next_value = val_arr[0]
 
         compute_gae_list[dtype](
@@ -484,8 +488,9 @@ struct GenericOnPolicyContinuousAgent[
                         MutAnyOrigin,
                     ](actor_cache.unsafe_ptr())
                     var a_p = cpu_state.actor.params_view()
+                    var a_s = cpu_state.actor.model_state_view()
                     Self.ActorNet.forward_with_cache[1](
-                        obs_t, actor_out_t, a_p, actor_cache_t
+                        obs_t, actor_out_t, a_p, a_s, actor_cache_t
                     )
 
                     # Compute actor gradient — shared variables across branches
@@ -558,10 +563,16 @@ struct GenericOnPolicyContinuousAgent[
                             MutAnyOrigin,
                         ](loss_params_arr.unsafe_ptr())
 
+                        # Zero-length model state slice (LossGraph is stateless)
+                        var loss_state_t = LayoutTensor[
+                            dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
+                        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
                         LossGraph.forward[1](
                             loss_in_t,
                             loss_out_t,
                             loss_params_t,
+                            loss_state_t,
                             loss_cache_t,
                         )
 
@@ -596,6 +607,7 @@ struct GenericOnPolicyContinuousAgent[
                             loss_go_t,
                             loss_gi_t,
                             loss_params_t,
+                            loss_state_t,
                             loss_cache_t,
                             loss_grads_t,
                         )
@@ -702,7 +714,7 @@ struct GenericOnPolicyContinuousAgent[
                     var a_g = cpu_state.actor.grads_view()
                     cpu_state.actor.zero_grads()
                     Self.ActorNet.backward[1](
-                        grad_out_t, grad_in_t, a_p, actor_cache_t, a_g
+                        grad_out_t, grad_in_t, a_p, a_s, actor_cache_t, a_g
                     )
                     cpu_state.actor.optimizer_step()
 
@@ -729,8 +741,9 @@ struct GenericOnPolicyContinuousAgent[
                         MutAnyOrigin,
                     ](obs_arr.unsafe_ptr())
                     var c_p = cpu_state.critic.params_view()
+                    var c_s = cpu_state.critic.model_state_view()
                     Self.CriticNet.forward_with_cache[1](
-                        c_obs_t2, val_t2, c_p, c_cache_t
+                        c_obs_t2, val_t2, c_p, c_s, c_cache_t
                     )
 
                     # Critic gradient (MSE)
@@ -759,7 +772,7 @@ struct GenericOnPolicyContinuousAgent[
                     var c_g = cpu_state.critic.grads_view()
                     cpu_state.critic.zero_grads()
                     Self.CriticNet.backward[1](
-                        v_grad_t, c_grad_in_t, c_p, c_cache_t, c_g
+                        v_grad_t, c_grad_in_t, c_p, c_s, c_cache_t, c_g
                     )
                     cpu_state.critic.optimizer_step()
 
@@ -789,7 +802,8 @@ struct GenericOnPolicyContinuousAgent[
             dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
         ](actor_out.unsafe_ptr())
         var p = cpu_state.actor.params_view()
-        Self.ActorNet.forward[1](obs_t, actor_out_t, p)
+        var s = cpu_state.actor.model_state_view()
+        Self.ActorNet.forward[1](obs_t, actor_out_t, p, s)
 
         # Return mean (deterministic policy)
         var result = List[Float64](capacity=Self.ACTIONS)
@@ -845,19 +859,19 @@ struct GenericOnPolicyContinuousAgent[
 
         var metadata = read_metadata_section(content)
         var gamma_str = get_metadata_value(metadata, "gamma")
-        if len(gamma_str) > 0:
+        if gamma_str.byte_length() > 0:
             self.gamma = atof(gamma_str)
         var gae_str = get_metadata_value(metadata, "gae_lambda")
-        if len(gae_str) > 0:
+        if gae_str.byte_length() > 0:
             self.gae_lambda = atof(gae_str)
         var entropy_str = get_metadata_value(metadata, "entropy_coef")
-        if len(entropy_str) > 0:
+        if entropy_str.byte_length() > 0:
             self.entropy_coef = atof(entropy_str)
         var clip_str = get_metadata_value(metadata, "clip_epsilon")
-        if len(clip_str) > 0:
+        if clip_str.byte_length() > 0:
             self.clip_epsilon = atof(clip_str)
         var step_str = get_metadata_value(metadata, "train_step_count")
-        if len(step_str) > 0:
+        if step_str.byte_length() > 0:
             self.train_step_count = Int(atol(step_str))
 
     # =========================================================================
@@ -998,7 +1012,8 @@ struct GenericOnPolicyContinuousAgent[
                     dtype, Layout.row_major(1, Self.ACTOR_OUT), MutAnyOrigin
                 ](actor_out.unsafe_ptr())
                 var p = eval_state.actor.params_view()
-                Self.ActorNet.forward[1](obs_t, actor_out_t, p)
+                var s = eval_state.actor.model_state_view()
+                Self.ActorNet.forward[1](obs_t, actor_out_t, p, s)
 
                 var action = List[Float64](capacity=Self.ACTIONS)
                 if stochastic:
@@ -1143,6 +1158,7 @@ struct GenericOnPolicyContinuousAgent[
         var log_probs_buf = ctx.enqueue_create_buffer[dtype](N_EVAL_ENVS)
 
         # Deterministic action extraction kernel
+        @parameter
         @always_inline
         def extract_deterministic_actions(
             actions: LayoutTensor[
@@ -1182,11 +1198,16 @@ struct GenericOnPolicyContinuousAgent[
                 Layout.row_major(Self.ActorModel.PARAM_SIZE),
                 MutAnyOrigin,
             ](actor_params_buf.unsafe_ptr())
+            # Zero-length model state slice (stateless actor; no GPUNetworkState in scope)
+            var eval_state_t = LayoutTensor[
+                dtype, Layout.row_major(Self.ActorModel.STATE_SIZE), MutAnyOrigin
+            ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
             Self.ActorModel.forward_gpu_no_cache[N_EVAL_ENVS](
                 ctx,
                 eval_actor_out_t,
                 eval_obs_t,
                 eval_params_t,
+                eval_state_t,
                 actor_workspace_buf,
             )
 
@@ -1353,7 +1374,9 @@ struct GenericOnPolicyContinuousAgent[
         comptime blocks = (N_ENVS + TPB - 1) // TPB
 
         var actor_params_t = gpu_state.gpu_actor.params_view()
+        var actor_state_t = gpu_state.gpu_actor.model_state_view()
         var critic_params_t = gpu_state.gpu_critic.params_view()
+        var critic_state_t = gpu_state.gpu_critic.model_state_view()
 
         var obs_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
@@ -1368,6 +1391,7 @@ struct GenericOnPolicyContinuousAgent[
             actor_out_t,
             obs_t,
             actor_params_t,
+            actor_state_t,
             gpu_state.actor_env_workspace_buf,
         )
 
@@ -1385,6 +1409,7 @@ struct GenericOnPolicyContinuousAgent[
             values_t,
             c_obs_t,
             critic_params_t,
+            critic_state_t,
             gpu_state.critic_env_workspace_buf,
         )
 
@@ -1418,6 +1443,7 @@ struct GenericOnPolicyContinuousAgent[
         comptime ROLLOUT_TOTAL = Self.TOTAL_ROLLOUT_SIZE
 
         var critic_params_t = gpu_state.gpu_critic.params_view()
+        var critic_state_t = gpu_state.gpu_critic.model_state_view()
         var final_obs_t = LayoutTensor[
             dtype, Layout.row_major(Self.n_envs, Self.CRITIC_IN), MutAnyOrigin
         ](final_obs_buf.unsafe_ptr())
@@ -1433,6 +1459,7 @@ struct GenericOnPolicyContinuousAgent[
             bootstrap_t,
             final_obs_t,
             critic_params_t,
+            critic_state_t,
             gpu_state.critic_env_workspace_buf,
         )
 
@@ -1523,8 +1550,10 @@ struct GenericOnPolicyContinuousAgent[
 
         # Param views
         var actor_params_t = gpu_state.gpu_actor.params_view()
+        var actor_state_t = gpu_state.gpu_actor.model_state_view()
         var actor_grads_t = gpu_state.gpu_actor.grads_view()
         var critic_params_t = gpu_state.gpu_critic.params_view()
+        var critic_state_t = gpu_state.gpu_critic.model_state_view()
         var critic_grads_t = gpu_state.gpu_critic.grads_view()
 
         # Minibatch LayoutTensor views
@@ -1778,6 +1807,7 @@ struct GenericOnPolicyContinuousAgent[
                     actor_logits_t,
                     mb_obs_t,
                     actor_params_t,
+                    actor_state_t,
                     actor_cache_t,
                     gpu_state.actor_mb_workspace_buf,
                 )
@@ -1827,6 +1857,7 @@ struct GenericOnPolicyContinuousAgent[
                         MutAnyOrigin,
                     ](loss_input_ptr)
 
+                    @parameter
                     @always_inline
                     def pack_loss_input_k(
                         dst: LayoutTensor[
@@ -1921,11 +1952,17 @@ struct GenericOnPolicyContinuousAgent[
                         MutAnyOrigin,
                     ](loss_params_ptr)
 
+                    # Zero-length model state slice (LossGraph is stateless)
+                    var loss_state_t = LayoutTensor[
+                        dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
+                    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
                     LossGraph.forward_gpu[MINIBATCH](
                         ctx,
                         loss_output_t,
                         loss_input_t,
                         loss_params_t,
+                        loss_state_t,
                         loss_cache_t,
                         loss_workspace_buf,
                     )
@@ -1938,6 +1975,7 @@ struct GenericOnPolicyContinuousAgent[
                         MutAnyOrigin,
                     ](loss_grad_output_ptr)
 
+                    @parameter
                     @always_inline
                     def seed_grad_k(
                         go: LayoutTensor[
@@ -1976,6 +2014,7 @@ struct GenericOnPolicyContinuousAgent[
                         loss_grad_input_t,
                         loss_grad_output_t,
                         loss_params_t,
+                        loss_state_t,
                         loss_cache_t,
                         loss_grads_t,
                         loss_workspace_buf,
@@ -1989,6 +2028,7 @@ struct GenericOnPolicyContinuousAgent[
                         ImmutAnyOrigin,
                     ](loss_grad_input_ptr)
 
+                    @parameter
                     @always_inline
                     def extract_and_entropy_k(
                         dst: LayoutTensor[
@@ -2029,6 +2069,7 @@ struct GenericOnPolicyContinuousAgent[
                     )
 
                     # Compute diagnostics (KL, entropy, clip_flags) in separate kernel
+                    @parameter
                     @always_inline
                     def diag_kernel(
                         kl_out: LayoutTensor[
@@ -2179,6 +2220,7 @@ struct GenericOnPolicyContinuousAgent[
                     actor_grad_input_t,
                     actor_grad_output_t,
                     actor_params_t,
+                    actor_state_t,
                     actor_cache_t,
                     actor_grads_t,
                     gpu_state.actor_mb_workspace_buf,
@@ -2236,6 +2278,7 @@ struct GenericOnPolicyContinuousAgent[
                     critic_values_t,
                     mb_c_obs_t,
                     critic_params_t,
+                    critic_state_t,
                     critic_cache_t,
                     gpu_state.critic_mb_workspace_buf,
                 )
@@ -2289,6 +2332,7 @@ struct GenericOnPolicyContinuousAgent[
                     critic_grad_input_t,
                     critic_grad_output_t,
                     critic_params_t,
+                    critic_state_t,
                     critic_cache_t,
                     critic_grads_t,
                     gpu_state.critic_mb_workspace_buf,

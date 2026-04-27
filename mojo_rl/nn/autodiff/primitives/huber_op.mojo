@@ -207,6 +207,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         ](input.ptr)
         var grid_x = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             o: LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin],
@@ -253,6 +254,7 @@ struct HuberOp[delta: Float64 = 1.0](DiffOp):
         ](cache.ptr)
         var grid_x = (BATCH + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def wrapper(
             gi: LayoutTensor[dtype, Layout.row_major(BATCH, 2), MutAnyOrigin],

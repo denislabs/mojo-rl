@@ -617,6 +617,7 @@ struct Phyics3dEnv[
             gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ](model_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def reset_with_fk_wrapper(
             states: LayoutTensor[
@@ -714,6 +715,7 @@ struct Phyics3dEnv[
                 DType.uint64, Layout.row_major(1), MutAnyOrigin
             ](rng_counter_ptr)
 
+            @parameter
             @always_inline
             def selective_reset_with_fk_counter_wrapper(
                 states: LayoutTensor[
@@ -764,6 +766,7 @@ struct Phyics3dEnv[
             )
         else:
 
+            @parameter
             @always_inline
             def selective_reset_with_fk_wrapper(
                 states: LayoutTensor[
@@ -848,6 +851,7 @@ struct Phyics3dEnv[
         ]()
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
+        @parameter
         @always_inline
         def custom_obs_kernel(
             states: LayoutTensor[
@@ -891,6 +895,7 @@ struct Phyics3dEnv[
         comptime TPB_VAL = 256
         comptime BLOCKS = (BATCH_SIZE + TPB_VAL - 1) // TPB_VAL
 
+        @parameter
         @always_inline
         def term_obs_wrapper(
             obs: LayoutTensor[
@@ -991,6 +996,7 @@ struct Phyics3dEnv[
             gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ](workspace_buf.unsafe_ptr())
 
+        @parameter
         @always_inline
         def write_curriculum_kernel(
             model: LayoutTensor[
@@ -1028,6 +1034,7 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.MAX_CONTACTS,
         ]()
 
+        @parameter
         @always_inline
         def pre_step_kernel(
             states: LayoutTensor[
@@ -1124,6 +1131,7 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.NSITE,
         ]()
 
+        @parameter
         @always_inline
         def extract_kernel(
             states: LayoutTensor[

@@ -12,7 +12,7 @@ Self-Play with a General Reinforcement Learning Algorithm
 
 from std.math import exp, log, sqrt
 from std.random import random_float64
-from std.memory import alloc, memset
+from std.memory import alloc, memset, UnsafePointer
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
@@ -559,7 +559,7 @@ struct GenericAlphaZeroAgent[
         ](pred_ptr)
 
         Self.PredNet.forward[B](
-            obs_t, pred_t, self.state.prediction.params_view()
+            obs_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view()
         )
 
         var best_action = -1
@@ -612,7 +612,7 @@ struct GenericAlphaZeroAgent[
             dtype, Layout.row_major(B, PRED_OUT_DIM), MutAnyOrigin
         ](pred_ptr)
         Self.PredNet.forward[B](
-            obs_t, pred_t, self.state.prediction.params_view()
+            obs_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view()
         )
 
         # Softmax over legal actions for root prior
@@ -763,6 +763,7 @@ struct GenericAlphaZeroAgent[
                             c_obs_t,
                             c_pred_t,
                             self.state.prediction.params_view(),
+                            self.state.prediction.model_state_view(),
                         )
 
                         # Child prior (softmax over legal)
@@ -969,10 +970,10 @@ struct GenericAlphaZeroAgent[
         self.state.prediction.read_sections(content, "pred_")
         var metadata = read_metadata_section(content)
         var s1 = get_metadata_value(metadata, "train_step_count")
-        if len(s1) > 0:
+        if s1.byte_length() > 0:
             self.train_step_count = Int(atol(s1))
         var s2 = get_metadata_value(metadata, "total_steps")
-        if len(s2) > 0:
+        if s2.byte_length() > 0:
             self.total_steps = Int(atol(s2))
 
     def start_new_iteration(mut self):
@@ -1045,6 +1046,7 @@ struct GenericAlphaZeroAgent[
             obs_t,
             pred_t,
             gpu.prediction.params_view(),
+            gpu.prediction.model_state_view(),
             cache_t,
             gpu.workspace,
         )
@@ -1092,6 +1094,7 @@ struct GenericAlphaZeroAgent[
             grad_out_t,
             grad_in_t,
             gpu.prediction.params_view(),
+            gpu.prediction.model_state_view(),
             cache_t,
             grads,
             gpu.workspace,
@@ -1438,6 +1441,7 @@ struct GenericAlphaZeroAgent[
             obs_t,
             pred_t,
             gpu.prediction.params_view(),
+            gpu.prediction.model_state_view(),
             cache_t,
             gpu.workspace,
         )
@@ -1485,6 +1489,7 @@ struct GenericAlphaZeroAgent[
             grad_out_t,
             grad_in_t,
             gpu.prediction.params_view(),
+            gpu.prediction.model_state_view(),
             cache_t,
             grads,
             gpu.workspace,
@@ -1854,7 +1859,7 @@ struct GenericAlphaZeroAgent[
             MutAnyOrigin,
         ](gpu_mcts.pred_output.unsafe_ptr())
         Self.PredNet.forward_gpu[TOTAL_EXPAND](
-            ctx, p_in, p_out, gpu.prediction.params_view(), mcts_ws
+            ctx, p_in, p_out, gpu.prediction.params_view(), gpu.prediction.model_state_view(), mcts_ws
         )
 
         # 4. Fused expand + backup + remove virtual losses
@@ -2073,6 +2078,7 @@ struct GenericAlphaZeroAgent[
         ctx: DeviceContext,
         p0_params: DeviceBuffer[dtype],
         p1_params: DeviceBuffer[dtype],
+        mut active_model_state: DeviceBuffer[dtype],
         mut gpu_mcts: GPUMCTSState[
             N_ENVS,
             Self.Config.max_nodes,
@@ -2100,6 +2106,12 @@ struct GenericAlphaZeroAgent[
         num_games: Int = 0,
     ) raises -> Tuple[Int, Int, Int]:
         """Play n_envs games on GPU. P0 uses p0_params, P1 uses p1_params.
+
+        Both nets share `active_model_state` (BN running stats etc.). After
+        Phase 3.5b the per-step forwards run inference-mode and read state
+        without writing, so sharing is correctness-neutral; before that, this
+        matches current selfplay behavior (training-mode forward updates EMA
+        on the live buffer).
 
         Uses pre-allocated buffers (no per-call GPU allocation).
         num_games: number of games to count (0 = use all n_envs).
@@ -2141,6 +2153,12 @@ struct GenericAlphaZeroAgent[
             var active_params = LayoutTensor[
                 dtype, Layout.row_major(_PS), MutAnyOrigin
             ](p0_params.unsafe_ptr() if p0_turn else p1_params.unsafe_ptr())
+            # Real model-state slice over the caller's buffer. Conv2D+BN /
+            # ResBlockConv2DBN dereference state.ptr for running stats; a
+            # zero-length placeholder NULL'd out address 0.
+            var active_state = LayoutTensor[
+                dtype, Layout.row_major(Self.Config.PredModel.STATE_SIZE), MutAnyOrigin
+            ](active_model_state.unsafe_ptr())
 
             # LayoutTensor views over MCTS buffers
             var pred_obs = LayoutTensor[
@@ -2205,7 +2223,7 @@ struct GenericAlphaZeroAgent[
 
             # Forward pass → prediction output
             Self.PredNet.forward_gpu[N_ENVS](
-                ctx, pred_obs, pred_out, active_params, mcts_ws
+                ctx, pred_obs, pred_out, active_params, active_state, mcts_ws
             )
 
             # Zero tree data via bulk memset, then init root
@@ -2315,7 +2333,7 @@ struct GenericAlphaZeroAgent[
                     MutAnyOrigin,
                 ](gpu_mcts.pred_output.unsafe_ptr())
                 Self.PredNet.forward_gpu[TOTAL_EXPAND](
-                    ctx, p_in, p_out, active_params, mcts_ws
+                    ctx, p_in, p_out, active_params, active_state, mcts_ws
                 )
 
                 var b_po = LayoutTensor[
@@ -2473,6 +2491,9 @@ struct GenericAlphaZeroAgent[
         mut arena_new_params: DeviceBuffer[dtype],
         mut arena_old_params: DeviceBuffer[dtype],
         mut arena_params_host: HostBuffer[dtype],
+        # Live model_state buffer (BN running stats, RNG counters). Shared
+        # by both players in arena (see _gpu_play_games docstring).
+        mut active_model_state: DeviceBuffer[dtype],
         # Pre-allocated eval/arena buffers
         mut gpu_mcts: GPUMCTSState[
             N_ENVS,
@@ -2525,6 +2546,7 @@ struct GenericAlphaZeroAgent[
             ctx,
             arena_new_params,
             arena_old_params,
+            active_model_state,
             gpu_mcts,
             mcts_ws,
             states_buf,
@@ -2552,6 +2574,7 @@ struct GenericAlphaZeroAgent[
             ctx,
             arena_old_params,
             arena_new_params,
+            active_model_state,
             gpu_mcts,
             mcts_ws,
             states_buf,
@@ -2688,6 +2711,7 @@ struct GenericAlphaZeroAgent[
                     e_pred_obs,
                     e_pred_out,
                     gpu.prediction.params_view(),
+                    gpu.prediction.model_state_view(),
                     mcts_ws,
                 )
 
@@ -2892,6 +2916,7 @@ struct GenericAlphaZeroAgent[
                         ep_in,
                         ep_out,
                         gpu.prediction.params_view(),
+                        gpu.prediction.model_state_view(),
                         mcts_ws,
                     )
                     var e_b_po = LayoutTensor[
@@ -3324,6 +3349,7 @@ struct GenericAlphaZeroAgent[
                         pred_obs,
                         pred_out,
                         gpu.prediction.params_view(),
+                        gpu.prediction.model_state_view(),
                         mcts_ws,
                     )
 
@@ -4063,6 +4089,7 @@ struct GenericAlphaZeroAgent[
                     arena_new_params,
                     arena_old_params,
                     arena_params_host,
+                    gpu.prediction.model_state_buf,
                     eval_gpu_mcts,
                     eval_mcts_ws,
                     eval_states_buf,

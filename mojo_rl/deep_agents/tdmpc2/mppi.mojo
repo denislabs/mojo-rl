@@ -13,6 +13,7 @@ Reference: Hansen et al., 2023 — TD-MPC2
 """
 
 from std.math import exp, sqrt, cos, log
+from std.memory import UnsafePointer
 from std.random import random_float64
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
@@ -669,6 +670,20 @@ def plan_gpu[
     # ─── Softmax weights storage (CPU-side) ────────────────────────────────
     var weights = List[Float64](capacity=TOTAL_SAMPLES)
 
+    # Zero-length model state slices (stateless models; no GPUNetworkState here)
+    var pol_state = LayoutTensor[
+        dtype, Layout.row_major(PolModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var rew_state = LayoutTensor[
+        dtype, Layout.row_major(RewModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var dyn_state = LayoutTensor[
+        dtype, Layout.row_major(DynModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var q_state = LayoutTensor[
+        dtype, Layout.row_major(QModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
     # ─── Main MPPI iterations ──────────────────────────────────────────────
     for mppi_iter in range(NUM_ITERATIONS):
         var rng_seed = rng_base_seed + UInt32(
@@ -703,6 +718,7 @@ def plan_gpu[
                 pol_out_tensor,
                 pol_in_tensor,
                 pol_params,
+                pol_state,
                 mb.pol_ws_buf,
             )
 
@@ -734,6 +750,7 @@ def plan_gpu[
                 rew_out_tensor,
                 rew_in_tensor,
                 rew_params,
+                rew_state,
                 mb.rew_ws_buf,
             )
 
@@ -754,6 +771,7 @@ def plan_gpu[
                 dyn_out_tensor,
                 dyn_in_tensor,
                 dyn_params,
+                dyn_state,
                 mb.dyn_ws_buf,
             )
 
@@ -771,6 +789,7 @@ def plan_gpu[
             pol_out_tensor,
             pol_in_tensor,
             pol_params,
+            pol_state,
             mb.pol_ws_buf,
         )
 
@@ -793,6 +812,7 @@ def plan_gpu[
             q_out_tensor,
             q_in_tensor,
             qt1_params,
+            q_state,
             mb.q_ws_buf,
         )
         ctx.enqueue_function[q_decode, q_decode](
@@ -813,6 +833,7 @@ def plan_gpu[
                 q_out_tensor,
                 q_in_tensor,
                 qt_params,
+                q_state,
                 mb.q_ws_buf,
             )
             ctx.enqueue_function[decode_min, decode_min](
@@ -1132,6 +1153,20 @@ def plan_gpu_batched[
 
     comptime Q_PS = QModel.PARAM_SIZE
 
+    # Zero-length model state slices (stateless models; no GPUNetworkState here)
+    var pol_state = LayoutTensor[
+        dtype, Layout.row_major(PolModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var rew_state = LayoutTensor[
+        dtype, Layout.row_major(RewModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var dyn_state = LayoutTensor[
+        dtype, Layout.row_major(DynModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+    var q_state = LayoutTensor[
+        dtype, Layout.row_major(QModel.STATE_SIZE), MutAnyOrigin
+    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+
     # ─── Main MPPI iterations ────────────────────────────────────────────
     var temp_scalar = Scalar[dtype](temperature)
     for mppi_iter in range(NUM_ITERATIONS):
@@ -1159,6 +1194,7 @@ def plan_gpu_batched[
                 pol_out_tensor,
                 pol_in_tensor,
                 pol_params,
+                pol_state,
                 mb.pol_ws_buf,
             )
 
@@ -1182,6 +1218,7 @@ def plan_gpu_batched[
                 rew_out_tensor,
                 rew_in_tensor,
                 rew_params,
+                rew_state,
                 mb.rew_ws_buf,
             )
             DynModel.forward_gpu_no_cache[BATCH_TOTAL](
@@ -1189,6 +1226,7 @@ def plan_gpu_batched[
                 dyn_out_tensor,
                 dyn_in_tensor,
                 dyn_params,
+                dyn_state,
                 mb.dyn_ws_buf,
             )
             # Fused: accum reward + copy z
@@ -1210,6 +1248,7 @@ def plan_gpu_batched[
             pol_out_tensor,
             pol_in_tensor,
             pol_params,
+            pol_state,
             mb.pol_ws_buf,
         )
         ctx.enqueue_function[tanh_build_za, tanh_build_za](
@@ -1236,6 +1275,7 @@ def plan_gpu_batched[
             q_out_tensor,
             q_in_tensor,
             qt1_p,
+            q_state,
             mb.q_ws_buf,
         )
         ctx.enqueue_function[q_decode, q_decode](
@@ -1256,6 +1296,7 @@ def plan_gpu_batched[
                 q_out_tensor,
                 q_in_tensor,
                 qt_p,
+                q_state,
                 mb.q_ws_buf,
             )
             ctx.enqueue_function[decode_min, decode_min](

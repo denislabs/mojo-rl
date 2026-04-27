@@ -99,8 +99,8 @@ struct Materials[*M: MaterialSpec](MaterialsLike):
     and can reference a texture by name. Geoms reference materials by MATERIAL_NAME.
     """
 
-    comptime mat_types = Variadic.types[T=MaterialSpec, *Self.M]
-    comptime N: Int = TypeList[*Self.mat_types].size
+    comptime mat_types = Self.M
+    comptime N: Int = Self.mat_types.size
 
 
 @fieldwise_init

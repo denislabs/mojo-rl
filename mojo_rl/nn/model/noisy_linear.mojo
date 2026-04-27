@@ -26,7 +26,6 @@ from .model import Model, PerfTimerPtr, NULL_PERF
 from ..initializer import Initializer
 from layout import LayoutTensor, Layout
 from std.math import sqrt, abs, log, cos
-from std.random import random_float64
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.random.philox import Random as PhiloxRandom
@@ -49,22 +48,25 @@ def _noise_transform[dtype: DType = DType.float32](x: Scalar[dtype]) -> Scalar[d
 
 
 # =============================================================================
-# CPU noise generation using Box-Muller
+# Philox-based Box-Muller — deterministic in (seed, idx). Used by both CPU and
+# GPU paths so all noise comes from the on-device state counter.
 # =============================================================================
 
 
 @always_inline
-def _gaussian_sample[dtype: DType = DType.float32]() -> Scalar[dtype]:
-    """Generate a single N(0,1) sample using Box-Muller."""
+def _gaussian_from_seed[dtype: DType = DType.float32](
+    seed: UInt64, offset_idx: UInt64
+) -> Scalar[dtype]:
+    """Single N(0,1) sample via Box-Muller seeded by Philox(seed, offset_idx)."""
     comptime assert dtype.is_floating_point(), "dtype must be floating point"
-    var u1 = Scalar[dtype](random_float64(0.0, 1.0))
-    var u2 = Scalar[dtype](random_float64(0.0, 1.0))
-    # Clamp u1 away from 0 to avoid log(0)
+    var rng = PhiloxRandom(seed=seed, offset=offset_idx)
+    var vals = rng.step_uniform()
+    var u1 = vals[0]
     if u1 < 1e-7:
-        u1 = Scalar[dtype](1e-7)
-
-    var pi2 = Scalar[dtype](6.283185307179586)
-    return sqrt(Scalar[dtype](-2.0) * log(u1)) * cos(pi2 * u2)
+        u1 = 1e-7
+    return Scalar[dtype](
+        sqrt(-2.0 * log(u1)) * cos(6.283185307179586 * vals[1])
+    )
 
 
 # =============================================================================
@@ -90,6 +92,10 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
     # Workspace stores noise_p [in_dim] + noise_q [out_dim] for GPU kernels.
     # Shared across batch but sized per-sample to ensure adequate allocation.
     comptime WORKSPACE_SIZE_PER_SAMPLE: Int = Self.in_dim + Self.out_dim
+    # One Float32 slot bit-patterning a UInt32 RNG counter, bumped per forward
+    # so each call (and each replay of a captured CUDA graph) sees fresh noise
+    # without a host-side random_float64.
+    comptime STATE_SIZE: Int = 1
 
     # Parameter offsets
     comptime MU_W_OFFSET: Int = 0
@@ -144,6 +150,15 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         for j in range(Self.out_dim):
             params[Self.SIGMA_B_OFFSET + j] = sigma_init
 
+    @staticmethod
+    def initialize_state[dtype: DType = DType.float32](
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
+    ):
+        """Zero the GPU-resident RNG counter slot (Float32(0.0) bits == UInt32(0))."""
+        state.ptr[0] = Scalar[dtype](0.0)
+
     # =========================================================================
     # Forward with cache (training — noisy)
     # =========================================================================
@@ -161,12 +176,20 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
         """Forward with noise (training). Caches input + noise for backward."""
-        # Generate factorized noise once for all samples
+        # Bump the on-device RNG counter and derive a per-call seed so every
+        # forward sees fresh noise (matches the GPU path's behavior).
+        var counter_ptr = state.ptr.bitcast[Scalar[DType.uint32]]()
+        counter_ptr[0] = counter_ptr[0] + UInt32(1)
+        var bs = UInt64(counter_ptr[0]) * UInt64(2654435761)
+
         var noise_p = InlineArray[Scalar[dtype], Self.in_dim](
             uninitialized=True
         )
@@ -174,9 +197,15 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             uninitialized=True
         )
         for i in range(Self.in_dim):
-            noise_p[i] = _noise_transform[dtype](_gaussian_sample[dtype]())
+            noise_p[i] = _noise_transform[dtype](
+                _gaussian_from_seed[dtype](bs + UInt64(i), 0)
+            )
         for j in range(Self.out_dim):
-            noise_q[j] = _noise_transform[dtype](_gaussian_sample[dtype]())
+            noise_q[j] = _noise_transform[dtype](
+                _gaussian_from_seed[dtype](
+                    bs + UInt64(j + Self.in_dim + 10000), 0
+                )
+            )
 
         for b in range(BATCH):
             # Cache input
@@ -219,13 +248,21 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
     ):
         """Forward with noise but no caching (for action selection).
 
         Noise provides exploration. No cache needed since this isn't
         used for gradient computation.
         """
-        # Generate factorized noise
+        # Same RNG counter slot as training: bumped each call, drives the
+        # per-call Philox seed so every forward sees fresh noise.
+        var counter_ptr = state.ptr.bitcast[Scalar[DType.uint32]]()
+        counter_ptr[0] = counter_ptr[0] + UInt32(1)
+        var bs = UInt64(counter_ptr[0]) * UInt64(2654435761)
+
         var noise_p = InlineArray[Scalar[dtype], Self.in_dim](
             uninitialized=True
         )
@@ -233,9 +270,15 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             uninitialized=True
         )
         for i in range(Self.in_dim):
-            noise_p[i] = _noise_transform[dtype](_gaussian_sample[dtype]())
+            noise_p[i] = _noise_transform[dtype](
+                _gaussian_from_seed[dtype](bs + UInt64(i), 0)
+            )
         for j in range(Self.out_dim):
-            noise_q[j] = _noise_transform[dtype](_gaussian_sample[dtype]())
+            noise_q[j] = _noise_transform[dtype](
+                _gaussian_from_seed[dtype](
+                    bs + UInt64(j + Self.in_dim + 10000), 0
+                )
+            )
 
         for b in range(BATCH):
             for j in range(Self.out_dim):
@@ -271,6 +314,9 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         ],
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
         ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
@@ -359,6 +405,9 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         mut cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -377,12 +426,32 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](noise_ptr + Self.in_dim)
 
-        # Generate a varying seed on CPU (different each forward call)
-        var seed_base = UInt64(
-            random_float64(0.0, Float64(UInt32.MAX))
-        ) * UInt64(2654435761)
+        # Bit-cast the float32 state slot into a UInt32 RNG counter view.
+        # The counter lives on-device; the preamble kernel bumps it so each
+        # forward (and each captured-graph replay) sees a fresh seed without
+        # a host-side random_float64.
+        var counter_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](state.ptr.bitcast[Scalar[DType.uint32]]())
+
+        @parameter
+        @always_inline
+        def bump_kernel(
+            c: LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ],
+        ):
+            if Int(thread_idx.x) == 0:
+                c[0] = c[0] + UInt32(1)
+
+        ctx.enqueue_function[bump_kernel, bump_kernel](
+            counter_t,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
 
         # Step 1: Generate noise in workspace
+        @parameter
         @always_inline
         def gen_noise_kernel(
             np: LayoutTensor[
@@ -391,10 +460,13 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             nq: LayoutTensor[
                 dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
             ],
-            base_seed: Scalar[DType.uint64],
+            counter: LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ],
         ):
             var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
-            var bs = UInt64(base_seed)
+            # Knuth multiplier mixes low-bit counter values into a usable seed.
+            var bs = UInt64(counter.ptr[0]) * UInt64(2654435761)
             # Generate noise_p
             if tid < Self.in_dim:
                 var rng = PhiloxRandom(
@@ -429,16 +501,16 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                 nq[tid] = -sg if gauss < 0 else sg
 
         comptime NOISE_DIM = max(Self.in_dim, Self.out_dim)
-        var seed_s = Scalar[DType.uint64](seed_base)
         ctx.enqueue_function[gen_noise_kernel, gen_noise_kernel](
             noise_p_t,
             noise_q_t,
-            seed_s,
+            counter_t,
             grid_dim=((NOISE_DIM + TPB - 1) // TPB,),
             block_dim=(TPB,),
         )
 
         # Step 2: Forward pass + cache
+        @parameter
         @always_inline
         def fwd_kernel(
             dst: LayoutTensor[
@@ -524,6 +596,9 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
         perf: PerfTimerPtr = NULL_PERF,
         perf_slot: Int = 0,
@@ -538,12 +613,30 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](noise_ptr + Self.in_dim)
 
-        # Generate a varying seed on CPU
-        var seed_base_nc = UInt64(
-            random_float64(0.0, Float64(UInt32.MAX))
-        ) * UInt64(2654435761) + UInt64(99991)
+        # On-device RNG counter (same slot as forward_gpu); bumped each call so
+        # action selection sees fresh noise even inside captured CUDA graphs.
+        var counter_t = LayoutTensor[
+            DType.uint32, Layout.row_major(1), MutAnyOrigin
+        ](state.ptr.bitcast[Scalar[DType.uint32]]())
+
+        @parameter
+        @always_inline
+        def bump_kernel_nc(
+            c: LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ],
+        ):
+            if Int(thread_idx.x) == 0:
+                c[0] = c[0] + UInt32(1)
+
+        ctx.enqueue_function[bump_kernel_nc, bump_kernel_nc](
+            counter_t,
+            grid_dim=(1,),
+            block_dim=(1,),
+        )
 
         # Generate noise
+        @parameter
         @always_inline
         def gen_noise_nc(
             np: LayoutTensor[
@@ -552,10 +645,12 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
             nq: LayoutTensor[
                 dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
             ],
-            base_seed: Scalar[DType.uint64],
+            counter: LayoutTensor[
+                DType.uint32, Layout.row_major(1), MutAnyOrigin
+            ],
         ):
             var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
-            var bs = UInt64(base_seed)
+            var bs = UInt64(counter.ptr[0]) * UInt64(2654435761)
             if tid < Self.in_dim:
                 var rng = PhiloxRandom(
                     seed=bs + UInt64(tid),
@@ -588,16 +683,16 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
                 nq[tid] = -sg if gauss < 0 else sg
 
         comptime NOISE_DIM = max(Self.in_dim, Self.out_dim)
-        var seed_nc_s = Scalar[DType.uint64](seed_base_nc)
         ctx.enqueue_function[gen_noise_nc, gen_noise_nc](
             noise_p_t,
             noise_q_t,
-            seed_nc_s,
+            counter_t,
             grid_dim=((NOISE_DIM + TPB - 1) // TPB,),
             block_dim=(TPB,),
         )
 
         # Noisy forward
+        @parameter
         @always_inline
         def fwd_noisy_nc_kernel(
             dst: LayoutTensor[
@@ -664,9 +759,12 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         workspace: DeviceBuffer[dtype],
     ) raises:
-        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, workspace)
+        Self.forward_gpu_no_cache[BATCH, dtype](ctx, output, input, params, state, workspace)
 
     # =========================================================================
     # GPU Backward
@@ -686,6 +784,9 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
+        state: LayoutTensor[
+            dtype, Layout.row_major(Self.STATE_SIZE), MutAnyOrigin
+        ],
         cache: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
@@ -699,6 +800,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
         """GPU backward. Kernel 1: grad_input. Kernel 2: param grads."""
 
         # Kernel 1: Compute grad_input — one thread per (batch, in_dim)
+        @parameter
         @always_inline
         def grad_input_kernel(
             gi: LayoutTensor[
@@ -752,6 +854,7 @@ struct NoisyLinear[in_dim: Int, out_dim: Int](Model):
 
         # Kernel 2: Accumulate param grads — one thread per (i, j) pair
         # Each thread loops over batch dimension to accumulate
+        @parameter
         @always_inline
         def param_grad_kernel(
             go: LayoutTensor[

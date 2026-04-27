@@ -13,7 +13,7 @@ from ...constants import (
     MMA_BLOCK_THREADS,
 )
 from ...autodiff.op import DiffOp, OpID
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
@@ -272,16 +272,39 @@ struct Conv2D[
             dtype, Layout.row_major(Self.PARAM_SIZE), ImmutAnyOrigin
         ],
     ):
-        """GPU backward for grad_input. One thread per (batch, input_element).
+        """TileTensor variant of backward_dx_kernel_impl.
+
+        W viewed as 4D (out_channels, in_channels, kernel_size, kernel_size).
+        grad_output as 4D (BATCH, out_channels, out_h, out_w).
+        grad_input as 4D (BATCH, in_channels, in_h, in_w).
         """
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         var total = BATCH * Self.IN_DIM
         if idx >= total:
             return
 
+        var W_4d = TileTensor(
+            params.ptr,
+            row_major[
+                Self.out_channels,
+                Self.in_channels,
+                Self.kernel_size,
+                Self.kernel_size,
+            ](),
+        )
+        var grad_out_4d = TileTensor(
+            grad_output.ptr,
+            row_major[
+                BATCH, Self.out_channels, Self.out_h, Self.out_w
+            ](),
+        )
+        var grad_in_4d = TileTensor(
+            grad_input.ptr,
+            row_major[BATCH, Self.in_channels, Self.in_h, Self.in_w](),
+        )
+
         var b = idx // Self.IN_DIM
         var in_pos = idx % Self.IN_DIM
-
         var c = in_pos // (Self.in_h * Self.in_w)
         var rem = in_pos % (Self.in_h * Self.in_w)
         var ih = rem // Self.in_w
@@ -301,20 +324,12 @@ struct Conv2D[
                     var oh = oh_num // Self.stride
                     var ow = ow_num // Self.stride
                     if oh < Self.out_h and ow < Self.out_w:
-                        var s = oh * Self.out_w + ow
-                        var c_k = (
-                            c * Self.kernel_size * Self.kernel_size
-                            + kh * Self.kernel_size
-                            + kw
-                        )
                         for oc in range(Self.out_channels):
-                            acc += rebind[Scalar[dtype]](
-                                params[oc * Self.col_size + c_k]
-                            ) * rebind[Scalar[dtype]](
-                                grad_output[b, oc * Self.spatial_out + s]
+                            acc += (
+                                W_4d[oc, c, kh, kw] * grad_out_4d[b, oc, oh, ow]
                             )
 
-        grad_input[b, in_pos] = acc
+        grad_in_4d[b, c, ih, iw] = acc
 
     # =========================================================================
     # GPU kernels — tiled forward (Apple 2x2 / NVIDIA MMA)
@@ -338,16 +353,34 @@ struct Conv2D[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        """Tiled forward: output = W @ im2col(input) + bias with implicit im2col.
+        """TileTensor variant of eval_kernel_2x2 — same algorithm, N-d views.
 
-        Matmul: (out_channels, col_size) @ (col_size, spatial_out) per batch.
-        Grid: (ceil(spatial_out/32), ceil(out_channels/32), BATCH)
-        Block: (256, 1)
+        Param/cache/output/input viewed through TileTensor to replace flat
+        index arithmetic with structured N-d indexing.
         """
         comptime BT = 32
         comptime SK = 16
         comptime W_SIZE = Self.out_channels * Self.col_size
         comptime KS2 = Self.kernel_size * Self.kernel_size
+
+        var W = TileTensor(
+            params.ptr, row_major[Self.out_channels, Self.col_size]()
+        )
+        var bias = TileTensor(
+            params.ptr + W_SIZE, row_major[Self.out_channels]()
+        )
+        var input_4d = TileTensor(
+            input.ptr,
+            row_major[BATCH, Self.in_channels, Self.in_h, Self.in_w](),
+        )
+        var cache_3d = TileTensor(
+            cache.ptr,
+            row_major[BATCH, Self.spatial_out, Self.col_size](),
+        )
+        var output_3d = TileTensor(
+            output.ptr,
+            row_major[BATCH, Self.out_channels, Self.spatial_out](),
+        )
 
         var tid = Int(thread_idx.x)
         var sub_r = tid // 16
@@ -388,18 +421,18 @@ struct Conv2D[
             var ga_oc0 = block_oc + a_r0
             var ga_k0 = k_off + a_c0
             if ga_oc0 < Self.out_channels and ga_k0 < Self.col_size:
-                a_smem[a_r0, a_c0] = params[ga_oc0 * Self.col_size + ga_k0]
+                a_smem[a_r0, a_c0] = W[ga_oc0, ga_k0]
             else:
                 a_smem[a_r0, a_c0] = 0
 
             var ga_oc1 = block_oc + a_r1
             var ga_k1 = k_off + a_c1
             if ga_oc1 < Self.out_channels and ga_k1 < Self.col_size:
-                a_smem[a_r1, a_c1] = params[ga_oc1 * Self.col_size + ga_k1]
+                a_smem[a_r1, a_c1] = W[ga_oc1, ga_k1]
             else:
                 a_smem[a_r1, a_c1] = 0
 
-            # Load B tile: im2col[k_off + r, block_s + c] (implicit)
+            # Load B tile (implicit im2col): col[k_off + r, block_s + c]
             var b_r0 = tid // BT
             var b_c0 = tid % BT
             var b_r1 = (tid + 256) // BT
@@ -424,19 +457,14 @@ struct Conv2D[
                     and iw0 >= 0
                     and iw0 < Self.in_w
                 ):
-                    val0 = rebind[Scalar[dtype]](
-                        input[
-                            batch,
-                            ch0 * Self.in_h * Self.in_w + ih0 * Self.in_w + iw0,
-                        ]
-                    )
+                    val0 = input_4d[batch, ch0, ih0, iw0]
             b_smem[b_r0, b_c0] = val0
             if (
                 Int(block_idx.y) == 0
                 and k_idx0 < Self.col_size
                 and s_idx0 < Self.spatial_out
             ):
-                cache[batch, s_idx0 * Self.col_size + k_idx0] = val0
+                cache_3d[batch, s_idx0, k_idx0] = val0
 
             # Element 1
             var k_idx1 = k_off + b_r1
@@ -457,19 +485,14 @@ struct Conv2D[
                     and iw1 >= 0
                     and iw1 < Self.in_w
                 ):
-                    val1 = rebind[Scalar[dtype]](
-                        input[
-                            batch,
-                            ch1 * Self.in_h * Self.in_w + ih1 * Self.in_w + iw1,
-                        ]
-                    )
+                    val1 = input_4d[batch, ch1, ih1, iw1]
             b_smem[b_r1, b_c1] = val1
             if (
                 Int(block_idx.y) == 0
                 and k_idx1 < Self.col_size
                 and s_idx1 < Self.spatial_out
             ):
-                cache[batch, s_idx1 * Self.col_size + k_idx1] = val1
+                cache_3d[batch, s_idx1, k_idx1] = val1
 
             barrier()
 
@@ -486,26 +509,18 @@ struct Conv2D[
 
             barrier()
 
-        # Store with bias
+        # Store with bias — 3D output view, 1D bias view
         var oc0 = block_oc + sub_r * 2
         var s0 = block_s + sub_c * 2
 
         if oc0 < Self.out_channels and s0 < Self.spatial_out:
-            output[batch, oc0 * Self.spatial_out + s0] = acc00 + rebind[
-                Scalar[dtype]
-            ](params[W_SIZE + oc0])
+            output_3d[batch, oc0, s0] = acc00 + bias[oc0]
         if oc0 < Self.out_channels and s0 + 1 < Self.spatial_out:
-            output[batch, oc0 * Self.spatial_out + s0 + 1] = acc01 + rebind[
-                Scalar[dtype]
-            ](params[W_SIZE + oc0])
+            output_3d[batch, oc0, s0 + 1] = acc01 + bias[oc0]
         if oc0 + 1 < Self.out_channels and s0 < Self.spatial_out:
-            output[batch, (oc0 + 1) * Self.spatial_out + s0] = acc10 + rebind[
-                Scalar[dtype]
-            ](params[W_SIZE + oc0 + 1])
+            output_3d[batch, oc0 + 1, s0] = acc10 + bias[oc0 + 1]
         if oc0 + 1 < Self.out_channels and s0 + 1 < Self.spatial_out:
-            output[
-                batch, (oc0 + 1) * Self.spatial_out + s0 + 1
-            ] = acc11 + rebind[Scalar[dtype]](params[W_SIZE + oc0 + 1])
+            output_3d[batch, oc0 + 1, s0 + 1] = acc11 + bias[oc0 + 1]
 
     @always_inline
     @staticmethod
@@ -689,16 +704,23 @@ struct Conv2D[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
         ],
     ):
-        """Tiled backward: dW = sum_b[grad_out_b @ col_b.T].
+        """TileTensor variant of backward_dW_kernel_2x2.
 
-        Matmul: dW(oc, col_k) = A(oc, K) @ B(K, col_k)
-        where K = BATCH * spatial_out, A = grad_output reshaped, B = im2col.T.
-        Grid: (ceil(col_size/32), ceil(out_channels/32))
-        Block: (256, 1)
+        cache viewed as (BATCH, spatial_out, col_size); grad_output as
+        (BATCH, out_channels, spatial_out). dW stays 2D (OC, col_size).
         """
         comptime BT = 32
         comptime SK = 16
         comptime K_TOTAL = BATCH * Self.spatial_out
+
+        var grad_out_3d = TileTensor(
+            grad_output.ptr,
+            row_major[BATCH, Self.out_channels, Self.spatial_out](),
+        )
+        var cache_3d = TileTensor(
+            cache.ptr,
+            row_major[BATCH, Self.spatial_out, Self.col_size](),
+        )
 
         var tid = Int(thread_idx.x)
         var sub_r = tid // 16
@@ -730,8 +752,6 @@ struct Conv2D[
             var k_off = k_tile * SK
 
             # Load A: grad_output reshaped — A[oc, ki]
-            # ki = k_off + col, b_idx = ki // spatial_out, s_idx = ki % spatial_out
-            # A[oc, ki] = grad_output[b_idx, oc * spatial_out + s_idx]
             var a_r0 = tid // SK
             var a_c0 = tid % SK
             var a_r1 = (tid + 256) // SK
@@ -742,9 +762,7 @@ struct Conv2D[
             if g_oc0 < Self.out_channels and ki0 < K_TOTAL:
                 var b0 = ki0 // Self.spatial_out
                 var s0 = ki0 % Self.spatial_out
-                a_smem[a_r0, a_c0] = grad_output[
-                    b0, g_oc0 * Self.spatial_out + s0
-                ]
+                a_smem[a_r0, a_c0] = grad_out_3d[b0, g_oc0, s0]
             else:
                 a_smem[a_r0, a_c0] = 0
 
@@ -753,14 +771,11 @@ struct Conv2D[
             if g_oc1 < Self.out_channels and ki1 < K_TOTAL:
                 var b1 = ki1 // Self.spatial_out
                 var s1 = ki1 % Self.spatial_out
-                a_smem[a_r1, a_c1] = grad_output[
-                    b1, g_oc1 * Self.spatial_out + s1
-                ]
+                a_smem[a_r1, a_c1] = grad_out_3d[b1, g_oc1, s1]
             else:
                 a_smem[a_r1, a_c1] = 0
 
             # Load B: im2col cache — B[ki, col_k]
-            # B[ki, col_k] = cache[b_idx, col_k * spatial_out + s_idx]
             var b_r0 = tid // BT
             var b_c0 = tid % BT
             var b_r1 = (tid + 256) // BT
@@ -771,7 +786,7 @@ struct Conv2D[
             if gk0 < Self.col_size and bki0 < K_TOTAL:
                 var bb0 = bki0 // Self.spatial_out
                 var bs0 = bki0 % Self.spatial_out
-                b_smem[b_r0, b_c0] = cache[bb0, bs0 * Self.col_size + gk0]
+                b_smem[b_r0, b_c0] = cache_3d[bb0, bs0, gk0]
             else:
                 b_smem[b_r0, b_c0] = 0
 
@@ -780,7 +795,7 @@ struct Conv2D[
             if gk1 < Self.col_size and bki1 < K_TOTAL:
                 var bb1 = bki1 // Self.spatial_out
                 var bs1 = bki1 % Self.spatial_out
-                b_smem[b_r1, b_c1] = cache[bb1, bs1 * Self.col_size + gk1]
+                b_smem[b_r1, b_c1] = cache_3d[bb1, bs1, gk1]
             else:
                 b_smem[b_r1, b_c1] = 0
 
@@ -1429,6 +1444,7 @@ struct Conv2D[
             comptime im2col_elems = BATCH * Self.CACHE_SIZE
             comptime im2col_blocks = (im2col_elems + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def im2col_wrapper(
                 cache_out: LayoutTensor[
@@ -1442,6 +1458,16 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
+                var input_4d = TileTensor(
+                    input.ptr,
+                    row_major[
+                        BATCH, Self.in_channels, Self.in_h, Self.in_w
+                    ](),
+                )
+                var cache_3d = TileTensor(
+                    cache_out.ptr,
+                    row_major[BATCH, Self.spatial_out, Self.col_size](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= im2col_elems:
                     return
@@ -1459,12 +1485,8 @@ struct Conv2D[
                 var iw = ow * Self.stride - Self.padding + kw
                 var val: Scalar[dtype] = 0
                 if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
-                    val = rebind[Scalar[dtype]](
-                        input[
-                            b, ch * Self.in_h * Self.in_w + ih * Self.in_w + iw
-                        ]
-                    )
-                cache_out[b, pos] = val
+                    val = input_4d[b, ch, ih, iw]
+                cache_3d[b, s, k] = val
 
             ctx.enqueue_function[im2col_wrapper, im2col_wrapper](
                 cache,
@@ -1494,6 +1516,7 @@ struct Conv2D[
             comptime fwd_grid_x = (Self.out_channels + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime fwd_grid_y = (K_TOTAL + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+            @parameter
             @always_inline
             def fwd_mm_wrapper(
                 out_temp: LayoutTensor[
@@ -1533,6 +1556,7 @@ struct Conv2D[
                 dtype, Layout.row_major(Self.out_channels), ImmutAnyOrigin
             ](params.ptr + Self.out_channels * Self.col_size)
 
+            @parameter
             @always_inline
             def transpose_output_bias_wrapper(
                 output: LayoutTensor[
@@ -1551,6 +1575,21 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
+                var out_temp_3d = TileTensor(
+                    out_temp.ptr,
+                    row_major[
+                        BATCH, Self.spatial_out, Self.out_channels
+                    ](),
+                )
+                var output_3d = TileTensor(
+                    output.ptr,
+                    row_major[
+                        BATCH, Self.out_channels, Self.spatial_out
+                    ](),
+                )
+                var bias_tt = TileTensor(
+                    bias.ptr, row_major[Self.out_channels]()
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= out_elems:
                     return
@@ -1558,9 +1597,7 @@ struct Conv2D[
                 var out_pos = idx % Self.OUT_DIM
                 var oc = out_pos // Self.spatial_out
                 var s = out_pos % Self.spatial_out
-                output[b, out_pos] = rebind[Scalar[dtype]](
-                    out_temp[b * Self.spatial_out + s, oc]
-                ) + rebind[Scalar[dtype]](bias[oc])
+                output_3d[b, oc, s] = out_temp_3d[b, s, oc] + bias_tt[oc]
 
             ctx.enqueue_function[
                 transpose_output_bias_wrapper,
@@ -1573,10 +1610,11 @@ struct Conv2D[
                 block_dim=(TPB,),
             )
         else:
-            # Apple: fused im2col + tiled matmul kernel
+            # Apple: fused im2col + tiled matmul kernel (TileTensor-native)
             comptime grid_x = (Self.spatial_out + 31) // 32
             comptime grid_y = (Self.out_channels + 31) // 32
 
+            @parameter
             @always_inline
             def wrapper(
                 output: LayoutTensor[
@@ -1594,7 +1632,9 @@ struct Conv2D[
                     MutAnyOrigin,
                 ],
             ):
-                Self.eval_kernel_2x2[BATCH, dtype](output, input, params, cache)
+                Self.eval_kernel_2x2[BATCH, dtype](
+                    output, input, params, cache
+                )
 
             ctx.enqueue_function[wrapper, wrapper](
                 output,
@@ -1668,6 +1708,7 @@ struct Conv2D[
             comptime grad_elems = Self.out_channels * K_TOTAL
             comptime grad_blocks = (grad_elems + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def transpose_grad_wrapper(
                 dst: LayoutTensor[
@@ -1681,6 +1722,18 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
+                var src_3d = TileTensor(
+                    src.ptr,
+                    row_major[
+                        BATCH, Self.out_channels, Self.spatial_out
+                    ](),
+                )
+                var dst_3d = TileTensor(
+                    dst.ptr,
+                    row_major[
+                        Self.out_channels, BATCH, Self.spatial_out
+                    ](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= grad_elems:
                     return
@@ -1688,7 +1741,7 @@ struct Conv2D[
                 var bs = idx % K_TOTAL
                 var b = bs // Self.spatial_out
                 var s = bs % Self.spatial_out
-                dst[oc, bs] = src[b, oc * Self.spatial_out + s]
+                dst_3d[oc, b, s] = src_3d[b, oc, s]
 
             ctx.enqueue_function[
                 transpose_grad_wrapper, transpose_grad_wrapper
@@ -1703,6 +1756,7 @@ struct Conv2D[
             comptime dW_grid_x_nv = (Self.col_size + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime dW_grid_y_nv = (Self.out_channels + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+            @parameter
             @always_inline
             def dW_mm_wrapper(
                 dW: LayoutTensor[
@@ -1753,6 +1807,7 @@ struct Conv2D[
             comptime dx_grid_x_nv = (K_TOTAL + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime dx_grid_y_nv = (Self.col_size + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
+            @parameter
             @always_inline
             def dx_mm_wrapper(
                 dcol: LayoutTensor[
@@ -1787,6 +1842,7 @@ struct Conv2D[
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def col2im_gather(
                 grad_input: LayoutTensor[
@@ -1800,6 +1856,18 @@ struct Conv2D[
                     MutAnyOrigin,
                 ],
             ):
+                var dcol_3d = TileTensor(
+                    dcol.ptr,
+                    row_major[
+                        Self.col_size, BATCH, Self.spatial_out
+                    ](),
+                )
+                var grad_in_4d = TileTensor(
+                    grad_input.ptr,
+                    row_major[
+                        BATCH, Self.in_channels, Self.in_h, Self.in_w
+                    ](),
+                )
                 var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
                 if idx >= BATCH * Self.IN_DIM:
                     return
@@ -1830,10 +1898,8 @@ struct Conv2D[
                                     + kh * Self.kernel_size
                                     + kw
                                 )
-                                acc += rebind[Scalar[dtype]](
-                                    dcol[c_k, b * Self.spatial_out + s]
-                                )
-                grad_input[b, in_pos] = acc
+                                acc += dcol_3d[c_k, b, s]
+                grad_in_4d[b, c, ih, iw] = acc
 
             ctx.enqueue_function[col2im_gather, col2im_gather](
                 grad_input,
@@ -1842,10 +1908,11 @@ struct Conv2D[
                 block_dim=(TPB,),
             )
         else:
-            # ── Apple path: dx first, then dW ──
+            # ── Apple path: dx first, then dW (TileTensor-native) ──
             var total_dx = BATCH * Self.IN_DIM
             var grid_dx = (total_dx + TPB - 1) // TPB
 
+            @parameter
             @always_inline
             def dx_wrapper(
                 grad_input: LayoutTensor[
@@ -1875,6 +1942,7 @@ struct Conv2D[
             comptime dW_grid_x = (Self.col_size + 31) // 32
             comptime dW_grid_y = (Self.out_channels + 31) // 32
 
+            @parameter
             @always_inline
             def dW_wrapper(
                 dW: LayoutTensor[
@@ -1893,7 +1961,9 @@ struct Conv2D[
                     ImmutAnyOrigin,
                 ],
             ):
-                Self.backward_dW_kernel_2x2[BATCH, dtype](dW, cache, grad_output)
+                Self.backward_dW_kernel_2x2[BATCH, dtype](
+                    dW, cache, grad_output
+                )
 
             ctx.enqueue_function[dW_wrapper, dW_wrapper](
                 dW,
@@ -1909,6 +1979,7 @@ struct Conv2D[
         ](grad_params.ptr + Self.out_channels * Self.col_size)
 
         # Grid: one block per output channel, TPB threads reduce across BATCH
+        @parameter
         @always_inline
         def db_wrapper(
             db: LayoutTensor[
@@ -1926,3 +1997,4 @@ struct Conv2D[
             grid_dim=(Self.out_channels,),
             block_dim=(TPB,),
         )
+
