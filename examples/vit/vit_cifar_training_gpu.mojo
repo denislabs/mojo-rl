@@ -68,8 +68,11 @@ comptime BETA1 = 0.9
 comptime BETA2 = 0.999             # vision: canonical 0.999 (vs 0.95 for LM)
 comptime WD = 0.05
 
-# 50k train images / 128 batch = 391 iters/epoch. 50 epochs ≈ 19500 steps.
-comptime EPOCHS = 50
+# 50k train images / 128 batch = 391 iters/epoch. 100 epochs ≈ 39000 steps.
+# Cosine spans the full window (post-warmup), so doubling EPOCHS doesn't just
+# add tail steps at lr_scale=0.1 — it stretches the whole schedule, giving
+# the model ~2× more time at lr_scale > 0.5.
+comptime EPOCHS = 100
 comptime WARMUP_EPOCHS = 5         # ~5 epochs of linear warmup
 # Per-epoch eval over the test set; the Trainer's `N_VAL_BATCHES =
 # N_VAL // BATCH` slicing drops the final partial batch automatically
