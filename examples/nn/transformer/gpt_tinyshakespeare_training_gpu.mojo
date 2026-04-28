@@ -83,12 +83,19 @@ comptime GRAD_CLIP = 1.0     # max-abs clip on params grads each step
 #     that overflows the Apple linker; pre-sampling already gives random
 #     starting positions, so within-epoch order doesn't add much).
 #   N_VAL_WINDOWS = held-out validation windows.
-#   Total steps ≈ EPOCHS × (N_TRAIN_WINDOWS / BATCH). Default sized for
-#   ~20 k steps (40 × 512 = 20 480), matching the previous step-based recipe.
-comptime N_TRAIN_WINDOWS = 8192
+#   Total steps ≈ EPOCHS × (N_TRAIN_WINDOWS / BATCH).
+#
+# Sized to ~20 k steps (10 × 2048 = 20 480) but with 4× more unique windows
+# than the original recipe — each window now appears 10× during training
+# instead of 40×, reducing the overfit-to-fixed-corpus failure mode that
+# made the previous run report low val loss + degenerate samples.
+# Memory: 32768 × 256 × 65 × 4 B ≈ 2.2 GB train_inp + 2.2 GB train_tgt
+# on device; same again on host during upload. Fits comfortably on a 24 GB
+# 4090. If host RAM is tight, dial both down by 2× (16384 × 20).
+comptime N_TRAIN_WINDOWS = 32768
 comptime N_VAL_WINDOWS = 256          # 16 batches × BATCH=16
-comptime EPOCHS = 40
-comptime WARMUP_EPOCHS = 1            # ≈ 1 epoch of linear warmup, then cosine
+comptime EPOCHS = 10
+comptime WARMUP_EPOCHS = 1            # 1 epoch of linear warmup, then cosine
 
 comptime N_TRAIN_BATCHES = N_TRAIN_WINDOWS // BATCH
 comptime N_VAL_BATCHES = N_VAL_WINDOWS // BATCH
