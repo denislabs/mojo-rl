@@ -24,7 +24,15 @@ from std.math import abs
 from std.sys import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model import Model, Linear
+from mojo_rl.nn.model import (
+    Model,
+    Linear,
+    LinearReLU,
+    LinearTanh,
+    LinearSigmoid,
+    LinearMish,
+    LinearSwish,
+)
 from mojo_rl.nn.autodiff import MatMul, AutoFused, BiasAdd
 
 
@@ -430,6 +438,58 @@ def main() raises:
         Linear[256, 17, USE_MAX_KERNELS=True],
         BS=128,
     ](ctx, "Linear[256,17] BS=128 (HalfCheetah action head)")
+
+    # ── Phase 2: Linear + activation (FusedMatMulBiasActivation) ─
+    print("--- LinearReLU (Fused M+B+ReLU) ---")
+    total_fails += parity_check[
+        LinearReLU[27, 64, USE_MAX_KERNELS=False],
+        LinearReLU[27, 64, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "LinearReLU[27,64] BS=16 (TTT trunk layer 1)")
+
+    total_fails += parity_check[
+        LinearReLU[64, 64, USE_MAX_KERNELS=False],
+        LinearReLU[64, 64, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "LinearReLU[64,64] BS=16 (TTT trunk layer 2 close approx)")
+
+    total_fails += parity_check[
+        LinearReLU[256, 256, USE_MAX_KERNELS=False],
+        LinearReLU[256, 256, USE_MAX_KERNELS=True],
+        BS=128,
+    ](ctx, "LinearReLU[256,256] BS=128 (RL agent hidden)")
+
+    print("--- LinearTanh (Fused M+B+Tanh) ---")
+    total_fails += parity_check[
+        LinearTanh[64, 64, USE_MAX_KERNELS=False],
+        LinearTanh[64, 64, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "LinearTanh[64,64] BS=16")
+
+    total_fails += parity_check[
+        LinearTanh[256, 17, USE_MAX_KERNELS=False],
+        LinearTanh[256, 17, USE_MAX_KERNELS=True],
+        BS=128,
+    ](ctx, "LinearTanh[256,17] BS=128 (HalfCheetah continuous actor)")
+
+    print("--- LinearSigmoid / LinearMish / LinearSwish ---")
+    total_fails += parity_check[
+        LinearSigmoid[64, 32, USE_MAX_KERNELS=False],
+        LinearSigmoid[64, 32, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "LinearSigmoid[64,32] BS=16")
+
+    total_fails += parity_check[
+        LinearMish[128, 128, USE_MAX_KERNELS=False],
+        LinearMish[128, 128, USE_MAX_KERNELS=True],
+        BS=32,
+    ](ctx, "LinearMish[128,128] BS=32 (TDMPC2-ish)")
+
+    total_fails += parity_check[
+        LinearSwish[128, 128, USE_MAX_KERNELS=False],
+        LinearSwish[128, 128, USE_MAX_KERNELS=True],
+        BS=32,
+    ](ctx, "LinearSwish[128,128] BS=32 (MBPO actor)")
 
     print("======================================================")
     if total_fails == 0:
