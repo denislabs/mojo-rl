@@ -350,6 +350,39 @@ def main() raises:
         BS=2,
     ](ctx, "Attn[dim=384, heads=6, seq=64, non-causal] BS=2")
 
+    # ── head_dim=128 — exercises bmm's Ampere multistage GEMM path ─
+    # Bmm dispatch on Ampere+ requires a_k % 32 == 0, a_k >= 128, c_n % 128
+    # == 0. With dim=512, heads=4, seq=128: head_dim=128, both QK (a_k=128,
+    # c_n=128) and AV (a_k=128, c_n=128) hit the multistage kernel.
+    print("--- Attention (head_dim=128, multistage GEMM path) ---")
+    total_fails += parity_check[
+        AutoFused[
+            ScaledDotProductAttention[
+                512, 4, 128, causal=False, USE_MAX_KERNELS=False
+            ]
+        ],
+        AutoFused[
+            ScaledDotProductAttention[
+                512, 4, 128, causal=False, USE_MAX_KERNELS=True
+            ]
+        ],
+        BS=2,
+    ](ctx, "Attn[dim=512, heads=4, seq=128, non-causal] BS=2 (head_dim=128)")
+
+    total_fails += parity_check[
+        AutoFused[
+            ScaledDotProductAttention[
+                512, 4, 128, causal=True, USE_MAX_KERNELS=False
+            ]
+        ],
+        AutoFused[
+            ScaledDotProductAttention[
+                512, 4, 128, causal=True, USE_MAX_KERNELS=True
+            ]
+        ],
+        BS=2,
+    ](ctx, "Attn[dim=512, heads=4, seq=128, causal] BS=2 (head_dim=128)")
+
     print("======================================================")
     if total_fails == 0:
         print("=== USE_MAX_KERNELS parity (attention): ALL PASS ===")

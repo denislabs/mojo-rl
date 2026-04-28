@@ -1310,6 +1310,12 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ](cache.ptr)
 
+        comptime if Self.USE_MAX_KERNELS and has_nvidia_gpu_accelerator():
+            Self._vjp_gpu_bmm[BATCH, dtype](
+                ctx, go_immut, grad_input, cache_immut
+            )
+            return
+
         # B0: zero grad_input.
         @parameter
         @always_inline
@@ -1396,5 +1402,445 @@ struct ScaledDotProductAttention[
             grad_input,
             cache_immut,
             grid_dim=(BATCH * Self.n_heads,),
+            block_dim=(TPB,),
+        )
+
+    # =========================================================================
+    # GPU vjp — bmm path (NVIDIA, USE_MAX_KERNELS=True)
+    # =========================================================================
+    # Pipeline (9 launches, regardless of BATCH/n_heads):
+    #   1. pack_in:    grad_output + cache.{Q,K,V} → packed dout/Q/K/V (BH, seq, d)
+    #   2. bmm[t_b]:   dattn = dout @ V^T,                shape (BH, seq, seq)
+    #   3. softmax_jvp: dscore = scale * a * (dattn - sum_k a_k * dattn_k);
+    #                   reads cache.attn (per-sample-strided), writes contiguous.
+    #   4. transpose:  attn_T[bh, j, i] = cache.attn[bh, i, j]
+    #   5. bmm:        dV = attn_T @ dout,                shape (BH, seq, d)
+    #   6. transpose:  dscore_T[bh, j, i] = dscore[bh, i, j]
+    #   7. bmm:        dK = dscore_T @ Q,                 shape (BH, seq, d)
+    #   8. bmm:        dQ = dscore @ K,                   shape (BH, seq, d)
+    #   9. unpack_out: dQ/dK/dV → grad_input ([Q_grad | K_grad | V_grad] per
+    #                  sample, with per-head reshape).
+    # Causal: handled implicitly because cache.attn[i, j] = 0 for j > i, so
+    # the softmax_jvp kernel naturally produces dscore[i, j] = 0 there.
+    @staticmethod
+    def _vjp_gpu_bmm[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        grad_output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+        ],
+        mut grad_input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+        ],
+    ) raises:
+        comptime BH = BATCH * Self.n_heads
+        comptime PACKED_QKV_SIZE = BATCH * Self.seq_len * Self.dim
+        comptime SCORES_SIZE = BH * Self.seq_len * Self.seq_len
+
+        # Scratch buffers (10 of them — released after the backward returns).
+        var packed_dout_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var packed_q_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var packed_k_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var packed_v_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var dattn_buf = ctx.enqueue_create_buffer[dtype](SCORES_SIZE)
+        var dscore_buf = ctx.enqueue_create_buffer[dtype](SCORES_SIZE)
+        # attn_T then dscore_T — buffer reused after step 5.
+        var attn_T_buf = ctx.enqueue_create_buffer[dtype](SCORES_SIZE)
+        var dQ_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var dK_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var dV_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+
+        # ── 1. Pack: grad_output → dout_packed; cache.{Q,K,V} → packed_Q/K/V.
+        comptime pack_elems = BATCH * Self.seq_len * Self.dim
+        comptime pack_blocks = (pack_elems + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def pack_in_wrapper(
+            packed_dout: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+            ],
+            packed_q: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+            ],
+            packed_k: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+            ],
+            packed_v: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+            ],
+            grad_output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= pack_elems:
+                return
+            var hd = Self.head_dim
+            var d = idx % hd
+            var rem = idx // hd
+            var h = rem % Self.n_heads
+            var rem2 = rem // Self.n_heads
+            var t = rem2 % Self.seq_len
+            var b = rem2 // Self.seq_len
+
+            var col_in_dim = h * hd + d
+
+            var go_idx = b * Self.OUT_DIM + t * Self.dim + col_in_dim
+            var c_q = b * Self.CACHE_SIZE + t * Self.dim + col_in_dim
+            var c_k = (
+                b * Self.CACHE_SIZE
+                + Self._k_offset()
+                + t * Self.dim
+                + col_in_dim
+            )
+            var c_v = (
+                b * Self.CACHE_SIZE
+                + Self._v_offset()
+                + t * Self.dim
+                + col_in_dim
+            )
+
+            var bh = b * Self.n_heads + h
+            var packed_idx = bh * Self.seq_len * hd + t * hd + d
+
+            packed_dout.ptr[packed_idx] = grad_output.ptr[go_idx]
+            packed_q.ptr[packed_idx] = rebind[Scalar[dtype]](cache.ptr[c_q])
+            packed_k.ptr[packed_idx] = rebind[Scalar[dtype]](cache.ptr[c_k])
+            packed_v.ptr[packed_idx] = rebind[Scalar[dtype]](cache.ptr[c_v])
+
+        var packed_dout_lt = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+        ](packed_dout_buf.unsafe_ptr())
+        var packed_q_lt = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+        ](packed_q_buf.unsafe_ptr())
+        var packed_k_lt = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+        ](packed_k_buf.unsafe_ptr())
+        var packed_v_lt = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+        ](packed_v_buf.unsafe_ptr())
+
+        ctx.enqueue_function[pack_in_wrapper, pack_in_wrapper](
+            packed_dout_lt,
+            packed_q_lt,
+            packed_k_lt,
+            packed_v_lt,
+            grad_output,
+            cache,
+            grid_dim=(pack_blocks,),
+            block_dim=(TPB,),
+        )
+
+        # ── 2. bmm[transpose_b]: dattn = dout @ V^T.
+        var packed_dout_tt = TileTensor(
+            packed_dout_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        var packed_q_tt = TileTensor(
+            packed_q_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        var packed_k_tt = TileTensor(
+            packed_k_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        var packed_v_tt = TileTensor(
+            packed_v_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        var dattn_tt = TileTensor(
+            dattn_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.seq_len](),
+        )
+        batched_matmul[transpose_b=True, target="gpu"](
+            dattn_tt,
+            packed_dout_tt,
+            packed_v_tt,
+            context=DeviceContextPtr(ctx),
+        )
+
+        # ── 3. Softmax JVP: dscore = scale * a * (dattn - sum_k a_k * dattn_k).
+        # Reads cache.attn (per-sample-strided), reads dattn (contiguous),
+        # writes dscore (contiguous). For causal: cache.attn[i, j] = 0 for j > i,
+        # so dscore[i, j] is naturally 0 there — no explicit masking needed.
+        var scale = Scalar[dtype](Float32(1.0) / sqrt(Float32(Self.head_dim)))
+
+        @parameter
+        @always_inline
+        def softmax_jvp_wrapper(
+            dscore: LayoutTensor[
+                dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
+            ],
+            dattn: LayoutTensor[
+                dtype, Layout.row_major(SCORES_SIZE), ImmutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+            ],
+            scale_v: Scalar[dtype],
+        ):
+            comptime assert dtype.is_floating_point(), "dtype must be floating point"
+            # 1 block per (b, h); threads stride over rows i.
+            var blk = Int(block_idx.x)
+            if blk >= BH:
+                return
+            var b = blk // Self.n_heads
+            var h = blk % Self.n_heads
+            var tid = Int(thread_idx.x)
+            var bs = Int(block_dim.x)
+
+            var bh_off = blk * Self.seq_len * Self.seq_len
+            var cache_attn_base = (
+                b * Self.CACHE_SIZE
+                + Self._attn_cache_offset()
+                + h * Self.seq_len * Self.seq_len
+            )
+
+            var i = tid
+            while i < Self.seq_len:
+                var row_off = bh_off + i * Self.seq_len
+                var cache_row_off = cache_attn_base + i * Self.seq_len
+
+                # First pass: compute sum_k a_k * dattn_k for this row.
+                var s = Scalar[dtype](0)
+                for j in range(Self.seq_len):
+                    var a = rebind[Scalar[dtype]](
+                        cache.ptr[cache_row_off + j]
+                    )
+                    var d_a = rebind[Scalar[dtype]](dattn.ptr[row_off + j])
+                    s += a * d_a
+
+                # Second pass: dscore[j] = scale * a[j] * (dattn[j] - s).
+                for j in range(Self.seq_len):
+                    var a = rebind[Scalar[dtype]](
+                        cache.ptr[cache_row_off + j]
+                    )
+                    var d_a = rebind[Scalar[dtype]](dattn.ptr[row_off + j])
+                    dscore.ptr[row_off + j] = scale_v * a * (d_a - s)
+
+                i += bs
+
+        var dattn_lt = LayoutTensor[
+            dtype, Layout.row_major(SCORES_SIZE), ImmutAnyOrigin
+        ](dattn_buf.unsafe_ptr())
+        var dscore_lt = LayoutTensor[
+            dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
+        ](dscore_buf.unsafe_ptr())
+
+        ctx.enqueue_function[softmax_jvp_wrapper, softmax_jvp_wrapper](
+            dscore_lt,
+            dattn_lt,
+            cache,
+            scale,
+            grid_dim=(BH,),
+            block_dim=(TPB,),
+        )
+
+        # ── 4. Transpose attn from cache → attn_T_packed (BH, seq, seq).
+        comptime transpose_elems = BH * Self.seq_len * Self.seq_len
+        comptime transpose_blocks = (transpose_elems + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def transpose_attn_wrapper(
+            attn_T: LayoutTensor[
+                dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= transpose_elems:
+                return
+            # idx unrolls (bh, j, i) over BH × seq × seq → write attn_T[bh, j, i]
+            var i = idx % Self.seq_len
+            var rem = idx // Self.seq_len
+            var j = rem % Self.seq_len
+            var bh = rem // Self.seq_len
+            var b = bh // Self.n_heads
+            var h = bh % Self.n_heads
+            var src = (
+                b * Self.CACHE_SIZE
+                + Self._attn_cache_offset()
+                + h * Self.seq_len * Self.seq_len
+                + i * Self.seq_len
+                + j
+            )
+            var dst = bh * Self.seq_len * Self.seq_len + j * Self.seq_len + i
+            attn_T.ptr[dst] = rebind[Scalar[dtype]](cache.ptr[src])
+
+        var attn_T_lt = LayoutTensor[
+            dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
+        ](attn_T_buf.unsafe_ptr())
+
+        ctx.enqueue_function[transpose_attn_wrapper, transpose_attn_wrapper](
+            attn_T_lt,
+            cache,
+            grid_dim=(transpose_blocks,),
+            block_dim=(TPB,),
+        )
+
+        # ── 5. bmm: dV = attn_T @ dout.
+        var attn_T_tt = TileTensor(
+            attn_T_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.seq_len](),
+        )
+        var dV_tt = TileTensor(
+            dV_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        batched_matmul[target="gpu"](
+            dV_tt,
+            attn_T_tt,
+            packed_dout_tt,
+            context=DeviceContextPtr(ctx),
+        )
+
+        # ── 6. Transpose dscore in-place into the (now-free) attn_T buffer.
+        @parameter
+        @always_inline
+        def transpose_dscore_wrapper(
+            dscore_T: LayoutTensor[
+                dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
+            ],
+            dscore: LayoutTensor[
+                dtype, Layout.row_major(SCORES_SIZE), ImmutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= transpose_elems:
+                return
+            var i = idx % Self.seq_len
+            var rem = idx // Self.seq_len
+            var j = rem % Self.seq_len
+            var bh = rem // Self.seq_len
+            var src = bh * Self.seq_len * Self.seq_len + i * Self.seq_len + j
+            var dst = bh * Self.seq_len * Self.seq_len + j * Self.seq_len + i
+            dscore_T.ptr[dst] = rebind[Scalar[dtype]](dscore.ptr[src])
+
+        var dscore_immut = LayoutTensor[
+            dtype, Layout.row_major(SCORES_SIZE), ImmutAnyOrigin
+        ](dscore_buf.unsafe_ptr())
+
+        ctx.enqueue_function[
+            transpose_dscore_wrapper, transpose_dscore_wrapper
+        ](
+            attn_T_lt,  # reused for dscore_T
+            dscore_immut,
+            grid_dim=(transpose_blocks,),
+            block_dim=(TPB,),
+        )
+
+        # ── 7. bmm: dK = dscore_T @ Q.
+        var dscore_T_tt = TileTensor(
+            attn_T_buf.unsafe_ptr(),  # same buffer
+            row_major[BH, Self.seq_len, Self.seq_len](),
+        )
+        var dK_tt = TileTensor(
+            dK_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        batched_matmul[target="gpu"](
+            dK_tt,
+            dscore_T_tt,
+            packed_q_tt,
+            context=DeviceContextPtr(ctx),
+        )
+
+        # ── 8. bmm: dQ = dscore @ K.
+        var dscore_tt = TileTensor(
+            dscore_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.seq_len](),
+        )
+        var dQ_tt = TileTensor(
+            dQ_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        batched_matmul[target="gpu"](
+            dQ_tt,
+            dscore_tt,
+            packed_k_tt,
+            context=DeviceContextPtr(ctx),
+        )
+
+        # ── 9. Unpack: dQ/dK/dV → grad_input ([Q_grad | K_grad | V_grad] per
+        # sample, with per-head reshape).
+        comptime unpack_blocks = (pack_elems + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def unpack_grad_wrapper(
+            grad_input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+            ],
+            dQ: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), ImmutAnyOrigin
+            ],
+            dK: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), ImmutAnyOrigin
+            ],
+            dV: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), ImmutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= pack_elems:
+                return
+            var hd = Self.head_dim
+            var d = idx % hd
+            var rem = idx // hd
+            var h = rem % Self.n_heads
+            var rem2 = rem // Self.n_heads
+            var t = rem2 % Self.seq_len
+            var b = rem2 // Self.seq_len
+
+            var col_in_dim = h * hd + d
+            var bh = b * Self.n_heads + h
+            var packed_idx = bh * Self.seq_len * hd + t * hd + d
+
+            var gi_q = b * Self.IN_DIM + t * Self.dim + col_in_dim
+            var gi_k = (
+                b * Self.IN_DIM
+                + Self._k_offset()
+                + t * Self.dim
+                + col_in_dim
+            )
+            var gi_v = (
+                b * Self.IN_DIM
+                + Self._v_offset()
+                + t * Self.dim
+                + col_in_dim
+            )
+
+            grad_input.ptr[gi_q] = rebind[Scalar[dtype]](dQ.ptr[packed_idx])
+            grad_input.ptr[gi_k] = rebind[Scalar[dtype]](dK.ptr[packed_idx])
+            grad_input.ptr[gi_v] = rebind[Scalar[dtype]](dV.ptr[packed_idx])
+
+        var dQ_immut = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), ImmutAnyOrigin
+        ](dQ_buf.unsafe_ptr())
+        var dK_immut = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), ImmutAnyOrigin
+        ](dK_buf.unsafe_ptr())
+        var dV_immut = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), ImmutAnyOrigin
+        ](dV_buf.unsafe_ptr())
+
+        ctx.enqueue_function[unpack_grad_wrapper, unpack_grad_wrapper](
+            grad_input,
+            dQ_immut,
+            dK_immut,
+            dV_immut,
+            grid_dim=(unpack_blocks,),
             block_dim=(TPB,),
         )
