@@ -1252,11 +1252,18 @@ struct GenericAlphaZeroAgent[
                             tmax = tp
                     target_entropy_sum += tent
                     target_max_sum += tmax
+                var target_entropy_mean = target_entropy_sum / n
                 self.logger[].log_scalar(
-                    "target_entropy", target_entropy_sum / n, step
+                    "target_entropy", target_entropy_mean, step
                 )
                 self.logger[].log_scalar(
                     "target_max_prob", target_max_sum / n, step
+                )
+                # KL gap = CE - entropy(target). Real fit-quality metric.
+                self.logger[].log_scalar(
+                    "policy_ce_minus_target_entropy",
+                    pl - target_entropy_mean,
+                    step,
                 )
 
                 # Gradient diagnostics: reuse pre-allocated buffers
@@ -1630,11 +1637,20 @@ struct GenericAlphaZeroAgent[
                         tmax = tp
                 target_entropy_sum += tent
                 target_max_sum += tmax
+            var target_entropy_mean = target_entropy_sum / n
             self.logger[].log_scalar(
-                "target_entropy", target_entropy_sum / n, step
+                "target_entropy", target_entropy_mean, step
             )
             self.logger[].log_scalar(
                 "target_max_prob", target_max_sum / n, step
+            )
+            # KL divergence to targets — the real fit-quality metric.
+            # CE = entropy(target) + KL(target ‖ pred); rising CE is only a
+            # bug if this gap rises.
+            self.logger[].log_scalar(
+                "policy_ce_minus_target_entropy",
+                pl - target_entropy_mean,
+                step,
             )
 
             # Gradient diagnostics
