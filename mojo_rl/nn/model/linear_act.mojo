@@ -28,24 +28,59 @@ comptime Linear[
     USE_MAX_KERNELS=USE_MAX_KERNELS,
 ]
 
-comptime LinearReLU[in_dim: Int, out_dim: Int] = AutoFused[
-    MatMul[in_dim, out_dim], BiasAdd[out_dim], ReLUOp[out_dim]
+comptime LinearReLU[
+    in_dim: Int,
+    out_dim: Int,
+    USE_MAX_KERNELS: Bool = False,
+] = AutoFused[
+    MatMul[in_dim, out_dim, USE_MAX_KERNELS],
+    BiasAdd[out_dim],
+    ReLUOp[out_dim],
+    USE_MAX_KERNELS=USE_MAX_KERNELS,
 ]
 
-comptime LinearTanh[in_dim: Int, out_dim: Int] = AutoFused[
-    MatMul[in_dim, out_dim], BiasAdd[out_dim], TanhOp[out_dim]
+comptime LinearTanh[
+    in_dim: Int,
+    out_dim: Int,
+    USE_MAX_KERNELS: Bool = False,
+] = AutoFused[
+    MatMul[in_dim, out_dim, USE_MAX_KERNELS],
+    BiasAdd[out_dim],
+    TanhOp[out_dim],
+    USE_MAX_KERNELS=USE_MAX_KERNELS,
 ]
 
-comptime LinearSigmoid[in_dim: Int, out_dim: Int] = AutoFused[
-    MatMul[in_dim, out_dim], BiasAdd[out_dim], SigmoidOp[out_dim]
+comptime LinearSigmoid[
+    in_dim: Int,
+    out_dim: Int,
+    USE_MAX_KERNELS: Bool = False,
+] = AutoFused[
+    MatMul[in_dim, out_dim, USE_MAX_KERNELS],
+    BiasAdd[out_dim],
+    SigmoidOp[out_dim],
+    USE_MAX_KERNELS=USE_MAX_KERNELS,
 ]
 
-comptime LinearMish[in_dim: Int, out_dim: Int] = AutoFused[
-    MatMul[in_dim, out_dim], BiasAdd[out_dim], MishOp[out_dim]
+comptime LinearMish[
+    in_dim: Int,
+    out_dim: Int,
+    USE_MAX_KERNELS: Bool = False,
+] = AutoFused[
+    MatMul[in_dim, out_dim, USE_MAX_KERNELS],
+    BiasAdd[out_dim],
+    MishOp[out_dim],
+    USE_MAX_KERNELS=USE_MAX_KERNELS,
 ]
 
-comptime LinearSwish[in_dim: Int, out_dim: Int] = AutoFused[
-    MatMul[in_dim, out_dim], BiasAdd[out_dim], SwishOp[out_dim]
+comptime LinearSwish[
+    in_dim: Int,
+    out_dim: Int,
+    USE_MAX_KERNELS: Bool = False,
+] = AutoFused[
+    MatMul[in_dim, out_dim, USE_MAX_KERNELS],
+    BiasAdd[out_dim],
+    SwishOp[out_dim],
+    USE_MAX_KERNELS=USE_MAX_KERNELS,
 ]
 
 # NoisyLinear compositions (using Sequential since NoisyLinear is a Model, not DiffOp)

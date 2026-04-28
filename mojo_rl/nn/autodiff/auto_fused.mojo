@@ -258,23 +258,23 @@ def _auto_fused_forward[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](final_out_ptr)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation].eval[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS].eval[
                         BATCH
                     ](in_v, out_v, p_v, c_v)
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, TanhActivation].eval[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS].eval[
                         BATCH
                     ](in_v, out_v, p_v, c_v)
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].eval[BATCH](in_v, out_v, p_v, c_v)
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SwishActivation
+                        G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS
                     ].eval[BATCH](in_v, out_v, p_v, c_v)
                 else:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation].eval[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation, USE_MAX_KERNELS].eval[
                         BATCH
                     ](in_v, out_v, p_v, c_v)
             else:
@@ -282,23 +282,23 @@ def _auto_fused_forward[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](inter_ptr + BATCH * inter_off)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation].eval[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS].eval[
                         BATCH
                     ](in_v, out_v, p_v, c_v)
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, TanhActivation].eval[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS].eval[
                         BATCH
                     ](in_v, out_v, p_v, c_v)
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].eval[BATCH](in_v, out_v, p_v, c_v)
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SwishActivation
+                        G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS
                     ].eval[BATCH](in_v, out_v, p_v, c_v)
                 else:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation].eval[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation, USE_MAX_KERNELS].eval[
                         BATCH
                     ](in_v, out_v, p_v, c_v)
                 _auto_fused_forward[
@@ -556,23 +556,23 @@ def _auto_fused_backward[
                     dtype, Layout.row_major(FPS), MutAnyOrigin
                 ](grads_ptr + param_off)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation].vjp[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS].vjp[
                         BATCH
                     ](go_v, gi_v, p_v, c_v, g_v)
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, TanhActivation].vjp[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS].vjp[
                         BATCH
                     ](go_v, gi_v, p_v, c_v, g_v)
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].vjp[BATCH](go_v, gi_v, p_v, c_v, g_v)
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, SwishActivation].vjp[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS].vjp[
                         BATCH
                     ](go_v, gi_v, p_v, c_v, g_v)
                 else:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation].vjp[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation, USE_MAX_KERNELS].vjp[
                         BATCH
                     ](go_v, gi_v, p_v, c_v, g_v)
             else:
@@ -612,23 +612,23 @@ def _auto_fused_backward[
                     dtype, Layout.row_major(FPS), MutAnyOrigin
                 ](grads_ptr + param_off)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation].vjp[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS].vjp[
                         BATCH
                     ](go_v, gi_v, p_v, c_v, g_v)
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, TanhActivation].vjp[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS].vjp[
                         BATCH
                     ](go_v, gi_v, p_v, c_v, g_v)
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].vjp[BATCH](go_v, gi_v, p_v, c_v, g_v)
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, SwishActivation].vjp[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS].vjp[
                         BATCH
                     ](go_v, gi_v, p_v, c_v, g_v)
                 else:
-                    FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation].vjp[
+                    FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation, USE_MAX_KERNELS].vjp[
                         BATCH
                     ](go_v, gi_v, p_v, c_v, g_v)
         elif (
@@ -902,23 +902,23 @@ def _auto_fused_forward_gpu[
                 ](final_out_ptr)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, ReLUActivation
+                        G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, TanhActivation
+                        G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SwishActivation
+                        G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 else:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, MishActivation
+                        G_IN, G_OUT, MishActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
             else:
                 var out_v = LayoutTensor[
@@ -926,23 +926,23 @@ def _auto_fused_forward_gpu[
                 ](ws_ptr + BATCH * inter_off)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, ReLUActivation
+                        G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, TanhActivation
+                        G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SwishActivation
+                        G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 else:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, MishActivation
+                        G_IN, G_OUT, MishActivation, USE_MAX_KERNELS
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 _auto_fused_forward_gpu[
                     BATCH,
@@ -1135,7 +1135,11 @@ def _auto_fused_forward_gpu[
 
 
 def _auto_fused_forward_gpu_on_stream[
-    BATCH: Int, *OPS: DiffOp, START: Int = 0, dtype: DType = DType.float32
+    BATCH: Int,
+    *OPS: DiffOp,
+    START: Int = 0,
+    dtype: DType = DType.float32,
+    USE_MAX_KERNELS: Bool = False,
 ](
     ctx: DeviceContext,
     stream: DeviceStream,
@@ -1182,31 +1186,31 @@ def _auto_fused_forward_gpu_on_stream[
                 ](final_out_ptr)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, ReLUActivation
+                        G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, TanhActivation
+                        G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SwishActivation
+                        G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 else:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, MishActivation
+                        G_IN, G_OUT, MishActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
@@ -1216,35 +1220,41 @@ def _auto_fused_forward_gpu_on_stream[
                 ](ws_ptr + BATCH * inter_off)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, ReLUActivation
+                        G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, TanhActivation
+                        G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SwishActivation
+                        G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
                 else:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, MishActivation
+                        G_IN, G_OUT, MishActivation, USE_MAX_KERNELS
                     ].eval_gpu_on_stream[BATCH, dtype](
                         ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                     )
-                _auto_fused_forward_gpu_on_stream[BATCH, *OPS, START=START + 3, dtype=dtype](
+                _auto_fused_forward_gpu_on_stream[
+                    BATCH,
+                    *OPS,
+                    START=START + 3,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     ctx,
                     stream,
                     ws_ptr + BATCH * inter_off,
@@ -1278,18 +1288,24 @@ def _auto_fused_forward_gpu_on_stream[
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](final_out_ptr)
-                FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH, dtype](
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].eval_gpu_on_stream[BATCH, dtype](
                     ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                 )
             else:
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](ws_ptr + BATCH * inter_off)
-                FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH, dtype](
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].eval_gpu_on_stream[BATCH, dtype](
                     ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
                 )
                 comptime assert (OPS.size - START) >= 2
-                _auto_fused_forward_gpu_on_stream[BATCH, *OPS, START=START + 2, dtype=dtype](
+                _auto_fused_forward_gpu_on_stream[
+                    BATCH,
+                    *OPS,
+                    START=START + 2,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     ctx,
                     stream,
                     ws_ptr + BATCH * inter_off,
@@ -1328,7 +1344,13 @@ def _auto_fused_forward_gpu_on_stream[
                 ](ws_ptr + BATCH * inter_off)
                 OPS[START].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 comptime assert (OPS.size - START) >= 1
-                _auto_fused_forward_gpu_on_stream[BATCH, *OPS, START=START + 1, dtype=dtype](
+                _auto_fused_forward_gpu_on_stream[
+                    BATCH,
+                    *OPS,
+                    START=START + 1,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     ctx,
                     stream,
                     ws_ptr + BATCH * inter_off,
@@ -1363,7 +1385,7 @@ def _auto_fused_forward_gpu_on_stream[
             var out_v = LayoutTensor[
                 dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
             ](final_out_ptr)
-            FusedMatMulBias[G_IN, G_OUT].eval_gpu_on_stream[BATCH, dtype](
+            FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].eval_gpu_on_stream[BATCH, dtype](
                 ctx, stream, out_v, in_v, p_v, c_v, op_ws_ptr
             )
         else:
@@ -1476,23 +1498,23 @@ def _auto_fused_backward_gpu[
                 ](grads_ptr + param_off)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, ReLUActivation
+                        G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, TanhActivation
+                        G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SwishActivation
+                        G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 else:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, MishActivation
+                        G_IN, G_OUT, MishActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
@@ -1532,23 +1554,23 @@ def _auto_fused_backward_gpu[
                 ](grads_ptr + param_off)
                 comptime if OPS[START + 2].OP_ID == OpID.RELU._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, ReLUActivation
+                        G_IN, G_OUT, ReLUActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.TANH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, TanhActivation
+                        G_IN, G_OUT, TanhActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.SIGMOID._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SigmoidActivation
+                        G_IN, G_OUT, SigmoidActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 elif OPS[START + 2].OP_ID == OpID.SWISH._value:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, SwishActivation
+                        G_IN, G_OUT, SwishActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
                 else:
                     FusedMatMulBiasActivation[
-                        G_IN, G_OUT, MishActivation
+                        G_IN, G_OUT, MishActivation, USE_MAX_KERNELS
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
         elif (
             OPS[START].OP_ID == OpID.MATMUL._value
@@ -2151,7 +2173,12 @@ struct AutoFused[*OPS: DiffOp, USE_MAX_KERNELS: Bool = False](Model):
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
             Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
         )
-        _auto_fused_forward_gpu_on_stream[BATCH, *Self.OPS, dtype=dtype](
+        _auto_fused_forward_gpu_on_stream[
+            BATCH,
+            *Self.OPS,
+            dtype=dtype,
+            USE_MAX_KERNELS=Self.USE_MAX_KERNELS,
+        ](
             ctx,
             stream,
             input.ptr,
