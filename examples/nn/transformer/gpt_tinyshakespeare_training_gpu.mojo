@@ -242,13 +242,29 @@ def _eval_topk_accuracy_gpu(
 
 
 # =============================================================================
-# Sampling on device. Greedy if T=0, categorical otherwise. Slow path runs
-# one BATCH=1 forward per generated token (no KV cache). Pulls only the
-# last-position logits row back to host for sampling.
+# Sampling on device — nanoGPT-style.
+#
+# Slow path: one BATCH=1 forward per generated token (no KV cache). The
+# context window is FRONT-anchored: the running sequence sits at positions
+# 0..n_eff-1 and any unused tail (positions n_eff..SEQ-1) is filled with
+# pad_id but never reaches the read position, because causal attention
+# means output at position p only depends on inputs 0..p. Logits are
+# pulled at position read_pos = n_eff - 1 (the last real token), so the
+# model is always asked to predict the next token from an in-distribution
+# Shakespeare prefix — exactly the regime it was trained on. Once the
+# sequence overflows SEQ tokens we slide the window to keep the last SEQ
+# tokens and read at SEQ-1, matching nanoGPT's `idx[:, -block_size:]`
+# pattern in `sample.py`.
 # =============================================================================
-def _sample_categorical_host(
-    logits_row: List[Scalar[dtype]], vocab: Int, temperature: Float64
+def _sample_token(
+    logits_row: List[Scalar[dtype]],
+    vocab: Int,
+    temperature: Float64,
+    top_k: Int,
 ) -> Int:
+    """Greedy if `temperature <= 0`, else sample from softmax(logits/T)
+    optionally restricted to the top_k logits (top_k <= 0 disables the
+    filter)."""
     if temperature <= 0.0:
         var best_v = Float64(logits_row[0])
         var best_idx = 0
@@ -260,17 +276,46 @@ def _sample_categorical_host(
         return best_idx
 
     var inv_t = 1.0 / temperature
-    var max_l = Float64(logits_row[0]) * inv_t
-    for v in range(1, vocab):
-        var x = Float64(logits_row[v]) * inv_t
-        if x > max_l:
-            max_l = x
-    var sum_exp = 0.0
+    var scaled = List[Float64](capacity=vocab)
+    for v in range(vocab):
+        scaled.append(Float64(logits_row[v]) * inv_t)
+
+    # Top-k filter via repeated argmax (vocab is small, ~65, so O(k*vocab)
+    # is cheap). Marks the top_k indices as keep=True; rest stay False.
+    var keep = List[Bool](capacity=vocab)
+    if top_k > 0 and top_k < vocab:
+        for _ in range(vocab):
+            keep.append(False)
+        var work = List[Float64](capacity=vocab)
+        for v in range(vocab):
+            work.append(scaled[v])
+        for _ in range(top_k):
+            var bv: Float64 = -1e30
+            var bi = 0
+            for v in range(vocab):
+                if work[v] > bv:
+                    bv = work[v]
+                    bi = v
+            keep[bi] = True
+            work[bi] = -1e30
+    else:
+        for _ in range(vocab):
+            keep.append(True)
+
+    # Numerically-stable softmax over kept entries, then categorical sample.
+    var max_l: Float64 = -1e30
+    for v in range(vocab):
+        if keep[v] and scaled[v] > max_l:
+            max_l = scaled[v]
+    var sum_exp: Float64 = 0.0
     var exps = List[Float64](capacity=vocab)
     for v in range(vocab):
-        var e = exp(Float64(logits_row[v]) * inv_t - max_l)
-        exps.append(e)
-        sum_exp += e
+        if keep[v]:
+            var e = exp(scaled[v] - max_l)
+            exps.append(e)
+            sum_exp += e
+        else:
+            exps.append(0.0)
     var u = random_float64(0.0, 1.0) * sum_exp
     var acc = 0.0
     for v in range(vocab):
@@ -287,6 +332,7 @@ def _generate_text_gpu(
     prompt: String,
     n_tokens: Int,
     temperature: Float64 = 0.8,
+    top_k: Int = 10,
     pad_id: Int = 0,
 ) raises -> String:
     var p_view = state.params_view()
@@ -317,21 +363,22 @@ def _generate_text_gpu(
     ](cache_dev.unsafe_ptr())
 
     for _ in range(n_tokens):
-        # Build the SEQ-token context window. Last SEQ ids of the running
-        # sequence; when shorter than SEQ, BACK-anchor — pad the front with
-        # pad_id (newline) so the prompt sits at the end and logits are
-        # read at position SEQ-1.
+        # Front-anchored window:
+        #   positions 0..n_eff-1 = real ids (last SEQ when sequence overflows)
+        #   positions n_eff..SEQ-1 = pad_id (does not affect read position
+        #     thanks to causal attention)
+        # Read logits at position read_pos = n_eff - 1.
         for i in range(GPT_MODEL.IN_DIM):
             inp_host[i] = 0
         var n_have = len(all_ids)
-        var pad_n = SEQ - n_have if n_have < SEQ else 0
+        var n_eff = n_have if n_have <= SEQ else SEQ
         var first_real = 0 if n_have <= SEQ else n_have - SEQ
         for t in range(SEQ):
             var tid: Int
-            if t < pad_n:
-                tid = pad_id
+            if t < n_eff:
+                tid = all_ids[first_real + t]
             else:
-                tid = all_ids[first_real + (t - pad_n)]
+                tid = pad_id
             if tid < 0 or tid >= VOCAB:
                 continue
             inp_host[t * VOCAB + tid] = Scalar[dtype](1.0)
@@ -343,11 +390,11 @@ def _generate_text_gpu(
         ctx.enqueue_copy(out_host, out_dev)
         ctx.synchronize()
 
-        # Pull the SEQ-1-row logits to host, sample.
+        var read_pos = n_eff - 1
         var last_row = List[Scalar[dtype]](capacity=VOCAB)
         for v in range(VOCAB):
-            last_row.append(out_host[(SEQ - 1) * VOCAB + v])
-        var next_id = _sample_categorical_host(last_row, VOCAB, temperature)
+            last_row.append(out_host[read_pos * VOCAB + v])
+        var next_id = _sample_token(last_row, VOCAB, temperature, top_k)
         all_ids.append(next_id)
 
     var gen_only = List[Int](capacity=n_tokens)
@@ -643,11 +690,15 @@ def main() raises:
     print("\n[sample] prompt = " + repr(prompt))
 
     print("\n[sample] greedy (T=0.0):")
-    var greedy = _generate_text_gpu(ctx, state, tok, prompt, 200, 0.0)
+    var greedy = _generate_text_gpu(
+        ctx, state, tok, prompt, 200, 0.0, top_k=0
+    )
     print(prompt + greedy)
 
-    print("\n[sample] temperature (T=0.8):")
-    var temp = _generate_text_gpu(ctx, state, tok, prompt, 200, 0.8)
+    print("\n[sample] temperature (T=0.8, top_k=10):")
+    var temp = _generate_text_gpu(
+        ctx, state, tok, prompt, 200, 0.8, top_k=10
+    )
     print(prompt + temp)
 
     print("\n" + "=" * 70)
