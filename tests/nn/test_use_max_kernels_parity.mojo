@@ -32,6 +32,10 @@ from mojo_rl.nn.model import (
     LinearSigmoid,
     LinearMish,
     LinearSwish,
+    Conv2DReLU,
+    Conv2DTanh,
+    Conv2DSigmoid,
+    Conv2DMish,
 )
 from mojo_rl.nn.autodiff import MatMul, AutoFused, BiasAdd, Conv2D
 
@@ -547,6 +551,51 @@ def main() raises:
         ],
         BS=8,
     ](ctx, "Conv2D[4->32,8x8 s4,84x84] BS=8 (Atari NatureCNN)")
+
+    # ── Phase 3b: Conv2D + activation fusion ────────────────
+    print("--- Conv2DReLU (Fused C+B+ReLU) ---")
+    total_fails += parity_check[
+        Conv2DReLU[2, 4, 3, 1, 1, 5, 5, USE_MAX_KERNELS=False],
+        Conv2DReLU[2, 4, 3, 1, 1, 5, 5, USE_MAX_KERNELS=True],
+        BS=8,
+    ](ctx, "Conv2DReLU[2->4,3x3,5x5] BS=8 (AlphaZero board)")
+
+    total_fails += parity_check[
+        Conv2DReLU[1, 32, 3, 1, 1, 28, 28, USE_MAX_KERNELS=False],
+        Conv2DReLU[1, 32, 3, 1, 1, 28, 28, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "Conv2DReLU[1->32,3x3,28x28] BS=16 (MNIST first layer)")
+
+    total_fails += parity_check[
+        Conv2DReLU[3, 32, 3, 1, 1, 32, 32, USE_MAX_KERNELS=False],
+        Conv2DReLU[3, 32, 3, 1, 1, 32, 32, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "Conv2DReLU[3->32,3x3,32x32] BS=16 (CIFAR first layer)")
+
+    total_fails += parity_check[
+        Conv2DReLU[64, 64, 3, 1, 1, 16, 16, USE_MAX_KERNELS=False],
+        Conv2DReLU[64, 64, 3, 1, 1, 16, 16, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "Conv2DReLU[64->64,3x3,16x16] BS=16 (typical hidden conv)")
+
+    print("--- Conv2DTanh / Conv2DSigmoid / Conv2DMish ---")
+    total_fails += parity_check[
+        Conv2DTanh[3, 16, 3, 1, 1, 32, 32, USE_MAX_KERNELS=False],
+        Conv2DTanh[3, 16, 3, 1, 1, 32, 32, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "Conv2DTanh[3->16,3x3,32x32] BS=16")
+
+    total_fails += parity_check[
+        Conv2DSigmoid[8, 16, 3, 1, 1, 8, 8, USE_MAX_KERNELS=False],
+        Conv2DSigmoid[8, 16, 3, 1, 1, 8, 8, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "Conv2DSigmoid[8->16,3x3,8x8] BS=16")
+
+    total_fails += parity_check[
+        Conv2DMish[16, 32, 3, 1, 1, 16, 16, USE_MAX_KERNELS=False],
+        Conv2DMish[16, 32, 3, 1, 1, 16, 16, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "Conv2DMish[16->32,3x3,16x16] BS=16")
 
     print("======================================================")
     if total_fails == 0:
