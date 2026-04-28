@@ -21,7 +21,7 @@ recovered inside.
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
-from std.math import sqrt, log, cos, sin, pi
+from std.math import sqrt, log, cos, sin, tanh, pi
 from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.nn.constants import TPB
@@ -253,6 +253,218 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             output_loss_final=output_loss,
         )
 
+    @staticmethod
+    def compute_grads_from_latents[BATCH: Int](
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        T_infer: Int,
+        lr_x: Scalar[Self.dtype],
+    ) -> PCTrainResult:
+        """Like compute_grads_only but skips init_latents — caller has already
+        populated `latents` (e.g., via an amortized encoder).
+
+        Used for amortized PC (Tschantz 2023 hybrid): encoder produces an
+        initial guess for z_t; this method runs T_infer refinement steps from
+        there and computes W gradients at the refined state. With T_infer
+        small (~3-5), the encoder dominates and the refinement is just local
+        correction.
+        """
+        Self._forward_eps[BATCH](
+            x_in, y_target, params, latents, mu_eps_buf, a_below_buf
+        )
+        var energy_initial = Self._total_energy[BATCH](mu_eps_buf)
+
+        for _ in range(T_infer):
+            Self._inference_step[BATCH](
+                x_in,
+                y_target,
+                params,
+                latents,
+                mu_eps_buf,
+                a_below_buf,
+                z_below_buf,
+                dx_buf,
+                lr_x,
+            )
+
+        var energy_final = Self._total_energy[BATCH](mu_eps_buf)
+        var output_loss = Self._readout_loss[BATCH](mu_eps_buf)
+
+        comptime for i in range(Self.NET.N):
+            var li_g = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr + Self.NET._param_offset[i]())
+            var li_eps = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            var li_a_below = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+
+            Self.NET.block_types[i].weight_grad[BATCH, Self.dtype](
+                li_eps, li_a_below, li_g
+            )
+
+        return PCTrainResult(
+            energy_initial=energy_initial,
+            energy_final=energy_final,
+            output_loss_final=output_loss,
+        )
+
+    @staticmethod
+    def compute_grads_from_latents_bounded_readout[BATCH: Int](
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        T_infer: Int,
+        lr_x: Scalar[Self.dtype],
+    ) -> PCTrainResult:
+        """Like compute_grads_from_latents but applies a tanh squash to the
+        readout block's output: μ_readout = tanh(W·act(z) + b).
+
+        This bounds the model's predictions to [-1, 1] and prevents the
+        decoder W column from drifting unbounded — useful when the obs space
+        is bounded (e.g., normalized angles, normalized velocities) and the
+        diagnostic shows unbounded prediction outputs.
+
+        Implementation: after each forward sweep, the readout slot of
+        `mu_eps_buf` is replaced with the Jacobian-adjusted error
+        `(y - tanh(μ_lin)) · (1 - tanh(μ_lin)²)`. Subsequent `pull_back` and
+        `weight_grad` calls automatically produce correct gradients with
+        respect to the bounded output (because the chain-rule factor has
+        been folded into ε in-place).
+
+        Caller pre-populates `latents` (e.g., via an amortized encoder) —
+        this method does NOT call init_latents. Use compute_grads_only or
+        run init_latents externally if you want the standard forward-sweep
+        initialization.
+        """
+        for _ in range(T_infer):
+            Self._inference_step_bounded_readout[BATCH](
+                x_in,
+                y_target,
+                params,
+                latents,
+                mu_eps_buf,
+                a_below_buf,
+                z_below_buf,
+                dx_buf,
+                lr_x,
+            )
+
+        # Energy / loss at the post-inference state. mu_eps_buf has the
+        # Jacobian-adjusted ε for the readout slot, so reported numbers are
+        # not the bare bounded-ε but the gradient-ready version. Useful as
+        # a relative training signal.
+        var energy_final = Self._total_energy[BATCH](mu_eps_buf)
+        var output_loss = Self._readout_loss[BATCH](mu_eps_buf)
+
+        comptime for i in range(Self.NET.N):
+            var li_g = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr + Self.NET._param_offset[i]())
+            var li_eps = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            var li_a_below = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+
+            # For the readout (i = N-1), li_eps already contains the
+            # Jacobian-adjusted ε from `_modify_readout_eps_for_bounded`,
+            # so the standard `weight_grad` call produces the correct
+            # gradient `dW = a_below.T @ ((y - μ_bnd) ⊙ (1 - μ_bnd²))`.
+            Self.NET.block_types[i].weight_grad[BATCH, Self.dtype](
+                li_eps, li_a_below, li_g
+            )
+
+        return PCTrainResult(
+            energy_initial=0.0,
+            energy_final=energy_final,
+            output_loss_final=output_loss,
+        )
+
     # =========================================================================
     # Internals
     # =========================================================================
@@ -435,6 +647,161 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             )
 
             # 3. dx_l = ε_l − z
+            var li_eps_self = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[l_idx]())
+            var li_dx = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
+                MutAnyOrigin,
+            ](dx_buf.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+
+            for b in range(BATCH):
+                for k in range(Self.NET.block_types[l_idx].OUT_DIM):
+                    li_dx[b, k] = (
+                        rebind[Scalar[Self.dtype]](li_eps_self[b, k])
+                        - rebind[Scalar[Self.dtype]](li_z[b, k])
+                    )
+
+        # ===== Phase D: latents -= lr_x · dx ================================
+        for b in range(BATCH):
+            for k in range(Self.NET.LATENT_DIM):
+                latents[b, k] = (
+                    rebind[Scalar[Self.dtype]](latents[b, k])
+                    - lr_x * rebind[Scalar[Self.dtype]](dx_buf[b, k])
+                )
+
+    @staticmethod
+    def _modify_readout_eps_for_bounded[BATCH: Int](
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+    ):
+        """Replace `mu_eps_buf[readout_slot]` in place with the Jacobian-
+        adjusted ε for a tanh-squashed readout: μ_bnd = tanh(μ_lin),
+        ε_modified = (y - μ_bnd) · (1 - μ_bnd²).
+
+        Standard `_forward_eps` writes the linear residual `ε_lin = y - μ_lin`.
+        We recover μ_lin = y - ε_lin, squash it through tanh, recompute the
+        bounded residual, and multiply by the local Jacobian factor — the
+        chain-rule term that turns standard `pull_back` and `weight_grad`
+        into correct backprop through the tanh emission. After this call
+        the readout slot holds ε_modified = ε_bnd ⊙ (1 - μ_bnd²).
+        """
+        comptime offset_R = Self.NET._out_offset[Self.NET.N - 1]()
+        comptime out_dim_R = Self.NET.block_types[Self.NET.N - 1].OUT_DIM
+        var li_eps_R = LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, out_dim_R), MutAnyOrigin
+        ](mu_eps_buf.ptr + BATCH * offset_R)
+        for b in range(BATCH):
+            for j in range(out_dim_R):
+                var eps_lin = Float64(
+                    rebind[Scalar[Self.dtype]](li_eps_R[b, j])
+                )
+                var y_val = Float64(
+                    rebind[Scalar[Self.dtype]](y_target[b, j])
+                )
+                var mu_lin = y_val - eps_lin
+                var mu_bnd = tanh(mu_lin)
+                var eps_bnd = y_val - mu_bnd
+                var jac = 1.0 - mu_bnd * mu_bnd
+                li_eps_R[b, j] = Scalar[Self.dtype](eps_bnd * jac)
+
+    @staticmethod
+    def _inference_step_bounded_readout[BATCH: Int](
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        lr_x: Scalar[Self.dtype],
+    ):
+        """One Jacobi inference step with a tanh-squashed readout.
+
+        Same Jacobi update as `_inference_step` but the readout's ε is
+        replaced with the Jacobian-adjusted residual after the forward
+        sweep. This makes `pull_back` (Phase C) propagate the correct
+        chain-rule factor for a tanh emission.
+        """
+        # ===== Phase A+B: forward predict + ε compute (standard) =============
+        Self._forward_eps[BATCH](
+            x_in, y_target, params, latents, mu_eps_buf, a_below_buf
+        )
+
+        # ===== Bounded readout adjustment ===================================
+        Self._modify_readout_eps_for_bounded[BATCH](mu_eps_buf, y_target)
+
+        # ===== Phase C: dx_l = ε_l − act'(x_l) ⊙ (W_{l+1}·ε_{l+1}) ===========
+        # Identical to `_inference_step` Phase C — the readout's ε in
+        # `mu_eps_buf` already carries the Jacobian factor, so `pull_back`
+        # automatically backprops through the tanh emission correctly.
+        @parameter
+        for l_idx in range(Self.NET.N_LATENTS):
+            comptime upper = l_idx + 1
+
+            var li_p_upper = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(Self.NET.block_types[upper].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr + Self.NET._param_offset[upper]())
+            var li_eps_upper = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[upper].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[upper]())
+            var li_z = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
+                MutAnyOrigin,
+            ](z_below_buf.ptr + BATCH * Self.NET._in_offset[upper]())
+
+            Self.NET.block_types[upper].pull_back[BATCH, Self.dtype](
+                li_eps_upper, li_p_upper, li_z
+            )
+
+            var li_x_l = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
+                MutAnyOrigin,
+            ](latents.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            Self.NET.block_types[upper].act_derivative_mul[BATCH, Self.dtype](
+                li_x_l, li_z, li_z
+            )
+
             var li_eps_self = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),

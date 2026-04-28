@@ -123,13 +123,13 @@ def _clip_grad_norm(
     """
     var sum_sq: Float64 = 0
     for i in range(NET.PARAM_SIZE):
-        var g = Float64(grads[i])
+        var g = Float64(grads.ptr[i])
         sum_sq += g * g
     var norm = sqrt(sum_sq)
     if norm > max_norm:
-        var scale = max_norm / norm
+        var scale = Scalar[dtype](max_norm / norm)
         for i in range(NET.PARAM_SIZE):
-            grads[i] = Scalar[dtype](Float64(grads[i]) * scale)
+            grads.ptr[i] = grads.ptr[i] * scale
     return norm
 
 
