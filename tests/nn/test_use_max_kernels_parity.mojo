@@ -54,9 +54,18 @@ def _compare(
     a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     b: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     n: Int,
-    tol: Float64,
+    abs_tol: Float64,
+    rel_tol: Float64,
 ) -> Int:
-    """Returns count of failing elements; prints summary."""
+    """Element-wise compare with abs-or-rel tolerance.
+
+    An element passes if either the absolute error is below `abs_tol` (covers
+    the float32 GEMM noise floor — different reduction orders between two
+    correct implementations differ by ~1e-3 abs on tensor-core fp32) or the
+    relative error is below `rel_tol` (covers larger-magnitude values where
+    noise scales with magnitude). Reports max_abs and max_rel on every run
+    so the noise floor stays visible even when all elements pass.
+    """
     var max_abs: Float64 = 0.0
     var max_rel: Float64 = 0.0
     var fails = 0
@@ -72,7 +81,8 @@ def _compare(
             max_abs = err
         if rel > max_rel:
             max_rel = rel
-        if rel > tol and denom > 1e-6:
+        # Pass = within abs OR within rel. Fail only if both exceed.
+        if err > abs_tol and rel > rel_tol:
             fails += 1
             if fails <= 3:
                 print(
@@ -84,6 +94,8 @@ def _compare(
                     x,
                     "on=",
                     y,
+                    "abs=",
+                    err,
                     "rel=",
                     rel,
                 )
@@ -110,11 +122,18 @@ def parity_check[
 ](
     ctx: DeviceContext,
     name: String,
-    fwd_tol: Float64 = 1e-4,
-    bwd_tol: Float64 = 1e-3,
+    fwd_abs_tol: Float64 = 5e-3,
+    fwd_rel_tol: Float64 = 1e-2,
+    bwd_abs_tol: Float64 = 5e-3,
+    bwd_rel_tol: Float64 = 1e-2,
 ) raises -> Int:
     """OFF and ON must describe the same shape but with different
     USE_MAX_KERNELS values. Returns total fail count.
+
+    Tolerances default to float32 tensor-core GEMM noise levels: an element
+    passes if either abs_err < abs_tol OR rel_err < rel_tol. The defaults
+    (5e-3 abs, 1e-2 rel) accommodate ~1e-3 abs noise observed between
+    custom-MMA and linalg.matmul on small/medium shapes.
     """
     # Flag must not change layout — OFF and ON must agree on dims.
     comptime assert OFF.IN_DIM == ON.IN_DIM
@@ -238,7 +257,8 @@ def parity_check[
         out_off_host.unsafe_ptr(),
         out_on_host.unsafe_ptr(),
         BS * OUT,
-        fwd_tol,
+        fwd_abs_tol,
+        fwd_rel_tol,
     )
 
     # ── Backward — uploaded grad_output ─────────────────────
@@ -313,14 +333,16 @@ def parity_check[
         grad_in_off_host.unsafe_ptr(),
         grad_in_on_host.unsafe_ptr(),
         BS * IN,
-        bwd_tol,
+        bwd_abs_tol,
+        bwd_rel_tol,
     )
     fails += _compare(
         "grad_params",
         grads_off_host.unsafe_ptr(),
         grads_on_host.unsafe_ptr(),
         PS,
-        bwd_tol,
+        bwd_abs_tol,
+        bwd_rel_tol,
     )
     return fails
 
