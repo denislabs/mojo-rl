@@ -3,19 +3,30 @@
 GPU training script targeting the docs/TRANSFORMER_VIT.md Phase A goal:
 val loss ≤ 1.5 nats/char on the default nanoGPT-class config.
 
-Default config below (S=256, D=192, H=6, N=6, ~5M params, 20k steps) is sized
-for NVIDIA GPUs (~RTX 4090 / 5090). On the M1 Pro development hardware the
-config OOMs — for local iteration shrink SEQ, EMBED, LAYERS, and N_STEPS to
-the values commented in the constants block below.
+Same high-level structure as `examples/nn/mlp/mlp_mnist_training_gpu.mojo`
+and `examples/nn/vit/vit_cifar_training_gpu.mojo`:
+  - Pre-sample the train/val datasets once and upload to device.
+  - Per-epoch: apply a `CosineWarmupSchedule` LR scale, train one pass,
+    run validation, print one line.
+  - Final sampling at the end.
 
-All compute lives on device:
-- Native GPU kernels for ScaledDotProductAttention (forward + 4-stage backward),
-  MatMul/BiasAdd (AutoFused), LayerNorm, Embedding, Tokenwise.
-- `CrossEntropyLoss.forward_gpu` / `.backward_gpu` operate on the (BATCH*S, V)
-  reinterpretation of the GPT's flat (BATCH, S*V) output — averaging over all
-  (sample, position) pairs as standard per-token CE.
-- AdamW step + on-device step counter, gradient clipping.
-- Sampling at the end runs `GPUNetworkState.forward_gpu` per generated token.
+Two intentional differences from MLP/ViT:
+  1. The training loop is written inline (manual forward → CE → backward →
+     clip → optimizer step) instead of going through
+     `Trainer.train_gpu_minibatch` / `train_gpu_minibatch_full`. The deeply
+     nested GPT generic chain (three `Tokenwise[256, …]` wrappers around
+     Embedding, LayerNorm, and the LM head) overflows Apple `ld`'s symbol-
+     name length limit when wrapped in the Trainer's per-epoch closure.
+     Calling `GPT_MODEL.forward_gpu` / `backward_gpu` directly keeps every
+     mangled name short enough to link on macOS.
+  2. Validation is sequence-CE (mean per-token nats, computed via
+     `CrossEntropyLoss.forward_gpu` on a `(BATCH*SEQ, VOCAB)` reinterpret),
+     not the framework's classification eval — the latter assumes one
+     int32 label per sample, which doesn't fit `(BATCH, SEQ*VOCAB)` outputs.
+
+Default config is sized for NVIDIA GPUs (~RTX 4090 / 5090). On the M1 Pro
+development hardware shrink SEQ→64, EMBED→64, LAYERS→4, EPOCHS→4,
+N_TRAIN_WINDOWS→1024 to fit memory and iterate quickly.
 
 Run on NVIDIA (production target):
     pixi run -e nvidia mojo run -I . examples/nn/transformer/gpt_tinyshakespeare_training_gpu.mojo
@@ -25,11 +36,16 @@ Run on Apple Metal (dev iteration only — shrink config first):
 
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.random import seed, random_float64
-from std.math import cos, log, exp
+from std.math import log, exp
+from std.time import perf_counter_ns
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.composites import GPT
-from mojo_rl.nn.training import NetworkState, GPUNetworkState
+from mojo_rl.nn.training import (
+    NetworkState,
+    GPUNetworkState,
+    CosineWarmupSchedule,
+)
 from mojo_rl.nn.optimizer import AdamW
 from mojo_rl.nn.loss import CrossEntropyLoss
 from mojo_rl.nn.initializer import Xavier
@@ -45,9 +61,6 @@ from layout import Layout, LayoutTensor
 
 # =============================================================================
 # Hyperparameters — full nanoGPT-class config targeting val loss ≤ 1.5 nats.
-# Matches docs/TRANSFORMER_VIT.md Phase A defaults. Designed for NVIDIA GPUs;
-# on Apple M1 Pro (development hardware) reduce SEQ→64, EMBED→64, LAYERS→4
-# and N_STEPS→1000 to fit memory and iterate quickly.
 # =============================================================================
 comptime VOCAB = 65          # TinyShakespeare unique chars
 comptime SEQ = 256           # context length
@@ -60,188 +73,92 @@ comptime BATCH = 16          # ~150 MB activations at this config; lower if OOM
 
 comptime BASE_LR = 3e-4
 comptime BETA1 = 0.9
-comptime BETA2 = 0.95
+comptime BETA2 = 0.95        # LM canonical (vs 0.999 vision)
 comptime WD = 0.1
 comptime GRAD_CLIP = 1.0     # max-abs clip on params grads each step
 
-# Schedule: linear warmup over WARMUP_STEPS, then cosine decay to 10% over
-# the remaining (N_STEPS - WARMUP_STEPS). 20k steps × BATCH=16 × SEQ=256 =
-# ~82M tokens seen, comparable to nanoGPT's 5k iters at BATCH=64 SEQ=256.
-comptime N_STEPS = 20000
-comptime WARMUP_STEPS = 500
-comptime PRINT_EVERY = 100
-comptime EVAL_EVERY = 1000
-comptime EVAL_BATCHES = 8
+# Pre-sampled dataset:
+#   N_TRAIN_WINDOWS = distinct training windows sampled once and iterated
+#     each epoch (no per-epoch reshuffle to avoid the Trainer dependency
+#     that overflows the Apple linker; pre-sampling already gives random
+#     starting positions, so within-epoch order doesn't add much).
+#   N_VAL_WINDOWS = held-out validation windows.
+#   Total steps ≈ EPOCHS × (N_TRAIN_WINDOWS / BATCH). Default sized for
+#   ~20 k steps (40 × 512 = 20 480), matching the previous step-based recipe.
+comptime N_TRAIN_WINDOWS = 8192
+comptime N_VAL_WINDOWS = 256          # 16 batches × BATCH=16
+comptime EPOCHS = 40
+comptime WARMUP_EPOCHS = 1            # ≈ 1 epoch of linear warmup, then cosine
+
+comptime N_TRAIN_BATCHES = N_TRAIN_WINDOWS // BATCH
+comptime N_VAL_BATCHES = N_VAL_WINDOWS // BATCH
 
 
 # =============================================================================
-# LR schedule: linear warmup then cosine decay to 10 % of peak
+# Aliases.
 # =============================================================================
-def lr_scale(step: Int, warmup: Int, total: Int) -> Float64:
-    if step < warmup:
-        return Float64(step + 1) / Float64(warmup)
-    var progress = Float64(step - warmup) / Float64(max(1, total - warmup))
-    if progress > 1.0:
-        progress = 1.0
-    var c = 0.5 * (1.0 + cos(progress * 3.141592653589793))
-    return 0.1 + 0.9 * c
+comptime GPT_MODEL = GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True]
+comptime GPT_OPT = AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD]
+comptime GPT_SCHEDULER = CosineWarmupSchedule[WARMUP_EPOCHS, 0.1]
 
 
 # =============================================================================
-# Per-token cross-entropy on device (BATCH, S*V) viewed as (BATCH*S, V).
+# Sequence-level validation: mean per-token CE in nats over pre-uploaded
+# (N_VAL_WINDOWS, SEQ*VOCAB) one-hot windows. Uses the same forward + CE
+# kernels as training; the (BATCH, SEQ*VOCAB) output is reinterpreted as
+# (BATCH*SEQ, VOCAB) for the per-token CE.
 # =============================================================================
-def _ce_loss_and_grad_gpu(
+def _eval_loss_seq_gpu(
     ctx: DeviceContext,
-    output_dev: DeviceBuffer[dtype],
-    target_dev: DeviceBuffer[dtype],
-    grad_dev: DeviceBuffer[dtype],
-    loss_dev: DeviceBuffer[dtype],
-) raises:
+    state: GPUNetworkState[GPT_MODEL, GPT_OPT],
+    val_input: LayoutTensor[
+        dtype, Layout.row_major(N_VAL_WINDOWS, GPT_MODEL.IN_DIM), MutAnyOrigin
+    ],
+    val_target: LayoutTensor[
+        dtype, Layout.row_major(N_VAL_WINDOWS, GPT_MODEL.OUT_DIM), MutAnyOrigin
+    ],
+    output_buf: DeviceBuffer[dtype],
+    cache_buf: DeviceBuffer[dtype],
+    ws_buf: DeviceBuffer[dtype],
+    loss_buf: DeviceBuffer[dtype],
+    loss_host: HostBuffer[dtype],
+) raises -> Float64:
+    var output_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT_MODEL.OUT_DIM), MutAnyOrigin
+    ](output_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT_MODEL.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
     var output_v = LayoutTensor[
         dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
-    ](output_dev.unsafe_ptr())
-    var target_v = LayoutTensor[
-        dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
-    ](target_dev.unsafe_ptr())
-    var grad_v = LayoutTensor[
-        dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
-    ](grad_dev.unsafe_ptr())
+    ](output_buf.unsafe_ptr())
     var loss_t = LayoutTensor[
         dtype, Layout.row_major(1), MutAnyOrigin
-    ](loss_dev.unsafe_ptr())
+    ](loss_buf.unsafe_ptr())
 
-    CrossEntropyLoss.forward_gpu[BATCH * SEQ, VOCAB, dtype](
-        ctx, loss_t, output_v, target_v
-    )
-    CrossEntropyLoss.backward_gpu[BATCH * SEQ, VOCAB, dtype](
-        ctx, grad_v, output_v, target_v
-    )
-
-
-# =============================================================================
-# One training step on device — returns scalar loss in nats.
-# =============================================================================
-def _train_step_gpu(
-    ctx: DeviceContext,
-    mut state: GPUNetworkState[
-        GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True],
-        AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD],
-    ],
-    inp_dev: DeviceBuffer[dtype],
-    tgt_dev: DeviceBuffer[dtype],
-    out_dev: DeviceBuffer[dtype],
-    cache_dev: DeviceBuffer[dtype],
-    gin_dev: DeviceBuffer[dtype],
-    gout_dev: DeviceBuffer[dtype],
-    ws_dev: DeviceBuffer[dtype],
-    loss_dev: DeviceBuffer[dtype],
-    loss_host: HostBuffer[dtype],
-) raises -> Float64:
-    comptime Model = GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True]
-    var p_view = state.params_view()
-    var s_view = state.model_state_view()
-
-    var inp_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.IN_DIM), MutAnyOrigin
-    ](inp_dev.unsafe_ptr())
-    var out_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.OUT_DIM), MutAnyOrigin
-    ](out_dev.unsafe_ptr())
-    var cache_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.CACHE_SIZE), MutAnyOrigin
-    ](cache_dev.unsafe_ptr())
-    var gin_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.IN_DIM), MutAnyOrigin
-    ](gin_dev.unsafe_ptr())
-    var gout_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, Model.OUT_DIM), MutAnyOrigin
-    ](gout_dev.unsafe_ptr())
-
-    Model.forward_gpu[BATCH, dtype](
-        ctx, out_t, inp_t, p_view, s_view, cache_t, ws_dev
-    )
-    _ce_loss_and_grad_gpu(ctx, out_dev, tgt_dev, gout_dev, loss_dev)
-
-    state.zero_grads(ctx)
-    var grads_view = state.grads_view()
-    Model.backward_gpu[BATCH, dtype](
-        ctx, gin_t, gout_t, p_view, s_view, cache_t, grads_view, ws_dev
-    )
-    # Gradient clipping (per-element max-abs). Cheap insurance against the
-    # rare-spike instability common at this depth; standard in nanoGPT.
-    state.clip_grads(ctx, Scalar[dtype](GRAD_CLIP))
-    state.optimizer_step(ctx)
-
-    # Read scalar loss back to host.
-    ctx.enqueue_copy(loss_host, loss_dev)
-    ctx.synchronize()
-    return Float64(loss_host[0])
-
-
-# =============================================================================
-# Eval loss (no parameter update). Reuses the train buffers.
-# =============================================================================
-def _eval_loss_gpu(
-    ctx: DeviceContext,
-    state: GPUNetworkState[
-        GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True],
-        AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD],
-    ],
-    val_ids: List[Int],
-    n_batches: Int,
-    inp_dev: DeviceBuffer[dtype],
-    tgt_dev: DeviceBuffer[dtype],
-    out_dev: DeviceBuffer[dtype],
-    cache_dev: DeviceBuffer[dtype],
-    ws_dev: DeviceBuffer[dtype],
-    loss_dev: DeviceBuffer[dtype],
-    inp_host: HostBuffer[dtype],
-    tgt_host: HostBuffer[dtype],
-    loss_host: HostBuffer[dtype],
-) raises -> Float64:
-    comptime Model = GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True]
     var p_view = state.params_view()
     var s_view = state.model_state_view()
 
     var total: Float64 = 0.0
-    for _ in range(n_batches):
-        var batch = make_batch(val_ids, BATCH, SEQ)
-        var inp_data = to_one_hot(batch.inputs, VOCAB, BATCH, SEQ)
-        var tgt_data = to_one_hot(batch.targets, VOCAB, BATCH, SEQ)
-        for i in range(BATCH * Model.IN_DIM):
-            inp_host[i] = inp_data[i]
-            tgt_host[i] = tgt_data[i]
-        ctx.enqueue_copy(inp_dev, inp_host)
-        ctx.enqueue_copy(tgt_dev, tgt_host)
+    for batch_idx in range(N_VAL_BATCHES):
+        var batch_input = LayoutTensor[
+            dtype, Layout.row_major(BATCH, GPT_MODEL.IN_DIM), MutAnyOrigin
+        ](val_input.ptr + batch_idx * BATCH * GPT_MODEL.IN_DIM)
+        var target_v = LayoutTensor[
+            dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
+        ](val_target.ptr + batch_idx * BATCH * GPT_MODEL.OUT_DIM)
 
-        var inp_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Model.IN_DIM), MutAnyOrigin
-        ](inp_dev.unsafe_ptr())
-        var out_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Model.OUT_DIM), MutAnyOrigin
-        ](out_dev.unsafe_ptr())
-        var cache_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH, Model.CACHE_SIZE), MutAnyOrigin
-        ](cache_dev.unsafe_ptr())
-        Model.forward_gpu[BATCH, dtype](
-            ctx, out_t, inp_t, p_view, s_view, cache_t, ws_dev
+        GPT_MODEL.forward_gpu[BATCH, dtype](
+            ctx, output_t, batch_input, p_view, s_view, cache_t, ws_buf
         )
-        var out_v = LayoutTensor[
-            dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
-        ](out_dev.unsafe_ptr())
-        var tgt_v = LayoutTensor[
-            dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
-        ](tgt_dev.unsafe_ptr())
-        var loss_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin
-        ](loss_dev.unsafe_ptr())
         CrossEntropyLoss.forward_gpu[BATCH * SEQ, VOCAB, dtype](
-            ctx, loss_t, out_v, tgt_v
+            ctx, loss_t, output_v, target_v
         )
-        ctx.enqueue_copy(loss_host, loss_dev)
+        ctx.enqueue_copy(loss_host, loss_buf)
         ctx.synchronize()
         total += Float64(loss_host[0])
-    return total / Float64(n_batches)
+
+    return total / Float64(N_VAL_BATCHES)
 
 
 # =============================================================================
@@ -285,17 +202,13 @@ def _sample_categorical_host(
 
 def _generate_text_gpu(
     ctx: DeviceContext,
-    state: GPUNetworkState[
-        GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True],
-        AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD],
-    ],
+    state: GPUNetworkState[GPT_MODEL, GPT_OPT],
     tok: CharTokenizer,
     prompt: String,
     n_tokens: Int,
     temperature: Float64 = 0.8,
     pad_id: Int = 0,
 ) raises -> String:
-    comptime Model = GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True]
     var p_view = state.params_view()
     var s_view = state.model_state_view()
 
@@ -304,24 +217,23 @@ def _generate_text_gpu(
     if prompt_len == 0:
         raise Error("generate_text: prompt is empty after tokenization")
 
-    # BATCH=1 forward buffers.
-    var inp_host = ctx.enqueue_create_host_buffer[dtype](Model.IN_DIM)
-    var inp_dev = ctx.enqueue_create_buffer[dtype](Model.IN_DIM)
-    var out_dev = ctx.enqueue_create_buffer[dtype](Model.OUT_DIM)
-    var cache_dev = ctx.enqueue_create_buffer[dtype](Model.CACHE_SIZE)
+    var inp_host = ctx.enqueue_create_host_buffer[dtype](GPT_MODEL.IN_DIM)
+    var inp_dev = ctx.enqueue_create_buffer[dtype](GPT_MODEL.IN_DIM)
+    var out_dev = ctx.enqueue_create_buffer[dtype](GPT_MODEL.OUT_DIM)
+    var cache_dev = ctx.enqueue_create_buffer[dtype](GPT_MODEL.CACHE_SIZE)
     var ws_dev = ctx.enqueue_create_buffer[dtype](
-        max(1, Model.WORKSPACE_SIZE_PER_SAMPLE)
+        max(1, GPT_MODEL.WORKSPACE_SIZE_PER_SAMPLE)
     )
-    var out_host = ctx.enqueue_create_host_buffer[dtype](Model.OUT_DIM)
+    var out_host = ctx.enqueue_create_host_buffer[dtype](GPT_MODEL.OUT_DIM)
 
     var inp_t = LayoutTensor[
-        dtype, Layout.row_major(1, Model.IN_DIM), MutAnyOrigin
+        dtype, Layout.row_major(1, GPT_MODEL.IN_DIM), MutAnyOrigin
     ](inp_dev.unsafe_ptr())
     var out_t = LayoutTensor[
-        dtype, Layout.row_major(1, Model.OUT_DIM), MutAnyOrigin
+        dtype, Layout.row_major(1, GPT_MODEL.OUT_DIM), MutAnyOrigin
     ](out_dev.unsafe_ptr())
     var cache_t = LayoutTensor[
-        dtype, Layout.row_major(1, Model.CACHE_SIZE), MutAnyOrigin
+        dtype, Layout.row_major(1, GPT_MODEL.CACHE_SIZE), MutAnyOrigin
     ](cache_dev.unsafe_ptr())
 
     for _ in range(n_tokens):
@@ -329,18 +241,7 @@ def _generate_text_gpu(
         # sequence; when shorter than SEQ, BACK-anchor — pad the front with
         # pad_id (newline) so the prompt sits at the end and logits are
         # read at position SEQ-1.
-        #
-        # Empirically this produces noticeably better generations than
-        # front-anchoring at position n_have-1 with backwards padding. The
-        # front-anchored variant in theory feeds the model a more in-
-        # distribution short context, but in practice the model's
-        # position-(n_have-1) embedding carries an "early-in-window" prior
-        # toward common-character defaults (space, the), and the resulting
-        # generations collapse to that. Position-(SEQ-1) embeddings have
-        # been trained as "deep-in-window, look back" — the long run of
-        # leading pad newlines is unusual but attention learns to discount
-        # them; the prompt at the tail dominates the prediction.
-        for i in range(Model.IN_DIM):
+        for i in range(GPT_MODEL.IN_DIM):
             inp_host[i] = 0
         var n_have = len(all_ids)
         var pad_n = SEQ - n_have if n_have < SEQ else 0
@@ -356,7 +257,7 @@ def _generate_text_gpu(
             inp_host[t * VOCAB + tid] = Scalar[dtype](1.0)
         ctx.enqueue_copy(inp_dev, inp_host)
 
-        Model.forward_gpu[1, dtype](
+        GPT_MODEL.forward_gpu[1, dtype](
             ctx, out_t, inp_t, p_view, s_view, cache_t, ws_dev
         )
         ctx.enqueue_copy(out_host, out_dev)
@@ -380,16 +281,34 @@ def _generate_text_gpu(
 # =============================================================================
 def main() raises:
     seed(42)
-    comptime Model = GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True]
-    comptime Opt = AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD]
 
     print("=" * 70)
     print("TinyShakespeare GPT training (GPU)")
     print("=" * 70)
-    print("  vocab=" + String(VOCAB) + " seq=" + String(SEQ) + " embed=" + String(EMBED) + " heads=" + String(HEADS) + " layers=" + String(LAYERS))
-    print("  batch=" + String(BATCH) + " base_lr=" + String(BASE_LR) + " wd=" + String(WD))
-    print("  steps=" + String(N_STEPS) + " warmup=" + String(WARMUP_STEPS))
-    print("  PARAM_SIZE=" + String(Model.PARAM_SIZE) + " CACHE/sample=" + String(Model.CACHE_SIZE) + " WS/sample=" + String(Model.WORKSPACE_SIZE_PER_SAMPLE))
+    print(
+        "  vocab=" + String(VOCAB)
+        + " seq=" + String(SEQ)
+        + " embed=" + String(EMBED)
+        + " heads=" + String(HEADS)
+        + " layers=" + String(LAYERS)
+    )
+    print(
+        "  batch=" + String(BATCH)
+        + " base_lr=" + String(BASE_LR)
+        + " wd=" + String(WD)
+        + " grad_clip=" + String(GRAD_CLIP)
+    )
+    print(
+        "  n_train_windows=" + String(N_TRAIN_WINDOWS)
+        + " n_val_windows=" + String(N_VAL_WINDOWS)
+        + " epochs=" + String(EPOCHS)
+        + " warmup_ep=" + String(WARMUP_EPOCHS)
+    )
+    print(
+        "  PARAM_SIZE=" + String(GPT_MODEL.PARAM_SIZE)
+        + " CACHE/sample=" + String(GPT_MODEL.CACHE_SIZE)
+        + " WS/sample=" + String(GPT_MODEL.WORKSPACE_SIZE_PER_SAMPLE)
+    )
 
     # ---------- Data ----------
     print("\n[data] loading TinyShakespeare...")
@@ -405,115 +324,217 @@ def main() raises:
     var ids = tok.encode(text)
     var split = train_val_split(ids, 0.1)
     print(
-        "  total tokens="
-        + String(len(ids))
-        + " train="
-        + String(len(split.train))
-        + " val="
-        + String(len(split.val))
+        "  total tokens=" + String(len(ids))
+        + " train=" + String(len(split.train))
+        + " val=" + String(len(split.val))
+    )
+
+    # ---------- Pre-sample windows once on host ----------
+    print(
+        "\n[data] pre-sampling " + String(N_TRAIN_WINDOWS)
+        + " train windows + " + String(N_VAL_WINDOWS) + " val windows..."
+    )
+    var train_batch = make_batch(split.train, N_TRAIN_WINDOWS, SEQ)
+    var train_inp_data = to_one_hot(
+        train_batch.inputs, VOCAB, N_TRAIN_WINDOWS, SEQ
+    )
+    var train_tgt_data = to_one_hot(
+        train_batch.targets, VOCAB, N_TRAIN_WINDOWS, SEQ
+    )
+    var val_batch = make_batch(split.val, N_VAL_WINDOWS, SEQ)
+    var val_inp_data = to_one_hot(
+        val_batch.inputs, VOCAB, N_VAL_WINDOWS, SEQ
+    )
+    var val_tgt_data = to_one_hot(
+        val_batch.targets, VOCAB, N_VAL_WINDOWS, SEQ
     )
 
     # ---------- Device + state ----------
     var ctx = DeviceContext()
-    var state = GPUNetworkState[Model, Opt](ctx)
-
-    # Init via transient CPU NetworkState then upload (Trainer.init_state_gpu pattern).
-    var cpu = NetworkState[Model, Opt]()
+    var state = GPUNetworkState[GPT_MODEL, GPT_OPT](ctx)
+    var cpu = NetworkState[GPT_MODEL, GPT_OPT]()
     cpu.initialize[Xavier[]]()
     state.upload_from(cpu, ctx)
 
-    # ---------- Pre-allocate device + host buffers (reused every step) ----------
-    var inp_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.IN_DIM)
-    var tgt_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.OUT_DIM)
-    var out_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.OUT_DIM)
-    var cache_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.CACHE_SIZE)
-    var gin_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.IN_DIM)
-    var gout_dev = ctx.enqueue_create_buffer[dtype](BATCH * Model.OUT_DIM)
-    var ws_dev = ctx.enqueue_create_buffer[dtype](
-        max(1, BATCH * Model.WORKSPACE_SIZE_PER_SAMPLE)
+    # ---------- Upload train + val datasets once ----------
+    print("[data] uploading datasets to device...")
+    var train_inp_host = ctx.enqueue_create_host_buffer[dtype](
+        N_TRAIN_WINDOWS * GPT_MODEL.IN_DIM
     )
-    var loss_dev = ctx.enqueue_create_buffer[dtype](1)
-    var inp_host = ctx.enqueue_create_host_buffer[dtype](BATCH * Model.IN_DIM)
-    var tgt_host = ctx.enqueue_create_host_buffer[dtype](BATCH * Model.OUT_DIM)
+    var train_tgt_host = ctx.enqueue_create_host_buffer[dtype](
+        N_TRAIN_WINDOWS * GPT_MODEL.OUT_DIM
+    )
+    for i in range(N_TRAIN_WINDOWS * GPT_MODEL.IN_DIM):
+        train_inp_host.unsafe_ptr()[i] = train_inp_data[i]
+        train_tgt_host.unsafe_ptr()[i] = train_tgt_data[i]
+    var train_inp_buf = ctx.enqueue_create_buffer[dtype](
+        N_TRAIN_WINDOWS * GPT_MODEL.IN_DIM
+    )
+    var train_tgt_buf = ctx.enqueue_create_buffer[dtype](
+        N_TRAIN_WINDOWS * GPT_MODEL.OUT_DIM
+    )
+    ctx.enqueue_copy(train_inp_buf, train_inp_host)
+    ctx.enqueue_copy(train_tgt_buf, train_tgt_host)
+    var train_inp_lt = LayoutTensor[
+        dtype, Layout.row_major(N_TRAIN_WINDOWS, GPT_MODEL.IN_DIM), MutAnyOrigin
+    ](train_inp_buf.unsafe_ptr())
+    var train_tgt_lt = LayoutTensor[
+        dtype, Layout.row_major(N_TRAIN_WINDOWS, GPT_MODEL.OUT_DIM), MutAnyOrigin
+    ](train_tgt_buf.unsafe_ptr())
+
+    var val_inp_host = ctx.enqueue_create_host_buffer[dtype](
+        N_VAL_WINDOWS * GPT_MODEL.IN_DIM
+    )
+    var val_tgt_host = ctx.enqueue_create_host_buffer[dtype](
+        N_VAL_WINDOWS * GPT_MODEL.OUT_DIM
+    )
+    for i in range(N_VAL_WINDOWS * GPT_MODEL.IN_DIM):
+        val_inp_host.unsafe_ptr()[i] = val_inp_data[i]
+        val_tgt_host.unsafe_ptr()[i] = val_tgt_data[i]
+    var val_inp_buf = ctx.enqueue_create_buffer[dtype](
+        N_VAL_WINDOWS * GPT_MODEL.IN_DIM
+    )
+    var val_tgt_buf = ctx.enqueue_create_buffer[dtype](
+        N_VAL_WINDOWS * GPT_MODEL.OUT_DIM
+    )
+    ctx.enqueue_copy(val_inp_buf, val_inp_host)
+    ctx.enqueue_copy(val_tgt_buf, val_tgt_host)
+    var val_inp_lt = LayoutTensor[
+        dtype, Layout.row_major(N_VAL_WINDOWS, GPT_MODEL.IN_DIM), MutAnyOrigin
+    ](val_inp_buf.unsafe_ptr())
+    var val_tgt_lt = LayoutTensor[
+        dtype, Layout.row_major(N_VAL_WINDOWS, GPT_MODEL.OUT_DIM), MutAnyOrigin
+    ](val_tgt_buf.unsafe_ptr())
+
+    # ---------- Per-batch training scratch (allocated once, reused) ----------
+    var output_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * GPT_MODEL.OUT_DIM
+    )
+    var cache_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * GPT_MODEL.CACHE_SIZE
+    )
+    var grad_in_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * GPT_MODEL.IN_DIM
+    )
+    var grad_out_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * GPT_MODEL.OUT_DIM
+    )
+    var ws_buf = ctx.enqueue_create_buffer[dtype](
+        max(1, BATCH * GPT_MODEL.WORKSPACE_SIZE_PER_SAMPLE)
+    )
+    var loss_buf = ctx.enqueue_create_buffer[dtype](1)
     var loss_host = ctx.enqueue_create_host_buffer[dtype](1)
 
+    var output_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT_MODEL.OUT_DIM), MutAnyOrigin
+    ](output_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT_MODEL.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
+    var grad_in_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT_MODEL.IN_DIM), MutAnyOrigin
+    ](grad_in_buf.unsafe_ptr())
+    var grad_out_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT_MODEL.OUT_DIM), MutAnyOrigin
+    ](grad_out_buf.unsafe_ptr())
+    var output_v = LayoutTensor[
+        dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
+    ](output_buf.unsafe_ptr())
+    var grad_out_v = LayoutTensor[
+        dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
+    ](grad_out_buf.unsafe_ptr())
+    var loss_t = LayoutTensor[
+        dtype, Layout.row_major(1), MutAnyOrigin
+    ](loss_buf.unsafe_ptr())
+
     # ---------- Initial val loss ----------
-    var val_init = _eval_loss_gpu(
-        ctx, state, split.val, EVAL_BATCHES,
-        inp_dev, tgt_dev, out_dev, cache_dev, ws_dev, loss_dev,
-        inp_host, tgt_host, loss_host,
+    var val_init = _eval_loss_seq_gpu(
+        ctx, state, val_inp_lt, val_tgt_lt,
+        output_buf, cache_buf, ws_buf, loss_buf, loss_host,
     )
     print(
-        "\n[step 0] initial val loss="
-        + String(val_init)
-        + "  (random ≈ ln(V)="
-        + String(log(Float64(VOCAB)))
-        + ")"
+        "\n[epoch 0] initial val_loss=" + String(val_init)
+        + "  (random ≈ ln(V)=" + String(log(Float64(VOCAB))) + ")"
     )
 
-    # ---------- Training loop ----------
-    var loss_running: Float64 = 0.0
-    var loss_count: Int = 0
-    for step in range(N_STEPS):
-        var s = lr_scale(step, WARMUP_STEPS, N_STEPS)
-        state.set_lr_scale(s, ctx)
+    # ---------- Per-epoch loop: scheduler → batches → eval ----------
+    print("\n── Training ──")
+    var t_start = perf_counter_ns()
+    var final_loss: Float64 = 0.0
+    for epoch in range(EPOCHS):
+        var lr_s = GPT_SCHEDULER.lr_scale_at(epoch, EPOCHS)
+        state.set_lr_scale(lr_s, ctx)
 
-        # Sample minibatch on host, upload one-hots.
-        var batch = make_batch(split.train, BATCH, SEQ)
-        var inp_data = to_one_hot(batch.inputs, VOCAB, BATCH, SEQ)
-        var tgt_data = to_one_hot(batch.targets, VOCAB, BATCH, SEQ)
-        for i in range(BATCH * Model.IN_DIM):
-            inp_host[i] = inp_data[i]
-            tgt_host[i] = tgt_data[i]
-        ctx.enqueue_copy(inp_dev, inp_host)
-        ctx.enqueue_copy(tgt_dev, tgt_host)
+        var p_view = state.params_view()
+        var s_view = state.model_state_view()
 
-        var loss = _train_step_gpu(
-            ctx, state, inp_dev, tgt_dev, out_dev, cache_dev,
-            gin_dev, gout_dev, ws_dev, loss_dev, loss_host,
+        for batch_idx in range(N_TRAIN_BATCHES):
+            var batch_input = LayoutTensor[
+                dtype, Layout.row_major(BATCH, GPT_MODEL.IN_DIM), MutAnyOrigin
+            ](train_inp_lt.ptr + batch_idx * BATCH * GPT_MODEL.IN_DIM)
+            var target_v = LayoutTensor[
+                dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
+            ](train_tgt_lt.ptr + batch_idx * BATCH * GPT_MODEL.OUT_DIM)
+
+            GPT_MODEL.forward_gpu[BATCH, dtype](
+                ctx, output_t, batch_input, p_view, s_view, cache_t, ws_buf
+            )
+            CrossEntropyLoss.forward_gpu[BATCH * SEQ, VOCAB, dtype](
+                ctx, loss_t, output_v, target_v
+            )
+            CrossEntropyLoss.backward_gpu[BATCH * SEQ, VOCAB, dtype](
+                ctx, grad_out_v, output_v, target_v
+            )
+
+            state.zero_grads(ctx)
+            var grads_view = state.grads_view()
+            GPT_MODEL.backward_gpu[BATCH, dtype](
+                ctx, grad_in_t, grad_out_t, p_view, s_view, cache_t,
+                grads_view, ws_buf,
+            )
+            # Per-element max-abs grad clip — cheap insurance against the
+            # rare-spike instability common at this depth, standard in nanoGPT.
+            state.clip_grads(ctx, Scalar[dtype](GRAD_CLIP))
+            state.optimizer_step(ctx)
+
+        # Read the last batch's loss as a cheap epoch summary.
+        ctx.enqueue_copy(loss_host, loss_buf)
+        ctx.synchronize()
+        final_loss = Float64(loss_host[0])
+
+        var v = _eval_loss_seq_gpu(
+            ctx, state, val_inp_lt, val_tgt_lt,
+            output_buf, cache_buf, ws_buf, loss_buf, loss_host,
         )
-        loss_running += loss
-        loss_count += 1
+        print(
+            "  epoch " + String(epoch + 1) + "/" + String(EPOCHS)
+            + "  train_loss(last_batch)=" + String(Float32(final_loss))
+            + "  val_loss=" + String(v)
+            + "  lr_scale=" + String(lr_s)
+        )
 
-        if (step + 1) % PRINT_EVERY == 0:
-            var avg = loss_running / Float64(loss_count)
-            print(
-                "[step "
-                + String(step + 1)
-                + "] train_loss="
-                + String(avg)
-                + " lr_scale="
-                + String(s)
-            )
-            loss_running = 0.0
-            loss_count = 0
-
-        if (step + 1) % EVAL_EVERY == 0:
-            var v = _eval_loss_gpu(
-                ctx, state, split.val, EVAL_BATCHES,
-                inp_dev, tgt_dev, out_dev, cache_dev, ws_dev, loss_dev,
-                inp_host, tgt_host, loss_host,
-            )
-            print("           val_loss=" + String(v))
+    var t_end = perf_counter_ns()
+    print(
+        "\n  training time: "
+        + String(Float64(t_end - t_start) / 1e9)[byte=:6]
+        + " s"
+    )
 
     # ---------- Final eval ----------
-    var val_final = _eval_loss_gpu(
-        ctx, state, split.val, EVAL_BATCHES,
-        inp_dev, tgt_dev, out_dev, cache_dev, ws_dev, loss_dev,
-        inp_host, tgt_host, loss_host,
+    var val_final = _eval_loss_seq_gpu(
+        ctx, state, val_inp_lt, val_tgt_lt,
+        output_buf, cache_buf, ws_buf, loss_buf, loss_host,
     )
     print(
-        "\n[final] val_loss="
-        + String(val_final)
-        + " (start "
-        + String(val_init)
-        + ")"
+        "\n[final] val_loss=" + String(val_final)
+        + " (start " + String(val_init) + ")"
     )
     if val_final < val_init - 0.1:
         print("  PASS: validation loss decreased by > 0.1 nats")
     else:
         print(
-            "  WARN: validation loss did not improve substantially — increase N_STEPS or check"
+            "  WARN: validation loss did not improve substantially —"
+            + " increase EPOCHS or check"
         )
 
     # ---------- Sampling ----------
