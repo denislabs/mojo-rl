@@ -21,6 +21,8 @@ recovered inside.
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
+from std.math import sqrt, log, cos, sin, pi
+from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.nn.constants import TPB
 from mojo_rl.nn.initializer import Initializer
@@ -483,13 +485,17 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             MutAnyOrigin,
         ],
     ) -> Float64:
-        """0.5 · Σ_b Σ_k ε_{N-1}[b, k]² — supervised output loss."""
+        """0.5 · Σ_b Σ_k ε_{N-1}[b, k]² — supervised output loss.
+
+        Block-major access: readout's slot starts at `BATCH * out_offset[N-1]`,
+        with stride `out_dim` per sample (matches the per-block views).
+        """
         comptime offset = Self.NET._out_offset[Self.NET.N - 1]()
         comptime out_dim = Self.NET.block_types[Self.NET.N - 1].OUT_DIM
         var total: Float64 = 0
         for b in range(BATCH):
             for k in range(out_dim):
-                var idx = b * Self.NET.SCRATCH_OUT_DIM + offset + k
+                var idx = BATCH * offset + b * out_dim + k
                 var v = Float64(mu_eps_buf.ptr[idx])
                 total += v * v
         return 0.5 * total
@@ -859,3 +865,409 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
             Self.NET.block_types[i].weight_grad_gpu[BATCH, Self.dtype](
                 ctx, li_eps, li_a_below, li_g
             )
+
+    # =========================================================================
+    # MCPC (Monte Carlo Predictive Coding) — Bogacz notebook 2
+    #
+    # Adds Langevin noise to the latent SGD step (SGLD), turning MAP inference
+    # into MCMC sampling. With a learned prior block as the first PCBlock and
+    # no inputs (constant pseudo-input), this trains a generative model whose
+    # latents sample from the data distribution.
+    #
+    # CPU-only for the first cut. GPU port can come later.
+    # =========================================================================
+
+    @staticmethod
+    def _box_muller_fill[BATCH: Int](
+        mut buf: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.LATENT_DIM), MutAnyOrigin
+        ],
+        seed: UInt64,
+        offset_base: UInt64,
+    ):
+        """Fill `buf` with i.i.d. N(0, 1) samples via Box-Muller from PhiloxRandom.
+
+        Each pair of uniforms produces two independent normals (z0 = r·cos, z1 = r·sin).
+        `offset_base` should be unique per call across the SGLD trajectory.
+        """
+        var size = BATCH * Self.NET.LATENT_DIM
+        var i = 0
+        var pair_idx: UInt64 = 0
+        while i < size:
+            var rng1 = PhiloxRandom(seed=seed, offset=offset_base + pair_idx * 2)
+            var rng2 = PhiloxRandom(seed=seed, offset=offset_base + pair_idx * 2 + 1)
+            var u1 = rng1.step_uniform()[0]
+            var u2 = rng2.step_uniform()[0]
+            pair_idx += 1
+            if u1 < 1e-10:
+                u1 = 1e-10
+            var r = sqrt(-2.0 * log(u1))
+            var z0 = r * cos(2.0 * pi * u2)
+            buf.ptr[i] = Scalar[Self.dtype](z0)
+            i += 1
+            if i < size:
+                var z1 = r * sin(2.0 * pi * u2)
+                buf.ptr[i] = Scalar[Self.dtype](z1)
+                i += 1
+
+    @staticmethod
+    def _inference_step_mcpc[BATCH: Int](
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut noise_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        lr_x: Scalar[Self.dtype],
+        noise_coeff: Scalar[Self.dtype],
+        seed: UInt64,
+        offset_base: UInt64,
+        clamp_output: Bool,
+    ):
+        """SGLD inference step: x_l ← x_l − lr_x · dx_l + noise_coeff · N(0,1).
+
+        - clamp_output=True (training): readout block's ε = data − μ_readout.
+        - clamp_output=False (generation): readout block's ε is forced to 0,
+          so the supervised loss exerts no force on the top latent.
+        - noise_coeff = sqrt(2 · noise_var · lr_x) for canonical SGLD.
+
+        Reuses _forward_eps for Phases A+B, then optionally zeros the readout's
+        ε slot, computes Phase C dx, and applies Phase D with added noise.
+        """
+        Self._forward_eps[BATCH](
+            x_in, y_target, params, latents, mu_eps_buf, a_below_buf
+        )
+
+        # If generating (no data clamp): zero out the readout block's ε slot.
+        # Buffer is BLOCK-major (each block's per-sample slots are contiguous,
+        # NOT the row_major(BATCH, SCRATCH_OUT_DIM) the outer view declares),
+        # so we use the same per-block view offsets as the rest of the trainer.
+        if not clamp_output:
+            comptime offset_eps_R = Self.NET._out_offset[Self.NET.N - 1]()
+            comptime out_dim_R = Self.NET.block_types[Self.NET.N - 1].OUT_DIM
+            var li_eps_R = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, out_dim_R),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * offset_eps_R)
+            for b in range(BATCH):
+                for k in range(out_dim_R):
+                    li_eps_R[b, k] = Scalar[Self.dtype](0)
+
+        # Phase C: dx_l = ε_l − act'(x_l) ⊙ (W_{l+1}·ε_{l+1})
+        @parameter
+        for l_idx in range(Self.NET.N_LATENTS):
+            comptime upper = l_idx + 1
+
+            var li_p_upper = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(Self.NET.block_types[upper].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr + Self.NET._param_offset[upper]())
+            var li_eps_upper = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[upper].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[upper]())
+            var li_z = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
+                MutAnyOrigin,
+            ](z_below_buf.ptr + BATCH * Self.NET._in_offset[upper]())
+
+            Self.NET.block_types[upper].pull_back[BATCH, Self.dtype](
+                li_eps_upper, li_p_upper, li_z
+            )
+
+            var li_x_l = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
+                MutAnyOrigin,
+            ](latents.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            Self.NET.block_types[upper].act_derivative_mul[BATCH, Self.dtype](
+                li_x_l, li_z, li_z
+            )
+
+            var li_eps_self = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[l_idx]())
+            var li_dx = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[l_idx].OUT_DIM),
+                MutAnyOrigin,
+            ](dx_buf.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+
+            for b in range(BATCH):
+                for k in range(Self.NET.block_types[l_idx].OUT_DIM):
+                    li_dx[b, k] = (
+                        rebind[Scalar[Self.dtype]](li_eps_self[b, k])
+                        - rebind[Scalar[Self.dtype]](li_z[b, k])
+                    )
+
+        # Phase D (SGLD): latents -= lr_x · dx + noise_coeff · N(0,1)
+        Self._box_muller_fill[BATCH](noise_buf, seed, offset_base)
+        for b in range(BATCH):
+            for k in range(Self.NET.LATENT_DIM):
+                latents[b, k] = (
+                    rebind[Scalar[Self.dtype]](latents[b, k])
+                    - lr_x * rebind[Scalar[Self.dtype]](dx_buf[b, k])
+                    + noise_coeff * rebind[Scalar[Self.dtype]](noise_buf[b, k])
+                )
+
+    @staticmethod
+    def compute_grads_only_mcpc[BATCH: Int](
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut noise_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        T_mixing: Int,
+        T_sampling: Int,
+        lr_x: Scalar[Self.dtype],
+        noise_var: Scalar[Self.dtype],
+        seed: UInt64,
+        offset_base: UInt64,
+    ) -> PCTrainResult:
+        """MCPC training step: SGLD-aware inference + grad accumulation.
+
+        T_mixing iterations let the chain settle (no grad accumulation needed —
+        we just take the final-iteration ε's for the W gradient, which matches
+        the reference implementation's `T_sampling = 1`). T_sampling > 1 would
+        average grads over multiple post-burn-in iterations; we keep
+        T_sampling=1 default to match the notebook.
+
+        SGLD noise coefficient: sqrt(2 · noise_var · lr_x).
+
+        Caller manages `offset_base` to ensure no two calls share a Philox
+        substream (recommended bump: BATCH * LATENT_DIM * (T_mixing + T_sampling) per call).
+        """
+        Self.NET.init_latents[BATCH, Self.dtype](x_in, params, latents)
+
+        var noise_coeff = Scalar[Self.dtype](
+            sqrt(2.0 * Float64(noise_var) * Float64(lr_x))
+        )
+        var n_per_step = UInt64(BATCH * Self.NET.LATENT_DIM)
+
+        # Mixing phase: SGLD steps with output clamped to data
+        for t in range(T_mixing):
+            Self._inference_step_mcpc[BATCH](
+                x_in, y_target, params, latents,
+                mu_eps_buf, a_below_buf, z_below_buf, dx_buf, noise_buf,
+                lr_x, noise_coeff,
+                seed, offset_base + UInt64(t) * n_per_step * 2,
+                True,
+            )
+
+        # Sampling phase (we just need ε at the post-mixing point for grad).
+        # For T_sampling=1, this is one more inference step; for >1, we'd
+        # average grads but skip that for the first cut.
+        for t in range(T_sampling):
+            Self._inference_step_mcpc[BATCH](
+                x_in, y_target, params, latents,
+                mu_eps_buf, a_below_buf, z_below_buf, dx_buf, noise_buf,
+                lr_x, noise_coeff,
+                seed,
+                offset_base + UInt64(T_mixing + t) * n_per_step * 2,
+                True,
+            )
+
+        var energy_final = Self._total_energy[BATCH](mu_eps_buf)
+        var output_loss = Self._readout_loss[BATCH](mu_eps_buf)
+
+        # Compute weight grads at the post-sampling state
+        @parameter
+        for i in range(Self.NET.N):
+            var li_g = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr + Self.NET._param_offset[i]())
+            var li_eps = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            var li_a_below = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+
+            Self.NET.block_types[i].weight_grad[BATCH, Self.dtype](
+                li_eps, li_a_below, li_g
+            )
+
+        return PCTrainResult(
+            energy_initial=0.0,
+            energy_final=energy_final,
+            output_loss_final=output_loss,
+        )
+
+    @staticmethod
+    def generate_samples[BATCH: Int](
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut noise_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target_dummy: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        mut sample_out: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        T: Int,
+        lr_x: Scalar[Self.dtype],
+        noise_var: Scalar[Self.dtype],
+        seed: UInt64,
+        offset_base: UInt64,
+    ):
+        """Sample BATCH points from the learned generative model.
+
+        Runs T iterations of SGLD inference WITHOUT the data clamp (clamp_output=False),
+        so latents settle to draws from the prior. Then forwards the final latent
+        through the readout block to produce one sample per batch row.
+
+        `y_target_dummy` is read but its values don't affect generation since
+        the readout block's ε is forced to 0 inside the inference step.
+        """
+        Self.NET.init_latents[BATCH, Self.dtype](x_in, params, latents)
+
+        var noise_coeff = Scalar[Self.dtype](
+            sqrt(2.0 * Float64(noise_var) * Float64(lr_x))
+        )
+        var n_per_step = UInt64(BATCH * Self.NET.LATENT_DIM)
+
+        for t in range(T):
+            Self._inference_step_mcpc[BATCH](
+                x_in, y_target_dummy, params, latents,
+                mu_eps_buf, a_below_buf, z_below_buf, dx_buf, noise_buf,
+                lr_x, noise_coeff,
+                seed, offset_base + UInt64(t) * n_per_step * 2,
+                False,
+            )
+
+        # Final forward through the readout block to produce sample_out
+        comptime read_idx = Self.NET.N - 1
+        var li_p_read = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(Self.NET.block_types[read_idx].PARAM_SIZE),
+            MutAnyOrigin,
+        ](params.ptr + Self.NET._param_offset[read_idx]())
+        var li_a_read = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.block_types[read_idx].IN_DIM),
+            MutAnyOrigin,
+        ](a_below_buf.ptr + BATCH * Self.NET._in_offset[read_idx]())
+        # x_below for the readout = last interior latent
+        var li_x_below = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.block_types[read_idx].IN_DIM),
+            MutAnyOrigin,
+        ](latents.ptr + BATCH * Self.NET._latent_offset[Self.NET.N_LATENTS - 1]())
+        Self.NET.block_types[read_idx].predict[BATCH, Self.dtype](
+            li_x_below, li_p_read, sample_out, li_a_read
+        )
