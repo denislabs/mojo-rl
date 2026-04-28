@@ -41,7 +41,7 @@ struct FusedMatMulBiasActivation[
     in_dim: Int,
     out_dim: Int,
     ACT: Activation,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](FusedOp):
     """Fused y = act(x @ W + b) in a single operation.
 

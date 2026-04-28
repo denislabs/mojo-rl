@@ -28,7 +28,7 @@ from layout.tile_tensor import lt_to_tt
 struct MatMul[
     in_dim: Int,
     out_dim: Int,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](DiffOp):
     """MatMul : y = x @ W  where x:(B, in_dim), W:(in_dim, out_dim), y:(B, out_dim).
 

@@ -108,27 +108,19 @@ struct AlphaZeroTicTacToeConfig[
     SIMS: Int = 100,
     NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
-    USE_MAX_KERNELS: Bool = False,
 ](AlphaZeroConfig):
-    """AlphaZero for TicTacToe (27D obs, 9 actions) — MLP variant.
-
-    USE_MAX_KERNELS (NVIDIA only): routes ALL Linear and LinearReLU layers in
-    the network (trunk + heads) through linalg.matmul (max_matmul) instead of
-    the custom MMA kernel.
-    """
+    """AlphaZero for TicTacToe (27D obs, 9 actions) — MLP variant."""
 
     comptime NAME: String = "AlphaZero-TicTacToe"
     comptime obs_dim: Int = 27
     comptime action_dim: Int = 9
 
     comptime PredModel = Sequential[
-        LinearReLU[27, Self.HIDDEN, USE_MAX_KERNELS=Self.USE_MAX_KERNELS],
-        LinearReLU[
-            Self.HIDDEN, Self.HIDDEN, USE_MAX_KERNELS=Self.USE_MAX_KERNELS
-        ],
+        LinearReLU[27, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
         Parallel[
-            Linear[Self.HIDDEN, 9, USE_MAX_KERNELS=Self.USE_MAX_KERNELS],
-            Linear[Self.HIDDEN, 1, USE_MAX_KERNELS=Self.USE_MAX_KERNELS],
+            Linear[Self.HIDDEN, 9],  # Policy head
+            Linear[Self.HIDDEN, 1],  # Scalar value head
         ],
     ]
     comptime OptType = Adam[LR=Self.LR]

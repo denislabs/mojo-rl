@@ -43,10 +43,7 @@ def main() raises:
 
     # Choose architecture:
     # MLP (fastest, decent for TTT):
-    # USE_MAX_KERNELS=True routes the policy/value head Linears through
-    # linalg.matmul (max_matmul) — see project_alphazero_ttt_nvidia_regression.
-    # Trunk LinearReLUs still use custom MMA (phase 2).
-    comptime Config = AlphaZeroTicTacToeConfig[USE_MAX_KERNELS=True]
+    comptime Config = AlphaZeroTicTacToeConfig[]
     # CNN (heavier but better features):
     # comptime Config = AlphaZeroTicTacToeCNNConfig[]
     # ResNet (strongest, 50 MCTS sims):
