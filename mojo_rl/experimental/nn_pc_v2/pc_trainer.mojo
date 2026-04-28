@@ -1271,3 +1271,463 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         Self.NET.block_types[read_idx].predict[BATCH, Self.dtype](
             li_x_below, li_p_read, sample_out, li_a_read
         )
+
+    # =========================================================================
+    # GPU MCPC paths
+    #
+    # Mirror the CPU MCPC path: SGLD-aware inference with optional output
+    # clamp, plus a generation helper. Float32 internally for Metal safety,
+    # so output is statistically equivalent to the CPU path but NOT bitwise
+    # identical (the CPU path uses Float64 inside Box-Muller).
+    # =========================================================================
+
+    @staticmethod
+    fn _box_muller_fill_kernel[
+        BATCH: Int, LDIM: Int, KDT: DType,
+    ](
+        noise_buf: LayoutTensor[
+            KDT, Layout.row_major(BATCH, LDIM), MutAnyOrigin
+        ],
+        seed: UInt64,
+        offset_base: UInt64,
+    ):
+        """Each thread fills one element of noise_buf with N(0,1).
+
+        Matches CPU's Philox offset usage: pair `pair_idx` uses two RNG
+        instances at offsets `offset_base + 2k` and `offset_base + 2k + 1`,
+        producing two correlated normals (cos, sin). Float32 internally.
+        """
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * LDIM:
+            return
+        var pair_idx = UInt64(idx // 2)
+        var which_in_pair = idx % 2
+
+        var rng1 = PhiloxRandom(seed=seed, offset=offset_base + pair_idx * 2)
+        var rng2 = PhiloxRandom(seed=seed, offset=offset_base + pair_idx * 2 + 1)
+        var u1 = Float32(rng1.step_uniform()[0])
+        var u2 = Float32(rng2.step_uniform()[0])
+        if u1 < Float32(1e-7):
+            u1 = Float32(1e-7)
+        var r = sqrt(Float32(-2.0) * log(u1))
+        var two_pi_u2 = Float32(6.283185307179586) * u2
+        var z: Float32 = (
+            r * cos(two_pi_u2) if which_in_pair == 0 else r * sin(two_pi_u2)
+        )
+
+        var b = idx // LDIM
+        var k = idx % LDIM
+        noise_buf[b, k] = Scalar[KDT](z)
+
+    @staticmethod
+    def _box_muller_fill_gpu[BATCH: Int](
+        ctx: DeviceContext,
+        mut noise_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        seed: UInt64,
+        offset_base: UInt64,
+    ) raises:
+        comptime k = Self._box_muller_fill_kernel[
+            BATCH, Self.NET.LATENT_DIM, Self.dtype
+        ]
+        var threads = BATCH * Self.NET.LATENT_DIM
+        var blocks = (threads + TPB - 1) // TPB
+        ctx.enqueue_function[k, k](
+            noise_buf, seed, offset_base,
+            grid_dim=(blocks,), block_dim=(TPB,),
+        )
+
+    @staticmethod
+    fn _zero_eps_kernel[
+        BATCH: Int, DIM: Int, KDT: DType,
+    ](
+        eps: LayoutTensor[
+            KDT, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+    ):
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * DIM:
+            return
+        var b = idx // DIM
+        var k = idx % DIM
+        eps[b, k] = Scalar[KDT](0)
+
+    @staticmethod
+    fn _sgld_apply_kernel[
+        BATCH: Int, LDIM: Int, KDT: DType,
+    ](
+        latents: LayoutTensor[
+            KDT, Layout.row_major(BATCH, LDIM), MutAnyOrigin
+        ],
+        dx_buf: LayoutTensor[
+            KDT, Layout.row_major(BATCH, LDIM), MutAnyOrigin
+        ],
+        noise_buf: LayoutTensor[
+            KDT, Layout.row_major(BATCH, LDIM), MutAnyOrigin
+        ],
+        lr_x: Scalar[KDT],
+        noise_coeff: Scalar[KDT],
+    ):
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * LDIM:
+            return
+        var b = idx // LDIM
+        var k = idx % LDIM
+        latents[b, k] = (
+            rebind[Scalar[KDT]](latents[b, k])
+            - lr_x * rebind[Scalar[KDT]](dx_buf[b, k])
+            + noise_coeff * rebind[Scalar[KDT]](noise_buf[b, k])
+        )
+
+    @staticmethod
+    def _inference_step_mcpc_gpu[BATCH: Int](
+        ctx: DeviceContext,
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.OUT_DIM),
+            MutAnyOrigin,
+        ],
+        params: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(Self.NET.PARAM_SIZE),
+            MutAnyOrigin,
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut noise_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        lr_x: Scalar[Self.dtype],
+        noise_coeff: Scalar[Self.dtype],
+        seed: UInt64,
+        offset_base: UInt64,
+        clamp_output: Bool,
+    ) raises:
+        """SGLD inference step on GPU: x_l ← x_l − lr_x · dx_l + noise_coeff · N(0,1).
+
+        Mirrors `_inference_step_mcpc` (CPU). `clamp_output=False` zeros out
+        the readout block's ε slot so the supervised loss exerts no force on
+        the top latent (used during generation).
+        """
+        Self._forward_eps_gpu[BATCH](
+            ctx, x_in, y_target, params, latents, mu_eps_buf, a_below_buf
+        )
+
+        if not clamp_output:
+            comptime offset_eps_R = Self.NET._out_offset[Self.NET.N - 1]()
+            comptime out_dim_R = Self.NET.block_types[Self.NET.N - 1].OUT_DIM
+            var li_eps_R = LayoutTensor[
+                Self.dtype, Layout.row_major(BATCH, out_dim_R), MutAnyOrigin
+            ](mu_eps_buf.ptr + BATCH * offset_eps_R)
+            comptime zero_k = Self._zero_eps_kernel[
+                BATCH, out_dim_R, Self.dtype
+            ]
+            var z_threads = BATCH * out_dim_R
+            var z_blocks = (z_threads + TPB - 1) // TPB
+            ctx.enqueue_function[zero_k, zero_k](
+                li_eps_R,
+                grid_dim=(z_blocks,), block_dim=(TPB,),
+            )
+
+        # Phase C: dx_l = ε_l − act'(x_l) ⊙ (W_{l+1} · ε_{l+1})
+        comptime for l_idx in range(Self.NET.N_LATENTS):
+            comptime upper = l_idx + 1
+
+            var li_p_upper = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(Self.NET.block_types[upper].PARAM_SIZE),
+                MutAnyOrigin,
+            ](params.ptr + Self.NET._param_offset[upper]())
+            var li_eps_upper = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(
+                    BATCH, Self.NET.block_types[upper].OUT_DIM
+                ),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[upper]())
+            var li_z = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
+                MutAnyOrigin,
+            ](z_below_buf.ptr + BATCH * Self.NET._in_offset[upper]())
+
+            Self.NET.block_types[upper].pull_back_gpu[BATCH, Self.dtype](
+                ctx, li_eps_upper, li_p_upper, li_z
+            )
+
+            var li_x_l = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[upper].IN_DIM),
+                MutAnyOrigin,
+            ](latents.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+            Self.NET.block_types[upper].act_derivative_mul_gpu[
+                BATCH, Self.dtype
+            ](ctx, li_x_l, li_z, li_z)
+
+            var li_eps_self = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(
+                    BATCH, Self.NET.block_types[l_idx].OUT_DIM
+                ),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[l_idx]())
+            var li_dx = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(
+                    BATCH, Self.NET.block_types[l_idx].OUT_DIM
+                ),
+                MutAnyOrigin,
+            ](dx_buf.ptr + BATCH * Self.NET._latent_offset[l_idx]())
+
+            comptime sub_k = Self._dx_subtract_kernel[
+                BATCH, Self.NET.block_types[l_idx].OUT_DIM, Self.dtype
+            ]
+            var sub_threads = BATCH * Self.NET.block_types[l_idx].OUT_DIM
+            var sub_blocks = (sub_threads + TPB - 1) // TPB
+            ctx.enqueue_function[sub_k, sub_k](
+                li_eps_self, li_z, li_dx,
+                grid_dim=(sub_blocks,), block_dim=(TPB,),
+            )
+
+        # Generate noise on device
+        Self._box_muller_fill_gpu[BATCH](ctx, noise_buf, seed, offset_base)
+
+        # Phase D (SGLD): latents -= lr_x · dx + noise_coeff · noise (one fused kernel)
+        comptime apply_k = Self._sgld_apply_kernel[
+            BATCH, Self.NET.LATENT_DIM, Self.dtype
+        ]
+        var apply_threads = BATCH * Self.NET.LATENT_DIM
+        var apply_blocks = (apply_threads + TPB - 1) // TPB
+        ctx.enqueue_function[apply_k, apply_k](
+            latents, dx_buf, noise_buf, lr_x, noise_coeff,
+            grid_dim=(apply_blocks,), block_dim=(TPB,),
+        )
+
+    @staticmethod
+    def compute_grads_only_mcpc_gpu[BATCH: Int](
+        ctx: DeviceContext,
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut grads: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut noise_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        T_mixing: Int,
+        T_sampling: Int,
+        lr_x: Scalar[Self.dtype],
+        noise_var: Scalar[Self.dtype],
+        seed: UInt64,
+        offset_base: UInt64,
+    ) raises:
+        """GPU equivalent of compute_grads_only_mcpc.
+
+        No diagnostic energies returned (would require host syncs). Caller
+        bumps `offset_base` between calls; recommended bump:
+        BATCH * LATENT_DIM * (T_mixing + T_sampling) * 2.
+        """
+        Self.NET.init_latents_gpu[BATCH, Self.dtype](
+            ctx, x_in, params, latents, a_below_buf
+        )
+
+        var noise_coeff = Scalar[Self.dtype](
+            sqrt(2.0 * Float64(noise_var) * Float64(lr_x))
+        )
+        var n_per_step = UInt64(BATCH * Self.NET.LATENT_DIM)
+
+        for t in range(T_mixing):
+            Self._inference_step_mcpc_gpu[BATCH](
+                ctx, x_in, y_target, params, latents,
+                mu_eps_buf, a_below_buf, z_below_buf, dx_buf, noise_buf,
+                lr_x, noise_coeff,
+                seed, offset_base + UInt64(t) * n_per_step * 2,
+                True,
+            )
+
+        for t in range(T_sampling):
+            Self._inference_step_mcpc_gpu[BATCH](
+                ctx, x_in, y_target, params, latents,
+                mu_eps_buf, a_below_buf, z_below_buf, dx_buf, noise_buf,
+                lr_x, noise_coeff,
+                seed, offset_base + UInt64(T_mixing + t) * n_per_step * 2,
+                True,
+            )
+
+        # Compute weight grads at post-sampling state
+        comptime for i in range(Self.NET.N):
+            var li_g = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
+                MutAnyOrigin,
+            ](grads.ptr + Self.NET._param_offset[i]())
+            var li_eps = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
+                MutAnyOrigin,
+            ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
+            var li_a_below = LayoutTensor[
+                Self.dtype,
+                Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
+                MutAnyOrigin,
+            ](a_below_buf.ptr + BATCH * Self.NET._in_offset[i]())
+
+            Self.NET.block_types[i].weight_grad_gpu[BATCH, Self.dtype](
+                ctx, li_eps, li_a_below, li_g
+            )
+
+    @staticmethod
+    def generate_samples_gpu[BATCH: Int](
+        ctx: DeviceContext,
+        params: LayoutTensor[
+            Self.dtype, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
+        ],
+        mut latents: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut mu_eps_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_OUT_DIM),
+            MutAnyOrigin,
+        ],
+        mut a_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut z_below_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.SCRATCH_IN_DIM),
+            MutAnyOrigin,
+        ],
+        mut dx_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        mut noise_buf: LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.LATENT_DIM),
+            MutAnyOrigin,
+        ],
+        x_in: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.IN_DIM), MutAnyOrigin
+        ],
+        y_target_dummy: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        mut sample_out: LayoutTensor[
+            Self.dtype, Layout.row_major(BATCH, Self.NET.OUT_DIM), MutAnyOrigin
+        ],
+        T: Int,
+        lr_x: Scalar[Self.dtype],
+        noise_var: Scalar[Self.dtype],
+        seed: UInt64,
+        offset_base: UInt64,
+    ) raises:
+        """GPU equivalent of generate_samples — imagined-rollout sampling."""
+        Self.NET.init_latents_gpu[BATCH, Self.dtype](
+            ctx, x_in, params, latents, a_below_buf
+        )
+
+        var noise_coeff = Scalar[Self.dtype](
+            sqrt(2.0 * Float64(noise_var) * Float64(lr_x))
+        )
+        var n_per_step = UInt64(BATCH * Self.NET.LATENT_DIM)
+
+        for t in range(T):
+            Self._inference_step_mcpc_gpu[BATCH](
+                ctx, x_in, y_target_dummy, params, latents,
+                mu_eps_buf, a_below_buf, z_below_buf, dx_buf, noise_buf,
+                lr_x, noise_coeff,
+                seed, offset_base + UInt64(t) * n_per_step * 2,
+                False,
+            )
+
+        # Final feedforward through readout to produce sample_out
+        comptime read_idx = Self.NET.N - 1
+        var li_p_read = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(Self.NET.block_types[read_idx].PARAM_SIZE),
+            MutAnyOrigin,
+        ](params.ptr + Self.NET._param_offset[read_idx]())
+        var li_a_read = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.block_types[read_idx].IN_DIM),
+            MutAnyOrigin,
+        ](a_below_buf.ptr + BATCH * Self.NET._in_offset[read_idx]())
+        var li_x_below = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BATCH, Self.NET.block_types[read_idx].IN_DIM),
+            MutAnyOrigin,
+        ](latents.ptr + BATCH * Self.NET._latent_offset[Self.NET.N_LATENTS - 1]())
+        Self.NET.block_types[read_idx].predict_gpu[BATCH, Self.dtype](
+            ctx, li_x_below, li_p_read, sample_out, li_a_read
+        )
