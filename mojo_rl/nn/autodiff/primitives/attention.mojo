@@ -922,6 +922,16 @@ struct ScaledDotProductAttention[
                     scores.ptr[row_off + j] = w
                     cache.ptr[cache_row_off + j] = w
 
+                # Causal: also zero cache.attn[i, j > i] so the backward
+                # softmax_jvp reads zeros (not uninitialized memory) for
+                # the masked positions. The custom backward avoids these
+                # slots entirely via bounded loops, so the OFF path doesn't
+                # need this — but the bmm backward computes a full (seq,
+                # seq) dscore and relies on a[i, j > i] = 0 to mask out.
+                comptime if Self.causal:
+                    for j in range(i + 1, Self.seq_len):
+                        cache.ptr[cache_row_off + j] = Scalar[dtype](0)
+
                 i += bs
 
         var scores_lt = LayoutTensor[
