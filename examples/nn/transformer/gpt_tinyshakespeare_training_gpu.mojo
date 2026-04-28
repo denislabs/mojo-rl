@@ -724,4 +724,31 @@ def main() raises:
     )
     print(prompt + temp)
 
+    # Diagnostic: long-prompt sampling.
+    #
+    # The val_loss=1.6 + top-1=52 % numbers were measured with full 256-char
+    # context. The "ROMEO:" prompt above only feeds 6 chars, so position 5
+    # has very little context to work with. To distinguish (a) a real bug in
+    # the front-anchor inference path from (b) a low-context capacity issue,
+    # generate from a 250-char real Shakespeare prefix. With ~250 chars of
+    # context the model is in the regime the val diagnostic actually measured.
+    #   - If output is coherent → low-context generation just needs more
+    #     prompt / bigger model; the inference pipeline is fine.
+    #   - If output is still degenerate (newlines, repeated bigrams) →
+    #     there's a real bug somewhere in the front-anchor / generation path.
+    var long_prompt = text[byte=0:250]
+    print(
+        "\n[sample] long prompt diagnostic (250 real Shakespeare chars):\n"
+        + "---- prompt ----\n" + long_prompt + "\n---- continuation (greedy) ----"
+    )
+    var long_cont = _generate_text_gpu(
+        ctx, state, tok, long_prompt, 200, 0.0, top_k=0
+    )
+    print(long_cont)
+    print("---- continuation (T=0.8, no top-k) ----")
+    var long_temp = _generate_text_gpu(
+        ctx, state, tok, long_prompt, 200, 0.8, top_k=0
+    )
+    print(long_temp)
+
     print("\n" + "=" * 70)
