@@ -25,11 +25,20 @@ from linalg.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
 
 
-struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
+struct FusedMatMulBias[
+    in_dim: Int,
+    out_dim: Int,
+    USE_MAX_KERNELS: Bool = False,
+](FusedOp):
     """Fused y = x @ W + b in a single operation.
 
     PARAM_SIZE = in_dim * out_dim + out_dim  (W then b)
     CACHE_SIZE = in_dim  (caches input for dW)
+
+    USE_MAX_KERNELS (NVIDIA only): when True, route the matmul portion through
+    `linalg.matmul.matmul` (max_matmul) and apply bias via a separate kernel.
+    Backward likewise uses max_matmul for dx and dW; db keeps its own kernel.
+    Apple is unaffected — always uses the 2x2 tiled fallback.
     """
 
     comptime OP_ID: Int = OpID.FUSED_MATMUL_BIAS._value
@@ -1084,44 +1093,112 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
         ](input.ptr)
 
-        comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+        comptime if Self.USE_MAX_KERNELS and has_nvidia_gpu_accelerator():
+            # max_matmul has no fused bias; do matmul → bias-add as 3 kernels
+            # (cache-input, GEMM, bias-add). Backward parity: dx/dW use
+            # max_matmul, db keeps its existing kernel.
+            comptime cache_elems = BATCH * Self.in_dim
+            comptime cache_blocks = (cache_elems + TPB - 1) // TPB
 
-        @parameter
-        @always_inline
-        def wrapper(
-            output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
-            ],
-            input: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-            ],
-            W: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.out_dim),
-                ImmutAnyOrigin,
-            ],
-            b: LayoutTensor[
-                dtype, Layout.row_major(Self.out_dim), ImmutAnyOrigin
-            ],
-            cache: LayoutTensor[
+            @parameter
+            @always_inline
+            def cache_input_wrapper(
+                cache: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+                ],
+                input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx < cache_elems:
+                    cache.ptr[idx] = input.ptr[idx]
+
+            ctx.enqueue_function[cache_input_wrapper, cache_input_wrapper](
+                cache,
+                input_immut,
+                grid_dim=(cache_blocks,),
+                block_dim=(TPB,),
+            )
+
+            var input_mm = LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-            ],
-        ):
-            comptime if is_nvidia_gpu():
-                Self.eval_kernel_mma[BATCH, dtype](output, input, W, b, cache)
-            else:
-                Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
+            ](input.ptr)
+            var W_mm = LayoutTensor[
+                dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+            ](params.ptr)
+            max_matmul[target="gpu"](
+                lt_to_tt(output),
+                lt_to_tt(input_mm),
+                lt_to_tt(W_mm),
+                DeviceContextPtr(ctx),
+            )
 
-        ctx.enqueue_function[wrapper, wrapper](
-            output,
-            input_immut,
-            W,
-            b,
-            cache,
-            grid_dim=(grid_x, grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
+            comptime out_elems = BATCH * Self.out_dim
+            comptime bias_blocks = (out_elems + TPB - 1) // TPB
+
+            @parameter
+            @always_inline
+            def bias_add_wrapper(
+                output: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+                ],
+                b: LayoutTensor[
+                    dtype, Layout.row_major(Self.out_dim), ImmutAnyOrigin
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                if idx < out_elems:
+                    var col = idx % Self.out_dim
+                    output.ptr[idx] = output.ptr[idx] + rebind[Scalar[dtype]](
+                        b[col]
+                    )
+
+            ctx.enqueue_function[bias_add_wrapper, bias_add_wrapper](
+                output,
+                b,
+                grid_dim=(bias_blocks,),
+                block_dim=(TPB,),
+            )
+        else:
+            comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+            @parameter
+            @always_inline
+            def wrapper(
+                output: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+                ],
+                input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+                ],
+                W: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.in_dim, Self.out_dim),
+                    ImmutAnyOrigin,
+                ],
+                b: LayoutTensor[
+                    dtype, Layout.row_major(Self.out_dim), ImmutAnyOrigin
+                ],
+                cache: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+                ],
+            ):
+                comptime if is_nvidia_gpu():
+                    Self.eval_kernel_mma[BATCH, dtype](output, input, W, b, cache)
+                else:
+                    Self.eval_kernel_2x2[BATCH, dtype](output, input, W, b, cache)
+
+            ctx.enqueue_function[wrapper, wrapper](
+                output,
+                input_immut,
+                W,
+                b,
+                cache,
+                grid_dim=(grid_x, grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
     @staticmethod
     def eval_gpu_on_stream[
@@ -1232,75 +1309,139 @@ struct FusedMatMulBias[in_dim: Int, out_dim: Int](FusedOp):
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](grad_params.ptr + Self.in_dim * Self.out_dim)
 
-        # Kernel 1: dx = grad_output @ W.T
-        comptime dx_grid_x = (Self.in_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
-
-        @parameter
-        @always_inline
-        def dx_wrapper(
-            grad_input: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
-            ],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
-            ],
-            W: LayoutTensor[
-                dtype,
-                Layout.row_major(Self.in_dim, Self.out_dim),
-                ImmutAnyOrigin,
-            ],
-        ):
-            comptime if is_nvidia_gpu():
-                Self.backward_dx_kernel_mma[BATCH, dtype](
-                    grad_input, grad_output, W
-                )
-            else:
-                Self.backward_dx_kernel_2x2[BATCH, dtype](
-                    grad_input, grad_output, W
-                )
-
-        ctx.enqueue_function[dx_wrapper, dx_wrapper](
-            grad_input,
-            grad_output_immut,
-            W,
-            grid_dim=(dx_grid_x, dx_grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
-
-        # Kernel 2: dW = cache.T @ grad_output
-        comptime dW_grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-        comptime dW_grid_y = (Self.in_dim + MMA_BLOCK_M - 1) // MMA_BLOCK_M
-
-        @parameter
-        @always_inline
-        def dW_wrapper(
-            dW: LayoutTensor[
+        comptime if Self.USE_MAX_KERNELS and has_nvidia_gpu_accelerator():
+            # dx = grad_output @ W^T via max_matmul (transpose_b)
+            var W_for_dx = LayoutTensor[
                 dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
-            ],
-            cache: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
-            ],
-            grad_output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
-            ],
-        ):
-            comptime if is_nvidia_gpu():
-                Self.backward_dW_kernel_mma[BATCH, dtype](
-                    dW, cache, grad_output
-                )
-            else:
-                Self.backward_dW_kernel_2x2[BATCH, dtype](
-                    dW, cache, grad_output
-                )
+            ](params.ptr)
+            var grad_input_mm = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+            ](grad_input.ptr)
+            var grad_output_mm = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+            ](grad_output.ptr)
+            max_matmul[transpose_b=True, target="gpu"](
+                lt_to_tt(grad_input_mm),
+                lt_to_tt(grad_output_mm),
+                lt_to_tt(W_for_dx),
+                DeviceContextPtr(ctx),
+            )
 
-        ctx.enqueue_function[dW_wrapper, dW_wrapper](
-            dW,
-            cache_immut,
-            grad_output_immut,
-            grid_dim=(dW_grid_x, dW_grid_y),
-            block_dim=(MMA_BLOCK_THREADS, 1),
-        )
+            # dW = cache^T @ grad_output. max_matmul has no transpose_a, so
+            # materialize cache^T into a scratch buffer first.
+            var cache_T_buf = ctx.enqueue_create_buffer[dtype](
+                BATCH * Self.in_dim
+            )
+            var cache_T = LayoutTensor[
+                dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
+            ](cache_T_buf.unsafe_ptr())
+            var cache_src = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+            ](cache.ptr)
+
+            @parameter
+            @always_inline
+            def _transpose_cache(
+                dst: LayoutTensor[
+                    dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
+                ],
+                src: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+                ],
+            ):
+                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                var row = idx // Self.in_dim
+                var col = idx % Self.in_dim
+                if row < BATCH:
+                    dst[col, row] = src[row, col]
+
+            comptime T_GRID = (BATCH * Self.in_dim + TPB - 1) // TPB
+            ctx.enqueue_function[_transpose_cache, _transpose_cache](
+                cache_T,
+                cache_src,
+                grid_dim=(T_GRID,),
+                block_dim=(TPB,),
+            )
+
+            var go_for_dW = LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+            ](grad_output.ptr)
+            max_matmul[target="gpu"](
+                lt_to_tt(dW),
+                lt_to_tt(cache_T),
+                lt_to_tt(go_for_dW),
+                DeviceContextPtr(ctx),
+            )
+        else:
+            # Kernel 1: dx = grad_output @ W.T
+            comptime dx_grid_x = (Self.in_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime dx_grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+            @parameter
+            @always_inline
+            def dx_wrapper(
+                grad_input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+                ],
+                grad_output: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
+                ],
+                W: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.in_dim, Self.out_dim),
+                    ImmutAnyOrigin,
+                ],
+            ):
+                comptime if is_nvidia_gpu():
+                    Self.backward_dx_kernel_mma[BATCH, dtype](
+                        grad_input, grad_output, W
+                    )
+                else:
+                    Self.backward_dx_kernel_2x2[BATCH, dtype](
+                        grad_input, grad_output, W
+                    )
+
+            ctx.enqueue_function[dx_wrapper, dx_wrapper](
+                grad_input,
+                grad_output_immut,
+                W,
+                grid_dim=(dx_grid_x, dx_grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
+
+            # Kernel 2: dW = cache.T @ grad_output
+            comptime dW_grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime dW_grid_y = (Self.in_dim + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+            @parameter
+            @always_inline
+            def dW_wrapper(
+                dW: LayoutTensor[
+                    dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+                ],
+                cache: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.in_dim), ImmutAnyOrigin
+                ],
+                grad_output: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
+                ],
+            ):
+                comptime if is_nvidia_gpu():
+                    Self.backward_dW_kernel_mma[BATCH, dtype](
+                        dW, cache, grad_output
+                    )
+                else:
+                    Self.backward_dW_kernel_2x2[BATCH, dtype](
+                        dW, cache, grad_output
+                    )
+
+            ctx.enqueue_function[dW_wrapper, dW_wrapper](
+                dW,
+                cache_immut,
+                grad_output_immut,
+                grid_dim=(dW_grid_x, dW_grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
         # Kernel 3: db = sum(grad_output, axis=0)
         comptime db_grid_x = (Self.out_dim + TPB - 1) // TPB

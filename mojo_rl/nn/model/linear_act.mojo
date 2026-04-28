@@ -18,8 +18,14 @@ from ..autodiff import (
     SwishOp,
 )
 
-comptime Linear[in_dim: Int, out_dim: Int] = AutoFused[
-    MatMul[in_dim, out_dim], BiasAdd[out_dim]
+comptime Linear[
+    in_dim: Int,
+    out_dim: Int,
+    USE_MAX_KERNELS: Bool = False,
+] = AutoFused[
+    MatMul[in_dim, out_dim, USE_MAX_KERNELS],
+    BiasAdd[out_dim],
+    USE_MAX_KERNELS=USE_MAX_KERNELS,
 ]
 
 comptime LinearReLU[in_dim: Int, out_dim: Int] = AutoFused[

@@ -206,7 +206,11 @@ def _fused_inter_size[*OPS: DiffOp, START: Int = 0]() -> Int:
 
 
 def _auto_fused_forward[
-    BATCH: Int, *OPS: DiffOp, START: Int = 0, dtype: DType = DType.float32
+    BATCH: Int,
+    *OPS: DiffOp,
+    START: Int = 0,
+    dtype: DType = DType.float32,
+    USE_MAX_KERNELS: Bool = False,
 ](
     in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     final_out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -297,7 +301,13 @@ def _auto_fused_forward[
                     FusedMatMulBiasActivation[G_IN, G_OUT, MishActivation].eval[
                         BATCH
                     ](in_v, out_v, p_v, c_v)
-                _auto_fused_forward[BATCH, *OPS, START=START + 3, dtype=dtype](
+                _auto_fused_forward[
+                    BATCH,
+                    *OPS,
+                    START=START + 3,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     inter_ptr + BATCH * inter_off,
                     final_out_ptr,
                     params_ptr,
@@ -331,14 +341,24 @@ def _auto_fused_forward[
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](final_out_ptr)
-                FusedMatMulBias[G_IN, G_OUT].eval[BATCH](in_v, out_v, p_v, c_v)
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].eval[BATCH](
+                    in_v, out_v, p_v, c_v
+                )
             else:
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](inter_ptr + BATCH * inter_off)
-                FusedMatMulBias[G_IN, G_OUT].eval[BATCH](in_v, out_v, p_v, c_v)
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].eval[BATCH](
+                    in_v, out_v, p_v, c_v
+                )
                 comptime assert (OPS.size - START) >= 2
-                _auto_fused_forward[BATCH, *OPS, START=START + 2, dtype=dtype](
+                _auto_fused_forward[
+                    BATCH,
+                    *OPS,
+                    START=START + 2,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     inter_ptr + BATCH * inter_off,
                     final_out_ptr,
                     params_ptr,
@@ -376,7 +396,13 @@ def _auto_fused_forward[
                 ](inter_ptr + BATCH * inter_off)
                 OPS[START].eval[BATCH](in_v, out_v, p_v, c_v)
                 comptime assert (OPS.size - START) >= 1
-                _auto_fused_forward[BATCH, *OPS, START=START + 1, dtype=dtype](
+                _auto_fused_forward[
+                    BATCH,
+                    *OPS,
+                    START=START + 1,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     inter_ptr + BATCH * inter_off,
                     final_out_ptr,
                     params_ptr,
@@ -408,7 +434,9 @@ def _auto_fused_forward[
             var out_v = LayoutTensor[
                 dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
             ](final_out_ptr)
-            FusedMatMulBias[G_IN, G_OUT].eval[BATCH](in_v, out_v, p_v, c_v)
+            FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].eval[BATCH](
+                in_v, out_v, p_v, c_v
+            )
         else:
             # Two unfused ops: op0 → inter, op1 → output
             comptime G0_IN = OPS[START].IN_DIM
@@ -474,7 +502,11 @@ def _auto_fused_forward[
 
 
 def _auto_fused_backward[
-    BATCH: Int, *OPS: DiffOp, START: Int = 0, dtype: DType = DType.float32
+    BATCH: Int,
+    *OPS: DiffOp,
+    START: Int = 0,
+    dtype: DType = DType.float32,
+    USE_MAX_KERNELS: Bool = False,
 ](
     grad_in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     grad_chain_out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -546,7 +578,13 @@ def _auto_fused_backward[
             else:
                 # Not last: recurse first, then VJP
                 var out_inter = gi_ptr + BATCH * inter_off
-                _auto_fused_backward[BATCH, *OPS, START=START + 3, dtype=dtype](
+                _auto_fused_backward[
+                    BATCH,
+                    *OPS,
+                    START=START + 3,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     out_inter,
                     grad_chain_out_ptr,
                     params_ptr,
@@ -619,13 +657,19 @@ def _auto_fused_backward[
                 var g_v = LayoutTensor[
                     dtype, Layout.row_major(FPS), MutAnyOrigin
                 ](grads_ptr + param_off)
-                FusedMatMulBias[G_IN, G_OUT].vjp[BATCH](
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].vjp[BATCH](
                     go_v, gi_v, p_v, c_v, g_v
                 )
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
                 comptime assert (OPS.size - START) >= 2
-                _auto_fused_backward[BATCH, *OPS, START=START + 2, dtype=dtype](
+                _auto_fused_backward[
+                    BATCH,
+                    *OPS,
+                    START=START + 2,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     out_inter,
                     grad_chain_out_ptr,
                     params_ptr,
@@ -651,7 +695,7 @@ def _auto_fused_backward[
                 var g_v = LayoutTensor[
                     dtype, Layout.row_major(FPS), MutAnyOrigin
                 ](grads_ptr + param_off)
-                FusedMatMulBias[G_IN, G_OUT].vjp[BATCH](
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].vjp[BATCH](
                     go_v, gi_v, p_v, c_v, g_v
                 )
         else:
@@ -681,7 +725,13 @@ def _auto_fused_backward[
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
                 comptime assert (OPS.size - START) >= 1
-                _auto_fused_backward[BATCH, *OPS, START=START + 1, dtype=dtype](
+                _auto_fused_backward[
+                    BATCH,
+                    *OPS,
+                    START=START + 1,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     out_inter,
                     grad_chain_out_ptr,
                     params_ptr,
@@ -733,7 +783,9 @@ def _auto_fused_backward[
             var g_v = LayoutTensor[dtype, Layout.row_major(FPS), MutAnyOrigin](
                 grads_ptr + param_off
             )
-            FusedMatMulBias[G_IN, G_OUT].vjp[BATCH](go_v, gi_v, p_v, c_v, g_v)
+            FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].vjp[BATCH](
+                go_v, gi_v, p_v, c_v, g_v
+            )
         else:
             # Two unfused ops — reverse order: op1 first, then op0
             comptime G0_IN = OPS[START].IN_DIM
@@ -801,7 +853,11 @@ def _auto_fused_backward[
 
 
 def _auto_fused_forward_gpu[
-    BATCH: Int, *OPS: DiffOp, START: Int = 0, dtype: DType = DType.float32
+    BATCH: Int,
+    *OPS: DiffOp,
+    START: Int = 0,
+    dtype: DType = DType.float32,
+    USE_MAX_KERNELS: Bool = False,
 ](
     ctx: DeviceContext,
     in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -888,7 +944,13 @@ def _auto_fused_forward_gpu[
                     FusedMatMulBiasActivation[
                         G_IN, G_OUT, MishActivation
                     ].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
-                _auto_fused_forward_gpu[BATCH, *OPS, START=START + 3, dtype=dtype](
+                _auto_fused_forward_gpu[
+                    BATCH,
+                    *OPS,
+                    START=START + 3,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     ctx,
                     ws_ptr + BATCH * inter_off,
                     final_out_ptr,
@@ -921,18 +983,24 @@ def _auto_fused_forward_gpu[
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](final_out_ptr)
-                FusedMatMulBias[G_IN, G_OUT].eval_gpu[BATCH](
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].eval_gpu[BATCH](
                     ctx, out_v, in_v, p_v, c_v, op_ws_ptr
                 )
             else:
                 var out_v = LayoutTensor[
                     dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
                 ](ws_ptr + BATCH * inter_off)
-                FusedMatMulBias[G_IN, G_OUT].eval_gpu[BATCH](
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].eval_gpu[BATCH](
                     ctx, out_v, in_v, p_v, c_v, op_ws_ptr
                 )
                 comptime assert (OPS.size - START) >= 2
-                _auto_fused_forward_gpu[BATCH, *OPS, START=START + 2, dtype=dtype](
+                _auto_fused_forward_gpu[
+                    BATCH,
+                    *OPS,
+                    START=START + 2,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     ctx,
                     ws_ptr + BATCH * inter_off,
                     final_out_ptr,
@@ -969,7 +1037,13 @@ def _auto_fused_forward_gpu[
                 ](ws_ptr + BATCH * inter_off)
                 OPS[START].eval_gpu[BATCH](ctx, out_v, in_v, p_v, c_v, op_ws_ptr)
                 comptime assert (OPS.size - START) >= 1
-                _auto_fused_forward_gpu[BATCH, *OPS, START=START + 1, dtype=dtype](
+                _auto_fused_forward_gpu[
+                    BATCH,
+                    *OPS,
+                    START=START + 1,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     ctx,
                     ws_ptr + BATCH * inter_off,
                     final_out_ptr,
@@ -1003,7 +1077,7 @@ def _auto_fused_forward_gpu[
             var out_v = LayoutTensor[
                 dtype, Layout.row_major(BATCH, G_OUT), MutAnyOrigin
             ](final_out_ptr)
-            FusedMatMulBias[G_IN, G_OUT].eval_gpu[BATCH](
+            FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].eval_gpu[BATCH](
                 ctx, out_v, in_v, p_v, c_v, op_ws_ptr
             )
         else:
@@ -1349,7 +1423,11 @@ def _auto_fused_forward_gpu_on_stream[
 
 
 def _auto_fused_backward_gpu[
-    BATCH: Int, *OPS: DiffOp, START: Int = 0, dtype: DType = DType.float32
+    BATCH: Int,
+    *OPS: DiffOp,
+    START: Int = 0,
+    dtype: DType = DType.float32,
+    USE_MAX_KERNELS: Bool = False,
 ](
     ctx: DeviceContext,
     grad_in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -1418,7 +1496,13 @@ def _auto_fused_backward_gpu[
                     ].vjp_gpu[BATCH](ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr)
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
-                _auto_fused_backward_gpu[BATCH, *OPS, START=START + 3, dtype=dtype](
+                _auto_fused_backward_gpu[
+                    BATCH,
+                    *OPS,
+                    START=START + 3,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     ctx,
                     out_inter,
                     grad_chain_out_ptr,
@@ -1490,13 +1574,19 @@ def _auto_fused_backward_gpu[
                 var g_v = LayoutTensor[
                     dtype, Layout.row_major(FPS), MutAnyOrigin
                 ](grads_ptr + param_off)
-                FusedMatMulBias[G_IN, G_OUT].vjp_gpu[BATCH](
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].vjp_gpu[BATCH](
                     ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
                 )
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
                 comptime assert (OPS.size - START) >= 2
-                _auto_fused_backward_gpu[BATCH, *OPS, START=START + 2, dtype=dtype](
+                _auto_fused_backward_gpu[
+                    BATCH,
+                    *OPS,
+                    START=START + 2,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     ctx,
                     out_inter,
                     grad_chain_out_ptr,
@@ -1524,7 +1614,7 @@ def _auto_fused_backward_gpu[
                 var g_v = LayoutTensor[
                     dtype, Layout.row_major(FPS), MutAnyOrigin
                 ](grads_ptr + param_off)
-                FusedMatMulBias[G_IN, G_OUT].vjp_gpu[BATCH](
+                FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].vjp_gpu[BATCH](
                     ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
                 )
         else:
@@ -1552,7 +1642,13 @@ def _auto_fused_backward_gpu[
             else:
                 var out_inter = gi_ptr + BATCH * inter_off
                 comptime assert (OPS.size - START) >= 1
-                _auto_fused_backward_gpu[BATCH, *OPS, START=START + 1, dtype=dtype](
+                _auto_fused_backward_gpu[
+                    BATCH,
+                    *OPS,
+                    START=START + 1,
+                    dtype=dtype,
+                    USE_MAX_KERNELS=USE_MAX_KERNELS,
+                ](
                     ctx,
                     out_inter,
                     grad_chain_out_ptr,
@@ -1606,7 +1702,7 @@ def _auto_fused_backward_gpu[
             var g_v = LayoutTensor[dtype, Layout.row_major(FPS), MutAnyOrigin](
                 grads_ptr + param_off
             )
-            FusedMatMulBias[G_IN, G_OUT].vjp_gpu[BATCH](
+            FusedMatMulBias[G_IN, G_OUT, USE_MAX_KERNELS].vjp_gpu[BATCH](
                 ctx, go_v, gi_v, p_v, c_v, g_v, op_ws_ptr
             )
         else:
@@ -1673,7 +1769,7 @@ def _auto_fused_backward_gpu[
 
 
 @fieldwise_init
-struct AutoFused[*OPS: DiffOp](Model):
+struct AutoFused[*OPS: DiffOp, USE_MAX_KERNELS: Bool = False](Model):
     """Automatically fuses a DiffOp chain into optimized fused groups.
 
     Pattern matching (greedy, left-to-right):
@@ -1687,6 +1783,15 @@ struct AutoFused[*OPS: DiffOp](Model):
             MatMul[4,1], BiasAdd[1],
         ]
         # Internally executes: FusedMBR[2,4] → FusedMB[4,1]
+
+    USE_MAX_KERNELS (NVIDIA only): forwards to the M+B (FusedMatMulBias)
+    primitives produced by fusion, which then route through `linalg.matmul`
+    (max_matmul) instead of the custom MMA kernel. Note: the per-MatMul
+    USE_MAX_KERNELS parameter on individual ops in OPS is *ignored* under
+    fusion — only this AutoFused-level flag controls fused-primitive
+    behavior. Use the `Linear` alias to keep both in sync. M+B+Act fusion
+    is unaffected by this flag (phase 1 covers Linear only). Stream
+    dispatch (forward_gpu_no_cache_on_stream) also ignores the flag.
     """
 
     comptime op_types = Self.OPS
@@ -1828,7 +1933,12 @@ struct AutoFused[*OPS: DiffOp](Model):
         for _ in range(inter_size if inter_size > 0 else 1):
             inter_storage.append(0)
 
-        _auto_fused_forward[BATCH, *Self.OPS, dtype=dtype](
+        _auto_fused_forward[
+            BATCH,
+            *Self.OPS,
+            dtype=dtype,
+            USE_MAX_KERNELS=Self.USE_MAX_KERNELS,
+        ](
             input.ptr,
             output.ptr,
             params.ptr,
@@ -1907,7 +2017,12 @@ struct AutoFused[*OPS: DiffOp](Model):
         for _ in range(gi_size if gi_size > 0 else 1):
             gi_storage.append(0)
 
-        _auto_fused_backward[BATCH, *Self.OPS, dtype=dtype](
+        _auto_fused_backward[
+            BATCH,
+            *Self.OPS,
+            dtype=dtype,
+            USE_MAX_KERNELS=Self.USE_MAX_KERNELS,
+        ](
             grad_input.ptr,
             grad_output.ptr,
             params.ptr,
@@ -1951,7 +2066,12 @@ struct AutoFused[*OPS: DiffOp](Model):
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
             Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
         )
-        _auto_fused_forward_gpu[BATCH, *Self.OPS, dtype=dtype](
+        _auto_fused_forward_gpu[
+            BATCH,
+            *Self.OPS,
+            dtype=dtype,
+            USE_MAX_KERNELS=Self.USE_MAX_KERNELS,
+        ](
             ctx,
             input.ptr,
             output.ptr,
@@ -2080,7 +2200,12 @@ struct AutoFused[*OPS: DiffOp](Model):
         var op_ws_ptr = workspace.unsafe_ptr() + BATCH * (
             Self.INTER_SIZE_PER_SAMPLE + Self.CACHE_SIZE
         )
-        _auto_fused_backward_gpu[BATCH, *Self.OPS, dtype=dtype](
+        _auto_fused_backward_gpu[
+            BATCH,
+            *Self.OPS,
+            dtype=dtype,
+            USE_MAX_KERNELS=Self.USE_MAX_KERNELS,
+        ](
             ctx,
             grad_input.ptr,
             grad_output.ptr,
