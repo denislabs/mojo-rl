@@ -36,6 +36,7 @@ from mojo_rl.nn.model import (
     Conv2DTanh,
     Conv2DSigmoid,
     Conv2DMish,
+    NormedLinear,
 )
 from mojo_rl.nn.autodiff import MatMul, AutoFused, BiasAdd, Conv2D
 
@@ -596,6 +597,41 @@ def main() raises:
         Conv2DMish[16, 32, 3, 1, 1, 16, 16, USE_MAX_KERNELS=True],
         BS=16,
     ](ctx, "Conv2DMish[16->32,3x3,16x16] BS=16")
+
+    # ── Phase 4a: NormedLinear (TDMPC2 / REDQ-OFE) ─────────────
+    # NormedLinear = matmul + bias + LayerNorm + Mish, fused. Validates the
+    # max_matmul + post-kernel-norm pattern. Tolerances are looser because
+    # LayerNorm propagates GEMM noise through the normalization variance.
+    print("--- NormedLinear (Linear + LN + Mish) ---")
+    total_fails += parity_check[
+        NormedLinear[8, 16, USE_MAX_KERNELS=False],
+        NormedLinear[8, 16, USE_MAX_KERNELS=True],
+        BS=8,
+    ](ctx, "NormedLinear[8,16] BS=8")
+
+    total_fails += parity_check[
+        NormedLinear[16, 16, USE_MAX_KERNELS=False],
+        NormedLinear[16, 16, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "NormedLinear[16,16] BS=16")
+
+    total_fails += parity_check[
+        NormedLinear[32, 32, USE_MAX_KERNELS=False],
+        NormedLinear[32, 32, USE_MAX_KERNELS=True],
+        BS=16,
+    ](ctx, "NormedLinear[32,32] BS=16")
+
+    total_fails += parity_check[
+        NormedLinear[64, 64, USE_MAX_KERNELS=False],
+        NormedLinear[64, 64, USE_MAX_KERNELS=True],
+        BS=32,
+    ](ctx, "NormedLinear[64,64] BS=32 (TDMPC2 typical)")
+
+    total_fails += parity_check[
+        NormedLinear[256, 256, USE_MAX_KERNELS=False],
+        NormedLinear[256, 256, USE_MAX_KERNELS=True],
+        BS=64,
+    ](ctx, "NormedLinear[256,256] BS=64 (RL agent hidden)")
 
     print("======================================================")
     if total_fails == 0:
