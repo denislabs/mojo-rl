@@ -1,24 +1,22 @@
-"""Pendulum world model — amortized PC (Tschantz 2023 hybrid PC).
+"""MountainCar Continuous world model — amortized PC.
 
-Replaces the iterative SGLD inference with an encoder + few refinement steps:
-    z_init = encoder([z_{t-1}, a_{t-1}, s_t])    # learned MLP, feedforward
-    z_t    = z_init refined with K=5 SGLD steps  # local correction
-    W's    updated via PC's local rule at refined z_t  (no backprop through W)
-    encoder W's updated via MSE(encoder_out, refined_z_t.detach())  (standard backprop)
+Same architecture and training pipeline as `test_pendulum_amortized_pc.mojo`,
+with Pendulum dynamics swapped for MountainCar Continuous. Tests whether the
+framework (amortized PC + cosine LR sched + bootstrap refinement) generalizes
+across env types or hits the same persistence-baseline ceiling we saw on
+Pendulum (where slow rotation made `s_{t+1} = s_t` an unreasonably strong
+baseline).
 
-This addresses the two failure modes that vanilla iterative-PC hit on Pendulum:
-  - **Lazy fit** is gone: encoder is forced to be a tight forward predictor.
-  - **Recurrent inference instability** is gone: with K=5 instead of T_INFER=50,
-    latents don't have time to diverge even if W's spectral radius drifts past 1.
-
-PC's distinctives are preserved: local learning rule for the world model W's,
-iterative refinement (just shorter), Bayesian framing.
-
-Encoder is a 2-layer MLP, hand-rolled in this test file (test-local). If this
-works, promote to a framework primitive.
+Env: MountainCar Continuous.
+- Obs (2D): [position, velocity], normalized to [-1, 1].
+  - position ∈ [-1.2, 0.6] → normalized as 2·(p + 0.3)/0.9.
+  - velocity ∈ [-0.07, 0.07] → normalized as v / 0.07.
+- Action (1D continuous): [-1, 1] (force direction).
+- Dynamics: v += action·force − cos(3·p)·gravity; p += v; clip both;
+  boundary collisions zero out velocity.
 
 Run:
-    pixi run mojo run -I . tests/nn_pc_v2/test_pendulum_amortized_pc.mojo
+    pixi run mojo run -I . tests/nn_pc_v2/test_mountain_car_amortized_pc.mojo
 """
 
 from std.math import sqrt, log, cos, sin, tanh, pi
@@ -39,23 +37,24 @@ from mojo_rl.experimental.nn_pc_v2 import (
     PCTanh,
     PCTrainer,
     clip_grad_norm,
-    spectral_norm_clamp,
 )
 
 
-# Pendulum physics
-comptime PEND_G: Float64 = 10.0
-comptime PEND_L: Float64 = 1.0
-comptime PEND_M: Float64 = 1.0
-comptime PEND_DT: Float64 = 0.05
-comptime PEND_MAX_SPEED: Float64 = 8.0
-comptime PEND_MAX_TORQUE: Float64 = 2.0
+# MountainCar Continuous physics (Gymnasium defaults)
+comptime MC_FORCE: Float64 = 0.0015
+comptime MC_GRAVITY: Float64 = 0.0025
+comptime MC_MAX_SPEED: Float64 = 0.07
+comptime MC_MIN_POSITION: Float64 = -1.2
+comptime MC_MAX_POSITION: Float64 = 0.6
+# Position center ((MIN+MAX)/2 = -0.3) and half-range (0.9) for [-1,1] norm.
+comptime MC_POS_CENTER: Float64 = -0.3
+comptime MC_POS_HALF_RANGE: Float64 = 0.9
 
 # World-model architecture (PC)
 comptime BATCH = 32
 comptime HIDDEN = 64
 comptime ACTION_DIM = 1
-comptime OBS_DIM = 3
+comptime OBS_DIM = 2
 comptime AUG_DIM = HIDDEN + ACTION_DIM
 comptime SEQ_LEN = 20
 comptime EVAL_HORIZON = 10
@@ -71,11 +70,6 @@ comptime ADAM_LR_PC: Float64 = 0.001
 comptime ADAM_LR_ENC: Float64 = 0.001
 comptime GRAD_CLIP_NORM: Float64 = 1.0
 comptime PC_WEIGHT_DECAY: Float64 = 0.01    # AdamW weight decay — regularizes decoder W to prevent unbounded ω predictions
-# Spectral norm cap on the recurrence sub-block of block-0 W (z_{t-1} → z_t).
-# σ_max ≤ SPECTRAL_TARGET keeps the recurrence non-expansive so open-loop
-# rollout errors don't compound geometrically. 1.0 = standard Miyato choice.
-comptime SPECTRAL_TARGET: Float64 = 1.0
-comptime SPECTRAL_POWER_ITERS: Int = 1   # one iter per call; persistent (u, v) tracks σ_max across steps
 
 # Encoder architecture (framework PCEncoder, 2-layer MLP w/ tanh hidden)
 comptime ENC_INPUT_DIM = HIDDEN + ACTION_DIM + OBS_DIM   # [prev_z, action, obs]
@@ -103,32 +97,34 @@ comptime SCHED = CosineWarmupSchedule[
 ]
 
 
-fn _angle_normalize(t: Float64) -> Float64:
-    var x = (t + pi) - 2.0 * pi * Float64(Int((t + pi) / (2.0 * pi)))
-    if x < 0.0:
-        x += 2.0 * pi
-    return x - pi
-
-
-def _step_pendulum(
-    mut theta: Float64, mut theta_dot: Float64, torque: Float64
+def _step_mountain_car(
+    position: Float64, velocity: Float64, action: Float64
 ) -> Tuple[Float64, Float64]:
-    var u = torque
-    if u > PEND_MAX_TORQUE:
-        u = PEND_MAX_TORQUE
-    elif u < -PEND_MAX_TORQUE:
-        u = -PEND_MAX_TORQUE
-    var theta_acc = (
-        (3.0 * PEND_G) / (2.0 * PEND_L) * sin(theta)
-        + (3.0 / (PEND_M * PEND_L * PEND_L)) * u
+    """One step of MountainCar Continuous dynamics.
+
+    Returns (new_position, new_velocity). Action is clipped to [-1, 1] (force
+    direction). Boundary collisions zero out the velocity.
+    """
+    var u = action
+    if u > 1.0:
+        u = 1.0
+    elif u < -1.0:
+        u = -1.0
+    var new_v = (
+        velocity + u * MC_FORCE - cos(3.0 * position) * MC_GRAVITY
     )
-    var new_dot = theta_dot + theta_acc * PEND_DT
-    if new_dot > PEND_MAX_SPEED:
-        new_dot = PEND_MAX_SPEED
-    elif new_dot < -PEND_MAX_SPEED:
-        new_dot = -PEND_MAX_SPEED
-    var new_theta = _angle_normalize(theta + new_dot * PEND_DT)
-    return (new_theta, new_dot)
+    if new_v > MC_MAX_SPEED:
+        new_v = MC_MAX_SPEED
+    elif new_v < -MC_MAX_SPEED:
+        new_v = -MC_MAX_SPEED
+    var new_p = position + new_v
+    if new_p < MC_MIN_POSITION:
+        new_p = MC_MIN_POSITION
+        new_v = 0.0
+    elif new_p > MC_MAX_POSITION:
+        new_p = MC_MAX_POSITION
+        new_v = 0.0
+    return (new_p, new_v)
 
 
 def _gen_rollout_into[
@@ -140,31 +136,40 @@ def _gen_rollout_into[
     actions_offset: Int,
     obs_offset: Int,
 ):
+    """Generate one MountainCar Continuous rollout.
+
+    Initial state: position ~ U(-0.6, -0.4) (Gymnasium default), velocity = 0.
+    Actions: U(-1, 1) per step.
+    Obs (normalized): [(p+0.3)/0.9, v/0.07] ∈ [-1, 1]² roughly.
+    """
     var u0 = Float64(rng.step_uniform()[0])
-    var u1 = Float64(rng.step_uniform()[0])
-    var theta = (u0 * 2.0 - 1.0) * pi
-    var theta_dot = (u1 * 2.0 - 1.0) * 1.0
-    obs_buf[obs_offset + 0] = Scalar[dtype](cos(theta))
-    obs_buf[obs_offset + 1] = Scalar[dtype](sin(theta))
-    obs_buf[obs_offset + 2] = Scalar[dtype](theta_dot / PEND_MAX_SPEED)
+    var position = -0.6 + u0 * 0.2  # U(-0.6, -0.4)
+    var velocity = 0.0
+
+    obs_buf[obs_offset + 0] = Scalar[dtype](
+        (position - MC_POS_CENTER) / MC_POS_HALF_RANGE
+    )
+    obs_buf[obs_offset + 1] = Scalar[dtype](velocity / MC_MAX_SPEED)
 
     for t in range(SEQ_LEN_T):
         var ua = Float64(rng.step_uniform()[0])
-        var torque_norm = ua * 2.0 - 1.0
-        var torque = torque_norm * PEND_MAX_TORQUE
-        actions_buf[actions_offset + t] = Scalar[dtype](torque_norm)
+        var action_norm = ua * 2.0 - 1.0  # U(-1, 1)
+        actions_buf[actions_offset + t] = Scalar[dtype](action_norm)
 
-        var stepped = _step_pendulum(theta, theta_dot, torque)
-        theta = stepped[0]
-        theta_dot = stepped[1]
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 0] = Scalar[dtype](cos(theta))
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 1] = Scalar[dtype](sin(theta))
-        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](theta_dot / PEND_MAX_SPEED)
+        var stepped = _step_mountain_car(position, velocity, action_norm)
+        position = stepped[0]
+        velocity = stepped[1]
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 0] = Scalar[dtype](
+            (position - MC_POS_CENTER) / MC_POS_HALF_RANGE
+        )
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 1] = Scalar[dtype](
+            velocity / MC_MAX_SPEED
+        )
 
 
 def main() raises:
     print("=" * 60)
-    print("Pendulum world model — amortized PC")
+    print("MountainCar Continuous world model — amortized PC")
     print("=" * 60)
     print("  PC arch    : PCBlock[", AUG_DIM, ",", HIDDEN, ",PCTanh] → PCBlock[", HIDDEN, ",", OBS_DIM, ",PCTanh]")
     print("  PC params  :", NET.PARAM_SIZE)
@@ -174,7 +179,6 @@ def main() raises:
     print("  PC_OPT=Adam(lr=", ADAM_LR_PC, ")  ENC_OPT=Adam(lr=", ADAM_LR_ENC, ")")
     print("  LR schedule: cosine warmup (W=", WARMUP_EPOCHS, ", min=", LR_MIN_SCALE, ")")
     print("  LR_X=", LR_X, "  GRAD_CLIP=", GRAD_CLIP_NORM)
-    print("  SPECTRAL_TARGET=", SPECTRAL_TARGET, "  SPECTRAL_POWER_ITERS=", SPECTRAL_POWER_ITERS)
 
     # ── PC params + Adam state ────────────────────────────────────────────────
     var pc_params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
@@ -198,25 +202,6 @@ def main() raises:
         dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
     ](pc_opt_global_buf)
     NET.initialize_params[Xavier[], dtype](pc_params)
-
-    # ── Spectral-norm state for the recurrence sub-block of block-0 W ─────────
-    # Block-0 W is laid out [AUG_DIM=HIDDEN+ACTION_DIM, HIDDEN] in row-major.
-    # The recurrence sub-block W_rec = W[0:HIDDEN, :] (first HIDDEN rows) is
-    # stored contiguously in the first HIDDEN*HIDDEN scalars of pc_params_buf.
-    # We project σ_max(W_rec) ≤ SPECTRAL_TARGET after each PC Adam step so the
-    # latent recurrence stays non-expansive — preventing geometric error
-    # compounding during open-loop rollouts.
-    var W_rec = LayoutTensor[
-        dtype, Layout.row_major(HIDDEN, HIDDEN), MutAnyOrigin
-    ](pc_params_buf)
-    var sn_u_buf = alloc[Scalar[dtype]](HIDDEN)
-    var sn_v_buf = alloc[Scalar[dtype]](HIDDEN)
-    var sn_rng = PhiloxRandom(seed=UInt64(2027), offset=UInt64(0))
-    for i in range(HIDDEN):
-        sn_u_buf[i] = Scalar[dtype](Float64(sn_rng.step_uniform()[0]) * 2.0 - 1.0)
-        sn_v_buf[i] = Scalar[dtype](Float64(sn_rng.step_uniform()[0]) * 2.0 - 1.0)
-    var sn_u = LayoutTensor[dtype, Layout.row_major(HIDDEN), MutAnyOrigin](sn_u_buf)
-    var sn_v = LayoutTensor[dtype, Layout.row_major(HIDDEN), MutAnyOrigin](sn_v_buf)
 
     # ── Encoder params + Adam state ───────────────────────────────────────────
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
@@ -393,12 +378,6 @@ def main() raises:
                     pc_params, pc_grads, pc_opt_state, pc_opt_global,
                     pc_step_num, lr_scale=lr_scale,
                 )
-                # Project σ_max(W_rec) ≤ SPECTRAL_TARGET on block-0 recurrence.
-                _ = spectral_norm_clamp[HIDDEN, HIDDEN, dtype](
-                    W_rec, sn_u, sn_v,
-                    target_sigma=SPECTRAL_TARGET,
-                    n_power_iters=SPECTRAL_POWER_ITERS,
-                )
                 last_loss = result.output_loss_final
 
                 # Encoder gradient: dz = encoder_out - settled_z (stop-gradient on settled).
@@ -427,18 +406,10 @@ def main() raises:
 
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
-            # σ_max(W_rec) probe (extra power iters to settle, no clamp impact
-            # since target is 1.0 and projection already applied).
-            var sigma_probe = spectral_norm_clamp[HIDDEN, HIDDEN, dtype](
-                W_rec, sn_u, sn_v,
-                target_sigma=10.0,
-                n_power_iters=10,
-            )
             print(
                 "    ep=", epoch,
                 "  loss=", last_loss,
                 "  lr_scale=", lr_scale,
-                "  σ(W_rec)=", sigma_probe,
                 "  wall=", elapsed, "s",
             )
 
@@ -487,7 +458,7 @@ def main() raises:
     # At each step, encode/filter z_t against actual s_t, predict s_{t+1} via
     # feedforward block_0+block_1 (PC recurrence). Compare to actual s_{t+1}.
     print("\n  === Mode 1: 1-step teacher-forced prediction ===")
-    print("  Per-dim cos/sin/ω: model_total | persist_total | model[per-dim] | persist[per-dim]")
+    print("  Per-dim [position, velocity]: model_total | persist_total | model[per-dim] | persist[per-dim]")
 
     memset(prev_z_buf, 0, BATCH * HIDDEN)
 
@@ -545,51 +516,39 @@ def main() raises:
             z_pred, params_b1, s_pred, a_s_pred
         )
 
-        # MSE
+        # MSE — 2D obs: [position, velocity]
         var step_mse_0: Float64 = 0
         var step_mse_1: Float64 = 0
-        var step_mse_2: Float64 = 0
         var step_persist_0: Float64 = 0
         var step_persist_1: Float64 = 0
-        var step_persist_2: Float64 = 0
         for b in range(N_EVAL_TRAJ):
             var s_true_0 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 0])
             var s_true_1 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 1])
-            var s_true_2 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 2])
             var s_prev_0 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 0])
             var s_prev_1 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 1])
-            var s_prev_2 = Float64(obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + (t - 1) * OBS_DIM + 2])
             var d0 = Float64(s_pred_buf[b * OBS_DIM + 0]) - s_true_0
             var d1 = Float64(s_pred_buf[b * OBS_DIM + 1]) - s_true_1
-            var d2 = Float64(s_pred_buf[b * OBS_DIM + 2]) - s_true_2
             step_mse_0 += d0 * d0
             step_mse_1 += d1 * d1
-            step_mse_2 += d2 * d2
             var p0 = s_prev_0 - s_true_0
             var p1 = s_prev_1 - s_true_1
-            var p2 = s_prev_2 - s_true_2
             step_persist_0 += p0 * p0
             step_persist_1 += p1 * p1
-            step_persist_2 += p2 * p2
         step_mse_0 /= Float64(N_EVAL_TRAJ)
         step_mse_1 /= Float64(N_EVAL_TRAJ)
-        step_mse_2 /= Float64(N_EVAL_TRAJ)
         step_persist_0 /= Float64(N_EVAL_TRAJ)
         step_persist_1 /= Float64(N_EVAL_TRAJ)
-        step_persist_2 /= Float64(N_EVAL_TRAJ)
-        var mse_step = step_mse_0 + step_mse_1 + step_mse_2
-        var persist_step = step_persist_0 + step_persist_1 + step_persist_2
+        var mse_step = step_mse_0 + step_mse_1
+        var persist_step = step_persist_0 + step_persist_1
         mse_1step_total += mse_step
         mse_persist_total += persist_step
-        # Untruncated print — Mojo renders very small Float64 in scientific
-        # notation (e.g. "1.12e-04"); truncating to fixed bytes can hide the
-        # exponent suffix and badly mislead diagnosis.
+        # Per-dim print: [position, velocity].
         print(
             "    t=", t,
             " | total=", mse_step,
             " | persist=", persist_step,
-            " | per-dim=[", step_mse_0, ", ", step_mse_1, ", ", step_mse_2, "]",
-            " | persist=[", step_persist_0, ", ", step_persist_1, ", ", step_persist_2, "]",
+            " | per-dim=[", step_mse_0, ", ", step_mse_1, "]",
+            " | persist=[", step_persist_0, ", ", step_persist_1, "]",
         )
 
         # Filter z_t: encode against actual s_t, refine, save.
@@ -765,8 +724,6 @@ def main() raises:
     actions_buf.free()
     obs_buf.free()
     prev_z_buf.free()
-    sn_u_buf.free()
-    sn_v_buf.free()
     z_pred_buf.free()
     a_z_pred_buf.free()
     s_pred_buf.free()
