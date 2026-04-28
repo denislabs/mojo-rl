@@ -426,33 +426,92 @@ def az_flush_episodes_kernel[
                             pol_base + d
                         ]
                 else:
-                    # Horizontal flip: col → (COLS-1-col) within each plane
-                    for plane in range(PLANES):
-                        var p_off = plane * ROWS * COLS
-                        for row in range(ROWS):
-                            for col in range(COLS):
-                                replay_obs[
-                                    dst * OBS + p_off + row * COLS + col
-                                ] = stage_obs[
-                                    obs_base
-                                    + p_off
-                                    + row * COLS
-                                    + (COLS - 1 - col)
-                                ]
-                    # Flip policy. Two action layouts:
-                    #   - Per-cell (e.g. TicTacToe ACT=ROWS*COLS): action
-                    #     (r,c) → action (r, COLS-1-c).
-                    #   - Per-column drop (e.g. Connect Four ACT=COLS): action
-                    #     c → action ACT-1-c.
-                    comptime if ROWS * COLS == ACT:
+                    # Apply symmetry s. Two layouts:
+                    #   - Square per-cell (TTT: ROWS==COLS, ACT==ROWS*COLS):
+                    #     full D4 dihedral group, s=1..7. Convention:
+                    #     replay[(r,c)] = stage[perm_s((r,c))].
+                    #     1=h-flip, 2=v-flip, 3=rot180, 4=rot90 CW,
+                    #     5=rot270 CW, 6=main-diag, 7=anti-diag.
+                    #   - Otherwise (e.g. Connect Four, ACT==COLS):
+                    #     s=1 only — horizontal flip with single-row policy
+                    #     reversal.
+                    comptime if ROWS == COLS and ROWS * COLS == ACT:
+                        for plane in range(PLANES):
+                            var p_off = plane * ROWS * COLS
+                            for r in range(ROWS):
+                                for c in range(COLS):
+                                    var sr: Int
+                                    var sc: Int
+                                    if s == 1:  # h-flip
+                                        sr = r
+                                        sc = COLS - 1 - c
+                                    elif s == 2:  # v-flip
+                                        sr = ROWS - 1 - r
+                                        sc = c
+                                    elif s == 3:  # rot180
+                                        sr = ROWS - 1 - r
+                                        sc = COLS - 1 - c
+                                    elif s == 4:  # rot90 CW
+                                        sr = COLS - 1 - c
+                                        sc = r
+                                    elif s == 5:  # rot270 CW
+                                        sr = c
+                                        sc = ROWS - 1 - r
+                                    elif s == 6:  # main diag
+                                        sr = c
+                                        sc = r
+                                    else:  # s == 7: anti-diag
+                                        sr = COLS - 1 - c
+                                        sc = ROWS - 1 - r
+                                    replay_obs[
+                                        dst * OBS + p_off + r * COLS + c
+                                    ] = stage_obs[
+                                        obs_base + p_off + sr * COLS + sc
+                                    ]
                         for r in range(ROWS):
                             for c in range(COLS):
-                                replay_policy[dst * ACT + r * COLS + c] = (
-                                    stage_policy[
-                                        pol_base + r * COLS + (COLS - 1 - c)
-                                    ]
-                                )
+                                var sr: Int
+                                var sc: Int
+                                if s == 1:
+                                    sr = r
+                                    sc = COLS - 1 - c
+                                elif s == 2:
+                                    sr = ROWS - 1 - r
+                                    sc = c
+                                elif s == 3:
+                                    sr = ROWS - 1 - r
+                                    sc = COLS - 1 - c
+                                elif s == 4:
+                                    sr = COLS - 1 - c
+                                    sc = r
+                                elif s == 5:
+                                    sr = c
+                                    sc = ROWS - 1 - r
+                                elif s == 6:
+                                    sr = c
+                                    sc = r
+                                else:
+                                    sr = COLS - 1 - c
+                                    sc = ROWS - 1 - r
+                                replay_policy[
+                                    dst * ACT + r * COLS + c
+                                ] = stage_policy[
+                                    pol_base + sr * COLS + sc
+                                ]
                     else:
+                        # h-flip on non-square / non-per-cell layout.
+                        for plane in range(PLANES):
+                            var p_off = plane * ROWS * COLS
+                            for row in range(ROWS):
+                                for col in range(COLS):
+                                    replay_obs[
+                                        dst * OBS + p_off + row * COLS + col
+                                    ] = stage_obs[
+                                        obs_base
+                                        + p_off
+                                        + row * COLS
+                                        + (COLS - 1 - col)
+                                    ]
                         for c in range(ACT):
                             replay_policy[dst * ACT + c] = stage_policy[
                                 pol_base + (ACT - 1 - c)

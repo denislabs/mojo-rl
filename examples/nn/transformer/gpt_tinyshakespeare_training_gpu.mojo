@@ -40,22 +40,7 @@ from std.math import log, exp
 from std.time import perf_counter_ns
 
 from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model import (
-    Sequential,
-    Residual,
-    Repeat,
-    Tokenwise,
-    Linear,
-    LayerNorm,
-    GELU,
-    Dropout,
-)
-from mojo_rl.nn.autodiff import AutoDiffChain
-from mojo_rl.nn.autodiff.primitives import (
-    ScaledDotProductAttention,
-    Embedding,
-    BiasAdd,
-)
+from mojo_rl.nn.composites import GPTDrop
 from mojo_rl.nn.training import (
     NetworkState,
     GPUNetworkState,
@@ -128,74 +113,21 @@ comptime DROP_SEED_BASE = UInt64(0xC0FFEE)
 
 
 # =============================================================================
-# GPT composites with dropout — same shape as `composites.GPT` but with
-# nanoGPT's three dropout points wired in:
-#   1. After (token + position) embedding (input dropout)
-#   2. After MHA's output projection (resid_dropout in `CausalSelfAttention`)
-#   3. After MLP's output projection (`MLP.dropout`)
-# Skipping nanoGPT's `attn_dropout` between softmax and matmul-V — that one
-# lives inside the attention kernel and would need a custom kernel change.
+# Model alias — full GPT chain lives in `mojo_rl.nn.composites.GPTDrop`.
+# Defining it inside the package (rather than inline here) keeps the deeply
+# nested generic specialization in a unit the compiler processes once,
+# instead of redoing it every time this script changes.
 # =============================================================================
-comptime MHA_Drop[
-    dim: Int, n_heads: Int, seq_len: Int, causal: Bool,
-] = Sequential[
-    Tokenwise[seq_len, Linear[dim, 3 * dim]],
-    AutoDiffChain[ScaledDotProductAttention[dim, n_heads, seq_len, causal]],
-    Tokenwise[seq_len, Linear[dim, dim]],
-    Dropout[seq_len * dim, DROPOUT_P, DROP_SEED_BASE + 1, True],
-]
-
-
-comptime FFN_Drop[
-    seq_len: Int, dim: Int, ff_dim: Int,
-] = Sequential[
-    Tokenwise[seq_len, Linear[dim, ff_dim]],
-    GELU[seq_len * ff_dim],
-    Tokenwise[seq_len, Linear[ff_dim, dim]],
-    Dropout[seq_len * dim, DROPOUT_P, DROP_SEED_BASE + 2, True],
-]
-
-
-comptime Block_Drop[
-    dim: Int, n_heads: Int, seq_len: Int, ff_dim: Int, causal: Bool,
-] = Sequential[
-    Residual[
-        Sequential[
-            Tokenwise[seq_len, LayerNorm[dim]],
-            MHA_Drop[dim, n_heads, seq_len, causal],
-        ]
-    ],
-    Residual[
-        Sequential[
-            Tokenwise[seq_len, LayerNorm[dim]],
-            FFN_Drop[seq_len, dim, ff_dim],
-        ]
-    ],
-]
-
-
-comptime GPT_Drop[
-    vocab: Int, seq_len: Int, embed_dim: Int, n_heads: Int, n_layers: Int,
-    ff_mult: Int, causal: Bool,
-] = Sequential[
-    Tokenwise[seq_len, AutoDiffChain[Embedding[vocab, embed_dim]]],
-    AutoDiffChain[BiasAdd[seq_len * embed_dim]],
-    Dropout[seq_len * embed_dim, DROPOUT_P, DROP_SEED_BASE + 0, True],
-    Repeat[
-        n_layers,
-        Block_Drop[embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal],
-        False,
-    ],
-    Tokenwise[seq_len, LayerNorm[embed_dim]],
-    Tokenwise[seq_len, Linear[embed_dim, vocab]],
-]
-
-
-# =============================================================================
-# Aliases.
-# =============================================================================
-comptime GPT_MODEL = GPT_Drop[
-    VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True
+comptime GPT_MODEL = GPTDrop[
+    VOCAB,
+    SEQ,
+    EMBED,
+    HEADS,
+    LAYERS,
+    FF_MULT,
+    True,  # causal
+    DROPOUT_P,
+    DROP_SEED_BASE,
 ]
 comptime GPT_OPT = AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD]
 comptime GPT_SCHEDULER = CosineWarmupSchedule[WARMUP_EPOCHS, 0.1]

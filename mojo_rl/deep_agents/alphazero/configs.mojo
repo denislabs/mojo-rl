@@ -104,7 +104,7 @@ struct AlphaZeroTicTacToeConfig[
     HIDDEN: Int = 128,
     LR: Float64 = 0.01,
     BS: Int = 16,
-    CAP: Int = 50000,
+    CAP: Int = 120000,
     SIMS: Int = 100,
     NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
@@ -130,7 +130,7 @@ struct AlphaZeroTicTacToeConfig[
     comptime history_window: Int = 20  # Like alpha-zero-general
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
-    comptime temp_threshold: Int = 15  # temp=1 first 15 moves, then temp=0
+    comptime temp_threshold: Int = 4  # temp=1 first 4 moves, then temp_min
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
@@ -140,7 +140,7 @@ struct AlphaZeroTicTacToeConfig[
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 2  # identity + horizontal flip
+    comptime num_symmetries: Int = 8  # full D4 dihedral group
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
@@ -156,7 +156,7 @@ struct AlphaZeroTicTacToeCNNConfig[
     FILTERS: Int = 128,
     LR: Float64 = 0.001,
     BS: Int = 64,
-    CAP: Int = 100_000,
+    CAP: Int = 120_000,
     SIMS: Int = 100,
     NODES: Int = 128,
     C_PUCT: Float64 = 1.0,
@@ -198,7 +198,7 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime history_window: Int = 20
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
-    comptime temp_threshold: Int = 15
+    comptime temp_threshold: Int = 4
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
@@ -208,7 +208,7 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 2
+    comptime num_symmetries: Int = 8  # full D4 dihedral group
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
@@ -553,7 +553,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     NUM_BLOCKS: Int = 4,
     LR: Float64 = 1e-3,
     BS: Int = 64,
-    CAP: Int = 50000,
+    CAP: Int = 120000,
     SIMS: Int = 50,
     NODES: Int = 64,
     C_PUCT: Float64 = 1.0,
@@ -589,7 +589,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime history_window: Int = 20
     comptime num_simulations: Int = Self.SIMS
     comptime max_nodes: Int = Self.NODES
-    comptime temp_threshold: Int = 15
+    comptime temp_threshold: Int = 4
     comptime temp_min: Float64 = 0.0
     comptime batch_sims: Int = 8
     comptime invalid_action_penalty: Float64 = 0.0
@@ -599,7 +599,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 2  # identity + horizontal flip
+    comptime num_symmetries: Int = 8  # full D4 dihedral group
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]

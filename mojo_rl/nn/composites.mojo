@@ -27,6 +27,7 @@ from .model import (
     Conv2DReLU,
     MaxPoolLayer,
     FlattenLayer,
+    Dropout,
 )
 from .autodiff import AutoDiffChain
 from .autodiff.primitives import ScaledDotProductAttention, Embedding, BiasAdd
@@ -215,6 +216,124 @@ comptime GPT[
     Repeat[
         n_layers,
         TransformerBlock[embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal],
+        False,
+    ],
+    Tokenwise[seq_len, LayerNorm[embed_dim]],
+    Tokenwise[seq_len, Linear[embed_dim, vocab]],
+]
+
+
+# =============================================================================
+# Transformer + Dropout variants (nanoGPT-style)
+# =============================================================================
+#
+# Same shape as MultiHeadAttention / TransformerFFN / TransformerBlock / GPT,
+# with three nanoGPT dropout points wired in:
+#   1. After (token + position) embedding (input dropout, in `GPTDrop`)
+#   2. After MHA's output projection (resid_dropout, in `MultiHeadAttentionDrop`)
+#   3. After FFN's output projection (`TransformerFFNDrop`)
+# Skipping nanoGPT's `attn_dropout` between softmax and matmul-V — that one
+# lives inside the attention kernel and would need a custom kernel change.
+#
+# Dropout is parameterized on `dropout_p: Float64` and a `seed: UInt64` for
+# the on-device PRNG counter. The Model-level `Dropout[..., training=True]`
+# bumps the counter per forward, so the mask refreshes each step. Inference
+# paths (`forward_gpu_no_cache`) bypass dropout to identity regardless.
+#
+# Defining these as separate aliases (not optional flags on the original GPT
+# alias) keeps the package's existing `GPT` callers unaffected and lets new
+# transformer/ViT scripts import a single `GPTDrop[...]` instantiation
+# instead of redefining the chain inline (which is slow to compile because
+# the deeply-nested generic specialization happens inside the user script).
+
+# MultiHeadAttentionDrop: like MultiHeadAttention but with output-projection dropout.
+comptime MultiHeadAttentionDrop[
+    dim: Int,
+    n_heads: Int,
+    seq_len: Int,
+    causal: Bool,
+    dropout_p: Float64,
+    seed: UInt64,
+] = Sequential[
+    Tokenwise[seq_len, Linear[dim, 3 * dim]],
+    AutoDiffChain[ScaledDotProductAttention[dim, n_heads, seq_len, causal]],
+    Tokenwise[seq_len, Linear[dim, dim]],
+    Dropout[seq_len * dim, dropout_p, seed, True],
+]
+
+# TransformerFFNDrop: TransformerFFN + output dropout.
+comptime TransformerFFNDrop[
+    seq_len: Int,
+    dim: Int,
+    ff_dim: Int,
+    dropout_p: Float64,
+    seed: UInt64,
+] = Sequential[
+    Tokenwise[seq_len, Linear[dim, ff_dim]],
+    GELU[seq_len * ff_dim],
+    Tokenwise[seq_len, Linear[ff_dim, dim]],
+    Dropout[seq_len * dim, dropout_p, seed, True],
+]
+
+# TransformerBlockDrop: TransformerBlock with dropout in MHA + FFN sublayers.
+# `seed_base` is a per-block seed; MHA uses seed_base+1, FFN uses seed_base+2
+# (input dropout in `GPTDrop` uses seed_base+0).
+comptime TransformerBlockDrop[
+    dim: Int,
+    n_heads: Int,
+    seq_len: Int,
+    ff_dim: Int,
+    causal: Bool,
+    dropout_p: Float64,
+    seed_base: UInt64,
+] = Sequential[
+    Residual[
+        Sequential[
+            Tokenwise[seq_len, LayerNorm[dim]],
+            MultiHeadAttentionDrop[
+                dim, n_heads, seq_len, causal, dropout_p, seed_base + 1
+            ],
+        ]
+    ],
+    Residual[
+        Sequential[
+            Tokenwise[seq_len, LayerNorm[dim]],
+            TransformerFFNDrop[
+                seq_len, dim, ff_dim, dropout_p, seed_base + 2
+            ],
+        ]
+    ],
+]
+
+# GPTDrop: GPT with three dropout points (input, MHA output, FFN output).
+# `seed_base` indexes the dropout PRNG seeds: input uses seed_base+0; every
+# block reuses the same seed_base+1/+2 pair internally (per-step counter
+# bump on-device gives fresh masks regardless).
+comptime GPTDrop[
+    vocab: Int,
+    seq_len: Int,
+    embed_dim: Int,
+    n_heads: Int,
+    n_layers: Int,
+    ff_mult: Int = 4,
+    causal: Bool = True,
+    dropout_p: Float64 = 0.2,
+    seed_base: UInt64 = UInt64(0xC0FFEE),
+] = Sequential[
+    Tokenwise[seq_len, AutoDiffChain[Embedding[vocab, embed_dim]]],
+    AutoDiffChain[BiasAdd[seq_len * embed_dim]],
+    Dropout[seq_len * embed_dim, dropout_p, seed_base, True],
+    Repeat[
+        n_layers,
+        TransformerBlockDrop[
+            embed_dim,
+            n_heads,
+            seq_len,
+            ff_mult * embed_dim,
+            causal,
+            dropout_p,
+            seed_base,
+        ],
         False,
     ],
     Tokenwise[seq_len, LayerNorm[embed_dim]],
