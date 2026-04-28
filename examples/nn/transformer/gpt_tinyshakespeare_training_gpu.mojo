@@ -18,9 +18,9 @@ All compute lives on device:
 - Sampling at the end runs `GPUNetworkState.forward_gpu` per generated token.
 
 Run on NVIDIA (production target):
-    pixi run -e nvidia mojo run -I . examples/transformer/gpt_tinyshakespeare_training_gpu.mojo
+    pixi run -e nvidia mojo run -I . examples/nn/transformer/gpt_tinyshakespeare_training_gpu.mojo
 Run on Apple Metal (dev iteration only — shrink config first):
-    pixi run -e apple mojo run -I . examples/transformer/gpt_tinyshakespeare_training_gpu.mojo
+    pixi run -e apple mojo run -I . examples/nn/transformer/gpt_tinyshakespeare_training_gpu.mojo
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer

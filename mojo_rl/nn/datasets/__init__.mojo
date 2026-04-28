@@ -1,5 +1,6 @@
 from .mnist import MNIST
 from .cifar10 import CIFAR10
+from .cifar10_augmenter import CIFAR10CropFlipAugmenter
 from .tinyshakespeare import (
     CharTokenizer,
     DatasetSplit,

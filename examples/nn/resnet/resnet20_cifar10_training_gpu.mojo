@@ -21,22 +21,24 @@ Architecture (6N+2 = 20 layers, N=3):
     Linear(64 → 10)
 
 Reference accuracy (akamaster/pytorch_resnet_cifar10): ~91.25% on test.
-This test passes at ≥85% — the 6% margin covers framework-vs-PyTorch
+This example passes at ≥85% — the 6% margin covers framework-vs-PyTorch
 recipe differences (Adam vs SGD+momentum, no LR schedule, fewer epochs).
 
+Uses `Trainer.train_gpu_minibatch_full` with `CIFAR10CropFlipAugmenter`
+(centralized in `mojo_rl.nn.datasets`) for the full training loop and
+on-device per-epoch eval.
+
 Run:
-    pixi run -e nvidia mojo run -I . tests/nn/test_resnet20_cifar10.mojo
-    pixi run -e apple  mojo run -I . tests/nn/test_resnet20_cifar10.mojo
+    pixi run -e nvidia mojo run -I . examples/nn/resnet/resnet20_cifar10_training_gpu.mojo
+    pixi run -e apple  mojo run -I . examples/nn/resnet/resnet20_cifar10_training_gpu.mojo
 """
 
 from std.random import seed
-from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
-from std.gpu import thread_idx, block_idx
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype, TPB
+from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model.conv2d_bn_relu import Conv2DBatchNormReLU
 from mojo_rl.nn.model.conv2d_layer import Conv2DLayer
 from mojo_rl.nn.model.batch_norm_2d import BatchNorm2D
@@ -49,60 +51,13 @@ from mojo_rl.nn.model.sequential import Sequential
 from mojo_rl.nn.autodiff import ProjectedResidual, Repeat
 from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.trainer import Trainer
+from mojo_rl.nn.training import Trainer
 from mojo_rl.nn.initializer.initializers import Kaiming
-from mojo_rl.nn.datasets.cifar10 import CIFAR10
+from mojo_rl.nn.datasets import CIFAR10, CIFAR10CropFlipAugmenter
 
 
 comptime BATCH = 128
 comptime EPOCHS = 50
-
-
-def _cifar_augment_kernel[
-    N: Int,
-    dtype: DType = DType.float32,
-](
-    aug: LayoutTensor[dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin],
-    raw: LayoutTensor[dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin],
-    epoch_seed: Scalar[DType.uint64],
-):
-    """Random crop (pad 4) + random horizontal flip, per sample.
-
-    Grid: (N,), Block: (TPB,). One block per sample; threads parallelize
-    the 3072 output pixels. All threads in a block derive dx/dy/flip from
-    PhiloxRandom(epoch_seed, b) identically — out-of-bounds pixels get 0.
-    """
-    var b = Int(block_idx.x)
-    if b >= N:
-        return
-    var tid = Int(thread_idx.x)
-
-    comptime C = 3
-    comptime H = 32
-    comptime W = 32
-    comptime CHAN = H * W
-    comptime IMG_SIZE = C * CHAN
-
-    var rng = PhiloxRandom(seed=UInt64(epoch_seed), offset=UInt64(b))
-    var r = rng.step_uniform()
-    var dx = Int(Scalar[DType.float32](r[0]) * 9.0) - 4  # [-4, 4]
-    var dy = Int(Scalar[DType.float32](r[1]) * 9.0) - 4  # [-4, 4]
-    var flip = Scalar[DType.float32](r[2]) > 0.5
-
-    var idx = tid
-    while idx < IMG_SIZE:
-        var c = idx // CHAN
-        var yx = idx % CHAN
-        var oy = yx // W
-        var ox = yx % W
-        var src_y = oy + dy
-        var vx = ox + dx
-        var val = Scalar[dtype](0.0)
-        if src_y >= 0 and src_y < H and vx >= 0 and vx < W:
-            var src_x = (W - 1 - vx) if flip else vx
-            val = rebind[Scalar[dtype]](raw[b, c * CHAN + src_y * W + src_x])
-        aug[b, idx] = val
-        idx += TPB
 
 
 # ─── ResNet-20 architecture ──────────────────────────────────────────────
@@ -188,143 +143,87 @@ def main() raises:
             i * CIFAR10.NUM_CLASSES + Int(ds.train_labels[i])
         ] = 1.0
 
-    var raw_train_img_buf = ctx.enqueue_create_buffer[dtype](
-        CIFAR10.N_TRAIN * CIFAR10.IMG_SIZE
-    )
-    var aug_train_img_buf = ctx.enqueue_create_buffer[dtype](
+    var train_img_buf = ctx.enqueue_create_buffer[dtype](
         CIFAR10.N_TRAIN * CIFAR10.IMG_SIZE
     )
     var train_tgt_buf = ctx.enqueue_create_buffer[dtype](
         CIFAR10.N_TRAIN * CIFAR10.NUM_CLASSES
     )
-    ctx.enqueue_copy(raw_train_img_buf, train_img_host)
+    ctx.enqueue_copy(train_img_buf, train_img_host)
     ctx.enqueue_copy(train_tgt_buf, train_tgt_host)
 
-    var raw_train_img_lt = LayoutTensor[
+    var train_img_lt = LayoutTensor[
         dtype,
         Layout.row_major(CIFAR10.N_TRAIN, CIFAR10.IMG_SIZE),
         MutAnyOrigin,
-    ](raw_train_img_buf)
-    var aug_train_img_lt = LayoutTensor[
-        dtype,
-        Layout.row_major(CIFAR10.N_TRAIN, CIFAR10.IMG_SIZE),
-        MutAnyOrigin,
-    ](aug_train_img_buf)
+    ](train_img_buf)
     var train_tgt_lt = LayoutTensor[
         dtype,
         Layout.row_major(CIFAR10.N_TRAIN, CIFAR10.NUM_CLASSES),
         MutAnyOrigin,
     ](train_tgt_buf)
 
-    # ── Train ──
-    print("\n── Training ──")
-    var t0 = perf_counter_ns()
-    var final_loss: Float32 = 0.0
-    comptime aug_k = _cifar_augment_kernel[CIFAR10.N_TRAIN, dtype]
-    for epoch in range(EPOCHS):
-        var aug_seed = Scalar[DType.uint64](UInt64(1000) + UInt64(epoch))
-        ctx.enqueue_function[aug_k, aug_k](
-            aug_train_img_lt,
-            raw_train_img_lt,
-            aug_seed,
-            grid_dim=(CIFAR10.N_TRAIN,),
-            block_dim=(TPB,),
-        )
-
-        var result = TRAINER.train_gpu_minibatch[
-            BATCH, CIFAR10.N_TRAIN, USE_CUDA_GRAPH=False
-        ](
-            state,
-            ctx,
-            aug_train_img_lt,
-            train_tgt_lt,
-            epochs=1,
-            print_every_batches=0,
-            shuffle=True,
-            rng_seed=UInt64(42 + epoch),
-        )
-        ctx.synchronize()
-        final_loss = Float32(result.final_loss)
-        print(
-            "  epoch "
-            + String(epoch + 1)
-            + "/"
-            + String(EPOCHS)
-            + "  last-batch loss="
-            + String(final_loss)
-        )
-    var t1 = perf_counter_ns()
-    print("  training time: " + String(Float64(t1 - t0) / 1e9)[byte=:6] + " s")
-    print("  final batch loss: " + String(final_loss)[byte=:8])
-
-    # ── Evaluate test set ──
-    print("\n── Evaluating ──")
-
+    # ── Upload test set (images + int32 labels) to GPU once ──
     var test_img_host = ctx.enqueue_create_host_buffer[dtype](
         CIFAR10.N_TEST * CIFAR10.IMG_SIZE
     )
+    var test_lbl_host = ctx.enqueue_create_host_buffer[DType.int32](
+        CIFAR10.N_TEST
+    )
     for i in range(CIFAR10.N_TEST * CIFAR10.IMG_SIZE):
         test_img_host.unsafe_ptr()[i] = ds.test_images[i]
+    for i in range(CIFAR10.N_TEST):
+        test_lbl_host.unsafe_ptr()[i] = ds.test_labels[i]
+
     var test_img_buf = ctx.enqueue_create_buffer[dtype](
         CIFAR10.N_TEST * CIFAR10.IMG_SIZE
     )
+    var test_lbl_buf = ctx.enqueue_create_buffer[DType.int32](CIFAR10.N_TEST)
     ctx.enqueue_copy(test_img_buf, test_img_host)
+    ctx.enqueue_copy(test_lbl_buf, test_lbl_host)
 
-    comptime num_test_batches = CIFAR10.N_TEST // BATCH
-    var output_buf = ctx.enqueue_create_buffer[dtype](BATCH * RESNET20.OUT_DIM)
-    var workspace_buf = ctx.enqueue_create_buffer[dtype](
-        BATCH * RESNET20.WORKSPACE_SIZE_PER_SAMPLE
+    var test_img_lt = LayoutTensor[
+        dtype,
+        Layout.row_major(CIFAR10.N_TEST, CIFAR10.IMG_SIZE),
+        MutAnyOrigin,
+    ](test_img_buf)
+    var test_lbl_lt = LayoutTensor[
+        DType.int32, Layout.row_major(CIFAR10.N_TEST), MutAnyOrigin
+    ](test_lbl_buf)
+
+    # ── Train + per-epoch eval ──
+    print("\n── Training ──")
+    var t0 = perf_counter_ns()
+    var result = TRAINER.train_gpu_minibatch_full[
+        BATCH, CIFAR10.N_TRAIN, CIFAR10.N_TEST,
+        AUGMENTER=CIFAR10CropFlipAugmenter,
+    ](
+        state,
+        ctx,
+        train_img_lt, train_tgt_lt,
+        test_img_lt, test_lbl_lt,
+        epochs=EPOCHS,
+        shuffle=True,
+        rng_seed=UInt64(42),
+        aug_seed=UInt64(1000),
+        show_progress=True,
+        eval_every_epochs=1,
+        progress_label="ResNet20-CIFAR10",
     )
-    var output_host = ctx.enqueue_create_host_buffer[dtype](
-        BATCH * RESNET20.OUT_DIM
-    )
-
-    var output_lt = LayoutTensor[
-        dtype, Layout.row_major(BATCH, RESNET20.OUT_DIM), MutAnyOrigin
-    ](output_buf)
-
-    var correct: Int = 0
-    var total: Int = 0
-
-    for batch_idx in range(num_test_batches):
-        var batch_input = LayoutTensor[
-            dtype, Layout.row_major(BATCH, RESNET20.IN_DIM), MutAnyOrigin
-        ](test_img_buf.unsafe_ptr() + batch_idx * BATCH * RESNET20.IN_DIM)
-
-        var params_eval = state.params_view()
-        RESNET20.forward_gpu_no_cache[BATCH](
-            ctx,
-            output_lt,
-            batch_input,
-            params_eval,
-            state.model_state_view(),
-            workspace_buf,
-        )
-        ctx.enqueue_copy(output_host, output_buf)
-        ctx.synchronize()
-
-        for b in range(BATCH):
-            var best_idx = 0
-            var best_val = output_host.unsafe_ptr()[b * 10 + 0]
-            for c in range(1, 10):
-                var v = output_host.unsafe_ptr()[b * 10 + c]
-                if v > best_val:
-                    best_val = v
-                    best_idx = c
-            var true_label = Int(ds.test_labels[batch_idx * BATCH + b])
-            if best_idx == true_label:
-                correct += 1
-            total += 1
-
-    var acc = Float64(correct) / Float64(total)
+    ctx.synchronize()
+    var t1 = perf_counter_ns()
     print(
-        "  test accuracy: "
-        + String(correct)
-        + " / "
-        + String(total)
-        + " = "
-        + String(acc * 100.0)[byte=:6]
-        + "%"
+        "  training time: " + String(Float64(t1 - t0) / 1e9)[byte=:6] + " s"
+    )
+    print("  final batch loss: " + String(result.final_loss)[byte=:8])
+
+    # ── Final report ──
+    var n_evals = len(result.val_top1_history)
+    var acc = result.val_top1_history[n_evals - 1]
+    var test_loss = result.val_loss_history[n_evals - 1]
+    print("\n── Final evaluation (full test set) ──")
+    print(
+        "  test_loss=" + String(test_loss) + "  top1=" + String(acc * 100.0)[byte=:6] + "%"
     )
 
     print("=" * 65)

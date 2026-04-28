@@ -10,7 +10,7 @@ iterations, not to reach a target validation score (that is the GPU
 training script's job).
 
 Run:
-    pixi run mojo run -I . examples/transformer/gpt_tinyshakespeare_training.mojo
+    pixi run mojo run -I . examples/nn/transformer/gpt_tinyshakespeare_training.mojo
 """
 
 from std.random import seed, random_float64
