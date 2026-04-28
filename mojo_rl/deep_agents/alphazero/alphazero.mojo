@@ -439,11 +439,24 @@ def az_flush_episodes_kernel[
                                     + row * COLS
                                     + (COLS - 1 - col)
                                 ]
-                    # Flip policy: action c → action (ACT-1-c)
-                    for c in range(ACT):
-                        replay_policy[dst * ACT + c] = stage_policy[
-                            pol_base + (ACT - 1 - c)
-                        ]
+                    # Flip policy. Two action layouts:
+                    #   - Per-cell (e.g. TicTacToe ACT=ROWS*COLS): action
+                    #     (r,c) → action (r, COLS-1-c).
+                    #   - Per-column drop (e.g. Connect Four ACT=COLS): action
+                    #     c → action ACT-1-c.
+                    comptime if ROWS * COLS == ACT:
+                        for r in range(ROWS):
+                            for c in range(COLS):
+                                replay_policy[dst * ACT + r * COLS + c] = (
+                                    stage_policy[
+                                        pol_base + r * COLS + (COLS - 1 - c)
+                                    ]
+                                )
+                    else:
+                        for c in range(ACT):
+                            replay_policy[dst * ACT + c] = stage_policy[
+                                pol_base + (ACT - 1 - c)
+                            ]
 
                 replay_value[dst] = z
 
