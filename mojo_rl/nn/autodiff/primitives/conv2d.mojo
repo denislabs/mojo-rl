@@ -16,10 +16,13 @@ from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
+from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.memory import AddressSpace
 from std.gpu.primitives import block, lane_id
 from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from std.gpu.compute.mma import mma
+from linalg.matmul import matmul as max_matmul
+from layout.tile_tensor import lt_to_tt
 
 
 struct Conv2D[
@@ -30,6 +33,7 @@ struct Conv2D[
     padding: Int,
     in_h: Int,
     in_w: Int,
+    USE_MAX_KERNELS: Bool = True,
 ](DiffOp):
     """2D Convolution via im2col reduction to MatMul.
 
@@ -1500,7 +1504,10 @@ struct Conv2D[
                 dtype, Layout.row_major(K_TOTAL, Self.col_size), MutAnyOrigin
             ](cache.ptr)
 
-            # 2. Custom MMA matmul with transpose_b: out = col_flat @ W.T
+            # 2. Forward matmul: out_temp (K_TOTAL × OC) = col_flat (K_TOTAL × col_size)
+            #    @ W.T (col_size × OC). With USE_MAX_KERNELS, route through
+            #    linalg.matmul[transpose_b=True]; otherwise use the custom MMA
+            #    kernel which folds the B-transpose into the load.
             var W_mat = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.out_channels, Self.col_size),
@@ -1513,39 +1520,47 @@ struct Conv2D[
                 MutAnyOrigin,
             ](workspace)
 
-            comptime fwd_grid_x = (Self.out_channels + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-            comptime fwd_grid_y = (K_TOTAL + MMA_BLOCK_M - 1) // MMA_BLOCK_M
-
-            @parameter
-            @always_inline
-            def fwd_mm_wrapper(
-                out_temp: LayoutTensor[
-                    dtype,
-                    Layout.row_major(K_TOTAL, Self.out_channels),
-                    MutAnyOrigin,
-                ],
-                col_flat: LayoutTensor[
-                    dtype,
-                    Layout.row_major(K_TOTAL, Self.col_size),
-                    MutAnyOrigin,
-                ],
-                W_mat: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.out_channels, Self.col_size),
-                    MutAnyOrigin,
-                ],
-            ):
-                Self.conv_matmul_fwd_mma[K_TOTAL, dtype](
-                    out_temp, col_flat, W_mat
+            comptime if Self.USE_MAX_KERNELS:
+                max_matmul[transpose_b=True, target="gpu"](
+                    lt_to_tt(out_temp),
+                    lt_to_tt(col_flat),
+                    lt_to_tt(W_mat),
+                    DeviceContextPtr(ctx),
                 )
+            else:
+                comptime fwd_grid_x = (Self.out_channels + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+                comptime fwd_grid_y = (K_TOTAL + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
-            ctx.enqueue_function[fwd_mm_wrapper, fwd_mm_wrapper](
-                out_temp,
-                col_flat,
-                W_mat,
-                grid_dim=(fwd_grid_x, fwd_grid_y),
-                block_dim=(MMA_BLOCK_THREADS, 1),
-            )
+                @parameter
+                @always_inline
+                def fwd_mm_wrapper(
+                    out_temp: LayoutTensor[
+                        dtype,
+                        Layout.row_major(K_TOTAL, Self.out_channels),
+                        MutAnyOrigin,
+                    ],
+                    col_flat: LayoutTensor[
+                        dtype,
+                        Layout.row_major(K_TOTAL, Self.col_size),
+                        MutAnyOrigin,
+                    ],
+                    W_mat: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.out_channels, Self.col_size),
+                        MutAnyOrigin,
+                    ],
+                ):
+                    Self.conv_matmul_fwd_mma[K_TOTAL, dtype](
+                        out_temp, col_flat, W_mat
+                    )
+
+                ctx.enqueue_function[fwd_mm_wrapper, fwd_mm_wrapper](
+                    out_temp,
+                    col_flat,
+                    W_mat,
+                    grid_dim=(fwd_grid_x, fwd_grid_y),
+                    block_dim=(MMA_BLOCK_THREADS, 1),
+                )
 
             # 4. Transpose output + bias: (K_TOTAL, OC) → (BATCH, OC*S)
             # out_temp[b*S+s, oc] → output[b, oc*S+s] + bias[oc]
@@ -1752,44 +1767,54 @@ struct Conv2D[
                 block_dim=(TPB,),
             )
 
-            # Custom MMA dW: dW = grad_reshaped @ col_flat
-            comptime dW_grid_x_nv = (Self.col_size + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-            comptime dW_grid_y_nv = (Self.out_channels + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+            # dW (OC × col_size) = grad_reshaped (OC × K_TOTAL) @ col_flat
+            # (K_TOTAL × col_size). No transpose needed.
+            comptime if Self.USE_MAX_KERNELS:
+                max_matmul[target="gpu"](
+                    lt_to_tt(dW),
+                    lt_to_tt(grad_reshaped),
+                    lt_to_tt(col_flat),
+                    DeviceContextPtr(ctx),
+                )
+            else:
+                comptime dW_grid_x_nv = (Self.col_size + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+                comptime dW_grid_y_nv = (Self.out_channels + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
-            @parameter
-            @always_inline
-            def dW_mm_wrapper(
-                dW: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.out_channels, Self.col_size),
-                    MutAnyOrigin,
-                ],
-                grad_reshaped: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.out_channels, K_TOTAL),
-                    MutAnyOrigin,
-                ],
-                col_flat: LayoutTensor[
-                    dtype,
-                    Layout.row_major(K_TOTAL, Self.col_size),
-                    MutAnyOrigin,
-                ],
-            ):
-                Self.conv_matmul_dW_mma[K_TOTAL, dtype](
-                    dW, grad_reshaped, col_flat
+                @parameter
+                @always_inline
+                def dW_mm_wrapper(
+                    dW: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.out_channels, Self.col_size),
+                        MutAnyOrigin,
+                    ],
+                    grad_reshaped: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.out_channels, K_TOTAL),
+                        MutAnyOrigin,
+                    ],
+                    col_flat: LayoutTensor[
+                        dtype,
+                        Layout.row_major(K_TOTAL, Self.col_size),
+                        MutAnyOrigin,
+                    ],
+                ):
+                    Self.conv_matmul_dW_mma[K_TOTAL, dtype](
+                        dW, grad_reshaped, col_flat
+                    )
+
+                ctx.enqueue_function[dW_mm_wrapper, dW_mm_wrapper](
+                    dW,
+                    grad_reshaped,
+                    col_flat,
+                    grid_dim=(dW_grid_x_nv, dW_grid_y_nv),
+                    block_dim=(MMA_BLOCK_THREADS, 1),
                 )
 
-            ctx.enqueue_function[dW_mm_wrapper, dW_mm_wrapper](
-                dW,
-                grad_reshaped,
-                col_flat,
-                grid_dim=(dW_grid_x_nv, dW_grid_y_nv),
-                block_dim=(MMA_BLOCK_THREADS, 1),
-            )
-
-            # ── dx via custom MMA + col2im gather ──
-            # dcol = W.T @ grad_reshaped (transpose_a on W)
-            # Custom MMA handles transpose directly — no explicit W transpose needed
+            # ── dx: dcol (col_size × K_TOTAL) = W.T (col_size × OC)
+            #    @ grad_reshaped (OC × K_TOTAL).
+            # Custom MMA handles W.T inline. max_matmul has no transpose_a, so
+            # we materialize W.T into a scratch buffer first.
             var W_bwd = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.out_channels, Self.col_size),
@@ -1804,39 +1829,86 @@ struct Conv2D[
                 MutAnyOrigin,
             ](workspace + dcol_offset)
 
-            comptime dx_grid_x_nv = (K_TOTAL + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-            comptime dx_grid_y_nv = (Self.col_size + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+            comptime if Self.USE_MAX_KERNELS:
+                var W_T_buf = ctx.enqueue_create_buffer[dtype](
+                    Self.col_size * Self.out_channels
+                )
+                var W_T = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.col_size, Self.out_channels),
+                    MutAnyOrigin,
+                ](W_T_buf.unsafe_ptr())
 
-            @parameter
-            @always_inline
-            def dx_mm_wrapper(
-                dcol: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.col_size, K_TOTAL),
-                    MutAnyOrigin,
-                ],
-                W: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.out_channels, Self.col_size),
-                    MutAnyOrigin,
-                ],
-                grad_reshaped: LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.out_channels, K_TOTAL),
-                    MutAnyOrigin,
-                ],
-            ):
-                Self.conv_matmul_dx_mma[K_TOTAL, dtype](
-                    dcol, W, grad_reshaped
+                @parameter
+                @always_inline
+                def transpose_W_wrapper(
+                    dst: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.col_size, Self.out_channels),
+                        MutAnyOrigin,
+                    ],
+                    src: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.out_channels, Self.col_size),
+                        MutAnyOrigin,
+                    ],
+                ):
+                    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+                    if idx < Self.out_channels * Self.col_size:
+                        var oc = idx // Self.col_size
+                        var ck = idx % Self.col_size
+                        dst[ck, oc] = src[oc, ck]
+
+                comptime W_T_blocks = (
+                    Self.out_channels * Self.col_size + TPB - 1
+                ) // TPB
+                ctx.enqueue_function[transpose_W_wrapper, transpose_W_wrapper](
+                    W_T,
+                    W_bwd,
+                    grid_dim=(W_T_blocks,),
+                    block_dim=(TPB,),
                 )
 
-            ctx.enqueue_function[dx_mm_wrapper, dx_mm_wrapper](
-                dcol,
-                W_bwd,
-                grad_reshaped,
-                grid_dim=(dx_grid_x_nv, dx_grid_y_nv),
-                block_dim=(MMA_BLOCK_THREADS, 1),
-            )
+                max_matmul[target="gpu"](
+                    lt_to_tt(dcol),
+                    lt_to_tt(W_T),
+                    lt_to_tt(grad_reshaped),
+                    DeviceContextPtr(ctx),
+                )
+            else:
+                comptime dx_grid_x_nv = (K_TOTAL + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+                comptime dx_grid_y_nv = (Self.col_size + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+
+                @parameter
+                @always_inline
+                def dx_mm_wrapper(
+                    dcol: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.col_size, K_TOTAL),
+                        MutAnyOrigin,
+                    ],
+                    W: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.out_channels, Self.col_size),
+                        MutAnyOrigin,
+                    ],
+                    grad_reshaped: LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.out_channels, K_TOTAL),
+                        MutAnyOrigin,
+                    ],
+                ):
+                    Self.conv_matmul_dx_mma[K_TOTAL, dtype](
+                        dcol, W, grad_reshaped
+                    )
+
+                ctx.enqueue_function[dx_mm_wrapper, dx_mm_wrapper](
+                    dcol,
+                    W_bwd,
+                    grad_reshaped,
+                    grid_dim=(dx_grid_x_nv, dx_grid_y_nv),
+                    block_dim=(MMA_BLOCK_THREADS, 1),
+                )
 
             # col2im gather: one thread per input element
             var total_dx = BATCH * Self.IN_DIM
