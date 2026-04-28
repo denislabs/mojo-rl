@@ -31,6 +31,7 @@ target via output loss (no extra nonlinearity on top).
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
+from std.math import tanh
 
 from mojo_rl.nn.constants import TPB
 from mojo_rl.nn.initializer import Initializer
@@ -333,6 +334,137 @@ struct PCIdentity(PCActivation):
         var blocks = (threads + TPB - 1) // TPB
         ctx.enqueue_function[k, k](
             z_in, z_out, grid_dim=(blocks,), block_dim=(TPB,)
+        )
+
+
+struct PCTanh(PCActivation):
+    """Tanh: f(x) = tanh(x); f'(x) = 1 − tanh²(x).
+
+    Common in recurrent PC (tPC) where the post-activation feeds back as input
+    to the next time step. Bounded output prevents the recurrent dynamics
+    from drifting to infinity.
+    """
+
+    def __init__(out self):
+        pass
+
+    def __init__(out self, *, copy: Self):
+        pass
+
+    def __init__(out self, *, deinit take: Self):
+        pass
+
+    @staticmethod
+    def apply[
+        BATCH: Int, DIM: Int, dtype: DType = DType.float32
+    ](
+        x: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+        mut a: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+    ):
+        comptime assert (dtype.is_floating_point()), "PCTanh requires floating-point dtype"
+        for b in range(BATCH):
+            for i in range(DIM):
+                var v = rebind[Scalar[dtype]](x[b, i])
+                a[b, i] = tanh(v)
+
+    @staticmethod
+    def apply_derivative_mul[
+        BATCH: Int, DIM: Int, dtype: DType = DType.float32
+    ](
+        x: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+        z_in: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+        mut z_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+    ):
+        comptime assert (dtype.is_floating_point()), "PCTanh requires floating-point dtype"
+        for b in range(BATCH):
+            for i in range(DIM):
+                var t = tanh(rebind[Scalar[dtype]](x[b, i]))
+                z_out[b, i] = (
+                    rebind[Scalar[dtype]](z_in[b, i])
+                    * (Scalar[dtype](1) - t * t)
+                )
+
+    # ── GPU kernels (naive: one thread per element) ──────────────────────────
+
+    @staticmethod
+    fn _tanh_apply_kernel[
+        BATCH: Int, DIM: Int, dtype: DType,
+    ](
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    ):
+        comptime assert (dtype.is_floating_point()), "PCTanh requires floating-point dtype"
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * DIM:
+            return
+        var b = idx // DIM
+        var i = idx % DIM
+        var v = rebind[Scalar[dtype]](x[b, i])
+        a[b, i] = tanh(v)
+
+    @staticmethod
+    fn _tanh_deriv_mul_kernel[
+        BATCH: Int, DIM: Int, dtype: DType,
+    ](
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_out: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    ):
+        comptime assert (dtype.is_floating_point()), "PCTanh requires floating-point dtype"
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * DIM:
+            return
+        var b = idx // DIM
+        var i = idx % DIM
+        var t = tanh(rebind[Scalar[dtype]](x[b, i]))
+        z_out[b, i] = (
+            rebind[Scalar[dtype]](z_in[b, i])
+            * (Scalar[dtype](1) - t * t)
+        )
+
+    @staticmethod
+    def apply_gpu[
+        BATCH: Int, DIM: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    ) raises:
+        comptime k = Self._tanh_apply_kernel[BATCH, DIM, dtype]
+        var threads = BATCH * DIM
+        var blocks = (threads + TPB - 1) // TPB
+        ctx.enqueue_function[k, k](
+            x, a, grid_dim=(blocks,), block_dim=(TPB,)
+        )
+
+    @staticmethod
+    def apply_derivative_mul_gpu[
+        BATCH: Int, DIM: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+        mut z_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+    ) raises:
+        comptime k = Self._tanh_deriv_mul_kernel[BATCH, DIM, dtype]
+        var threads = BATCH * DIM
+        var blocks = (threads + TPB - 1) // TPB
+        ctx.enqueue_function[k, k](
+            x, z_in, z_out, grid_dim=(blocks,), block_dim=(TPB,)
         )
 
 

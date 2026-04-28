@@ -10,6 +10,7 @@ from .predictive_model import (
     PCBlockTrait,
     PCIdentity,
     PCReLU,
+    PCTanh,
 )
 from .pc_block import PCBlock
 from .pc_sequential import PCSequential
