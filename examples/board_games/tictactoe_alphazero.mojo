@@ -77,6 +77,7 @@ def main() raises:
         checkpoint_path="tictactoe_alphazero.ckpt",
         logger=UnsafePointer(to=logger),
         diag_every=100,
+        dump_replay=True,
     )
 
     logger.close()

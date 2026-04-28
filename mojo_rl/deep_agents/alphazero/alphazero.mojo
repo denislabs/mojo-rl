@@ -1698,6 +1698,152 @@ struct GenericAlphaZeroAgent[
             pass
 
     # ══════════════════════════════════════════════════════════════
+    # GPU Replay Dump (diagnostic)
+    # ══════════════════════════════════════════════════════════════
+
+    def _dump_gpu_replay(
+        self,
+        ctx: DeviceContext,
+        mut gpu: Self.GPUStateType,
+        n_rows: Int,
+        label: String,
+    ) raises:
+        """Print n_rows random samples from the GPU replay buffer.
+
+        Format per row:
+          - obs as PLANES boards of ROWS×COLS floats
+          - policy as ACT-vector (grid if ACT==ROWS*COLS); argmax + entropy
+          - value scalar
+        """
+        comptime OBS = Self.Config.obs_dim
+        comptime ACT = Self.Config.action_dim
+        comptime ROWS = Self.Config.board_rows
+        comptime COLS = Self.Config.board_cols
+        comptime PLANES = Self.Config.board_planes
+
+        ctx.enqueue_copy(gpu.replay_size_host, gpu.replay_size)
+        ctx.enqueue_copy(gpu.replay_obs_host, gpu.replay_obs)
+        ctx.enqueue_copy(gpu.replay_policy_host, gpu.replay_policy)
+        ctx.enqueue_copy(gpu.replay_value_host, gpu.replay_value)
+        ctx.synchronize()
+
+        var sz = Int(gpu.replay_size_host[0])
+        if sz == 0:
+            print("  [dump", label, "] replay empty")
+            return
+
+        # Aggregate stats across the whole filled region
+        var agg_max_p: Float64 = 0.0
+        var agg_entropy: Float64 = 0.0
+        var agg_max_p_min: Float64 = 1.0
+        var agg_max_p_max: Float64 = 0.0
+        var agg_v_pos = 0
+        var agg_v_neg = 0
+        var agg_v_zero = 0
+        for i in range(sz):
+            var max_p: Float64 = 0.0
+            var ent: Float64 = 0.0
+            for a in range(ACT):
+                var p = Float64(gpu.replay_policy_host[i * ACT + a])
+                if p > max_p:
+                    max_p = p
+                if p > 1e-8:
+                    ent -= p * log(p)
+            agg_max_p += max_p
+            agg_entropy += ent
+            if max_p < agg_max_p_min:
+                agg_max_p_min = max_p
+            if max_p > agg_max_p_max:
+                agg_max_p_max = max_p
+            var v = Float64(gpu.replay_value_host[i])
+            if v > 0.5:
+                agg_v_pos += 1
+            elif v < -0.5:
+                agg_v_neg += 1
+            else:
+                agg_v_zero += 1
+        var nf = Float64(sz)
+
+        print("  [dump", label, "] replay_size =", sz)
+        print(
+            "    max_prob:  mean=",
+            agg_max_p / nf,
+            " min=",
+            agg_max_p_min,
+            " max=",
+            agg_max_p_max,
+        )
+        print("    entropy:   mean=", agg_entropy / nf)
+        print(
+            "    value:     pos=",
+            agg_v_pos,
+            " zero=",
+            agg_v_zero,
+            " neg=",
+            agg_v_neg,
+        )
+        print("    sampling", n_rows, "rows:")
+
+        for _ in range(n_rows):
+            var idx = Int(random_float64() * Float64(sz))
+            if idx >= sz:
+                idx = sz - 1
+
+            print("      --- row", idx, "---")
+            for p in range(PLANES):
+                var line = String("        plane ") + String(p) + String(": ")
+                for r in range(ROWS):
+                    for c in range(COLS):
+                        var v = Float64(
+                            gpu.replay_obs_host[
+                                idx * OBS + p * ROWS * COLS + r * COLS + c
+                            ]
+                        )
+                        line += String(v) + " "
+                    if r < ROWS - 1:
+                        line += " | "
+                print(line)
+
+            var max_p: Float64 = 0.0
+            var max_a: Int = 0
+            var ent: Float64 = 0.0
+            for a in range(ACT):
+                var p = Float64(gpu.replay_policy_host[idx * ACT + a])
+                if p > max_p:
+                    max_p = p
+                    max_a = a
+                if p > 1e-8:
+                    ent -= p * log(p)
+            print(
+                "        policy: argmax=",
+                max_a,
+                " max_prob=",
+                max_p,
+                " entropy=",
+                ent,
+            )
+            comptime if ROWS * COLS == ACT:
+                for r in range(ROWS):
+                    var pl = String("          ")
+                    for c in range(COLS):
+                        var pp = Float64(
+                            gpu.replay_policy_host[idx * ACT + r * COLS + c]
+                        )
+                        pl += String(pp) + " "
+                    print(pl)
+            else:
+                var pl = String("          [")
+                for a in range(ACT):
+                    pl += (
+                        String(Float64(gpu.replay_policy_host[idx * ACT + a]))
+                        + " "
+                    )
+                pl += String("]")
+                print(pl)
+
+            print("        value=", Float64(gpu.replay_value_host[idx]))
+
+    # ══════════════════════════════════════════════════════════════
     # MCTS Round Kernels (CUDA graph capturable)
     # ══════════════════════════════════════════════════════════════
 
@@ -3104,6 +3250,7 @@ struct GenericAlphaZeroAgent[
         ](),
         diag_every: Int = 50,
         verbose: Bool = True,
+        dump_replay: Bool = False,
     ) raises -> TrainingMetrics:
         """Train via batch-then-train (like alpha-zero-general).
 
@@ -3881,6 +4028,18 @@ struct GenericAlphaZeroAgent[
             ctx.enqueue_copy(gpu.replay_size_host, gpu.replay_size)
             ctx.synchronize()
             var gpu_buf_sz = Int(gpu.replay_size_host[0])
+
+            # Diagnostic: dump GPU replay rows at strategic iterations.
+            # Triggered at the first MCTS iter, mid-training, and last iter.
+            if dump_replay and use_mcts:
+                var mid = warmup_iters + (num_iters - warmup_iters) // 2
+                if (
+                    iter == warmup_iters
+                    or iter == mid
+                    or iter == num_iters - 1
+                ):
+                    self._dump_gpu_replay(ctx, gpu, 5, "iter " + String(iter))
+
             comptime BATCH = Self.Config.batch_size
             if use_mcts and gpu_buf_sz >= BATCH * 2:
                 var num_train_steps = train_epochs * gpu_buf_sz // BATCH

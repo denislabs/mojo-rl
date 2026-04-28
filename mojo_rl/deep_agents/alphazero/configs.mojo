@@ -599,7 +599,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 2
+    comptime num_symmetries: Int = 1  # TEMP: ruled out as divergence cause
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
