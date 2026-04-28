@@ -44,12 +44,21 @@ from ...autodiff.op import DiffOp, OpID
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.runtime.asyncrt import DeviceContextPtr
 from std.gpu.primitives import block
 from std.math import exp, sqrt
+from std.sys import has_nvidia_gpu_accelerator
+from linalg.bmm import batched_matmul
+from layout.tile_tensor import TileTensor, lt_to_tt
+from layout import row_major
 
 
 struct ScaledDotProductAttention[
-    dim: Int, n_heads: Int, seq_len: Int, causal: Bool = False
+    dim: Int,
+    n_heads: Int,
+    seq_len: Int,
+    causal: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](DiffOp):
     """Scaled dot-product attention with multi-head support.
 
@@ -58,6 +67,16 @@ struct ScaledDotProductAttention[
 
     Set causal=True for decoder/GPT-style attention (position i attends only
     to j ≤ i). Defaults to False for bidirectional/encoder/ViT attention.
+
+    USE_MAX_KERNELS (NVIDIA only): when True, route the QK^T and AV matmuls
+    through `linalg.bmm.batched_matmul` (single batched GEMM call covering
+    all BATCH*n_heads matmuls each), with softmax kept as a custom kernel.
+    When False, use the existing single-kernel-per-(b,h) implementation that
+    does scalar Q·K dot products inline. Apple is unaffected — always uses
+    the existing per-(b,h) kernel regardless of this flag.
+
+    Backward (vjp_gpu) is currently always on the per-(b,h) custom path
+    regardless of this flag — phase 4c will add bmm support there.
 
     No learnable parameters — projections should be done by MatMul ops
     before this op in the chain.
@@ -629,26 +648,350 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
         ](input.ptr)
 
+        comptime if Self.USE_MAX_KERNELS and has_nvidia_gpu_accelerator():
+            Self._eval_gpu_bmm[BATCH, dtype](
+                ctx, output, input_immut, cache
+            )
+        else:
+
+            @parameter
+            @always_inline
+            def wrapper(
+                output: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+                ],
+                input: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+                ],
+                cache: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+                ],
+            ):
+                Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
+
+            ctx.enqueue_function[wrapper, wrapper](
+                output,
+                input_immut,
+                cache,
+                grid_dim=(BATCH * Self.n_heads,),
+                block_dim=(TPB,),
+            )
+
+    # =========================================================================
+    # GPU eval — bmm path (NVIDIA, USE_MAX_KERNELS=True)
+    # =========================================================================
+    # Pipeline:
+    #   1. pack_qkv:  (BATCH, seq, n_heads*head_dim) → (BATCH*n_heads, seq, head_dim)
+    #                 contiguous packed buffers (also writes Q/K/V to cache for backward).
+    #   2. bmm[transpose_b]: scratch_scores = packed_Q @ packed_K^T,
+    #                        shape (BATCH*n_heads, seq, seq).
+    #   3. softmax_kernel: scale + (causal mask) + softmax in scratch_scores,
+    #                      and gather-write attention weights into cache.attn (with
+    #                      per-sample stride CACHE_SIZE — needed for backward).
+    #   4. bmm: packed_out = scratch_scores @ packed_V,
+    #           shape (BATCH*n_heads, seq, head_dim).
+    #   5. unpack_out: (BATCH*n_heads, seq, head_dim) → (BATCH, seq, n_heads*head_dim).
+    # Total launches: 5, regardless of BATCH/n_heads.
+    @staticmethod
+    def _eval_gpu_bmm[
+        BATCH: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        mut output: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        ],
+        input: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+        ],
+        mut cache: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+        ],
+    ) raises:
+        comptime BH = BATCH * Self.n_heads
+        comptime PACKED_QKV_SIZE = BATCH * Self.seq_len * Self.dim
+        comptime SCORES_SIZE = BH * Self.seq_len * Self.seq_len
+
+        # Scratch buffers — released after the forward returns.
+        var packed_q_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var packed_k_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var packed_v_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var packed_out_buf = ctx.enqueue_create_buffer[dtype](PACKED_QKV_SIZE)
+        var scores_buf = ctx.enqueue_create_buffer[dtype](SCORES_SIZE)
+
+        # ── 1. Pack Q/K/V from (B, seq, n_heads*head_dim) → (B*H, seq, head_dim).
+        # Also writes Q/K/V to cache (cache layout unchanged: per-sample
+        # [Q | K | V | attn], with seq*dim each for QKV).
+        comptime pack_elems = BATCH * Self.seq_len * Self.dim
+        comptime pack_blocks = (pack_elems + TPB - 1) // TPB
+
         @parameter
         @always_inline
-        def wrapper(
-            output: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+        def pack_qkv_wrapper(
+            packed_q: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
             ],
-            input: LayoutTensor[
-                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            packed_k: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+            ],
+            packed_v: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
             ],
             cache: LayoutTensor[
                 dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ],
+            input: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
+            ],
         ):
-            Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= pack_elems:
+                return
+            # idx unrolls to (b, t, h, d) over BATCH x seq x n_heads x head_dim
+            var hd = Self.head_dim
+            var d = idx % hd
+            var rem = idx // hd
+            var h = rem % Self.n_heads
+            var rem2 = rem // Self.n_heads
+            var t = rem2 % Self.seq_len
+            var b = rem2 // Self.seq_len
 
-        ctx.enqueue_function[wrapper, wrapper](
-            output,
-            input_immut,
+            var col_in_dim = h * hd + d  # head_dim chunk inside dim
+
+            # Source positions in input (input layout: per-sample
+            # [Q_0..Q_seq | K_0..K_seq | V_0..V_seq], each Q_t/K_t/V_t is dim-wide)
+            var inp_q = (
+                b * Self.IN_DIM + t * Self.dim + col_in_dim
+            )
+            var inp_k = (
+                b * Self.IN_DIM
+                + Self._k_offset()
+                + t * Self.dim
+                + col_in_dim
+            )
+            var inp_v = (
+                b * Self.IN_DIM
+                + Self._v_offset()
+                + t * Self.dim
+                + col_in_dim
+            )
+
+            # Cache positions (same layout as before — backward reads here)
+            var c_q = b * Self.CACHE_SIZE + t * Self.dim + col_in_dim
+            var c_k = (
+                b * Self.CACHE_SIZE
+                + Self._k_offset()
+                + t * Self.dim
+                + col_in_dim
+            )
+            var c_v = (
+                b * Self.CACHE_SIZE
+                + Self._v_offset()
+                + t * Self.dim
+                + col_in_dim
+            )
+
+            # Packed positions: (BATCH*n_heads, seq, head_dim) flat
+            var bh = b * Self.n_heads + h
+            var packed_idx = bh * Self.seq_len * hd + t * hd + d
+
+            var q_val = input.ptr[inp_q]
+            var k_val = input.ptr[inp_k]
+            var v_val = input.ptr[inp_v]
+
+            cache.ptr[c_q] = q_val
+            cache.ptr[c_k] = k_val
+            cache.ptr[c_v] = v_val
+            packed_q.ptr[packed_idx] = q_val
+            packed_k.ptr[packed_idx] = k_val
+            packed_v.ptr[packed_idx] = v_val
+
+        var packed_q_lt = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+        ](packed_q_buf.unsafe_ptr())
+        var packed_k_lt = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+        ](packed_k_buf.unsafe_ptr())
+        var packed_v_lt = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+        ](packed_v_buf.unsafe_ptr())
+
+        ctx.enqueue_function[pack_qkv_wrapper, pack_qkv_wrapper](
+            packed_q_lt,
+            packed_k_lt,
+            packed_v_lt,
             cache,
-            grid_dim=(BATCH * Self.n_heads,),
+            input,
+            grid_dim=(pack_blocks,),
+            block_dim=(TPB,),
+        )
+
+        # ── 2. bmm[transpose_b]: scratch_scores = packed_Q @ packed_K^T.
+        var scores_tt = TileTensor(
+            scores_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.seq_len](),
+        )
+        var packed_q_tt = TileTensor(
+            packed_q_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        var packed_k_tt = TileTensor(
+            packed_k_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        batched_matmul[transpose_b=True, target="gpu"](
+            scores_tt,
+            packed_q_tt,
+            packed_k_tt,
+            context=DeviceContextPtr(ctx),
+        )
+
+        # ── 3. Softmax: scale + (optional causal) + numerically-stable softmax
+        # in-place on scores_buf. Also gather-writes the resulting attention
+        # weights into cache.attn (per-sample-strided) so backward can read
+        # them from the existing cache layout.
+        var scale = Scalar[dtype](Float32(1.0) / sqrt(Float32(Self.head_dim)))
+
+        @parameter
+        @always_inline
+        def softmax_wrapper(
+            scores: LayoutTensor[
+                dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
+            ],
+            cache: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+            ],
+            scale_v: Scalar[dtype],
+        ):
+            comptime assert dtype.is_floating_point(), "dtype must be floating point"
+            # 1 block per (b, h) — threads stride over rows i.
+            var blk = Int(block_idx.x)
+            if blk >= BH:
+                return
+            var b = blk // Self.n_heads
+            var h = blk % Self.n_heads
+            var tid = Int(thread_idx.x)
+            var bs = Int(block_dim.x)
+
+            var bh_off = blk * Self.seq_len * Self.seq_len
+            var cache_attn_base = (
+                b * Self.CACHE_SIZE
+                + Self._attn_cache_offset()
+                + h * Self.seq_len * Self.seq_len
+            )
+
+            var i = tid
+            while i < Self.seq_len:
+                var j_end = Self.seq_len
+                comptime if Self.causal:
+                    j_end = i + 1
+
+                var row_off = bh_off + i * Self.seq_len
+                var cache_row_off = cache_attn_base + i * Self.seq_len
+
+                # Apply scale + find max (causal: ignore j > i).
+                var max_score = Scalar[dtype](-1e30)
+                for j in range(j_end):
+                    var s = (
+                        rebind[Scalar[dtype]](scores.ptr[row_off + j])
+                        * scale_v
+                    )
+                    scores.ptr[row_off + j] = s
+                    if s > max_score:
+                        max_score = s
+
+                # Exponentiate (zero out masked region first so the second
+                # bmm still produces correct output in the causal case).
+                var sum_exp = Scalar[dtype](0)
+                for j in range(j_end):
+                    var e = exp(
+                        rebind[Scalar[dtype]](scores.ptr[row_off + j])
+                        - max_score
+                    )
+                    scores.ptr[row_off + j] = e
+                    sum_exp += e
+                comptime if Self.causal:
+                    for j in range(i + 1, Self.seq_len):
+                        scores.ptr[row_off + j] = Scalar[dtype](0)
+
+                var inv_sum = Scalar[dtype](1) / sum_exp
+                for j in range(j_end):
+                    var w = (
+                        rebind[Scalar[dtype]](scores.ptr[row_off + j])
+                        * inv_sum
+                    )
+                    scores.ptr[row_off + j] = w
+                    cache.ptr[cache_row_off + j] = w
+
+                i += bs
+
+        var scores_lt = LayoutTensor[
+            dtype, Layout.row_major(SCORES_SIZE), MutAnyOrigin
+        ](scores_buf.unsafe_ptr())
+
+        ctx.enqueue_function[softmax_wrapper, softmax_wrapper](
+            scores_lt,
+            cache,
+            scale,
+            grid_dim=(BH,),
+            block_dim=(TPB,),
+        )
+
+        # ── 4. bmm: packed_out = attn @ V.
+        var packed_out_tt = TileTensor(
+            packed_out_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        var packed_v_tt = TileTensor(
+            packed_v_buf.unsafe_ptr(),
+            row_major[BH, Self.seq_len, Self.head_dim](),
+        )
+        batched_matmul[target="gpu"](
+            packed_out_tt,
+            scores_tt,
+            packed_v_tt,
+            context=DeviceContextPtr(ctx),
+        )
+
+        # ── 5. Unpack output: (BH, seq, head_dim) → (BATCH, seq, n_heads*head_dim).
+        comptime unpack_elems = BATCH * Self.seq_len * Self.dim
+        comptime unpack_blocks = (unpack_elems + TPB - 1) // TPB
+
+        @parameter
+        @always_inline
+        def unpack_wrapper(
+            output: LayoutTensor[
+                dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
+            ],
+            packed_out: LayoutTensor[
+                dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= unpack_elems:
+                return
+            var hd = Self.head_dim
+            var d = idx % hd
+            var rem = idx // hd
+            var h = rem % Self.n_heads
+            var rem2 = rem // Self.n_heads
+            var t = rem2 % Self.seq_len
+            var b = rem2 // Self.seq_len
+
+            var bh = b * Self.n_heads + h
+            var packed_idx = bh * Self.seq_len * hd + t * hd + d
+            var out_idx = (
+                b * Self.OUT_DIM + t * Self.dim + h * hd + d
+            )
+            output.ptr[out_idx] = packed_out.ptr[packed_idx]
+
+        var packed_out_lt = LayoutTensor[
+            dtype, Layout.row_major(PACKED_QKV_SIZE), MutAnyOrigin
+        ](packed_out_buf.unsafe_ptr())
+
+        ctx.enqueue_function[unpack_wrapper, unpack_wrapper](
+            output,
+            packed_out_lt,
+            grid_dim=(unpack_blocks,),
             block_dim=(TPB,),
         )
 
