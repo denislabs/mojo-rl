@@ -109,7 +109,10 @@ comptime GRAD_CLIP = 1.0     # max-abs clip on params grads each step
 # 4090. If host RAM is tight, dial both down by 2× (16384 × 20).
 comptime N_TRAIN_WINDOWS = 32768
 comptime N_VAL_WINDOWS = 256          # 16 batches × BATCH=16
-comptime EPOCHS = 10
+# Early-stop test: previous 10-epoch run hit val ≈ 1.65 at epoch 2 then
+# fell off a cliff to val ≈ 0.86 by epoch 10 with degenerate samples.
+# Stopping at 4 keeps us in nanoGPT's reported regime (val ≈ 1.47).
+comptime EPOCHS = 4
 comptime WARMUP_EPOCHS = 1            # 1 epoch of linear warmup, then cosine
 
 comptime N_TRAIN_BATCHES = N_TRAIN_WINDOWS // BATCH
@@ -781,9 +784,11 @@ def main() raises:
     )
     print(prompt + greedy)
 
-    print("\n[sample] temperature (T=0.8, top_k=10):")
+    # top_k=0 → no filter, sample from the full softmax (matches nanoGPT
+    # `sample.py` default top_k=200 with vocab=65, i.e. effectively no filter).
+    print("\n[sample] temperature (T=0.8, no top-k):")
     var temp = _generate_text_gpu(
-        ctx, state, tok, prompt, 200, 0.8, top_k=10
+        ctx, state, tok, prompt, 200, 0.8, top_k=0
     )
     print(prompt + temp)
 
