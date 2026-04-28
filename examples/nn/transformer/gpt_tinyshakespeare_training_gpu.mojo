@@ -40,7 +40,22 @@ from std.math import log, exp
 from std.time import perf_counter_ns
 
 from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.composites import GPT
+from mojo_rl.nn.model import (
+    Sequential,
+    Residual,
+    Repeat,
+    Tokenwise,
+    Linear,
+    LayerNorm,
+    GELU,
+    Dropout,
+)
+from mojo_rl.nn.autodiff import AutoDiffChain
+from mojo_rl.nn.autodiff.primitives import (
+    ScaledDotProductAttention,
+    Embedding,
+    BiasAdd,
+)
 from mojo_rl.nn.training import (
     NetworkState,
     GPUNetworkState,
@@ -100,11 +115,85 @@ comptime WARMUP_EPOCHS = 1            # 1 epoch of linear warmup, then cosine
 comptime N_TRAIN_BATCHES = N_TRAIN_WINDOWS // BATCH
 comptime N_VAL_BATCHES = N_VAL_WINDOWS // BATCH
 
+# Dropout — fixed at 0.2 to match nanoGPT's char-Shakespeare config. The
+# Model-level `Dropout[…, training=True]` carries an on-device PRNG counter
+# that gets bumped per forward, so the mask is fresh every step.
+# Inference paths (`forward_gpu_no_cache`) bypass to identity regardless of
+# the `training` flag, so we don't need a separate eval-mode model.
+comptime DROPOUT_P = 0.2
+comptime DROP_SEED_BASE = UInt64(0xC0FFEE)
+
+
+# =============================================================================
+# GPT composites with dropout — same shape as `composites.GPT` but with
+# nanoGPT's three dropout points wired in:
+#   1. After (token + position) embedding (input dropout)
+#   2. After MHA's output projection (resid_dropout in `CausalSelfAttention`)
+#   3. After MLP's output projection (`MLP.dropout`)
+# Skipping nanoGPT's `attn_dropout` between softmax and matmul-V — that one
+# lives inside the attention kernel and would need a custom kernel change.
+# =============================================================================
+comptime MHA_Drop[
+    dim: Int, n_heads: Int, seq_len: Int, causal: Bool,
+] = Sequential[
+    Tokenwise[seq_len, Linear[dim, 3 * dim]],
+    AutoDiffChain[ScaledDotProductAttention[dim, n_heads, seq_len, causal]],
+    Tokenwise[seq_len, Linear[dim, dim]],
+    Dropout[seq_len * dim, DROPOUT_P, DROP_SEED_BASE + 1, True],
+]
+
+
+comptime FFN_Drop[
+    seq_len: Int, dim: Int, ff_dim: Int,
+] = Sequential[
+    Tokenwise[seq_len, Linear[dim, ff_dim]],
+    GELU[seq_len * ff_dim],
+    Tokenwise[seq_len, Linear[ff_dim, dim]],
+    Dropout[seq_len * dim, DROPOUT_P, DROP_SEED_BASE + 2, True],
+]
+
+
+comptime Block_Drop[
+    dim: Int, n_heads: Int, seq_len: Int, ff_dim: Int, causal: Bool,
+] = Sequential[
+    Residual[
+        Sequential[
+            Tokenwise[seq_len, LayerNorm[dim]],
+            MHA_Drop[dim, n_heads, seq_len, causal],
+        ]
+    ],
+    Residual[
+        Sequential[
+            Tokenwise[seq_len, LayerNorm[dim]],
+            FFN_Drop[seq_len, dim, ff_dim],
+        ]
+    ],
+]
+
+
+comptime GPT_Drop[
+    vocab: Int, seq_len: Int, embed_dim: Int, n_heads: Int, n_layers: Int,
+    ff_mult: Int, causal: Bool,
+] = Sequential[
+    Tokenwise[seq_len, AutoDiffChain[Embedding[vocab, embed_dim]]],
+    AutoDiffChain[BiasAdd[seq_len * embed_dim]],
+    Dropout[seq_len * embed_dim, DROPOUT_P, DROP_SEED_BASE + 0, True],
+    Repeat[
+        n_layers,
+        Block_Drop[embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal],
+        False,
+    ],
+    Tokenwise[seq_len, LayerNorm[embed_dim]],
+    Tokenwise[seq_len, Linear[embed_dim, vocab]],
+]
+
 
 # =============================================================================
 # Aliases.
 # =============================================================================
-comptime GPT_MODEL = GPT[VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True]
+comptime GPT_MODEL = GPT_Drop[
+    VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True
+]
 comptime GPT_OPT = AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD]
 comptime GPT_SCHEDULER = CosineWarmupSchedule[WARMUP_EPOCHS, 0.1]
 
@@ -133,9 +222,6 @@ def _eval_loss_seq_gpu(
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, GPT_MODEL.OUT_DIM), MutAnyOrigin
     ](output_buf.unsafe_ptr())
-    var cache_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, GPT_MODEL.CACHE_SIZE), MutAnyOrigin
-    ](cache_buf.unsafe_ptr())
     var output_v = LayoutTensor[
         dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
     ](output_buf.unsafe_ptr())
@@ -155,8 +241,9 @@ def _eval_loss_seq_gpu(
             dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
         ](val_target.ptr + batch_idx * BATCH * GPT_MODEL.OUT_DIM)
 
-        GPT_MODEL.forward_gpu[BATCH, dtype](
-            ctx, output_t, batch_input, p_view, s_view, cache_t, ws_buf
+        # forward_gpu_no_cache → Dropout falls back to identity (eval mode).
+        GPT_MODEL.forward_gpu_no_cache[BATCH, dtype](
+            ctx, output_t, batch_input, p_view, s_view, ws_buf
         )
         CrossEntropyLoss.forward_gpu[BATCH * SEQ, VOCAB, dtype](
             ctx, loss_t, output_v, target_v
@@ -196,9 +283,6 @@ def _eval_topk_accuracy_gpu(
     var output_t = LayoutTensor[
         dtype, Layout.row_major(BATCH, GPT_MODEL.OUT_DIM), MutAnyOrigin
     ](output_buf.unsafe_ptr())
-    var cache_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH, GPT_MODEL.CACHE_SIZE), MutAnyOrigin
-    ](cache_buf.unsafe_ptr())
     var output_host = ctx.enqueue_create_host_buffer[dtype](
         BATCH * GPT_MODEL.OUT_DIM
     )
@@ -213,8 +297,9 @@ def _eval_topk_accuracy_gpu(
             dtype, Layout.row_major(BATCH, GPT_MODEL.IN_DIM), MutAnyOrigin
         ](val_input.ptr + batch_idx * BATCH * GPT_MODEL.IN_DIM)
 
-        GPT_MODEL.forward_gpu[BATCH, dtype](
-            ctx, output_t, batch_input, p_view, s_view, cache_t, ws_buf
+        # forward_gpu_no_cache → Dropout falls back to identity (eval mode).
+        GPT_MODEL.forward_gpu_no_cache[BATCH, dtype](
+            ctx, output_t, batch_input, p_view, s_view, ws_buf
         )
         ctx.enqueue_copy(output_host, output_buf)
         ctx.synchronize()
@@ -384,8 +469,9 @@ def _generate_text_gpu(
             inp_host[t * VOCAB + tid] = Scalar[dtype](1.0)
         ctx.enqueue_copy(inp_dev, inp_host)
 
-        GPT_MODEL.forward_gpu[1, dtype](
-            ctx, out_t, inp_t, p_view, s_view, cache_t, ws_dev
+        # forward_gpu_no_cache → Dropout falls back to identity (eval mode).
+        GPT_MODEL.forward_gpu_no_cache[1, dtype](
+            ctx, out_t, inp_t, p_view, s_view, ws_dev
         )
         ctx.enqueue_copy(out_host, out_dev)
         ctx.synchronize()
