@@ -169,6 +169,79 @@ def _eval_loss_seq_gpu(
 
 
 # =============================================================================
+# Diagnostic: per-token top-1 argmax accuracy on the val windows.
+#
+# Same forward pass as `_eval_loss_seq_gpu`, but instead of CE we argmax
+# the logits at every (sample, position) pair and compare to the integer
+# target id. Tells us whether the training loss is *consistent* with
+# good next-token prediction:
+#
+#   val_loss = 0.55 nats  ⇒  e^-0.55 ≈ 58 % avg true-class probability,
+#   so a non-pathological model should land near 55–65 % top-1. If we
+#   instead see ~5–15 % we know the loss is artifactually low (forward-
+#   pass leak somewhere) rather than the model genuinely predicting well
+#   in-context.
+# =============================================================================
+def _eval_topk_accuracy_gpu(
+    ctx: DeviceContext,
+    state: GPUNetworkState[GPT_MODEL, GPT_OPT],
+    val_input: LayoutTensor[
+        dtype, Layout.row_major(N_VAL_WINDOWS, GPT_MODEL.IN_DIM), MutAnyOrigin
+    ],
+    val_target_ids: List[Int],
+    output_buf: DeviceBuffer[dtype],
+    cache_buf: DeviceBuffer[dtype],
+    ws_buf: DeviceBuffer[dtype],
+) raises -> Float64:
+    var output_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT_MODEL.OUT_DIM), MutAnyOrigin
+    ](output_buf.unsafe_ptr())
+    var cache_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT_MODEL.CACHE_SIZE), MutAnyOrigin
+    ](cache_buf.unsafe_ptr())
+    var output_host = ctx.enqueue_create_host_buffer[dtype](
+        BATCH * GPT_MODEL.OUT_DIM
+    )
+
+    var p_view = state.params_view()
+    var s_view = state.model_state_view()
+
+    var total_correct: Int = 0
+    var total_count: Int = 0
+    for batch_idx in range(N_VAL_BATCHES):
+        var batch_input = LayoutTensor[
+            dtype, Layout.row_major(BATCH, GPT_MODEL.IN_DIM), MutAnyOrigin
+        ](val_input.ptr + batch_idx * BATCH * GPT_MODEL.IN_DIM)
+
+        GPT_MODEL.forward_gpu[BATCH, dtype](
+            ctx, output_t, batch_input, p_view, s_view, cache_t, ws_buf
+        )
+        ctx.enqueue_copy(output_host, output_buf)
+        ctx.synchronize()
+
+        # Per-(sample, position) argmax over VOCAB logits, vs integer target.
+        for b in range(BATCH):
+            var b_off = b * SEQ * VOCAB
+            for t in range(SEQ):
+                var row_off = b_off + t * VOCAB
+                var best_v = Float64(output_host[row_off])
+                var best_idx = 0
+                for v in range(1, VOCAB):
+                    var x = Float64(output_host[row_off + v])
+                    if x > best_v:
+                        best_v = x
+                        best_idx = v
+                var tgt = val_target_ids[
+                    batch_idx * BATCH * SEQ + b * SEQ + t
+                ]
+                if best_idx == tgt:
+                    total_correct += 1
+                total_count += 1
+
+    return Float64(total_correct) / Float64(total_count)
+
+
+# =============================================================================
 # Sampling on device. Greedy if T=0, categorical otherwise. Slow path runs
 # one BATCH=1 forward per generated token (no KV cache). Pulls only the
 # last-position logits row back to host for sampling.
@@ -543,6 +616,27 @@ def main() raises:
             "  WARN: validation loss did not improve substantially —"
             + " increase EPOCHS or check"
         )
+
+    # ---------- Diagnostic: per-token top-1 accuracy on val ----------
+    # Distinguishes "loss is real, generator is broken" from "loss is
+    # artifactually low (forward-pass leak)". Expected with val_loss≈0.55:
+    #   genuine model     → ~55–65 % top-1 (e^-0.55 ≈ 58 %)
+    #   leak/cheat        → ~5–15 % top-1 (loss decoupled from prediction)
+    var val_acc = _eval_topk_accuracy_gpu(
+        ctx, state, val_inp_lt, val_batch.targets,
+        output_buf, cache_buf, ws_buf,
+    )
+    print(
+        "[diagnostic] val per-token top-1 accuracy="
+        + String(val_acc * 100.0)[byte=:5]
+        + "%  (random ≈ "
+        + String(100.0 / Float64(VOCAB))[byte=:4]
+        + "%, expected from loss≈"
+        + String(val_final)[byte=:5]
+        + " ⇒ ~"
+        + String(exp(-val_final) * 100.0)[byte=:5]
+        + "%)"
+    )
 
     # ---------- Sampling ----------
     var prompt = String("ROMEO:")
