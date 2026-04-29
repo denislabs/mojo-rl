@@ -64,7 +64,7 @@ from layout import Layout, LayoutTensor
 # =============================================================================
 comptime VOCAB = 65          # TinyShakespeare unique chars
 comptime SEQ = 256           # context length
-comptime EMBED = 192         # transformer width
+comptime EMBED = 384         # transformer width (matches nanoGPT char-Shakespeare)
 comptime HEADS = 6           # head_dim = 32
 comptime LAYERS = 6          # transformer blocks
 comptime FF_MULT = 4         # FFN inner dim = 4 * EMBED = 768
@@ -94,10 +94,7 @@ comptime GRAD_CLIP = 1.0     # max-abs clip on params grads each step
 # 4090. If host RAM is tight, dial both down by 2× (16384 × 20).
 comptime N_TRAIN_WINDOWS = 32768
 comptime N_VAL_WINDOWS = 256          # 16 batches × BATCH=16
-# Early-stop test: previous 10-epoch run hit val ≈ 1.65 at epoch 2 then
-# fell off a cliff to val ≈ 0.86 by epoch 10 with degenerate samples.
-# Stopping at 4 keeps us in nanoGPT's reported regime (val ≈ 1.47).
-comptime EPOCHS = 4
+comptime EPOCHS = 10
 comptime WARMUP_EPOCHS = 1            # 1 epoch of linear warmup, then cosine
 
 comptime N_TRAIN_BATCHES = N_TRAIN_WINDOWS // BATCH
