@@ -67,7 +67,7 @@ def main() raises:
         ctx,
         num_iters=100,
         steps_per_iter=1000,
-        train_epochs=3,
+        train_epochs=10,
         warmup_iters=1,
         arena_threshold=0.55,
         do_eval=True,
@@ -78,6 +78,7 @@ def main() raises:
         logger=UnsafePointer(to=logger),
         diag_every=100,
         dump_replay=True,
+        use_one_cycle=True,
     )
 
     logger.close()

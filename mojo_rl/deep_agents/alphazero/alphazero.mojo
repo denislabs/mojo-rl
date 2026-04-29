@@ -18,6 +18,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.nn.training.scheduler import OneCycleSchedule
 from mojo_rl.nn.checkpoint import (
     write_checkpoint_header,
     write_metadata_section,
@@ -3326,6 +3327,7 @@ struct GenericAlphaZeroAgent[
         diag_every: Int = 50,
         verbose: Bool = True,
         dump_replay: Bool = False,
+        use_one_cycle: Bool = False,
     ) raises -> TrainingMetrics:
         """Train via batch-then-train (like alpha-zero-general).
 
@@ -4141,7 +4143,12 @@ struct GenericAlphaZeroAgent[
                             )
                         _train_graph = graph^
                     # All steps via async graph replay (no per-step CPU work)
-                    for _ in range(num_train_steps):
+                    for s_idx in range(num_train_steps):
+                        if use_one_cycle:
+                            var sc = OneCycleSchedule[].lr_scale_at(
+                                s_idx, num_train_steps
+                            )
+                            gpu.prediction.set_lr_scale(sc, ctx)
                         _train_graph.value().replay_on_mojo_stream()
 
                     # Diagnostics outside graph (once after all replays)
@@ -4156,7 +4163,12 @@ struct GenericAlphaZeroAgent[
                     )
                 else:
                     # GPU-side sampling + training (no CPU replay needed)
-                    for _ in range(num_train_steps):
+                    for s_idx in range(num_train_steps):
+                        if use_one_cycle:
+                            var sc = OneCycleSchedule[].lr_scale_at(
+                                s_idx, num_train_steps
+                            )
+                            gpu.prediction.set_lr_scale(sc, ctx)
                         self._gpu_train_kernels(ctx, gpu)
                     self._gpu_train_diagnostics(
                         ctx,
