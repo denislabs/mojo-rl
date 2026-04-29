@@ -21,6 +21,10 @@ For the readout, ε_L = target − output (target plays the role of x_above).
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
+from std.runtime.asyncrt import DeviceContextPtr
+from std.sys import has_nvidia_gpu_accelerator
+from linalg.matmul import matmul as max_matmul
+from layout.tile_tensor import lt_to_tt
 
 from mojo_rl.nn.constants import TPB
 from mojo_rl.nn.initializer import Initializer
@@ -32,6 +36,7 @@ struct PCBlock[
     in_dim: Int,
     out_dim: Int,
     ACT: PCActivation = PCReLU,
+    USE_MAX_KERNELS: Bool = True,
 ](PCBlockTrait):
     """One PCN level: W [in_dim, out_dim] + b [out_dim] + bundled `ACT`.
 
@@ -40,6 +45,11 @@ struct PCBlock[
       - out_dim is the above side (latent x_above of this dim is predicted)
 
     For the readout, pass `ACT=PCIdentity` and target plays role of x_above.
+
+    USE_MAX_KERNELS (NVIDIA only): when True, route predict / pull_back /
+    weight_grad GPU matmuls through `linalg.matmul` (the optimized max_matmul
+    GEMM). When False, fall through to the naive elementwise kernels. Apple
+    always uses the naive fallback regardless of this flag.
     """
 
     comptime IN_DIM: Int = Self.in_dim
@@ -381,6 +391,52 @@ struct PCBlock[
             s += rebind[Scalar[dtype]](eps_above[sb, j])
         b_grad[j] = -s
 
+    # ── Helpers used by the max_matmul fast path ─────────────────────────────
+
+    @staticmethod
+    fn _bias_add_kernel[
+        BATCH: Int, OUT: Int, dtype: DType,
+    ](
+        mu: LayoutTensor[
+            dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
+        ],
+        b: LayoutTensor[dtype, Layout.row_major(OUT), MutAnyOrigin],
+    ):
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * OUT:
+            return
+        var col = idx % OUT
+        mu.ptr[idx] = mu.ptr[idx] + rebind[Scalar[dtype]](b[col])
+
+    @staticmethod
+    fn _negate_kernel[
+        N: Int, dtype: DType,
+    ](
+        buf: LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin],
+    ):
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= N:
+            return
+        buf.ptr[idx] = -buf.ptr[idx]
+
+    @staticmethod
+    fn _transpose_2d_kernel[
+        ROWS: Int, COLS: Int, dtype: DType,
+    ](
+        dst: LayoutTensor[
+            dtype, Layout.row_major(COLS, ROWS), MutAnyOrigin
+        ],
+        src: LayoutTensor[
+            dtype, Layout.row_major(ROWS, COLS), MutAnyOrigin
+        ],
+    ):
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= ROWS * COLS:
+            return
+        var row = idx // COLS
+        var col = idx % COLS
+        dst[col, row] = src[row, col]
+
     # ── GPU dispatchers ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -414,15 +470,36 @@ struct PCBlock[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](params.ptr + Self.in_dim * Self.out_dim)
 
-        comptime k = Self._predict_matmul_kernel[
-            BATCH, Self.in_dim, Self.out_dim, dtype
-        ]
-        var threads = BATCH * Self.out_dim
-        var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
-            a_below, W, b_view, mu,
-            grid_dim=(blocks,), block_dim=(TPB,),
-        )
+        comptime if Self.USE_MAX_KERNELS and has_nvidia_gpu_accelerator():
+            # Fast path: max_matmul writes mu = a_below @ W (no bias),
+            # then a separate bias-add kernel folds in b.
+            max_matmul[target="gpu"](
+                lt_to_tt(mu),
+                lt_to_tt(a_below),
+                lt_to_tt(W),
+                DeviceContextPtr(ctx),
+            )
+
+            comptime kb = Self._bias_add_kernel[
+                BATCH, Self.out_dim, dtype
+            ]
+            var ba_threads = BATCH * Self.out_dim
+            var ba_blocks = (ba_threads + TPB - 1) // TPB
+            ctx.enqueue_function[kb, kb](
+                mu, b_view,
+                grid_dim=(ba_blocks,), block_dim=(TPB,),
+            )
+        else:
+            # Fallback: naive one-thread-per-output-element kernel.
+            comptime k = Self._predict_matmul_kernel[
+                BATCH, Self.in_dim, Self.out_dim, dtype
+            ]
+            var threads = BATCH * Self.out_dim
+            var blocks = (threads + TPB - 1) // TPB
+            ctx.enqueue_function[k, k](
+                a_below, W, b_view, mu,
+                grid_dim=(blocks,), block_dim=(TPB,),
+            )
 
     @staticmethod
     def eps_compute_gpu[
@@ -467,15 +544,26 @@ struct PCBlock[
             Layout.row_major(Self.in_dim, Self.out_dim),
             MutAnyOrigin,
         ](params.ptr)
-        comptime k = Self._pull_back_kernel[
-            BATCH, Self.in_dim, Self.out_dim, dtype
-        ]
-        var threads = BATCH * Self.in_dim
-        var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k, k](
-            eps_above, W, z_below,
-            grid_dim=(blocks,), block_dim=(TPB,),
-        )
+        comptime if Self.USE_MAX_KERNELS and has_nvidia_gpu_accelerator():
+            # z_below[B, IN] = eps_above[B, OUT] @ W^T[OUT, IN]
+            # max_matmul with transpose_b=True treats W (stored [IN, OUT])
+            # as if it were W^T, giving exactly this contraction.
+            max_matmul[transpose_b=True, target="gpu"](
+                lt_to_tt(z_below),
+                lt_to_tt(eps_above),
+                lt_to_tt(W),
+                DeviceContextPtr(ctx),
+            )
+        else:
+            comptime k = Self._pull_back_kernel[
+                BATCH, Self.in_dim, Self.out_dim, dtype
+            ]
+            var threads = BATCH * Self.in_dim
+            var blocks = (threads + TPB - 1) // TPB
+            ctx.enqueue_function[k, k](
+                eps_above, W, z_below,
+                grid_dim=(blocks,), block_dim=(TPB,),
+            )
 
     @staticmethod
     def act_derivative_mul_gpu[
@@ -520,15 +608,63 @@ struct PCBlock[
             dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
         ](grads.ptr + Self.in_dim * Self.out_dim)
 
-        comptime kw = Self._weight_grad_kernel[
-            BATCH, Self.in_dim, Self.out_dim, dtype
-        ]
-        var w_threads = Self.in_dim * Self.out_dim
-        var w_blocks = (w_threads + TPB - 1) // TPB
-        ctx.enqueue_function[kw, kw](
-            eps_above, a_below, W_grad,
-            grid_dim=(w_blocks,), block_dim=(TPB,),
-        )
+        comptime if Self.USE_MAX_KERNELS and has_nvidia_gpu_accelerator():
+            # dW[IN, OUT] = -a_below^T[IN, BATCH] @ eps_above[BATCH, OUT]
+            # max_matmul has no transpose_a, so materialize a_below^T into
+            # a scratch buffer first, then compute the GEMM and negate dW.
+            var a_T_buf = ctx.enqueue_create_buffer[dtype](
+                BATCH * Self.in_dim
+            )
+            var a_T = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim, BATCH),
+                MutAnyOrigin,
+            ](a_T_buf.unsafe_ptr())
+
+            comptime kt = Self._transpose_2d_kernel[
+                BATCH, Self.in_dim, dtype
+            ]
+            comptime t_blocks = (
+                BATCH * Self.in_dim + TPB - 1
+            ) // TPB
+            ctx.enqueue_function[kt, kt](
+                a_T, a_below,
+                grid_dim=(t_blocks,), block_dim=(TPB,),
+            )
+
+            max_matmul[target="gpu"](
+                lt_to_tt(W_grad),
+                lt_to_tt(a_T),
+                lt_to_tt(eps_above),
+                DeviceContextPtr(ctx),
+            )
+
+            # Bake in the −sign expected by Optimizer.step (params -= lr·grads).
+            var W_grad_flat = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.in_dim * Self.out_dim),
+                MutAnyOrigin,
+            ](grads.ptr)
+            comptime kn = Self._negate_kernel[
+                Self.in_dim * Self.out_dim, dtype
+            ]
+            comptime n_blocks = (
+                Self.in_dim * Self.out_dim + TPB - 1
+            ) // TPB
+            ctx.enqueue_function[kn, kn](
+                W_grad_flat,
+                grid_dim=(n_blocks,), block_dim=(TPB,),
+            )
+        else:
+            comptime kw = Self._weight_grad_kernel[
+                BATCH, Self.in_dim, Self.out_dim, dtype
+            ]
+            var w_threads = Self.in_dim * Self.out_dim
+            var w_blocks = (w_threads + TPB - 1) // TPB
+            ctx.enqueue_function[kw, kw](
+                eps_above, a_below, W_grad,
+                grid_dim=(w_blocks,), block_dim=(TPB,),
+            )
 
         comptime kb = Self._bias_grad_kernel[BATCH, Self.out_dim, dtype]
         var b_threads = Self.out_dim
