@@ -736,7 +736,7 @@ def main() raises:
     #     prompt / bigger model; the inference pipeline is fine.
     #   - If output is still degenerate (newlines, repeated bigrams) →
     #     there's a real bug somewhere in the front-anchor / generation path.
-    var long_prompt = text[byte=0:250]
+    var long_prompt = String(text[byte=0:250])
     print(
         "\n[sample] long prompt diagnostic (250 real Shakespeare chars):\n"
         + "---- prompt ----\n" + long_prompt + "\n---- continuation (greedy) ----"
