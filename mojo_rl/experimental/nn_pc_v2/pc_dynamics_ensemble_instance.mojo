@@ -31,6 +31,10 @@ from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.checkpoint import (
+    write_float_section_ptr,
+    read_float_section_list,
+)
 from mojo_rl.deep_agents.core.replay import HeapReplayBuffer
 
 from .pc_dynamics import PCDynamics
@@ -485,3 +489,78 @@ struct PCDynamicsEnsembleInstanceCPU[
             target_buf[b * Self.DYN.READOUT + Self.OBS_DIM] = (
                 buffer.rewards[idx]
             )
+
+    # =========================================================================
+    # Checkpoint surface — mirrors `NetworkState.write_sections` /
+    # `read_sections`, but covers the whole ensemble in a single call (one
+    # `params:` / `opt_state:` / `opt_global:` section blob keyed by `prefix`).
+    # The fork's checkpoint code becomes a single line per ensemble instead
+    # of the per-member loop in vanilla MBPO.
+    # =========================================================================
+
+    def write_sections(self, prefix: String) -> String:
+        """Serialize ensemble (params + Adam state + step counters) as text sections.
+
+        Sections written (each is `prefix + "<name>:"` followed by one
+        float per line):
+
+        - `params:`     — `TOTAL_PARAM_SIZE` floats covering all members
+                          back-to-back at member-stride `PER_MEMBER_PARAM_SIZE`.
+        - `opt_state:`  — `TOTAL_PARAM_SIZE * STATE_PER_PARAM` floats
+                          (Adam m/v moments, per-member).
+        - `opt_global:` — `NUM_ENSEMBLE * GLOBAL_STATE_SIZE` floats
+                          (per-member step counter + lr_scale).
+        - `step_nums:`  — `NUM_ENSEMBLE` integers (host-side mirrors of the
+                          on-device step counters; encoded as floats).
+
+        Elite indices are NOT written here — the agent persists them in its
+        metadata block (matches vanilla MBPO).
+        """
+        var content = write_float_section_ptr(
+            prefix + "params:", self.params_buf, Self.ENS.TOTAL_PARAM_SIZE
+        )
+        content += write_float_section_ptr(
+            prefix + "opt_state:",
+            self.opt_state_buf,
+            Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM,
+        )
+        content += write_float_section_ptr(
+            prefix + "opt_global:",
+            self.opt_global_buf,
+            Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE,
+        )
+        var steps = prefix + "step_nums:\n"
+        for m in range(Self.NUM_ENSEMBLE):
+            steps += String(self.step_nums[m]) + "\n"
+        content += steps
+        return content
+
+    def read_sections(mut self, content: String, prefix: String) raises:
+        """Restore ensemble from sections written by `write_sections`."""
+        var loaded_params = read_float_section_list[Self.dtype](
+            content, prefix + "params:", Self.ENS.TOTAL_PARAM_SIZE
+        )
+        for i in range(Self.ENS.TOTAL_PARAM_SIZE):
+            (self.params_buf + i)[] = loaded_params[i]
+
+        var loaded_opt = read_float_section_list[Self.dtype](
+            content,
+            prefix + "opt_state:",
+            Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM,
+        )
+        for i in range(Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM):
+            (self.opt_state_buf + i)[] = loaded_opt[i]
+
+        var loaded_global = read_float_section_list[Self.dtype](
+            content,
+            prefix + "opt_global:",
+            Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE,
+        )
+        for i in range(Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE):
+            (self.opt_global_buf + i)[] = loaded_global[i]
+
+        var loaded_steps = read_float_section_list[Self.dtype](
+            content, prefix + "step_nums:", Self.NUM_ENSEMBLE
+        )
+        for m in range(Self.NUM_ENSEMBLE):
+            self.step_nums[m] = Int(Float64(loaded_steps[m]))

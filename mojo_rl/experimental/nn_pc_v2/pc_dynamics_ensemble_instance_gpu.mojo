@@ -22,6 +22,10 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.checkpoint import (
+    write_float_section_ptr,
+    read_float_section_list,
+)
 
 from .pc_dynamics import PCDynamics
 from .pc_dynamics_ensemble_gpu import PCDynamicsEnsembleGPU
@@ -38,6 +42,11 @@ struct PCDynamicsEnsembleInstanceGPU[
     T_INFER: Int = 10,
     LR_X_FLOAT: Float64 = 0.01,
     DYN_LR: Float64 = 0.001,
+    # Workspace sizing for the actor's `forward_gpu` during rollouts. The
+    # PCN-MBPO agent fork passes its actor's `WORKSPACE_SIZE_PER_SAMPLE`
+    # times ROLLOUT_BATCH at instantiation. Kept comptime so allocation is
+    # static. Default 1 means the actor doesn't need scratch.
+    R_WS_SIZE: Int = 1,
     dtype: DType = DType.float32,
 ](Movable):
     """Owning GPU wrapper around `PCDynamicsEnsembleGPU`.
@@ -53,6 +62,30 @@ struct PCDynamicsEnsembleInstanceGPU[
     ]
     comptime DYN = Self.ENS.DYN
     comptime OPT = Adam[LR=Self.DYN_LR]
+
+    # =========================================================================
+    # MBPO-compatible comptime aliases. The agent fork reads these as
+    # `gpu_dynamics.rollout_batch`, `gpu_dynamics.DYN_IN`, etc.
+    #
+    # PCN dynamics outputs are deterministic (delta_obs + reward only — no
+    # logvar), so DYN_OUT == DYN_PRED == READOUT. Vanilla MBPO's DYN_OUT is
+    # 2*DYN_PRED because it interleaves logvar.
+    # =========================================================================
+
+    comptime obs_dim: Int = Self.OBS_DIM
+    comptime action_dim: Int = Self.ACTION_DIM
+    comptime num_ensemble: Int = Self.NUM_ENSEMBLE
+    comptime num_elites: Int = Self.NUM_ELITES
+    comptime rollout_batch: Int = Self.ROLLOUT_BATCH
+    comptime DYN_IN: Int = Self.DYN.AUG_DIM
+    comptime DYN_PRED: Int = Self.DYN.READOUT
+    comptime DYN_OUT: Int = Self.DYN.READOUT
+    # Sampling-staging shared size — covers both train minibatch sampling
+    # and rollout-start sampling.
+    comptime SAMPLE_BATCH: Int = (
+        Self.DYN_BATCH if Self.DYN_BATCH > Self.ROLLOUT_BATCH
+        else Self.ROLLOUT_BATCH
+    )
 
     # =========================================================================
     # Owned device buffers — one big block per kind, member m at offset
@@ -93,13 +126,69 @@ struct PCDynamicsEnsembleInstanceGPU[
     var e_out_host: HostBuffer[Self.dtype]
     var e_target_host: HostBuffer[Self.dtype]
 
-    # Rollout scratch (ROLLOUT_BATCH-sized — used by agent's
-    # do_model_rollouts_gpu in the forked agent).
-    var r_s_a_dbuf: DeviceBuffer[Self.dtype]
-    var r_a_aug_dbuf: DeviceBuffer[Self.dtype]
-    var r_z_dbuf: DeviceBuffer[Self.dtype]
-    var r_a_z_dbuf: DeviceBuffer[Self.dtype]
-    var r_out_dbuf: DeviceBuffer[Self.dtype]
+    # =========================================================================
+    # Rollout-time MBPO-compatible buffers. Field names match
+    # `GPUDynamicsEnsemble` so the agent fork's `do_model_rollouts_gpu`
+    # accesses (`r_obs`, `r_actions`, `r_dyn_input`, `r_dyn_output_all`,
+    # `r_alive`, `r_ws`, `r_next_obs`, `r_dones`, `r_rewards`, etc.) work
+    # without renaming the agent body.
+    # =========================================================================
+
+    # Rollout state (per ROLLOUT_BATCH).
+    var r_obs: DeviceBuffer[Self.dtype]            # [RB * obs_dim]
+    var r_next_obs: DeviceBuffer[Self.dtype]       # [RB * obs_dim]
+    var r_actions: DeviceBuffer[Self.dtype]        # [RB * action_dim]
+    var r_rewards: DeviceBuffer[Self.dtype]        # [RB]
+    var r_dones: DeviceBuffer[Self.dtype]          # [RB]
+    var r_alive: DeviceBuffer[Self.dtype]          # [RB] alive mask multi-step
+
+    # Rollout dynamics input/output. `r_dyn_input` is the staged [obs|action]
+    # tensor (same role as MBPO's). `r_dyn_output` holds one elite member's
+    # forward output (READOUT-wide, no logvar). `r_dyn_output_all` stacks
+    # all elite forwards: [NUM_ELITES, RB, READOUT] for per-sample elite
+    # selection in the rollout sample kernel.
+    var r_dyn_input: DeviceBuffer[Self.dtype]      # [RB * AUG_DIM]
+    var r_dyn_output: DeviceBuffer[Self.dtype]     # [RB * READOUT]
+    var r_dyn_output_all: DeviceBuffer[Self.dtype] # [NUM_ELITES * RB * READOUT]
+
+    # PCN-internal activation scratch shared with `predict_rollout_member`.
+    # These are PC-graph activations (not MBPO's NLL pipeline), kept under
+    # the prior names since they have no MBPO equivalent.
+    # Rollout-time PCN forward scratch. `predict_member_gpu` wraps
+    # `forward_eval_gpu`, which needs `mu_buf` ([RB*SCRATCH_OUT]) and
+    # `a_buf` ([RB*SCRATCH_IN]) sized for the whole PCBlock chain (sum
+    # of per-block OUT_DIMs / IN_DIMs across both blocks). The names are
+    # legacy from a single-block draft; capacity is now full SCRATCH_*.
+    var r_a_aug_dbuf: DeviceBuffer[Self.dtype]     # mu_buf  [RB * SCRATCH_OUT]
+    var r_z_dbuf: DeviceBuffer[Self.dtype]         # a_buf   [RB * SCRATCH_IN]
+    var r_a_z_dbuf: DeviceBuffer[Self.dtype]       # [RB * HIDDEN_DIM] (reserved)
+
+    # Per-sample elite selection (matches MBPO).
+    var r_elite_idx_per_sample: DeviceBuffer[DType.int32]  # [RB]
+    var r_elite_rng: DeviceBuffer[DType.uint32]            # [1]
+    # Map elite-slot -> ensemble-member index. Re-uploaded from
+    # `elite_indices` after every train round (see `sync_elite_member_buf`).
+    var elite_member_buf: DeviceBuffer[DType.int32]        # [NUM_ELITES]
+    var elite_member_host: HostBuffer[DType.int32]         # [NUM_ELITES]
+
+    # Actor workspace (caller sizes via R_WS_SIZE). Used by both actor and
+    # any rollout-time forward that needs scratch.
+    var r_ws: DeviceBuffer[Self.dtype]             # [R_WS_SIZE]
+
+    # Replay-buffer sample staging — shared by training and rollout sample
+    # paths. Sized for max(DYN_BATCH, ROLLOUT_BATCH) so both fit.
+    var s_obs: DeviceBuffer[Self.dtype]            # [SB * obs_dim]
+    var s_act: DeviceBuffer[Self.dtype]            # [SB * action_dim]
+    var s_rew: DeviceBuffer[Self.dtype]            # [SB]
+    var s_nobs: DeviceBuffer[Self.dtype]           # [SB * obs_dim]
+    var s_done: DeviceBuffer[Self.dtype]           # [SB]
+    var s_idx: DeviceBuffer[DType.int32]           # [SB]
+
+    # Input scaler — initialized to identity so callers that don't fit a
+    # scaler get pass-through normalization. Matches MBPO's behavior on
+    # the first dynamics train (scaler refit there). Sized DYN_IN.
+    var input_mean: DeviceBuffer[Self.dtype]       # [DYN_IN]
+    var input_std: DeviceBuffer[Self.dtype]        # [DYN_IN]
 
     # =========================================================================
     # Construction / destruction.
@@ -209,22 +298,94 @@ struct PCDynamicsEnsembleInstanceGPU[
             Self.DYN_BATCH * Self.DYN.READOUT
         )
 
-        # Rollout scratch (ROLLOUT_BATCH).
-        self.r_s_a_dbuf = ctx.enqueue_create_buffer[Self.dtype](
+        # Rollout state (MBPO-compatible field names).
+        self.r_obs = ctx.enqueue_create_buffer[Self.dtype](
+            Self.ROLLOUT_BATCH * Self.OBS_DIM
+        )
+        self.r_next_obs = ctx.enqueue_create_buffer[Self.dtype](
+            Self.ROLLOUT_BATCH * Self.OBS_DIM
+        )
+        self.r_actions = ctx.enqueue_create_buffer[Self.dtype](
+            Self.ROLLOUT_BATCH * Self.ACTION_DIM
+        )
+        self.r_rewards = ctx.enqueue_create_buffer[Self.dtype](
+            Self.ROLLOUT_BATCH
+        )
+        self.r_dones = ctx.enqueue_create_buffer[Self.dtype](
+            Self.ROLLOUT_BATCH
+        )
+        self.r_alive = ctx.enqueue_create_buffer[Self.dtype](
+            Self.ROLLOUT_BATCH
+        )
+
+        # Rollout dynamics input/output (renamed from r_s_a_dbuf / r_out_dbuf).
+        self.r_dyn_input = ctx.enqueue_create_buffer[Self.dtype](
             Self.ROLLOUT_BATCH * Self.DYN.AUG_DIM
         )
+        self.r_dyn_output = ctx.enqueue_create_buffer[Self.dtype](
+            Self.ROLLOUT_BATCH * Self.DYN.READOUT
+        )
+        self.r_dyn_output_all = ctx.enqueue_create_buffer[Self.dtype](
+            Self.NUM_ELITES * Self.ROLLOUT_BATCH * Self.DYN.READOUT
+        )
+
+        # PCN forward scratch sized for `forward_eval_gpu` (whole-chain
+        # SCRATCH_OUT / SCRATCH_IN, not just one block's AUG/HIDDEN).
         self.r_a_aug_dbuf = ctx.enqueue_create_buffer[Self.dtype](
-            Self.ROLLOUT_BATCH * Self.DYN.AUG_DIM
+            Self.ROLLOUT_BATCH * Self.DYN.SCRATCH_OUT
         )
         self.r_z_dbuf = ctx.enqueue_create_buffer[Self.dtype](
-            Self.ROLLOUT_BATCH * Self.DYN.HIDDEN_DIM
+            Self.ROLLOUT_BATCH * Self.DYN.SCRATCH_IN
         )
         self.r_a_z_dbuf = ctx.enqueue_create_buffer[Self.dtype](
             Self.ROLLOUT_BATCH * Self.DYN.HIDDEN_DIM
         )
-        self.r_out_dbuf = ctx.enqueue_create_buffer[Self.dtype](
-            Self.ROLLOUT_BATCH * Self.DYN.READOUT
+
+        # Per-sample elite selection (default mapping = first NUM_ELITES
+        # members; refreshed each train round via `sync_elite_member_buf`).
+        self.r_elite_idx_per_sample = ctx.enqueue_create_buffer[DType.int32](
+            Self.ROLLOUT_BATCH
         )
+        self.r_elite_rng = ctx.enqueue_create_buffer[DType.uint32](1)
+        self.r_elite_rng.enqueue_fill(UInt32(0xC0FFEE))
+        self.elite_member_buf = ctx.enqueue_create_buffer[DType.int32](
+            Self.NUM_ELITES
+        )
+        self.elite_member_host = ctx.enqueue_create_host_buffer[DType.int32](
+            Self.NUM_ELITES
+        )
+        for i in range(Self.NUM_ELITES):
+            self.elite_member_host[i] = Int32(i)
+        ctx.enqueue_copy(self.elite_member_buf, self.elite_member_host)
+
+        # Actor workspace.
+        self.r_ws = ctx.enqueue_create_buffer[Self.dtype](Self.R_WS_SIZE)
+
+        # Replay-buffer sample staging — shared between training-batch and
+        # rollout-start sampling.
+        self.s_obs = ctx.enqueue_create_buffer[Self.dtype](
+            Self.SAMPLE_BATCH * Self.OBS_DIM
+        )
+        self.s_act = ctx.enqueue_create_buffer[Self.dtype](
+            Self.SAMPLE_BATCH * Self.ACTION_DIM
+        )
+        self.s_rew = ctx.enqueue_create_buffer[Self.dtype](Self.SAMPLE_BATCH)
+        self.s_nobs = ctx.enqueue_create_buffer[Self.dtype](
+            Self.SAMPLE_BATCH * Self.OBS_DIM
+        )
+        self.s_done = ctx.enqueue_create_buffer[Self.dtype](Self.SAMPLE_BATCH)
+        self.s_idx = ctx.enqueue_create_buffer[DType.int32](Self.SAMPLE_BATCH)
+
+        # Input scaler — start at identity. Caller may overwrite via
+        # `enqueue_fill` or by copying from a fitted scaler.
+        self.input_mean = ctx.enqueue_create_buffer[Self.dtype](
+            Self.DYN.AUG_DIM
+        )
+        self.input_std = ctx.enqueue_create_buffer[Self.dtype](
+            Self.DYN.AUG_DIM
+        )
+        self.input_mean.enqueue_fill(Scalar[Self.dtype](0.0))
+        self.input_std.enqueue_fill(Scalar[Self.dtype](1.0))
 
         ctx.synchronize()
 
@@ -250,11 +411,34 @@ struct PCDynamicsEnsembleInstanceGPU[
         self.e_out_dbuf = take.e_out_dbuf^
         self.e_out_host = take.e_out_host^
         self.e_target_host = take.e_target_host^
-        self.r_s_a_dbuf = take.r_s_a_dbuf^
+        # Rollout state (MBPO-compatible).
+        self.r_obs = take.r_obs^
+        self.r_next_obs = take.r_next_obs^
+        self.r_actions = take.r_actions^
+        self.r_rewards = take.r_rewards^
+        self.r_dones = take.r_dones^
+        self.r_alive = take.r_alive^
+        self.r_dyn_input = take.r_dyn_input^
+        self.r_dyn_output = take.r_dyn_output^
+        self.r_dyn_output_all = take.r_dyn_output_all^
         self.r_a_aug_dbuf = take.r_a_aug_dbuf^
         self.r_z_dbuf = take.r_z_dbuf^
         self.r_a_z_dbuf = take.r_a_z_dbuf^
-        self.r_out_dbuf = take.r_out_dbuf^
+        self.r_elite_idx_per_sample = take.r_elite_idx_per_sample^
+        self.r_elite_rng = take.r_elite_rng^
+        self.elite_member_buf = take.elite_member_buf^
+        self.elite_member_host = take.elite_member_host^
+        self.r_ws = take.r_ws^
+        # Replay sample staging.
+        self.s_obs = take.s_obs^
+        self.s_act = take.s_act^
+        self.s_rew = take.s_rew^
+        self.s_nobs = take.s_nobs^
+        self.s_done = take.s_done^
+        self.s_idx = take.s_idx^
+        # Input scaler.
+        self.input_mean = take.input_mean^
+        self.input_std = take.input_std^
 
     # =========================================================================
     # Common LayoutTensor views (build once per call from device buffers).
@@ -454,36 +638,180 @@ struct PCDynamicsEnsembleInstanceGPU[
         ctx: DeviceContext,
         m: Int,
     ) raises:
-        """Feedforward member m over ROLLOUT_BATCH inputs in `r_s_a_dbuf`.
+        """Feedforward member m over ROLLOUT_BATCH inputs in `r_dyn_input`.
 
-        Result is left in `r_out_dbuf` (caller un-normalizes + stores).
+        Result is left in `r_dyn_output` (caller un-normalizes + stores).
         """
         var r_s_a_t = LayoutTensor[
             Self.dtype,
             Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.AUG_DIM),
             MutAnyOrigin,
-        ](self.r_s_a_dbuf.unsafe_ptr())
-        var r_a_aug_t = LayoutTensor[
+        ](self.r_dyn_input.unsafe_ptr())
+        var r_mu_buf_t = LayoutTensor[
             Self.dtype,
-            Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.AUG_DIM),
+            Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.SCRATCH_OUT),
             MutAnyOrigin,
         ](self.r_a_aug_dbuf.unsafe_ptr())
-        var r_z_t = LayoutTensor[
+        var r_a_buf_t = LayoutTensor[
             Self.dtype,
-            Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.HIDDEN_DIM),
+            Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.SCRATCH_IN),
             MutAnyOrigin,
         ](self.r_z_dbuf.unsafe_ptr())
-        var r_a_z_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.HIDDEN_DIM),
-            MutAnyOrigin,
-        ](self.r_a_z_dbuf.unsafe_ptr())
         var r_out_t = LayoutTensor[
             Self.dtype,
             Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.READOUT),
             MutAnyOrigin,
-        ](self.r_out_dbuf.unsafe_ptr())
+        ](self.r_dyn_output.unsafe_ptr())
         Self.ENS.predict_member_gpu[Self.ROLLOUT_BATCH](
             ctx, m, r_s_a_t, self.params_dbuf.unsafe_ptr(),
-            r_a_aug_t, r_z_t, r_out_t,
+            r_mu_buf_t, r_a_buf_t, r_out_t,
         )
+
+    # =========================================================================
+    # Predict member m into a specific slot of r_dyn_output_all. Used by the
+    # agent's per-elite forward loop in `do_model_rollouts_gpu` so each
+    # elite member writes its forward into a different slot for per-sample
+    # elite selection.
+    # =========================================================================
+
+    def predict_rollout_member_into_slot(
+        mut self,
+        ctx: DeviceContext,
+        m: Int,
+        slot: Int,
+    ) raises:
+        """Feedforward member m into `r_dyn_output_all[slot, :, :]`.
+
+        Layout: [NUM_ELITES, ROLLOUT_BATCH, READOUT]; member-output is
+        written at offset `slot * ROLLOUT_BATCH * READOUT`.
+        """
+        var r_s_a_t = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.AUG_DIM),
+            MutAnyOrigin,
+        ](self.r_dyn_input.unsafe_ptr())
+        var r_mu_buf_t = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.SCRATCH_OUT),
+            MutAnyOrigin,
+        ](self.r_a_aug_dbuf.unsafe_ptr())
+        var r_a_buf_t = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.SCRATCH_IN),
+            MutAnyOrigin,
+        ](self.r_z_dbuf.unsafe_ptr())
+        var slot_ptr = (
+            self.r_dyn_output_all.unsafe_ptr()
+            + slot * Self.ROLLOUT_BATCH * Self.DYN.READOUT
+        )
+        var slot_t = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(Self.ROLLOUT_BATCH, Self.DYN.READOUT),
+            MutAnyOrigin,
+        ](slot_ptr)
+        Self.ENS.predict_member_gpu[Self.ROLLOUT_BATCH](
+            ctx, m, r_s_a_t, self.params_dbuf.unsafe_ptr(),
+            r_mu_buf_t, r_a_buf_t, slot_t,
+        )
+
+    # =========================================================================
+    # Re-upload elite-slot -> ensemble-member mapping after a train round.
+    # Mirrors MBPO's pattern (elite_member_buf is consumed by the rollout
+    # sample kernel for per-sample elite selection).
+    # =========================================================================
+
+    def sync_elite_member_buf(mut self, ctx: DeviceContext) raises:
+        """Refresh `elite_member_buf` from the host `elite_indices` list."""
+        for i in range(Self.NUM_ELITES):
+            self.elite_member_host[i] = Int32(self.elite_indices[i])
+        ctx.enqueue_copy(self.elite_member_buf, self.elite_member_host)
+
+    # =========================================================================
+    # Checkpoint surface — mirrors `PCDynamicsEnsembleInstanceCPU`. Downloads
+    # device-resident params + Adam state to host buffers, then emits the
+    # same section format. On read, parses sections and uploads back.
+    # =========================================================================
+
+    def write_sections(
+        mut self, ctx: DeviceContext, prefix: String
+    ) raises -> String:
+        """Serialize ensemble (params + Adam state + step counters) as text
+        sections. Format identical to `PCDynamicsEnsembleInstanceCPU`."""
+        var params_h = ctx.enqueue_create_host_buffer[Self.dtype](
+            Self.ENS.TOTAL_PARAM_SIZE
+        )
+        var opt_state_h = ctx.enqueue_create_host_buffer[Self.dtype](
+            Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM
+        )
+        var opt_global_h = ctx.enqueue_create_host_buffer[Self.dtype](
+            Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE
+        )
+        ctx.enqueue_copy(params_h, self.params_dbuf)
+        ctx.enqueue_copy(opt_state_h, self.opt_state_dbuf)
+        ctx.enqueue_copy(opt_global_h, self.opt_global_dbuf)
+        ctx.synchronize()
+
+        var content = write_float_section_ptr(
+            prefix + "params:",
+            params_h.unsafe_ptr(),
+            Self.ENS.TOTAL_PARAM_SIZE,
+        )
+        content += write_float_section_ptr(
+            prefix + "opt_state:",
+            opt_state_h.unsafe_ptr(),
+            Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM,
+        )
+        content += write_float_section_ptr(
+            prefix + "opt_global:",
+            opt_global_h.unsafe_ptr(),
+            Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE,
+        )
+        var steps = prefix + "step_nums:\n"
+        for m in range(Self.NUM_ENSEMBLE):
+            steps += String(self.step_nums[m]) + "\n"
+        content += steps
+        return content
+
+    def read_sections(
+        mut self, ctx: DeviceContext, content: String, prefix: String
+    ) raises:
+        """Restore ensemble from sections written by `write_sections`."""
+        var loaded_params = read_float_section_list[Self.dtype](
+            content, prefix + "params:", Self.ENS.TOTAL_PARAM_SIZE
+        )
+        var loaded_opt = read_float_section_list[Self.dtype](
+            content,
+            prefix + "opt_state:",
+            Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM,
+        )
+        var loaded_global = read_float_section_list[Self.dtype](
+            content,
+            prefix + "opt_global:",
+            Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE,
+        )
+        var loaded_steps = read_float_section_list[Self.dtype](
+            content, prefix + "step_nums:", Self.NUM_ENSEMBLE
+        )
+
+        var params_h = ctx.enqueue_create_host_buffer[Self.dtype](
+            Self.ENS.TOTAL_PARAM_SIZE
+        )
+        var opt_state_h = ctx.enqueue_create_host_buffer[Self.dtype](
+            Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM
+        )
+        var opt_global_h = ctx.enqueue_create_host_buffer[Self.dtype](
+            Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE
+        )
+        for i in range(Self.ENS.TOTAL_PARAM_SIZE):
+            params_h.unsafe_ptr()[i] = loaded_params[i]
+        for i in range(Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM):
+            opt_state_h.unsafe_ptr()[i] = loaded_opt[i]
+        for i in range(Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE):
+            opt_global_h.unsafe_ptr()[i] = loaded_global[i]
+        ctx.enqueue_copy(self.params_dbuf, params_h)
+        ctx.enqueue_copy(self.opt_state_dbuf, opt_state_h)
+        ctx.enqueue_copy(self.opt_global_dbuf, opt_global_h)
+        ctx.synchronize()
+
+        for m in range(Self.NUM_ENSEMBLE):
+            self.step_nums[m] = Int(Float64(loaded_steps[m]))
