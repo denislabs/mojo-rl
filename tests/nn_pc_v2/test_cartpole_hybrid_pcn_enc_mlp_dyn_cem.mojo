@@ -1,0 +1,985 @@
+"""CartPole-Continuous CEM planning — Phase-1 ablation (Experiment 2).
+
+Hybrid: PCN-trained encoder + MLP-trained transition + decoder.
+
+Training:
+- Phase 1 (PHASE1_EPOCHS): full PCN procedure (joint encoder + PC dynamics).
+- Phase 2 (PHASE2_EPOCHS): freeze encoder, re-init MLP transition + decoder
+  (Xavier), train via K-step BPTT (K=SEQ_LEN, full-rollout).
+
+Eval: encoder forward only + BPTT-MLP imagination, no SGLD.
+
+See `docs/PCN_MBRL_PLAN.md` Experiment 2 for hypothesis. Comparison only —
+pass criterion (≥ 3/5) reported but not enforced.
+
+Run:
+    pixi run mojo run -I . tests/nn_pc_v2/test_cartpole_hybrid_pcn_enc_mlp_dyn_cem.mojo
+"""
+
+from std.math import sqrt, log, cos, sin, tanh, pi
+from std.memory import alloc, memset
+from std.random.philox import Random as PhiloxRandom
+from std.time import perf_counter_ns
+from layout import Layout, LayoutTensor
+
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.training.scheduler import CosineWarmupSchedule
+from mojo_rl.experimental.nn_pc_v2 import (
+    PCBlock,
+    PCEncoder,
+    PCSequential,
+    PCTanh,
+    PCTrainer,
+    clip_grad_norm,
+)
+
+
+# CartPole-Continuous physics.
+comptime CP_GRAVITY: Float64 = 9.8
+comptime CP_MASSCART: Float64 = 1.0
+comptime CP_MASSPOLE: Float64 = 0.1
+comptime CP_TOTAL_MASS: Float64 = CP_MASSCART + CP_MASSPOLE
+comptime CP_LENGTH: Float64 = 0.5
+comptime CP_POLEMASS_LENGTH: Float64 = CP_MASSPOLE * CP_LENGTH
+comptime CP_FORCE_MAG: Float64 = 10.0
+comptime CP_TAU: Float64 = 0.02
+comptime CP_X_THRESHOLD: Float64 = 2.4
+comptime CP_THETA_THRESHOLD: Float64 = 0.2
+comptime CP_RESET_RANGE: Float64 = 0.05
+
+comptime CP_X_SCALE: Float64 = 2.4
+comptime CP_XDOT_SCALE: Float64 = 3.0
+comptime CP_THETA_SCALE: Float64 = 0.2
+comptime CP_THETADOT_SCALE: Float64 = 2.0
+
+# Architecture.
+comptime BATCH = 32
+comptime HIDDEN = 64
+comptime ACTION_DIM = 1
+comptime OBS_DIM = 4
+comptime AUG_DIM = HIDDEN + ACTION_DIM
+comptime SEQ_LEN = 20
+comptime K_BPTT = SEQ_LEN
+
+comptime PHASE1_EPOCHS = 50
+comptime PHASE2_EPOCHS = 50
+comptime N_BATCHES_PER_EPOCH = 100
+
+comptime T_REFINE_BOOTSTRAP = 30
+comptime T_REFINE = 10
+comptime LR_X: Float64 = 0.01
+comptime ADAM_LR_PC: Float64 = 0.001
+comptime ADAM_LR_ENC: Float64 = 0.001
+comptime ADAM_LR_BPTT: Float64 = 0.001
+
+comptime WARMUP_EPOCHS = 5
+comptime LR_MIN_SCALE: Float64 = 0.1
+comptime GRAD_CLIP_NORM: Float64 = 1.0
+
+comptime ENC_INPUT_DIM = HIDDEN + ACTION_DIM + OBS_DIM
+comptime ENC_HIDDEN_DIM = 64
+comptime ENC_OUTPUT_DIM = HIDDEN
+comptime ENC = PCEncoder[ENC_INPUT_DIM, ENC_HIDDEN_DIM, ENC_OUTPUT_DIM]
+comptime ENC_PARAM_SIZE = ENC.PARAM_SIZE
+
+comptime T_PARAM_SIZE = AUG_DIM * HIDDEN + HIDDEN
+comptime D_PARAM_SIZE = HIDDEN * OBS_DIM + OBS_DIM
+comptime T_W_OFFSET = 0
+comptime T_B_OFFSET = AUG_DIM * HIDDEN
+comptime D_W_OFFSET = 0
+comptime D_B_OFFSET = HIDDEN * OBS_DIM
+
+# CEM planning.
+comptime PLAN_HORIZON = 20
+comptime N_SAMPLES = 128
+comptime N_ELITES = 16
+comptime N_CEM_ITERS = 2
+comptime INITIAL_SIGMA: Float64 = 0.5
+comptime MIN_SIGMA: Float64 = 0.05
+comptime ACTION_PENALTY: Float64 = 0.001
+comptime POS_PENALTY: Float64 = 0.05
+comptime MAX_EPISODE_STEPS = 200
+comptime PASS_STEPS = 195
+comptime N_EVAL_EPISODES = 5
+
+comptime NET = PCSequential[
+    PCBlock[AUG_DIM, HIDDEN, PCTanh],
+    PCBlock[HIDDEN, OBS_DIM, PCTanh],
+]
+comptime TRAINER = PCTrainer[
+    PCBlock[AUG_DIM, HIDDEN, PCTanh],
+    PCBlock[HIDDEN, OBS_DIM, PCTanh],
+    dtype=dtype,
+]
+comptime OPT_PC = Adam[LR=ADAM_LR_PC]
+comptime OPT_ENC = Adam[LR=ADAM_LR_ENC]
+comptime OPT_BPTT = Adam[LR=ADAM_LR_BPTT]
+comptime SCHED_PHASE1 = CosineWarmupSchedule[
+    WARMUP_EPOCHS=WARMUP_EPOCHS, MIN_SCALE=LR_MIN_SCALE
+]
+comptime SCHED_PHASE2 = CosineWarmupSchedule[
+    WARMUP_EPOCHS=WARMUP_EPOCHS, MIN_SCALE=LR_MIN_SCALE
+]
+
+
+def _step_cartpole(
+    x: Float64, x_dot: Float64, theta: Float64, theta_dot: Float64,
+    action_norm: Float64,
+) -> Tuple[Float64, Float64, Float64, Float64]:
+    var u = action_norm
+    if u > 1.0:
+        u = 1.0
+    elif u < -1.0:
+        u = -1.0
+    var force = u * CP_FORCE_MAG
+    var ct = cos(theta)
+    var st = sin(theta)
+    var temp = (
+        force + CP_POLEMASS_LENGTH * theta_dot * theta_dot * st
+    ) / CP_TOTAL_MASS
+    var theta_acc = (CP_GRAVITY * st - ct * temp) / (
+        CP_LENGTH * (4.0 / 3.0 - CP_MASSPOLE * ct * ct / CP_TOTAL_MASS)
+    )
+    var x_acc = temp - CP_POLEMASS_LENGTH * theta_acc * ct / CP_TOTAL_MASS
+    var new_x = x + CP_TAU * x_dot
+    var new_x_dot = x_dot + CP_TAU * x_acc
+    var new_theta = theta + CP_TAU * theta_dot
+    var new_theta_dot = theta_dot + CP_TAU * theta_acc
+    return (new_x, new_x_dot, new_theta, new_theta_dot)
+
+
+def _gen_rollout_into[
+    SEQ_LEN_T: Int
+](
+    mut rng: PhiloxRandom,
+    actions_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    obs_buf: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    actions_offset: Int,
+    obs_offset: Int,
+):
+    var u0 = Float64(rng.step_uniform()[0])
+    var u1 = Float64(rng.step_uniform()[0])
+    var u2 = Float64(rng.step_uniform()[0])
+    var u3 = Float64(rng.step_uniform()[0])
+    var x = (u0 * 2.0 - 1.0) * CP_RESET_RANGE
+    var x_dot = (u1 * 2.0 - 1.0) * CP_RESET_RANGE
+    var theta = (u2 * 2.0 - 1.0) * CP_RESET_RANGE
+    var theta_dot = (u3 * 2.0 - 1.0) * CP_RESET_RANGE
+
+    obs_buf[obs_offset + 0] = Scalar[dtype](x / CP_X_SCALE)
+    obs_buf[obs_offset + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
+    obs_buf[obs_offset + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
+    obs_buf[obs_offset + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+
+    for t in range(SEQ_LEN_T):
+        var ua = Float64(rng.step_uniform()[0])
+        var action_norm = ua * 2.0 - 1.0
+        actions_buf[actions_offset + t] = Scalar[dtype](action_norm)
+        var stepped = _step_cartpole(x, x_dot, theta, theta_dot, action_norm)
+        x = stepped[0]
+        x_dot = stepped[1]
+        theta = stepped[2]
+        theta_dot = stepped[3]
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 0] = Scalar[dtype](x / CP_X_SCALE)
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
+        obs_buf[obs_offset + (t + 1) * OBS_DIM + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+
+
+fn _gauss_pair(mut rng: PhiloxRandom) -> Tuple[Float64, Float64]:
+    var u1 = Float64(rng.step_uniform()[0])
+    var u2 = Float64(rng.step_uniform()[0])
+    if u1 < 1e-12:
+        u1 = 1e-12
+    var r = sqrt(-2.0 * log(u1))
+    var theta = 2.0 * pi * u2
+    return (r * cos(theta), r * sin(theta))
+
+
+fn _xavier_init_layer(
+    params: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    in_dim: Int,
+    out_dim: Int,
+    seed: UInt64,
+):
+    var rng = PhiloxRandom(seed=seed, offset=UInt64(0))
+    var bound = sqrt(Float64(6.0) / Float64(in_dim + out_dim))
+    for i in range(in_dim * out_dim):
+        var u = Float64(rng.step_uniform()[0])
+        params[i] = Scalar[dtype]((u * 2.0 - 1.0) * bound)
+    for j in range(out_dim):
+        params[in_dim * out_dim + j] = Scalar[dtype](0.0)
+
+
+def _lt_forward[
+    BATCH_T: Int, IN: Int, OUT: Int
+](
+    params: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    x: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    a: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    mu: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+):
+    for s in range(BATCH_T):
+        for i in range(IN):
+            a[s * IN + i] = Scalar[dtype](tanh(Float64(x[s * IN + i])))
+        for j in range(OUT):
+            var sum_j = Float64(params[IN * OUT + j])
+            for i in range(IN):
+                sum_j += Float64(a[s * IN + i]) * Float64(
+                    params[i * OUT + j]
+                )
+            mu[s * OUT + j] = Scalar[dtype](sum_j)
+
+
+def _lt_backward_accum[
+    BATCH_T: Int, IN: Int, OUT: Int
+](
+    params: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    a: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    d_mu: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    d_W: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    d_b: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+    d_x: UnsafePointer[Scalar[dtype], origin=MutAnyOrigin],
+):
+    for s in range(BATCH_T):
+        for j in range(OUT):
+            d_b[j] = Scalar[dtype](
+                Float64(d_b[j]) + Float64(d_mu[s * OUT + j])
+            )
+        for i in range(IN):
+            var a_i = Float64(a[s * IN + i])
+            for j in range(OUT):
+                var idx = i * OUT + j
+                d_W[idx] = Scalar[dtype](
+                    Float64(d_W[idx]) + a_i * Float64(d_mu[s * OUT + j])
+                )
+        for i in range(IN):
+            var d_a_i: Float64 = 0
+            for j in range(OUT):
+                d_a_i += Float64(params[i * OUT + j]) * Float64(
+                    d_mu[s * OUT + j]
+                )
+            var a_i = Float64(a[s * IN + i])
+            d_x[s * IN + i] = Scalar[dtype](d_a_i * (1.0 - a_i * a_i))
+
+
+def main() raises:
+    print("=" * 60)
+    print("CartPole-Continuous — Exp 2: hybrid PCN-encoder + MLP-dynamics")
+    print("=" * 60)
+    print("  Phase 1    : full PCN for", PHASE1_EPOCHS, " epochs (encoder + PC dynamics)")
+    print("  Phase 2    : frozen encoder + BPTT MLP dynamics for", PHASE2_EPOCHS, " epochs")
+    print("  K_BPTT     :", K_BPTT, " (full-rollout)")
+    print("  Eval       : encoder forward only + BPTT-MLP imagination")
+    print("  Pass       : survive ≥", PASS_STEPS, " of", MAX_EPISODE_STEPS, " steps")
+
+    # ── Phase-1 PC params + Adam state ────────────────────────────────────────
+    var pc_params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var pc_grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var pc_opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM)
+    var pc_opt_global_buf = alloc[Scalar[dtype]](OPT_PC.GLOBAL_STATE_SIZE)
+    memset(pc_params_buf, 0, NET.PARAM_SIZE)
+    memset(pc_grads_buf, 0, NET.PARAM_SIZE)
+    memset(pc_opt_state_buf, 0, NET.PARAM_SIZE * OPT_PC.STATE_PER_PARAM)
+    memset(pc_opt_global_buf, 0, OPT_PC.GLOBAL_STATE_SIZE)
+    var pc_params = LayoutTensor[
+        dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
+    ](pc_params_buf)
+    var pc_grads = LayoutTensor[
+        dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
+    ](pc_grads_buf)
+    var pc_opt_state = LayoutTensor[
+        dtype, Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM), MutAnyOrigin
+    ](pc_opt_state_buf)
+    var pc_opt_global = LayoutTensor[
+        dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
+    ](pc_opt_global_buf)
+    NET.initialize_params[Xavier[], dtype](pc_params)
+
+    var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
+    var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
+    var enc_opt_state_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM)
+    var enc_opt_global_buf = alloc[Scalar[dtype]](OPT_ENC.GLOBAL_STATE_SIZE)
+    memset(enc_params_buf, 0, ENC_PARAM_SIZE)
+    memset(enc_grads_buf, 0, ENC_PARAM_SIZE)
+    memset(enc_opt_state_buf, 0, ENC_PARAM_SIZE * OPT_ENC.STATE_PER_PARAM)
+    memset(enc_opt_global_buf, 0, OPT_ENC.GLOBAL_STATE_SIZE)
+    var enc_params = LayoutTensor[
+        dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
+    ](enc_params_buf)
+    var enc_grads = LayoutTensor[
+        dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
+    ](enc_grads_buf)
+    var enc_opt_state = LayoutTensor[
+        dtype, Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM), MutAnyOrigin
+    ](enc_opt_state_buf)
+    var enc_opt_global = LayoutTensor[
+        dtype, Layout.row_major(OPT_ENC.GLOBAL_STATE_SIZE), MutAnyOrigin
+    ](enc_opt_global_buf)
+    ENC.xavier_init[dtype](enc_params, UInt64(123))
+
+    # ── Phase-2 BPTT params ──────────────────────────────────────────────────
+    var T_params_buf = alloc[Scalar[dtype]](T_PARAM_SIZE)
+    var T_grads_buf = alloc[Scalar[dtype]](T_PARAM_SIZE)
+    var T_opt_state_buf = alloc[Scalar[dtype]](T_PARAM_SIZE * OPT_BPTT.STATE_PER_PARAM)
+    var T_opt_global_buf = alloc[Scalar[dtype]](OPT_BPTT.GLOBAL_STATE_SIZE)
+    var T_params = LayoutTensor[
+        dtype, Layout.row_major(T_PARAM_SIZE), MutAnyOrigin
+    ](T_params_buf)
+    var T_grads = LayoutTensor[
+        dtype, Layout.row_major(T_PARAM_SIZE), MutAnyOrigin
+    ](T_grads_buf)
+    var T_opt_state = LayoutTensor[
+        dtype, Layout.row_major(T_PARAM_SIZE, OPT_BPTT.STATE_PER_PARAM), MutAnyOrigin
+    ](T_opt_state_buf)
+    var T_opt_global = LayoutTensor[
+        dtype, Layout.row_major(OPT_BPTT.GLOBAL_STATE_SIZE), MutAnyOrigin
+    ](T_opt_global_buf)
+
+    var D_params_buf = alloc[Scalar[dtype]](D_PARAM_SIZE)
+    var D_grads_buf = alloc[Scalar[dtype]](D_PARAM_SIZE)
+    var D_opt_state_buf = alloc[Scalar[dtype]](D_PARAM_SIZE * OPT_BPTT.STATE_PER_PARAM)
+    var D_opt_global_buf = alloc[Scalar[dtype]](OPT_BPTT.GLOBAL_STATE_SIZE)
+    var D_params = LayoutTensor[
+        dtype, Layout.row_major(D_PARAM_SIZE), MutAnyOrigin
+    ](D_params_buf)
+    var D_grads = LayoutTensor[
+        dtype, Layout.row_major(D_PARAM_SIZE), MutAnyOrigin
+    ](D_grads_buf)
+    var D_opt_state = LayoutTensor[
+        dtype, Layout.row_major(D_PARAM_SIZE, OPT_BPTT.STATE_PER_PARAM), MutAnyOrigin
+    ](D_opt_state_buf)
+    var D_opt_global = LayoutTensor[
+        dtype, Layout.row_major(OPT_BPTT.GLOBAL_STATE_SIZE), MutAnyOrigin
+    ](D_opt_global_buf)
+
+    # ── Shared scratch ───────────────────────────────────────────────────────
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    memset(lat_buf, 0, BATCH * NET.LATENT_DIM)
+    var latents = LayoutTensor[
+        dtype, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
+    ](lat_buf)
+    var mu_eps_buf = LayoutTensor[
+        dtype, Layout.row_major(BATCH, NET.SCRATCH_OUT_DIM), MutAnyOrigin
+    ](mu_eps_buf_raw)
+    var a_below_buf = LayoutTensor[
+        dtype, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin
+    ](a_below_buf_raw)
+    var z_below_buf = LayoutTensor[
+        dtype, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin
+    ](z_below_buf_raw)
+    var dx_buf = LayoutTensor[
+        dtype, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
+    ](dx_buf_raw)
+
+    var x_in_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
+    var y_tgt_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM)
+    memset(x_in_buf, 0, BATCH * AUG_DIM)
+    memset(y_tgt_buf, 0, BATCH * OBS_DIM)
+    var x_in = LayoutTensor[
+        dtype, Layout.row_major(BATCH, AUG_DIM), MutAnyOrigin
+    ](x_in_buf)
+    var y_target = LayoutTensor[
+        dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
+    ](y_tgt_buf)
+
+    var enc_input_buf = alloc[Scalar[dtype]](BATCH * ENC_INPUT_DIM)
+    var enc_hpre_buf = alloc[Scalar[dtype]](BATCH * ENC_HIDDEN_DIM)
+    var enc_hact_buf = alloc[Scalar[dtype]](BATCH * ENC_HIDDEN_DIM)
+    var enc_output_buf = alloc[Scalar[dtype]](BATCH * ENC_OUTPUT_DIM)
+    var enc_dz_buf = alloc[Scalar[dtype]](BATCH * ENC_OUTPUT_DIM)
+    var enc_input = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ENC_INPUT_DIM), MutAnyOrigin
+    ](enc_input_buf)
+    var enc_hpre = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ENC_HIDDEN_DIM), MutAnyOrigin
+    ](enc_hpre_buf)
+    var enc_hact = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ENC_HIDDEN_DIM), MutAnyOrigin
+    ](enc_hact_buf)
+    var enc_output = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ENC_OUTPUT_DIM), MutAnyOrigin
+    ](enc_output_buf)
+    var enc_dz = LayoutTensor[
+        dtype, Layout.row_major(BATCH, ENC_OUTPUT_DIM), MutAnyOrigin
+    ](enc_dz_buf)
+
+    var enc_input_1 = LayoutTensor[
+        dtype, Layout.row_major(1, ENC_INPUT_DIM), MutAnyOrigin
+    ](enc_input_buf)
+    var enc_hpre_1 = LayoutTensor[
+        dtype, Layout.row_major(1, ENC_HIDDEN_DIM), MutAnyOrigin
+    ](enc_hpre_buf)
+    var enc_hact_1 = LayoutTensor[
+        dtype, Layout.row_major(1, ENC_HIDDEN_DIM), MutAnyOrigin
+    ](enc_hact_buf)
+    var enc_output_1 = LayoutTensor[
+        dtype, Layout.row_major(1, ENC_OUTPUT_DIM), MutAnyOrigin
+    ](enc_output_buf)
+
+    # ── BPTT cache ───────────────────────────────────────────────────────────
+    var cache_x_aug_buf = alloc[Scalar[dtype]](K_BPTT * BATCH * AUG_DIM)
+    var cache_a_x_aug_buf = alloc[Scalar[dtype]](K_BPTT * BATCH * AUG_DIM)
+    var cache_mu_z_next_buf = alloc[Scalar[dtype]](K_BPTT * BATCH * HIDDEN)
+    var cache_a_z_next_buf = alloc[Scalar[dtype]](K_BPTT * BATCH * HIDDEN)
+    var cache_mu_obs_buf = alloc[Scalar[dtype]](K_BPTT * BATCH * OBS_DIM)
+    var d_mu_obs_buf = alloc[Scalar[dtype]](BATCH * OBS_DIM)
+    var d_mu_z_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var d_z_from_next_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var d_x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
+
+    var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN)
+    var obs_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1) * OBS_DIM)
+
+    # ────────────────────────────────────────────────────────────────────────
+    # PHASE 1: PCN training.
+    # ────────────────────────────────────────────────────────────────────────
+    print("\n  --- Phase 1 (PCN training) ---")
+    print("  epoch | last_step_loss | wall_t (s)")
+    print("  ------+----------------+------------")
+    var rng = PhiloxRandom(seed=UInt64(7), offset=UInt64(0))
+    var pc_step_num: Int = 0
+    var enc_step_num: Int = 0
+    var prev_z_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
+    var t0 = perf_counter_ns()
+
+    for epoch in range(PHASE1_EPOCHS):
+        var lr_scale = SCHED_PHASE1.lr_scale_at(epoch, PHASE1_EPOCHS)
+        var last_loss: Float64 = 0.0
+        for batch_idx in range(N_BATCHES_PER_EPOCH):
+            for b in range(BATCH):
+                _gen_rollout_into[SEQ_LEN](
+                    rng, actions_buf, obs_buf,
+                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                )
+            memset(prev_z_buf, 0, BATCH * HIDDEN)
+            for t in range(0, SEQ_LEN + 1):
+                for b in range(BATCH):
+                    for j in range(HIDDEN):
+                        enc_input_buf[b * ENC_INPUT_DIM + j] = prev_z_buf[b * HIDDEN + j]
+                    var act_val = Scalar[dtype](0.0) if t == 0 else actions_buf[
+                        b * SEQ_LEN + (t - 1)
+                    ]
+                    enc_input_buf[b * ENC_INPUT_DIM + HIDDEN] = act_val
+                    for d in range(OBS_DIM):
+                        enc_input_buf[
+                            b * ENC_INPUT_DIM + HIDDEN + ACTION_DIM + d
+                        ] = obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d]
+                    for j in range(HIDDEN):
+                        x_in_buf[b * AUG_DIM + j] = prev_z_buf[b * HIDDEN + j]
+                    x_in_buf[b * AUG_DIM + HIDDEN] = act_val
+                    for d in range(OBS_DIM):
+                        y_tgt_buf[b * OBS_DIM + d] = obs_buf[
+                            b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + d
+                        ]
+                ENC.forward[BATCH, dtype](
+                    enc_params, enc_input, enc_hpre, enc_hact, enc_output
+                )
+                for b in range(BATCH):
+                    for j in range(HIDDEN):
+                        lat_buf[b * NET.LATENT_DIM + j] = enc_output_buf[
+                            b * ENC_OUTPUT_DIM + j
+                        ]
+                var T_refine_step = T_REFINE_BOOTSTRAP if t == 0 else T_REFINE
+                var result = TRAINER.compute_grads_from_latents[BATCH](
+                    pc_params, pc_grads, latents,
+                    mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
+                    x_in, y_target,
+                    T_infer=T_refine_step,
+                    lr_x=Scalar[dtype](LR_X),
+                )
+                clip_grad_norm[NET.PARAM_SIZE, dtype](pc_grads, GRAD_CLIP_NORM)
+                pc_step_num += 1
+                OPT_PC.step[NET.PARAM_SIZE, dtype](
+                    pc_params, pc_grads, pc_opt_state, pc_opt_global,
+                    pc_step_num, lr_scale=lr_scale,
+                )
+                last_loss = result.output_loss_final
+                for b in range(BATCH):
+                    for j in range(HIDDEN):
+                        enc_dz_buf[b * ENC_OUTPUT_DIM + j] = (
+                            enc_output_buf[b * ENC_OUTPUT_DIM + j]
+                            - lat_buf[b * NET.LATENT_DIM + j]
+                        )
+                ENC.backward[BATCH, dtype](
+                    enc_params, enc_input, enc_hact, enc_dz, enc_grads
+                )
+                clip_grad_norm[ENC_PARAM_SIZE, dtype](enc_grads, GRAD_CLIP_NORM)
+                enc_step_num += 1
+                OPT_ENC.step[ENC_PARAM_SIZE, dtype](
+                    enc_params, enc_grads, enc_opt_state, enc_opt_global,
+                    enc_step_num, lr_scale=lr_scale,
+                )
+                for b in range(BATCH):
+                    for j in range(HIDDEN):
+                        prev_z_buf[b * HIDDEN + j] = lat_buf[
+                            b * NET.LATENT_DIM + j
+                        ]
+
+        if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == PHASE1_EPOCHS - 1:
+            var elapsed = Float64(perf_counter_ns() - t0) / 1e9
+            print(
+                "    ep=", epoch, "  loss=", last_loss,
+                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+            )
+
+    var phase1_time = Float64(perf_counter_ns() - t0) / 1e9
+    print("  phase 1 wall:", phase1_time, "s")
+
+    # ────────────────────────────────────────────────────────────────────────
+    # PHASE 2: BPTT MLP dynamics, frozen encoder.
+    # ────────────────────────────────────────────────────────────────────────
+    print("\n  --- Phase 2 (BPTT MLP dynamics, frozen encoder) ---")
+    print("  epoch | mean_loss | wall_t (s)")
+    print("  ------+-----------+------------")
+
+    memset(T_params_buf, 0, T_PARAM_SIZE)
+    memset(T_grads_buf, 0, T_PARAM_SIZE)
+    memset(T_opt_state_buf, 0, T_PARAM_SIZE * OPT_BPTT.STATE_PER_PARAM)
+    memset(T_opt_global_buf, 0, OPT_BPTT.GLOBAL_STATE_SIZE)
+    _xavier_init_layer(T_params_buf, AUG_DIM, HIDDEN, UInt64(7))
+    memset(D_params_buf, 0, D_PARAM_SIZE)
+    memset(D_grads_buf, 0, D_PARAM_SIZE)
+    memset(D_opt_state_buf, 0, D_PARAM_SIZE * OPT_BPTT.STATE_PER_PARAM)
+    memset(D_opt_global_buf, 0, OPT_BPTT.GLOBAL_STATE_SIZE)
+    _xavier_init_layer(D_params_buf, HIDDEN, OBS_DIM, UInt64(8))
+
+    var bptt_step_num: Int = 0
+    var t1 = perf_counter_ns()
+
+    for epoch in range(PHASE2_EPOCHS):
+        var lr_scale = SCHED_PHASE2.lr_scale_at(epoch, PHASE2_EPOCHS)
+        var last_loss: Float64 = 0.0
+        for batch_idx in range(N_BATCHES_PER_EPOCH):
+            for b in range(BATCH):
+                _gen_rollout_into[SEQ_LEN](
+                    rng, actions_buf, obs_buf,
+                    b * SEQ_LEN, b * (SEQ_LEN + 1) * OBS_DIM,
+                )
+
+            for b in range(BATCH):
+                for j in range(HIDDEN):
+                    enc_input_buf[b * ENC_INPUT_DIM + j] = Scalar[dtype](0.0)
+                enc_input_buf[b * ENC_INPUT_DIM + HIDDEN] = Scalar[dtype](0.0)
+                for d in range(OBS_DIM):
+                    enc_input_buf[
+                        b * ENC_INPUT_DIM + HIDDEN + ACTION_DIM + d
+                    ] = obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + d]
+            ENC.forward[BATCH, dtype](
+                enc_params, enc_input, enc_hpre, enc_hact, enc_output
+            )
+
+            for k in range(K_BPTT):
+                for b in range(BATCH):
+                    if k == 0:
+                        for j in range(HIDDEN):
+                            cache_x_aug_buf[
+                                k * BATCH * AUG_DIM + b * AUG_DIM + j
+                            ] = enc_output_buf[b * ENC_OUTPUT_DIM + j]
+                    else:
+                        for j in range(HIDDEN):
+                            cache_x_aug_buf[
+                                k * BATCH * AUG_DIM + b * AUG_DIM + j
+                            ] = cache_mu_z_next_buf[
+                                (k - 1) * BATCH * HIDDEN + b * HIDDEN + j
+                            ]
+                    cache_x_aug_buf[
+                        k * BATCH * AUG_DIM + b * AUG_DIM + HIDDEN
+                    ] = actions_buf[b * SEQ_LEN + k]
+                _lt_forward[BATCH, AUG_DIM, HIDDEN](
+                    T_params_buf,
+                    cache_x_aug_buf + k * BATCH * AUG_DIM,
+                    cache_a_x_aug_buf + k * BATCH * AUG_DIM,
+                    cache_mu_z_next_buf + k * BATCH * HIDDEN,
+                )
+                _lt_forward[BATCH, HIDDEN, OBS_DIM](
+                    D_params_buf,
+                    cache_mu_z_next_buf + k * BATCH * HIDDEN,
+                    cache_a_z_next_buf + k * BATCH * HIDDEN,
+                    cache_mu_obs_buf + k * BATCH * OBS_DIM,
+                )
+
+            var sum_sq: Float64 = 0.0
+            for k in range(K_BPTT):
+                for b in range(BATCH):
+                    for d in range(OBS_DIM):
+                        var diff = (
+                            Float64(
+                                cache_mu_obs_buf[
+                                    k * BATCH * OBS_DIM + b * OBS_DIM + d
+                                ]
+                            )
+                            - Float64(
+                                obs_buf[
+                                    b * (SEQ_LEN + 1) * OBS_DIM
+                                    + (k + 1) * OBS_DIM
+                                    + d
+                                ]
+                            )
+                        )
+                        sum_sq += diff * diff
+            last_loss = 0.5 * sum_sq / Float64(BATCH * K_BPTT)
+
+            memset(T_grads_buf, 0, T_PARAM_SIZE)
+            memset(D_grads_buf, 0, D_PARAM_SIZE)
+            memset(d_z_from_next_buf, 0, BATCH * HIDDEN)
+
+            for k_rev in range(K_BPTT):
+                var k = K_BPTT - 1 - k_rev
+                for b in range(BATCH):
+                    for d in range(OBS_DIM):
+                        d_mu_obs_buf[b * OBS_DIM + d] = Scalar[dtype](
+                            Float64(
+                                cache_mu_obs_buf[
+                                    k * BATCH * OBS_DIM + b * OBS_DIM + d
+                                ]
+                            )
+                            - Float64(
+                                obs_buf[
+                                    b * (SEQ_LEN + 1) * OBS_DIM
+                                    + (k + 1) * OBS_DIM
+                                    + d
+                                ]
+                            )
+                        )
+                _lt_backward_accum[BATCH, HIDDEN, OBS_DIM](
+                    D_params_buf,
+                    cache_a_z_next_buf + k * BATCH * HIDDEN,
+                    d_mu_obs_buf,
+                    D_grads_buf + D_W_OFFSET,
+                    D_grads_buf + D_B_OFFSET,
+                    d_mu_z_next_buf,
+                )
+                for b in range(BATCH):
+                    for j in range(HIDDEN):
+                        d_mu_z_next_buf[b * HIDDEN + j] = Scalar[dtype](
+                            Float64(d_mu_z_next_buf[b * HIDDEN + j])
+                            + Float64(d_z_from_next_buf[b * HIDDEN + j])
+                        )
+                _lt_backward_accum[BATCH, AUG_DIM, HIDDEN](
+                    T_params_buf,
+                    cache_a_x_aug_buf + k * BATCH * AUG_DIM,
+                    d_mu_z_next_buf,
+                    T_grads_buf + T_W_OFFSET,
+                    T_grads_buf + T_B_OFFSET,
+                    d_x_aug_buf,
+                )
+                for b in range(BATCH):
+                    for j in range(HIDDEN):
+                        d_z_from_next_buf[b * HIDDEN + j] = d_x_aug_buf[
+                            b * AUG_DIM + j
+                        ]
+
+            clip_grad_norm[T_PARAM_SIZE, dtype](T_grads, GRAD_CLIP_NORM)
+            clip_grad_norm[D_PARAM_SIZE, dtype](D_grads, GRAD_CLIP_NORM)
+            bptt_step_num += 1
+            OPT_BPTT.step[T_PARAM_SIZE, dtype](
+                T_params, T_grads, T_opt_state, T_opt_global,
+                bptt_step_num, lr_scale=lr_scale,
+            )
+            OPT_BPTT.step[D_PARAM_SIZE, dtype](
+                D_params, D_grads, D_opt_state, D_opt_global,
+                bptt_step_num, lr_scale=lr_scale,
+            )
+
+        if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == PHASE2_EPOCHS - 1:
+            var elapsed = Float64(perf_counter_ns() - t1) / 1e9
+            print(
+                "    ep=", epoch, "  loss=", last_loss,
+                "  lr_scale=", lr_scale, "  wall=", elapsed, "s",
+            )
+
+    var phase2_time = Float64(perf_counter_ns() - t1) / 1e9
+    print("  phase 2 wall:", phase2_time, "s")
+    print("  total train wall:", phase1_time + phase2_time, "s")
+
+    # ────────────────────────────────────────────────────────────────────────
+    # CEM eval.
+    # ────────────────────────────────────────────────────────────────────────
+    var cem_z_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN)
+    var cem_x_aug_buf = alloc[Scalar[dtype]](N_SAMPLES * AUG_DIM)
+    var cem_a_x_aug_buf = alloc[Scalar[dtype]](N_SAMPLES * AUG_DIM)
+    var cem_mu_z_next_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN)
+    var cem_a_z_next_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN)
+    var cem_mu_obs_buf = alloc[Scalar[dtype]](N_SAMPLES * OBS_DIM)
+    var cem_actions_buf = alloc[Scalar[dtype]](N_SAMPLES * PLAN_HORIZON)
+
+    var cem_mu = List[Float64](capacity=PLAN_HORIZON)
+    var cem_sigma = List[Float64](capacity=PLAN_HORIZON)
+    var cem_scores = List[Float64](capacity=N_SAMPLES)
+    var cem_indices = List[Int](capacity=N_SAMPLES)
+    for _ in range(PLAN_HORIZON):
+        cem_mu.append(0.0)
+        cem_sigma.append(INITIAL_SIGMA)
+    for _ in range(N_SAMPLES):
+        cem_scores.append(0.0)
+        cem_indices.append(0)
+
+    var agent_z_buf = alloc[Scalar[dtype]](HIDDEN)
+
+    print("\n  === CEM planning evaluation (hybrid) ===")
+    var eval_rng = PhiloxRandom(seed=UInt64(2027), offset=UInt64(0))
+    var n_success: Int = 0
+    var sum_steps_survived: Int = 0
+    var t_eval_start = perf_counter_ns()
+
+    for ep in range(N_EVAL_EPISODES):
+        var u0 = Float64(eval_rng.step_uniform()[0])
+        var u1 = Float64(eval_rng.step_uniform()[0])
+        var u2 = Float64(eval_rng.step_uniform()[0])
+        var u3 = Float64(eval_rng.step_uniform()[0])
+        var x = (u0 * 2.0 - 1.0) * CP_RESET_RANGE
+        var x_dot = (u1 * 2.0 - 1.0) * CP_RESET_RANGE
+        var theta = (u2 * 2.0 - 1.0) * CP_RESET_RANGE
+        var theta_dot = (u3 * 2.0 - 1.0) * CP_RESET_RANGE
+
+        memset(agent_z_buf, 0, HIDDEN)
+        for h in range(PLAN_HORIZON):
+            cem_mu[h] = 0.0
+            cem_sigma[h] = INITIAL_SIGMA
+
+        for j in range(HIDDEN):
+            enc_input_buf[j] = Scalar[dtype](0.0)
+        enc_input_buf[HIDDEN] = Scalar[dtype](0.0)
+        enc_input_buf[HIDDEN + ACTION_DIM + 0] = Scalar[dtype](x / CP_X_SCALE)
+        enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
+        enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
+        enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+        ENC.forward[1, dtype](
+            enc_params, enc_input_1, enc_hpre_1, enc_hact_1, enc_output_1
+        )
+        for j in range(HIDDEN):
+            agent_z_buf[j] = enc_output_buf[j]
+
+        var steps_survived: Int = 0
+        var terminated_at: Int = -1
+
+        for step in range(MAX_EPISODE_STEPS):
+            var x_abs = x if x > 0.0 else -x
+            var th_abs = theta if theta > 0.0 else -theta
+            if x_abs > CP_X_THRESHOLD or th_abs > CP_THETA_THRESHOLD:
+                terminated_at = step
+                break
+            steps_survived = step + 1
+
+            for cem_iter in range(N_CEM_ITERS):
+                var total = N_SAMPLES * PLAN_HORIZON
+                var i = 0
+                while i < total:
+                    var pair = _gauss_pair(eval_rng)
+                    var s0 = i // PLAN_HORIZON
+                    var h0 = i % PLAN_HORIZON
+                    var a0 = cem_mu[h0] + cem_sigma[h0] * pair[0]
+                    if a0 > 1.0:
+                        a0 = 1.0
+                    elif a0 < -1.0:
+                        a0 = -1.0
+                    cem_actions_buf[s0 * PLAN_HORIZON + h0] = Scalar[dtype](a0)
+                    i += 1
+                    if i < total:
+                        var s1 = i // PLAN_HORIZON
+                        var h1 = i % PLAN_HORIZON
+                        var a1 = cem_mu[h1] + cem_sigma[h1] * pair[1]
+                        if a1 > 1.0:
+                            a1 = 1.0
+                        elif a1 < -1.0:
+                            a1 = -1.0
+                        cem_actions_buf[s1 * PLAN_HORIZON + h1] = Scalar[dtype](a1)
+                        i += 1
+
+                for s in range(N_SAMPLES):
+                    for j in range(HIDDEN):
+                        cem_z_buf[s * HIDDEN + j] = agent_z_buf[j]
+                    cem_scores[s] = 0.0
+
+                for h in range(PLAN_HORIZON):
+                    for s in range(N_SAMPLES):
+                        for j in range(HIDDEN):
+                            cem_x_aug_buf[s * AUG_DIM + j] = cem_z_buf[
+                                s * HIDDEN + j
+                            ]
+                        cem_x_aug_buf[s * AUG_DIM + HIDDEN] = cem_actions_buf[
+                            s * PLAN_HORIZON + h
+                        ]
+                    _lt_forward[N_SAMPLES, AUG_DIM, HIDDEN](
+                        T_params_buf,
+                        cem_x_aug_buf, cem_a_x_aug_buf, cem_mu_z_next_buf,
+                    )
+                    _lt_forward[N_SAMPLES, HIDDEN, OBS_DIM](
+                        D_params_buf,
+                        cem_mu_z_next_buf, cem_a_z_next_buf, cem_mu_obs_buf,
+                    )
+                    for s in range(N_SAMPLES):
+                        var x_norm = Float64(cem_mu_obs_buf[s * OBS_DIM + 0])
+                        var th_norm = Float64(cem_mu_obs_buf[s * OBS_DIM + 2])
+                        var a = Float64(cem_actions_buf[s * PLAN_HORIZON + h])
+                        cem_scores[s] -= (
+                            th_norm * th_norm
+                            + POS_PENALTY * x_norm * x_norm
+                            + ACTION_PENALTY * a * a
+                        )
+                    for s in range(N_SAMPLES):
+                        for j in range(HIDDEN):
+                            cem_z_buf[s * HIDDEN + j] = cem_mu_z_next_buf[
+                                s * HIDDEN + j
+                            ]
+
+                for s in range(N_SAMPLES):
+                    cem_indices[s] = s
+                for k in range(N_ELITES):
+                    var best_s = k
+                    var best_score = cem_scores[cem_indices[k]]
+                    for s in range(k + 1, N_SAMPLES):
+                        if cem_scores[cem_indices[s]] > best_score:
+                            best_score = cem_scores[cem_indices[s]]
+                            best_s = s
+                    if best_s != k:
+                        var tmp = cem_indices[k]
+                        cem_indices[k] = cem_indices[best_s]
+                        cem_indices[best_s] = tmp
+
+                for h in range(PLAN_HORIZON):
+                    var s_mu: Float64 = 0
+                    for k in range(N_ELITES):
+                        s_mu += Float64(
+                            cem_actions_buf[
+                                cem_indices[k] * PLAN_HORIZON + h
+                            ]
+                        )
+                    var new_mu = s_mu / Float64(N_ELITES)
+                    var s_var: Float64 = 0
+                    for k in range(N_ELITES):
+                        var d = (
+                            Float64(
+                                cem_actions_buf[
+                                    cem_indices[k] * PLAN_HORIZON + h
+                                ]
+                            )
+                            - new_mu
+                        )
+                        s_var += d * d
+                    var new_sigma = sqrt(s_var / Float64(N_ELITES))
+                    if new_sigma < MIN_SIGMA:
+                        new_sigma = MIN_SIGMA
+                    cem_mu[h] = new_mu
+                    cem_sigma[h] = new_sigma
+
+            var action_norm = cem_mu[0]
+            if action_norm > 1.0:
+                action_norm = 1.0
+            elif action_norm < -1.0:
+                action_norm = -1.0
+            var stepped = _step_cartpole(x, x_dot, theta, theta_dot, action_norm)
+            x = stepped[0]
+            x_dot = stepped[1]
+            theta = stepped[2]
+            theta_dot = stepped[3]
+
+            for j in range(HIDDEN):
+                enc_input_buf[j] = agent_z_buf[j]
+            enc_input_buf[HIDDEN] = Scalar[dtype](action_norm)
+            enc_input_buf[HIDDEN + ACTION_DIM + 0] = Scalar[dtype](x / CP_X_SCALE)
+            enc_input_buf[HIDDEN + ACTION_DIM + 1] = Scalar[dtype](x_dot / CP_XDOT_SCALE)
+            enc_input_buf[HIDDEN + ACTION_DIM + 2] = Scalar[dtype](theta / CP_THETA_SCALE)
+            enc_input_buf[HIDDEN + ACTION_DIM + 3] = Scalar[dtype](theta_dot / CP_THETADOT_SCALE)
+            ENC.forward[1, dtype](
+                enc_params, enc_input_1, enc_hpre_1, enc_hact_1, enc_output_1
+            )
+            for j in range(HIDDEN):
+                agent_z_buf[j] = enc_output_buf[j]
+
+            for h in range(PLAN_HORIZON - 1):
+                cem_mu[h] = cem_mu[h + 1]
+                cem_sigma[h] = cem_sigma[h + 1]
+            cem_mu[PLAN_HORIZON - 1] = 0.0
+            cem_sigma[PLAN_HORIZON - 1] = INITIAL_SIGMA
+
+        sum_steps_survived += steps_survived
+        var passed = steps_survived >= PASS_STEPS
+        if passed:
+            n_success += 1
+        if terminated_at == -1:
+            print(
+                "    ep=", ep, " : SURVIVED full ", MAX_EPISODE_STEPS,
+                " steps (final |x|=", x if x > 0.0 else -x,
+                " |θ|=", theta if theta > 0.0 else -theta, ")",
+                " →", "PASS" if passed else "MISS",
+            )
+        else:
+            print(
+                "    ep=", ep, " : terminated at step ", terminated_at,
+                " (|x|=", x if x > 0.0 else -x,
+                " |θ|=", theta if theta > 0.0 else -theta, ")",
+                " →", "PASS" if passed else "MISS",
+            )
+
+    var t_eval = Float64(perf_counter_ns() - t_eval_start) / 1e9
+    print("\n  eval wall time:", t_eval, "s")
+    print("  success rate :", n_success, "/", N_EVAL_EPISODES)
+    print(
+        "  avg steps survived (all eps):",
+        Float64(sum_steps_survived) / Float64(N_EVAL_EPISODES),
+    )
+
+    print("\n  === Exp 2 (hybrid PCN-enc + MLP-dyn) summary ===")
+    print(
+        "  Solved", n_success, "/", N_EVAL_EPISODES,
+        " (PCN baseline: 5/5; MLP+BPTT: 0/5; MLP-1step: 0/5)"
+    )
+
+    # cleanup
+    pc_params_buf.free()
+    pc_grads_buf.free()
+    pc_opt_state_buf.free()
+    pc_opt_global_buf.free()
+    enc_params_buf.free()
+    enc_grads_buf.free()
+    enc_opt_state_buf.free()
+    enc_opt_global_buf.free()
+    T_params_buf.free()
+    T_grads_buf.free()
+    T_opt_state_buf.free()
+    T_opt_global_buf.free()
+    D_params_buf.free()
+    D_grads_buf.free()
+    D_opt_state_buf.free()
+    D_opt_global_buf.free()
+    lat_buf.free()
+    mu_eps_buf_raw.free()
+    a_below_buf_raw.free()
+    z_below_buf_raw.free()
+    dx_buf_raw.free()
+    x_in_buf.free()
+    y_tgt_buf.free()
+    enc_input_buf.free()
+    enc_hpre_buf.free()
+    enc_hact_buf.free()
+    enc_output_buf.free()
+    enc_dz_buf.free()
+    cache_x_aug_buf.free()
+    cache_a_x_aug_buf.free()
+    cache_mu_z_next_buf.free()
+    cache_a_z_next_buf.free()
+    cache_mu_obs_buf.free()
+    d_mu_obs_buf.free()
+    d_mu_z_next_buf.free()
+    d_z_from_next_buf.free()
+    d_x_aug_buf.free()
+    actions_buf.free()
+    obs_buf.free()
+    prev_z_buf.free()
+    cem_z_buf.free()
+    cem_x_aug_buf.free()
+    cem_a_x_aug_buf.free()
+    cem_mu_z_next_buf.free()
+    cem_a_z_next_buf.free()
+    cem_mu_obs_buf.free()
+    cem_actions_buf.free()
+    agent_z_buf.free()
+    print("=== Done ===")
