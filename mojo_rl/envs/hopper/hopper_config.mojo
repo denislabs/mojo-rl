@@ -114,8 +114,12 @@ struct HopperConfig(Phyics3dEnvConfig):
         var dt = Scalar[DTYPE](Self.get_timestep()) * Scalar[DTYPE](frame_skip)
         var x_velocity = (x_after - prev_x) / dt
 
-        # Forward reward
-        var forward_reward = Scalar[DTYPE](P.FORWARD_REWARD_WEIGHT) * x_velocity
+        # Forward reward — capped to discourage runaway acceleration past
+        # the sustainable hopping regime (MuJoCo experts cruise at ~2.5–3 m/s).
+        var forward_speed = x_velocity
+        if forward_speed > Scalar[DTYPE](3.0):
+            forward_speed = Scalar[DTYPE](3.0)
+        var forward_reward = Scalar[DTYPE](P.FORWARD_REWARD_WEIGHT) * forward_speed
 
         # Control cost
         var ctrl_cost = Scalar[DTYPE](0.0)
@@ -331,7 +335,13 @@ struct HopperConfig(Phyics3dEnvConfig):
         if not is_healthy:
             healthy_reward = Scalar[DTYPE](0.0)
 
-        var reward = x_velocity + healthy_reward - ctrl_cost
+        # Cap forward velocity reward to discourage runaway acceleration
+        # past the sustainable hopping regime. Mirrors CPU path.
+        var forward_speed = x_velocity
+        if forward_speed > Scalar[DTYPE](3.0):
+            forward_speed = Scalar[DTYPE](3.0)
+
+        var reward = forward_speed + healthy_reward - ctrl_cost
         return (reward, not is_healthy)
 
     # === GPU: Observation-based termination ===
