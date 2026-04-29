@@ -36,7 +36,7 @@ Run on Apple Metal (dev iteration only — shrink config first):
 
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.random import seed, random_float64
-from std.math import log, exp
+from std.math import log, exp, sqrt
 from std.time import perf_counter_ns
 
 from mojo_rl.nn.constants import dtype, TPB
@@ -149,6 +149,82 @@ comptime GPT_SCHEDULER = CosineWarmupSchedule[WARMUP_ITERS, MIN_LR_SCALE]
 comptime EMB_W_OFF = 0
 comptime LM_W_OFF = GPT_MODEL.PARAM_SIZE - VOCAB * EMBED - VOCAB
 comptime TIE_NCELL = VOCAB * EMBED
+
+# =============================================================================
+# Per-block layout (GPTDrop / TransformerBlockDrop) — used by the c_proj
+# scaled-init pass below. Each block is laid out in this order:
+#
+#   LN1 (Tokenwise[seq, LayerNorm[D]])  : 2*D
+#   Linear[D, 3D]   (QKV proj)          : 3*D² + 3*D
+#   ScaledDotProductAttention            : 0
+#   Linear[D, D]    (attn out, c_proj)  : D² + D     ← W scaled by 1/√(2L)
+#   Dropout                              : 0
+#   LN2                                  : 2*D
+#   Linear[D, F]    (FFN first)         : D*F + F
+#   GELU                                 : 0
+#   Linear[F, D]    (FFN out, c_proj)   : F*D + D    ← W scaled by 1/√(2L)
+#   Dropout                              : 0
+#
+# The Linear layout inside each fused block is [W_flat | b], so the W of
+# each c_proj layer is the first D² (attn-out) or F*D (FFN-out) entries.
+# We scale only the W portion; biases (initialized via the Initializer)
+# are left untouched by this pass.
+# =============================================================================
+comptime FFDIM = FF_MULT * EMBED
+comptime LN_SIZE = 2 * EMBED
+comptime QKV_SIZE = 3 * EMBED * EMBED + 3 * EMBED
+comptime ATTN_OUT_SIZE = EMBED * EMBED + EMBED
+comptime FFN1_SIZE = EMBED * FFDIM + FFDIM
+comptime FFN2_SIZE = FFDIM * EMBED + EMBED
+comptime BLOCK_SIZE = (
+    LN_SIZE + QKV_SIZE + ATTN_OUT_SIZE + LN_SIZE + FFN1_SIZE + FFN2_SIZE
+)
+
+# Offsets within a block.
+comptime OFF_LN1 = 0
+comptime OFF_QKV = OFF_LN1 + LN_SIZE
+comptime OFF_ATTN_OUT = OFF_QKV + QKV_SIZE
+comptime OFF_LN2 = OFF_ATTN_OUT + ATTN_OUT_SIZE
+comptime OFF_FFN1 = OFF_LN2 + LN_SIZE
+comptime OFF_FFN2 = OFF_FFN1 + FFN1_SIZE
+
+# First block starts after Embedding (vocab*embed) + position BiasAdd (seq*embed).
+comptime BLOCKS_BASE = VOCAB * EMBED + SEQ * EMBED
+
+
+def _apply_c_proj_scaled_init(
+    mut p: LayoutTensor[
+        dtype, Layout.row_major(GPT_MODEL.PARAM_SIZE), MutAnyOrigin
+    ],
+) raises:
+    """Scale attn-output-proj W and FFN-output-proj W per block by 1/√(2L).
+
+    Matches nanoGPT's GPT-2-style scaled init for residual output projections.
+    Run on CPU after `cpu.initialize[Normal[0, 0.02]]()` and before the
+    `state.upload_from(cpu, ctx)` that uploads weights to the GPU.
+
+    Takes the raw param `LayoutTensor` (not the wrapping NetworkState) so
+    the function's mangled name doesn't carry the deep `GPTDrop[…]` chain
+    — that pushed the Apple `ld` symbol-name-length limit over the cliff.
+    """
+    var scale = Scalar[dtype](1.0 / sqrt(Float64(2 * LAYERS)))
+
+    for b in range(LAYERS):
+        var block_off = BLOCKS_BASE + b * BLOCK_SIZE
+
+        # Attention output proj W (Linear[D, D]) — first D² entries of its block.
+        var attn_w_off = block_off + OFF_ATTN_OUT
+        for i in range(EMBED * EMBED):
+            p[attn_w_off + i] = (
+                rebind[Scalar[dtype]](p[attn_w_off + i]) * scale
+            )
+
+        # FFN output proj W (Linear[F, D]) — first F*D entries of its block.
+        var mlp_w_off = block_off + OFF_FFN2
+        for i in range(FFDIM * EMBED):
+            p[mlp_w_off + i] = (
+                rebind[Scalar[dtype]](p[mlp_w_off + i]) * scale
+            )
 
 
 @always_inline
@@ -583,11 +659,12 @@ def main() raises:
     var state = GPUNetworkState[GPT_MODEL, GPT_OPT](ctx)
     var cpu = NetworkState[GPT_MODEL, GPT_OPT]()
     # nanoGPT's char-Shakespeare init: N(0, 0.02) for every Linear / Embedding
-    # weight (biases stay 0 from `initialize_state`). nanoGPT additionally
-    # scales the attention/FFN output projections by 1/sqrt(2*L); we skip
-    # that for now and rely on the gradient clip + LayerNorm to bound the
-    # residual stream.
+    # weight, plus an additional 1/√(2L) scaling on every attention-output and
+    # FFN-output projection (the GPT-2 "scaled init"). Keeps the residual
+    # stream variance bounded as depth grows.
     cpu.initialize[Normal[0.0, 0.02]]()
+    var cpu_params = cpu.params_view()
+    _apply_c_proj_scaled_init(cpu_params)
     state.upload_from(cpu, ctx)
     # Tie LM head weight to embedding weight at init (overwrites the LM
     # head's freshly-sampled weights with embedding.T). After this every
