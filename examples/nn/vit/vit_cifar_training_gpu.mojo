@@ -26,18 +26,19 @@ Run on Apple Metal (dev iteration only — shrink config first):
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.random import seed
 from std.time import perf_counter_ns
-from std.math import log
+from std.math import log, sqrt
 
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.composites import ViT
 from mojo_rl.nn.training import (
+    NetworkState,
     GPUNetworkState,
     Trainer,
     CosineWarmupSchedule,
 )
 from mojo_rl.nn.optimizer import AdamW
 from mojo_rl.nn.loss import CrossEntropyLoss
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.initializer import Normal
 from mojo_rl.nn.datasets import CIFAR10, CIFAR10CropFlipAugmenter
 from layout import Layout, LayoutTensor
 
@@ -87,6 +88,87 @@ comptime VIT_MODEL = ViT[
 comptime VIT_OPT = AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD]
 comptime VIT_TRAINER = Trainer[VIT_MODEL, VIT_OPT, CrossEntropyLoss]
 comptime VIT_SCHEDULER = CosineWarmupSchedule[WARMUP_EPOCHS, 0.1]
+
+
+# =============================================================================
+# Per-block layout (TransformerBlock inside the ViT chain) — used by the
+# c_proj scaled-init pass below. Each block lays out as:
+#
+#   LN1 (Tokenwise[seq, LayerNorm[D]])    : 2*D
+#   Linear[D, 3D]   (QKV proj)            : 3*D² + 3*D
+#   ScaledDotProductAttention              : 0
+#   Linear[D, D]    (attn out, c_proj)    : D² + D     ← W scaled by 1/√(2L)
+#   LN2                                    : 2*D
+#   Linear[D, F]    (FFN first)           : D*F + F
+#   GELU                                   : 0
+#   Linear[F, D]    (FFN out, c_proj)     : F*D + D    ← W scaled by 1/√(2L)
+#
+# Linear layout inside the fused block is [W_flat | b], so each c_proj W is
+# the first D² (attn-out) or F*D (FFN-out) entries of its layer.
+#
+# BLOCKS_BASE in the full param vector = PatchEmbed (Conv2D + Transpose2D)
+# params + position BiasAdd params:
+#   PatchEmbed.PARAM_SIZE = embed * (in_channels * patch² + 1)
+#   BiasAdd.PARAM_SIZE    = n_patches * embed
+# (Transpose2D contributes 0.)
+# =============================================================================
+comptime FFDIM = FF_MULT * EMBED
+comptime LN_SIZE = 2 * EMBED
+comptime QKV_SIZE = 3 * EMBED * EMBED + 3 * EMBED
+comptime ATTN_OUT_SIZE = EMBED * EMBED + EMBED
+comptime FFN1_SIZE = EMBED * FFDIM + FFDIM
+comptime FFN2_SIZE = FFDIM * EMBED + EMBED
+comptime BLOCK_SIZE = (
+    LN_SIZE + QKV_SIZE + ATTN_OUT_SIZE + LN_SIZE + FFN1_SIZE + FFN2_SIZE
+)
+
+# Offsets within a block.
+comptime OFF_LN1 = 0
+comptime OFF_QKV = OFF_LN1 + LN_SIZE
+comptime OFF_ATTN_OUT = OFF_QKV + QKV_SIZE
+comptime OFF_LN2 = OFF_ATTN_OUT + ATTN_OUT_SIZE
+comptime OFF_FFN1 = OFF_LN2 + LN_SIZE
+comptime OFF_FFN2 = OFF_FFN1 + FFN1_SIZE
+
+# First block starts after PatchEmbed (Conv2D weights + bias) + position BiasAdd.
+comptime PATCH_EMBED_PARAM_SIZE = EMBED * (IN_CHANNELS * PATCH * PATCH + 1)
+comptime POS_EMBED_SIZE = N_PATCHES * EMBED
+comptime BLOCKS_BASE = PATCH_EMBED_PARAM_SIZE + POS_EMBED_SIZE
+
+
+def _apply_c_proj_scaled_init(
+    mut p: LayoutTensor[
+        dtype, Layout.row_major(VIT_MODEL.PARAM_SIZE), MutAnyOrigin
+    ],
+) raises:
+    """Scale attn-output-proj W and FFN-output-proj W per block by 1/√(2L).
+
+    Matches nanoGPT's GPT-2-style scaled init for residual output projections.
+    Run on CPU after `cpu.initialize[Normal[0, 0.02]]()` and before the
+    `gpu.upload_from(cpu, ctx)` that uploads weights to the GPU.
+
+    Takes the raw param `LayoutTensor` (not the wrapping NetworkState) to
+    keep the function's mangled name short — the deep `ViT[…]` chain in
+    the type would otherwise push the Apple `ld` symbol-name limit.
+    """
+    var scale = Scalar[dtype](1.0 / sqrt(Float64(2 * LAYERS)))
+
+    for b in range(LAYERS):
+        var block_off = BLOCKS_BASE + b * BLOCK_SIZE
+
+        # Attention output proj W (Linear[D, D]) — first D² entries of its block.
+        var attn_w_off = block_off + OFF_ATTN_OUT
+        for i in range(EMBED * EMBED):
+            p[attn_w_off + i] = (
+                rebind[Scalar[dtype]](p[attn_w_off + i]) * scale
+            )
+
+        # FFN output proj W (Linear[F, D]) — first F*D entries of its block.
+        var mlp_w_off = block_off + OFF_FFN2
+        for i in range(FFDIM * EMBED):
+            p[mlp_w_off + i] = (
+                rebind[Scalar[dtype]](p[mlp_w_off + i]) * scale
+            )
 
 
 # =============================================================================
@@ -151,7 +233,17 @@ def main() raises:
     var ctx = DeviceContext()
 
     # ---------- Initialize network on GPU ----------
-    var state = VIT_TRAINER.init_state_gpu[Xavier[]](ctx)
+    # nanoGPT-style transformer init: N(0, 0.02) on every Linear / Conv2D
+    # weight, plus 1/√(2L) post-init scaling on every attention-output and
+    # FFN-output projection (the GPT-2 "scaled init"). Mirrors the recipe in
+    # examples/nn/transformer/gpt_tinyshakespeare_training_gpu.mojo —
+    # weight tying doesn't apply here (no embedding↔head pair to share).
+    var cpu = NetworkState[VIT_MODEL, VIT_OPT]()
+    cpu.initialize[Normal[0.0, 0.02]]()
+    var cpu_params = cpu.params_view()
+    _apply_c_proj_scaled_init(cpu_params)
+    var state = GPUNetworkState[VIT_MODEL, VIT_OPT](ctx)
+    state.upload_from(cpu, ctx)
 
     # ---------- Upload full train set (raw images + one-hot targets) ----------
     var train_img_host = ctx.enqueue_create_host_buffer[dtype](
