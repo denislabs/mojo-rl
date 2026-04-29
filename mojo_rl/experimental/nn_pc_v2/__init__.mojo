@@ -20,3 +20,6 @@ from .pc_utils import clip_grad_norm, spectral_norm_clamp
 from .encoder_wrapped_env import EncoderWrappedEnv
 from .pc_dynamics import PCDynamics
 from .pc_dynamics_ensemble import PCDynamicsEnsemble
+from .pc_dynamics_ensemble_gpu import PCDynamicsEnsembleGPU
+from .pc_dynamics_ensemble_instance import PCDynamicsEnsembleInstanceCPU
+from .pc_dynamics_ensemble_instance_gpu import PCDynamicsEnsembleInstanceGPU
