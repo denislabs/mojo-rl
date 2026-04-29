@@ -46,6 +46,7 @@ from .training.onpolicy_helpers import (
 from .training.gpu_offpolicy_train import (
     GPUOffPolicyState,
     GPUOffPolicyAgent,
+    GPUEvaluableContinuous,
     run_offpolicy_continuous_train_gpu,
     run_offpolicy_discrete_train_gpu,
 )

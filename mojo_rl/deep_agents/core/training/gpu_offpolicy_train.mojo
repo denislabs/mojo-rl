@@ -338,18 +338,48 @@ trait GPUOffPolicyAgent:
 
 
 # =============================================================================
+# GPUEvaluableContinuous Trait
+# =============================================================================
+#
+# Optional add-on trait for continuous-action GPU agents that support running
+# a fresh deterministic evaluation pass on isolated env instances. The
+# continuous training loop requires this so it can log a true policy-quality
+# signal (`eval_reward`) alongside the noisy stochastic-rollout `avg_reward`.
+# Stochastic-policy methods (SAC) typically have a large gap between the two.
+
+
+trait GPUEvaluableContinuous:
+    """Continuous-action agent that can run a parallel GPU evaluation."""
+
+    def evaluate_gpu[
+        EnvType: GPUContinuousEnv,
+        N_EVAL_ENVS: Int = 64,
+    ](
+        self,
+        ctx: DeviceContext,
+        num_episodes: Int = 100,
+        max_steps: Int = 1000,
+        verbose: Bool = False,
+        stochastic: Bool = True,
+    ) raises -> Float64:
+        """Run isolated parallel evaluation envs and return average return."""
+        ...
+
+
+# =============================================================================
 # Shared GPU Training Loop — Continuous Actions
 # =============================================================================
 
 
 def run_offpolicy_continuous_train_gpu[
     E: GPUContinuousEnv,
-    A: GPUOffPolicyAgent & Checkpointable,
+    A: GPUOffPolicyAgent & Checkpointable & GPUEvaluableContinuous,
     PROFILE: Int = 0,
     L: Logger = NoOpLogger,
     CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
     USE_CUDA_GRAPH: Bool = True,
     USE_ENV_CUDA_GRAPH: Bool = True,
+    EVAL_ENVS: Int = 16,
 ](
     mut agent: A,
     ctx: DeviceContext,
@@ -367,6 +397,8 @@ def run_offpolicy_continuous_train_gpu[
     algorithm_name: String = "GPUOffPolicy",
     target_total_steps: Int = 0,
     reward_scale: Float64 = 1.0,
+    eval_every: Int = 0,
+    eval_episodes: Int = 16,
 ) raises -> TrainingMetrics:
     """Shared GPU training loop for continuous-action off-policy agents.
 
@@ -540,6 +572,8 @@ def run_offpolicy_continuous_train_gpu[
     var next_print = print_every
     var next_sync = sync_every
     var next_checkpoint = checkpoint_every
+    var next_eval = eval_every if eval_every > 0 else (num_steps + n_envs)
+    var last_eval_reward: Float64 = 0.0
 
     # Progress bar: ~20 updates per print interval
     var progress_interval = print_every // 20
@@ -1164,6 +1198,27 @@ def run_offpolicy_continuous_train_gpu[
                     "train_steps", Float64(total_train_steps), total_steps
                 )
 
+            # Deterministic eval on isolated parallel envs.
+            # `avg_reward` above is a stochastic-rollout signal; for SAC the
+            # entropy noise inflates failure rate so it underrepresents the
+            # learned policy. `eval_reward` is the true policy quality.
+            if eval_every > 0 and total_steps >= next_eval:
+                # evaluate_gpu reads weights from CPU state (self.state.actor),
+                # so make sure the CPU mirror is fresh.
+                agent.download_from_gpu(gpu_state, ctx)
+                last_eval_reward = agent.evaluate_gpu[E, EVAL_ENVS](
+                    ctx,
+                    num_episodes=eval_episodes,
+                    max_steps=1000,
+                    verbose=False,
+                    stochastic=False,
+                )
+                if logger:
+                    logger[].log_scalar(
+                        "eval_reward", last_eval_reward, total_steps
+                    )
+                next_eval += eval_every
+
             # Curriculum logging
             comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
                 var cur_progress = Float64(0.0)
@@ -1203,6 +1258,10 @@ def run_offpolicy_continuous_train_gpu[
                     + " | Train: "
                     + String(total_train_steps)
                 )
+                if eval_every > 0:
+                    status_line += (
+                        " | EvalR: " + String(last_eval_reward)[byte=:7]
+                    )
                 comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
                     var cp = Float64(0.0)
                     if target_total_steps > 0:

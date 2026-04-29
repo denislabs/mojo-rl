@@ -152,6 +152,8 @@ def main() raises:
                 diag_every=5_000,
                 # gradient_steps=4,
                 reward_scale=1.0,
+                eval_every=50_000,
+                eval_episodes=16,
             )
 
             var end_time = perf_counter_ns()

@@ -50,6 +50,7 @@ from mojo_rl.deep_agents.core import (
     OffPolicyContinuousAgent,
     GPUOffPolicyState,
     GPUOffPolicyAgent,
+    GPUEvaluableContinuous,
     run_offpolicy_continuous_train,
     run_offpolicy_continuous_train_gpu,
     Checkpointable,
@@ -661,7 +662,12 @@ struct GenericOffPolicyAgent[
     profile: Int = 0,
     L: Logger = NoOpLogger,
     max_n_envs: Int = 64,
-](OffPolicyContinuousAgent & GPUOffPolicyAgent & Checkpointable):
+](
+    OffPolicyContinuousAgent
+    & GPUOffPolicyAgent
+    & GPUEvaluableContinuous
+    & Checkpointable
+):
     """Generic off-policy agent. Supports DDPG, TD3, and SAC via Config strategies.
     """
 
@@ -2465,6 +2471,7 @@ struct GenericOffPolicyAgent[
         CurriculumType: CurriculumScheduler = NoCurriculumScheduler,
         USE_CUDA_GRAPH: Bool = True,
         USE_ENV_CUDA_GRAPH: Bool = True,
+        EVAL_ENVS: Int = 16,
     ](
         mut self,
         ctx: DeviceContext,
@@ -2479,6 +2486,8 @@ struct GenericOffPolicyAgent[
         diag_every: Int = 0,
         gradient_steps: Int = 0,
         reward_scale: Float64 = 1.0,
+        eval_every: Int = 0,
+        eval_episodes: Int = 16,
     ) raises -> TrainingMetrics:
         """Train using GPU-accelerated training loop.
 
@@ -2527,6 +2536,7 @@ struct GenericOffPolicyAgent[
             CurriculumType,
             USE_CUDA_GRAPH,
             USE_ENV_CUDA_GRAPH,
+            EVAL_ENVS,
         ](
             self,
             ctx,
@@ -2542,6 +2552,8 @@ struct GenericOffPolicyAgent[
             target_total_steps=tgt_steps,
             gradient_steps=gradient_steps,
             reward_scale=reward_scale,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
         )
 
         comptime if Self.profile >= 2:
