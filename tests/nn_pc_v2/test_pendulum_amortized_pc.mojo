@@ -39,7 +39,6 @@ from mojo_rl.experimental.nn_pc_v2 import (
     PCTanh,
     PCTrainer,
     clip_grad_norm,
-    spectral_norm_clamp,
 )
 
 
@@ -71,11 +70,14 @@ comptime ADAM_LR_PC: Float64 = 0.001
 comptime ADAM_LR_ENC: Float64 = 0.001
 comptime GRAD_CLIP_NORM: Float64 = 1.0
 comptime PC_WEIGHT_DECAY: Float64 = 0.01    # AdamW weight decay — regularizes decoder W to prevent unbounded ω predictions
-# Spectral norm cap on the recurrence sub-block of block-0 W (z_{t-1} → z_t).
-# σ_max ≤ SPECTRAL_TARGET keeps the recurrence non-expansive so open-loop
-# rollout errors don't compound geometrically. 1.0 = standard Miyato choice.
-comptime SPECTRAL_TARGET: Float64 = 1.0
-comptime SPECTRAL_POWER_ITERS: Int = 1   # one iter per call; persistent (u, v) tracks σ_max across steps
+# NOTE: spectral norm on the recurrence sub-block (σ_max(W_rec) ≤ 1) was tried
+# and made Pendulum strictly worse (1-step ratio 0.35 → 3.0, open-loop 6.5 →
+# 21.1). After tanh, the effective recurrence gain is σ_max · |tanh'| ≤ 1,
+# which is strictly contractive — Pendulum's angular velocity needs gain > 1
+# in some directions to track torque-driven dynamics. The technique is in the
+# framework as `spectral_norm_clamp` for envs where it might help, but it
+# does not fix the open-loop blowup here. See PCN_WORLD_MODEL_ROADMAP.md
+# (Option B result, 2026-04-28) for the full diagnostic.
 
 # Encoder architecture (framework PCEncoder, 2-layer MLP w/ tanh hidden)
 comptime ENC_INPUT_DIM = HIDDEN + ACTION_DIM + OBS_DIM   # [prev_z, action, obs]
@@ -174,7 +176,6 @@ def main() raises:
     print("  PC_OPT=Adam(lr=", ADAM_LR_PC, ")  ENC_OPT=Adam(lr=", ADAM_LR_ENC, ")")
     print("  LR schedule: cosine warmup (W=", WARMUP_EPOCHS, ", min=", LR_MIN_SCALE, ")")
     print("  LR_X=", LR_X, "  GRAD_CLIP=", GRAD_CLIP_NORM)
-    print("  SPECTRAL_TARGET=", SPECTRAL_TARGET, "  SPECTRAL_POWER_ITERS=", SPECTRAL_POWER_ITERS)
 
     # ── PC params + Adam state ────────────────────────────────────────────────
     var pc_params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
@@ -198,25 +199,6 @@ def main() raises:
         dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
     ](pc_opt_global_buf)
     NET.initialize_params[Xavier[], dtype](pc_params)
-
-    # ── Spectral-norm state for the recurrence sub-block of block-0 W ─────────
-    # Block-0 W is laid out [AUG_DIM=HIDDEN+ACTION_DIM, HIDDEN] in row-major.
-    # The recurrence sub-block W_rec = W[0:HIDDEN, :] (first HIDDEN rows) is
-    # stored contiguously in the first HIDDEN*HIDDEN scalars of pc_params_buf.
-    # We project σ_max(W_rec) ≤ SPECTRAL_TARGET after each PC Adam step so the
-    # latent recurrence stays non-expansive — preventing geometric error
-    # compounding during open-loop rollouts.
-    var W_rec = LayoutTensor[
-        dtype, Layout.row_major(HIDDEN, HIDDEN), MutAnyOrigin
-    ](pc_params_buf)
-    var sn_u_buf = alloc[Scalar[dtype]](HIDDEN)
-    var sn_v_buf = alloc[Scalar[dtype]](HIDDEN)
-    var sn_rng = PhiloxRandom(seed=UInt64(2027), offset=UInt64(0))
-    for i in range(HIDDEN):
-        sn_u_buf[i] = Scalar[dtype](Float64(sn_rng.step_uniform()[0]) * 2.0 - 1.0)
-        sn_v_buf[i] = Scalar[dtype](Float64(sn_rng.step_uniform()[0]) * 2.0 - 1.0)
-    var sn_u = LayoutTensor[dtype, Layout.row_major(HIDDEN), MutAnyOrigin](sn_u_buf)
-    var sn_v = LayoutTensor[dtype, Layout.row_major(HIDDEN), MutAnyOrigin](sn_v_buf)
 
     # ── Encoder params + Adam state ───────────────────────────────────────────
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
@@ -393,12 +375,6 @@ def main() raises:
                     pc_params, pc_grads, pc_opt_state, pc_opt_global,
                     pc_step_num, lr_scale=lr_scale,
                 )
-                # Project σ_max(W_rec) ≤ SPECTRAL_TARGET on block-0 recurrence.
-                _ = spectral_norm_clamp[HIDDEN, HIDDEN, dtype](
-                    W_rec, sn_u, sn_v,
-                    target_sigma=SPECTRAL_TARGET,
-                    n_power_iters=SPECTRAL_POWER_ITERS,
-                )
                 last_loss = result.output_loss_final
 
                 # Encoder gradient: dz = encoder_out - settled_z (stop-gradient on settled).
@@ -427,18 +403,10 @@ def main() raises:
 
         if epoch == 0 or (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             var elapsed = Float64(perf_counter_ns() - t0) / 1e9
-            # σ_max(W_rec) probe (extra power iters to settle, no clamp impact
-            # since target is 1.0 and projection already applied).
-            var sigma_probe = spectral_norm_clamp[HIDDEN, HIDDEN, dtype](
-                W_rec, sn_u, sn_v,
-                target_sigma=10.0,
-                n_power_iters=10,
-            )
             print(
                 "    ep=", epoch,
                 "  loss=", last_loss,
                 "  lr_scale=", lr_scale,
-                "  σ(W_rec)=", sigma_probe,
                 "  wall=", elapsed, "s",
             )
 
@@ -765,8 +733,6 @@ def main() raises:
     actions_buf.free()
     obs_buf.free()
     prev_z_buf.free()
-    sn_u_buf.free()
-    sn_v_buf.free()
     z_pred_buf.free()
     a_z_pred_buf.free()
     s_pred_buf.free()
