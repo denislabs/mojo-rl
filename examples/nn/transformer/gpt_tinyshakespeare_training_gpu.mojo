@@ -39,7 +39,8 @@ from std.random import seed, random_float64
 from std.math import log, exp
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.constants import dtype, TPB
+from std.gpu import block_dim, block_idx, thread_idx
 from mojo_rl.nn.composites import GPTDrop
 from mojo_rl.nn.training import (
     NetworkState,
@@ -48,7 +49,7 @@ from mojo_rl.nn.training import (
 )
 from mojo_rl.nn.optimizer import AdamW
 from mojo_rl.nn.loss import CrossEntropyLoss
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.initializer import Normal
 from mojo_rl.nn.datasets import (
     CharTokenizer,
     load_text,
@@ -69,35 +70,29 @@ comptime HEADS = 6           # head_dim = 32
 comptime LAYERS = 6          # transformer blocks
 comptime FF_MULT = 4         # FFN inner dim = 4 * EMBED = 768
 
-comptime BATCH = 16          # ~150 MB activations at this config; lower if OOM
+comptime BATCH = 64          # nanoGPT char-Shakespeare batch size
 
-comptime BASE_LR = 3e-4
+comptime BASE_LR = 1e-3      # nanoGPT char-Shakespeare LR (3.3× our prior 3e-4)
 comptime BETA1 = 0.9
-comptime BETA2 = 0.95        # LM canonical (vs 0.999 vision)
+comptime BETA2 = 0.99        # nanoGPT char-Shakespeare beta2 (small batch → bigger)
 comptime WD = 0.1
 comptime GRAD_CLIP = 1.0     # max-abs clip on params grads each step
 
-# Pre-sampled dataset:
-#   N_TRAIN_WINDOWS = distinct training windows sampled once and iterated
-#     each epoch (no per-epoch reshuffle to avoid the Trainer dependency
-#     that overflows the Apple linker; pre-sampling already gives random
-#     starting positions, so within-epoch order doesn't add much).
-#   N_VAL_WINDOWS = held-out validation windows.
-#   Total steps ≈ EPOCHS × (N_TRAIN_WINDOWS / BATCH).
-#
-# Sized to ~20 k steps (10 × 2048 = 20 480) but with 4× more unique windows
-# than the original recipe — each window now appears 10× during training
-# instead of 40×, reducing the overfit-to-fixed-corpus failure mode that
-# made the previous run report low val loss + degenerate samples.
-# Memory: 32768 × 256 × 65 × 4 B ≈ 2.2 GB train_inp + 2.2 GB train_tgt
-# on device; same again on host during upload. Fits comfortably on a 24 GB
-# 4090. If host RAM is tight, dial both down by 2× (16384 × 20).
-comptime N_TRAIN_WINDOWS = 32768
-comptime N_VAL_WINDOWS = 256          # 16 batches × BATCH=16
-comptime EPOCHS = 10
-comptime WARMUP_EPOCHS = 1            # 1 epoch of linear warmup, then cosine
+# Per-step random window sampling (matches nanoGPT's `get_batch`):
+#   each iter samples a fresh BATCH of random windows from `split.train`,
+#   instead of pre-sampling 32k windows up-front. Avoids the overfit-to-
+#   fixed-corpus failure mode where the same windows are revisited 10× and
+#   the model memorises local statistics rather than learning long-range
+#   structure.
+# Total examples seen ≈ TOTAL_ITERS × BATCH = 5000 × 64 = 320 000, exact
+# match with nanoGPT's `max_iters=5000, batch_size=64`.
+comptime TOTAL_ITERS = 5000
+comptime WARMUP_ITERS = 100            # nanoGPT default
+comptime EVAL_INTERVAL = 250           # nanoGPT eval_interval
+comptime MIN_LR_SCALE = 0.1            # min_lr / lr = 1e-4 / 1e-3
 
-comptime N_TRAIN_BATCHES = N_TRAIN_WINDOWS // BATCH
+# Validation kept pre-sampled — cheap and gives a stable per-eval signal.
+comptime N_VAL_WINDOWS = 256           # 4 batches × BATCH=64
 comptime N_VAL_BATCHES = N_VAL_WINDOWS // BATCH
 
 # Dropout — fixed at 0.2 to match nanoGPT's char-Shakespeare config. The
@@ -127,7 +122,103 @@ comptime GPT_MODEL = GPTDrop[
     DROP_SEED_BASE,
 ]
 comptime GPT_OPT = AdamW[BASE_LR, BETA1, BETA2, 1e-8, WD]
-comptime GPT_SCHEDULER = CosineWarmupSchedule[WARMUP_EPOCHS, 0.1]
+# CosineWarmupSchedule is unit-agnostic — we feed it (iter, TOTAL_ITERS)
+# so warmup over WARMUP_ITERS, cosine decay to MIN_LR_SCALE thereafter.
+comptime GPT_SCHEDULER = CosineWarmupSchedule[WARMUP_ITERS, MIN_LR_SCALE]
+
+
+# =============================================================================
+# Weight tying — LM head shares params with the input embedding (nanoGPT).
+#
+# Embedding W layout : (VOCAB, EMBED) row-major → flat index v*EMBED + e
+# LM head Linear W   : (EMBED, VOCAB) row-major → flat index e*VOCAB + v
+# Tying enforces  lm_head_W[e, v] == embedding_W[v, e]  (transpose).
+#
+# In the GPTDrop chain, Embedding is the first param-bearing layer and the
+# LM head Linear is the last; Linear[EMBED, VOCAB] stores [W (EMBED*VOCAB) | b (VOCAB)],
+# so:
+#   EMB_W_OFF  = 0
+#   LM_W_OFF   = PARAM_SIZE - VOCAB*EMBED - VOCAB
+#
+# Each iter we (a) accumulate the LM head W gradient into the embedding W
+# gradient (transposed) and zero the LM head W grad before optimizer_step,
+# then (b) copy the embedding W back into the LM head W slot afterwards so
+# the two stay perfectly tied. The LM head's bias and optimizer moments
+# evolve normally — only its weight is forced to mirror the embedding.
+# =============================================================================
+comptime EMB_W_OFF = 0
+comptime LM_W_OFF = GPT_MODEL.PARAM_SIZE - VOCAB * EMBED - VOCAB
+comptime TIE_NCELL = VOCAB * EMBED
+
+
+@always_inline
+def tie_grads_kernel[
+    PARAM_SIZE: Int,
+    EMB_OFF: Int,
+    LM_OFF: Int,
+    VOCAB_: Int,
+    EMBED_: Int,
+    dtype: DType,
+](
+    grads: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= VOCAB_ * EMBED_:
+        return
+    var v = idx // EMBED_
+    var e = idx % EMBED_
+    var emb_idx = EMB_OFF + v * EMBED_ + e
+    var lm_idx = LM_OFF + e * VOCAB_ + v
+    var lm_g = rebind[Scalar[dtype]](grads[lm_idx])
+    grads[emb_idx] = rebind[Scalar[dtype]](grads[emb_idx]) + lm_g
+    grads[lm_idx] = Scalar[dtype](0.0)
+
+
+@always_inline
+def tie_params_kernel[
+    PARAM_SIZE: Int,
+    EMB_OFF: Int,
+    LM_OFF: Int,
+    VOCAB_: Int,
+    EMBED_: Int,
+    dtype: DType,
+](
+    params: LayoutTensor[dtype, Layout.row_major(PARAM_SIZE), MutAnyOrigin],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= VOCAB_ * EMBED_:
+        return
+    var v = idx // EMBED_
+    var e = idx % EMBED_
+    var emb_idx = EMB_OFF + v * EMBED_ + e
+    var lm_idx = LM_OFF + e * VOCAB_ + v
+    params[lm_idx] = rebind[Scalar[dtype]](params[emb_idx])
+
+
+def _tie_grads(ctx: DeviceContext, state: GPUNetworkState[GPT_MODEL, GPT_OPT]) raises:
+    var g = state.grads_view()
+    comptime BLOCKS = (TIE_NCELL + TPB - 1) // TPB
+    ctx.enqueue_function[
+        tie_grads_kernel[
+            GPT_MODEL.PARAM_SIZE, EMB_W_OFF, LM_W_OFF, VOCAB, EMBED, dtype
+        ],
+        tie_grads_kernel[
+            GPT_MODEL.PARAM_SIZE, EMB_W_OFF, LM_W_OFF, VOCAB, EMBED, dtype
+        ],
+    ](g, grid_dim=(BLOCKS,), block_dim=(TPB,))
+
+
+def _tie_params(ctx: DeviceContext, state: GPUNetworkState[GPT_MODEL, GPT_OPT]) raises:
+    var p = state.params_view()
+    comptime BLOCKS = (TIE_NCELL + TPB - 1) // TPB
+    ctx.enqueue_function[
+        tie_params_kernel[
+            GPT_MODEL.PARAM_SIZE, EMB_W_OFF, LM_W_OFF, VOCAB, EMBED, dtype
+        ],
+        tie_params_kernel[
+            GPT_MODEL.PARAM_SIZE, EMB_W_OFF, LM_W_OFF, VOCAB, EMBED, dtype
+        ],
+    ](p, grid_dim=(BLOCKS,), block_dim=(TPB,))
 
 
 # =============================================================================
@@ -444,10 +535,10 @@ def main() raises:
         + " grad_clip=" + String(GRAD_CLIP)
     )
     print(
-        "  n_train_windows=" + String(N_TRAIN_WINDOWS)
+        "  total_iters=" + String(TOTAL_ITERS)
+        + " warmup_iters=" + String(WARMUP_ITERS)
+        + " eval_interval=" + String(EVAL_INTERVAL)
         + " n_val_windows=" + String(N_VAL_WINDOWS)
-        + " epochs=" + String(EPOCHS)
-        + " warmup_ep=" + String(WARMUP_EPOCHS)
     )
     print(
         "  PARAM_SIZE=" + String(GPT_MODEL.PARAM_SIZE)
@@ -474,17 +565,10 @@ def main() raises:
         + " val=" + String(len(split.val))
     )
 
-    # ---------- Pre-sample windows once on host ----------
+    # ---------- Pre-sample val windows; train sampled per-iter ----------
     print(
-        "\n[data] pre-sampling " + String(N_TRAIN_WINDOWS)
-        + " train windows + " + String(N_VAL_WINDOWS) + " val windows..."
-    )
-    var train_batch = make_batch(split.train, N_TRAIN_WINDOWS, SEQ)
-    var train_inp_data = to_one_hot(
-        train_batch.inputs, VOCAB, N_TRAIN_WINDOWS, SEQ
-    )
-    var train_tgt_data = to_one_hot(
-        train_batch.targets, VOCAB, N_TRAIN_WINDOWS, SEQ
+        "\n[data] pre-sampling " + String(N_VAL_WINDOWS) + " val windows"
+        + " (train resampled per iter)..."
     )
     var val_batch = make_batch(split.val, N_VAL_WINDOWS, SEQ)
     var val_inp_data = to_one_hot(
@@ -498,35 +582,20 @@ def main() raises:
     var ctx = DeviceContext()
     var state = GPUNetworkState[GPT_MODEL, GPT_OPT](ctx)
     var cpu = NetworkState[GPT_MODEL, GPT_OPT]()
-    cpu.initialize[Xavier[]]()
+    # nanoGPT's char-Shakespeare init: N(0, 0.02) for every Linear / Embedding
+    # weight (biases stay 0 from `initialize_state`). nanoGPT additionally
+    # scales the attention/FFN output projections by 1/sqrt(2*L); we skip
+    # that for now and rely on the gradient clip + LayerNorm to bound the
+    # residual stream.
+    cpu.initialize[Normal[0.0, 0.02]]()
     state.upload_from(cpu, ctx)
+    # Tie LM head weight to embedding weight at init (overwrites the LM
+    # head's freshly-sampled weights with embedding.T). After this every
+    # forward sees a coherent tied pair; subsequent ties happen post-step.
+    _tie_params(ctx, state)
 
-    # ---------- Upload train + val datasets once ----------
-    print("[data] uploading datasets to device...")
-    var train_inp_host = ctx.enqueue_create_host_buffer[dtype](
-        N_TRAIN_WINDOWS * GPT_MODEL.IN_DIM
-    )
-    var train_tgt_host = ctx.enqueue_create_host_buffer[dtype](
-        N_TRAIN_WINDOWS * GPT_MODEL.OUT_DIM
-    )
-    for i in range(N_TRAIN_WINDOWS * GPT_MODEL.IN_DIM):
-        train_inp_host.unsafe_ptr()[i] = train_inp_data[i]
-        train_tgt_host.unsafe_ptr()[i] = train_tgt_data[i]
-    var train_inp_buf = ctx.enqueue_create_buffer[dtype](
-        N_TRAIN_WINDOWS * GPT_MODEL.IN_DIM
-    )
-    var train_tgt_buf = ctx.enqueue_create_buffer[dtype](
-        N_TRAIN_WINDOWS * GPT_MODEL.OUT_DIM
-    )
-    ctx.enqueue_copy(train_inp_buf, train_inp_host)
-    ctx.enqueue_copy(train_tgt_buf, train_tgt_host)
-    var train_inp_lt = LayoutTensor[
-        dtype, Layout.row_major(N_TRAIN_WINDOWS, GPT_MODEL.IN_DIM), MutAnyOrigin
-    ](train_inp_buf.unsafe_ptr())
-    var train_tgt_lt = LayoutTensor[
-        dtype, Layout.row_major(N_TRAIN_WINDOWS, GPT_MODEL.OUT_DIM), MutAnyOrigin
-    ](train_tgt_buf.unsafe_ptr())
-
+    # ---------- Upload val once; train uses a per-iter staging batch ----------
+    print("[data] uploading val dataset + allocating per-iter train staging...")
     var val_inp_host = ctx.enqueue_create_host_buffer[dtype](
         N_VAL_WINDOWS * GPT_MODEL.IN_DIM
     )
@@ -550,6 +619,26 @@ def main() raises:
     var val_tgt_lt = LayoutTensor[
         dtype, Layout.row_major(N_VAL_WINDOWS, GPT_MODEL.OUT_DIM), MutAnyOrigin
     ](val_tgt_buf.unsafe_ptr())
+
+    # Per-iter train staging — one BATCH worth of one-hot, reused every step.
+    var train_inp_host = ctx.enqueue_create_host_buffer[dtype](
+        BATCH * GPT_MODEL.IN_DIM
+    )
+    var train_tgt_host = ctx.enqueue_create_host_buffer[dtype](
+        BATCH * GPT_MODEL.OUT_DIM
+    )
+    var train_inp_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * GPT_MODEL.IN_DIM
+    )
+    var train_tgt_buf = ctx.enqueue_create_buffer[dtype](
+        BATCH * GPT_MODEL.OUT_DIM
+    )
+    var batch_input = LayoutTensor[
+        dtype, Layout.row_major(BATCH, GPT_MODEL.IN_DIM), MutAnyOrigin
+    ](train_inp_buf.unsafe_ptr())
+    var batch_target_v = LayoutTensor[
+        dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
+    ](train_tgt_buf.unsafe_ptr())
 
     # ---------- Per-batch training scratch (allocated once, reused) ----------
     var output_buf = ctx.enqueue_create_buffer[dtype](
@@ -598,65 +687,75 @@ def main() raises:
         output_buf, cache_buf, ws_buf, loss_buf, loss_host,
     )
     print(
-        "\n[epoch 0] initial val_loss=" + String(val_init)
+        "\n[iter 0] initial val_loss=" + String(val_init)
         + "  (random ≈ ln(V)=" + String(log(Float64(VOCAB))) + ")"
     )
 
-    # ---------- Per-epoch loop: scheduler → batches → eval ----------
+    # ---------- Per-iter loop: sample → forward → backward → step ----------
     print("\n── Training ──")
     var t_start = perf_counter_ns()
     var final_loss: Float64 = 0.0
-    for epoch in range(EPOCHS):
-        var lr_s = GPT_SCHEDULER.lr_scale_at(epoch, EPOCHS)
+    for iter in range(TOTAL_ITERS):
+        var lr_s = GPT_SCHEDULER.lr_scale_at(iter, TOTAL_ITERS)
         state.set_lr_scale(lr_s, ctx)
 
         var p_view = state.params_view()
         var s_view = state.model_state_view()
 
-        for batch_idx in range(N_TRAIN_BATCHES):
-            var batch_input = LayoutTensor[
-                dtype, Layout.row_major(BATCH, GPT_MODEL.IN_DIM), MutAnyOrigin
-            ](train_inp_lt.ptr + batch_idx * BATCH * GPT_MODEL.IN_DIM)
-            var target_v = LayoutTensor[
-                dtype, Layout.row_major(BATCH * SEQ, VOCAB), MutAnyOrigin
-            ](train_tgt_lt.ptr + batch_idx * BATCH * GPT_MODEL.OUT_DIM)
+        # Sample a fresh BATCH of windows from train, build one-hot, upload.
+        var mb = make_batch(split.train, BATCH, SEQ)
+        var inp_oh = to_one_hot(mb.inputs, VOCAB, BATCH, SEQ)
+        var tgt_oh = to_one_hot(mb.targets, VOCAB, BATCH, SEQ)
+        for i in range(BATCH * GPT_MODEL.IN_DIM):
+            train_inp_host.unsafe_ptr()[i] = inp_oh[i]
+            train_tgt_host.unsafe_ptr()[i] = tgt_oh[i]
+        ctx.enqueue_copy(train_inp_buf, train_inp_host)
+        ctx.enqueue_copy(train_tgt_buf, train_tgt_host)
 
-            GPT_MODEL.forward_gpu[BATCH, dtype](
-                ctx, output_t, batch_input, p_view, s_view, cache_t, ws_buf
-            )
-            CrossEntropyLoss.forward_gpu[BATCH * SEQ, VOCAB, dtype](
-                ctx, loss_t, output_v, target_v
-            )
-            CrossEntropyLoss.backward_gpu[BATCH * SEQ, VOCAB, dtype](
-                ctx, grad_out_v, output_v, target_v
-            )
-
-            state.zero_grads(ctx)
-            var grads_view = state.grads_view()
-            GPT_MODEL.backward_gpu[BATCH, dtype](
-                ctx, grad_in_t, grad_out_t, p_view, s_view, cache_t,
-                grads_view, ws_buf,
-            )
-            # Per-element max-abs grad clip — cheap insurance against the
-            # rare-spike instability common at this depth, standard in nanoGPT.
-            state.clip_grads(ctx, Scalar[dtype](GRAD_CLIP))
-            state.optimizer_step(ctx)
-
-        # Read the last batch's loss as a cheap epoch summary.
-        ctx.enqueue_copy(loss_host, loss_buf)
-        ctx.synchronize()
-        final_loss = Float64(loss_host[0])
-
-        var v = _eval_loss_seq_gpu(
-            ctx, state, val_inp_lt, val_tgt_lt,
-            output_buf, cache_buf, ws_buf, loss_buf, loss_host,
+        GPT_MODEL.forward_gpu[BATCH, dtype](
+            ctx, output_t, batch_input, p_view, s_view, cache_t, ws_buf
         )
-        print(
-            "  epoch " + String(epoch + 1) + "/" + String(EPOCHS)
-            + "  train_loss(last_batch)=" + String(Float32(final_loss))
-            + "  val_loss=" + String(v)
-            + "  lr_scale=" + String(lr_s)
+        CrossEntropyLoss.forward_gpu[BATCH * SEQ, VOCAB, dtype](
+            ctx, loss_t, output_v, batch_target_v
         )
+        CrossEntropyLoss.backward_gpu[BATCH * SEQ, VOCAB, dtype](
+            ctx, grad_out_v, output_v, batch_target_v
+        )
+
+        state.zero_grads(ctx)
+        var grads_view = state.grads_view()
+        GPT_MODEL.backward_gpu[BATCH, dtype](
+            ctx, grad_in_t, grad_out_t, p_view, s_view, cache_t,
+            grads_view, ws_buf,
+        )
+        # Weight tying — fold lm_head W grad (transposed) into embedding W
+        # grad and zero the lm_head W grad slot. Must run before clip+step.
+        _tie_grads(ctx, state)
+        # Per-element max-abs grad clip — cheap insurance against the
+        # rare-spike instability common at this depth, standard in nanoGPT.
+        state.clip_grads(ctx, Scalar[dtype](GRAD_CLIP))
+        state.optimizer_step(ctx)
+        # Re-tie lm_head W to embedding W after step (in case Adam moments
+        # in the lm_head slot ever produce a non-trivial update — shouldn't
+        # since grad was zeroed, but keeps the tie strict against numerical
+        # drift / weight decay).
+        _tie_params(ctx, state)
+
+        # Eval + log every EVAL_INTERVAL iters (and on the last iter).
+        if (iter + 1) % EVAL_INTERVAL == 0 or (iter + 1) == TOTAL_ITERS:
+            ctx.enqueue_copy(loss_host, loss_buf)
+            ctx.synchronize()
+            final_loss = Float64(loss_host[0])
+            var v = _eval_loss_seq_gpu(
+                ctx, state, val_inp_lt, val_tgt_lt,
+                output_buf, cache_buf, ws_buf, loss_buf, loss_host,
+            )
+            print(
+                "  iter " + String(iter + 1) + "/" + String(TOTAL_ITERS)
+                + "  train_loss=" + String(Float32(final_loss))
+                + "  val_loss=" + String(v)
+                + "  lr_scale=" + String(lr_s)
+            )
 
     var t_end = perf_counter_ns()
     print(
