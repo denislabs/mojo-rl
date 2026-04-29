@@ -19,14 +19,15 @@ For the readout, ε_L = target − output (target plays the role of x_above).
 """
 
 from layout import Layout, LayoutTensor
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext
+from std.gpu.memory import AddressSpace
 from std.runtime.asyncrt import DeviceContextPtr
 from std.sys import has_nvidia_gpu_accelerator
 from linalg.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
 
-from mojo_rl.nn.constants import TPB
+from mojo_rl.nn.constants import TPB, MMA_BLOCK_M, MMA_BLOCK_N, MMA_BLOCK_THREADS
 from mojo_rl.nn.initializer import Initializer
 
 from .predictive_model import PCActivation, PCReLU, PCBlockTrait
@@ -270,33 +271,8 @@ struct PCBlock[
             b_grad[j] = -s
 
     # =========================================================================
-    # GPU kernels (naive: one thread per output element)
+    # GPU kernels (elementwise: ε computation, bias gradient)
     # =========================================================================
-
-    @staticmethod
-    fn _predict_matmul_kernel[
-        BATCH: Int, IN: Int, OUT: Int, dtype: DType,
-    ](
-        a_below: LayoutTensor[
-            dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
-        ],
-        W: LayoutTensor[dtype, Layout.row_major(IN, OUT), MutAnyOrigin],
-        b: LayoutTensor[dtype, Layout.row_major(OUT), MutAnyOrigin],
-        mu: LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-        ],
-    ):
-        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= BATCH * OUT:
-            return
-        var sb = idx // OUT
-        var j = idx % OUT
-        var s: Scalar[dtype] = rebind[Scalar[dtype]](b[j])
-        for i in range(IN):
-            s += rebind[Scalar[dtype]](a_below[sb, i]) * rebind[
-                Scalar[dtype]
-            ](W[i, j])
-        mu[sb, j] = s
 
     @staticmethod
     fn _eps_kernel[
@@ -321,56 +297,6 @@ struct PCBlock[
             rebind[Scalar[dtype]](x_above[b, j])
             - rebind[Scalar[dtype]](mu[b, j])
         )
-
-    @staticmethod
-    fn _pull_back_kernel[
-        BATCH: Int, IN: Int, OUT: Int, dtype: DType,
-    ](
-        eps_above: LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-        ],
-        W: LayoutTensor[dtype, Layout.row_major(IN, OUT), MutAnyOrigin],
-        z_below: LayoutTensor[
-            dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
-        ],
-    ):
-        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= BATCH * IN:
-            return
-        var b = idx // IN
-        var i = idx % IN
-        var s: Scalar[dtype] = 0
-        for j in range(OUT):
-            s += rebind[Scalar[dtype]](eps_above[b, j]) * rebind[
-                Scalar[dtype]
-            ](W[i, j])
-        z_below[b, i] = s
-
-    @staticmethod
-    fn _weight_grad_kernel[
-        BATCH: Int, IN: Int, OUT: Int, dtype: DType,
-    ](
-        eps_above: LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-        ],
-        a_below: LayoutTensor[
-            dtype, Layout.row_major(BATCH, IN), MutAnyOrigin
-        ],
-        W_grad: LayoutTensor[
-            dtype, Layout.row_major(IN, OUT), MutAnyOrigin
-        ],
-    ):
-        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-        if idx >= IN * OUT:
-            return
-        var i = idx // OUT
-        var j = idx % OUT
-        var s: Scalar[dtype] = 0
-        for sb in range(BATCH):
-            s += rebind[Scalar[dtype]](eps_above[sb, j]) * rebind[
-                Scalar[dtype]
-            ](a_below[sb, i])
-        W_grad[i, j] = -s
 
     @staticmethod
     fn _bias_grad_kernel[
@@ -437,6 +363,350 @@ struct PCBlock[
         var col = idx % COLS
         dst[col, row] = src[row, col]
 
+    # =========================================================================
+    # Register-tiled 2×2 GPU kernels (Apple / non-USE_MAX_KERNELS path)
+    # =========================================================================
+    # Each thread computes a 2×2 sub-block of the output. Block tile is BT×BT
+    # (32×32), shared-memory reduction tile SK = 16. 256 threads per block
+    # cover the 32×32 output tile (16 sub-rows × 16 sub-cols × 2×2 = 1024 elems).
+    # Mirrors `eval_kernel_2x2` / `backward_dx_kernel_2x2` /
+    # `backward_dW_kernel_2x2` in `nn/autodiff/primitives/matmul.mojo`.
+
+    @always_inline
+    @staticmethod
+    fn _predict_kernel_2x2[
+        BATCH: Int, dtype: DType,
+    ](
+        a_below: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+        ],
+        W: LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+        ],
+        mu: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+        ],
+    ):
+        """Tiled mu = a_below @ W (no bias; bias added by post-kernel)."""
+        comptime BT = 32
+        comptime SK = 16
+
+        var tid = Int(thread_idx.x)
+        var sub_r = tid // 16
+        var sub_c = tid % 16
+        var block_row = Int(block_idx.y) * BT
+        var block_col = Int(block_idx.x) * BT
+
+        var a_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        var b_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+
+        var acc00: Scalar[dtype] = 0
+        var acc01: Scalar[dtype] = 0
+        var acc10: Scalar[dtype] = 0
+        var acc11: Scalar[dtype] = 0
+
+        comptime num_k_tiles = (Self.in_dim + SK - 1) // SK
+
+        for k_tile in range(num_k_tiles):
+            var k_off = k_tile * SK
+
+            var a_r0 = tid // SK
+            var a_c0 = tid % SK
+            var a_r1 = (tid + 256) // SK
+            var a_c1 = (tid + 256) % SK
+
+            if block_row + a_r0 < BATCH and k_off + a_c0 < Self.in_dim:
+                a_smem[a_r0, a_c0] = a_below[
+                    block_row + a_r0, k_off + a_c0
+                ]
+            else:
+                a_smem[a_r0, a_c0] = 0
+            if block_row + a_r1 < BATCH and k_off + a_c1 < Self.in_dim:
+                a_smem[a_r1, a_c1] = a_below[
+                    block_row + a_r1, k_off + a_c1
+                ]
+            else:
+                a_smem[a_r1, a_c1] = 0
+
+            var b_r0 = tid // BT
+            var b_c0 = tid % BT
+            var b_r1 = (tid + 256) // BT
+            var b_c1 = (tid + 256) % BT
+
+            if k_off + b_r0 < Self.in_dim and block_col + b_c0 < Self.out_dim:
+                b_smem[b_r0, b_c0] = W[k_off + b_r0, block_col + b_c0]
+            else:
+                b_smem[b_r0, b_c0] = 0
+            if k_off + b_r1 < Self.in_dim and block_col + b_c1 < Self.out_dim:
+                b_smem[b_r1, b_c1] = W[k_off + b_r1, block_col + b_c1]
+            else:
+                b_smem[b_r1, b_c1] = 0
+
+            barrier()
+
+            for k in range(SK):
+                if k_off + k < Self.in_dim:
+                    var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
+                    var a1 = rebind[Scalar[dtype]](
+                        a_smem[sub_r * 2 + 1, k]
+                    )
+                    var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
+                    var b1 = rebind[Scalar[dtype]](
+                        b_smem[k, sub_c * 2 + 1]
+                    )
+                    acc00 += a0 * b0
+                    acc01 += a0 * b1
+                    acc10 += a1 * b0
+                    acc11 += a1 * b1
+
+            barrier()
+
+        var gr0 = block_row + sub_r * 2
+        var gc0 = block_col + sub_c * 2
+        if gr0 < BATCH and gc0 < Self.out_dim:
+            mu[gr0, gc0] = acc00
+        if gr0 < BATCH and gc0 + 1 < Self.out_dim:
+            mu[gr0, gc0 + 1] = acc01
+        if gr0 + 1 < BATCH and gc0 < Self.out_dim:
+            mu[gr0 + 1, gc0] = acc10
+        if gr0 + 1 < BATCH and gc0 + 1 < Self.out_dim:
+            mu[gr0 + 1, gc0 + 1] = acc11
+
+    @always_inline
+    @staticmethod
+    fn _pull_back_kernel_2x2[
+        BATCH: Int, dtype: DType,
+    ](
+        eps_above: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+        ],
+        W: LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+        ],
+        z_below: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+        ],
+    ):
+        """Tiled z_below = eps_above @ W^T (W^T loaded transposed from W)."""
+        comptime BT = 32
+        comptime SK = 16
+
+        var tid = Int(thread_idx.x)
+        var sub_r = tid // 16
+        var sub_c = tid % 16
+        var block_row = Int(block_idx.y) * BT  # BATCH axis
+        var block_col = Int(block_idx.x) * BT  # in_dim axis
+
+        var a_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        var b_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+
+        var acc00: Scalar[dtype] = 0
+        var acc01: Scalar[dtype] = 0
+        var acc10: Scalar[dtype] = 0
+        var acc11: Scalar[dtype] = 0
+
+        comptime num_k_tiles = (Self.out_dim + SK - 1) // SK
+
+        for k_tile in range(num_k_tiles):
+            var k_off = k_tile * SK
+
+            # A = eps_above
+            var a_r0 = tid // SK
+            var a_c0 = tid % SK
+            var a_r1 = (tid + 256) // SK
+            var a_c1 = (tid + 256) % SK
+            if block_row + a_r0 < BATCH and k_off + a_c0 < Self.out_dim:
+                a_smem[a_r0, a_c0] = eps_above[
+                    block_row + a_r0, k_off + a_c0
+                ]
+            else:
+                a_smem[a_r0, a_c0] = 0
+            if block_row + a_r1 < BATCH and k_off + a_c1 < Self.out_dim:
+                a_smem[a_r1, a_c1] = eps_above[
+                    block_row + a_r1, k_off + a_c1
+                ]
+            else:
+                a_smem[a_r1, a_c1] = 0
+
+            # B = W^T: b_smem[k, c] = W[block_col + c, k_off + k]
+            var b_r0 = tid // BT
+            var b_c0 = tid % BT
+            var b_r1 = (tid + 256) // BT
+            var b_c1 = (tid + 256) % BT
+            if k_off + b_r0 < Self.out_dim and block_col + b_c0 < Self.in_dim:
+                b_smem[b_r0, b_c0] = W[block_col + b_c0, k_off + b_r0]
+            else:
+                b_smem[b_r0, b_c0] = 0
+            if k_off + b_r1 < Self.out_dim and block_col + b_c1 < Self.in_dim:
+                b_smem[b_r1, b_c1] = W[block_col + b_c1, k_off + b_r1]
+            else:
+                b_smem[b_r1, b_c1] = 0
+
+            barrier()
+
+            for k in range(SK):
+                if k_off + k < Self.out_dim:
+                    var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
+                    var a1 = rebind[Scalar[dtype]](
+                        a_smem[sub_r * 2 + 1, k]
+                    )
+                    var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
+                    var b1 = rebind[Scalar[dtype]](
+                        b_smem[k, sub_c * 2 + 1]
+                    )
+                    acc00 += a0 * b0
+                    acc01 += a0 * b1
+                    acc10 += a1 * b0
+                    acc11 += a1 * b1
+
+            barrier()
+
+        var gr0 = block_row + sub_r * 2
+        var gc0 = block_col + sub_c * 2
+        if gr0 < BATCH and gc0 < Self.in_dim:
+            z_below[gr0, gc0] = acc00
+        if gr0 < BATCH and gc0 + 1 < Self.in_dim:
+            z_below[gr0, gc0 + 1] = acc01
+        if gr0 + 1 < BATCH and gc0 < Self.in_dim:
+            z_below[gr0 + 1, gc0] = acc10
+        if gr0 + 1 < BATCH and gc0 + 1 < Self.in_dim:
+            z_below[gr0 + 1, gc0 + 1] = acc11
+
+    @always_inline
+    @staticmethod
+    fn _weight_grad_kernel_2x2[
+        BATCH: Int, dtype: DType,
+    ](
+        a_below: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
+        ],
+        eps_above: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
+        ],
+        W_grad: LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
+        ],
+    ):
+        """Tiled W_grad = -a_below^T @ eps_above (sign baked in)."""
+        comptime BT = 32
+        comptime SK = 16
+
+        var tid = Int(thread_idx.x)
+        var sub_r = tid // 16
+        var sub_c = tid % 16
+        var block_row = Int(block_idx.y) * BT  # in_dim axis
+        var block_col = Int(block_idx.x) * BT  # out_dim axis
+
+        var a_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(BT, SK),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+        var b_smem = LayoutTensor[
+            dtype,
+            Layout.row_major(SK, BT),
+            MutAnyOrigin,
+            address_space=AddressSpace.SHARED,
+        ].stack_allocation()
+
+        var acc00: Scalar[dtype] = 0
+        var acc01: Scalar[dtype] = 0
+        var acc10: Scalar[dtype] = 0
+        var acc11: Scalar[dtype] = 0
+
+        comptime num_k_tiles = (BATCH + SK - 1) // SK
+
+        for k_tile in range(num_k_tiles):
+            var k_off = k_tile * SK
+
+            # A = a_below^T: a_smem[r, k] = a_below[k_off + k, block_row + r]
+            var a_r0 = tid // SK
+            var a_c0 = tid % SK
+            var a_r1 = (tid + 256) // SK
+            var a_c1 = (tid + 256) % SK
+            if k_off + a_c0 < BATCH and block_row + a_r0 < Self.in_dim:
+                a_smem[a_r0, a_c0] = a_below[
+                    k_off + a_c0, block_row + a_r0
+                ]
+            else:
+                a_smem[a_r0, a_c0] = 0
+            if k_off + a_c1 < BATCH and block_row + a_r1 < Self.in_dim:
+                a_smem[a_r1, a_c1] = a_below[
+                    k_off + a_c1, block_row + a_r1
+                ]
+            else:
+                a_smem[a_r1, a_c1] = 0
+
+            # B = eps_above
+            var b_r0 = tid // BT
+            var b_c0 = tid % BT
+            var b_r1 = (tid + 256) // BT
+            var b_c1 = (tid + 256) % BT
+            if k_off + b_r0 < BATCH and block_col + b_c0 < Self.out_dim:
+                b_smem[b_r0, b_c0] = eps_above[
+                    k_off + b_r0, block_col + b_c0
+                ]
+            else:
+                b_smem[b_r0, b_c0] = 0
+            if k_off + b_r1 < BATCH and block_col + b_c1 < Self.out_dim:
+                b_smem[b_r1, b_c1] = eps_above[
+                    k_off + b_r1, block_col + b_c1
+                ]
+            else:
+                b_smem[b_r1, b_c1] = 0
+
+            barrier()
+
+            for k in range(SK):
+                if k_off + k < BATCH:
+                    var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
+                    var a1 = rebind[Scalar[dtype]](
+                        a_smem[sub_r * 2 + 1, k]
+                    )
+                    var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
+                    var b1 = rebind[Scalar[dtype]](
+                        b_smem[k, sub_c * 2 + 1]
+                    )
+                    acc00 += a0 * b0
+                    acc01 += a0 * b1
+                    acc10 += a1 * b0
+                    acc11 += a1 * b1
+
+            barrier()
+
+        # Bake in the −sign expected by Optimizer.step (params -= lr·grads).
+        var gr0 = block_row + sub_r * 2
+        var gc0 = block_col + sub_c * 2
+        if gr0 < Self.in_dim and gc0 < Self.out_dim:
+            W_grad[gr0, gc0] = -acc00
+        if gr0 < Self.in_dim and gc0 + 1 < Self.out_dim:
+            W_grad[gr0, gc0 + 1] = -acc01
+        if gr0 + 1 < Self.in_dim and gc0 < Self.out_dim:
+            W_grad[gr0 + 1, gc0] = -acc10
+        if gr0 + 1 < Self.in_dim and gc0 + 1 < Self.out_dim:
+            W_grad[gr0 + 1, gc0 + 1] = -acc11
+
     # ── GPU dispatchers ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -490,15 +760,27 @@ struct PCBlock[
                 grid_dim=(ba_blocks,), block_dim=(TPB,),
             )
         else:
-            # Fallback: naive one-thread-per-output-element kernel.
-            comptime k = Self._predict_matmul_kernel[
-                BATCH, Self.in_dim, Self.out_dim, dtype
+            # Fallback (Apple / non-NVIDIA): 2×2 register-tiled GEMM, then
+            # post-add bias.
+            comptime kt = Self._predict_kernel_2x2[BATCH, dtype]
+            comptime grid_x = (
+                Self.out_dim + MMA_BLOCK_N - 1
+            ) // MMA_BLOCK_N
+            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+            ctx.enqueue_function[kt, kt](
+                a_below, W, mu,
+                grid_dim=(grid_x, grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
+
+            comptime kb = Self._bias_add_kernel[
+                BATCH, Self.out_dim, dtype
             ]
-            var threads = BATCH * Self.out_dim
-            var blocks = (threads + TPB - 1) // TPB
-            ctx.enqueue_function[k, k](
-                a_below, W, b_view, mu,
-                grid_dim=(blocks,), block_dim=(TPB,),
+            var ba_threads = BATCH * Self.out_dim
+            var ba_blocks = (ba_threads + TPB - 1) // TPB
+            ctx.enqueue_function[kb, kb](
+                mu, b_view,
+                grid_dim=(ba_blocks,), block_dim=(TPB,),
             )
 
     @staticmethod
@@ -555,14 +837,17 @@ struct PCBlock[
                 DeviceContextPtr(ctx),
             )
         else:
-            comptime k = Self._pull_back_kernel[
-                BATCH, Self.in_dim, Self.out_dim, dtype
-            ]
-            var threads = BATCH * Self.in_dim
-            var blocks = (threads + TPB - 1) // TPB
-            ctx.enqueue_function[k, k](
+            # Fallback (Apple / non-NVIDIA): 2×2 register-tiled GEMM with
+            # transposed W loads.
+            comptime kt = Self._pull_back_kernel_2x2[BATCH, dtype]
+            comptime grid_x = (
+                Self.in_dim + MMA_BLOCK_N - 1
+            ) // MMA_BLOCK_N
+            comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+            ctx.enqueue_function[kt, kt](
                 eps_above, W, z_below,
-                grid_dim=(blocks,), block_dim=(TPB,),
+                grid_dim=(grid_x, grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
             )
 
     @staticmethod
@@ -656,14 +941,19 @@ struct PCBlock[
                 grid_dim=(n_blocks,), block_dim=(TPB,),
             )
         else:
-            comptime kw = Self._weight_grad_kernel[
-                BATCH, Self.in_dim, Self.out_dim, dtype
-            ]
-            var w_threads = Self.in_dim * Self.out_dim
-            var w_blocks = (w_threads + TPB - 1) // TPB
+            # Fallback (Apple / non-NVIDIA): 2×2 register-tiled GEMM with
+            # transposed a_below loads; sign baked into the store.
+            comptime kw = Self._weight_grad_kernel_2x2[BATCH, dtype]
+            comptime w_grid_x = (
+                Self.out_dim + MMA_BLOCK_N - 1
+            ) // MMA_BLOCK_N
+            comptime w_grid_y = (
+                Self.in_dim + MMA_BLOCK_M - 1
+            ) // MMA_BLOCK_M
             ctx.enqueue_function[kw, kw](
-                eps_above, a_below, W_grad,
-                grid_dim=(w_blocks,), block_dim=(TPB,),
+                a_below, eps_above, W_grad,
+                grid_dim=(w_grid_x, w_grid_y),
+                block_dim=(MMA_BLOCK_THREADS, 1),
             )
 
         comptime kb = Self._bias_grad_kernel[BATCH, Self.out_dim, dtype]
