@@ -169,7 +169,7 @@ struct PCReLU(PCActivation):
     # ── GPU kernels (naive: one thread per element) ──────────────────────────
 
     @staticmethod
-    fn _relu_apply_kernel[
+    def _relu_apply_kernel[
         BATCH: Int, DIM: Int, dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -184,7 +184,7 @@ struct PCReLU(PCActivation):
         a[b, i] = v if v > 0 else Scalar[dtype](0)
 
     @staticmethod
-    fn _relu_deriv_mul_kernel[
+    def _relu_deriv_mul_kernel[
         BATCH: Int, DIM: Int, dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -287,7 +287,7 @@ struct PCIdentity(PCActivation):
     # ── GPU kernels (naive copy) ─────────────────────────────────────────────
 
     @staticmethod
-    fn _identity_copy_kernel[
+    def _identity_copy_kernel[
         BATCH: Int, DIM: Int, dtype: DType,
     ](
         src: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -397,7 +397,7 @@ struct PCTanh(PCActivation):
     # ── GPU kernels (naive: one thread per element) ──────────────────────────
 
     @staticmethod
-    fn _tanh_apply_kernel[
+    def _tanh_apply_kernel[
         BATCH: Int, DIM: Int, dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -413,7 +413,7 @@ struct PCTanh(PCActivation):
         a[b, i] = tanh(v)
 
     @staticmethod
-    fn _tanh_deriv_mul_kernel[
+    def _tanh_deriv_mul_kernel[
         BATCH: Int, DIM: Int, dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],

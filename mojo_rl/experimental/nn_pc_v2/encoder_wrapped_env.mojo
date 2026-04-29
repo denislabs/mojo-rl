@@ -136,7 +136,7 @@ struct EncoderWrappedEnv[
     # and `raw_obs_ptr`. Updates `prev_z` in place.
     # =========================================================================
 
-    fn _encode(mut self):
+    def _encode(mut self):
         """Run encoder.forward at BATCH=1 over the staged enc_input.
 
         Caller must have already filled `self.enc_input` with
@@ -166,7 +166,7 @@ struct EncoderWrappedEnv[
         for j in range(Self.HIDDEN):
             self.prev_z[j] = self.enc_output[j]
 
-    fn _stage_enc_input(mut self, raw_obs_f64: List[Float64]):
+    def _stage_enc_input(mut self, raw_obs_f64: List[Float64]):
         """Build enc_input = [prev_z | prev_action | raw_obs / obs_div].
 
         Caller converts raw_obs to Float64 first; this avoids generic-dtype
@@ -183,14 +183,14 @@ struct EncoderWrappedEnv[
                 Self.dtype
             ](raw_obs_f64[d] / div)
 
-    fn _latent_as_list[DTYPE_OUT: DType](self) -> List[Scalar[DTYPE_OUT]]:
+    def _latent_as_list[DTYPE_OUT: DType](self) -> List[Scalar[DTYPE_OUT]]:
         """Copy the current latent (`prev_z`) into a List of DTYPE_OUT."""
         var z = List[Scalar[DTYPE_OUT]](capacity=Self.HIDDEN)
         for j in range(Self.HIDDEN):
             z.append(Scalar[DTYPE_OUT](Float64(self.prev_z[j])))
         return z^
 
-    fn _zero_state(mut self):
+    def _zero_state(mut self):
         """Zero `prev_z` and `prev_action`."""
         for j in range(Self.HIDDEN):
             self.prev_z[j] = Scalar[Self.dtype](0.0)

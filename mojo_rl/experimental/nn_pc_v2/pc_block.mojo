@@ -49,8 +49,8 @@ struct PCBlock[
 
     USE_MAX_KERNELS (NVIDIA only): when True, route predict / pull_back /
     weight_grad GPU matmuls through `linalg.matmul` (the optimized max_matmul
-    GEMM). When False, fall through to the naive elementwise kernels. Apple
-    always uses the naive fallback regardless of this flag.
+    GEMM). When False, fall through to the 2×2 register-tiled fallback
+    kernels. Apple always uses the tiled fallback regardless of this flag.
     """
 
     comptime IN_DIM: Int = Self.in_dim
@@ -275,7 +275,7 @@ struct PCBlock[
     # =========================================================================
 
     @staticmethod
-    fn _eps_kernel[
+    def _eps_kernel[
         BATCH: Int, OUT: Int, dtype: DType,
     ](
         x_above: LayoutTensor[
@@ -299,7 +299,7 @@ struct PCBlock[
         )
 
     @staticmethod
-    fn _bias_grad_kernel[
+    def _bias_grad_kernel[
         BATCH: Int, OUT: Int, dtype: DType,
     ](
         eps_above: LayoutTensor[
@@ -320,7 +320,7 @@ struct PCBlock[
     # ── Helpers used by the max_matmul fast path ─────────────────────────────
 
     @staticmethod
-    fn _bias_add_kernel[
+    def _bias_add_kernel[
         BATCH: Int, OUT: Int, dtype: DType,
     ](
         mu: LayoutTensor[
@@ -335,7 +335,7 @@ struct PCBlock[
         mu.ptr[idx] = mu.ptr[idx] + rebind[Scalar[dtype]](b[col])
 
     @staticmethod
-    fn _negate_kernel[
+    def _negate_kernel[
         N: Int, dtype: DType,
     ](
         buf: LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin],
@@ -346,7 +346,7 @@ struct PCBlock[
         buf.ptr[idx] = -buf.ptr[idx]
 
     @staticmethod
-    fn _transpose_2d_kernel[
+    def _transpose_2d_kernel[
         ROWS: Int, COLS: Int, dtype: DType,
     ](
         dst: LayoutTensor[
@@ -374,7 +374,7 @@ struct PCBlock[
 
     @always_inline
     @staticmethod
-    fn _predict_kernel_2x2[
+    def _predict_kernel_2x2[
         BATCH: Int, dtype: DType,
     ](
         a_below: LayoutTensor[
@@ -484,7 +484,7 @@ struct PCBlock[
 
     @always_inline
     @staticmethod
-    fn _pull_back_kernel_2x2[
+    def _pull_back_kernel_2x2[
         BATCH: Int, dtype: DType,
     ](
         eps_above: LayoutTensor[
@@ -594,7 +594,7 @@ struct PCBlock[
 
     @always_inline
     @staticmethod
-    fn _weight_grad_kernel_2x2[
+    def _weight_grad_kernel_2x2[
         BATCH: Int, dtype: DType,
     ](
         a_below: LayoutTensor[

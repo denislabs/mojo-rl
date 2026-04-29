@@ -75,7 +75,7 @@ struct PCDynamicsEnsemble[
     # =========================================================================
 
     @staticmethod
-    fn member_params(
+    def member_params(
         params_buf: UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin],
         m: Int,
     ) -> LayoutTensor[
@@ -279,7 +279,7 @@ struct PCDynamicsEnsemble[
     # =========================================================================
 
     @staticmethod
-    fn select_elites(
+    def select_elites(
         losses: List[Float64],
         mut elite_indices: List[Int],
     ):

@@ -120,7 +120,7 @@ struct PCDynamics[
     # =========================================================================
 
     @staticmethod
-    fn params_b0_view(
+    def params_b0_view(
         params_buf: UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin],
     ) -> LayoutTensor[
         Self.dtype, Layout.row_major(Self.BLOCK0.PARAM_SIZE), MutAnyOrigin
@@ -132,7 +132,7 @@ struct PCDynamics[
         ](params_buf)
 
     @staticmethod
-    fn params_b1_view(
+    def params_b1_view(
         params_buf: UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin],
     ) -> LayoutTensor[
         Self.dtype, Layout.row_major(Self.BLOCK1.PARAM_SIZE), MutAnyOrigin

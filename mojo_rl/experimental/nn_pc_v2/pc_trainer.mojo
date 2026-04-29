@@ -120,8 +120,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         var output_loss = Self._readout_loss[BATCH](mu_eps_buf)
 
         # === 3. Compute weight gradients per block =========================
-        @parameter
-        for i in range(Self.NET.N):
+        comptime for i in range(Self.NET.N):
             var li_g = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
@@ -495,8 +494,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         ],
     ):
         """Phases A+B of inference: forward predict + ε compute (no x update)."""
-        @parameter
-        for i in range(Self.NET.N):
+        comptime for i in range(Self.NET.N):
             var li_p = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
@@ -513,8 +511,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 MutAnyOrigin,
             ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
 
-            @parameter
-            if i == 0:
+            comptime if i == 0:
                 var li_x_below = LayoutTensor[
                     Self.dtype,
                     Layout.row_major(BATCH, Self.NET.block_types[i].IN_DIM),
@@ -534,8 +531,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 )
 
         # ε = x_above − μ (in-place)
-        @parameter
-        for i in range(Self.NET.N):
+        comptime for i in range(Self.NET.N):
             var li_mu_view = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
@@ -547,8 +543,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                 MutAnyOrigin,
             ](mu_eps_buf.ptr + BATCH * Self.NET._out_offset[i]())
 
-            @parameter
-            if i == Self.NET.N - 1:
+            comptime if i == Self.NET.N - 1:
                 var li_target = LayoutTensor[
                     Self.dtype,
                     Layout.row_major(BATCH, Self.NET.block_types[i].OUT_DIM),
@@ -611,8 +606,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         )
 
         # ===== Phase C: dx_l = ε_l − act'(x_l) ⊙ (W_{l+1}·ε_{l+1}) ===========
-        @parameter
-        for l_idx in range(Self.NET.N_LATENTS):
+        comptime for l_idx in range(Self.NET.N_LATENTS):
             comptime upper = l_idx + 1
 
             var li_p_upper = LayoutTensor[
@@ -769,8 +763,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         # Identical to `_inference_step` Phase C — the readout's ε in
         # `mu_eps_buf` already carries the Jacobian factor, so `pull_back`
         # automatically backprops through the tanh emission correctly.
-        @parameter
-        for l_idx in range(Self.NET.N_LATENTS):
+        comptime for l_idx in range(Self.NET.N_LATENTS):
             comptime upper = l_idx + 1
 
             var li_p_upper = LayoutTensor[
@@ -872,7 +865,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
     # =========================================================================
 
     @staticmethod
-    fn _dx_subtract_kernel[
+    def _dx_subtract_kernel[
         BATCH: Int, DIM: Int, KDT: DType,
     ](
         eps_self: LayoutTensor[
@@ -892,7 +885,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         )
 
     @staticmethod
-    fn _latents_apply_kernel[
+    def _latents_apply_kernel[
         BATCH: Int, LDIM: Int, KDT: DType,
     ](
         latents: LayoutTensor[
@@ -1355,8 +1348,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
                     li_eps_R[b, k] = Scalar[Self.dtype](0)
 
         # Phase C: dx_l = ε_l − act'(x_l) ⊙ (W_{l+1}·ε_{l+1})
-        @parameter
-        for l_idx in range(Self.NET.N_LATENTS):
+        comptime for l_idx in range(Self.NET.N_LATENTS):
             comptime upper = l_idx + 1
 
             var li_p_upper = LayoutTensor[
@@ -1514,8 +1506,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         var output_loss = Self._readout_loss[BATCH](mu_eps_buf)
 
         # Compute weight grads at the post-sampling state
-        @parameter
-        for i in range(Self.NET.N):
+        comptime for i in range(Self.NET.N):
             var li_g = LayoutTensor[
                 Self.dtype,
                 Layout.row_major(Self.NET.block_types[i].PARAM_SIZE),
@@ -1649,7 +1640,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
     # =========================================================================
 
     @staticmethod
-    fn _box_muller_fill_kernel[
+    def _box_muller_fill_kernel[
         BATCH: Int, LDIM: Int, KDT: DType,
     ](
         noise_buf: LayoutTensor[
@@ -1708,7 +1699,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         )
 
     @staticmethod
-    fn _zero_eps_kernel[
+    def _zero_eps_kernel[
         BATCH: Int, DIM: Int, KDT: DType,
     ](
         eps: LayoutTensor[
@@ -1723,7 +1714,7 @@ struct PCTrainer[*BLOCKS: PCBlockTrait, dtype: DType = DType.float32]:
         eps[b, k] = Scalar[KDT](0)
 
     @staticmethod
-    fn _sgld_apply_kernel[
+    def _sgld_apply_kernel[
         BATCH: Int, LDIM: Int, KDT: DType,
     ](
         latents: LayoutTensor[
