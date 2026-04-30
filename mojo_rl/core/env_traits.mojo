@@ -347,6 +347,27 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
 
 
 # ============================================================================
+# Termination-aware variant
+# ============================================================================
+
+
+trait TerminationAwareEnv(BoxContinuousActionEnv):
+    """BoxContinuousActionEnv that exposes terminated-vs-truncated.
+
+    `step_continuous_vec` collapses both into a single `done` flag; this
+    trait adds `was_terminated()` so off-policy training can keep the TD
+    bootstrap on time-limit truncation while dropping it on natural
+    termination — required for correct learning on Hopper/Walker/Ant where
+    truncation at 1000 steps is a common outcome of a successful policy.
+    """
+
+    def was_terminated(self) -> Bool:
+        """True iff the previous `step_continuous_vec` ended via natural
+        termination (not time-limit truncation)."""
+        ...
+
+
+# ============================================================================
 # GPU Environment Trait for Composable GPU RL. (Experimental)
 # ============================================================================
 

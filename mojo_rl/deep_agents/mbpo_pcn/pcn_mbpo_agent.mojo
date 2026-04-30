@@ -1246,12 +1246,20 @@ struct PCNMBPOAgent[
             increment_rng_counter_kernel, increment_rng_counter_kernel
         ](dyn_rng_t, grid_dim=(1,), block_dim=(1,))
 
+        # Refit the input scaler on the current real buffer (per-dim
+        # mean/std of [obs || act]). Required for BLOCK0's `tanh(x_below)`
+        # to operate in its linear regime — without it, raw HalfCheetah
+        # obs (positions/velocities ±10) saturate tanh and the dynamics
+        # learns garbage. Same recipe as vanilla MBPO TensorStandardScaler.
+        gpu_dynamics.fit_scaler_gpu[Self.GPU_BUF_CAP](ctx, gpu_buffer)
+
         comptime concat_k = concat_obs_action_kernel[
             dtype, DB, Self.Config.obs_dim, Self.Config.action_dim, DYN_IN
         ]
         comptime build_target_k = pcn_build_dyn_target_kernel[
             dtype, DB, Self.Config.obs_dim, READOUT
         ]
+        comptime norm_k = normalize_input_kernel[dtype, DB, DYN_IN]
 
         # ── Per-member training pass ───────────────────────────────────────
         for m in range(Self.Config.ENSEMBLE_SIZE):
@@ -1286,8 +1294,22 @@ struct PCNMBPOAgent[
                 grid_dim=(DB_IN_BLOCKS,),
                 block_dim=(TPB_VAL,),
             )
+            # 2b. Normalize s_a using the just-fitted scaler so the PCN
+            # forward operates on roughly-unit-scale inputs.
+            var mean_t = LayoutTensor[
+                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+            ](gpu_dynamics.input_mean.unsafe_ptr())
+            var std_t = LayoutTensor[
+                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+            ](gpu_dynamics.input_std.unsafe_ptr())
+            ctx.enqueue_function[norm_k, norm_k](
+                s_a_t, mean_t, std_t,
+                grid_dim=(DB_IN_BLOCKS,),
+                block_dim=(TPB_VAL,),
+            )
 
-            # 3. Build target = (delta_obs, reward).
+            # 3. Build target = (delta_obs, reward) (raw — unnormalized;
+            # PCIdentity readout outputs the same scale).
             var s_nobs_t = LayoutTensor[
                 dtype,
                 Layout.row_major(DB, Self.Config.obs_dim),
@@ -1325,6 +1347,18 @@ struct PCNMBPOAgent[
         ](gpu_dynamics.s_a_dbuf.unsafe_ptr())
         ctx.enqueue_function[concat_k, concat_k](
             hs_a_t, hs_obs_t, hs_act_t,
+            grid_dim=(DB_IN_BLOCKS,),
+            block_dim=(TPB_VAL,),
+        )
+        # Normalize the holdout batch the same way as the train batches.
+        var h_mean_t = LayoutTensor[
+            dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+        ](gpu_dynamics.input_mean.unsafe_ptr())
+        var h_std_t = LayoutTensor[
+            dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+        ](gpu_dynamics.input_std.unsafe_ptr())
+        ctx.enqueue_function[norm_k, norm_k](
+            hs_a_t, h_mean_t, h_std_t,
             grid_dim=(DB_IN_BLOCKS,),
             block_dim=(TPB_VAL,),
         )
@@ -1420,6 +1454,7 @@ struct PCNMBPOAgent[
         comptime elite_assign_k = sample_elite_assignment_kernel[
             dtype, RB, NUM_ELITES_C
         ]
+        comptime r_norm_k = normalize_input_kernel[dtype, RB, DYN_IN]
 
         var num_elites = len(gpu_dynamics.elite_indices)
         if num_elites == 0 or not gpu_state.buffer.is_ready[RB]():
@@ -1484,6 +1519,18 @@ struct PCNMBPOAgent[
             ](gpu_dynamics.r_dyn_input.unsafe_ptr())
             ctx.enqueue_function[concat_k, concat_k](
                 r_dyn_in_t, r_obs_t, r_act_t,
+                grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
+            )
+            # 3b. Normalize the dynamics input the same way training did.
+            # Without this, BLOCK0's tanh saturates on raw obs/action.
+            var r_mean_t = LayoutTensor[
+                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+            ](gpu_dynamics.input_mean.unsafe_ptr())
+            var r_std_t = LayoutTensor[
+                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+            ](gpu_dynamics.input_std.unsafe_ptr())
+            ctx.enqueue_function[r_norm_k, r_norm_k](
+                r_dyn_in_t, r_mean_t, r_std_t,
                 grid_dim=(DYN_IN_BLOCKS,), block_dim=(TPB_VAL,),
             )
 
@@ -2872,14 +2919,50 @@ struct PCNMBPOAgent[
             step_seed += 1
 
             if total_steps >= next_model_train and total_steps >= warmup_steps:
-                # PCN equivalent of vanilla `gpu_dynamics.train_on_buffer`
-                # (which returned a holdout loss). Our `train_dynamics_gpu`
-                # samples + trains + refreshes elites in one shot; doesn't
-                # currently return a holdout MSE (could plumb through later
-                # via `gpu_dynamics.eval_member_holdout_loss` after refresh).
+                # PCN equivalent of vanilla `gpu_dynamics.train_on_buffer`.
+                # Fits scaler → trains each member → refreshes elites.
                 self.train_dynamics_gpu(ctx, gpu_dynamics, gpu_state.buffer)
                 self.update_rollout_length(epoch)
                 epoch += 1
+
+                # ── Dynamics health metrics ────────────────────────────────
+                # Holdout MSE is computed inside `train_dynamics_gpu`'s
+                # `refresh_elites` call but not returned. Re-run holdout
+                # eval per member here for logging only (cheap: NUM_ENSEMBLE
+                # forwards on a DYN_BATCH-sized batch already on device).
+                if logger:
+                    var per_member_loss = List[Float64]()
+                    var loss_sum: Float64 = 0.0
+                    var loss_min: Float64 = 1e30
+                    var loss_max: Float64 = -1.0
+                    for m in range(Self.Config.ENSEMBLE_SIZE):
+                        var L = gpu_dynamics.eval_member_holdout_loss(ctx, m)
+                        per_member_loss.append(L)
+                        loss_sum += L
+                        if L < loss_min:
+                            loss_min = L
+                        if L > loss_max:
+                            loss_max = L
+                    logger[].log_scalar(
+                        "dyn_holdout_mse_mean",
+                        loss_sum / Float64(Self.Config.ENSEMBLE_SIZE),
+                        total_steps,
+                    )
+                    logger[].log_scalar(
+                        "dyn_holdout_mse_min", loss_min, total_steps
+                    )
+                    logger[].log_scalar(
+                        "dyn_holdout_mse_max", loss_max, total_steps
+                    )
+                    logger[].log_scalar(
+                        "dyn_holdout_spread",
+                        loss_max - loss_min,
+                        total_steps,
+                    )
+                    var input_std_mean = gpu_dynamics.download_input_std(ctx)
+                    logger[].log_scalar(
+                        "dyn_input_std_mean", input_std_mean, total_steps
+                    )
 
                 var n_rollout_batches = max(
                     1,

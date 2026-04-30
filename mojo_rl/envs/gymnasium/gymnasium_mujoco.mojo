@@ -22,7 +22,9 @@ Note: These require pip install "gymnasium[mujoco]" or mujoco-py
 """
 
 from std.python import Python, PythonObject
-from mojo_rl.core import State, Action, BoxContinuousActionEnv, RenderableEnv
+from mojo_rl.core import (
+    State, Action, BoxContinuousActionEnv, RenderableEnv, TerminationAwareEnv,
+)
 
 
 # ============================================================================
@@ -66,7 +68,12 @@ struct GymMuJoCoAction(Action, Copyable, ImplicitlyCopyable, Movable):
 # ============================================================================
 
 
-struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
+struct GymMuJoCoEnv(
+    BoxContinuousActionEnv
+    & RenderableEnv
+    & TerminationAwareEnv
+    & Movable
+):
     """Generic wrapper for MuJoCo environments.
 
     Since MuJoCo envs have varying observation/action dimensions,
@@ -95,6 +102,10 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     var current_obs: List[Float64]
     var current_obs_4d: SIMD[DType.float64, 4]  # For trait conformance
     var done: Bool
+    var last_terminated: Bool
+    """Set by step_with_list: True only when Gym's `terminated` was True
+    (not `truncated`). Lets off-policy training drop the bootstrap on
+    natural termination but keep it on time-limit truncation."""
     var episode_reward: Float64
     var episode_length: Int
 
@@ -156,9 +167,28 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
         self.current_obs_4d = SIMD[DType.float64, 4](0.0)
 
         self.done = False
+        self.last_terminated = False
         self.episode_reward = 0.0
         self.episode_length = 0
         self._render_initialized = False
+
+    def __init__(out self, *, deinit take: Self):
+        """Movable conformance: takes ownership of `take`'s fields."""
+        self.env = take.env^
+        self.gym = take.gym^
+        self.np = take.np^
+        self.env_name = take.env_name^
+        self._obs_dim = take._obs_dim
+        self._action_dim = take._action_dim
+        self._action_low = take._action_low
+        self._action_high = take._action_high
+        self.current_obs = take.current_obs^
+        self.current_obs_4d = take.current_obs_4d
+        self.done = take.done
+        self.last_terminated = take.last_terminated
+        self.episode_reward = take.episode_reward
+        self.episode_length = take.episode_length
+        self._render_initialized = take._render_initialized
 
     # ========================================================================
     # Env base trait methods
@@ -181,6 +211,7 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
             self.current_obs_4d = SIMD[DType.float64, 4](0.0)
 
         self.done = False
+        self.last_terminated = False
         self.episode_reward = 0.0
         self.episode_length = 0
         return GymMuJoCoState(index=0)
@@ -365,8 +396,10 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
             for i in range(min_dim):
                 self.current_obs_4d[i] = self.current_obs[i]
 
+            self.last_terminated = terminated
             self.done = terminated or truncated
         except:
+            self.last_terminated = True
             self.done = True
 
         self.episode_reward += Float64(reward)
@@ -404,6 +437,13 @@ struct GymMuJoCoEnv(BoxContinuousActionEnv & RenderableEnv):
     def is_done(self) -> Bool:
         """Check if episode is done."""
         return self.done
+
+    def was_terminated(self) -> Bool:
+        """Return True only when the last step ended via Gym's `terminated`
+        (e.g. unhealthy state), not when it was truncated by the time limit.
+        Use this to mask the bootstrap in TD targets without dropping it for
+        time-limit truncations."""
+        return self.last_terminated
 
     def get_info(self) -> String:
         """Return environment info string."""

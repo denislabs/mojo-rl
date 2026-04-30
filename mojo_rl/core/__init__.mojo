@@ -13,6 +13,7 @@ from .env_traits import (
     DiscreteEnv,
     BoxDiscreteActionEnv,
     BoxContinuousActionEnv,
+    TerminationAwareEnv,
     GPUDiscreteEnv,
     GPUContinuousEnv,
     CurriculumScheduler,

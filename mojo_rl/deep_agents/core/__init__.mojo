@@ -50,6 +50,9 @@ from .training.gpu_offpolicy_train import (
     run_offpolicy_continuous_train_gpu,
     run_offpolicy_discrete_train_gpu,
 )
+from .training.gpu_agent_cpu_env_train import (
+    run_offpolicy_continuous_train_cpu_env_gpu_agent,
+)
 
 from .training.gpu_onpolicy_train import (
     GPUOnPolicyState,
