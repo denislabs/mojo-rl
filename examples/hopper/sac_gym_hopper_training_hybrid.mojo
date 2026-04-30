@@ -86,6 +86,11 @@ def main() raises:
             p.init_pointee_move(GymMuJoCoEnv("Hopper-v5"))
             envs.append(p)
 
+        # Separate env for deterministic eval — must not share state with
+        # any training env so eval doesn't perturb the rollout.
+        var eval_env_ptr = alloc[GymMuJoCoEnv](1)
+        eval_env_ptr.init_pointee_move(GymMuJoCoEnv("Hopper-v5"))
+
         print("Env: Gymnasium MuJoCo Hopper-v5 (CPU)")
         print("Agent: SAC (GPU networks, replay, training)")
         print("  Obs dim: " + String(OBS_DIM))
@@ -133,6 +138,11 @@ def main() raises:
                 print_every=50_000,
                 logger=UnsafePointer(to=logger),
                 reward_scale=1.0,
+                eval_env=eval_env_ptr,
+                eval_every=50_000,
+                eval_episodes=5,
+                eval_max_steps=1000,
+                diag_every=1000,
             )
 
             var end_time = perf_counter_ns()
@@ -187,5 +197,7 @@ def main() raises:
         for i in range(N_ENVS):
             envs[i][].close()
             envs[i].free()
+        eval_env_ptr[].close()
+        eval_env_ptr.free()
 
     print(">>> main() completed <<<")

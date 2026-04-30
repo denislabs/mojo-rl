@@ -51,6 +51,7 @@ from mojo_rl.deep_agents.core import (
     GPUOffPolicyState,
     GPUOffPolicyAgent,
     GPUEvaluableContinuous,
+    CPUEvaluableContinuous,
     run_offpolicy_continuous_train,
     run_offpolicy_continuous_train_gpu,
     run_offpolicy_continuous_train_cpu_env_gpu_agent,
@@ -668,6 +669,7 @@ struct GenericOffPolicyAgent[
     OffPolicyContinuousAgent
     & GPUOffPolicyAgent
     & GPUEvaluableContinuous
+    & CPUEvaluableContinuous
     & Checkpointable
 ):
     """Generic off-policy agent. Supports DDPG, TD3, and SAC via Config strategies.
@@ -1305,6 +1307,13 @@ struct GenericOffPolicyAgent[
                     a = -self.action_scale
                 result.append(a)
             return result^
+
+    # =========================================================================
+    # CPUEvaluableContinuous trait
+    # =========================================================================
+
+    def select_greedy_action_obs(self, obs: List[Float64]) -> List[Float64]:
+        return self.select_greedy_action(self.state, obs)
 
     # =========================================================================
     # GPUOffPolicyAgent trait
@@ -2582,6 +2591,13 @@ struct GenericOffPolicyAgent[
         ](),
         gradient_steps: Int = 0,
         reward_scale: Float64 = 1.0,
+        eval_env: UnsafePointer[E, MutAnyOrigin] = UnsafePointer[
+            E, MutAnyOrigin
+        ](),
+        eval_every: Int = 0,
+        eval_episodes: Int = 5,
+        eval_max_steps: Int = 1000,
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Hybrid training: this GPU agent driven by CPU-stepped envs.
 
@@ -2610,6 +2626,7 @@ struct GenericOffPolicyAgent[
             TrainingMetrics with episode statistics.
         """
         self.logger = logger
+        self.diag_every = diag_every
         var ckpt_every = self.checkpoint_every
         var ckpt_path = String(self.checkpoint_path)
         var metrics = run_offpolicy_continuous_train_cpu_env_gpu_agent[
@@ -2631,6 +2648,11 @@ struct GenericOffPolicyAgent[
             environment_name=environment_name,
             algorithm_name=Self.Config.NAME + "_HYBRID",
             reward_scale=reward_scale,
+            eval_env=eval_env,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
+            eval_max_steps=eval_max_steps,
+            diag_every=diag_every,
         )
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         return metrics^

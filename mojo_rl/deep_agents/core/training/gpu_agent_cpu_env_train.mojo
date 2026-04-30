@@ -9,7 +9,7 @@ Mirrors `run_offpolicy_continuous_train_gpu` but:
   - Obs / actions / rewards / done flow across the H↔D boundary each step.
   - No CUDA graphs (env can't be captured).
   - No GPU episode-tracking (counters live on CPU since we're already there).
-  - No periodic eval (skip; run a separate eval script if needed).
+  - Periodic CPU-side deterministic eval on a separate eval env.
 
 The trait `TerminationAwareEnv` extends BoxContinuousActionEnv with
 `was_terminated()` so the bootstrap mask is correct under time-limit
@@ -20,6 +20,7 @@ steps).
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.memory import UnsafePointer
 from std.random import random_float64
+from std.time import perf_counter_ns
 
 from layout import Layout, LayoutTensor
 
@@ -29,9 +30,33 @@ from mojo_rl.core import (
     TerminationAwareEnv,
 )
 from mojo_rl.core.logger import Logger, NoOpLogger
+from mojo_rl.deep_agents.core.utils import (
+    print_progress_bar,
+    clear_progress_bar,
+)
 from mojo_rl.nn.constants import dtype
 from ..checkpoint_trait import Checkpointable
 from .gpu_offpolicy_train import GPUOffPolicyAgent
+
+
+# =============================================================================
+# CPUEvaluableContinuous Trait
+# =============================================================================
+#
+# Optional add-on trait for continuous-action agents that support running a
+# deterministic eval against a CPU-stepped env. The hybrid training loop uses
+# it to log a true policy-quality signal (`eval_reward`) alongside the noisy
+# stochastic-rollout `avg_reward`, since SAC entropy noise inflates the gap.
+
+
+trait CPUEvaluableContinuous:
+    """Continuous-action agent supporting deterministic CPU-side eval."""
+
+    def select_greedy_action_obs(
+        self, obs: List[Float64]
+    ) -> List[Float64]:
+        """Return the deterministic action for a single observation."""
+        ...
 
 
 # =============================================================================
@@ -41,7 +66,7 @@ from .gpu_offpolicy_train import GPUOffPolicyAgent
 
 def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     E: TerminationAwareEnv,
-    A: GPUOffPolicyAgent & Checkpointable,
+    A: GPUOffPolicyAgent & Checkpointable & CPUEvaluableContinuous,
     L: Logger = NoOpLogger,
 ](
     mut agent: A,
@@ -59,6 +84,11 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     environment_name: String = "Environment",
     algorithm_name: String = "GPUAgentCPUEnv",
     reward_scale: Float64 = 1.0,
+    eval_env: UnsafePointer[E, MutAnyOrigin] = UnsafePointer[E, MutAnyOrigin](),
+    eval_every: Int = 0,
+    eval_episodes: Int = 5,
+    eval_max_steps: Int = 1000,
+    diag_every: Int = 0,
 ) raises -> TrainingMetrics:
     """Train a GPU off-policy agent against CPU-stepped environments.
 
@@ -79,6 +109,14 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
         algorithm_name: Used in the verbose status line.
         reward_scale: Multiplier applied to env rewards before storing in the
             replay buffer (matches `train_gpu` `reward_scale`).
+        eval_env: Optional separate env pointer used for periodic deterministic
+            eval. Null pointer disables eval regardless of eval_every.
+        eval_every: Run deterministic eval every N transitions (0 disables).
+        eval_episodes: Episodes per eval pass.
+        eval_max_steps: Hard cap per eval episode (default: 1000, matches
+            Gymnasium MuJoCo time-limit truncation).
+        diag_every: Forwarded to the agent so it logs critic_loss / mean_q /
+            mean_abs_action / alpha every N train steps. 0 disables.
 
     Returns:
         TrainingMetrics with per-episode statistics.
@@ -148,17 +186,37 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     var total_train_steps = 0
     var completed_episodes = 0
     var recent_reward_sum: Float64 = 0.0
+    var recent_length_sum: Int = 0
     var recent_episode_count = 0
     var last_avg_reward: Float64 = 0.0
+    var last_avg_length: Float64 = 0.0
+    var last_eval_reward: Float64 = 0.0
+    var last_eval_length: Float64 = 0.0
 
     var next_print = print_every
     var next_sync = sync_every
     var next_checkpoint = checkpoint_every if checkpoint_every > 0 else (
         num_steps + 1
     )
+    var has_eval_env = Bool(eval_env)
+    var next_eval = eval_every if (eval_every > 0 and has_eval_env) else (
+        num_steps + 1
+    )
 
     var grad_steps = gradient_steps if gradient_steps > 0 else n_envs
     var action_scale = agent.get_action_scale()
+    _ = diag_every  # forwarded by caller (`train_hybrid`) onto the agent.
+
+    # Progress bar cadence: ~20 ticks per print interval, but never more
+    # frequent than once per collection iteration.
+    var progress_interval = print_every // 20
+    if progress_interval < n_envs:
+        progress_interval = n_envs
+    var next_progress = progress_interval
+
+    # Wallclock for steps/sec.
+    var interval_start_steps = 0
+    var interval_start_ns = perf_counter_ns()
 
     # ------------------------------------------------------------------
     # Main loop
@@ -223,6 +281,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
                     0.0,
                 )
                 recent_reward_sum += per_env_reward[i]
+                recent_length_sum += per_env_steps[i]
                 recent_episode_count += 1
                 completed_episodes += 1
                 per_env_reward[i] = 0.0
@@ -279,7 +338,52 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
             agent.save_checkpoint(checkpoint_path)
             next_checkpoint += checkpoint_every
 
-        # 9. Periodic print + log.
+        # 9. Progress bar (no GPU sync, pure CPU counters).
+        if verbose and total_steps >= next_progress:
+            var interval_start = next_print - print_every
+            print_progress_bar(
+                total_steps - interval_start,
+                print_every,
+                total_train_steps,
+                algorithm_name,
+            )
+            next_progress += progress_interval
+
+        # 10. Periodic deterministic eval on the dedicated eval env.
+        # Uses the CPU mirror of weights (already kept fresh by the sync
+        # cadence above; we re-download for safety since SAC entropy noise
+        # makes the in-buffer reward a poor policy-quality signal).
+        if eval_every > 0 and has_eval_env and total_steps >= next_eval:
+            agent.download_from_gpu(gpu_state, ctx)
+            var eval_sum: Float64 = 0.0
+            var eval_len_sum: Int = 0
+            for _ in range(eval_episodes):
+                var obs_raw = eval_env[].reset_obs_list()
+                var obs_f64 = List[Float64](capacity=OBS_DIM)
+                for j in range(OBS_DIM):
+                    obs_f64.append(Float64(obs_raw[j]))
+                var ep_reward: Float64 = 0.0
+                var ep_len: Int = 0
+                var done = False
+                while (not done) and ep_len < eval_max_steps:
+                    var action = agent.select_greedy_action_obs(obs_f64)
+                    var action_dt = List[Scalar[E.dtype]](capacity=ACTION_DIM)
+                    for j in range(ACTION_DIM):
+                        action_dt.append(Scalar[E.dtype](action[j]))
+                    var result = eval_env[].step_continuous_vec(action_dt)
+                    ep_reward += Float64(result[1])
+                    ep_len += 1
+                    done = result[2]
+                    obs_f64 = List[Float64](capacity=OBS_DIM)
+                    for j in range(OBS_DIM):
+                        obs_f64.append(Float64(result[0][j]))
+                eval_sum += ep_reward
+                eval_len_sum += ep_len
+            last_eval_reward = eval_sum / Float64(eval_episodes)
+            last_eval_length = Float64(eval_len_sum) / Float64(eval_episodes)
+            next_eval += eval_every
+
+        # 11. Periodic print + log.
         if (
             verbose or (logger and logger[].is_active())
         ) and total_steps >= next_print:
@@ -287,11 +391,28 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
                 last_avg_reward = recent_reward_sum / Float64(
                     recent_episode_count
                 )
+                last_avg_length = Float64(recent_length_sum) / Float64(
+                    recent_episode_count
+                )
             recent_reward_sum = 0.0
+            recent_length_sum = 0
             recent_episode_count = 0
+
+            var now_ns = perf_counter_ns()
+            var dt_s = Float64(now_ns - interval_start_ns) / 1e9
+            var steps_per_sec = Float64(0.0)
+            if dt_s > 0.0:
+                steps_per_sec = Float64(
+                    total_steps - interval_start_steps
+                ) / dt_s
+            interval_start_ns = now_ns
+            interval_start_steps = total_steps
 
             if logger:
                 logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
+                logger[].log_scalar(
+                    "avg_episode_length", last_avg_length, total_steps
+                )
                 logger[].log_scalar(
                     "episodes", Float64(completed_episodes), total_steps
                 )
@@ -300,9 +421,20 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
                     Float64(total_train_steps),
                     total_steps,
                 )
+                logger[].log_scalar("steps_per_sec", steps_per_sec, total_steps)
+                if eval_every > 0 and has_eval_env:
+                    logger[].log_scalar(
+                        "eval_reward", last_eval_reward, total_steps
+                    )
+                    logger[].log_scalar(
+                        "eval_episode_length",
+                        last_eval_length,
+                        total_steps,
+                    )
 
             if verbose:
-                print(
+                clear_progress_bar()
+                var status_line = (
                     algorithm_name
                     + " | Step "
                     + String(total_steps)
@@ -312,9 +444,22 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
                     + String(completed_episodes)
                     + " | AvgR: "
                     + String(last_avg_reward)[byte=:7]
+                    + " | AvgLen: "
+                    + String(last_avg_length)[byte=:6]
                     + " | Train: "
                     + String(total_train_steps)
+                    + " | "
+                    + String(steps_per_sec)[byte=:6]
+                    + " sps"
                 )
+                if eval_every > 0 and has_eval_env:
+                    status_line += (
+                        " | EvalR: " + String(last_eval_reward)[byte=:7]
+                    )
+                    status_line += (
+                        " | EvalLen: " + String(last_eval_length)[byte=:6]
+                    )
+                print(status_line)
             next_print += print_every
 
     # ------------------------------------------------------------------
@@ -327,15 +472,24 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     if logger and logger[].is_active():
         logger[].log_scalar("avg_reward", last_avg_reward, total_steps)
         logger[].log_scalar(
+            "avg_episode_length", last_avg_length, total_steps
+        )
+        logger[].log_scalar(
             "episodes", Float64(completed_episodes), total_steps
         )
         logger[].log_scalar(
             "train_steps", Float64(total_train_steps), total_steps
         )
+        if eval_every > 0 and has_eval_env:
+            logger[].log_scalar("eval_reward", last_eval_reward, total_steps)
+            logger[].log_scalar(
+                "eval_episode_length", last_eval_length, total_steps
+            )
         logger[].flush()
 
     if verbose:
-        print(
+        clear_progress_bar()
+        var final_line = (
             algorithm_name
             + " | Step "
             + String(total_steps)
@@ -345,9 +499,16 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
             + String(completed_episodes)
             + " | AvgR: "
             + String(last_avg_reward)[byte=:7]
+            + " | AvgLen: "
+            + String(last_avg_length)[byte=:6]
             + " | Train: "
             + String(total_train_steps)
-            + " (final)"
         )
+        if eval_every > 0 and has_eval_env:
+            final_line += (
+                " | EvalR: " + String(last_eval_reward)[byte=:7]
+            )
+        final_line += " [DONE]"
+        print(final_line)
 
     return metrics^
