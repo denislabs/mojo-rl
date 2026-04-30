@@ -319,9 +319,17 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
             ctx.enqueue_copy(obs_buf, obs_host)
 
         # 6. Train if buffer is ready.
+        # NOTE: soft_update_targets_gpu MUST be called per train step. The
+        # native gpu_offpolicy_train loop captures it inside the CUDA graph
+        # (line 1108-1109) or calls it explicitly in the non-graph path
+        # (line 1126-1128). `do_gpu_train_step` only runs the gradient
+        # kernels — it does NOT update targets. Forgetting this freezes the
+        # target nets at init, which manifests as α collapse and a degenerate
+        # deterministic policy that fails in ~7 steps.
         if gpu_state.gpu_buffer_is_ready():
             for _ in range(grad_steps):
                 agent.do_gpu_train_step(ctx, gpu_state)
+                agent.soft_update_targets_gpu(ctx, gpu_state)
                 total_train_steps += 1
 
         total_steps += n_envs

@@ -3674,6 +3674,45 @@ def reduce_mean_loss_kernel[
 
 
 @always_inline
+def dynamics_mse_per_sample_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    PRED_DIM: Int,
+    OUT_DIM: Int = 2 * PRED_DIM,
+](
+    loss_per_sample: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    model_output: LayoutTensor[
+        dtype, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    target: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+):
+    """Per-sample mean squared error on the μ portion of the dynamics output.
+
+    Vanilla MBPO's dynamics output is [μ_0..μ_{P-1}, lv_0..lv_{P-1}]; this
+    kernel ignores the logvar half and computes
+        loss[b] = mean over d of (μ[b,d] - target[b,d])²
+
+    Pair with `reduce_mean_loss_kernel[dtype, BATCH]` for a single MSE
+    scalar averaged over (BATCH × PRED_DIM) — the same units as PCN-MBPO's
+    `dyn_holdout_mse_*` so the two agents can be plotted on one chart.
+
+    Grid: ceil(BATCH / TPB), block: TPB. One thread per sample.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+    var total = Scalar[dtype](0.0)
+    for d in range(PRED_DIM):
+        var mu = rebind[Scalar[dtype]](model_output[b, d])
+        var tgt = rebind[Scalar[dtype]](target[b, d])
+        var diff = mu - tgt
+        total += diff * diff
+    loss_per_sample[b] = total / Scalar[dtype](PRED_DIM)
+
+
+@always_inline
 def clamp_rewards_kernel[
     dtype: DType where dtype.is_floating_point(),
     BATCH: Int,
