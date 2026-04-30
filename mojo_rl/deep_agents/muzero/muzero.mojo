@@ -104,6 +104,7 @@ from .kernels import (
     sample_seq_with_targets_kernel,
     nstep_value_targets_kernel,
     scalar_transform_kernel,
+    to_play_from_episode_step_kernel,
 )
 
 
@@ -165,6 +166,10 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
     var _episode_rewards: List[Float64]
     var _episode_policies: List[InlineArray[Float64, Self.Config.action_dim]]
     var _episode_values: List[Float64]
+    # Per-step player-to-move (0 for single-player; 0/1 for two-player).
+    # Used for muzero-general-style sign flipping during n-step value
+    # target computation (replay_buffer.py:242-259).
+    var _episode_to_play: List[Int]
 
     # ══════════════════════════════════════════════════════════════════════
     # Constructors
@@ -214,6 +219,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             InlineArray[Float64, Self.Config.action_dim]
         ]()
         self._episode_values = List[Float64]()
+        self._episode_to_play = List[Int]()
 
     def __init__(out self, *, deinit take: Self):
         """Move constructor — transfer ownership of all fields."""
@@ -233,6 +239,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         self._episode_rewards = take._episode_rewards^
         self._episode_policies = take._episode_policies^
         self._episode_values = take._episode_values^
+        self._episode_to_play = take._episode_to_play^
 
     # ══════════════════════════════════════════════════════════════════════
     # Episode Management
@@ -245,6 +252,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         self._episode_rewards.clear()
         self._episode_policies.clear()
         self._episode_values.clear()
+        self._episode_to_play.clear()
 
     def store_transition(
         mut self,
@@ -254,6 +262,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         policy: InlineArray[Float64, Self.Config.action_dim],
         value: Float64,
         done: Bool,
+        to_play: Int = 0,
     ):
         """Store a transition with MCTS policy/value targets.
 
@@ -267,12 +276,17 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             policy: MCTS visit count policy.
             value: MCTS root value.
             done: Whether the episode ended.
+            to_play: Player to move at this step (0 for single-player envs;
+                0/1 for two-player turn-taking games). Used to sign-flip
+                bootstrap value and rewards during n-step target
+                computation in two-player games.
         """
         self._episode_obs.append(obs.copy())
         self._episode_actions.append(action)
         self._episode_rewards.append(reward)
         self._episode_policies.append(policy)
         self._episode_values.append(value)
+        self._episode_to_play.append(to_play)
 
         if done:
             self._flush_episode()
@@ -323,6 +337,9 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             self.state.mcts_values[buf_idx] = Scalar[dtype](
                 self._episode_values[t]
             )
+            self.state.mcts_to_play[buf_idx] = Scalar[DType.uint8](
+                self._episode_to_play[t]
+            )
 
         self.reset_episode()
 
@@ -334,6 +351,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         mut self,
         obs: List[Scalar[dtype]],
         training: Bool = True,
+        legal_mask: List[Bool] = List[Bool](),
     ) -> Tuple[Int, InlineArray[Float64, Self.Config.action_dim], Float64]:
         """Select an action using batched MCTS with the learned model.
 
@@ -343,6 +361,10 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         Args:
             obs: Current observation [obs_dim].
             training: If True, sample with temperature; if False, argmax.
+            legal_mask: Optional list of bools, length action_dim. When
+                provided, illegal actions are zeroed out of the root prior
+                and the action sampler. Default: empty (all actions
+                treated as legal — correct for envs without illegal moves).
 
         Returns:
             Tuple of (action_index, mcts_policy, root_value).
@@ -364,6 +386,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             self.v_min,
             self.v_max,
             add_noise=training,
+            legal_mask=legal_mask,
         )
 
         # Get root value from MCTS (value at root after search)
@@ -1661,6 +1684,11 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         var buf_val_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
         ](gpu.mcts_value_buf.unsafe_ptr())
+        var buf_tp_t = LayoutTensor[
+            DType.uint8,
+            Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+            MutAnyOrigin,
+        ](gpu.mcts_to_play_buf.unsafe_ptr())
 
         var b_obs_t = LayoutTensor[
             dtype, Layout.row_major(BATCH * (K + 1) * OBS), MutAnyOrigin
@@ -1686,6 +1714,9 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         ](
             gpu.value_targets_buf.unsafe_ptr()
         )  # reuse: overwritten by nstep kernel
+        var b_tp_t = LayoutTensor[
+            DType.uint8, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        ](gpu.batch_to_play_buf.unsafe_ptr())
 
         var buf_size_s = Scalar[DType.int32](gpu.replay.size)
         var buf_wptr_s = Scalar[DType.int32](gpu.replay.write_idx)
@@ -1720,6 +1751,11 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             bv: LayoutTensor[
                 dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
             ],
+            btp: LayoutTensor[
+                DType.uint8,
+                Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                MutAnyOrigin,
+            ],
             oo: LayoutTensor[
                 dtype, Layout.row_major(BATCH * (K + 1) * OBS), MutAnyOrigin
             ],
@@ -1734,13 +1770,20 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             ov: LayoutTensor[
                 dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
             ],
+            otp: LayoutTensor[
+                DType.uint8, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+            ],
             bsz: Scalar[DType.int32],
             bwi: Scalar[DType.int32],
             seed: Scalar[DType.uint32],
         ):
             sample_seq_with_targets_kernel[
                 BATCH, K, N_ENVS_GPU, PER_ENV_CAP, OBS, ACT, dtype
-            ](bo, ba, br, bd, bp, bv, oo, oa, orw, od, op, ov, bsz, bwi, seed)
+            ](
+                bo, ba, br, bd, bp, bv, btp,
+                oo, oa, orw, od, op, ov, otp,
+                bsz, bwi, seed,
+            )
 
         ctx.enqueue_function[sample_wrapper, sample_wrapper](
             buf_obs_t,
@@ -1749,12 +1792,14 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             buf_done_t,
             buf_pol_t,
             buf_val_t,
+            buf_tp_t,
             b_obs_t,
             b_act_t,
             b_rew_t,
             b_done_t,
             b_pol_t,
             b_val_t,
+            b_tp_t,
             buf_size_s,
             buf_wptr_s,
             sample_seed,
@@ -1788,20 +1833,25 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             bval: LayoutTensor[
                 dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
             ],
+            btp: LayoutTensor[
+                DType.uint8, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+            ],
             g: Scalar[dtype],
         ):
             nstep_value_targets_kernel[BATCH, K, N_TD, dtype](
-                vt, rt, brew, bdn, bval, g
+                vt, rt, brew, bdn, bval, btp, g
             )
 
         # b_val_t still holds raw MCTS values from sampling, used as bootstrap
         # b_rew_t holds raw rewards from sampling
+        # b_tp_t holds the per-step player-to-move stream (0 for single-player)
         ctx.enqueue_function[nstep_wrapper, nstep_wrapper](
             val_tgt_t,
             rew_tgt_t,
             b_rew_t,
             b_done_t,
             b_val_t,
+            b_tp_t,
             Scalar[dtype](self.gamma),
             grid_dim=(TARGET_BLOCKS,),
             block_dim=(TPB,),
@@ -2814,6 +2864,9 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             var mcts_val_in_t = LayoutTensor[
                 dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
             ](gpu.mcts_step_value_buf.unsafe_ptr())
+            var mcts_tp_in_t = LayoutTensor[
+                DType.uint8, Layout.row_major(Self.n_envs), MutAnyOrigin
+            ](gpu.mcts_step_to_play_buf.unsafe_ptr())
             var mcts_pol_buf_t = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.n_envs * PER_ENV_CAP * ACT),
@@ -2822,6 +2875,11 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             var mcts_val_buf_t = LayoutTensor[
                 dtype, Layout.row_major(Self.n_envs * PER_ENV_CAP), MutAnyOrigin
             ](gpu.mcts_value_buf.unsafe_ptr())
+            var mcts_tp_buf_t = LayoutTensor[
+                DType.uint8,
+                Layout.row_major(Self.n_envs * PER_ENV_CAP),
+                MutAnyOrigin,
+            ](gpu.mcts_to_play_buf.unsafe_ptr())
             var prev_write_idx = Scalar[DType.int32](
                 (gpu.replay.write_idx - 1 + PER_ENV_CAP) % PER_ENV_CAP
             )
@@ -2835,6 +2893,11 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 vi: LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                 ],
+                ti: LayoutTensor[
+                    DType.uint8,
+                    Layout.row_major(Self.n_envs),
+                    MutAnyOrigin,
+                ],
                 pb: LayoutTensor[
                     dtype,
                     Layout.row_major(Self.n_envs * PER_ENV_CAP * ACT),
@@ -2845,17 +2908,24 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     Layout.row_major(Self.n_envs * PER_ENV_CAP),
                     MutAnyOrigin,
                 ],
+                tb: LayoutTensor[
+                    DType.uint8,
+                    Layout.row_major(Self.n_envs * PER_ENV_CAP),
+                    MutAnyOrigin,
+                ],
                 widx: Scalar[DType.int32],
             ):
                 store_mcts_targets_kernel[Self.n_envs, PER_ENV_CAP, ACT, dtype](
-                    pi, vi, pb, vb, widx
+                    pi, vi, ti, pb, vb, tb, widx
                 )
 
             ctx.enqueue_function[store_targets_wrapper, store_targets_wrapper](
                 mcts_pol_in_t,
                 mcts_val_in_t,
+                mcts_tp_in_t,
                 mcts_pol_buf_t,
                 mcts_val_buf_t,
+                mcts_tp_buf_t,
                 prev_write_idx,
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
@@ -3539,13 +3609,38 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 # ── Store in GPU replay ──────────────────────────
                 gpu.replay.store(ctx, actions_buf, rewards_buf, terminated_buf)
 
-                # Store MCTS targets
+                # Compute per-env player-to-move from episode-step counter.
+                # ep_steps_buf still holds the step index of the move we
+                # just took (incrementing happens after the store).
+                # Assumes player 0 starts and players strictly alternate.
+                var ep_steps_for_tp = LayoutTensor[
+                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                ](ep_steps_buf.unsafe_ptr())
+                var step_tp_out = LayoutTensor[
+                    DType.uint8, Layout.row_major(Self.n_envs), MutAnyOrigin
+                ](gpu.mcts_step_to_play_buf.unsafe_ptr())
+                comptime run_to_play = to_play_from_episode_step_kernel[
+                    Self.n_envs, dtype
+                ]
+                ctx.enqueue_function[run_to_play, run_to_play](
+                    ep_steps_for_tp,
+                    step_tp_out,
+                    grid_dim=(ENV_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+                # Store MCTS targets (policies/values/to-play).
                 var mcts_pol_in = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs * ACT), MutAnyOrigin
                 ](gpu.mcts_step_policy_buf.unsafe_ptr())
                 var mcts_val_in = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                 ](gpu.mcts_step_value_buf.unsafe_ptr())
+                var mcts_tp_in = LayoutTensor[
+                    DType.uint8,
+                    Layout.row_major(Self.n_envs),
+                    MutAnyOrigin,
+                ](gpu.mcts_step_to_play_buf.unsafe_ptr())
                 gpu.mcts_step_value_buf.enqueue_fill(Scalar[dtype](0.0))
                 var mcts_pol_buf_t = LayoutTensor[
                     dtype,
@@ -3557,6 +3652,11 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     Layout.row_major(Self.n_envs * PER_ENV_CAP),
                     MutAnyOrigin,
                 ](gpu.mcts_value_buf.unsafe_ptr())
+                var mcts_tp_buf_t = LayoutTensor[
+                    DType.uint8,
+                    Layout.row_major(Self.n_envs * PER_ENV_CAP),
+                    MutAnyOrigin,
+                ](gpu.mcts_to_play_buf.unsafe_ptr())
                 var prev_widx = Scalar[DType.int32](
                     (gpu.replay.write_idx - 1 + PER_ENV_CAP) % PER_ENV_CAP
                 )
@@ -3570,6 +3670,11 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     vi: LayoutTensor[
                         dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
                     ],
+                    ti: LayoutTensor[
+                        DType.uint8,
+                        Layout.row_major(Self.n_envs),
+                        MutAnyOrigin,
+                    ],
                     pb: LayoutTensor[
                         dtype,
                         Layout.row_major(Self.n_envs * PER_ENV_CAP * ACT),
@@ -3580,17 +3685,24 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                         Layout.row_major(Self.n_envs * PER_ENV_CAP),
                         MutAnyOrigin,
                     ],
+                    tb: LayoutTensor[
+                        DType.uint8,
+                        Layout.row_major(Self.n_envs * PER_ENV_CAP),
+                        MutAnyOrigin,
+                    ],
                     w: Scalar[DType.int32],
                 ):
                     store_mcts_targets_kernel[
                         Self.n_envs, PER_ENV_CAP, ACT, dtype
-                    ](pi, vi, pb, vb, w)
+                    ](pi, vi, ti, pb, vb, tb, w)
 
                 ctx.enqueue_function[store_tgt_w, store_tgt_w](
                     mcts_pol_in,
                     mcts_val_in,
+                    mcts_tp_in,
                     mcts_pol_buf_t,
                     mcts_val_buf_t,
+                    mcts_tp_buf_t,
                     prev_widx,
                     grid_dim=(ENV_BLOCKS,),
                     block_dim=(TPB,),

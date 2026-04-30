@@ -85,6 +85,14 @@ struct MuZeroCPUState[
     ]  # [CAPACITY * ACT]
     var mcts_values: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [CAPACITY]
 
+    # Per-step player-to-move (UInt8). Used to sign-flip n-step bootstrap
+    # values and rewards in two-player games (muzero-general convention,
+    # replay_buffer.py:242-259). For single-player envs this stays 0 and
+    # the sign-flip is a no-op.
+    var mcts_to_play: UnsafePointer[
+        Scalar[DType.uint8], MutAnyOrigin
+    ]  # [CAPACITY]
+
     # ── Batch sampling scratch ───────────────────────────────────────────
     # For K-step unroll training, we sample positions and extract windows
     var _batch_obs: UnsafePointer[
@@ -102,6 +110,9 @@ struct MuZeroCPUState[
     ]  # [BATCH * (K+1) * ACT]
     var _batch_values: UnsafePointer[
         Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * (K+1)]
+    var _batch_to_play: UnsafePointer[
+        Scalar[DType.uint8], MutAnyOrigin
     ]  # [BATCH * (K+1)]
 
     # ── K-step unroll scratch ────────────────────────────────────────────
@@ -187,6 +198,9 @@ struct MuZeroCPUState[
         self.mcts_values = alloc[Scalar[dtype]](Self._CAP)
         memset(self.mcts_values, 0, Self._CAP)
 
+        self.mcts_to_play = alloc[Scalar[DType.uint8]](Self._CAP)
+        memset(self.mcts_to_play, 0, Self._CAP)
+
         # ── Batch scratch ────────────────────────────────────────────────
         comptime BATCH_OBS_SIZE = Self.BATCH * (Self.K + 1) * Self.OBS
         self._batch_obs = alloc[Scalar[dtype]](BATCH_OBS_SIZE)
@@ -210,6 +224,9 @@ struct MuZeroCPUState[
         comptime BATCH_VALUE_SIZE = Self.BATCH * (Self.K + 1)
         self._batch_values = alloc[Scalar[dtype]](BATCH_VALUE_SIZE)
         memset(self._batch_values, 0, BATCH_VALUE_SIZE)
+
+        self._batch_to_play = alloc[Scalar[DType.uint8]](BATCH_VALUE_SIZE)
+        memset(self._batch_to_play, 0, BATCH_VALUE_SIZE)
 
         # ── Unroll scratch ───────────────────────────────────────────────
         comptime HIDDEN_SIZE = (Self.K + 1) * Self.BATCH * Self.LATENT
@@ -282,12 +299,14 @@ struct MuZeroCPUState[
         self.buffer = take.buffer^
         self.mcts_policies = take.mcts_policies
         self.mcts_values = take.mcts_values
+        self.mcts_to_play = take.mcts_to_play
         self._batch_obs = take._batch_obs
         self._batch_actions = take._batch_actions
         self._batch_rewards = take._batch_rewards
         self._batch_dones = take._batch_dones
         self._batch_policies = take._batch_policies
         self._batch_values = take._batch_values
+        self._batch_to_play = take._batch_to_play
         self._hidden_states = take._hidden_states
         self._pred_outputs = take._pred_outputs
         self._dyn_reward_logits = take._dyn_reward_logits
@@ -307,12 +326,14 @@ struct MuZeroCPUState[
         """Free all heap-allocated buffers."""
         self.mcts_policies.free()
         self.mcts_values.free()
+        self.mcts_to_play.free()
         self._batch_obs.free()
         self._batch_actions.free()
         self._batch_rewards.free()
         self._batch_dones.free()
         self._batch_policies.free()
         self._batch_values.free()
+        self._batch_to_play.free()
         self._hidden_states.free()
         self._pred_outputs.free()
         self._dyn_reward_logits.free()
@@ -434,6 +455,9 @@ struct MuZeroCPUState[
                 # MCTS value targets (K+1 values)
                 self._batch_values[val_off + t] = self.mcts_values[idx]
 
+                # Per-step player-to-move (UInt8). Default 0 for single-player.
+                self._batch_to_play[val_off + t] = self.mcts_to_play[idx]
+
             # Copy K actions, rewards, dones
             for t in range(K):
                 var idx = (actual_start + t) % CAPACITY
@@ -456,8 +480,16 @@ struct MuZeroCPUState[
             # ── Compute n-step value targets for this sample ─────────
             # z_value(t+k) = sum_{i=0}^{min(n,T-t-k)-1} gamma^i * r_{t+k+i}
             #                + gamma^n * v_{t+k+n}  (if not terminal)
+            #
+            # Two-player sign flip: rewards and bootstrap are stored from
+            # the perspective of the player-to-move at each step. When the
+            # target's perspective player (mcts_to_play[base_idx]) differs
+            # from the step's perspective, we negate. For single-player
+            # envs (mcts_to_play all zeros) the sign flip is a no-op.
+            # Reference: muzero-general/replay_buffer.py:242-259.
             for k in range(K + 1):
                 var base_idx = (actual_start + k) % CAPACITY
+                var perspective = self.mcts_to_play[base_idx]
 
                 var n_step_return = Float64(0.0)
                 var gamma_power = Float64(1.0)
@@ -473,9 +505,10 @@ struct MuZeroCPUState[
                     if step_age >= self.buffer.size:
                         break
 
-                    n_step_return += gamma_power * Float64(
-                        self.buffer.rewards[step_idx]
-                    )
+                    var reward = Float64(self.buffer.rewards[step_idx])
+                    if self.mcts_to_play[step_idx] != perspective:
+                        reward = -reward
+                    n_step_return += gamma_power * reward
                     gamma_power *= gamma
                     steps_used += 1
 
@@ -491,9 +524,10 @@ struct MuZeroCPUState[
                         self.buffer.ptr - bootstrap_idx - 1 + CAPACITY
                     ) % CAPACITY
                     if boot_age < self.buffer.size:
-                        n_step_return += gamma_power * Float64(
-                            self.mcts_values[bootstrap_idx]
-                        )
+                        var boot_v = Float64(self.mcts_values[bootstrap_idx])
+                        if self.mcts_to_play[bootstrap_idx] != perspective:
+                            boot_v = -boot_v
+                        n_step_return += gamma_power * boot_v
 
                 self._value_targets[k * BATCH + b] = Scalar[dtype](
                     n_step_return
@@ -525,6 +559,7 @@ struct MuZeroCPUState[
                 )
             for i in range(K + 1):
                 self._batch_values[b * (K + 1) + i] = Scalar[dtype](0.0)
+                self._batch_to_play[b * (K + 1) + i] = Scalar[DType.uint8](0)
                 self._value_targets[i * BATCH + b] = Scalar[dtype](0.0)
             for i in range(K):
                 self._reward_targets[i * BATCH + b] = Scalar[dtype](0.0)
@@ -574,19 +609,27 @@ struct MuZeroGPUState[
     # ── MCTS Target Buffers (parallel to replay, same per-env layout) ─
     var mcts_policy_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP * ACT]
     var mcts_value_buf: DeviceBuffer[dtype]  # [N_ENVS * PER_ENV_CAP]
+    var mcts_to_play_buf: DeviceBuffer[
+        DType.uint8
+    ]  # [N_ENVS * PER_ENV_CAP]
 
     # Per-step MCTS target staging buffers (for CPU→GPU upload per step)
     var mcts_step_policy_buf: DeviceBuffer[dtype]  # [N_ENVS * ACT]
     var mcts_step_value_buf: DeviceBuffer[dtype]  # [N_ENVS]
+    var mcts_step_to_play_buf: DeviceBuffer[DType.uint8]  # [N_ENVS]
 
     # Host buffers for uploading MCTS targets from CPU
     var mcts_policy_host: HostBuffer[dtype]  # [N_ENVS * ACT]
     var mcts_value_host: HostBuffer[dtype]  # [N_ENVS]
+    var mcts_to_play_host: HostBuffer[DType.uint8]  # [N_ENVS]
 
     # ── Batch data (sampled on GPU) ──────────────────────────────────
     var batch_obs_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * OBS]
     var batch_actions_buf: DeviceBuffer[dtype]  # [BATCH * K * ACT]
     var batch_policies_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * ACT]
+    var batch_to_play_buf: DeviceBuffer[
+        DType.uint8
+    ]  # [BATCH * (K+1)]
 
     # ── Value/Reward target scratch ──────────────────────────────────
     var value_targets_buf: DeviceBuffer[
@@ -660,18 +703,29 @@ struct MuZeroGPUState[
         self.mcts_value_buf = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * Self.PER_ENV_CAP
         )
+        self.mcts_to_play_buf = ctx.enqueue_create_buffer[DType.uint8](
+            Self.N_ENVS * Self.PER_ENV_CAP
+        )
         ctx.enqueue_memset(self.mcts_policy_buf, 0)
         ctx.enqueue_memset(self.mcts_value_buf, 0)
+        ctx.enqueue_memset(self.mcts_to_play_buf, UInt8(0))
 
         self.mcts_step_policy_buf = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * Self.ACT
         )
         self.mcts_step_value_buf = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
+        self.mcts_step_to_play_buf = ctx.enqueue_create_buffer[DType.uint8](
+            Self.N_ENVS
+        )
+        ctx.enqueue_memset(self.mcts_step_to_play_buf, UInt8(0))
 
         self.mcts_policy_host = ctx.enqueue_create_host_buffer[dtype](
             Self.N_ENVS * Self.ACT
         )
         self.mcts_value_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.N_ENVS
+        )
+        self.mcts_to_play_host = ctx.enqueue_create_host_buffer[DType.uint8](
             Self.N_ENVS
         )
 
@@ -684,6 +738,9 @@ struct MuZeroGPUState[
         )
         self.batch_policies_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * (Self.K + 1) * Self.ACT
+        )
+        self.batch_to_play_buf = ctx.enqueue_create_buffer[DType.uint8](
+            Self.BATCH * (Self.K + 1)
         )
 
         # ── Targets ──────────────────────────────────────────────────
@@ -785,13 +842,17 @@ struct MuZeroGPUState[
         self.replay = take.replay^
         self.mcts_policy_buf = take.mcts_policy_buf^
         self.mcts_value_buf = take.mcts_value_buf^
+        self.mcts_to_play_buf = take.mcts_to_play_buf^
         self.mcts_step_policy_buf = take.mcts_step_policy_buf^
         self.mcts_step_value_buf = take.mcts_step_value_buf^
+        self.mcts_step_to_play_buf = take.mcts_step_to_play_buf^
         self.mcts_policy_host = take.mcts_policy_host^
         self.mcts_value_host = take.mcts_value_host^
+        self.mcts_to_play_host = take.mcts_to_play_host^
         self.batch_obs_buf = take.batch_obs_buf^
         self.batch_actions_buf = take.batch_actions_buf^
         self.batch_policies_buf = take.batch_policies_buf^
+        self.batch_to_play_buf = take.batch_to_play_buf^
         self.value_targets_buf = take.value_targets_buf^
         self.reward_targets_buf = take.reward_targets_buf^
         self.value_target_dist_buf = take.value_target_dist_buf^

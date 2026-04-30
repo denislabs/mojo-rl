@@ -41,7 +41,7 @@ from mojo_rl.nn.optimizer.adam import Adam
 from .pc_block import PCBlock
 from .pc_sequential import PCSequential
 from .pc_trainer import PCTrainer
-from .predictive_model import PCTanh, PCIdentity
+from .predictive_model import PCSwish, PCIdentity
 from .pc_utils import clip_grad_norm
 
 
@@ -67,14 +67,15 @@ struct PCDynamics[
     comptime READOUT: Int = Self.OBS_DIM + 1
 
     # 5-block chain mirroring vanilla MBPO depth: 4 hidden + 1 readout.
-    # All hidden blocks tanh. Readout PCIdentity for unbounded targets
-    # (HalfCheetah rewards ∈ [-15, +20], per-step delta_obs can hit ±2 on
-    # velocity dims). Caller pre-normalizes the dynamics input via the GPU
-    # instance's `fit_scaler_gpu` so BLOCK0's tanh stays in its linear regime.
-    comptime BLOCK0 = PCBlock[Self.AUG_DIM, Self.HIDDEN_DIM, PCTanh]
-    comptime BLOCK1 = PCBlock[Self.HIDDEN_DIM, Self.HIDDEN_DIM, PCTanh]
-    comptime BLOCK2 = PCBlock[Self.HIDDEN_DIM, Self.HIDDEN_DIM, PCTanh]
-    comptime BLOCK3 = PCBlock[Self.HIDDEN_DIM, Self.HIDDEN_DIM, PCTanh]
+    # Hidden blocks use PCSwish (= SiLU) — same activation vanilla MBPO uses
+    # for its 4-LinearSwish dynamics ensemble. Readout PCIdentity for
+    # unbounded targets (HalfCheetah rewards ∈ [-15, +20], per-step
+    # delta_obs can hit ±2 on velocity dims). Caller pre-normalizes the
+    # dynamics input via the GPU instance's `fit_scaler_gpu`.
+    comptime BLOCK0 = PCBlock[Self.AUG_DIM, Self.HIDDEN_DIM, PCSwish]
+    comptime BLOCK1 = PCBlock[Self.HIDDEN_DIM, Self.HIDDEN_DIM, PCSwish]
+    comptime BLOCK2 = PCBlock[Self.HIDDEN_DIM, Self.HIDDEN_DIM, PCSwish]
+    comptime BLOCK3 = PCBlock[Self.HIDDEN_DIM, Self.HIDDEN_DIM, PCSwish]
     comptime BLOCK4 = PCBlock[Self.HIDDEN_DIM, Self.READOUT, PCIdentity]
     comptime NET = PCSequential[
         Self.BLOCK0, Self.BLOCK1, Self.BLOCK2, Self.BLOCK3, Self.BLOCK4

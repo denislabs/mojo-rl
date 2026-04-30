@@ -415,6 +415,7 @@ struct MCTS[
         v_min: Float64,
         v_max: Float64,
         add_noise: Bool = True,
+        legal_mask: List[Bool] = List[Bool](),
     ) -> InlineArray[Float64, Self.ACTION_DIM]:
         """Run batched MCTS — select BATCH_SIMS leaves per round, expand in one forward call.
 
@@ -500,6 +501,29 @@ struct MCTS[
             root.prior[a] = policy_logits_ptr[a] / sum_exp
 
         pred_out_ptr.free()
+
+        # Apply legal action mask to root prior (same logic as search()).
+        # Internal MCTS expansions are intentionally not masked: muzero-general
+        # also leaves them to the dynamics network.
+        if len(legal_mask) == Self.ACTION_DIM:
+            var mask_sum = Float64(0.0)
+            for a in range(Self.ACTION_DIM):
+                if not legal_mask[a]:
+                    root.prior[a] = Float64(0.0)
+                else:
+                    mask_sum += root.prior[a]
+            if mask_sum > 0.0:
+                for a in range(Self.ACTION_DIM):
+                    root.prior[a] /= mask_sum
+            else:
+                var legal_count = Float64(0.0)
+                for a in range(Self.ACTION_DIM):
+                    if legal_mask[a]:
+                        legal_count += 1.0
+                if legal_count > 0.0:
+                    for a in range(Self.ACTION_DIM):
+                        if legal_mask[a]:
+                            root.prior[a] = 1.0 / legal_count
 
         # Dirichlet noise
         if add_noise:

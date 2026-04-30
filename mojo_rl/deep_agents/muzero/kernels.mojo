@@ -451,17 +451,45 @@ def set_hidden_grad_for_dyn_kernel[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def to_play_from_episode_step_kernel[
+    N_ENVS: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    ep_steps: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    to_play_out: LayoutTensor[
+        DType.uint8, Layout.row_major(N_ENVS), MutAnyOrigin
+    ],
+):
+    """Compute per-env player-to-move from per-env episode-step counter.
+
+    Assumes player 0 starts after each reset and players strictly alternate
+    (the standard convention for two-player turn-based games like TicTacToe
+    and Connect Four). One thread per env. ep_steps[e] is the count of
+    transitions stored in the current episode for env e (so ep_steps=0 on
+    the first move). to_play_out[e] = ep_steps[e] mod 2.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var s = Int(rebind[Scalar[dtype]](ep_steps[e]))
+    to_play_out[e] = UInt8(s & 1)
+
+
 def store_mcts_targets_kernel[
     N_ENVS: Int,
     PER_ENV_CAP: Int,
     ACT: Int,
     dtype: DType where dtype.is_floating_point(),
 ](
-    # Input: MCTS policies/values for this step (from CPU)
+    # Input: MCTS policies/values/to-play for this step (from CPU)
     policies_in: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
     ],
     values_in: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    to_play_in: LayoutTensor[
+        DType.uint8, Layout.row_major(N_ENVS), MutAnyOrigin
+    ],
     # Output: per-env circular buffers
     policy_buf: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PER_ENV_CAP * ACT), MutAnyOrigin
@@ -469,11 +497,15 @@ def store_mcts_targets_kernel[
     value_buf: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
     ],
+    to_play_buf: LayoutTensor[
+        DType.uint8, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
     write_idx: Scalar[DType.int32],
 ):
-    """Store MCTS policy/value targets into per-env circular buffer.
+    """Store MCTS policy/value/to-play targets into per-env circular buffer.
 
-    One thread per env. Writes at the same write_idx used by GPUSequenceReplayBuffer.
+    One thread per env. Writes at the same write_idx used by
+    GPUSequenceReplayBuffer.
     """
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
@@ -487,8 +519,9 @@ def store_mcts_targets_kernel[
     for a in range(ACT):
         policy_buf[pol_base + a] = policies_in[pol_src + a]
 
-    # Store value [1 scalar]
+    # Store value + player-to-move [1 scalar each]
     value_buf[e * PER_ENV_CAP + w] = values_in[e]
+    to_play_buf[e * PER_ENV_CAP + w] = to_play_in[e]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -525,6 +558,9 @@ def sample_seq_with_targets_kernel[
     buf_values: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
     ],
+    buf_to_play: LayoutTensor[
+        DType.uint8, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
     # Output batch buffers
     batch_obs: LayoutTensor[
         dtype, Layout.row_major(BATCH * (H + 1) * OBS_DIM), MutAnyOrigin
@@ -541,6 +577,9 @@ def sample_seq_with_targets_kernel[
     ],
     batch_values: LayoutTensor[
         dtype, Layout.row_major(BATCH * (H + 1)), MutAnyOrigin
+    ],
+    batch_to_play: LayoutTensor[
+        DType.uint8, Layout.row_major(BATCH * (H + 1)), MutAnyOrigin
     ],
     # Buffer state
     buf_size: Scalar[DType.int32],
@@ -619,6 +658,12 @@ def sample_seq_with_targets_kernel[
             env_idx * PER_ENV_CAP + buf_idx
         ]
 
+        # Player-to-move (UInt8). Used by nstep_value_targets_kernel for
+        # two-player sign flipping; default 0 for single-player envs.
+        batch_to_play[val_out_base + t] = buf_to_play[
+            env_idx * PER_ENV_CAP + buf_idx
+        ]
+
     # H steps: actions, rewards, dones
     for t in range(H):
         var buf_idx = (start + t) % PER_ENV_CAP
@@ -659,6 +704,9 @@ def nstep_value_targets_kernel[
     batch_values: LayoutTensor[
         dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
     ],
+    batch_to_play: LayoutTensor[
+        DType.uint8, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+    ],
     gamma: Scalar[dtype],
 ):
     """Compute n-step bootstrapped value targets and reward targets.
@@ -666,6 +714,13 @@ def nstep_value_targets_kernel[
     One thread per (batch, k) pair. Total threads: BATCH * (K+1).
     Value targets use n-step bootstrap with MCTS root values.
     Reward targets are just the raw rewards.
+
+    Two-player sign flip: rewards and the bootstrap value are stored from
+    the perspective of the player-to-move at each step. When the target's
+    perspective player (batch_to_play[b * (K+1) + k]) differs from the
+    step's perspective, we negate. For single-player envs (batch_to_play
+    all zeros) this is a no-op. Reference: muzero-general
+    /replay_buffer.py:242-259.
     """
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * (K + 1):
@@ -673,6 +728,9 @@ def nstep_value_targets_kernel[
 
     var b = idx % BATCH
     var k = idx // BATCH
+    var perspective = rebind[Scalar[DType.uint8]](
+        batch_to_play[b * (K + 1) + k]
+    )
 
     # Value target: n-step bootstrapped return
     var n_step_return = Scalar[dtype](0.0)
@@ -685,6 +743,11 @@ def nstep_value_targets_kernel[
         if step_k >= K:
             break
         var rew = rebind[Scalar[dtype]](batch_rewards[b * K + step_k])
+        var step_player = rebind[Scalar[DType.uint8]](
+            batch_to_play[b * (K + 1) + step_k]
+        )
+        if step_player != perspective:
+            rew = -rew
         n_step_return += gamma_power * rew
         gamma_power *= gamma
         steps_used += 1
@@ -699,13 +762,21 @@ def nstep_value_targets_kernel[
     if not hit_terminal and steps_used == N:
         var boot_k = k + N
         if boot_k <= K:
-            n_step_return += gamma_power * rebind[Scalar[dtype]](
+            var boot_v = rebind[Scalar[dtype]](
                 batch_values[b * (K + 1) + boot_k]
             )
+            var boot_player = rebind[Scalar[DType.uint8]](
+                batch_to_play[b * (K + 1) + boot_k]
+            )
+            if boot_player != perspective:
+                boot_v = -boot_v
+            n_step_return += gamma_power * boot_v
 
     value_targets[k * BATCH + b] = n_step_return
 
-    # Reward target (only for k < K)
+    # Reward target (only for k < K). Reward target is in the perspective
+    # of the step's player (it's the "predicted reward" the dynamics net
+    # should output for that transition); no sign flip here.
     if k < K:
         reward_targets[k * BATCH + b] = batch_rewards[b * K + k]
 
