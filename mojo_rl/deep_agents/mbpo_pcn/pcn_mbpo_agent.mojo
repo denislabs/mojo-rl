@@ -514,6 +514,16 @@ struct PCNMBPOAgent[
     var use_ere: Bool
     var ere_eta: Float32
 
+    # PCN dynamics training schedule. The agent fork originally only ran ONE
+    # minibatch per ensemble member per `train_dynamics_gpu` call, vs vanilla
+    # MBPO's "train until holdout stops improving" loop (~hundreds of
+    # minibatches per call). That under-trained dynamics was the dominant
+    # reason synth rollouts were noisy on HalfCheetah. These two knobs set
+    # the per-call budget and the warmup-bootstrap budget respectively.
+    var dyn_train_minibatches_per_call: Int
+    var dyn_warmup_minibatches: Int
+    var _dyn_pretrained: Bool  # one-shot guard for warmup pretrain.
+
     # Checkpointing
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -542,6 +552,8 @@ struct PCNMBPOAgent[
         max_grad_norm: Float64 = 0.0,  # Opt-in; reference MBPO uses no clipping
         use_ere: Bool = False,
         ere_eta: Float32 = Float32(0.996),
+        dyn_train_minibatches_per_call: Int = 50,
+        dyn_warmup_minibatches: Int = 500,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
         diag_every: Int = 0,
@@ -598,6 +610,10 @@ struct PCNMBPOAgent[
         self.max_grad_norm = max_grad_norm
         self.use_ere = use_ere
         self.ere_eta = ere_eta
+
+        self.dyn_train_minibatches_per_call = dyn_train_minibatches_per_call
+        self.dyn_warmup_minibatches = dyn_warmup_minibatches
+        self._dyn_pretrained = False
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
@@ -1215,16 +1231,27 @@ struct PCNMBPOAgent[
         gpu_buffer: GPUReplayBuffer[
             Self.GPU_BUF_CAP, Self.Config.obs_dim, Self.Config.action_dim
         ],
+        n_minibatches: Int = -1,
     ) raises:
         """Train PCN dynamics ensemble on GPU.
 
         Mirrors vanilla MBPO's `gpu_dynamics.train_on_buffer[CAP](ctx, ...)`
-        but uses the PCN training procedure: sample a minibatch into the
+        but uses the PCN training procedure: per minibatch, sample into the
         instance's `s_*` staging buffers, build `(s_a, target=(delta_obs,
         reward))` on device, then call `train_one_minibatch(ctx, m)` per
-        ensemble member. Refresh elite indices from a fresh holdout batch
-        at the end.
+        ensemble member. Repeats for `n_minibatches` iterations to give
+        the local PC weight rule enough gradient steps to actually fit
+        (vanilla MBPO does ~hundreds per call). Refresh elite indices
+        from a fresh holdout batch at the end.
+
+        `n_minibatches=-1` (default) uses `self.dyn_train_minibatches_per_call`.
         """
+        var n_iters = (
+            n_minibatches if n_minibatches >= 0
+            else self.dyn_train_minibatches_per_call
+        )
+        if n_iters <= 0:
+            return
         comptime DB = Self.Config.DYN_BATCH
         comptime DYN_IN = Self.Config.obs_dim + Self.Config.action_dim
         comptime READOUT = Self.Config.obs_dim + 1
@@ -1261,74 +1288,86 @@ struct PCNMBPOAgent[
         ]
         comptime norm_k = normalize_input_kernel[dtype, DB, DYN_IN]
 
-        # ── Per-member training pass ───────────────────────────────────────
-        for m in range(Self.Config.ENSEMBLE_SIZE):
-            # 1. Sample DB transitions from gpu_buffer into s_obs/s_act/...
-            gpu_buffer.sample[DB](
-                ctx,
-                gpu_dynamics.r_elite_rng,
-                gpu_dynamics.s_obs,
-                gpu_dynamics.s_act,
-                gpu_dynamics.s_rew,
-                gpu_dynamics.s_nobs,
-                gpu_dynamics.s_done,
-                gpu_dynamics.s_idx,
-            )
+        # ── Per-iter, per-member training pass ─────────────────────────────
+        # Outer loop = `n_iters` minibatches; inner = ensemble members.
+        # This is the key fix for the cold-start: vanilla MBPO trains
+        # dynamics until holdout converges (~hundreds of minibatches per
+        # call), whereas the original fork did one. Without this loop the
+        # local PC weight rule produces ~MSE 30 at env step 60K vs vanilla
+        # ~MSE 0.3, and SAC trains on garbage synth rollouts.
+        for batch_iter in range(n_iters):
+            # Bump RNG so each outer iteration draws a fresh minibatch.
+            ctx.enqueue_function[
+                increment_rng_counter_kernel, increment_rng_counter_kernel
+            ](dyn_rng_t, grid_dim=(1,), block_dim=(1,))
 
-            # 2. Build s_a_dbuf = concat(s_obs, s_act).
-            var s_obs_t = LayoutTensor[
-                dtype,
-                Layout.row_major(DB, Self.Config.obs_dim),
-                MutAnyOrigin,
-            ](gpu_dynamics.s_obs.unsafe_ptr())
-            var s_act_t = LayoutTensor[
-                dtype,
-                Layout.row_major(DB, Self.Config.action_dim),
-                MutAnyOrigin,
-            ](gpu_dynamics.s_act.unsafe_ptr())
-            var s_a_t = LayoutTensor[
-                dtype, Layout.row_major(DB, DYN_IN), MutAnyOrigin
-            ](gpu_dynamics.s_a_dbuf.unsafe_ptr())
-            ctx.enqueue_function[concat_k, concat_k](
-                s_a_t, s_obs_t, s_act_t,
-                grid_dim=(DB_IN_BLOCKS,),
-                block_dim=(TPB_VAL,),
-            )
-            # 2b. Normalize s_a using the just-fitted scaler so the PCN
-            # forward operates on roughly-unit-scale inputs.
-            var mean_t = LayoutTensor[
-                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
-            ](gpu_dynamics.input_mean.unsafe_ptr())
-            var std_t = LayoutTensor[
-                dtype, Layout.row_major(DYN_IN), MutAnyOrigin
-            ](gpu_dynamics.input_std.unsafe_ptr())
-            ctx.enqueue_function[norm_k, norm_k](
-                s_a_t, mean_t, std_t,
-                grid_dim=(DB_IN_BLOCKS,),
-                block_dim=(TPB_VAL,),
-            )
+            for m in range(Self.Config.ENSEMBLE_SIZE):
+                # 1. Sample DB transitions from gpu_buffer into s_obs/s_act/...
+                gpu_buffer.sample[DB](
+                    ctx,
+                    gpu_dynamics.r_elite_rng,
+                    gpu_dynamics.s_obs,
+                    gpu_dynamics.s_act,
+                    gpu_dynamics.s_rew,
+                    gpu_dynamics.s_nobs,
+                    gpu_dynamics.s_done,
+                    gpu_dynamics.s_idx,
+                )
 
-            # 3. Build target = (delta_obs, reward) (raw — unnormalized;
-            # PCIdentity readout outputs the same scale).
-            var s_nobs_t = LayoutTensor[
-                dtype,
-                Layout.row_major(DB, Self.Config.obs_dim),
-                MutAnyOrigin,
-            ](gpu_dynamics.s_nobs.unsafe_ptr())
-            var s_rew_t = LayoutTensor[
-                dtype, Layout.row_major(DB), MutAnyOrigin
-            ](gpu_dynamics.s_rew.unsafe_ptr())
-            var target_t = LayoutTensor[
-                dtype, Layout.row_major(DB, READOUT), MutAnyOrigin
-            ](gpu_dynamics.target_dbuf.unsafe_ptr())
-            ctx.enqueue_function[build_target_k, build_target_k](
-                target_t, s_obs_t, s_nobs_t, s_rew_t,
-                grid_dim=(DB_OUT_BLOCKS,),
-                block_dim=(TPB_VAL,),
-            )
+                # 2. Build s_a_dbuf = concat(s_obs, s_act).
+                var s_obs_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(DB, Self.Config.obs_dim),
+                    MutAnyOrigin,
+                ](gpu_dynamics.s_obs.unsafe_ptr())
+                var s_act_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(DB, Self.Config.action_dim),
+                    MutAnyOrigin,
+                ](gpu_dynamics.s_act.unsafe_ptr())
+                var s_a_t = LayoutTensor[
+                    dtype, Layout.row_major(DB, DYN_IN), MutAnyOrigin
+                ](gpu_dynamics.s_a_dbuf.unsafe_ptr())
+                ctx.enqueue_function[concat_k, concat_k](
+                    s_a_t, s_obs_t, s_act_t,
+                    grid_dim=(DB_IN_BLOCKS,),
+                    block_dim=(TPB_VAL,),
+                )
+                # 2b. Normalize s_a using the just-fitted scaler so the PCN
+                # forward operates on roughly-unit-scale inputs.
+                var mean_t = LayoutTensor[
+                    dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+                ](gpu_dynamics.input_mean.unsafe_ptr())
+                var std_t = LayoutTensor[
+                    dtype, Layout.row_major(DYN_IN), MutAnyOrigin
+                ](gpu_dynamics.input_std.unsafe_ptr())
+                ctx.enqueue_function[norm_k, norm_k](
+                    s_a_t, mean_t, std_t,
+                    grid_dim=(DB_IN_BLOCKS,),
+                    block_dim=(TPB_VAL,),
+                )
 
-            # 4. SGLD inference + PC weight grads + Adam step on member m.
-            gpu_dynamics.train_one_minibatch(ctx, m)
+                # 3. Build target = (delta_obs, reward) (raw — unnormalized;
+                # PCIdentity readout outputs the same scale).
+                var s_nobs_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(DB, Self.Config.obs_dim),
+                    MutAnyOrigin,
+                ](gpu_dynamics.s_nobs.unsafe_ptr())
+                var s_rew_t = LayoutTensor[
+                    dtype, Layout.row_major(DB), MutAnyOrigin
+                ](gpu_dynamics.s_rew.unsafe_ptr())
+                var target_t = LayoutTensor[
+                    dtype, Layout.row_major(DB, READOUT), MutAnyOrigin
+                ](gpu_dynamics.target_dbuf.unsafe_ptr())
+                ctx.enqueue_function[build_target_k, build_target_k](
+                    target_t, s_obs_t, s_nobs_t, s_rew_t,
+                    grid_dim=(DB_OUT_BLOCKS,),
+                    block_dim=(TPB_VAL,),
+                )
+
+                # 4. SGLD inference + PC weight grads + Adam step on member m.
+                gpu_dynamics.train_one_minibatch(ctx, m)
 
         # ── Refresh elite indices from a fresh holdout batch ───────────────
         gpu_buffer.sample[DB](
@@ -2918,9 +2957,38 @@ struct PCNMBPOAgent[
             total_steps += n_envs
             step_seed += 1
 
+            # ── One-shot pretrain right after warmup completes ──────────────
+            # Hammers the dynamics on the warmup buffer with many minibatches
+            # before SAC starts using synth rollouts. Without this, MSE at
+            # env step 5K is still ~30+ and the first ~10K env steps of
+            # synth rollouts are noise that SAC overfits to. With the
+            # pretrain, MSE starts the post-warmup phase already in single
+            # digits so synth data is useful from the first SAC update.
+            if (
+                not self._dyn_pretrained
+                and total_steps >= warmup_steps
+                and gpu_state.buffer.is_ready[Self.Config.DYN_BATCH]()
+            ):
+                if verbose:
+                    print(
+                        "[PCN-MBPO] Warmup complete (",
+                        total_steps,
+                        " env steps); pretraining dynamics for ",
+                        self.dyn_warmup_minibatches,
+                        " minibatches/member ...",
+                    )
+                self.train_dynamics_gpu(
+                    ctx, gpu_dynamics, gpu_state.buffer,
+                    n_minibatches=self.dyn_warmup_minibatches,
+                )
+                self._dyn_pretrained = True
+                if verbose:
+                    print("[PCN-MBPO] Dynamics pretrain done.")
+
             if total_steps >= next_model_train and total_steps >= warmup_steps:
                 # PCN equivalent of vanilla `gpu_dynamics.train_on_buffer`.
-                # Fits scaler → trains each member → refreshes elites.
+                # Fits scaler → trains each member (× n_minibatches) →
+                # refreshes elites.
                 self.train_dynamics_gpu(ctx, gpu_dynamics, gpu_state.buffer)
                 self.update_rollout_length(epoch)
                 epoch += 1

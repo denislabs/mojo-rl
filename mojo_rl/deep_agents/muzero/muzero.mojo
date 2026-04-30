@@ -3078,6 +3078,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         E: GPUTwoPlayerDiscreteEnv,
         GPUEval: GPUEvaluator = RandomOpponent,
         GPUEval2: GPUEvaluator = RandomOpponent,
+        temp_threshold: Int = 15,
     ](
         mut self,
         ctx: DeviceContext,
@@ -3091,7 +3092,6 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         do_arena: Bool = False,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "muzero.ckpt",
-        temp_threshold: Int = 15,
     ) raises -> TrainingMetrics:
         """Train MuZero via GPU self-play with batch-then-train loop.
 
@@ -3119,7 +3119,11 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             do_arena: Whether to run arena comparison (new vs best).
             checkpoint_every: Save checkpoint every N iterations (0=off).
             checkpoint_path: Path for checkpoint files.
+
+        Compile-time parameters:
             temp_threshold: Use temp=1 for first N moves, then argmax.
+                Comptime so it can be passed directly to GPU kernels
+                (Mojo's GPU enqueue does not accept runtime Int args).
 
         Returns:
             TrainingMetrics with game statistics.
@@ -3560,14 +3564,16 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     comptime run_act_temp = gpu_mcts_extract_actions_temp_kernel[
                         Self.n_envs, MAX_NODES, ACT, dtype
                     ]
+                    comptime _temp_thr = temp_threshold
                     ctx.enqueue_function[run_act_temp, run_act_temp](
                         vc_t,
                         lm_t,
                         ep_steps_t,
                         act_out,
                         pol_out,
-                        temp_threshold,
+                        _temp_thr,
                         Scalar[DType.uint32](UInt32(total_steps + iter_steps)),
+                        Scalar[dtype](0.0),
                         grid_dim=(ENV_BLOCKS,),
                         block_dim=(TPB,),
                     )
