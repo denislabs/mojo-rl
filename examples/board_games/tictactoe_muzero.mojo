@@ -35,7 +35,9 @@ def main() raises:
 
     var agent = GenericMuZeroAgent[Config, 64]()
 
-    _ = agent.train_selfplay_gpu[TTT, RandomOpponent, GPUMinimaxTicTacToe](
+    _ = agent.train_selfplay_gpu[
+        TTT, RandomOpponent, GPUMinimaxTicTacToe, 15
+    ](
         ctx,
         num_iters=100,
         steps_per_iter=1000,
@@ -47,7 +49,6 @@ def main() raises:
         do_arena=True,
         checkpoint_every=10,
         checkpoint_path="tictactoe_muzero.ckpt",
-        temp_threshold=15,
     )
 
     print()

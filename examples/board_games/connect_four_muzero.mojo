@@ -35,7 +35,9 @@ def main() raises:
 
     var agent = GenericMuZeroAgent[Config, 64]()
 
-    _ = agent.train_selfplay_gpu[C4, GPUMinimaxConnectFour[5]](
+    _ = agent.train_selfplay_gpu[
+        C4, GPUMinimaxConnectFour[5], RandomOpponent, 20
+    ](
         ctx,
         num_iters=50,
         steps_per_iter=5000,
@@ -46,7 +48,6 @@ def main() raises:
         do_arena=True,
         checkpoint_every=10,
         checkpoint_path="connect_four_muzero.ckpt",
-        temp_threshold=20,
     )
 
     print()
