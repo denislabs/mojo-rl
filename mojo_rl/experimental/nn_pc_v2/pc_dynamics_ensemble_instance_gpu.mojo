@@ -26,6 +26,11 @@ from mojo_rl.nn.checkpoint import (
     write_float_section_ptr,
     read_float_section_list,
 )
+from mojo_rl.deep_agents.core.replay import GPUReplayBuffer
+from mojo_rl.deep_agents.core.kernels import (
+    compute_scaler_mean_kernel,
+    compute_scaler_std_kernel,
+)
 
 from .pc_dynamics import PCDynamics
 from .pc_dynamics_ensemble_gpu import PCDynamicsEnsembleGPU
@@ -47,7 +52,7 @@ struct PCDynamicsEnsembleInstanceGPU[
     # times ROLLOUT_BATCH at instantiation. Kept comptime so allocation is
     # static. Default 1 means the actor doesn't need scratch.
     R_WS_SIZE: Int = 1,
-    dtype: DType = DType.float32,
+    dtype: DType where dtype.is_floating_point() = DType.float32,
 ](Movable):
     """Owning GPU wrapper around `PCDynamicsEnsembleGPU`.
 
@@ -725,6 +730,115 @@ struct PCDynamicsEnsembleInstanceGPU[
         for i in range(Self.NUM_ELITES):
             self.elite_member_host[i] = Int32(self.elite_indices[i])
         ctx.enqueue_copy(self.elite_member_buf, self.elite_member_host)
+
+    # =========================================================================
+    # Input scaler — fits per-dim mean/std over (obs, action) on the agent's
+    # real GPU buffer. Matches vanilla MBPO's `TensorStandardScaler.fit`
+    # (bnn.py:335). Called once per dynamics-train round so every per-member
+    # train minibatch + every rollout step within the round uses the same
+    # scaler. Without it BLOCK0's `tanh(x_below)` saturates on raw HalfCheetah
+    # obs (positions ±10, velocities ±10) and the dynamics learns garbage.
+    # =========================================================================
+
+    def fit_scaler_gpu[
+        BUF_CAP: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        buffer: GPUReplayBuffer[BUF_CAP, Self.OBS_DIM, Self.ACTION_DIM],
+    ) raises:
+        """Compute per-dim mean and std of [obs || act] over the populated
+        buffer. Stores into `input_mean` (sized DYN_IN) and `input_std`."""
+        var n = buffer.size
+        if n < 1:
+            return
+
+        var mean_obs_t = LayoutTensor[
+            Self.dtype, Layout.row_major(Self.OBS_DIM), MutAnyOrigin
+        ](self.input_mean.unsafe_ptr())
+        var mean_act_t = LayoutTensor[
+            Self.dtype, Layout.row_major(Self.ACTION_DIM), MutAnyOrigin
+        ](self.input_mean.unsafe_ptr() + Self.OBS_DIM)
+        var std_obs_t = LayoutTensor[
+            Self.dtype, Layout.row_major(Self.OBS_DIM), MutAnyOrigin
+        ](self.input_std.unsafe_ptr())
+        var std_act_t = LayoutTensor[
+            Self.dtype, Layout.row_major(Self.ACTION_DIM), MutAnyOrigin
+        ](self.input_std.unsafe_ptr() + Self.OBS_DIM)
+        # GPUReplayBuffer uses the global `dtype` from `mojo_rl.nn.constants`
+        # for its underlying DeviceBuffer; rebind so the LayoutTensor view
+        # matches `Self.dtype` (which is also the global by default but the
+        # type checker treats them as distinct aliases).
+        var obs_data_t = LayoutTensor[
+            Self.dtype, Layout.row_major(BUF_CAP, Self.OBS_DIM), MutAnyOrigin
+        ](
+            rebind[
+                UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin]
+            ](buffer.states_buf.unsafe_ptr())
+        )
+        var act_data_t = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(BUF_CAP, Self.ACTION_DIM),
+            MutAnyOrigin,
+        ](
+            rebind[
+                UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin]
+            ](buffer.actions_buf.unsafe_ptr())
+        )
+
+        # Pass 1: per-dim means on populated rows [0, n).
+        comptime obs_mean_k = compute_scaler_mean_kernel[
+            Self.dtype, BUF_CAP, Self.OBS_DIM
+        ]
+        comptime act_mean_k = compute_scaler_mean_kernel[
+            Self.dtype, BUF_CAP, Self.ACTION_DIM
+        ]
+        ctx.enqueue_function[obs_mean_k, obs_mean_k](
+            mean_obs_t, obs_data_t, n,
+            grid_dim=(Self.OBS_DIM,), block_dim=(1,),
+        )
+        ctx.enqueue_function[act_mean_k, act_mean_k](
+            mean_act_t, act_data_t, n,
+            grid_dim=(Self.ACTION_DIM,), block_dim=(1,),
+        )
+
+        # Pass 2: per-dim stds (need means already on device).
+        var min_std = Scalar[Self.dtype](1e-12)
+        comptime obs_std_k = compute_scaler_std_kernel[
+            Self.dtype, BUF_CAP, Self.OBS_DIM
+        ]
+        comptime act_std_k = compute_scaler_std_kernel[
+            Self.dtype, BUF_CAP, Self.ACTION_DIM
+        ]
+        ctx.enqueue_function[obs_std_k, obs_std_k](
+            std_obs_t, obs_data_t, mean_obs_t, n, min_std,
+            grid_dim=(Self.OBS_DIM,), block_dim=(1,),
+        )
+        ctx.enqueue_function[act_std_k, act_std_k](
+            std_act_t, act_data_t, mean_act_t, n, min_std,
+            grid_dim=(Self.ACTION_DIM,), block_dim=(1,),
+        )
+
+    # =========================================================================
+    # Health metrics — small reductions read back from device for logging.
+    # =========================================================================
+
+    def download_input_std(mut self, ctx: DeviceContext) raises -> Float64:
+        """Return mean of `input_std` across DYN_IN dims (host-side scalar).
+
+        Useful for tracking input-scale drift over training. A healthy
+        scaler should produce input_std around 1 after the first fit (we
+        normalize by it); the *raw* per-dim stds before normalization
+        live in the buffer's own data, not here.
+        """
+        var div = Self.OBS_DIM + Self.ACTION_DIM
+        var host = ctx.enqueue_create_host_buffer[Self.dtype](div)
+        ctx.enqueue_copy(host, self.input_std)
+        ctx.synchronize()
+        var s: Float64 = 0.0
+        for i in range(div):
+            s += Float64(host.unsafe_ptr()[i])
+        return s / Float64(div)
 
     # =========================================================================
     # Checkpoint surface — mirrors `PCDynamicsEnsembleInstanceCPU`. Downloads

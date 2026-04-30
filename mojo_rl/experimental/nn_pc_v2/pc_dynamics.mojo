@@ -32,7 +32,7 @@ from mojo_rl.nn.optimizer.adam import Adam
 from .pc_block import PCBlock
 from .pc_sequential import PCSequential
 from .pc_trainer import PCTrainer
-from .predictive_model import PCTanh
+from .predictive_model import PCTanh, PCIdentity
 from .pc_utils import clip_grad_norm
 
 
@@ -58,7 +58,13 @@ struct PCDynamics[
     comptime READOUT: Int = Self.OBS_DIM + 1
 
     comptime BLOCK0 = PCBlock[Self.AUG_DIM, Self.HIDDEN_DIM, PCTanh]
-    comptime BLOCK1 = PCBlock[Self.HIDDEN_DIM, Self.READOUT, PCTanh]
+    # Readout block: identity (no output activation). PCTanh would clip the
+    # prediction to [-1, 1] which breaks unbounded targets like real-env
+    # rewards (HalfCheetah ∈ [-15, +20]) and per-step delta_obs (can hit ±2
+    # on velocity dims). Caller is expected to pre-normalize the dynamics
+    # input via the GPU instance's `fit_scaler_gpu` so BLOCK0's tanh stays
+    # in its linear regime; targets are predicted in their native scale.
+    comptime BLOCK1 = PCBlock[Self.HIDDEN_DIM, Self.READOUT, PCIdentity]
     comptime NET = PCSequential[Self.BLOCK0, Self.BLOCK1]
     comptime TRAINER = PCTrainer[Self.BLOCK0, Self.BLOCK1, dtype=Self.dtype]
 

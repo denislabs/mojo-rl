@@ -200,6 +200,15 @@ def main() raises:
     ](pc_opt_global_buf)
     NET.initialize_params[Xavier[], dtype](pc_params)
 
+    # Per-block PC param views — used during eval (open-loop rollout).
+    comptime offset_b1 = NET._param_offset[1]()
+    var params_b0 = LayoutTensor[
+        dtype, Layout.row_major(NET.block_types[0].PARAM_SIZE), MutAnyOrigin
+    ](pc_params_buf)
+    var params_b1 = LayoutTensor[
+        dtype, Layout.row_major(NET.block_types[1].PARAM_SIZE), MutAnyOrigin
+    ](pc_params_buf + offset_b1)
+
     # ── Encoder params + Adam state ───────────────────────────────────────────
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
     var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
@@ -412,15 +421,6 @@ def main() raises:
 
     var total_t = Float64(perf_counter_ns() - t0) / 1e9
     print("\n  total train time:", total_t, "s")
-
-    # ── Per-block PC param views for eval feedforward ─────────────────────────
-    comptime offset_b1 = NET._param_offset[1]()
-    var params_b0 = LayoutTensor[
-        dtype, Layout.row_major(NET.block_types[0].PARAM_SIZE), MutAnyOrigin
-    ](pc_params_buf)
-    var params_b1 = LayoutTensor[
-        dtype, Layout.row_major(NET.block_types[1].PARAM_SIZE), MutAnyOrigin
-    ](pc_params_buf + offset_b1)
 
     # Eval feedforward scratch
     var z_pred_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
