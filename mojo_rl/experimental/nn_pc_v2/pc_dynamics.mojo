@@ -1,24 +1,33 @@
 """PCDynamics — single PCN-trained world-model dynamics for MBPO.
 
-Architecture: 2-layer PCBlock chain `(s, a) → HIDDEN → (s_next, r)`. Trained
-with the Phase-1-baseline procedure (SGLD inference for z + per-block PC
-weight rule on W). Inference (used by MBPO during imagination) is plain
-feedforward — Bogacz canonical PC eval property.
+Architecture: 5-layer PCBlock chain `(s, a) → H → H → H → H → (s_next, r)`,
+matching vanilla MBPO's 4-LinearSwish + 1-Linear readout depth (same hidden
+width). Trained with the Phase-1-baseline procedure (SGLD inference for
+internal latents + per-block PC weight rule on W). Inference (used by MBPO
+during imagination) is plain feedforward — Bogacz canonical PC eval property.
 
-Why this shape:
-- Phase 1 ablations (`docs/PCN_MBRL_DESIGN.md`) showed the per-step local
-  energy weight rule is the source of PCN's MBRL win. Multi-layer with an
-  internal latent z is required to express that bias (a 1-layer PCN
-  degenerates to standard MSE).
+Why 5 layers (Phase B "depth match" experiment, 2026-04-30):
+- The 2-layer baseline (Path B) plateaued at holdout MSE ~5 on HalfCheetah
+  vs vanilla MBPO's ~0.3 (17× worse). Hypothesis: capacity gap, not training
+  rule. Vanilla uses 4 hidden Swish layers; PCN had only 1 hidden tanh layer.
+- This variant matches vanilla's depth at 200 hidden units, so any remaining
+  MSE gap isolates the local PC weight rule itself as the bottleneck.
+
+Why this shape (still applies):
+- Phase 1 ablations showed the per-step local energy weight rule is the
+  source of PCN's MBRL win. Multi-layer with internal latents is required
+  to express that bias (a 1-layer PCN degenerates to standard MSE).
 - No encoder. Phase 2 ruled out PCN-encoder-as-frozen-representation;
-  here we test PCN-as-dynamics directly. The internal latent z is settled
-  by SGLD at train time, not by an amortized encoder.
+  here we test PCN-as-dynamics directly. Internal latents are settled by
+  SGLD at train time, not by an amortized encoder.
 - Output predicts (s_next, r) jointly (last component is reward). Caller
   handles any obs normalization — the dynamics treats obs and reward
   uniformly.
 
 Static-method API (no per-instance state) — matches PCBlock / PCEncoder.
-Caller owns all params / scratch buffers.
+Caller owns all params / scratch buffers (`predict_batch` delegates to
+`PCSequential.forward_eval`, which allocates its own intermediate scratch
+internally — fine for the eval-only path).
 """
 
 from layout import Layout, LayoutTensor
@@ -57,16 +66,23 @@ struct PCDynamics[
     comptime AUG_DIM: Int = Self.OBS_DIM + Self.ACTION_DIM
     comptime READOUT: Int = Self.OBS_DIM + 1
 
+    # 5-block chain mirroring vanilla MBPO depth: 4 hidden + 1 readout.
+    # All hidden blocks tanh. Readout PCIdentity for unbounded targets
+    # (HalfCheetah rewards ∈ [-15, +20], per-step delta_obs can hit ±2 on
+    # velocity dims). Caller pre-normalizes the dynamics input via the GPU
+    # instance's `fit_scaler_gpu` so BLOCK0's tanh stays in its linear regime.
     comptime BLOCK0 = PCBlock[Self.AUG_DIM, Self.HIDDEN_DIM, PCTanh]
-    # Readout block: identity (no output activation). PCTanh would clip the
-    # prediction to [-1, 1] which breaks unbounded targets like real-env
-    # rewards (HalfCheetah ∈ [-15, +20]) and per-step delta_obs (can hit ±2
-    # on velocity dims). Caller is expected to pre-normalize the dynamics
-    # input via the GPU instance's `fit_scaler_gpu` so BLOCK0's tanh stays
-    # in its linear regime; targets are predicted in their native scale.
-    comptime BLOCK1 = PCBlock[Self.HIDDEN_DIM, Self.READOUT, PCIdentity]
-    comptime NET = PCSequential[Self.BLOCK0, Self.BLOCK1]
-    comptime TRAINER = PCTrainer[Self.BLOCK0, Self.BLOCK1, dtype=Self.dtype]
+    comptime BLOCK1 = PCBlock[Self.HIDDEN_DIM, Self.HIDDEN_DIM, PCTanh]
+    comptime BLOCK2 = PCBlock[Self.HIDDEN_DIM, Self.HIDDEN_DIM, PCTanh]
+    comptime BLOCK3 = PCBlock[Self.HIDDEN_DIM, Self.HIDDEN_DIM, PCTanh]
+    comptime BLOCK4 = PCBlock[Self.HIDDEN_DIM, Self.READOUT, PCIdentity]
+    comptime NET = PCSequential[
+        Self.BLOCK0, Self.BLOCK1, Self.BLOCK2, Self.BLOCK3, Self.BLOCK4
+    ]
+    comptime TRAINER = PCTrainer[
+        Self.BLOCK0, Self.BLOCK1, Self.BLOCK2, Self.BLOCK3, Self.BLOCK4,
+        dtype=Self.dtype,
+    ]
 
     comptime PARAM_SIZE: Int = Self.NET.PARAM_SIZE
     comptime LATENT_DIM: Int = Self.HIDDEN_DIM
@@ -87,72 +103,58 @@ struct PCDynamics[
         ],
         seed: UInt64,
     ):
-        """Xavier-init both PCBlocks, with an optional seed for ensemble use.
+        """Xavier-init all 5 PCBlocks, with an optional seed for ensemble use.
 
-        Note: the underlying `NET.initialize_params` uses a fixed Mojo
-        global RNG, which makes ensemble seed control awkward. We re-roll
-        our own Xavier init that respects `seed`, mirroring PCEncoder's
-        approach. Bias terms are zeroed.
+        The underlying `NET.initialize_params` uses a fixed Mojo global
+        RNG, which makes ensemble seed control awkward. We re-roll our
+        own Xavier init that respects `seed`, mirroring PCEncoder. Bias
+        terms are zeroed.
+
+        Block fan-in/out (per Xavier formula `sqrt(6 / (in + out))`):
+          B0: AUG → HIDDEN
+          B1: HIDDEN → HIDDEN
+          B2: HIDDEN → HIDDEN
+          B3: HIDDEN → HIDDEN
+          B4: HIDDEN → READOUT  (PCIdentity)
         """
         var rng = PhiloxRandom(seed=seed, offset=UInt64(0))
 
-        # Block 0: W shape (AUG_DIM, HIDDEN_DIM), then bias (HIDDEN_DIM).
-        var bound0 = sqrt(
-            Float64(6.0) / Float64(Self.AUG_DIM + Self.HIDDEN_DIM)
+        @parameter
+        def _init_block[
+            IN_DIM: Int, OUT_DIM: Int
+        ](offset: Int):
+            var bound = sqrt(Float64(6.0) / Float64(IN_DIM + OUT_DIM))
+            var w_size = IN_DIM * OUT_DIM
+            for i in range(w_size):
+                var u = Float64(rng.step_uniform()[0])
+                params.ptr[offset + i] = Scalar[Self.dtype](
+                    (u * 2.0 - 1.0) * bound
+                )
+            for j in range(OUT_DIM):
+                params.ptr[offset + w_size + j] = Scalar[Self.dtype](0.0)
+
+        _init_block[Self.AUG_DIM, Self.HIDDEN_DIM](
+            Self.NET._param_offset[0]()
         )
-        var w0_size = Self.AUG_DIM * Self.HIDDEN_DIM
-        for i in range(w0_size):
-            var u = Float64(rng.step_uniform()[0])
-            params.ptr[i] = Scalar[Self.dtype]((u * 2.0 - 1.0) * bound0)
-        for j in range(Self.HIDDEN_DIM):
-            params.ptr[w0_size + j] = Scalar[Self.dtype](0.0)
-
-        # Block 1: offset by Block 0's PARAM_SIZE.
-        comptime offset_b1 = Self.NET._param_offset[1]()
-        var bound1 = sqrt(
-            Float64(6.0) / Float64(Self.HIDDEN_DIM + Self.READOUT)
+        _init_block[Self.HIDDEN_DIM, Self.HIDDEN_DIM](
+            Self.NET._param_offset[1]()
         )
-        var w1_size = Self.HIDDEN_DIM * Self.READOUT
-        for i in range(w1_size):
-            var u = Float64(rng.step_uniform()[0])
-            params.ptr[offset_b1 + i] = Scalar[Self.dtype](
-                (u * 2.0 - 1.0) * bound1
-            )
-        for j in range(Self.READOUT):
-            params.ptr[offset_b1 + w1_size + j] = Scalar[Self.dtype](0.0)
-
-    # =========================================================================
-    # Per-block param views (for direct PCBlock.predict usage at inference)
-    # =========================================================================
-
-    @staticmethod
-    def params_b0_view(
-        params_buf: UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin],
-    ) -> LayoutTensor[
-        Self.dtype, Layout.row_major(Self.BLOCK0.PARAM_SIZE), MutAnyOrigin
-    ]:
-        return LayoutTensor[
-            Self.dtype,
-            Layout.row_major(Self.BLOCK0.PARAM_SIZE),
-            MutAnyOrigin,
-        ](params_buf)
-
-    @staticmethod
-    def params_b1_view(
-        params_buf: UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin],
-    ) -> LayoutTensor[
-        Self.dtype, Layout.row_major(Self.BLOCK1.PARAM_SIZE), MutAnyOrigin
-    ]:
-        comptime offset_b1 = Self.NET._param_offset[1]()
-        return LayoutTensor[
-            Self.dtype,
-            Layout.row_major(Self.BLOCK1.PARAM_SIZE),
-            MutAnyOrigin,
-        ](params_buf + offset_b1)
+        _init_block[Self.HIDDEN_DIM, Self.HIDDEN_DIM](
+            Self.NET._param_offset[2]()
+        )
+        _init_block[Self.HIDDEN_DIM, Self.HIDDEN_DIM](
+            Self.NET._param_offset[3]()
+        )
+        _init_block[Self.HIDDEN_DIM, Self.READOUT](
+            Self.NET._param_offset[4]()
+        )
 
     # =========================================================================
     # Inference: feedforward `(s, a) → (s_next, r)`. Used by MBPO during
     # imagination rollouts. No SGLD, matching Bogacz canonical eval.
+    # Delegates to `NET.forward_eval` so depth changes propagate
+    # automatically. `forward_eval` allocates its own intermediate scratch
+    # internally — fine for the eval-only call sites here.
     # =========================================================================
 
     @staticmethod
@@ -165,30 +167,17 @@ struct PCDynamics[
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        # Scratch (caller-allocated):
-        mut a_aug: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.AUG_DIM), MutAnyOrigin
-        ],
-        mut z_hidden: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.HIDDEN_DIM), MutAnyOrigin
-        ],
-        mut a_z: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.HIDDEN_DIM), MutAnyOrigin
-        ],
         # Output: (s_next, r) jointly in `out`. Caller splits.
         mut out: LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.READOUT), MutAnyOrigin
         ],
     ):
-        """Forward pass: `(s, a) → z = block_0(...) → out = block_1(z)`.
+        """Forward pass through the full N-block chain.
 
         `out[:, 0:OBS_DIM]` = next-obs prediction.
         `out[:, OBS_DIM]`   = reward prediction.
         """
-        var pb0 = Self.params_b0_view(params.ptr)
-        var pb1 = Self.params_b1_view(params.ptr)
-        Self.BLOCK0.predict[BATCH, Self.dtype](s_a, pb0, z_hidden, a_aug)
-        Self.BLOCK1.predict[BATCH, Self.dtype](z_hidden, pb1, out, a_z)
+        Self.NET.forward_eval[BATCH, Self.dtype](s_a, params, out)
 
     # =========================================================================
     # Holdout loss for elite selection (no SGLD, just feedforward MSE).
@@ -207,15 +196,6 @@ struct PCDynamics[
         params: LayoutTensor[
             Self.dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-        mut a_aug: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.AUG_DIM), MutAnyOrigin
-        ],
-        mut z_hidden: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.HIDDEN_DIM), MutAnyOrigin
-        ],
-        mut a_z: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.HIDDEN_DIM), MutAnyOrigin
-        ],
         mut out: LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.READOUT), MutAnyOrigin
         ],
@@ -225,7 +205,7 @@ struct PCDynamics[
         Used by the ensemble's elite selection — pick the K members with
         the lowest holdout MSE on a held-out validation slice.
         """
-        Self.predict_batch[BATCH](s_a, params, a_aug, z_hidden, a_z, out)
+        Self.predict_batch[BATCH](s_a, params, out)
         var sum_sq: Float64 = 0.0
         for b in range(BATCH):
             for d in range(Self.READOUT):

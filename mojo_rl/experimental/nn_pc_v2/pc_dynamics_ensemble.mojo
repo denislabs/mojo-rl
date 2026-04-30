@@ -213,28 +213,12 @@ struct PCDynamicsEnsemble[
             Self.dtype, Layout.row_major(BATCH, Self.DYN.AUG_DIM), MutAnyOrigin
         ],
         params_buf: UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin],
-        # Scratch (reused across calls):
-        mut a_aug: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.DYN.AUG_DIM), MutAnyOrigin
-        ],
-        mut z_hidden: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.DYN.HIDDEN_DIM),
-            MutAnyOrigin,
-        ],
-        mut a_z: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.DYN.HIDDEN_DIM),
-            MutAnyOrigin,
-        ],
         mut out: LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.DYN.READOUT), MutAnyOrigin
         ],
     ):
         var member_view = Self.member_params(params_buf, m)
-        Self.DYN.predict_batch[BATCH](
-            s_a, member_view, a_aug, z_hidden, a_z, out
-        )
+        Self.DYN.predict_batch[BATCH](s_a, member_view, out)
 
     # =========================================================================
     # Holdout-loss evaluation per member (for elite selection).
@@ -252,26 +236,13 @@ struct PCDynamicsEnsemble[
             Self.dtype, Layout.row_major(BATCH, Self.DYN.READOUT), MutAnyOrigin
         ],
         params_buf: UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin],
-        mut a_aug: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.DYN.AUG_DIM), MutAnyOrigin
-        ],
-        mut z_hidden: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.DYN.HIDDEN_DIM),
-            MutAnyOrigin,
-        ],
-        mut a_z: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.DYN.HIDDEN_DIM),
-            MutAnyOrigin,
-        ],
         mut out: LayoutTensor[
             Self.dtype, Layout.row_major(BATCH, Self.DYN.READOUT), MutAnyOrigin
         ],
     ) -> Float64:
         var member_view = Self.member_params(params_buf, m)
         return Self.DYN.eval_loss_batch[BATCH](
-            s_a, target, member_view, a_aug, z_hidden, a_z, out
+            s_a, target, member_view, out
         )
 
     # =========================================================================

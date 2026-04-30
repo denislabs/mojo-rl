@@ -287,21 +287,11 @@ struct PCDynamicsEnsembleInstanceCPU[
         var p_s_a_t = LayoutTensor[
             Self.dtype, Layout.row_major(1, Self.DYN.AUG_DIM), MutAnyOrigin
         ](self.p_s_a)
-        var p_a_aug_t = LayoutTensor[
-            Self.dtype, Layout.row_major(1, Self.DYN.AUG_DIM), MutAnyOrigin
-        ](self.p_a_aug)
-        var p_z_t = LayoutTensor[
-            Self.dtype, Layout.row_major(1, Self.DYN.HIDDEN_DIM), MutAnyOrigin
-        ](self.p_z)
-        var p_a_z_t = LayoutTensor[
-            Self.dtype, Layout.row_major(1, Self.DYN.HIDDEN_DIM), MutAnyOrigin
-        ](self.p_a_z)
         var p_out_t = LayoutTensor[
             Self.dtype, Layout.row_major(1, Self.DYN.READOUT), MutAnyOrigin
         ](self.p_out)
         Self.ENS.predict_member[1](
-            member_idx, p_s_a_t, self.params_buf,
-            p_a_aug_t, p_z_t, p_a_z_t, p_out_t,
+            member_idx, p_s_a_t, self.params_buf, p_out_t,
         )
         # Output: out[0:OBS_DIM] = predicted delta_obs (residual), out[OBS_DIM] = reward.
         # `predict_single`'s contract on vanilla MBPO returns absolute next_obs
@@ -435,8 +425,7 @@ struct PCDynamicsEnsembleInstanceCPU[
         var holdout_losses = List[Float64](capacity=Self.NUM_ENSEMBLE)
         for m in range(Self.NUM_ENSEMBLE):
             var L = Self.ENS.eval_member_loss[Self.DYN_BATCH](
-                m, s_a_h, target_h, self.params_buf,
-                e_a_aug_t, e_z_t, e_a_z_t, e_out_t,
+                m, s_a_h, target_h, self.params_buf, e_out_t,
             )
             holdout_losses.append(L)
         Self.ENS.select_elites(holdout_losses, self.elite_indices)

@@ -20,7 +20,7 @@ Layers:
   - For the readout, use ACT=PCIdentity: PCBlock[HIDDEN_LAST, NUM_CLASSES, PCIdentity]
 
 Activations:
-  - PCReLU, PCIdentity (PCActivation trait — extensible).
+  - PCReLU, PCIdentity, PCTanh, PCSwish (PCActivation trait — extensible).
 
 The activation is bundled into the block (comptime param). It acts on the
 *below* side: act(x_below) is what gets multiplied by W. For the readout,
@@ -31,7 +31,7 @@ target via output loss (no extra nonlinearity on top).
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
-from std.math import tanh
+from std.math import exp, tanh
 
 from mojo_rl.nn.constants import TPB
 from mojo_rl.nn.initializer import Initializer
@@ -461,6 +461,153 @@ struct PCTanh(PCActivation):
         ],
     ) raises:
         comptime k = Self._tanh_deriv_mul_kernel[BATCH, DIM, dtype]
+        var threads = BATCH * DIM
+        var blocks = (threads + TPB - 1) // TPB
+        ctx.enqueue_function[k, k](
+            x, z_in, z_out, grid_dim=(blocks,), block_dim=(TPB,)
+        )
+
+
+# =============================================================================
+# PCSwish (= SiLU)
+# =============================================================================
+
+
+struct PCSwish(PCActivation):
+    """Swish / SiLU: f(x) = x · σ(x); f'(x) = σ(x) · (1 + x · (1 − σ(x))).
+
+    Same activation vanilla MBPO uses for its 4-LinearSwish dynamics
+    ensemble. Smooth (unlike ReLU), unbounded above (unlike PCTanh — won't
+    saturate on large hidden activations), self-gating. Used by the
+    Variant-B "activation match" experiment: hold depth at 5 and swap
+    PCTanh → PCSwish to test whether activation choice closes the
+    remaining MSE gap to vanilla MBPO.
+    """
+
+    def __init__(out self):
+        pass
+
+    def __init__(out self, *, copy: Self):
+        pass
+
+    def __init__(out self, *, deinit take: Self):
+        pass
+
+    @staticmethod
+    def apply[
+        BATCH: Int, DIM: Int, dtype: DType = DType.float32
+    ](
+        x: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+        mut a: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+    ):
+        comptime assert (dtype.is_floating_point()), "PCSwish requires floating-point dtype"
+        for b in range(BATCH):
+            for i in range(DIM):
+                var v = rebind[Scalar[dtype]](x[b, i])
+                var s = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-v))
+                a[b, i] = v * s
+
+    @staticmethod
+    def apply_derivative_mul[
+        BATCH: Int, DIM: Int, dtype: DType = DType.float32
+    ](
+        x: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+        z_in: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+        mut z_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+    ):
+        comptime assert (dtype.is_floating_point()), "PCSwish requires floating-point dtype"
+        for b in range(BATCH):
+            for i in range(DIM):
+                var v = rebind[Scalar[dtype]](x[b, i])
+                var s = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-v))
+                var deriv = s * (
+                    Scalar[dtype](1.0) + v * (Scalar[dtype](1.0) - s)
+                )
+                z_out[b, i] = (
+                    rebind[Scalar[dtype]](z_in[b, i]) * deriv
+                )
+
+    # ── GPU kernels (naive: one thread per element) ──────────────────────────
+
+    @staticmethod
+    def _swish_apply_kernel[
+        BATCH: Int, DIM: Int, dtype: DType,
+    ](
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    ):
+        comptime assert (dtype.is_floating_point()), "PCSwish requires floating-point dtype"
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * DIM:
+            return
+        var b = idx // DIM
+        var i = idx % DIM
+        var v = rebind[Scalar[dtype]](x[b, i])
+        var s = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-v))
+        a[b, i] = v * s
+
+    @staticmethod
+    def _swish_deriv_mul_kernel[
+        BATCH: Int, DIM: Int, dtype: DType,
+    ](
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_out: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    ):
+        comptime assert (dtype.is_floating_point()), "PCSwish requires floating-point dtype"
+        var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+        if idx >= BATCH * DIM:
+            return
+        var b = idx // DIM
+        var i = idx % DIM
+        var v = rebind[Scalar[dtype]](x[b, i])
+        var s = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-v))
+        var deriv = s * (
+            Scalar[dtype](1.0) + v * (Scalar[dtype](1.0) - s)
+        )
+        z_out[b, i] = (
+            rebind[Scalar[dtype]](z_in[b, i]) * deriv
+        )
+
+    @staticmethod
+    def apply_gpu[
+        BATCH: Int, DIM: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    ) raises:
+        comptime k = Self._swish_apply_kernel[BATCH, DIM, dtype]
+        var threads = BATCH * DIM
+        var blocks = (threads + TPB - 1) // TPB
+        ctx.enqueue_function[k, k](
+            x, a, grid_dim=(blocks,), block_dim=(TPB,)
+        )
+
+    @staticmethod
+    def apply_derivative_mul_gpu[
+        BATCH: Int, DIM: Int, dtype: DType = DType.float32
+    ](
+        ctx: DeviceContext,
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+        mut z_out: LayoutTensor[
+            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
+        ],
+    ) raises:
+        comptime k = Self._swish_deriv_mul_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
         ctx.enqueue_function[k, k](

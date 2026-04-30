@@ -10,6 +10,7 @@ from .predictive_model import (
     PCBlockTrait,
     PCIdentity,
     PCReLU,
+    PCSwish,
     PCTanh,
 )
 from .pc_block import PCBlock
