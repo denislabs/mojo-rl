@@ -44,7 +44,7 @@ comptime N_ENVS = 4
 # Training duration. Hybrid is slower than full GPU due to per-step CPU env
 # stepping + H↔D marshalling, so 1M is a reasonable diagnostic budget.
 comptime NUM_STEPS = 1_000_000
-comptime WARMUP_STEPS = 25_000
+comptime WARMUP_STEPS = 10_000
 
 
 def main() raises:
@@ -61,7 +61,7 @@ def main() raises:
             hidden_dim=HIDDEN_DIM,
             buffer_capacity=BUFFER_CAPACITY,
             batch_size=BATCH_SIZE,
-            actor_lr=0.0003,
+            actor_lr=0.001,
             critic_lr=0.001,
             L=RemoteLogger,
             max_n_envs=N_ENVS,
@@ -71,7 +71,7 @@ def main() raises:
             action_scale=1.0,
             alpha=0.2,
             auto_alpha=True,
-            alpha_lr=0.0003,
+            alpha_lr=0.001,
             target_entropy=-3.0,
             max_grad_norm=0.0,
             checkpoint_every=100_000,
@@ -116,12 +116,13 @@ def main() raises:
         logger.set_config("agent", "SAC")
         logger.set_config("env", "Gymnasium-Hopper-v5")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
-        logger.set_config("actor_lr", "3e-4")
+        logger.set_config("actor_lr", "1e-3")
         logger.set_config("critic_lr", "1e-3")
-        logger.set_config("alpha_lr", "3e-4")
+        logger.set_config("alpha_lr", "1e-3")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
         logger.set_config("n_envs", String(N_ENVS))
+        logger.set_config("warmup_steps", String(WARMUP_STEPS))
 
         print("Starting hybrid training...")
         print("-" * 70)
