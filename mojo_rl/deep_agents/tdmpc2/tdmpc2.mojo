@@ -25,7 +25,7 @@ Reference: Hansen et al., 2023 — TD-MPC2: Scalable, Robust World Models
            for Continuous Control
 """
 
-from std.math import exp, log, sqrt
+from std.math import exp, log, sqrt, tanh
 from std.gpu import thread_idx
 from std.random import random_float64, seed
 from std.random.philox import Random as PhiloxRandom
@@ -3561,13 +3561,242 @@ struct TDMPC2Agent[
 
                 self.train_step_count += 1
 
-                # Log training diagnostics periodically
+                # Log training diagnostics periodically.
+                # We piggyback fresh post-update forward passes on (z_0, a_buffer_0)
+                # to compute value/reward losses and mean targets — same idea as
+                # SAC's diag block in core/agents/offpolicy_agent.mojo.
                 if (
                     self.logger
                     and self.diag_every > 0
                     and self.train_step_count % self.diag_every == 0
                 ):
                     try:
+                        # ── Fresh post-update forward passes on (z_0, a_buf_0) ──
+                        # obs_step_buf still holds obs_0 from earlier in this iter.
+                        Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            z_tensor,
+                            obs_step_tensor,
+                            enc_params_tensor,
+                            enc_model_state_tensor,
+                            gs.enc_batch_ws_buf,
+                        )
+                        # Policy forward at z_0 → pi_out (mean | raw_log_std)
+                        Self.WM.PolicyNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            pi_out_tensor,
+                            z_tensor,
+                            pol_params_tensor,
+                            pol_model_state_tensor,
+                            gs.pol_batch_ws_buf,
+                        )
+                        # Extract a_buffer at step 0 → act_step_tensor
+                        ctx.enqueue_function[
+                            tdmpc2_extract_act_step_kernel[
+                                dtype, Self.BATCH, Self.ACT, Self.H
+                            ],
+                            tdmpc2_extract_act_step_kernel[
+                                dtype, Self.BATCH, Self.ACT, Self.H
+                            ],
+                        ](
+                            LayoutTensor[
+                                dtype,
+                                Layout.row_major(Self.BATCH_ACT_FLAT),
+                                MutAnyOrigin,
+                            ](gs.batch_act_buf.unsafe_ptr()),
+                            0,
+                            LayoutTensor[
+                                dtype,
+                                Layout.row_major(Self.BATCH, Self.ACT),
+                                MutAnyOrigin,
+                            ](gs.act_step_buf.unsafe_ptr()),
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        # Build za = [z_0, a_buffer_0]
+                        ctx.enqueue_function[
+                            tdmpc2_build_za_kernel[
+                                dtype, Self.BATCH, Self.LATENT, Self.ACT
+                            ],
+                            tdmpc2_build_za_kernel[
+                                dtype, Self.BATCH, Self.LATENT, Self.ACT
+                            ],
+                        ](
+                            z_tensor,
+                            LayoutTensor[
+                                dtype,
+                                Layout.row_major(Self.BATCH, Self.ACT),
+                                MutAnyOrigin,
+                            ](gs.act_step_buf.unsafe_ptr()),
+                            za_tensor,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        # Q1 forward → logits, then download
+                        Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            logits_tensor,
+                            za_tensor,
+                            q1_params_tensor,
+                            q1_model_state_tensor,
+                            gs.q1_batch_ws_buf,
+                        )
+                        ctx.enqueue_copy(gs.diag_logits_host, gs.logits_buf)
+                        # Reward forward → logits (overwrites), download
+                        Self.WM.RewardNet.MODEL.forward_gpu_no_cache[Self.BATCH](
+                            ctx,
+                            logits_tensor,
+                            za_tensor,
+                            rew_params_tensor,
+                            rew_model_state_tensor,
+                            gs.rew_batch_ws_buf,
+                        )
+                        ctx.enqueue_copy(gs.diag_rew_logits_host, gs.logits_buf)
+                        # Download targets + raw signals + policy out
+                        ctx.enqueue_copy(gs.diag_rew_host, gs.batch_rew_buf)
+                        ctx.enqueue_copy(gs.diag_done_host, gs.batch_done_buf)
+                        ctx.enqueue_copy(gs.diag_pi_out_host, gs.pi_out_buf)
+                        ctx.enqueue_copy(
+                            gs.diag_td_targets_host, gs.td_targets_buf
+                        )
+                        ctx.enqueue_copy(
+                            gs.diag_rew_targets_host, gs.rew_targets_buf
+                        )
+                        ctx.synchronize()
+
+                        # ── CPU-side aggregation ──
+                        comptime BS = Self.BATCH
+                        comptime BNS = Self.BINS
+
+                        var mean_reward: Float64 = 0.0
+                        var mean_done: Float64 = 0.0
+                        for i in range(Self.BATCH_SCALAR_FLAT):
+                            mean_reward += Float64(gs.diag_rew_host[i])
+                            mean_done += Float64(gs.diag_done_host[i])
+                        mean_reward /= Float64(Self.BATCH_SCALAR_FLAT)
+                        mean_done /= Float64(Self.BATCH_SCALAR_FLAT)
+
+                        # mean_abs_action computed on tanh(mean) (deterministic
+                        # action) and mean_log_std after the smooth tanh-based
+                        # bound (matches what the policy actually emits).
+                        var mean_abs_action: Float64 = 0.0
+                        var mean_log_std: Float64 = 0.0
+                        for b in range(BS):
+                            for j in range(Self.ACT):
+                                var mean_raw = Float64(
+                                    gs.diag_pi_out_host[b * Self.POL_OUT + j]
+                                )
+                                var x = Float64(
+                                    gs.diag_pi_out_host[
+                                        b * Self.POL_OUT + Self.ACT + j
+                                    ]
+                                )
+                                var act_det = Float64(tanh(Float32(mean_raw)))
+                                var ls = -10.0 + 6.0 * (
+                                    Float64(tanh(Float32(x))) + 1.0
+                                )
+                                if act_det < 0.0:
+                                    act_det = -act_det
+                                mean_abs_action += act_det
+                                mean_log_std += ls
+                        mean_abs_action /= Float64(BS * Self.ACT)
+                        mean_log_std /= Float64(BS * Self.ACT)
+
+                        # value_loss = soft CE between Q logits and TD target
+                        # at horizon step 0; mean_target = symexp-decoded
+                        # expected value of the two-hot target.
+                        var value_loss: Float64 = 0.0
+                        var mean_target: Float64 = 0.0
+                        for b in range(BS):
+                            var max_l: Float64 = -1e30
+                            for k in range(BNS):
+                                var v = Float64(
+                                    gs.diag_logits_host[b * BNS + k]
+                                )
+                                if v > max_l:
+                                    max_l = v
+                            var sum_exp: Float64 = 0.0
+                            for k in range(BNS):
+                                sum_exp += exp(
+                                    Float64(gs.diag_logits_host[b * BNS + k])
+                                    - max_l
+                                )
+                            var lse = log(sum_exp) + max_l
+                            var ce: Float64 = 0.0
+                            var tgt_symlog: Float64 = 0.0
+                            for k in range(BNS):
+                                var logit = Float64(
+                                    gs.diag_logits_host[b * BNS + k]
+                                )
+                                var tgt = Float64(
+                                    gs.diag_td_targets_host[b * BNS + k]
+                                )
+                                ce -= tgt * (logit - lse)
+                                tgt_symlog += tgt * Float64(
+                                    self.state.world_model.bins[k]
+                                )
+                            value_loss += ce
+                            var ats = (
+                                tgt_symlog
+                                if tgt_symlog >= 0.0
+                                else -tgt_symlog
+                            )
+                            var dec_target = (exp(ats) - 1.0) if (
+                                tgt_symlog >= 0.0
+                            ) else -(exp(ats) - 1.0)
+                            mean_target += dec_target
+                        value_loss /= Float64(BS)
+                        mean_target /= Float64(BS)
+
+                        # reward_loss = soft CE between reward logits and reward
+                        # target at horizon step 0; mean_pred_reward = symexp-
+                        # decoded expectation under predicted distribution.
+                        var reward_loss: Float64 = 0.0
+                        var mean_pred_reward: Float64 = 0.0
+                        for b in range(BS):
+                            var max_l: Float64 = -1e30
+                            for k in range(BNS):
+                                var v = Float64(
+                                    gs.diag_rew_logits_host[b * BNS + k]
+                                )
+                                if v > max_l:
+                                    max_l = v
+                            var sum_exp: Float64 = 0.0
+                            for k in range(BNS):
+                                sum_exp += exp(
+                                    Float64(
+                                        gs.diag_rew_logits_host[b * BNS + k]
+                                    )
+                                    - max_l
+                                )
+                            var lse = log(sum_exp) + max_l
+                            var ce: Float64 = 0.0
+                            var pred_symlog: Float64 = 0.0
+                            for k in range(BNS):
+                                var logit = Float64(
+                                    gs.diag_rew_logits_host[b * BNS + k]
+                                )
+                                var sm = exp(logit - lse)
+                                var tgt = Float64(
+                                    gs.diag_rew_targets_host[b * BNS + k]
+                                )
+                                ce -= tgt * (logit - lse)
+                                pred_symlog += sm * Float64(
+                                    self.state.world_model.bins[k]
+                                )
+                            reward_loss += ce
+                            var aps = (
+                                pred_symlog
+                                if pred_symlog >= 0.0
+                                else -pred_symlog
+                            )
+                            var dec_pred = (exp(aps) - 1.0) if (
+                                pred_symlog >= 0.0
+                            ) else -(exp(aps) - 1.0)
+                            mean_pred_reward += dec_pred
+                        reward_loss /= Float64(BS)
+                        mean_pred_reward /= Float64(BS)
+
                         var step = self.train_step_count
                         self.logger[].log_scalar("q_mean", diag_q_mean, step)
                         self.logger[].log_scalar("q_min", diag_q_min, step)
@@ -3576,6 +3805,30 @@ struct TDMPC2Agent[
                             "pi_scale", self.running_scale, step
                         )
                         self.logger[].log_scalar("gamma", self.gamma, step)
+                        self.logger[].log_scalar(
+                            "value_loss", value_loss, step
+                        )
+                        self.logger[].log_scalar(
+                            "reward_loss", reward_loss, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_target", mean_target, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_pred_reward", mean_pred_reward, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_reward", mean_reward, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_done", mean_done, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_abs_action", mean_abs_action, step
+                        )
+                        self.logger[].log_scalar(
+                            "mean_log_std", mean_log_std, step
+                        )
                     except:
                         pass
 

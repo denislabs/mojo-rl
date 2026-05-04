@@ -652,6 +652,28 @@ struct TDMPC2GPUState[
         dtype
     ]  # [BATCH] for Q-value diagnostic readback
 
+    # ── Diagnostic host buffers (downloaded only every diag_every steps) ──
+    var diag_rew_host: HostBuffer[dtype]  # [BATCH * H] batch rewards
+    var diag_done_host: HostBuffer[dtype]  # [BATCH * H] batch dones
+    var diag_pi_act_host: HostBuffer[
+        dtype
+    ]  # [BATCH * ACT] policy actions at z_0
+    var diag_pi_out_host: HostBuffer[
+        dtype
+    ]  # [BATCH * POL_OUT] policy mean + raw_log_std at z_0
+    var diag_logits_host: HostBuffer[
+        dtype
+    ]  # [BATCH * BINS] Q logits at (z_0, a_buffer_0)
+    var diag_td_targets_host: HostBuffer[
+        dtype
+    ]  # [H * BATCH * BINS] TD targets (only first BATCH*BINS chunk read)
+    var diag_rew_logits_host: HostBuffer[
+        dtype
+    ]  # [BATCH * BINS] reward logits at (z_0, a_buffer_0)
+    var diag_rew_targets_host: HostBuffer[
+        dtype
+    ]  # [H * BATCH * BINS] reward targets (only first BATCH*BINS chunk read)
+
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU and host buffers."""
 
@@ -847,6 +869,32 @@ struct TDMPC2GPUState[
         # ── Reusable host buffers ──
         self.qt_upload_host = ctx.enqueue_create_host_buffer[dtype](Self.Q_P)
         self.q_vals_host = ctx.enqueue_create_host_buffer[dtype](Self.BATCH)
+
+        # ── Diagnostic host buffers ──
+        self.diag_rew_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_SCALAR_FLAT
+        )
+        self.diag_done_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_SCALAR_FLAT
+        )
+        self.diag_pi_act_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_ACT
+        )
+        self.diag_pi_out_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.POL_OUT
+        )
+        self.diag_logits_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_BINS
+        )
+        self.diag_td_targets_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_TGTS_FLAT
+        )
+        self.diag_rew_logits_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_BINS
+        )
+        self.diag_rew_targets_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH_TGTS_FLAT
+        )
 
 
 # =============================================================================
