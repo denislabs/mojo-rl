@@ -721,14 +721,17 @@ struct FusedConv2DActivation[
 
         var oc0 = block_oc + sub_r * 2
         var k0 = block_k + sub_c * 2
+        # Accumulate (+=) into dW so multiple backward calls in a single
+        # update (MuZero K-step unroll, DreamerV3/TD-MPC2 BPTT) sum
+        # gradients instead of overwriting. Caller pre-zeros via zero_grads.
         if oc0 < Self.out_channels and k0 < Self.col_size:
-            dW[oc0, k0] = acc00
+            dW[oc0, k0] = dW[oc0, k0] + acc00
         if oc0 < Self.out_channels and k0 + 1 < Self.col_size:
-            dW[oc0, k0 + 1] = acc01
+            dW[oc0, k0 + 1] = dW[oc0, k0 + 1] + acc01
         if oc0 + 1 < Self.out_channels and k0 < Self.col_size:
-            dW[oc0 + 1, k0] = acc10
+            dW[oc0 + 1, k0] = dW[oc0 + 1, k0] + acc10
         if oc0 + 1 < Self.out_channels and k0 + 1 < Self.col_size:
-            dW[oc0 + 1, k0 + 1] = acc11
+            dW[oc0 + 1, k0 + 1] = dW[oc0 + 1, k0 + 1] + acc11
 
     @always_inline
     @staticmethod
@@ -797,7 +800,9 @@ struct FusedConv2DActivation[
             db_stride //= 2
 
         if tid == 0:
-            db[oc] = smem[0]
+            # Accumulate into db (pre-zeroed via zero_grads) so multi-call
+            # backward sequences sum bias gradients instead of overwriting.
+            db[oc] = db[oc] + smem[0]
 
     # =========================================================================
     # GPU kernels — MMA matmul (NVIDIA, replaces max_matmul)
@@ -1044,14 +1049,17 @@ struct FusedConv2DActivation[
             var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
             var c1 = c0 + 1
 
+            # Accumulate (+=) into dW. Multi-call backward (MuZero K-step
+            # unroll, RSSM/world-model BPTT) requires accumulation across
+            # calls. Caller pre-zeros grad_params via zero_grads.
             if r0 < Self.out_channels and c0 < Self.col_size:
-                dW[r0, c0] = acc[0].cast[dtype]()
+                dW[r0, c0] = dW[r0, c0] + acc[0].cast[dtype]()
             if r0 < Self.out_channels and c1 < Self.col_size:
-                dW[r0, c1] = acc[1].cast[dtype]()
+                dW[r0, c1] = dW[r0, c1] + acc[1].cast[dtype]()
             if r1 < Self.out_channels and c0 < Self.col_size:
-                dW[r1, c0] = acc[2].cast[dtype]()
+                dW[r1, c0] = dW[r1, c0] + acc[2].cast[dtype]()
             if r1 < Self.out_channels and c1 < Self.col_size:
-                dW[r1, c1] = acc[3].cast[dtype]()
+                dW[r1, c1] = dW[r1, c1] + acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod

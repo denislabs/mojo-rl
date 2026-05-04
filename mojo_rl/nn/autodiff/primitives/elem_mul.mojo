@@ -169,7 +169,9 @@ struct ElemMul[dim: Int](DiffOp):
 
         var total = block.sum[block_size=TPB, broadcast=False](val=my_sum)
         if local_i == 0:
-            dgamma[col] = total[0]
+            # Accumulate into dgamma (pre-zeroed via zero_grads) so multi-call
+            # backward sequences sum scale gradients instead of overwriting.
+            dgamma[col] = dgamma[col] + total[0]
 
     # =========================================================================
     # GPU launchers

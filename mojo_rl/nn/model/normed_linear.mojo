@@ -1689,14 +1689,17 @@ struct NormedLinear[
             var r1 = r0 + 8
             var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
             var c1 = c0 + 1
+            # Accumulate (+=) into dW. Multi-call backward (TDMPC2 world-model
+            # K-step BPTT, MuZero unroll) requires accumulation across calls.
+            # Caller pre-zeros grad_params via zero_grads.
             if r0 < Self.IN_DIM and c0 < Self.OUT_DIM:
-                dW[r0, c0] = rebind[Scalar[dtype]](acc[0])
+                dW[r0, c0] = dW[r0, c0] + rebind[Scalar[dtype]](acc[0])
             if r0 < Self.IN_DIM and c1 < Self.OUT_DIM:
-                dW[r0, c1] = rebind[Scalar[dtype]](acc[1])
+                dW[r0, c1] = dW[r0, c1] + rebind[Scalar[dtype]](acc[1])
             if r1 < Self.IN_DIM and c0 < Self.OUT_DIM:
-                dW[r1, c0] = rebind[Scalar[dtype]](acc[2])
+                dW[r1, c0] = dW[r1, c0] + rebind[Scalar[dtype]](acc[2])
             if r1 < Self.IN_DIM and c1 < Self.OUT_DIM:
-                dW[r1, c1] = rebind[Scalar[dtype]](acc[3])
+                dW[r1, c1] = dW[r1, c1] + rebind[Scalar[dtype]](acc[3])
         else:
             # 2x2 register-tiled fallback
             comptime BT = 32
@@ -1778,14 +1781,17 @@ struct NormedLinear[
                 barrier()
             var gr0 = block_row + sub_r * 2
             var gc0 = block_col + sub_c * 2
+            # Accumulate (+=) into dW. Multi-call backward (TDMPC2 world-model
+            # K-step BPTT, MuZero unroll) requires accumulation across calls.
+            # Caller pre-zeros grad_params via zero_grads.
             if gr0 < Self.IN_DIM and gc0 < Self.OUT_DIM:
-                dW[gr0, gc0] = acc00
+                dW[gr0, gc0] = dW[gr0, gc0] + acc00
             if gr0 < Self.IN_DIM and gc0 + 1 < Self.OUT_DIM:
-                dW[gr0, gc0 + 1] = acc01
+                dW[gr0, gc0 + 1] = dW[gr0, gc0 + 1] + acc01
             if gr0 + 1 < Self.IN_DIM and gc0 < Self.OUT_DIM:
-                dW[gr0 + 1, gc0] = acc10
+                dW[gr0 + 1, gc0] = dW[gr0 + 1, gc0] + acc10
             if gr0 + 1 < Self.IN_DIM and gc0 + 1 < Self.OUT_DIM:
-                dW[gr0 + 1, gc0 + 1] = acc11
+                dW[gr0 + 1, gc0 + 1] = dW[gr0 + 1, gc0 + 1] + acc11
 
     @always_inline
     @staticmethod
@@ -1921,7 +1927,12 @@ struct NormedLinear[
                 barrier()
 
             if global_row < Self.IN_DIM and global_col < Self.OUT_DIM:
-                dW[global_row, global_col] = dW_acc
+                # Accumulate (+=) into dW. Multi-call backward (TDMPC2
+                # world-model K-step BPTT) requires accumulation across calls.
+                # Caller pre-zeros grad_params via zero_grads.
+                dW[global_row, global_col] = (
+                    dW[global_row, global_col] + dW_acc
+                )
 
             # db reduction
             if dW_block_y == 0 and global_col < Self.OUT_DIM:
@@ -1932,7 +1943,9 @@ struct NormedLinear[
                     var total = shared_A[0, local_col]
                     for r in range(1, TILE):
                         total += shared_A[r, local_col]
-                    db[global_col] = total
+                    # Accumulate into db (pre-zeroed via zero_grads) so
+                    # multi-call backward sums bias gradients.
+                    db[global_col] = db[global_col] + total
 
     # =========================================================================
     # GPU Launchers
@@ -2599,7 +2612,9 @@ struct NormedLinear[
                 var acc: Scalar[dtype] = 0
                 for ba in range(BATCH):
                     acc += rebind[Scalar[dtype]](d_linear_out[ba, col])
-                db[col] = acc
+                # Accumulate into db (pre-zeroed via zero_grads) so
+                # multi-call backward sums bias gradients.
+                db[col] = db[col] + acc
 
         ctx.enqueue_function[db_wrapper, db_wrapper](
             db,

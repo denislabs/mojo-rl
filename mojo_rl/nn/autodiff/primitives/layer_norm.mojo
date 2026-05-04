@@ -319,8 +319,11 @@ struct LayerNormOp[dim: Int](DiffOp):
             val=my_dbeta
         )
         if local_i == 0:
-            dgamma[col] = total_dgamma[0]
-            dbeta[col] = total_dbeta[0]
+            # Accumulate into dgamma/dbeta (pre-zeroed via zero_grads) so
+            # multi-call backward sequences (MuZero K-step unroll,
+            # DreamerV3/TD-MPC2 BPTT) sum gradients instead of overwriting.
+            dgamma[col] = dgamma[col] + total_dgamma[0]
+            dbeta[col] = dbeta[col] + total_dbeta[0]
 
     # =========================================================================
     # GPU launchers

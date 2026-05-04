@@ -361,7 +361,10 @@ struct MatMul[
             barrier()
 
         if global_row < Self.in_dim and global_col < Self.out_dim:
-            dW[global_row, global_col] = acc
+            # Accumulate (+=) into dW so multi-call backward (MuZero K-step
+            # unroll, DreamerV3/TD-MPC2 BPTT) sums gradients across calls
+            # instead of overwriting. Caller pre-zeros via zero_grads.
+            dW[global_row, global_col] = dW[global_row, global_col] + acc
 
     # =========================================================================
     # GPU kernel implementations — MMA (NVIDIA tensor cores)
@@ -961,14 +964,17 @@ struct MatMul[
             var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
             var c1 = c0 + 1
 
+            # Accumulate (+=) into dW. Multi-call backward (MuZero K-step
+            # unroll, RSSM/world-model BPTT) requires accumulation across
+            # calls. Caller pre-zeros grad_params via zero_grads.
             if r0 < Self.in_dim and c0 < Self.out_dim:
-                dW[r0, c0] = acc[0].cast[dtype]()
+                dW[r0, c0] = dW[r0, c0] + acc[0].cast[dtype]()
             if r0 < Self.in_dim and c1 < Self.out_dim:
-                dW[r0, c1] = acc[1].cast[dtype]()
+                dW[r0, c1] = dW[r0, c1] + acc[1].cast[dtype]()
             if r1 < Self.in_dim and c0 < Self.out_dim:
-                dW[r1, c0] = acc[2].cast[dtype]()
+                dW[r1, c0] = dW[r1, c0] + acc[2].cast[dtype]()
             if r1 < Self.in_dim and c1 < Self.out_dim:
-                dW[r1, c1] = acc[3].cast[dtype]()
+                dW[r1, c1] = dW[r1, c1] + acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod
@@ -1067,14 +1073,17 @@ struct MatMul[
 
         var gr0 = block_row + sub_r * 2
         var gc0 = block_col + sub_c * 2
+        # Accumulate (+=) into dW so multiple backward calls in a single
+        # update (MuZero K-step unroll, DreamerV3/TD-MPC2 BPTT) sum
+        # gradients instead of overwriting. Caller pre-zeros via zero_grads.
         if gr0 < Self.in_dim and gc0 < Self.out_dim:
-            dW[gr0, gc0] = acc00
+            dW[gr0, gc0] = dW[gr0, gc0] + acc00
         if gr0 < Self.in_dim and gc0 + 1 < Self.out_dim:
-            dW[gr0, gc0 + 1] = acc01
+            dW[gr0, gc0 + 1] = dW[gr0, gc0 + 1] + acc01
         if gr0 + 1 < Self.in_dim and gc0 < Self.out_dim:
-            dW[gr0 + 1, gc0] = acc10
+            dW[gr0 + 1, gc0] = dW[gr0 + 1, gc0] + acc10
         if gr0 + 1 < Self.in_dim and gc0 + 1 < Self.out_dim:
-            dW[gr0 + 1, gc0 + 1] = acc11
+            dW[gr0 + 1, gc0 + 1] = dW[gr0 + 1, gc0 + 1] + acc11
 
     # =========================================================================
     # GPU launchers (auto-dispatching: MMA on NVIDIA, 2x2 on Apple)
