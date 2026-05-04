@@ -622,6 +622,52 @@ def gpu_mcts_extract_actions_kernel[
             policies_out[e * ACT + a] = Scalar[dtype](1.0) / Scalar[dtype](ACT)
 
 
+def gpu_mcts_extract_root_value_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    values_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+):
+    """Extract MCTS root value as `Σ_a total_value[root,a] / Σ_a visit_count[root,a]`.
+
+    Mirrors muzero-general's `node.value() = value_sum / visit_count` and is
+    used as the n-step bootstrap V(s_{t+n}) in `nstep_value_targets_kernel`.
+    Without this, the bootstrap would be a hardcoded zero — value targets
+    collapse to the sum of K rewards regardless of state, and the value head
+    learns a constant. See docs/MUZERO_AUDIT.md F2.
+
+    Total_value is accumulated by the expand+backup kernel in raw (post-h⁻¹)
+    scalar space (after F1), so the returned root value is in raw space —
+    the same space the n-step return formula expects.
+
+    One thread per environment.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var root_off = e * MAX_NODES * ACT  # Root is always node 0
+
+    var visit_sum = Scalar[dtype](0.0)
+    var value_sum = Scalar[dtype](0.0)
+    for a in range(ACT):
+        visit_sum += rebind[Scalar[dtype]](visit_count[root_off + a])
+        value_sum += rebind[Scalar[dtype]](total_value[root_off + a])
+
+    if visit_sum > Scalar[dtype](0.5):
+        values_out[e] = value_sum / visit_sum
+    else:
+        values_out[e] = Scalar[dtype](0.0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Self-Play Kernels (legal masking + negated backup)
 # ═══════════════════════════════════════════════════════════════════════════

@@ -41,7 +41,18 @@ def main() raises:
 
     var agent = GenericMuZeroAgent[Config, 32](
         gamma=0.99,
-        temperature_decay_steps=20000,
+        # temperature_decay_steps is the full training horizon for the
+        # muzero-general step schedule (1.0 → 0.5 → 0.25). Setting it to
+        # num_steps (50K) means temp = 1.0 for first 25K env steps, 0.5
+        # for next 12.5K, 0.25 for remaining 12.5K. Bug E follow-up:
+        # previous 20K linear-to-0.01 collapsed to greedy at step 19.8K,
+        # killing exploration and capping reward at ~7.
+        temperature_decay_steps=50000,
+        pred_head_input_dim=64,  # = HIDDEN; zero-inits pred policy + value
+        # heads at construction so the untrained network produces uniform
+        # softmax(policy) and decoded value=0 instead of Kaiming's biased
+        # logits ±2.5 / value -451. Without this MCTS commits to one action
+        # regardless of obs (Bug A/B, see docs/MUZERO_AUDIT.md 2026-05-04).
     )
     print("Agent created:", Config.NAME)
 
@@ -51,7 +62,11 @@ def main() raises:
         num_steps=50000,
         warmup_steps=1000,
         print_every=2000,
-        use_reanalyze=False,  # keep reanalyze off until target net is warm
+        # Reanalyze on: per-timestep target-net forward freshens the
+        # bootstrap value at sample time (matches muzero-general). Audit
+        # Phase E4 wired the target nets correctly; the dead CPU-side
+        # `self.reanalyze(...)` call was removed 2026-05-04.
+        use_reanalyze=True,
     )
 
     print()
