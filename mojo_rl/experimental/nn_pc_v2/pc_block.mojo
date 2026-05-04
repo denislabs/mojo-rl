@@ -27,7 +27,12 @@ from std.sys import has_nvidia_gpu_accelerator
 from linalg.matmul import matmul as max_matmul
 from layout.tile_tensor import lt_to_tt
 
-from mojo_rl.nn.constants import TPB, MMA_BLOCK_M, MMA_BLOCK_N, MMA_BLOCK_THREADS
+from mojo_rl.nn.constants import (
+    TPB,
+    MMA_BLOCK_M,
+    MMA_BLOCK_N,
+    MMA_BLOCK_THREADS,
+)
 from mojo_rl.nn.initializer import Initializer
 
 from .predictive_model import PCActivation, PCReLU, PCBlockTrait
@@ -84,9 +89,9 @@ struct PCBlock[
             Layout.row_major(Self.in_dim * Self.out_dim),
             MutAnyOrigin,
         ](params.ptr)
-        INIT.init[
-            Self.in_dim * Self.out_dim, Self.in_dim, Self.out_dim, dtype
-        ](W_view)
+        INIT.init[Self.in_dim * Self.out_dim, Self.in_dim, Self.out_dim, dtype](
+            W_view
+        )
         # Zero biases
         for j in range(Self.out_dim):
             params.ptr[Self.in_dim * Self.out_dim + j] = Scalar[dtype](0)
@@ -159,10 +164,9 @@ struct PCBlock[
     ):
         for b in range(BATCH):
             for j in range(Self.out_dim):
-                eps[b, j] = (
-                    rebind[Scalar[dtype]](x_above[b, j])
-                    - rebind[Scalar[dtype]](mu[b, j])
-                )
+                eps[b, j] = rebind[Scalar[dtype]](x_above[b, j]) - rebind[
+                    Scalar[dtype]
+                ](mu[b, j])
 
     # =========================================================================
     # Pull-back to latent below:  z_below = ε_above @ W^T
@@ -182,7 +186,7 @@ struct PCBlock[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        """z_below[b, i] = sum_j ε_above[b, j] * W[i, j]."""
+        """Formula = z_below[b, i] = sum_j ε_above[b, j] * W[i, j]."""
         var W = LayoutTensor[
             dtype,
             Layout.row_major(Self.in_dim, Self.out_dim),
@@ -276,38 +280,35 @@ struct PCBlock[
 
     @staticmethod
     def _eps_kernel[
-        BATCH: Int, OUT: Int, dtype: DType,
+        BATCH: Int,
+        OUT: Int,
+        dtype: DType,
     ](
         x_above: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
         ],
-        mu: LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-        ],
-        eps: LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-        ],
+        mu: LayoutTensor[dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin],
+        eps: LayoutTensor[dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     ):
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * OUT:
             return
         var b = idx // OUT
         var j = idx % OUT
-        eps[b, j] = (
-            rebind[Scalar[dtype]](x_above[b, j])
-            - rebind[Scalar[dtype]](mu[b, j])
-        )
+        eps[b, j] = rebind[Scalar[dtype]](x_above[b, j]) - rebind[
+            Scalar[dtype]
+        ](mu[b, j])
 
     @staticmethod
     def _bias_grad_kernel[
-        BATCH: Int, OUT: Int, dtype: DType,
+        BATCH: Int,
+        OUT: Int,
+        dtype: DType,
     ](
         eps_above: LayoutTensor[
             dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
         ],
-        b_grad: LayoutTensor[
-            dtype, Layout.row_major(OUT), MutAnyOrigin
-        ],
+        b_grad: LayoutTensor[dtype, Layout.row_major(OUT), MutAnyOrigin],
     ):
         var j = Int(block_dim.x * block_idx.x + thread_idx.x)
         if j >= OUT:
@@ -321,11 +322,11 @@ struct PCBlock[
 
     @staticmethod
     def _bias_add_kernel[
-        BATCH: Int, OUT: Int, dtype: DType,
+        BATCH: Int,
+        OUT: Int,
+        dtype: DType,
     ](
-        mu: LayoutTensor[
-            dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-        ],
+        mu: LayoutTensor[dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin],
         b: LayoutTensor[dtype, Layout.row_major(OUT), MutAnyOrigin],
     ):
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -336,10 +337,9 @@ struct PCBlock[
 
     @staticmethod
     def _negate_kernel[
-        N: Int, dtype: DType,
-    ](
-        buf: LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin],
-    ):
+        N: Int,
+        dtype: DType,
+    ](buf: LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin],):
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= N:
             return
@@ -347,14 +347,12 @@ struct PCBlock[
 
     @staticmethod
     def _transpose_2d_kernel[
-        ROWS: Int, COLS: Int, dtype: DType,
+        ROWS: Int,
+        COLS: Int,
+        dtype: DType,
     ](
-        dst: LayoutTensor[
-            dtype, Layout.row_major(COLS, ROWS), MutAnyOrigin
-        ],
-        src: LayoutTensor[
-            dtype, Layout.row_major(ROWS, COLS), MutAnyOrigin
-        ],
+        dst: LayoutTensor[dtype, Layout.row_major(COLS, ROWS), MutAnyOrigin],
+        src: LayoutTensor[dtype, Layout.row_major(ROWS, COLS), MutAnyOrigin],
     ):
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= ROWS * COLS:
@@ -375,7 +373,8 @@ struct PCBlock[
     @always_inline
     @staticmethod
     def _predict_kernel_2x2[
-        BATCH: Int, dtype: DType,
+        BATCH: Int,
+        dtype: DType,
     ](
         a_below: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
@@ -426,15 +425,11 @@ struct PCBlock[
             var a_c1 = (tid + 256) % SK
 
             if block_row + a_r0 < BATCH and k_off + a_c0 < Self.in_dim:
-                a_smem[a_r0, a_c0] = a_below[
-                    block_row + a_r0, k_off + a_c0
-                ]
+                a_smem[a_r0, a_c0] = a_below[block_row + a_r0, k_off + a_c0]
             else:
                 a_smem[a_r0, a_c0] = 0
             if block_row + a_r1 < BATCH and k_off + a_c1 < Self.in_dim:
-                a_smem[a_r1, a_c1] = a_below[
-                    block_row + a_r1, k_off + a_c1
-                ]
+                a_smem[a_r1, a_c1] = a_below[block_row + a_r1, k_off + a_c1]
             else:
                 a_smem[a_r1, a_c1] = 0
 
@@ -457,13 +452,9 @@ struct PCBlock[
             for k in range(SK):
                 if k_off + k < Self.in_dim:
                     var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
-                    var a1 = rebind[Scalar[dtype]](
-                        a_smem[sub_r * 2 + 1, k]
-                    )
+                    var a1 = rebind[Scalar[dtype]](a_smem[sub_r * 2 + 1, k])
                     var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
-                    var b1 = rebind[Scalar[dtype]](
-                        b_smem[k, sub_c * 2 + 1]
-                    )
+                    var b1 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2 + 1])
                     acc00 += a0 * b0
                     acc01 += a0 * b1
                     acc10 += a1 * b0
@@ -485,7 +476,8 @@ struct PCBlock[
     @always_inline
     @staticmethod
     def _pull_back_kernel_2x2[
-        BATCH: Int, dtype: DType,
+        BATCH: Int,
+        dtype: DType,
     ](
         eps_above: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.out_dim), MutAnyOrigin
@@ -536,15 +528,11 @@ struct PCBlock[
             var a_r1 = (tid + 256) // SK
             var a_c1 = (tid + 256) % SK
             if block_row + a_r0 < BATCH and k_off + a_c0 < Self.out_dim:
-                a_smem[a_r0, a_c0] = eps_above[
-                    block_row + a_r0, k_off + a_c0
-                ]
+                a_smem[a_r0, a_c0] = eps_above[block_row + a_r0, k_off + a_c0]
             else:
                 a_smem[a_r0, a_c0] = 0
             if block_row + a_r1 < BATCH and k_off + a_c1 < Self.out_dim:
-                a_smem[a_r1, a_c1] = eps_above[
-                    block_row + a_r1, k_off + a_c1
-                ]
+                a_smem[a_r1, a_c1] = eps_above[block_row + a_r1, k_off + a_c1]
             else:
                 a_smem[a_r1, a_c1] = 0
 
@@ -567,13 +555,9 @@ struct PCBlock[
             for k in range(SK):
                 if k_off + k < Self.out_dim:
                     var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
-                    var a1 = rebind[Scalar[dtype]](
-                        a_smem[sub_r * 2 + 1, k]
-                    )
+                    var a1 = rebind[Scalar[dtype]](a_smem[sub_r * 2 + 1, k])
                     var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
-                    var b1 = rebind[Scalar[dtype]](
-                        b_smem[k, sub_c * 2 + 1]
-                    )
+                    var b1 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2 + 1])
                     acc00 += a0 * b0
                     acc01 += a0 * b1
                     acc10 += a1 * b0
@@ -595,7 +579,8 @@ struct PCBlock[
     @always_inline
     @staticmethod
     def _weight_grad_kernel_2x2[
-        BATCH: Int, dtype: DType,
+        BATCH: Int,
+        dtype: DType,
     ](
         a_below: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.in_dim), MutAnyOrigin
@@ -646,15 +631,11 @@ struct PCBlock[
             var a_r1 = (tid + 256) // SK
             var a_c1 = (tid + 256) % SK
             if k_off + a_c0 < BATCH and block_row + a_r0 < Self.in_dim:
-                a_smem[a_r0, a_c0] = a_below[
-                    k_off + a_c0, block_row + a_r0
-                ]
+                a_smem[a_r0, a_c0] = a_below[k_off + a_c0, block_row + a_r0]
             else:
                 a_smem[a_r0, a_c0] = 0
             if k_off + a_c1 < BATCH and block_row + a_r1 < Self.in_dim:
-                a_smem[a_r1, a_c1] = a_below[
-                    k_off + a_c1, block_row + a_r1
-                ]
+                a_smem[a_r1, a_c1] = a_below[k_off + a_c1, block_row + a_r1]
             else:
                 a_smem[a_r1, a_c1] = 0
 
@@ -664,15 +645,11 @@ struct PCBlock[
             var b_r1 = (tid + 256) // BT
             var b_c1 = (tid + 256) % BT
             if k_off + b_r0 < BATCH and block_col + b_c0 < Self.out_dim:
-                b_smem[b_r0, b_c0] = eps_above[
-                    k_off + b_r0, block_col + b_c0
-                ]
+                b_smem[b_r0, b_c0] = eps_above[k_off + b_r0, block_col + b_c0]
             else:
                 b_smem[b_r0, b_c0] = 0
             if k_off + b_r1 < BATCH and block_col + b_c1 < Self.out_dim:
-                b_smem[b_r1, b_c1] = eps_above[
-                    k_off + b_r1, block_col + b_c1
-                ]
+                b_smem[b_r1, b_c1] = eps_above[k_off + b_r1, block_col + b_c1]
             else:
                 b_smem[b_r1, b_c1] = 0
 
@@ -681,13 +658,9 @@ struct PCBlock[
             for k in range(SK):
                 if k_off + k < BATCH:
                     var a0 = rebind[Scalar[dtype]](a_smem[sub_r * 2, k])
-                    var a1 = rebind[Scalar[dtype]](
-                        a_smem[sub_r * 2 + 1, k]
-                    )
+                    var a1 = rebind[Scalar[dtype]](a_smem[sub_r * 2 + 1, k])
                     var b0 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2])
-                    var b1 = rebind[Scalar[dtype]](
-                        b_smem[k, sub_c * 2 + 1]
-                    )
+                    var b1 = rebind[Scalar[dtype]](b_smem[k, sub_c * 2 + 1])
                     acc00 += a0 * b0
                     acc01 += a0 * b1
                     acc10 += a1 * b0
@@ -750,37 +723,37 @@ struct PCBlock[
                 DeviceContextPtr(ctx),
             )
 
-            comptime kb = Self._bias_add_kernel[
-                BATCH, Self.out_dim, dtype
-            ]
+            comptime kb = Self._bias_add_kernel[BATCH, Self.out_dim, dtype]
             var ba_threads = BATCH * Self.out_dim
             var ba_blocks = (ba_threads + TPB - 1) // TPB
             ctx.enqueue_function[kb, kb](
-                mu, b_view,
-                grid_dim=(ba_blocks,), block_dim=(TPB,),
+                mu,
+                b_view,
+                grid_dim=(ba_blocks,),
+                block_dim=(TPB,),
             )
         else:
             # Fallback (Apple / non-NVIDIA): 2×2 register-tiled GEMM, then
             # post-add bias.
             comptime kt = Self._predict_kernel_2x2[BATCH, dtype]
-            comptime grid_x = (
-                Self.out_dim + MMA_BLOCK_N - 1
-            ) // MMA_BLOCK_N
+            comptime grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
             ctx.enqueue_function[kt, kt](
-                a_below, W, mu,
+                a_below,
+                W,
+                mu,
                 grid_dim=(grid_x, grid_y),
                 block_dim=(MMA_BLOCK_THREADS, 1),
             )
 
-            comptime kb = Self._bias_add_kernel[
-                BATCH, Self.out_dim, dtype
-            ]
+            comptime kb = Self._bias_add_kernel[BATCH, Self.out_dim, dtype]
             var ba_threads = BATCH * Self.out_dim
             var ba_blocks = (ba_threads + TPB - 1) // TPB
             ctx.enqueue_function[kb, kb](
-                mu, b_view,
-                grid_dim=(ba_blocks,), block_dim=(TPB,),
+                mu,
+                b_view,
+                grid_dim=(ba_blocks,),
+                block_dim=(TPB,),
             )
 
     @staticmethod
@@ -802,8 +775,11 @@ struct PCBlock[
         var threads = BATCH * Self.out_dim
         var blocks = (threads + TPB - 1) // TPB
         ctx.enqueue_function[k, k](
-            x_above, mu, eps,
-            grid_dim=(blocks,), block_dim=(TPB,),
+            x_above,
+            mu,
+            eps,
+            grid_dim=(blocks,),
+            block_dim=(TPB,),
         )
 
     @staticmethod
@@ -840,12 +816,12 @@ struct PCBlock[
             # Fallback (Apple / non-NVIDIA): 2×2 register-tiled GEMM with
             # transposed W loads.
             comptime kt = Self._pull_back_kernel_2x2[BATCH, dtype]
-            comptime grid_x = (
-                Self.in_dim + MMA_BLOCK_N - 1
-            ) // MMA_BLOCK_N
+            comptime grid_x = (Self.in_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
             comptime grid_y = (BATCH + MMA_BLOCK_M - 1) // MMA_BLOCK_M
             ctx.enqueue_function[kt, kt](
-                eps_above, W, z_below,
+                eps_above,
+                W,
+                z_below,
                 grid_dim=(grid_x, grid_y),
                 block_dim=(MMA_BLOCK_THREADS, 1),
             )
@@ -897,24 +873,20 @@ struct PCBlock[
             # dW[IN, OUT] = -a_below^T[IN, BATCH] @ eps_above[BATCH, OUT]
             # max_matmul has no transpose_a, so materialize a_below^T into
             # a scratch buffer first, then compute the GEMM and negate dW.
-            var a_T_buf = ctx.enqueue_create_buffer[dtype](
-                BATCH * Self.in_dim
-            )
+            var a_T_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.in_dim)
             var a_T = LayoutTensor[
                 dtype,
                 Layout.row_major(Self.in_dim, BATCH),
                 MutAnyOrigin,
             ](a_T_buf.unsafe_ptr())
 
-            comptime kt = Self._transpose_2d_kernel[
-                BATCH, Self.in_dim, dtype
-            ]
-            comptime t_blocks = (
-                BATCH * Self.in_dim + TPB - 1
-            ) // TPB
+            comptime kt = Self._transpose_2d_kernel[BATCH, Self.in_dim, dtype]
+            comptime t_blocks = (BATCH * Self.in_dim + TPB - 1) // TPB
             ctx.enqueue_function[kt, kt](
-                a_T, a_below,
-                grid_dim=(t_blocks,), block_dim=(TPB,),
+                a_T,
+                a_below,
+                grid_dim=(t_blocks,),
+                block_dim=(TPB,),
             )
 
             max_matmul[target="gpu"](
@@ -930,28 +902,23 @@ struct PCBlock[
                 Layout.row_major(Self.in_dim * Self.out_dim),
                 MutAnyOrigin,
             ](grads.ptr)
-            comptime kn = Self._negate_kernel[
-                Self.in_dim * Self.out_dim, dtype
-            ]
-            comptime n_blocks = (
-                Self.in_dim * Self.out_dim + TPB - 1
-            ) // TPB
+            comptime kn = Self._negate_kernel[Self.in_dim * Self.out_dim, dtype]
+            comptime n_blocks = (Self.in_dim * Self.out_dim + TPB - 1) // TPB
             ctx.enqueue_function[kn, kn](
                 W_grad_flat,
-                grid_dim=(n_blocks,), block_dim=(TPB,),
+                grid_dim=(n_blocks,),
+                block_dim=(TPB,),
             )
         else:
             # Fallback (Apple / non-NVIDIA): 2×2 register-tiled GEMM with
             # transposed a_below loads; sign baked into the store.
             comptime kw = Self._weight_grad_kernel_2x2[BATCH, dtype]
-            comptime w_grid_x = (
-                Self.out_dim + MMA_BLOCK_N - 1
-            ) // MMA_BLOCK_N
-            comptime w_grid_y = (
-                Self.in_dim + MMA_BLOCK_M - 1
-            ) // MMA_BLOCK_M
+            comptime w_grid_x = (Self.out_dim + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime w_grid_y = (Self.in_dim + MMA_BLOCK_M - 1) // MMA_BLOCK_M
             ctx.enqueue_function[kw, kw](
-                a_below, eps_above, W_grad,
+                a_below,
+                eps_above,
+                W_grad,
                 grid_dim=(w_grid_x, w_grid_y),
                 block_dim=(MMA_BLOCK_THREADS, 1),
             )
@@ -960,6 +927,8 @@ struct PCBlock[
         var b_threads = Self.out_dim
         var b_blocks = (b_threads + TPB - 1) // TPB
         ctx.enqueue_function[kb, kb](
-            eps_above, b_grad,
-            grid_dim=(b_blocks,), block_dim=(TPB,),
+            eps_above,
+            b_grad,
+            grid_dim=(b_blocks,),
+            block_dim=(TPB,),
         )

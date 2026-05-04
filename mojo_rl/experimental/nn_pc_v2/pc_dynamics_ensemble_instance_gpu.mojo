@@ -62,8 +62,12 @@ struct PCDynamicsEnsembleInstanceGPU[
     """
 
     comptime ENS = PCDynamicsEnsembleGPU[
-        Self.OBS_DIM, Self.ACTION_DIM, Self.HIDDEN_DIM,
-        Self.NUM_ENSEMBLE, Self.NUM_ELITES, Self.dtype,
+        Self.OBS_DIM,
+        Self.ACTION_DIM,
+        Self.HIDDEN_DIM,
+        Self.NUM_ENSEMBLE,
+        Self.NUM_ELITES,
+        Self.dtype,
     ]
     comptime DYN = Self.ENS.DYN
     comptime OPT = Adam[LR=Self.DYN_LR]
@@ -88,8 +92,8 @@ struct PCDynamicsEnsembleInstanceGPU[
     # Sampling-staging shared size — covers both train minibatch sampling
     # and rollout-start sampling.
     comptime SAMPLE_BATCH: Int = (
-        Self.DYN_BATCH if Self.DYN_BATCH > Self.ROLLOUT_BATCH
-        else Self.ROLLOUT_BATCH
+        Self.DYN_BATCH if Self.DYN_BATCH
+        > Self.ROLLOUT_BATCH else Self.ROLLOUT_BATCH
     )
 
     # =========================================================================
@@ -140,21 +144,23 @@ struct PCDynamicsEnsembleInstanceGPU[
     # =========================================================================
 
     # Rollout state (per ROLLOUT_BATCH).
-    var r_obs: DeviceBuffer[Self.dtype]            # [RB * obs_dim]
-    var r_next_obs: DeviceBuffer[Self.dtype]       # [RB * obs_dim]
-    var r_actions: DeviceBuffer[Self.dtype]        # [RB * action_dim]
-    var r_rewards: DeviceBuffer[Self.dtype]        # [RB]
-    var r_dones: DeviceBuffer[Self.dtype]          # [RB]
-    var r_alive: DeviceBuffer[Self.dtype]          # [RB] alive mask multi-step
+    var r_obs: DeviceBuffer[Self.dtype]  # [RB * obs_dim]
+    var r_next_obs: DeviceBuffer[Self.dtype]  # [RB * obs_dim]
+    var r_actions: DeviceBuffer[Self.dtype]  # [RB * action_dim]
+    var r_rewards: DeviceBuffer[Self.dtype]  # [RB]
+    var r_dones: DeviceBuffer[Self.dtype]  # [RB]
+    var r_alive: DeviceBuffer[Self.dtype]  # [RB] alive mask multi-step
 
     # Rollout dynamics input/output. `r_dyn_input` is the staged [obs|action]
     # tensor (same role as MBPO's). `r_dyn_output` holds one elite member's
     # forward output (READOUT-wide, no logvar). `r_dyn_output_all` stacks
     # all elite forwards: [NUM_ELITES, RB, READOUT] for per-sample elite
     # selection in the rollout sample kernel.
-    var r_dyn_input: DeviceBuffer[Self.dtype]      # [RB * AUG_DIM]
-    var r_dyn_output: DeviceBuffer[Self.dtype]     # [RB * READOUT]
-    var r_dyn_output_all: DeviceBuffer[Self.dtype] # [NUM_ELITES * RB * READOUT]
+    var r_dyn_input: DeviceBuffer[Self.dtype]  # [RB * AUG_DIM]
+    var r_dyn_output: DeviceBuffer[Self.dtype]  # [RB * READOUT]
+    var r_dyn_output_all: DeviceBuffer[
+        Self.dtype
+    ]  # [NUM_ELITES * RB * READOUT]
 
     # PCN-internal activation scratch shared with `predict_rollout_member`.
     # These are PC-graph activations (not MBPO's NLL pipeline), kept under
@@ -164,42 +170,44 @@ struct PCDynamicsEnsembleInstanceGPU[
     # `a_buf` ([RB*SCRATCH_IN]) sized for the whole PCBlock chain (sum
     # of per-block OUT_DIMs / IN_DIMs across both blocks). The names are
     # legacy from a single-block draft; capacity is now full SCRATCH_*.
-    var r_a_aug_dbuf: DeviceBuffer[Self.dtype]     # mu_buf  [RB * SCRATCH_OUT]
-    var r_z_dbuf: DeviceBuffer[Self.dtype]         # a_buf   [RB * SCRATCH_IN]
-    var r_a_z_dbuf: DeviceBuffer[Self.dtype]       # [RB * HIDDEN_DIM] (reserved)
+    var r_a_aug_dbuf: DeviceBuffer[Self.dtype]  # mu_buf  [RB * SCRATCH_OUT]
+    var r_z_dbuf: DeviceBuffer[Self.dtype]  # a_buf   [RB * SCRATCH_IN]
+    var r_a_z_dbuf: DeviceBuffer[Self.dtype]  # [RB * HIDDEN_DIM] (reserved)
 
     # Per-sample elite selection (matches MBPO).
     var r_elite_idx_per_sample: DeviceBuffer[DType.int32]  # [RB]
-    var r_elite_rng: DeviceBuffer[DType.uint32]            # [1]
+    var r_elite_rng: DeviceBuffer[DType.uint32]  # [1]
     # Map elite-slot -> ensemble-member index. Re-uploaded from
     # `elite_indices` after every train round (see `sync_elite_member_buf`).
-    var elite_member_buf: DeviceBuffer[DType.int32]        # [NUM_ELITES]
-    var elite_member_host: HostBuffer[DType.int32]         # [NUM_ELITES]
+    var elite_member_buf: DeviceBuffer[DType.int32]  # [NUM_ELITES]
+    var elite_member_host: HostBuffer[DType.int32]  # [NUM_ELITES]
 
     # Actor workspace (caller sizes via R_WS_SIZE). Used by both actor and
     # any rollout-time forward that needs scratch.
-    var r_ws: DeviceBuffer[Self.dtype]             # [R_WS_SIZE]
+    var r_ws: DeviceBuffer[Self.dtype]  # [R_WS_SIZE]
 
     # Replay-buffer sample staging — shared by training and rollout sample
     # paths. Sized for max(DYN_BATCH, ROLLOUT_BATCH) so both fit.
-    var s_obs: DeviceBuffer[Self.dtype]            # [SB * obs_dim]
-    var s_act: DeviceBuffer[Self.dtype]            # [SB * action_dim]
-    var s_rew: DeviceBuffer[Self.dtype]            # [SB]
-    var s_nobs: DeviceBuffer[Self.dtype]           # [SB * obs_dim]
-    var s_done: DeviceBuffer[Self.dtype]           # [SB]
-    var s_idx: DeviceBuffer[DType.int32]           # [SB]
+    var s_obs: DeviceBuffer[Self.dtype]  # [SB * obs_dim]
+    var s_act: DeviceBuffer[Self.dtype]  # [SB * action_dim]
+    var s_rew: DeviceBuffer[Self.dtype]  # [SB]
+    var s_nobs: DeviceBuffer[Self.dtype]  # [SB * obs_dim]
+    var s_done: DeviceBuffer[Self.dtype]  # [SB]
+    var s_idx: DeviceBuffer[DType.int32]  # [SB]
 
     # Input scaler — initialized to identity so callers that don't fit a
     # scaler get pass-through normalization. Matches MBPO's behavior on
     # the first dynamics train (scaler refit there). Sized DYN_IN.
-    var input_mean: DeviceBuffer[Self.dtype]       # [DYN_IN]
-    var input_std: DeviceBuffer[Self.dtype]        # [DYN_IN]
+    var input_mean: DeviceBuffer[Self.dtype]  # [DYN_IN]
+    var input_std: DeviceBuffer[Self.dtype]  # [DYN_IN]
 
     # =========================================================================
     # Construction / destruction.
     # =========================================================================
 
-    def __init__(out self, ctx: DeviceContext, base_seed: UInt64 = UInt64(7)) raises:
+    def __init__(
+        out self, ctx: DeviceContext, base_seed: UInt64 = UInt64(7)
+    ) raises:
         """Allocate all GPU buffers and init members on host → upload."""
         # Param buffers.
         self.params_dbuf = ctx.enqueue_create_buffer[Self.dtype](
@@ -226,9 +234,7 @@ struct PCDynamicsEnsembleInstanceGPU[
         var opt_state_init = ctx.enqueue_create_host_buffer[Self.dtype](
             Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM
         )
-        for i in range(
-            Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM
-        ):
+        for i in range(Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM):
             opt_state_init.unsafe_ptr()[i] = Scalar[Self.dtype](0)
         ctx.enqueue_copy(self.opt_state_dbuf, opt_state_init)
 
@@ -236,12 +242,16 @@ struct PCDynamicsEnsembleInstanceGPU[
             Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE
         )
         for m in range(Self.NUM_ENSEMBLE):
-            opt_global_init.unsafe_ptr()[m * Self.OPT.GLOBAL_STATE_SIZE] = (
-                Scalar[Self.dtype](0)  # step counter (bit-pattern UInt32)
-            )
+            opt_global_init.unsafe_ptr()[
+                m * Self.OPT.GLOBAL_STATE_SIZE
+            ] = Scalar[Self.dtype](
+                0
+            )  # step counter (bit-pattern UInt32)
             opt_global_init.unsafe_ptr()[
                 m * Self.OPT.GLOBAL_STATE_SIZE + 1
-            ] = Scalar[Self.dtype](1.0)  # lr_scale
+            ] = Scalar[Self.dtype](
+                1.0
+            )  # lr_scale
         ctx.enqueue_copy(self.opt_global_dbuf, opt_global_init)
 
         # Step counters and elite indices on host.
@@ -316,12 +326,8 @@ struct PCDynamicsEnsembleInstanceGPU[
         self.r_rewards = ctx.enqueue_create_buffer[Self.dtype](
             Self.ROLLOUT_BATCH
         )
-        self.r_dones = ctx.enqueue_create_buffer[Self.dtype](
-            Self.ROLLOUT_BATCH
-        )
-        self.r_alive = ctx.enqueue_create_buffer[Self.dtype](
-            Self.ROLLOUT_BATCH
-        )
+        self.r_dones = ctx.enqueue_create_buffer[Self.dtype](Self.ROLLOUT_BATCH)
+        self.r_alive = ctx.enqueue_create_buffer[Self.dtype](Self.ROLLOUT_BATCH)
 
         # Rollout dynamics input/output (renamed from r_s_a_dbuf / r_out_dbuf).
         self.r_dyn_input = ctx.enqueue_create_buffer[Self.dtype](
@@ -386,9 +392,7 @@ struct PCDynamicsEnsembleInstanceGPU[
         self.input_mean = ctx.enqueue_create_buffer[Self.dtype](
             Self.DYN.AUG_DIM
         )
-        self.input_std = ctx.enqueue_create_buffer[Self.dtype](
-            Self.DYN.AUG_DIM
-        )
+        self.input_std = ctx.enqueue_create_buffer[Self.dtype](Self.DYN.AUG_DIM)
         self.input_mean.enqueue_fill(Scalar[Self.dtype](0.0))
         self.input_std.enqueue_fill(Scalar[Self.dtype](1.0))
 
@@ -450,7 +454,9 @@ struct PCDynamicsEnsembleInstanceGPU[
     # Helpers to avoid copy-paste in the train / eval / rollout entry points.
     # =========================================================================
 
-    fn _lat_view(self) -> LayoutTensor[
+    def _lat_view(
+        self,
+    ) -> LayoutTensor[
         Self.dtype,
         Layout.row_major(Self.DYN_BATCH, Self.DYN.SCRATCH_LAT),
         MutAnyOrigin,
@@ -461,7 +467,9 @@ struct PCDynamicsEnsembleInstanceGPU[
             MutAnyOrigin,
         ](self.lat_dbuf.unsafe_ptr())
 
-    fn _mu_eps_view(self) -> LayoutTensor[
+    def _mu_eps_view(
+        self,
+    ) -> LayoutTensor[
         Self.dtype,
         Layout.row_major(Self.DYN_BATCH, Self.DYN.SCRATCH_OUT),
         MutAnyOrigin,
@@ -472,7 +480,9 @@ struct PCDynamicsEnsembleInstanceGPU[
             MutAnyOrigin,
         ](self.mu_eps_dbuf.unsafe_ptr())
 
-    fn _a_below_view(self) -> LayoutTensor[
+    def _a_below_view(
+        self,
+    ) -> LayoutTensor[
         Self.dtype,
         Layout.row_major(Self.DYN_BATCH, Self.DYN.SCRATCH_IN),
         MutAnyOrigin,
@@ -483,7 +493,9 @@ struct PCDynamicsEnsembleInstanceGPU[
             MutAnyOrigin,
         ](self.a_below_dbuf.unsafe_ptr())
 
-    fn _z_below_view(self) -> LayoutTensor[
+    def _z_below_view(
+        self,
+    ) -> LayoutTensor[
         Self.dtype,
         Layout.row_major(Self.DYN_BATCH, Self.DYN.SCRATCH_IN),
         MutAnyOrigin,
@@ -494,7 +506,9 @@ struct PCDynamicsEnsembleInstanceGPU[
             MutAnyOrigin,
         ](self.z_below_dbuf.unsafe_ptr())
 
-    fn _dx_view(self) -> LayoutTensor[
+    def _dx_view(
+        self,
+    ) -> LayoutTensor[
         Self.dtype,
         Layout.row_major(Self.DYN_BATCH, Self.DYN.SCRATCH_LAT),
         MutAnyOrigin,
@@ -505,7 +519,9 @@ struct PCDynamicsEnsembleInstanceGPU[
             MutAnyOrigin,
         ](self.dx_dbuf.unsafe_ptr())
 
-    fn _s_a_view(self) -> LayoutTensor[
+    def _s_a_view(
+        self,
+    ) -> LayoutTensor[
         Self.dtype,
         Layout.row_major(Self.DYN_BATCH, Self.DYN.AUG_DIM),
         MutAnyOrigin,
@@ -516,7 +532,9 @@ struct PCDynamicsEnsembleInstanceGPU[
             MutAnyOrigin,
         ](self.s_a_dbuf.unsafe_ptr())
 
-    fn _target_view(self) -> LayoutTensor[
+    def _target_view(
+        self,
+    ) -> LayoutTensor[
         Self.dtype,
         Layout.row_major(Self.DYN_BATCH, Self.DYN.READOUT),
         MutAnyOrigin,
@@ -551,12 +569,19 @@ struct PCDynamicsEnsembleInstanceGPU[
         var z_below = self._z_below_view()
         var dx = self._dx_view()
         Self.ENS.train_member_gpu[Self.DYN_BATCH, Self.OPT](
-            ctx, m, s_a, target,
+            ctx,
+            m,
+            s_a,
+            target,
             self.params_dbuf.unsafe_ptr(),
             self.grads_dbuf.unsafe_ptr(),
             self.opt_state_dbuf.unsafe_ptr(),
             self.opt_global_dbuf.unsafe_ptr(),
-            lat, mu_eps, a_below, z_below, dx,
+            lat,
+            mu_eps,
+            a_below,
+            z_below,
+            dx,
             self.step_nums[m],
             T_infer=Self.T_INFER,
             lr_x=Scalar[Self.dtype](Self.LR_X_FLOAT),
@@ -599,8 +624,13 @@ struct PCDynamicsEnsembleInstanceGPU[
         var pred_mu = self._mu_eps_view()
         var pred_a = self._a_below_view()
         Self.ENS.predict_member_gpu[Self.DYN_BATCH](
-            ctx, m, s_a, self.params_dbuf.unsafe_ptr(),
-            pred_mu, pred_a, e_out_t,
+            ctx,
+            m,
+            s_a,
+            self.params_dbuf.unsafe_ptr(),
+            pred_mu,
+            pred_a,
+            e_out_t,
         )
         # Download outputs + targets, MSE on host.
         ctx.enqueue_copy(self.e_out_host, self.e_out_dbuf)
@@ -668,8 +698,13 @@ struct PCDynamicsEnsembleInstanceGPU[
             MutAnyOrigin,
         ](self.r_dyn_output.unsafe_ptr())
         Self.ENS.predict_member_gpu[Self.ROLLOUT_BATCH](
-            ctx, m, r_s_a_t, self.params_dbuf.unsafe_ptr(),
-            r_mu_buf_t, r_a_buf_t, r_out_t,
+            ctx,
+            m,
+            r_s_a_t,
+            self.params_dbuf.unsafe_ptr(),
+            r_mu_buf_t,
+            r_a_buf_t,
+            r_out_t,
         )
 
     # =========================================================================
@@ -715,8 +750,13 @@ struct PCDynamicsEnsembleInstanceGPU[
             MutAnyOrigin,
         ](slot_ptr)
         Self.ENS.predict_member_gpu[Self.ROLLOUT_BATCH](
-            ctx, m, r_s_a_t, self.params_dbuf.unsafe_ptr(),
-            r_mu_buf_t, r_a_buf_t, slot_t,
+            ctx,
+            m,
+            r_s_a_t,
+            self.params_dbuf.unsafe_ptr(),
+            r_mu_buf_t,
+            r_a_buf_t,
+            slot_t,
         )
 
     # =========================================================================
@@ -772,18 +812,18 @@ struct PCDynamicsEnsembleInstanceGPU[
         var obs_data_t = LayoutTensor[
             Self.dtype, Layout.row_major(BUF_CAP, Self.OBS_DIM), MutAnyOrigin
         ](
-            rebind[
-                UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin]
-            ](buffer.states_buf.unsafe_ptr())
+            rebind[UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin]](
+                buffer.states_buf.unsafe_ptr()
+            )
         )
         var act_data_t = LayoutTensor[
             Self.dtype,
             Layout.row_major(BUF_CAP, Self.ACTION_DIM),
             MutAnyOrigin,
         ](
-            rebind[
-                UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin]
-            ](buffer.actions_buf.unsafe_ptr())
+            rebind[UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin]](
+                buffer.actions_buf.unsafe_ptr()
+            )
         )
 
         # Pass 1: per-dim means on populated rows [0, n).
@@ -794,12 +834,18 @@ struct PCDynamicsEnsembleInstanceGPU[
             Self.dtype, BUF_CAP, Self.ACTION_DIM
         ]
         ctx.enqueue_function[obs_mean_k, obs_mean_k](
-            mean_obs_t, obs_data_t, n,
-            grid_dim=(Self.OBS_DIM,), block_dim=(1,),
+            mean_obs_t,
+            obs_data_t,
+            n,
+            grid_dim=(Self.OBS_DIM,),
+            block_dim=(1,),
         )
         ctx.enqueue_function[act_mean_k, act_mean_k](
-            mean_act_t, act_data_t, n,
-            grid_dim=(Self.ACTION_DIM,), block_dim=(1,),
+            mean_act_t,
+            act_data_t,
+            n,
+            grid_dim=(Self.ACTION_DIM,),
+            block_dim=(1,),
         )
 
         # Pass 2: per-dim stds (need means already on device).
@@ -811,12 +857,22 @@ struct PCDynamicsEnsembleInstanceGPU[
             Self.dtype, BUF_CAP, Self.ACTION_DIM
         ]
         ctx.enqueue_function[obs_std_k, obs_std_k](
-            std_obs_t, obs_data_t, mean_obs_t, n, min_std,
-            grid_dim=(Self.OBS_DIM,), block_dim=(1,),
+            std_obs_t,
+            obs_data_t,
+            mean_obs_t,
+            n,
+            min_std,
+            grid_dim=(Self.OBS_DIM,),
+            block_dim=(1,),
         )
         ctx.enqueue_function[act_std_k, act_std_k](
-            std_act_t, act_data_t, mean_act_t, n, min_std,
-            grid_dim=(Self.ACTION_DIM,), block_dim=(1,),
+            std_act_t,
+            act_data_t,
+            mean_act_t,
+            n,
+            min_std,
+            grid_dim=(Self.ACTION_DIM,),
+            block_dim=(1,),
         )
 
     # =========================================================================

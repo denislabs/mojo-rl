@@ -132,11 +132,13 @@ struct PCDynamicsEnsembleInstanceCPU[
         memset(self.params_buf, 0, Self.ENS.TOTAL_PARAM_SIZE)
         memset(self.grads_buf, 0, Self.ENS.TOTAL_PARAM_SIZE)
         memset(
-            self.opt_state_buf, 0,
+            self.opt_state_buf,
+            0,
             Self.ENS.TOTAL_PARAM_SIZE * Self.OPT.STATE_PER_PARAM,
         )
         memset(
-            self.opt_global_buf, 0,
+            self.opt_global_buf,
+            0,
             Self.NUM_ENSEMBLE * Self.OPT.GLOBAL_STATE_SIZE,
         )
         Self.ENS.init_all(self.params_buf, base_seed=base_seed)
@@ -228,7 +230,7 @@ struct PCDynamicsEnsembleInstanceCPU[
         self.e_out = take.e_out
         self.rng_state = take.rng_state
 
-    fn __del__(deinit self):
+    def __del__(deinit self):
         self.params_buf.free()
         self.grads_buf.free()
         self.opt_state_buf.free()
@@ -291,7 +293,10 @@ struct PCDynamicsEnsembleInstanceCPU[
             Self.dtype, Layout.row_major(1, Self.DYN.READOUT), MutAnyOrigin
         ](self.p_out)
         Self.ENS.predict_member[1](
-            member_idx, p_s_a_t, self.params_buf, p_out_t,
+            member_idx,
+            p_s_a_t,
+            self.params_buf,
+            p_out_t,
         )
         # Output: out[0:OBS_DIM] = predicted delta_obs (residual), out[OBS_DIM] = reward.
         # `predict_single`'s contract on vanilla MBPO returns absolute next_obs
@@ -299,9 +304,7 @@ struct PCDynamicsEnsembleInstanceCPU[
         out_next_obs.clear()
         for d in range(Self.OBS_DIM):
             var delta = Float64(self.p_out[d])
-            out_next_obs.append(
-                Scalar[Self.dtype](Float64(obs[d]) + delta)
-            )
+            out_next_obs.append(Scalar[Self.dtype](Float64(obs[d]) + delta))
         out_reward.clear()
         out_reward.append(self.p_out[Self.OBS_DIM])
 
@@ -339,8 +342,10 @@ struct PCDynamicsEnsembleInstanceCPU[
         for m in range(Self.NUM_ENSEMBLE):
             for _ in range(n_minibatches):
                 Self._build_batch_from_buffer[buffer_capacity](
-                    rng, buffer,
-                    self.s_a_batch, self.target_batch,
+                    rng,
+                    buffer,
+                    self.s_a_batch,
+                    self.target_batch,
                 )
                 var s_a_t = LayoutTensor[
                     Self.dtype,
@@ -378,10 +383,18 @@ struct PCDynamicsEnsembleInstanceCPU[
                     MutAnyOrigin,
                 ](self.dx_buf)
                 _ = Self.ENS.train_member[Self.DYN_BATCH, Self.OPT](
-                    m, s_a_t, target_t,
-                    self.params_buf, self.grads_buf,
-                    self.opt_state_buf, self.opt_global_buf,
-                    lat_t, mu_eps_t, a_below_t, z_below_t, dx_t,
+                    m,
+                    s_a_t,
+                    target_t,
+                    self.params_buf,
+                    self.grads_buf,
+                    self.opt_state_buf,
+                    self.opt_global_buf,
+                    lat_t,
+                    mu_eps_t,
+                    a_below_t,
+                    z_below_t,
+                    dx_t,
                     self.step_nums[m],
                     T_infer=Self.T_INFER,
                     lr_x=Scalar[Self.dtype](Self.LR_X_FLOAT),
@@ -425,7 +438,11 @@ struct PCDynamicsEnsembleInstanceCPU[
         var holdout_losses = List[Float64](capacity=Self.NUM_ENSEMBLE)
         for m in range(Self.NUM_ENSEMBLE):
             var L = Self.ENS.eval_member_loss[Self.DYN_BATCH](
-                m, s_a_h, target_h, self.params_buf, e_out_t,
+                m,
+                s_a_h,
+                target_h,
+                self.params_buf,
+                e_out_t,
             )
             holdout_losses.append(L)
         Self.ENS.select_elites(holdout_losses, self.elite_indices)
@@ -439,7 +456,7 @@ struct PCDynamicsEnsembleInstanceCPU[
     # =========================================================================
 
     @staticmethod
-    fn _build_batch_from_buffer[
+    def _build_batch_from_buffer[
         buffer_capacity: Int,
     ](
         mut rng: PhiloxRandom,
@@ -466,18 +483,18 @@ struct PCDynamicsEnsembleInstanceCPU[
                     idx * Self.OBS_DIM + d
                 ]
             for d in range(Self.ACTION_DIM):
-                s_a_buf[b * Self.DYN.AUG_DIM + Self.OBS_DIM + d] = (
-                    buffer.actions[idx * Self.ACTION_DIM + d]
-                )
+                s_a_buf[
+                    b * Self.DYN.AUG_DIM + Self.OBS_DIM + d
+                ] = buffer.actions[idx * Self.ACTION_DIM + d]
             for d in range(Self.OBS_DIM):
                 var s_d = Float64(buffer.obs[idx * Self.OBS_DIM + d])
                 var sn_d = Float64(buffer.next_obs[idx * Self.OBS_DIM + d])
                 target_buf[b * Self.DYN.READOUT + d] = Scalar[Self.dtype](
                     sn_d - s_d
                 )
-            target_buf[b * Self.DYN.READOUT + Self.OBS_DIM] = (
-                buffer.rewards[idx]
-            )
+            target_buf[b * Self.DYN.READOUT + Self.OBS_DIM] = buffer.rewards[
+                idx
+            ]
 
     # =========================================================================
     # Checkpoint surface — mirrors `NetworkState.write_sections` /

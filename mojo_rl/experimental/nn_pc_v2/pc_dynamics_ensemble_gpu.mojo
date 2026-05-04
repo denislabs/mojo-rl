@@ -54,9 +54,7 @@ struct PCDynamicsEnsembleGPU[
 
     @staticmethod
     def init_all_host(
-        host_params_buf: UnsafePointer[
-            Scalar[Self.dtype], origin=MutAnyOrigin
-        ],
+        host_params_buf: UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin],
         base_seed: UInt64,
     ):
         """Init all NUM_ENSEMBLE members into a host buffer. Caller copies
@@ -78,7 +76,7 @@ struct PCDynamicsEnsembleGPU[
     # =========================================================================
 
     @staticmethod
-    fn member_params_view(
+    def member_params_view(
         params_buf: UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin],
         m: Int,
     ) -> LayoutTensor[
@@ -162,14 +160,9 @@ struct PCDynamicsEnsembleGPU[
         var g_view = Self.member_params_view(grads_buf, m)
         var s_view = LayoutTensor[
             Self.dtype,
-            Layout.row_major(
-                Self.PER_MEMBER_PARAM_SIZE, OPT.STATE_PER_PARAM
-            ),
+            Layout.row_major(Self.PER_MEMBER_PARAM_SIZE, OPT.STATE_PER_PARAM),
             MutAnyOrigin,
-        ](
-            opt_state_buf
-            + m * Self.PER_MEMBER_PARAM_SIZE * OPT.STATE_PER_PARAM
-        )
+        ](opt_state_buf + m * Self.PER_MEMBER_PARAM_SIZE * OPT.STATE_PER_PARAM)
         var gl_view = LayoutTensor[
             Self.dtype,
             Layout.row_major(OPT.GLOBAL_STATE_SIZE),
@@ -178,9 +171,16 @@ struct PCDynamicsEnsembleGPU[
 
         # SGLD-settle z + compute PC weight grads on GPU.
         Self.DYN.TRAINER.compute_grads_only_gpu[BATCH](
-            ctx, p_view, g_view,
-            latents, mu_eps_buf, a_below_buf, z_below_buf, dx_buf,
-            s_a, target,
+            ctx,
+            p_view,
+            g_view,
+            latents,
+            mu_eps_buf,
+            a_below_buf,
+            z_below_buf,
+            dx_buf,
+            s_a,
+            target,
             T_infer=T_infer,
             lr_x=lr_x,
         )
@@ -235,7 +235,7 @@ struct PCDynamicsEnsembleGPU[
     # =========================================================================
 
     @staticmethod
-    fn select_elites(
+    def select_elites(
         losses: List[Float64],
         mut elite_indices: List[Int],
     ):
