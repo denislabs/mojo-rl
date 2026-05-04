@@ -128,6 +128,15 @@ def main() raises:
             num_rollouts_per_step=100_000,
             real_ratio=0.05,
             sac_updates_per_step=40,
+            # Option 2: bump per-call dynamics training budget to close the
+            # ~3× per-obs-dim MSE gap to vanilla MBPO. Default is 50; vanilla
+            # MBPO does ~50–500 effective per-member epochs per train call.
+            # 200 ≈ 4× the previous PCN budget. Cost on RTX 5090: ~1.5s extra
+            # per train call (every 250 env steps) ≈ ~6 min over a 60K-step run.
+            dyn_train_minibatches_per_call=200,
+            # Bump the warmup pretrain proportionally so dynamics is close to
+            # vanilla quality before the first SAC update sees synth data.
+            dyn_warmup_minibatches=2000,
             checkpoint_every=50_000,
             checkpoint_path="pcn_mbpo_half_cheetah.ckpt",
             diag_every=500,
