@@ -1359,6 +1359,24 @@ struct TDMPC2Agent[
                     block_dim=(TPB,),
                 )
 
+        # Store z[H] = z_pred from final dynamics step.
+        # The world-model backward (Phase 2) only reads z[0..H-1] for
+        # consistency targets, but the policy update (in train_gpu) consumes
+        # the full H+1 latent rollout — matching reference TD-MPC2's
+        # `update_pi(zs.detach(), task)` where zs has shape [H+1, B, latent].
+        var z_hist_H = LayoutTensor[
+            dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
+        ](gpu_state.z_history_buf.unsafe_ptr() + Self.H * Self.B_LATENT)
+        ctx.enqueue_function[
+            copy_buffer_kernel[dtype, Self.B_LATENT],
+            copy_buffer_kernel[dtype, Self.B_LATENT],
+        ](
+            z_hist_H,
+            z_pred_flat_tensor,
+            grid_dim=(Self.BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 2: BACKWARD — reverse order, carry gradient through dynamics
         # ═══════════════════════════════════════════════════════════════════
@@ -3246,33 +3264,51 @@ struct TDMPC2Agent[
                 # No sync needed — GPU pipelines optimizer → policy update naturally
                 gs.pol.zero_grads(ctx)
 
-                # Encode obs_0 with stop-grad → z_sg (reuse z_buf)
-                Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                    ctx,
-                    z_tensor,
-                    obs_step_tensor,
-                    enc_params_tensor,
-                    enc_model_state_tensor,
-                    gs.enc_batch_ws_buf,
-                )
-                # obs_step_buf still contains obs_0 from the world model step
+                # Reference TD-MPC2 reuses the H+1 latent rollout from the
+                # world-model forward pass (rolled with BUFFER actions) for
+                # the policy update via `zs.detach()` (tdmpc2.py:_update,
+                # update_pi). Phase 1 of `_wm_bptt_gpu` stores z_0..z_H in
+                # `z_history_buf`; we load each step's z directly from there
+                # instead of re-rolling dynamics with policy actions. This
+                # matches reference exactly and means the policy is improved
+                # at states the world model has actually been trained on.
 
                 var pol_rho_t = Scalar[dtype](1.0)
                 # Scale entropy by ACTION_DIM to match reference scaled_entropy.
-                # The 1/H factor mirrors `pi_loss = (... * rho).mean()` in
+                # The 1/(H+1) factor mirrors `pi_loss = (... * rho).mean()` in
                 # reference TD-MPC2 (tdmpc2.py:227): the trailing .mean() over
-                # the horizon dimension divides every per-step term by H.
-                # Without /H our policy gradient is H× too large — pre-autodiff-fix
-                # this was masked by the overwrite bug only retaining the last
-                # step; post-fix all H calls accumulate and over-shoot the actor
-                # into tanh saturation.
+                # the horizon dimension averages over H+1 timesteps because
+                # `zs` has shape [H+1, B, latent] (z_0 from encode + z_1..z_H
+                # from H dynamics steps). Without this normalization the policy
+                # gradient is H+1× too large; pre-autodiff-fix the overwrite bug
+                # masked it by retaining only the last step's contribution.
                 var entropy_coef_scalar = Scalar[dtype](
-                    self.entropy_coef * Float64(Self.ACT) / Float64(Self.H)
+                    self.entropy_coef
+                    * Float64(Self.ACT)
+                    / Float64(Self.H + 1)
                 )
                 var scale_scalar = Scalar[dtype](self.running_scale)
-                var inv_H = Scalar[dtype](1.0) / Scalar[dtype](Self.H)
+                var inv_HP1 = Scalar[dtype](1.0) / Scalar[dtype](Self.H + 1)
 
-                for t in range(Self.H):
+                for t in range(Self.H + 1):
+                    # Load z_t from world-model rollout history (buffer-action
+                    # rollout, computed pre-update — matches reference's
+                    # `zs.detach()` semantics).
+                    var z_hist_t = LayoutTensor[
+                        dtype, Layout.row_major(Self.B_LATENT), MutAnyOrigin
+                    ](
+                        gs.z_history_buf.unsafe_ptr() + t * Self.B_LATENT
+                    )
+                    ctx.enqueue_function[
+                        copy_buffer_kernel[dtype, Self.B_LATENT],
+                        copy_buffer_kernel[dtype, Self.B_LATENT],
+                    ](
+                        z_flat_tensor,
+                        z_hist_t,
+                        grid_dim=(Self.BATCH_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+
                     ctx.enqueue_memset(gs.grad_pi_out_buf, 0)
 
                     # Policy forward with cache → pi_out
@@ -3316,9 +3352,10 @@ struct TDMPC2Agent[
                     var rng_vals = pi_rng.step_uniform()
                     var qi_a = Int(rng_vals[0] * 5.0) % 5
                     var qi_b = (qi_a + 1 + Int(rng_vals[1] * 4.0) % 4) % 5
-                    # /H matches reference's trailing .mean() over horizon
-                    # (and /2 averages over the 2 random Q-nets used for DPG)
-                    var q_rho = pol_rho_t * inv_H / Scalar[dtype](2.0)
+                    # /(H+1) matches reference's trailing .mean() over the
+                    # H+1-element horizon dimension; /2 averages over the 2
+                    # random Q-nets used for DPG.
+                    var q_rho = pol_rho_t * inv_HP1 / Scalar[dtype](2.0)
 
                     # ── RunningScale update at first horizon step ──
                     # Decode Q-values from first Q-net to update scale (reference:
@@ -3477,26 +3514,10 @@ struct TDMPC2Agent[
                         gs.pol_batch_ws_buf,
                     )
 
-                    # Advance z_sg via dynamics (stop-grad)
-                    if t < Self.H - 1:
-                        Self.WM.DynamicsNet.MODEL.forward_gpu_no_cache[Self.BATCH](
-                            ctx,
-                            z_pred_tensor,
-                            za_tensor,
-                            dyn_params_tensor,
-                            dyn_model_state_tensor,
-                            gs.dyn_batch_ws_buf,
-                        )
-                        ctx.enqueue_function[
-                            copy_buffer_kernel[dtype, Self.B_LATENT],
-                            copy_buffer_kernel[dtype, Self.B_LATENT],
-                        ](
-                            z_flat_tensor,
-                            z_pred_flat_tensor,
-                            grid_dim=(Self.BATCH_BLOCKS,),
-                            block_dim=(TPB,),
-                        )
-
+                    # No inline dynamics rollout: z_{t+1} is loaded from
+                    # `z_history_buf` at the top of the next iteration (it's
+                    # the world-model rollout from Phase 1, with buffer
+                    # actions — matches reference TD-MPC2's `zs.detach()`).
                     pol_rho_t = pol_rho_t * Scalar[dtype](self.rho)
 
                 # Policy gradient clip + optimizer step
