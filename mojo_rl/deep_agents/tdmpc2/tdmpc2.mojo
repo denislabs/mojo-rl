@@ -2537,9 +2537,23 @@ struct TDMPC2Agent[
                     List[Scalar[dtype]](),
                 )
 
-            # Store transitions on GPU (saved obs + step results)
-            gpu_replay.store(
-                ctx, gs.env_act_buf, gs.env_rew_buf, gs.env_done_buf
+            # Store transitions on GPU with both boundary flags:
+            # - env_done_buf (term|trunc): drives sequence-rejection in
+            #   sampling so we never sample sequences that span an env
+            #   reset (post-reset obs[t+1] is meaningless for both the
+            #   consistency loss and the TD bootstrap).
+            # - terminated_buf (term-only): returned in batch_dones as
+            #   the bootstrap mask. The TD-target kernel uses this as
+            #   `(1-d)*Q_next` — zeroing only on real terminations
+            #   (Hopper falling), keeping it on time-limit truncation.
+            #   Reference TD-MPC2 (online_trainer.py, _td_target) does
+            #   the same: `info['terminated']` flows into `(1-terminated)`.
+            gpu_replay.store_with_termination(
+                ctx,
+                gs.env_act_buf,
+                gs.env_rew_buf,
+                gs.env_done_buf,
+                terminated_buf,
             )
 
             # Download only rew/done for episode tracking (small transfer)

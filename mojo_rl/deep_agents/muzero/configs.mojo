@@ -165,7 +165,24 @@ struct MuZeroMLPConfig[
         ],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
+    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
+    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
+    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
+    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
+    # |W| at 878 by step 10K with pre-min-max activations still in
+    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
+    # identical (sign-symmetric representation collapse). 1e-2 should
+    # keep |W| bounded enough that sign info propagates through min-max.
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -249,7 +266,24 @@ struct MuZeroCNNConfig[
         ],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
+    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
+    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
+    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
+    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
+    # |W| at 878 by step 10K with pre-min-max activations still in
+    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
+    # identical (sign-symmetric representation collapse). 1e-2 should
+    # keep |W| bounded enough that sign info propagates through min-max.
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -344,7 +378,24 @@ struct MuZeroResNetConfig[
         ],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
+    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
+    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
+    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
+    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
+    # |W| at 878 by step 10K with pre-min-max activations still in
+    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
+    # identical (sign-symmetric representation collapse). 1e-2 should
+    # keep |W| bounded enough that sign info propagates through min-max.
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -413,7 +464,24 @@ struct MuZeroLargeConfig[
         Parallel[Linear[512, Self.ACT], Linear[512, 301]],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
+    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
+    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
+    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
+    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
+    # |W| at 878 by step 10K with pre-min-max activations still in
+    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
+    # identical (sign-symmetric representation collapse). 1e-2 should
+    # keep |W| bounded enough that sign info propagates through min-max.
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
 
     comptime batch_size: Int = 256
     comptime buffer_capacity: Int = 500000
@@ -485,7 +553,24 @@ struct EfficientZeroConfig[
             Linear[Self.HIDDEN, Self.BINS],
         ],
     ]
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
+    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
+    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
+    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
+    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
+    # |W| at 878 by step 10K with pre-min-max activations still in
+    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
+    # identical (sign-symmetric representation collapse). 1e-2 should
+    # keep |W| bounded enough that sign info propagates through min-max.
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
 
     comptime batch_size: Int = 128
     comptime buffer_capacity: Int = 100000
@@ -565,7 +650,24 @@ struct MuZeroTicTacToeConfig[
         ],
     ]
 
-    comptime OptType = Adam[LR=Self.LR]
+    # AdamW with weight_decay=1e-4 — matches muzero-general's
+    # `torch.optim.Adam(weight_decay=1e-4)` (cartpole.py:86, trainer.py:48).
+    # Our `Adam` struct does not support weight_decay (only `AdamW` does);
+    # using bare `Adam` previously meant the agent's `weight_decay` field
+    # was a dead knob and rep weights drifted unbounded under the K-step
+    # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
+    # post-scale hidden state to saturate uniform across obs (state-blind).
+    # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
+    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
+    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
+    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
+    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
+    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
+    # |W| at 878 by step 10K with pre-min-max activations still in
+    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
+    # identical (sign-symmetric representation collapse). 1e-2 should
+    # keep |W| bounded enough that sign info propagates through min-max.
+    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
 
     # Training
     comptime batch_size: Int = Self.BS

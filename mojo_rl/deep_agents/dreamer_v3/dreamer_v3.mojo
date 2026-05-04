@@ -45,6 +45,9 @@ from mojo_rl.core import (
 from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
     SequenceReplayBuffer,
 )
+from mojo_rl.deep_agents.core.replay.gpu_sequence_replay_buffer import (
+    GPUSequenceReplayBuffer,
+)
 from .rssm import RSSM, categorical_sample, kl_divergence
 from .state import DreamerV3CPUState, DreamerV3GPUState
 from .imagination import (
@@ -2700,6 +2703,29 @@ struct DreamerV3Agent[
         gpu_state.actor.download_to(self.state.actor, ctx)
         gpu_state.critic.download_to(self.state.critic, ctx)
 
+    def do_gpu_train_step_from_device(
+        mut self,
+        ctx: DeviceContext,
+        mut gpu_state: Self.GPUStateType,
+    ) raises:
+        """One full DreamerV3 GPU training step, assuming `gpu_state.batch_*`
+        device buffers are already populated.
+
+        Use this when batches are sampled directly into device buffers
+        (e.g. via `GPUSequenceReplayBuffer.sample`), avoiding host-side
+        staging.
+        """
+        var dummy = List[Scalar[DType.float32]]()
+        self.do_gpu_train_step(
+            ctx,
+            gpu_state,
+            dummy,
+            dummy,
+            dummy,
+            dummy,
+            upload_from_host=False,
+        )
+
     def do_gpu_train_step(
         mut self,
         ctx: DeviceContext,
@@ -2708,14 +2734,18 @@ struct DreamerV3Agent[
         batch_actions: List[Scalar[DType.float32]],
         batch_rewards: List[Scalar[DType.float32]],
         batch_dones: List[Scalar[DType.float32]],
+        upload_from_host: Bool = True,
     ) raises:
         """One full DreamerV3 GPU training step.
 
-        Sequence data is sampled on CPU and uploaded here.
-        All forward/backward passes run on GPU.
+        When `upload_from_host=True` (default), the batch lists are
+        copied into `gpu_state.batch_*` device buffers before training.
+        When `upload_from_host=False`, the device buffers are assumed
+        pre-populated (e.g. by `GPUSequenceReplayBuffer.sample`); the
+        list arguments are ignored — pass empty lists.
 
         Steps:
-        1. Upload batch data to GPU
+        1. Upload batch data to GPU (skipped if upload_from_host=False)
         2. RSSM observe loop (sequential across BL, parallel across BATCH)
         3. World model losses + backward + optimizer step
         4. Imagination rollout (sequential across HORIZON, parallel across IB)
@@ -2731,6 +2761,7 @@ struct DreamerV3Agent[
             batch_actions: Sampled actions [BATCH * BL * ACT].
             batch_rewards: Sampled rewards [BATCH * BL].
             batch_dones: Sampled dones [BATCH * BL].
+            upload_from_host: If True, upload list contents to device.
         """
         comptime B = Self.batch_size
         comptime BL = Self.batch_length
@@ -2757,30 +2788,33 @@ struct DreamerV3Agent[
         comptime GHNet = Self.StateType.RSSMType.GRUHiddenNet
         comptime GGNet = Self.StateType.RSSMType.GRUGateNet
 
-        # ── 1. Upload batch data to GPU ──────────────────────────────────
+        # ── 1. Upload batch data to GPU (host → device staging) ──────────
+        # Skipped when `upload_from_host=False` — caller has already filled
+        # gpu_state.batch_* directly (e.g. via GPUSequenceReplayBuffer.sample).
         comptime OBS_SIZE = B * (BL + 1) * OBS
         comptime ACT_SIZE = B * BL * ACT
         comptime SCALAR_SIZE = B * BL
 
-        var host_obs = gpu_state.host_upload_obs_buf
-        for i in range(OBS_SIZE):
-            host_obs[i] = Scalar[dtype](batch_obs[i])
-        ctx.enqueue_copy(gpu_state.batch_obs, host_obs)
+        if upload_from_host:
+            var host_obs = gpu_state.host_upload_obs_buf
+            for i in range(OBS_SIZE):
+                host_obs[i] = Scalar[dtype](batch_obs[i])
+            ctx.enqueue_copy(gpu_state.batch_obs, host_obs)
 
-        var host_act = gpu_state.host_upload_act_buf
-        for i in range(ACT_SIZE):
-            host_act[i] = Scalar[dtype](batch_actions[i])
-        ctx.enqueue_copy(gpu_state.batch_actions, host_act)
+            var host_act = gpu_state.host_upload_act_buf
+            for i in range(ACT_SIZE):
+                host_act[i] = Scalar[dtype](batch_actions[i])
+            ctx.enqueue_copy(gpu_state.batch_actions, host_act)
 
-        var host_rew = gpu_state.host_upload_rew_buf
-        for i in range(SCALAR_SIZE):
-            host_rew[i] = Scalar[dtype](batch_rewards[i])
-        ctx.enqueue_copy(gpu_state.batch_rewards, host_rew)
+            var host_rew = gpu_state.host_upload_rew_buf
+            for i in range(SCALAR_SIZE):
+                host_rew[i] = Scalar[dtype](batch_rewards[i])
+            ctx.enqueue_copy(gpu_state.batch_rewards, host_rew)
 
-        var host_done = gpu_state.host_upload_done_buf
-        for i in range(SCALAR_SIZE):
-            host_done[i] = Scalar[dtype](batch_dones[i])
-        ctx.enqueue_copy(gpu_state.batch_dones, host_done)
+            var host_done = gpu_state.host_upload_done_buf
+            for i in range(SCALAR_SIZE):
+                host_done[i] = Scalar[dtype](batch_dones[i])
+            ctx.enqueue_copy(gpu_state.batch_dones, host_done)
 
         # ── Zero all world model gradients ───────────────────────────────
         ctx.enqueue_memset(gpu_state.encoder.grads_buf, 0)
@@ -4629,8 +4663,12 @@ struct DreamerV3Agent[
         var done_buf = ctx.enqueue_create_buffer[dtype](n_envs)
         var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
 
-        # ── Host transfer buffers (for CPU replay buffer) ────────────
-        var obs_host = ctx.enqueue_create_host_buffer[dtype](n_envs * OBS)
+        # ── Host transfer buffers (for CPU episode tracking + warmup) ────
+        # act_host: warmup-only — random CPU actions uploaded to act_buf.
+        # rew_host / done_host: per-step CPU episode tracking only.
+        # done_host is term|truncated (drives RSSM reset + episode counting).
+        # terminated_buf stays on-device — consumed by `gpu_replay.store_with_termination`
+        # as the bootstrap mask, no host download needed.
         var act_host = ctx.enqueue_create_host_buffer[dtype](n_envs * ACT)
         var rew_host = ctx.enqueue_create_host_buffer[dtype](n_envs)
         var done_host = ctx.enqueue_create_host_buffer[dtype](n_envs)
@@ -4679,11 +4717,13 @@ struct DreamerV3Agent[
         comptime INF_WS_SIZE = max(n_envs * MAX_INF_WS_PER, 1)
         var inf_ws = ctx.enqueue_create_buffer[dtype](INF_WS_SIZE)
 
-        # ── Per-env replay buffers (CPU) ─────────────────────────────
-        comptime PerEnvBuf = SequenceReplayBuffer[PER_ENV_CAP, OBS, ACT]
-        var env_bufs = List[PerEnvBuf](capacity=n_envs)
-        for _ in range(n_envs):
-            env_bufs.append(PerEnvBuf())
+        # ── GPU sequence replay buffer ───────────────────────────────
+        # Replaces the per-env CPU SequenceReplayBuffers — keeps all
+        # transitions on device and samples directly into gpu_state.batch_*,
+        # so the train step skips host→device staging entirely.
+        var gpu_replay = GPUSequenceReplayBuffer[
+            PER_ENV_CAP, OBS, ACT, n_envs
+        ](ctx)
 
         # ── GPU training state ───────────────────────────────────────
         var gpu_state = self.make_gpu_state(ctx)
@@ -4880,48 +4920,15 @@ struct DreamerV3Agent[
         )
         ctx.synchronize()
 
-        # ── Pre-allocated batch buffers (reused across training iters) ─
-        comptime BATCH_OBS_SIZE = B * (BL + 1) * OBS
-        comptime BATCH_ACT_SIZE = B * BL * ACT
-        comptime BATCH_SCALAR_SIZE = B * BL
-        var batch_obs = List[Scalar[DType.float32]](capacity=BATCH_OBS_SIZE)
-        var batch_acts = List[Scalar[DType.float32]](capacity=BATCH_ACT_SIZE)
-        var batch_rews = List[Scalar[DType.float32]](capacity=BATCH_SCALAR_SIZE)
-        var batch_dones = List[Scalar[DType.float32]](
-            capacity=BATCH_SCALAR_SIZE
-        )
-        for _ in range(BATCH_OBS_SIZE):
-            batch_obs.append(Scalar[DType.float32](0))
-        for _ in range(BATCH_ACT_SIZE):
-            batch_acts.append(Scalar[DType.float32](0))
-        for _ in range(BATCH_SCALAR_SIZE):
-            batch_rews.append(Scalar[DType.float32](0))
-            batch_dones.append(Scalar[DType.float32](0))
-
-        # ── Pre-allocated per-sample buffers (reused across samples) ──
-        comptime SEQ_OBS_SIZE = (BL + 1) * OBS
-        comptime SEQ_ACT_SIZE = BL * ACT
-        var s_obs = List[Scalar[DType.float32]](capacity=SEQ_OBS_SIZE)
-        var s_act = List[Scalar[DType.float32]](capacity=SEQ_ACT_SIZE)
-        var s_rew = List[Scalar[DType.float32]](capacity=BL)
-        var s_don = List[Scalar[DType.float32]](capacity=BL)
-        for _ in range(SEQ_OBS_SIZE):
-            s_obs.append(Scalar[DType.float32](0))
-        for _ in range(SEQ_ACT_SIZE):
-            s_act.append(Scalar[DType.float32](0))
-        for _ in range(BL):
-            s_rew.append(Scalar[DType.float32](0))
-            s_don.append(Scalar[DType.float32](0))
+        # ── Batch buffers live on device — gpu_replay.sample writes
+        # directly into gpu_state.batch_obs / batch_actions / batch_rewards /
+        # batch_dones, and do_gpu_train_step_from_device skips upload.
 
         # ── Main training loop ───────────────────────────────────────
         while completed_episodes < num_episodes:
-            # ── 1. Download current obs (for replay buffer) ──────────
-            ctx.enqueue_copy(obs_host, obs_buf)
-
-            # ── 2. Action selection (all on GPU) ─────────────────────
+            # ── 1. Action selection (all on GPU) ─────────────────────
             if total_steps < self.warmup_steps * n_envs:
                 # Warmup: random actions on CPU, upload
-                ctx.synchronize()  # wait for obs_host
                 for i in range(n_envs * ACT):
                     act_host[i] = Scalar[dtype](random_float64(-1.0, 1.0))
                 ctx.enqueue_copy(act_buf, act_host)
@@ -5091,6 +5098,10 @@ struct DreamerV3Agent[
                     block_dim=(TPB,),
                 )
 
+            # ── 2. Save current obs[t] in GPU replay before env step
+            # overwrites obs_buf with obs[t+1] ──────────────────────
+            gpu_replay.save_obs(ctx, obs_buf)
+
             # ── 3. Step GPU envs ─────────────────────────────────────
             comptime if TOTAL_WS > 0:
                 E.step_kernel_gpu[n_envs, E.STATE_SIZE, OBS, ACT](
@@ -5118,13 +5129,25 @@ struct DreamerV3Agent[
                     List[Scalar[dtype]](),
                 )
 
-            # ── 4. Download transitions BEFORE reset clears done flags ──
-            ctx.enqueue_copy(act_host, act_buf)
+            # ── 4. Store transition in GPU replay ────────────────────
+            # done_buf (term|trunc): drives sequence-rejection in sampling.
+            # terminated_buf (term-only): bootstrap mask returned in
+            # batch_dones — the continue head trains on it as
+            # `(1 - terminated) * V_next` so time-limit truncations don't
+            # zero the bootstrap.
+            gpu_replay.store_with_termination(
+                ctx, act_buf, rew_buf, done_buf, terminated_buf
+            )
+
+            # ── 5. Download minimal scalars for CPU episode tracking ──
+            # Replay storage already happened on-device; only rew + done
+            # (term|trunc) come back to CPU for cpu_ep_rewards updates and
+            # episode counting. terminated_buf stays on the GPU.
             ctx.enqueue_copy(rew_host, rew_buf)
             ctx.enqueue_copy(done_host, done_buf)
-            ctx.synchronize()  # also completes obs_host from step 1
+            ctx.synchronize()
 
-            # ── 5. Reset done envs (physics + RSSM) ──────────────────
+            # ── 6. Reset done envs (physics + RSSM) ──────────────────
             # Reset RSSM state for done envs (before done_buf is cleared)
             ctx.enqueue_function[run_rssm_reset_done, run_rssm_reset_done](
                 deter_2d,
@@ -5147,20 +5170,12 @@ struct DreamerV3Agent[
                 ctx, states_buf, obs_buf
             )
 
-            # ── 6. Process transitions (CPU, done_host already downloaded) ─
+            # ── 7. CPU episode tracking (replay add already happened on GPU) ─
             for e in range(n_envs):
                 var rew_val = Scalar[DType.float32](rew_host[e])
                 var done_val = Float64(done_host[e]) > 0.5
 
                 cpu_ep_rewards[e] += Float64(rew_val)
-
-                var obs_arr = InlineArray[Scalar[DType.float32], OBS](fill=0)
-                var act_arr = InlineArray[Scalar[DType.float32], ACT](fill=0)
-                for k in range(OBS):
-                    obs_arr[k] = Scalar[DType.float32](obs_host[e * OBS + k])
-                for k in range(ACT):
-                    act_arr[k] = Scalar[DType.float32](act_host[e * ACT + k])
-                env_bufs[e].add(obs_arr, act_arr, rew_val, done_val)
 
                 if done_val:
                     var ep_r = cpu_ep_rewards[e]
@@ -5199,46 +5214,28 @@ struct DreamerV3Agent[
             # ── 7. Training (train_ratio updates per collection step) ──
             if total_steps >= self.warmup_steps * n_envs:
                 if collection_step % train_every == 0:
+                    # Per-env capacity threshold for sequence sampling.
+                    # Mirrors the prior CPU `B + BL + 1` per-env check —
+                    # GPUSequenceReplayBuffer tracks `size` per env (all
+                    # envs step in lockstep), so this is enforced once.
                     comptime min_ready = B + BL + 1
-                    var ready = True
-                    for e in range(n_envs):
-                        if not env_bufs[e].is_ready[min_ready]():
-                            ready = False
-                            break
-
-                    if ready:
+                    if gpu_replay.is_ready[min_ready]():
                         for _tr in range(actual_train_ratio):
-                            var b_per_env = B // n_envs
-                            var b_rem = B % n_envs
-                            var b_offset = 0
-                            for e in range(n_envs):
-                                var n_seqs = b_per_env + (1 if e < b_rem else 0)
-                                for _ in range(n_seqs):
-                                    env_bufs[e].sample_sequences[1, BL](
-                                        s_obs, s_act, s_rew, s_don
-                                    )
-
-                                    var b = b_offset
-                                    for k in range(SEQ_OBS_SIZE):
-                                        batch_obs[b * SEQ_OBS_SIZE + k] = s_obs[
-                                            k
-                                        ]
-                                    for k in range(SEQ_ACT_SIZE):
-                                        batch_acts[
-                                            b * SEQ_ACT_SIZE + k
-                                        ] = s_act[k]
-                                    for k in range(BL):
-                                        batch_rews[b * BL + k] = s_rew[k]
-                                        batch_dones[b * BL + k] = s_don[k]
-                                    b_offset += 1
-
-                            self.do_gpu_train_step(
+                            var sample_seed = UInt32(
+                                UInt32(total_steps) * UInt32(1999999973)
+                                + UInt32(_tr) * UInt32(1000003)
+                                + UInt32(31)
+                            )
+                            gpu_replay.sample[B, BL](
                                 ctx,
-                                gpu_state,
-                                batch_obs,
-                                batch_acts,
-                                batch_rews,
-                                batch_dones,
+                                sample_seed,
+                                gpu_state.batch_obs,
+                                gpu_state.batch_actions,
+                                gpu_state.batch_rewards,
+                                gpu_state.batch_dones,
+                            )
+                            self.do_gpu_train_step_from_device(
+                                ctx, gpu_state
                             )
                             if self.train_step_count % sync_every == 0:
                                 self.download_from_gpu(gpu_state, ctx)

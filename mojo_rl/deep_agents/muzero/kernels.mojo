@@ -553,6 +553,14 @@ def sample_seq_with_targets_kernel[
     buf_dones: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
     ],
+    # buf_terminations: terminated-only stream (excludes truncation). Used
+    # to populate the OUTPUT batch_dones so n-step bootstrap is preserved
+    # on truncation. buf_dones (term OR trunc) is still used for boundary
+    # checks during sampling. See gpu_sequence_replay_buffer.mojo:1-44 for
+    # the full rationale; the same fix landed first for TD-MPC2.
+    buf_terminations: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
     # MCTS target storage (parallel per-env circular)
     buf_policies: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PER_ENV_CAP * ACT_DIM), MutAnyOrigin
@@ -703,7 +711,11 @@ def sample_seq_with_targets_kernel[
         batch_rewards[t * BATCH + tid] = buf_rewards[
             env_idx * PER_ENV_CAP + buf_idx
         ]
-        batch_dones[t * BATCH + tid] = buf_dones[
+        # Output uses TERMINATED-only (excludes truncation) so the n-step
+        # kernel doesn't zero the bootstrap on time-limit truncations. The
+        # boundary check above uses term|trunc so we don't sample across
+        # any episode boundary. See gpu_sequence_replay_buffer.mojo:1-44.
+        batch_dones[t * BATCH + tid] = buf_terminations[
             env_idx * PER_ENV_CAP + buf_idx
         ]
 

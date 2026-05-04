@@ -476,8 +476,13 @@ struct MuZeroCPUState[
                 self._batch_rewards[t * BATCH + b] = Scalar[dtype](
                     self.buffer.rewards[idx]
                 )
+                # Read TERMINATIONS (term-only) so n-step bootstrap is
+                # preserved on time-limit truncation, matching the GPU
+                # path's split between dones_buf (boundary) and
+                # terminations_buf (output). See
+                # gpu_sequence_replay_buffer.mojo:1-44.
                 self._batch_dones[t * BATCH + b] = Scalar[dtype](
-                    self.buffer.dones[idx]
+                    self.buffer.terminations[idx]
                 )
 
             # ── Compute n-step value targets for this sample ─────────

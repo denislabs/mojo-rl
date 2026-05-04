@@ -1847,6 +1847,13 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         var buf_done_t = LayoutTensor[
             dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
         ](gpu.replay.dones_buf.unsafe_ptr())
+        # buf_terminations: terminated-only (excludes truncation). Sample
+        # kernel uses this for the OUTPUT batch_dones so n-step bootstrap
+        # is preserved on time-limit truncation. Boundary check still uses
+        # buf_done_t. See gpu_sequence_replay_buffer.mojo:1-44.
+        var buf_term_t = LayoutTensor[
+            dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+        ](gpu.replay.terminations_buf.unsafe_ptr())
         var buf_pol_t = LayoutTensor[
             dtype,
             Layout.row_major(N_ENVS_GPU * PER_ENV_CAP * ACT),
@@ -1914,6 +1921,9 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             bd: LayoutTensor[
                 dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
             ],
+            bd_term: LayoutTensor[
+                dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+            ],
             bp: LayoutTensor[
                 dtype,
                 Layout.row_major(N_ENVS_GPU * PER_ENV_CAP * ACT),
@@ -1955,7 +1965,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             sample_seq_with_targets_kernel[
                 BATCH, K, N_TD, N_ENVS_GPU, PER_ENV_CAP, OBS, ACT, dtype
             ](
-                bo, ba, br, bd, bp, bv, btp,
+                bo, ba, br, bd, bd_term, bp, bv, btp,
                 oo, oa, orw, od, op, ov, otp,
                 bsz, bwi, seed,
             )
@@ -1965,6 +1975,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             buf_act_t,
             buf_rew_t,
             buf_done_t,
+            buf_term_t,
             buf_pol_t,
             buf_val_t,
             buf_tp_t,
@@ -3185,6 +3196,8 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         print_every: Int = 50000,
         use_reanalyze: Bool = False,
         sync_every: Int = 5000,
+        lr_decay_rate: Float64 = 1.0,
+        lr_decay_steps: Int = 1000,
     ) raises -> TrainingMetrics:
         """Train MuZero with GPU environment stepping and GPU training.
 
@@ -3234,6 +3247,23 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         comptime LocalGPUState = MuZeroGPUState[Self.Config, Self.n_envs]
         var gpu = LocalGPUState(ctx)
         gpu.upload_from(self.state, ctx)
+
+        # Apply LR decay state from persistent `self.train_step_count`.
+        # Each `train_gpu` call builds a fresh GPU state whose lr_scale
+        # defaults to 1.0; without this, multi-phase training (where
+        # `train_gpu` is called multiple times) resets to the full LR at
+        # the start of each phase, defeating the decay schedule. The
+        # value here matches what the in-loop print-boundary code below
+        # would compute, so a single-phase run is unaffected.
+        if lr_decay_rate < 1.0 and self.train_step_count > 0:
+            var initial_lr_scale = exp(
+                log(lr_decay_rate)
+                * Float64(self.train_step_count)
+                / Float64(lr_decay_steps)
+            )
+            gpu.representation.set_lr_scale(initial_lr_scale, ctx)
+            gpu.dynamics.set_lr_scale(initial_lr_scale, ctx)
+            gpu.prediction.set_lr_scale(initial_lr_scale, ctx)
 
         # ── Allocate GPU environment buffers ─────────────────────────
         var states_buf = ctx.enqueue_create_buffer[dtype](
@@ -3769,7 +3799,13 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             )
 
             # ── 4. Store transitions + MCTS targets in GPU replay ────
-            gpu.replay.store(ctx, actions_buf, rewards_buf, terminated_buf)
+            # dones_buf (term|trunc) drives sequence-rejection in sampling;
+            # terminated_buf (term-only) is the bootstrap mask returned in
+            # batch_dones — the n-step TD target uses `(1 - terminated) *
+            # V(s_{t+n})` so truncation does NOT zero the bootstrap.
+            gpu.replay.store_with_termination(
+                ctx, actions_buf, rewards_buf, dones_buf, terminated_buf
+            )
 
             # Store MCTS targets (policies from extract_actions, values from staging)
             var mcts_pol_in_t = LayoutTensor[
@@ -4017,6 +4053,24 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 # Reset GPU accumulators for next interval
                 gpu_reward_sum_buf.enqueue_fill(Scalar[dtype](0.0))
                 gpu_episode_count_buf.enqueue_fill(Scalar[dtype](0.0))
+
+                # LR decay — match muzero-general's exponential schedule
+                # (`trainer.py:275-283` lr = lr_init * decay_rate^(train_step
+                # / decay_steps), with cartpole.py defaults rate=0.8,
+                # steps=1000). Without this, constant LR + DC drift makes
+                # rep weights grow unbounded and post-min-max hidden state
+                # saturates uniform across obs. Applied at print boundary
+                # (coarse vs reference's per-step but cheap and adequate for
+                # ~2000-env-step intervals).
+                if lr_decay_rate < 1.0:
+                    var lr_scale = exp(
+                        log(lr_decay_rate)
+                        * Float64(self.train_step_count)
+                        / Float64(lr_decay_steps)
+                    )
+                    gpu.representation.set_lr_scale(lr_scale, ctx)
+                    gpu.dynamics.set_lr_scale(lr_scale, ctx)
+                    gpu.prediction.set_lr_scale(lr_scale, ctx)
 
                 next_print += print_every
 
@@ -4616,7 +4670,16 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 )
 
                 # ── Store in GPU replay ──────────────────────────
-                gpu.replay.store(ctx, actions_buf, rewards_buf, terminated_buf)
+                # dones_buf (term|trunc) → sequence-rejection in sampling.
+                # terminated_buf (term-only) → bootstrap mask in batch_dones
+                # so n-step TD targets keep V(s_{t+n}) on truncation.
+                gpu.replay.store_with_termination(
+                    ctx,
+                    actions_buf,
+                    rewards_buf,
+                    dones_buf,
+                    terminated_buf,
+                )
 
                 # Compute per-env player-to-move from episode-step counter.
                 # ep_steps_buf still holds the step index of the move we
