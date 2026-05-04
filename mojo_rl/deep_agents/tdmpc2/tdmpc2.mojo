@@ -3258,11 +3258,19 @@ struct TDMPC2Agent[
                 # obs_step_buf still contains obs_0 from the world model step
 
                 var pol_rho_t = Scalar[dtype](1.0)
-                # Scale entropy by ACTION_DIM to match reference scaled_entropy
+                # Scale entropy by ACTION_DIM to match reference scaled_entropy.
+                # The 1/H factor mirrors `pi_loss = (... * rho).mean()` in
+                # reference TD-MPC2 (tdmpc2.py:227): the trailing .mean() over
+                # the horizon dimension divides every per-step term by H.
+                # Without /H our policy gradient is H× too large — pre-autodiff-fix
+                # this was masked by the overwrite bug only retaining the last
+                # step; post-fix all H calls accumulate and over-shoot the actor
+                # into tanh saturation.
                 var entropy_coef_scalar = Scalar[dtype](
-                    self.entropy_coef * Float64(Self.ACT)
+                    self.entropy_coef * Float64(Self.ACT) / Float64(Self.H)
                 )
                 var scale_scalar = Scalar[dtype](self.running_scale)
+                var inv_H = Scalar[dtype](1.0) / Scalar[dtype](Self.H)
 
                 for t in range(Self.H):
                     ctx.enqueue_memset(gs.grad_pi_out_buf, 0)
@@ -3308,7 +3316,9 @@ struct TDMPC2Agent[
                     var rng_vals = pi_rng.step_uniform()
                     var qi_a = Int(rng_vals[0] * 5.0) % 5
                     var qi_b = (qi_a + 1 + Int(rng_vals[1] * 4.0) % 4) % 5
-                    var q_rho = pol_rho_t / Scalar[dtype](2.0)
+                    # /H matches reference's trailing .mean() over horizon
+                    # (and /2 averages over the 2 random Q-nets used for DPG)
+                    var q_rho = pol_rho_t * inv_H / Scalar[dtype](2.0)
 
                     # ── RunningScale update at first horizon step ──
                     # Decode Q-values from first Q-net to update scale (reference:
