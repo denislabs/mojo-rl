@@ -1053,14 +1053,18 @@ struct FusedMatMulBiasActivation[
             var c0 = block_col + warp_n * MMA_N + Int(group_lane * 2)
             var c1 = c0 + 1
 
+            # Accumulate (+=) into dW. Caller pre-zeros grad_params via
+            # zero_grads(); subsequent backward calls (e.g. MuZero K-step
+            # unroll, BPTT) accumulate gradients across calls instead of
+            # overwriting the previous step's contribution.
             if r0 < Self.in_dim and c0 < Self.out_dim:
-                dW[r0, c0] = acc[0].cast[dtype]()
+                dW[r0, c0] = dW[r0, c0] + acc[0].cast[dtype]()
             if r0 < Self.in_dim and c1 < Self.out_dim:
-                dW[r0, c1] = acc[1].cast[dtype]()
+                dW[r0, c1] = dW[r0, c1] + acc[1].cast[dtype]()
             if r1 < Self.in_dim and c0 < Self.out_dim:
-                dW[r1, c0] = acc[2].cast[dtype]()
+                dW[r1, c0] = dW[r1, c0] + acc[2].cast[dtype]()
             if r1 < Self.in_dim and c1 < Self.out_dim:
-                dW[r1, c1] = acc[3].cast[dtype]()
+                dW[r1, c1] = dW[r1, c1] + acc[3].cast[dtype]()
 
     @always_inline
     @staticmethod
@@ -1169,14 +1173,17 @@ struct FusedMatMulBiasActivation[
 
         var gr0 = block_row + sub_r * 2
         var gc0 = block_col + sub_c * 2
+        # Accumulate (+=) into dW so multiple backward calls in a single
+        # update (e.g. MuZero K-step unroll) sum gradients instead of each
+        # call overwriting the previous one. Caller pre-zeros via zero_grads.
         if gr0 < Self.in_dim and gc0 < Self.out_dim:
-            dW[gr0, gc0] = acc00
+            dW[gr0, gc0] = dW[gr0, gc0] + acc00
         if gr0 < Self.in_dim and gc0 + 1 < Self.out_dim:
-            dW[gr0, gc0 + 1] = acc01
+            dW[gr0, gc0 + 1] = dW[gr0, gc0 + 1] + acc01
         if gr0 + 1 < Self.in_dim and gc0 < Self.out_dim:
-            dW[gr0 + 1, gc0] = acc10
+            dW[gr0 + 1, gc0] = dW[gr0 + 1, gc0] + acc10
         if gr0 + 1 < Self.in_dim and gc0 + 1 < Self.out_dim:
-            dW[gr0 + 1, gc0 + 1] = acc11
+            dW[gr0 + 1, gc0 + 1] = dW[gr0 + 1, gc0 + 1] + acc11
 
     @always_inline
     @staticmethod
@@ -1193,7 +1200,11 @@ struct FusedMatMulBiasActivation[
             ImmutAnyOrigin,
         ],
     ):
-        """Formula: db = sum(masked_dy, axis=0)."""
+        """Formula: db += sum(masked_dy, axis=0).
+
+        Accumulates into db so multiple backward calls per update (MuZero
+        K-step unroll) sum bias gradients. Caller pre-zeros via zero_grads.
+        """
         var col = Int(block_idx.x) * TPB + Int(thread_idx.x)
         if col < Self.out_dim:
             var acc: Scalar[dtype] = 0
@@ -1203,7 +1214,7 @@ struct FusedMatMulBiasActivation[
                     cache[ba, Self.in_dim + col]
                 )
                 acc += Self.ACT.backward(cache_val, grad_val)
-            db[col] = acc
+            db[col] = db[col] + acc
 
     # =========================================================================
     # GPU launchers (auto-dispatching: MMA on NVIDIA, 2x2 on Apple)
@@ -1553,47 +1564,45 @@ struct FusedMatMulBiasActivation[
                 DeviceContextPtr(ctx),
             )
 
-            # dW = cache_input^T @ masked_dy. Materialize cache_input^T because
-            # max_matmul has no transpose_a.
-            var cache_T_buf = ctx.enqueue_create_buffer[dtype](
-                BATCH * Self.in_dim
-            )
-            var cache_T = LayoutTensor[
-                dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
-            ](cache_T_buf.unsafe_ptr())
+            # dW = cache_input^T @ masked_dy. Routed through the MMA kernel
+            # (not max_matmul) because max_matmul has no accumulate mode and
+            # would overwrite grad_params on each backward call — broken for
+            # multi-call BPTT-style unrolls (MuZero K-step). The MMA kernel
+            # below uses += so multiple backward calls correctly accumulate.
+            # It re-applies ACT.backward inline from cache, so the materialized
+            # masked_dy above is only consumed by the dx max_matmul.
+            comptime dW_grid_x_max = (
+                Self.out_dim + MMA_BLOCK_N - 1
+            ) // MMA_BLOCK_N
+            comptime dW_grid_y_max = (
+                Self.in_dim + MMA_BLOCK_M - 1
+            ) // MMA_BLOCK_M
 
             @parameter
             @always_inline
-            def transpose_cache_input(
-                dst: LayoutTensor[
-                    dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
+            def dW_wrapper_max(
+                dW: LayoutTensor[
+                    dtype, Layout.row_major(Self.in_dim, Self.out_dim), MutAnyOrigin
                 ],
-                src: LayoutTensor[
+                cache: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.in_dim + Self.out_dim),
                     ImmutAnyOrigin,
                 ],
+                grad_output: LayoutTensor[
+                    dtype, Layout.row_major(BATCH, Self.out_dim), ImmutAnyOrigin
+                ],
             ):
-                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if idx < BATCH * Self.in_dim:
-                    var row = idx // Self.in_dim
-                    var col = idx % Self.in_dim
-                    if row < BATCH:
-                        dst[col, row] = src[row, col]
+                Self.backward_dW_kernel_mma[BATCH, dtype](
+                    dW, cache, grad_output
+                )
 
-            comptime T_GRID = (BATCH * Self.in_dim + TPB - 1) // TPB
-            ctx.enqueue_function[transpose_cache_input, transpose_cache_input](
-                cache_T,
+            ctx.enqueue_function[dW_wrapper_max, dW_wrapper_max](
+                dW,
                 cache_immut,
-                grid_dim=(T_GRID,),
-                block_dim=(TPB,),
-            )
-
-            max_matmul[target="gpu"](
-                lt_to_tt(dW),
-                lt_to_tt(cache_T),
-                lt_to_tt(masked_dy),
-                DeviceContextPtr(ctx),
+                grad_output_immut,
+                grid_dim=(dW_grid_x_max, dW_grid_y_max),
+                block_dim=(MMA_BLOCK_THREADS, 1),
             )
 
             # db = sum(masked_dy, axis=0). The existing backward_db_kernel
