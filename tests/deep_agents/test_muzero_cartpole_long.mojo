@@ -26,16 +26,25 @@ def main() raises:
     # to "sum of K rewards" ≈ 5, giving the value head no learning signal.
     # K=N=3 lets bootstrap fire whenever the 3-step unroll doesn't hit
     # terminal, propagating real value information.
+    # LR=1e-2, BS=16 — aligned with AlphaZero-on-CartPole's config
+    # (which solves CartPole in ~6K env steps). Audit Phase E flagged
+    # MuZero defaults (LR=3e-4, BS=64) as 33× lower LR + 4× larger
+    # batch than AZ. Long run with prior MuZero defaults peaked at
+    # reward 8 by step 22K then decayed back to 5 by step 50K — pred
+    # ΔW peaked at 1.05 then settled in 0.3-0.7 band. The conservative
+    # LR likely traps pred at the uniform-near attractor before it
+    # can escape to state-dependent values.
     comptime Config = MuZeroMLPConfig[
         CartPoleGPU.OBS_DIM,
         CartPoleGPU.NUM_ACTIONS,
         LATENT=64,
         HIDDEN=64,
         BINS=21,
+        LR=1e-2,
         SIMS=25,
         K=3,
         N=3,
-        BS=64,
+        BS=16,
         CAP=50000,
     ]
 
