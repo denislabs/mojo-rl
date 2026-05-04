@@ -2483,52 +2483,48 @@ struct NormedLinear[
                 DeviceContextPtr(ctx),
             )
 
-            # dW (IN_DIM × OUT_DIM) = cache_input^T (IN_DIM × BATCH) @
-            # d_linear_out (BATCH × OUT_DIM). max_matmul has no transpose_a
-            # so we materialize cache_input transposed into a scratch buffer
-            # (only the input portion of cache, not the LN slots).
-            var cache_T_buf = ctx.enqueue_create_buffer[dtype](
-                Self.IN_DIM * BATCH
-            )
-            var cache_T = LayoutTensor[
-                dtype, Layout.row_major(Self.IN_DIM, BATCH), MutAnyOrigin
-            ](cache_T_buf.unsafe_ptr())
-
-            comptime cache_T_blocks = (BATCH * Self.IN_DIM + TPB - 1) // TPB
+            # dW = cache_input^T @ d_linear_out. Routed through the MMA
+            # kernel (not max_matmul) because max_matmul has no accumulate
+            # mode and would overwrite grad_params on each backward call —
+            # broken for multi-call BPTT unrolls (TDMPC2 world-model
+            # K-step, RSSM, MuZero unroll). The MMA kernel uses += so
+            # multi-call accumulates. Caller pre-zeros via zero_grads.
+            comptime dW_grid_x_max = (
+                Self.OUT_DIM + MMA_BLOCK_N - 1
+            ) // MMA_BLOCK_N
+            comptime dW_grid_y_max = (
+                Self.IN_DIM + MMA_BLOCK_M - 1
+            ) // MMA_BLOCK_M
 
             @parameter
             @always_inline
-            def transpose_cache_input_wrapper(
-                dst: LayoutTensor[
-                    dtype, Layout.row_major(Self.IN_DIM, BATCH), MutAnyOrigin
+            def dW_wrapper_max(
+                dW: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.IN_DIM, Self.OUT_DIM),
+                    MutAnyOrigin,
                 ],
-                src: LayoutTensor[
+                cache: LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, Self.CACHE_SIZE),
                     ImmutAnyOrigin,
                 ],
+                d_linear_out: LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.OUT_DIM),
+                    ImmutAnyOrigin,
+                ],
             ):
-                var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-                if idx >= BATCH * Self.IN_DIM:
-                    return
-                var b = idx // Self.IN_DIM
-                var i = idx % Self.IN_DIM
-                dst[i, b] = rebind[Scalar[dtype]](src[b, i])
+                Self._backward_dW_kernel[BATCH, dtype](
+                    dW, cache, d_linear_out
+                )
 
-            ctx.enqueue_function[
-                transpose_cache_input_wrapper, transpose_cache_input_wrapper
-            ](
-                cache_T,
+            ctx.enqueue_function[dW_wrapper_max, dW_wrapper_max](
+                dW,
                 cache_immut,
-                grid_dim=(cache_T_blocks,),
-                block_dim=(TPB,),
-            )
-
-            max_matmul[target="gpu"](
-                lt_to_tt(dW),
-                lt_to_tt(cache_T),
-                lt_to_tt(d_linear_mm),
-                DeviceContextPtr(ctx),
+                d_linear_out_immut,
+                grid_dim=(dW_grid_x_max, dW_grid_y_max),
+                block_dim=(MMA_BLOCK_THREADS, 1),
             )
         else:
             comptime dx_grid_x = (Self.IN_DIM + MMA_BLOCK_N - 1) // MMA_BLOCK_N

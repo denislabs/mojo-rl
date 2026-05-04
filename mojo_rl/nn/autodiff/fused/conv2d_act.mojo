@@ -1660,49 +1660,45 @@ struct FusedConv2DActivation[
             )
 
             # dW (OC × col_size) = grad_reshaped (OC × K_TOTAL) @ col_flat
-            # (K_TOTAL × col_size). Mirror Conv2D phase 3a — no transpose
-            # needed for dW, max_matmul takes it directly.
-            comptime if Self.USE_MAX_KERNELS:
-                max_matmul[target="gpu"](
-                    lt_to_tt(dW),
-                    lt_to_tt(grad_reshaped),
-                    lt_to_tt(col_flat),
-                    DeviceContextPtr(ctx),
-                )
-            else:
-                comptime dW_grid_x_nv = (Self.col_size + MMA_BLOCK_N - 1) // MMA_BLOCK_N
-                comptime dW_grid_y_nv = (Self.out_channels + MMA_BLOCK_M - 1) // MMA_BLOCK_M
+            # (K_TOTAL × col_size). Always routed through the MMA kernel:
+            # max_matmul has no accumulate mode and would overwrite
+            # grad_params on each backward call — broken for multi-call
+            # BPTT unrolls (MuZero K-step, RSSM, world-model BPTT). The MMA
+            # kernel uses += so multi-call accumulates. Pre-zeroed via
+            # zero_grads.
+            comptime dW_grid_x_nv = (Self.col_size + MMA_BLOCK_N - 1) // MMA_BLOCK_N
+            comptime dW_grid_y_nv = (Self.out_channels + MMA_BLOCK_M - 1) // MMA_BLOCK_M
 
-                @parameter
-                @always_inline
-                def dW_mm_wrapper(
-                    dW: LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.out_channels, Self.col_size),
-                        MutAnyOrigin,
-                    ],
-                    grad_reshaped: LayoutTensor[
-                        dtype,
-                        Layout.row_major(Self.out_channels, K_TOTAL),
-                        MutAnyOrigin,
-                    ],
-                    col_flat: LayoutTensor[
-                        dtype,
-                        Layout.row_major(K_TOTAL, Self.col_size),
-                        MutAnyOrigin,
-                    ],
-                ):
-                    Self.conv_matmul_dW_mma[K_TOTAL, dtype](
-                        dW, grad_reshaped, col_flat
-                    )
-
-                ctx.enqueue_function[dW_mm_wrapper, dW_mm_wrapper](
-                    dW,
-                    grad_reshaped,
-                    col_flat,
-                    grid_dim=(dW_grid_x_nv, dW_grid_y_nv),
-                    block_dim=(MMA_BLOCK_THREADS, 1),
+            @parameter
+            @always_inline
+            def dW_mm_wrapper(
+                dW: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, Self.col_size),
+                    MutAnyOrigin,
+                ],
+                grad_reshaped: LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.out_channels, K_TOTAL),
+                    MutAnyOrigin,
+                ],
+                col_flat: LayoutTensor[
+                    dtype,
+                    Layout.row_major(K_TOTAL, Self.col_size),
+                    MutAnyOrigin,
+                ],
+            ):
+                Self.conv_matmul_dW_mma[K_TOTAL, dtype](
+                    dW, grad_reshaped, col_flat
                 )
+
+            ctx.enqueue_function[dW_mm_wrapper, dW_mm_wrapper](
+                dW,
+                grad_reshaped,
+                col_flat,
+                grid_dim=(dW_grid_x_nv, dW_grid_y_nv),
+                block_dim=(MMA_BLOCK_THREADS, 1),
+            )
 
             # ── dx: dcol (col_size × K_TOTAL) = W.T (col_size × OC) @
             #   grad_reshaped (OC × K_TOTAL).
