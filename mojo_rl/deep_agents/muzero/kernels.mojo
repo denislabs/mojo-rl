@@ -531,7 +531,9 @@ def store_mcts_targets_kernel[
 
 def sample_seq_with_targets_kernel[
     BATCH: Int,
-    H: Int,
+    H: Int,  # Unroll length K (we sample H+1 obs/policies, H actions)
+    N_TD: Int,  # n-step horizon for value bootstrap (rewards/dones/values
+    #            extend to H+N_TD)
     N_ENVS: Int,
     PER_ENV_CAP: Int,
     OBS_DIM: Int,
@@ -561,35 +563,58 @@ def sample_seq_with_targets_kernel[
     buf_to_play: LayoutTensor[
         DType.uint8, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
     ],
-    # Output batch buffers
+    # Output batch buffers — TIME-MAJOR layout so the forward pass can
+    # read [t, b, *] in contiguous BATCH-sized slices.
+    # Window sizes: obs/policies extend H+N_TD+1 timesteps so reanalyze
+    # can fresh-forward at every bootstrap position; rewards/dones extend
+    # H+N_TD; values/to_play extend H+N_TD+1.
     batch_obs: LayoutTensor[
-        dtype, Layout.row_major(BATCH * (H + 1) * OBS_DIM), MutAnyOrigin
+        dtype,
+        Layout.row_major((H + N_TD + 1) * BATCH * OBS_DIM),
+        MutAnyOrigin,
     ],
     batch_actions: LayoutTensor[
-        dtype, Layout.row_major(BATCH * H * ACT_DIM), MutAnyOrigin
+        dtype, Layout.row_major(H * BATCH * ACT_DIM), MutAnyOrigin
     ],
     batch_rewards: LayoutTensor[
-        dtype, Layout.row_major(BATCH * H), MutAnyOrigin
+        dtype, Layout.row_major((H + N_TD) * BATCH), MutAnyOrigin
     ],
-    batch_dones: LayoutTensor[dtype, Layout.row_major(BATCH * H), MutAnyOrigin],
+    batch_dones: LayoutTensor[
+        dtype, Layout.row_major((H + N_TD) * BATCH), MutAnyOrigin
+    ],
     batch_policies: LayoutTensor[
-        dtype, Layout.row_major(BATCH * (H + 1) * ACT_DIM), MutAnyOrigin
+        dtype,
+        Layout.row_major((H + N_TD + 1) * BATCH * ACT_DIM),
+        MutAnyOrigin,
     ],
     batch_values: LayoutTensor[
-        dtype, Layout.row_major(BATCH * (H + 1)), MutAnyOrigin
+        dtype, Layout.row_major((H + N_TD + 1) * BATCH), MutAnyOrigin
     ],
     batch_to_play: LayoutTensor[
-        DType.uint8, Layout.row_major(BATCH * (H + 1)), MutAnyOrigin
+        DType.uint8,
+        Layout.row_major((H + N_TD + 1) * BATCH),
+        MutAnyOrigin,
     ],
     # Buffer state
     buf_size: Scalar[DType.int32],
     buf_write_idx: Scalar[DType.int32],
     rng_seed: Scalar[DType.uint32],
 ):
-    """Sample BATCH sequences of length H + gather MCTS targets, all on GPU.
+    """Sample BATCH sequences for MuZero K-step unrolled training.
 
-    Extends gpu_seq_sample_kernel to also gather policy/value targets from
-    parallel circular buffers sharing the same layout and indices.
+    Layout (time-major so forward pass sees contiguous BATCH-sized slices):
+      obs[t, b, *]:        t in [0, H+N_TD]   — H+1 unroll + N_TD bootstrap
+      policies[t, b, *]:   t in [0, H+N_TD]
+      actions[t, b, *]:    t in [0, H)
+      rewards[t, b]:       t in [0, H+N_TD)
+      dones[t, b]:         t in [0, H+N_TD)
+      values[t, b]:        t in [0, H+N_TD]
+      to_play[t, b]:       t in [0, H+N_TD]
+
+    The extra H+1..H+N_TD timesteps for rewards/dones/values let the
+    n-step kernel sum N_TD rewards from any base position k in [0, H]
+    and fetch a bootstrap value at k+N_TD. The extra obs/policies are
+    used by reanalyze (fresh forward pass at bootstrap positions).
     """
     var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
     if tid >= BATCH:
@@ -599,13 +624,16 @@ def sample_seq_with_targets_kernel[
     var sz = Int(buf_size)
     var wptr = Int(buf_write_idx)
 
-    # Rejection sampling to find valid sequence start
+    comptime WIN = H + N_TD  # Window length in timesteps minus 1
+
+    # Rejection sampling to find valid sequence start.
+    # We need WIN+1 valid timesteps available in the buffer.
     var philox = PhiloxRandom(
         seed=UInt64(rng_seed) + UInt64(tid * 137 + 1),
         offset=0,
     )
     var start = -1
-    var max_start = sz - H - 1
+    var max_start = sz - WIN - 1
     if max_start < 0:
         max_start = 0
 
@@ -618,6 +646,9 @@ def sample_seq_with_targets_kernel[
             candidate = max_start
         var actual = (wptr - sz + candidate + PER_ENV_CAP) % PER_ENV_CAP
 
+        # Check no episode boundary in unroll window [0, H-1]; the
+        # bootstrap window [H, H+N_TD-1] may cross terminal — the n-step
+        # kernel handles that via the dones stream.
         var valid = True
         for t in range(H - 1):
             var idx = (actual + t) % PER_ENV_CAP
@@ -632,50 +663,47 @@ def sample_seq_with_targets_kernel[
     if start < 0:
         start = (wptr - sz + PER_ENV_CAP) % PER_ENV_CAP
 
-    # Gather sequence data + MCTS targets
-    var obs_out_base = tid * (H + 1) * OBS_DIM
-    var act_out_base = tid * H * ACT_DIM
-    var scalar_out_base = tid * H
-    var pol_out_base = tid * (H + 1) * ACT_DIM
-    var val_out_base = tid * (H + 1)
-
-    # H+1 observations + policies + values
-    for t in range(H + 1):
+    # ── Gather full window (time-major output) ────────────────────────
+    # obs / policies / values / to_play: t in [0, H+N_TD]
+    for t in range(WIN + 1):
         var buf_idx = (start + t) % PER_ENV_CAP
         var env_obs_base = env_idx * PER_ENV_CAP * OBS_DIM + buf_idx * OBS_DIM
-        var out_off = obs_out_base + t * OBS_DIM
+        var obs_out_base = t * BATCH * OBS_DIM + tid * OBS_DIM
         for d in range(OBS_DIM):
-            batch_obs[out_off + d] = buf_obs[env_obs_base + d]
+            batch_obs[obs_out_base + d] = buf_obs[env_obs_base + d]
 
-        # MCTS policy
         var env_pol_base = env_idx * PER_ENV_CAP * ACT_DIM + buf_idx * ACT_DIM
-        var pol_off = pol_out_base + t * ACT_DIM
+        var pol_out_base = t * BATCH * ACT_DIM + tid * ACT_DIM
         for a in range(ACT_DIM):
-            batch_policies[pol_off + a] = buf_policies[env_pol_base + a]
+            batch_policies[pol_out_base + a] = buf_policies[env_pol_base + a]
 
-        # MCTS value
-        batch_values[val_out_base + t] = buf_values[
+        batch_values[t * BATCH + tid] = buf_values[
+            env_idx * PER_ENV_CAP + buf_idx
+        ]
+        batch_to_play[t * BATCH + tid] = buf_to_play[
             env_idx * PER_ENV_CAP + buf_idx
         ]
 
-        # Player-to-move (UInt8). Used by nstep_value_targets_kernel for
-        # two-player sign flipping; default 0 for single-player envs.
-        batch_to_play[val_out_base + t] = buf_to_play[
-            env_idx * PER_ENV_CAP + buf_idx
-        ]
-
-    # H steps: actions, rewards, dones
-    for t in range(H):
+    # actions / rewards / dones: t in [0, H+N_TD)
+    for t in range(WIN):
         var buf_idx = (start + t) % PER_ENV_CAP
-        var env_act_base = env_idx * PER_ENV_CAP * ACT_DIM + buf_idx * ACT_DIM
-        var act_off = act_out_base + t * ACT_DIM
-        for d in range(ACT_DIM):
-            batch_actions[act_off + d] = buf_actions[env_act_base + d]
+        # Actions only for t in [0, H) — only H actions are used in unroll
+        comptime if False:
+            pass
+        if t < H:
+            var env_act_base = (
+                env_idx * PER_ENV_CAP * ACT_DIM + buf_idx * ACT_DIM
+            )
+            var act_out_base = t * BATCH * ACT_DIM + tid * ACT_DIM
+            for d in range(ACT_DIM):
+                batch_actions[act_out_base + d] = buf_actions[
+                    env_act_base + d
+                ]
 
-        batch_rewards[scalar_out_base + t] = buf_rewards[
+        batch_rewards[t * BATCH + tid] = buf_rewards[
             env_idx * PER_ENV_CAP + buf_idx
         ]
-        batch_dones[scalar_out_base + t] = buf_dones[
+        batch_dones[t * BATCH + tid] = buf_dones[
             env_idx * PER_ENV_CAP + buf_idx
         ]
 
@@ -690,6 +718,7 @@ def nstep_value_targets_kernel[
     K: Int,
     N: Int,
     dtype: DType where dtype.is_floating_point(),
+    BACKUP_TYPE: Int = 0,  # 0=N-step bootstrap, 1=Monte Carlo, 2=Lambda
 ](
     value_targets: LayoutTensor[
         dtype, Layout.row_major((K + 1) * BATCH), MutAnyOrigin
@@ -698,14 +727,16 @@ def nstep_value_targets_kernel[
         dtype, Layout.row_major(K * BATCH), MutAnyOrigin
     ],
     batch_rewards: LayoutTensor[
-        dtype, Layout.row_major(BATCH * K), MutAnyOrigin
+        dtype, Layout.row_major((K + N) * BATCH), MutAnyOrigin
     ],
-    batch_dones: LayoutTensor[dtype, Layout.row_major(BATCH * K), MutAnyOrigin],
+    batch_dones: LayoutTensor[
+        dtype, Layout.row_major((K + N) * BATCH), MutAnyOrigin
+    ],
     batch_values: LayoutTensor[
-        dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        dtype, Layout.row_major((K + N + 1) * BATCH), MutAnyOrigin
     ],
     batch_to_play: LayoutTensor[
-        DType.uint8, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+        DType.uint8, Layout.row_major((K + N + 1) * BATCH), MutAnyOrigin
     ],
     gamma: Scalar[dtype],
 ):
@@ -715,12 +746,18 @@ def nstep_value_targets_kernel[
     Value targets use n-step bootstrap with MCTS root values.
     Reward targets are just the raw rewards.
 
-    Two-player sign flip: rewards and the bootstrap value are stored from
-    the perspective of the player-to-move at each step. When the target's
-    perspective player (batch_to_play[b * (K+1) + k]) differs from the
-    step's perspective, we negate. For single-player envs (batch_to_play
-    all zeros) this is a no-op. Reference: muzero-general
-    /replay_buffer.py:242-259.
+    All input/output tensors use TIME-MAJOR layout: index = t * BATCH + b.
+    The reward/done/value/to_play windows extend to length K+N (or K+N+1
+    for value/to_play) so the kernel can sum N rewards from any base
+    position k in [0, K] and access a bootstrap value at k+N. This
+    matches the muzero-general convention where the n-step horizon is
+    independent of the unroll length.
+
+    Two-player sign flip (muzero-general/replay_buffer.py:242-259):
+    rewards and the bootstrap value are stored from the perspective of
+    the player-to-move at each step. When the target's perspective
+    player (batch_to_play[k * BATCH + b]) differs, we negate. For
+    single-player envs (batch_to_play all zeros) this is a no-op.
     """
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * (K + 1):
@@ -729,7 +766,7 @@ def nstep_value_targets_kernel[
     var b = idx % BATCH
     var k = idx // BATCH
     var perspective = rebind[Scalar[DType.uint8]](
-        batch_to_play[b * (K + 1) + k]
+        batch_to_play[k * BATCH + b]
     )
 
     # Value target: n-step bootstrapped return
@@ -740,11 +777,10 @@ def nstep_value_targets_kernel[
 
     for i in range(N):
         var step_k = k + i
-        if step_k >= K:
-            break
-        var rew = rebind[Scalar[dtype]](batch_rewards[b * K + step_k])
+        # Window covers up to K+N steps; never out of bounds for k in [0,K].
+        var rew = rebind[Scalar[dtype]](batch_rewards[step_k * BATCH + b])
         var step_player = rebind[Scalar[DType.uint8]](
-            batch_to_play[b * (K + 1) + step_k]
+            batch_to_play[step_k * BATCH + b]
         )
         if step_player != perspective:
             rew = -rew
@@ -752,21 +788,22 @@ def nstep_value_targets_kernel[
         gamma_power *= gamma
         steps_used += 1
 
-        if rebind[Scalar[dtype]](batch_dones[b * K + step_k]) > Scalar[dtype](
-            0.5
-        ):
+        if rebind[Scalar[dtype]](batch_dones[step_k * BATCH + b]) > Scalar[
+            dtype
+        ](0.5):
             hit_terminal = True
             break
 
-    # Bootstrap with MCTS value if not terminal and enough steps
-    if not hit_terminal and steps_used == N:
-        var boot_k = k + N
-        if boot_k <= K:
+    # Bootstrap with MCTS value if not terminal and full N steps consumed.
+    # Monte Carlo (BACKUP_TYPE=1) never bootstraps — uses full episode return.
+    comptime if BACKUP_TYPE != 1:
+        if not hit_terminal and steps_used == N:
+            var boot_k = k + N  # always in [N, K+N], within window
             var boot_v = rebind[Scalar[dtype]](
-                batch_values[b * (K + 1) + boot_k]
+                batch_values[boot_k * BATCH + b]
             )
             var boot_player = rebind[Scalar[DType.uint8]](
-                batch_to_play[b * (K + 1) + boot_k]
+                batch_to_play[boot_k * BATCH + b]
             )
             if boot_player != perspective:
                 boot_v = -boot_v
@@ -775,10 +812,94 @@ def nstep_value_targets_kernel[
     value_targets[k * BATCH + b] = n_step_return
 
     # Reward target (only for k < K). Reward target is in the perspective
-    # of the step's player (it's the "predicted reward" the dynamics net
-    # should output for that transition); no sign flip here.
+    # of the step's player (predicted reward the dynamics net outputs);
+    # no sign flip here.
     if k < K:
-        reward_targets[k * BATCH + b] = batch_rewards[b * K + k]
+        reward_targets[k * BATCH + b] = batch_rewards[k * BATCH + b]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Value Distribution Decode (used by GPU reanalyze)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def decode_value_dist_kernel[
+    N: Int,  # number of samples to decode (= timesteps * batch)
+    BINS: Int,
+    PRED_OUT: Int,  # full prediction output dim (= ACT + BINS)
+    ACT_DIM: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    pred_logits: LayoutTensor[
+        dtype, Layout.row_major(N * PRED_OUT), MutAnyOrigin
+    ],
+    value_out: LayoutTensor[dtype, Layout.row_major(N), MutAnyOrigin],
+    v_min: Scalar[dtype],
+    v_max: Scalar[dtype],
+    eps: Scalar[dtype] = Scalar[dtype](0.001),
+):
+    """Decode a value distribution to a scalar via softmax expectation +
+    inverse MuZero scalar transform.
+
+    Each row of `pred_logits` is the prediction-net output for one sample
+    in TIME-MAJOR layout (i.e. row order matches batch_values layout).
+    The last BINS values per row are the value-distribution logits over
+    bins evenly spaced in [v_min, v_max]; the first ACT_DIM values are
+    the policy logits and are ignored here.
+
+    For row r:
+      p_i = softmax(value_logits[r])
+      h(v) = sum_i p_i * (v_min + i * step)        # expectation in transformed space
+      v    = inverse_h(h(v))                        # original scalar value
+    where inverse_h is muzero-general's inverse scalar transform with the
+    same eps used in the forward transform.
+
+    Used by GPU reanalyze (use_last_model_value): replaces stale
+    `batch_values` with fresh predictions from the current network so
+    the n-step kernel can bootstrap with up-to-date values.
+    """
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N:
+        return
+
+    var base = idx * PRED_OUT + ACT_DIM  # start of value logits
+
+    # Numerically stable softmax over BINS logits
+    var max_l = rebind[Scalar[dtype]](pred_logits[base])
+    for i in range(1, BINS):
+        var li = rebind[Scalar[dtype]](pred_logits[base + i])
+        if li > max_l:
+            max_l = li
+    var sum_exp = Scalar[dtype](0.0)
+    for i in range(BINS):
+        sum_exp += exp(
+            rebind[Scalar[dtype]](pred_logits[base + i]) - max_l
+        )
+
+    # Expectation under softmax: h(v) (transformed-space scalar)
+    # NB: avoid Float64 intermediates — Apple Metal rejects f64.
+    var step = (v_max - v_min) / Scalar[dtype](Int32(BINS - 1))
+    var hv = Scalar[dtype](0.0)
+    for i in range(BINS):
+        var p = exp(
+            rebind[Scalar[dtype]](pred_logits[base + i]) - max_l
+        ) / sum_exp
+        var atom = v_min + Scalar[dtype](Int32(i)) * step
+        hv += p * atom
+
+    # Inverse MuZero scalar transform: closed-form inverse of
+    # h(x) = sign(x)*(sqrt(|x|+1)-1) + eps*x
+    var sign = Scalar[dtype](1.0) if hv >= Scalar[dtype](0.0) else Scalar[
+        dtype
+    ](-1.0)
+    var abs_hv = hv if hv >= Scalar[dtype](0.0) else -hv
+    var inner = sqrt(
+        Scalar[dtype](1.0) + Scalar[dtype](4.0) * eps * (abs_hv + Scalar[
+            dtype
+        ](1.0) + eps)
+    )
+    var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps)
+    value_out[idx] = sign * (f * f - Scalar[dtype](1.0))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

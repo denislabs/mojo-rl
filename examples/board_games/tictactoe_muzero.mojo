@@ -35,8 +35,12 @@ def main() raises:
 
     var agent = GenericMuZeroAgent[Config, 64]()
 
+    # temp_threshold=5: temp=1 only for the first 5 moves; greedy from
+    # move 6+ during self-play. AlphaZero TTT uses 4. Previously 15 (>9
+    # max moves) which made every move exploratory and weakened the
+    # endgame policy signal.
     _ = agent.train_selfplay_gpu[
-        TTT, RandomOpponent, GPUMinimaxTicTacToe, 15
+        TTT, RandomOpponent, GPUMinimaxTicTacToe, 5
     ](
         ctx,
         num_iters=100,
@@ -49,6 +53,11 @@ def main() raises:
         do_arena=True,
         checkpoint_every=10,
         checkpoint_path="tictactoe_muzero.ckpt",
+        # Enable GPU reanalyze + Polyak target net (E2 / E4): bootstrap
+        # values are refreshed each train step from a slowly-tracking
+        # copy of the online networks, mirroring muzero-general's
+        # use_last_model_value=True.
+        use_reanalyze=True,
     )
 
     print()

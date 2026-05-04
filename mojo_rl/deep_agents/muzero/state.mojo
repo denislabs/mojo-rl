@@ -94,26 +94,33 @@ struct MuZeroCPUState[
     ]  # [CAPACITY]
 
     # ── Batch sampling scratch ───────────────────────────────────────────
-    # For K-step unroll training, we sample positions and extract windows
+    # TIME-MAJOR layout so the forward pass reads contiguous BATCH-sized
+    # slices for each unroll step. Window sizes are (K+N+1) for things
+    # we need at bootstrap positions, K+N for per-transition data, K for
+    # actions (only K dynamics steps), K+1 for unroll-only policies/obs
+    # — we extend obs/policies to K+N+1 anyway so reanalyze can fresh-
+    # forward at bootstrap positions without re-sampling.
     var _batch_obs: UnsafePointer[
         Scalar[dtype], MutAnyOrigin
-    ]  # [BATCH * (K+1) * OBS]
+    ]  # [(K+N+1) * BATCH * OBS]
     var _batch_actions: UnsafePointer[
         Scalar[dtype], MutAnyOrigin
-    ]  # [BATCH * K]  (discrete action indices)
+    ]  # [K * BATCH * ACT] (one-hot)
     var _batch_rewards: UnsafePointer[
         Scalar[dtype], MutAnyOrigin
-    ]  # [BATCH * K]
-    var _batch_dones: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [BATCH * K]
+    ]  # [(K+N) * BATCH]
+    var _batch_dones: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [(K+N) * BATCH]
     var _batch_policies: UnsafePointer[
         Scalar[dtype], MutAnyOrigin
-    ]  # [BATCH * (K+1) * ACT]
+    ]  # [(K+N+1) * BATCH * ACT]
     var _batch_values: UnsafePointer[
         Scalar[dtype], MutAnyOrigin
-    ]  # [BATCH * (K+1)]
+    ]  # [(K+N+1) * BATCH]
     var _batch_to_play: UnsafePointer[
         Scalar[DType.uint8], MutAnyOrigin
-    ]  # [BATCH * (K+1)]
+    ]  # [(K+N+1) * BATCH]
 
     # ── K-step unroll scratch ────────────────────────────────────────────
     # Hidden states through the unroll
@@ -201,27 +208,30 @@ struct MuZeroCPUState[
         self.mcts_to_play = alloc[Scalar[DType.uint8]](Self._CAP)
         memset(self.mcts_to_play, 0, Self._CAP)
 
-        # ── Batch scratch ────────────────────────────────────────────────
-        comptime BATCH_OBS_SIZE = Self.BATCH * (Self.K + 1) * Self.OBS
+        # ── Batch scratch (time-major; full window K+N+1) ────────────────
+        comptime WIN_FULL = Self.K + Self.N + 1  # obs/policies/values/to_play
+        comptime WIN_TRN = Self.K + Self.N  # rewards/dones (per-transition)
+
+        comptime BATCH_OBS_SIZE = WIN_FULL * Self.BATCH * Self.OBS
         self._batch_obs = alloc[Scalar[dtype]](BATCH_OBS_SIZE)
         memset(self._batch_obs, 0, BATCH_OBS_SIZE)
 
-        comptime BATCH_ACT_SIZE = Self.BATCH * Self.K
+        comptime BATCH_ACT_SIZE = Self.K * Self.BATCH * Self.ACT
         self._batch_actions = alloc[Scalar[dtype]](BATCH_ACT_SIZE)
         memset(self._batch_actions, 0, BATCH_ACT_SIZE)
 
-        comptime BATCH_SCALAR_SIZE = Self.BATCH * Self.K
-        self._batch_rewards = alloc[Scalar[dtype]](BATCH_SCALAR_SIZE)
-        memset(self._batch_rewards, 0, BATCH_SCALAR_SIZE)
+        comptime BATCH_TRN_SIZE = WIN_TRN * Self.BATCH
+        self._batch_rewards = alloc[Scalar[dtype]](BATCH_TRN_SIZE)
+        memset(self._batch_rewards, 0, BATCH_TRN_SIZE)
 
-        self._batch_dones = alloc[Scalar[dtype]](BATCH_SCALAR_SIZE)
-        memset(self._batch_dones, 0, BATCH_SCALAR_SIZE)
+        self._batch_dones = alloc[Scalar[dtype]](BATCH_TRN_SIZE)
+        memset(self._batch_dones, 0, BATCH_TRN_SIZE)
 
-        comptime BATCH_POLICY_SIZE = Self.BATCH * (Self.K + 1) * Self.ACT
+        comptime BATCH_POLICY_SIZE = WIN_FULL * Self.BATCH * Self.ACT
         self._batch_policies = alloc[Scalar[dtype]](BATCH_POLICY_SIZE)
         memset(self._batch_policies, 0, BATCH_POLICY_SIZE)
 
-        comptime BATCH_VALUE_SIZE = Self.BATCH * (Self.K + 1)
+        comptime BATCH_VALUE_SIZE = WIN_FULL * Self.BATCH
         self._batch_values = alloc[Scalar[dtype]](BATCH_VALUE_SIZE)
         memset(self._batch_values, 0, BATCH_VALUE_SIZE)
 
@@ -392,6 +402,8 @@ struct MuZeroCPUState[
         comptime OBS = Self.OBS
         comptime ACT = Self.ACT
         comptime CAPACITY = Self._CAP
+        comptime WIN_FULL = K + N + 1  # full window length (timesteps)
+        comptime WIN_TRN = K + N  # per-transition (rewards/dones) length
 
         var sampled = 0
         var max_attempts = BATCH * 100
@@ -411,82 +423,68 @@ struct MuZeroCPUState[
             if actual_start < 0:
                 actual_start += CAPACITY
 
-            # Need K+1 observations (K steps) minimum
-            if self.buffer.size < K + 1:
+            # Need K+N+1 observations (K+N steps) for full bootstrap window
+            if self.buffer.size < WIN_FULL:
                 continue
 
-            # Check for episode boundaries within the K-step window
+            # Check for episode boundaries within the K-step UNROLL window
+            # only — bootstrap window may legally cross episode boundaries
+            # and the kernel's done-stream handles termination.
             if not self.buffer._is_valid_sequence_start(actual_start, K):
                 continue
 
             # Verify end index is within recorded data
-            var end_idx = (actual_start + K) % CAPACITY
+            var end_idx = (actual_start + WIN_TRN) % CAPACITY
             var end_age = (self.buffer.ptr - end_idx - 1 + CAPACITY) % CAPACITY
             if end_age >= self.buffer.size:
                 continue
 
-            # ── Copy sequence data ───────────────────────────────────
+            # ── Copy sequence data (TIME-MAJOR layout) ───────────────
             var b = sampled
-            var obs_off = b * (K + 1) * OBS
-            var act_off = b * K * ACT
-            var rew_off = b * K
-            var don_off = b * K
-            var pol_off = b * (K + 1) * ACT
-            var val_off = b * (K + 1)
 
-            # Copy K+1 observations and their MCTS targets
-            for t in range(K + 1):
+            # Full window: obs, policies, values, to_play (K+N+1 timesteps)
+            for t in range(WIN_FULL):
                 var idx = (actual_start + t) % CAPACITY
 
-                # Observations
-                var obs_start = obs_off + t * OBS
+                var obs_start = t * BATCH * OBS + b * OBS
                 for i in range(OBS):
                     self._batch_obs[obs_start + i] = Scalar[dtype](
                         self.buffer.obs[idx * OBS + i]
                     )
 
-                # MCTS policy targets (K+1 policies)
-                var pol_start = pol_off + t * ACT
+                var pol_start = t * BATCH * ACT + b * ACT
                 for a in range(ACT):
                     self._batch_policies[pol_start + a] = self.mcts_policies[
                         idx * ACT + a
                     ]
 
-                # MCTS value targets (K+1 values)
-                self._batch_values[val_off + t] = self.mcts_values[idx]
+                self._batch_values[t * BATCH + b] = self.mcts_values[idx]
+                self._batch_to_play[t * BATCH + b] = self.mcts_to_play[idx]
 
-                # Per-step player-to-move (UInt8). Default 0 for single-player.
-                self._batch_to_play[val_off + t] = self.mcts_to_play[idx]
-
-            # Copy K actions, rewards, dones
-            for t in range(K):
+            # Per-transition window: rewards, dones (K+N timesteps).
+            # Actions only for the K-step unroll.
+            for t in range(WIN_TRN):
                 var idx = (actual_start + t) % CAPACITY
 
-                # Actions (one-hot encoded in buffer)
-                var act_start = act_off + t * ACT
-                for a in range(ACT):
-                    self._batch_actions[act_start + a] = Scalar[dtype](
-                        self.buffer.actions[idx * ACT + a]
-                    )
+                if t < K:
+                    var act_start = t * BATCH * ACT + b * ACT
+                    for a in range(ACT):
+                        self._batch_actions[act_start + a] = Scalar[dtype](
+                            self.buffer.actions[idx * ACT + a]
+                        )
 
-                # Rewards and dones
-                self._batch_rewards[rew_off + t] = Scalar[dtype](
+                self._batch_rewards[t * BATCH + b] = Scalar[dtype](
                     self.buffer.rewards[idx]
                 )
-                self._batch_dones[don_off + t] = Scalar[dtype](
+                self._batch_dones[t * BATCH + b] = Scalar[dtype](
                     self.buffer.dones[idx]
                 )
 
             # ── Compute n-step value targets for this sample ─────────
-            # z_value(t+k) = sum_{i=0}^{min(n,T-t-k)-1} gamma^i * r_{t+k+i}
-            #                + gamma^n * v_{t+k+n}  (if not terminal)
-            #
-            # Two-player sign flip: rewards and bootstrap are stored from
-            # the perspective of the player-to-move at each step. When the
-            # target's perspective player (mcts_to_play[base_idx]) differs
-            # from the step's perspective, we negate. For single-player
-            # envs (mcts_to_play all zeros) the sign flip is a no-op.
-            # Reference: muzero-general/replay_buffer.py:242-259.
+            # z_value(k) = sum_{i=0}^{N-1} gamma^i * r_{k+i}
+            #              + gamma^N * v_{k+N}  (if not terminal)
+            # All in the perspective of the player at index k. Reference:
+            # muzero-general/replay_buffer.py:242-259.
             for k in range(K + 1):
                 var base_idx = (actual_start + k) % CAPACITY
                 var perspective = self.mcts_to_play[base_idx]
@@ -498,7 +496,6 @@ struct MuZeroCPUState[
 
                 for i in range(N):
                     var step_idx = (base_idx + i) % CAPACITY
-                    # Check if this step is within valid buffer range
                     var step_age = (
                         self.buffer.ptr - step_idx - 1 + CAPACITY
                     ) % CAPACITY
@@ -512,7 +509,6 @@ struct MuZeroCPUState[
                     gamma_power *= gamma
                     steps_used += 1
 
-                    # Check for terminal
                     if Float64(self.buffer.dones[step_idx]) > 0.5:
                         hit_terminal = True
                         break
@@ -536,33 +532,37 @@ struct MuZeroCPUState[
             # ── Reward targets (actual rewards, no transform yet) ────
             for k in range(K):
                 self._reward_targets[k * BATCH + b] = self._batch_rewards[
-                    rew_off + k
+                    k * BATCH + b
                 ]
 
             sampled += 1
 
-        # Zero-fill any unsampled batch slots
+        # Zero-fill any unsampled batch slots (time-major)
         for b in range(sampled, BATCH):
-            var obs_off = b * (K + 1) * OBS
-            for i in range((K + 1) * OBS):
-                self._batch_obs[obs_off + i] = Scalar[dtype](0.0)
-            var act_off = b * K * ACT
-            for i in range(K * ACT):
-                self._batch_actions[act_off + i] = Scalar[dtype](0.0)
-            for i in range(K):
-                self._batch_rewards[b * K + i] = Scalar[dtype](0.0)
-                self._batch_dones[b * K + i] = Scalar[dtype](0.0)
-            var pol_off = b * (K + 1) * ACT
-            for i in range((K + 1) * ACT):
-                self._batch_policies[pol_off + i] = Scalar[dtype](
-                    1.0 / Float64(ACT)
-                )
-            for i in range(K + 1):
-                self._batch_values[b * (K + 1) + i] = Scalar[dtype](0.0)
-                self._batch_to_play[b * (K + 1) + i] = Scalar[DType.uint8](0)
-                self._value_targets[i * BATCH + b] = Scalar[dtype](0.0)
-            for i in range(K):
-                self._reward_targets[i * BATCH + b] = Scalar[dtype](0.0)
+            for t in range(WIN_FULL):
+                var obs_start = t * BATCH * OBS + b * OBS
+                for i in range(OBS):
+                    self._batch_obs[obs_start + i] = Scalar[dtype](0.0)
+                var pol_start = t * BATCH * ACT + b * ACT
+                for a in range(ACT):
+                    self._batch_policies[pol_start + a] = Scalar[dtype](
+                        1.0 / Float64(ACT)
+                    )
+                self._batch_values[t * BATCH + b] = Scalar[dtype](0.0)
+                self._batch_to_play[t * BATCH + b] = Scalar[DType.uint8](0)
+            for t in range(WIN_TRN):
+                if t < K:
+                    var act_start = t * BATCH * ACT + b * ACT
+                    for a in range(ACT):
+                        self._batch_actions[act_start + a] = Scalar[dtype](
+                            0.0
+                        )
+                self._batch_rewards[t * BATCH + b] = Scalar[dtype](0.0)
+                self._batch_dones[t * BATCH + b] = Scalar[dtype](0.0)
+            for k in range(K + 1):
+                self._value_targets[k * BATCH + b] = Scalar[dtype](0.0)
+            for k in range(K):
+                self._reward_targets[k * BATCH + b] = Scalar[dtype](0.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -586,6 +586,7 @@ struct MuZeroGPUState[
     comptime BINS: Int = Self.Config.num_bins
     comptime BATCH: Int = Self.Config.batch_size
     comptime K: Int = Self.Config.unroll_steps
+    comptime N_TD: Int = Self.Config.td_steps
     comptime DYN_IN: Int = Self.Config.DYN_IN
     comptime DYN_OUT: Int = Self.Config.DYN_OUT
     comptime PRED_OUT: Int = Self.Config.PRED_OUT
@@ -600,6 +601,13 @@ struct MuZeroGPUState[
     var representation: GPUNetworkState[Self.RepModel, Self.OptType]
     var dynamics: GPUNetworkState[Self.DynModel, Self.OptType]
     var prediction: GPUNetworkState[Self.PredModel, Self.OptType]
+
+    # Target networks for value bootstrap (E4). Used by GPU reanalyze
+    # so the bootstrap value is computed by a slowly-tracking copy of
+    # the online networks rather than the live (rapidly-changing) ones.
+    # Polyak-updated each train step.
+    var representation_target: GPUNetworkState[Self.RepModel, Self.OptType]
+    var prediction_target: GPUNetworkState[Self.PredModel, Self.OptType]
 
     # ── GPU Sequence Replay Buffer ───────────────────────────────────
     var replay: GPUSequenceReplayBuffer[
@@ -623,13 +631,18 @@ struct MuZeroGPUState[
     var mcts_value_host: HostBuffer[dtype]  # [N_ENVS]
     var mcts_to_play_host: HostBuffer[DType.uint8]  # [N_ENVS]
 
-    # ── Batch data (sampled on GPU) ──────────────────────────────────
-    var batch_obs_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * OBS]
-    var batch_actions_buf: DeviceBuffer[dtype]  # [BATCH * K * ACT]
-    var batch_policies_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * ACT]
+    # ── Batch data (sampled on GPU; TIME-MAJOR layout) ───────────────
+    # Window K+N+1 timesteps for obs/policies/values/to_play (full); K
+    # for actions; K+N for rewards/dones (per-transition).
+    var batch_obs_buf: DeviceBuffer[dtype]  # [(K+N+1) * BATCH * OBS]
+    var batch_actions_buf: DeviceBuffer[dtype]  # [K * BATCH * ACT]
+    var batch_rewards_buf: DeviceBuffer[dtype]  # [(K+N) * BATCH]
+    var batch_dones_buf: DeviceBuffer[dtype]  # [(K+N) * BATCH]
+    var batch_policies_buf: DeviceBuffer[dtype]  # [(K+N+1) * BATCH * ACT]
+    var batch_values_buf: DeviceBuffer[dtype]  # [(K+N+1) * BATCH]
     var batch_to_play_buf: DeviceBuffer[
         DType.uint8
-    ]  # [BATCH * (K+1)]
+    ]  # [(K+N+1) * BATCH]
 
     # ── Value/Reward target scratch ──────────────────────────────────
     var value_targets_buf: DeviceBuffer[
@@ -652,6 +665,13 @@ struct MuZeroGPUState[
     ]  # [BATCH * PRED_OUT] (reused per step)
     var dyn_input_buf: DeviceBuffer[dtype]  # [BATCH * DYN_IN]
     var dyn_output_buf: DeviceBuffer[dtype]  # [BATCH * DYN_OUT]
+
+    # ── Reanalyze scratch (used when use_reanalyze=True) ────────────
+    # Single-chunk hidden-state scratch for the chunked GPU reanalyze
+    # (one timestep × BATCH samples per chunk). The chunked design keeps
+    # the workspace buffer (sized for BATCH) valid; we reuse pred_out_buf
+    # for the per-chunk prediction output.
+    var reanalyze_hidden_buf: DeviceBuffer[dtype]  # [BATCH * LATENT]
 
     # ── Network cache (for backward) ────────────────────────────────
     var rep_cache_buf: DeviceBuffer[dtype]  # [BATCH * RepModel.CACHE_SIZE]
@@ -691,6 +711,16 @@ struct MuZeroGPUState[
         self.dynamics = GPUNetworkState[Self.DynModel, Self.OptType](ctx)
         self.prediction = GPUNetworkState[Self.PredModel, Self.OptType](ctx)
 
+        # Target nets — created with their own initialized params; the
+        # caller (`upload_from`) syncs them to match the online weights
+        # at the start of training so they begin identical.
+        self.representation_target = GPUNetworkState[
+            Self.RepModel, Self.OptType
+        ](ctx)
+        self.prediction_target = GPUNetworkState[
+            Self.PredModel, Self.OptType
+        ](ctx)
+
         # ── GPU Replay Buffer ───────────────────────────────────────
         self.replay = GPUSequenceReplayBuffer[
             Self.PER_ENV_CAP, Self.OBS, Self.ACT, Self.N_ENVS
@@ -729,18 +759,30 @@ struct MuZeroGPUState[
             Self.N_ENVS
         )
 
-        # ── Batch data ───────────────────────────────────────────────
+        # ── Batch data (TIME-MAJOR; full window K+N+1) ──────────────
+        comptime WIN_FULL = Self.K + Self.N_TD + 1
+        comptime WIN_TRN = Self.K + Self.N_TD
+
         self.batch_obs_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * (Self.K + 1) * Self.OBS
+            WIN_FULL * Self.BATCH * Self.OBS
         )
         self.batch_actions_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * Self.K * Self.ACT
+            Self.K * Self.BATCH * Self.ACT
+        )
+        self.batch_rewards_buf = ctx.enqueue_create_buffer[dtype](
+            WIN_TRN * Self.BATCH
+        )
+        self.batch_dones_buf = ctx.enqueue_create_buffer[dtype](
+            WIN_TRN * Self.BATCH
         )
         self.batch_policies_buf = ctx.enqueue_create_buffer[dtype](
-            Self.BATCH * (Self.K + 1) * Self.ACT
+            WIN_FULL * Self.BATCH * Self.ACT
+        )
+        self.batch_values_buf = ctx.enqueue_create_buffer[dtype](
+            WIN_FULL * Self.BATCH
         )
         self.batch_to_play_buf = ctx.enqueue_create_buffer[DType.uint8](
-            Self.BATCH * (Self.K + 1)
+            WIN_FULL * Self.BATCH
         )
 
         # ── Targets ──────────────────────────────────────────────────
@@ -769,6 +811,11 @@ struct MuZeroGPUState[
         )
         self.dyn_output_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * Self.DYN_OUT
+        )
+
+        # ── Reanalyze scratch (single chunk = BATCH samples) ────────
+        self.reanalyze_hidden_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.LATENT
         )
 
         # ── Cache ────────────────────────────────────────────────────
@@ -839,6 +886,8 @@ struct MuZeroGPUState[
         self.representation = take.representation^
         self.dynamics = take.dynamics^
         self.prediction = take.prediction^
+        self.representation_target = take.representation_target^
+        self.prediction_target = take.prediction_target^
         self.replay = take.replay^
         self.mcts_policy_buf = take.mcts_policy_buf^
         self.mcts_value_buf = take.mcts_value_buf^
@@ -851,7 +900,10 @@ struct MuZeroGPUState[
         self.mcts_to_play_host = take.mcts_to_play_host^
         self.batch_obs_buf = take.batch_obs_buf^
         self.batch_actions_buf = take.batch_actions_buf^
+        self.batch_rewards_buf = take.batch_rewards_buf^
+        self.batch_dones_buf = take.batch_dones_buf^
         self.batch_policies_buf = take.batch_policies_buf^
+        self.batch_values_buf = take.batch_values_buf^
         self.batch_to_play_buf = take.batch_to_play_buf^
         self.value_targets_buf = take.value_targets_buf^
         self.reward_targets_buf = take.reward_targets_buf^
@@ -861,6 +913,7 @@ struct MuZeroGPUState[
         self.pred_out_buf = take.pred_out_buf^
         self.dyn_input_buf = take.dyn_input_buf^
         self.dyn_output_buf = take.dyn_output_buf^
+        self.reanalyze_hidden_buf = take.reanalyze_hidden_buf^
         self.rep_cache_buf = take.rep_cache_buf^
         self.dyn_cache_buf = take.dyn_cache_buf^
         self.pred_cache_buf = take.pred_cache_buf^
@@ -885,10 +938,18 @@ struct MuZeroGPUState[
         cpu: MuZeroCPUState[Self.Config, _C],
         ctx: DeviceContext,
     ) raises:
-        """Upload CPU network params to GPU."""
+        """Upload CPU network params to GPU and sync target nets."""
         self.representation.upload_from(cpu.representation, ctx)
         self.dynamics.upload_from(cpu.dynamics, ctx)
         self.prediction.upload_from(cpu.prediction, ctx)
+        # Hard-init targets to match online so reanalyze starts producing
+        # sensible bootstrap values from step 0 instead of random ones.
+        self.representation_target.soft_update_from_gpu(
+            self.representation, 1.0, ctx
+        )
+        self.prediction_target.soft_update_from_gpu(
+            self.prediction, 1.0, ctx
+        )
 
     def download_to[
         _C: Int

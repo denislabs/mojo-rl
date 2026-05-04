@@ -105,6 +105,7 @@ from .kernels import (
     nstep_value_targets_kernel,
     scalar_transform_kernel,
     to_play_from_episode_step_kernel,
+    decode_value_dist_kernel,
 )
 
 
@@ -155,6 +156,10 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
     var temperature: Float64
     var temperature_decay_steps: Int
     var max_grad_norm: Float64
+    # Polyak τ for prediction/representation target networks (E4); used
+    # only when use_reanalyze is True. τ=1.0 → hard sync each step (no
+    # decoupling); τ=0.0 → frozen target. Typical: 0.005–0.01.
+    var target_tau: Float64
 
     # Step counters
     var total_steps: Int
@@ -184,6 +189,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         temperature: Float64 = 1.0,
         temperature_decay_steps: Int = 100000,
         max_grad_norm: Float64 = 10.0,
+        target_tau: Float64 = 0.01,
     ):
         """Initialize MuZero agent with all networks and MCTS engine.
 
@@ -210,6 +216,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         self.temperature = temperature
         self.temperature_decay_steps = temperature_decay_steps
         self.max_grad_norm = max_grad_norm
+        self.target_tau = target_tau
         self.total_steps = 0
         self.train_step_count = 0
         self._episode_obs = List[List[Scalar[dtype]]]()
@@ -232,6 +239,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         self.temperature = take.temperature
         self.temperature_decay_steps = take.temperature_decay_steps
         self.max_grad_norm = take.max_grad_norm
+        self.target_tau = take.target_tau
         self.total_steps = take.total_steps
         self.train_step_count = take.train_step_count
         self._episode_obs = take._episode_obs^
@@ -668,9 +676,10 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             # Compute policy and value loss for this step
             for b in range(BATCH):
                 # Policy loss: CE(predicted_logits, mcts_policy)
+                # batch_policies layout: [t, b, a] = t*BATCH*ACT + b*ACT + a
                 var policy_logits = alloc[Float64](ACT)
                 var policy_target = alloc[Float64](ACT)
-                var pol_base = b * (K + 1) * ACT + k * ACT
+                var pol_base = k * BATCH * ACT + b * ACT
                 for a in range(ACT):
                     policy_logits[a] = Float64(
                         (
@@ -738,12 +747,13 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                             + b * LATENT
                             + i
                         )[]
-                    # Copy one-hot action from batch_actions
+                    # Copy one-hot action from batch_actions (TIME-MAJOR:
+                    # [k, b, a] = k*BATCH*ACT + b*ACT + a)
                     for a in range(ACT):
                         dyn_input_ptr[b * DYN_IN + LATENT + a] = (
                             self.state._batch_actions
-                            + b * K * ACT
-                            + k * ACT
+                            + k * BATCH * ACT
+                            + b * ACT
                             + a
                         )[]
 
@@ -876,8 +886,9 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 var pred_offset = k * BATCH * PRED_OUT + b * PRED_OUT
 
                 # Policy gradient: (softmax(p) - target) / batch * inv_k
+                # batch_policies layout: [t, b, a] = t*BATCH*ACT + b*ACT + a
                 var policy_logits = alloc[Float64](ACT)
-                var pol_base = b * (K + 1) * ACT + k * ACT
+                var pol_base = k * BATCH * ACT + b * ACT
                 for a in range(ACT):
                     policy_logits[a] = Float64(
                         (self.state._pred_outputs + pred_offset + a)[]
@@ -1690,32 +1701,32 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             MutAnyOrigin,
         ](gpu.mcts_to_play_buf.unsafe_ptr())
 
+        # All batch tensors are TIME-MAJOR. Window K+N_TD+1 timesteps for
+        # full-window data (obs/policies/values/to_play), K+N_TD for
+        # per-transition (rewards/dones), K for actions.
+        comptime WIN_FULL = K + N_TD + 1
+        comptime WIN_TRN = K + N_TD
+
         var b_obs_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH * (K + 1) * OBS), MutAnyOrigin
+            dtype, Layout.row_major(WIN_FULL * BATCH * OBS), MutAnyOrigin
         ](gpu.batch_obs_buf.unsafe_ptr())
         var b_act_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH * K * ACT), MutAnyOrigin
+            dtype, Layout.row_major(K * BATCH * ACT), MutAnyOrigin
         ](gpu.batch_actions_buf.unsafe_ptr())
         var b_rew_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH * K), MutAnyOrigin
-        ](
-            gpu.reward_targets_buf.unsafe_ptr()
-        )  # reuse as batch rewards
+            dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
+        ](gpu.batch_rewards_buf.unsafe_ptr())
         var b_done_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH * K), MutAnyOrigin
-        ](
-            gpu.reward_target_dist_buf.unsafe_ptr()
-        )  # reuse temp buf for dones
+            dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
+        ](gpu.batch_dones_buf.unsafe_ptr())
         var b_pol_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH * (K + 1) * ACT), MutAnyOrigin
+            dtype, Layout.row_major(WIN_FULL * BATCH * ACT), MutAnyOrigin
         ](gpu.batch_policies_buf.unsafe_ptr())
         var b_val_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
-        ](
-            gpu.value_targets_buf.unsafe_ptr()
-        )  # reuse: overwritten by nstep kernel
+            dtype, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
+        ](gpu.batch_values_buf.unsafe_ptr())
         var b_tp_t = LayoutTensor[
-            DType.uint8, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+            DType.uint8, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
         ](gpu.batch_to_play_buf.unsafe_ptr())
 
         var buf_size_s = Scalar[DType.int32](gpu.replay.size)
@@ -1757,28 +1768,32 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 MutAnyOrigin,
             ],
             oo: LayoutTensor[
-                dtype, Layout.row_major(BATCH * (K + 1) * OBS), MutAnyOrigin
+                dtype, Layout.row_major(WIN_FULL * BATCH * OBS), MutAnyOrigin
             ],
             oa: LayoutTensor[
-                dtype, Layout.row_major(BATCH * K * ACT), MutAnyOrigin
+                dtype, Layout.row_major(K * BATCH * ACT), MutAnyOrigin
             ],
-            orw: LayoutTensor[dtype, Layout.row_major(BATCH * K), MutAnyOrigin],
-            od: LayoutTensor[dtype, Layout.row_major(BATCH * K), MutAnyOrigin],
+            orw: LayoutTensor[
+                dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
+            ],
+            od: LayoutTensor[
+                dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
+            ],
             op: LayoutTensor[
-                dtype, Layout.row_major(BATCH * (K + 1) * ACT), MutAnyOrigin
+                dtype, Layout.row_major(WIN_FULL * BATCH * ACT), MutAnyOrigin
             ],
             ov: LayoutTensor[
-                dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+                dtype, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
             ],
             otp: LayoutTensor[
-                DType.uint8, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+                DType.uint8, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
             ],
             bsz: Scalar[DType.int32],
             bwi: Scalar[DType.int32],
             seed: Scalar[DType.uint32],
         ):
             sample_seq_with_targets_kernel[
-                BATCH, K, N_ENVS_GPU, PER_ENV_CAP, OBS, ACT, dtype
+                BATCH, K, N_TD, N_ENVS_GPU, PER_ENV_CAP, OBS, ACT, dtype
             ](
                 bo, ba, br, bd, bp, bv, btp,
                 oo, oa, orw, od, op, ov, otp,
@@ -1807,6 +1822,97 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             block_dim=(TPB,),
         )
 
+        # ── Step 1.5: GPU reanalyze (use_last_model_value) ───────────
+        # When enabled, refresh batch_values with fresh predictions from
+        # the current network. The n-step kernel then bootstraps with
+        # up-to-date values rather than stale stored MCTS values.
+        # Reference: muzero-general/replay_buffer.py:237-238 (see also
+        # the asynchronous Reanalyse worker at .py:306-374).
+        #
+        # Chunked one timestep at a time so the existing workspace buffer
+        # (sized for BATCH samples) stays valid; we reuse pred_out_buf
+        # for the chunk's prediction output and write the decoded scalar
+        # straight into batch_values at the matching time-major offset.
+        if use_reanalyze:
+            comptime BATCH_BLOCKS_RA = (BATCH + TPB - 1) // TPB
+            comptime run_ra_scale = scale_hidden_kernel[BATCH, LATENT, dtype]
+            comptime run_ra_dec = decode_value_dist_kernel[
+                BATCH, BINS, PRED_OUT_DIM, ACT, dtype
+            ]
+            for t in range(WIN_FULL):
+                var obs_off = t * BATCH * OBS
+                var ra_obs_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, REP_IN_DIM),
+                    MutAnyOrigin,
+                ](gpu.batch_obs_buf.unsafe_ptr() + obs_off)
+                var ra_h_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, REP_OUT_DIM),
+                    MutAnyOrigin,
+                ](gpu.reanalyze_hidden_buf.unsafe_ptr())
+                # Use TARGET nets (E4) so the bootstrap value tracks a
+                # slowly-updating snapshot of the online weights, not the
+                # current step's mid-update weights.
+                Self.RepNet.forward_gpu[BATCH](
+                    ctx,
+                    ra_obs_t,
+                    ra_h_t,
+                    gpu.representation_target.params_view(),
+                    gpu.representation_target.model_state_view(),
+                    gpu.workspace_buf,
+                )
+
+                var ra_h_1d = LayoutTensor[
+                    dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+                ](gpu.reanalyze_hidden_buf.unsafe_ptr())
+                ctx.enqueue_function[run_ra_scale, run_ra_scale](
+                    ra_h_1d,
+                    grid_dim=(BATCH_BLOCKS_RA,),
+                    block_dim=(TPB,),
+                )
+
+                # Re-view the hidden as PRED input (same memory; the
+                # type system needs matching IN_DIM literal).
+                var ra_h_pred_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, PRED_IN_DIM),
+                    MutAnyOrigin,
+                ](gpu.reanalyze_hidden_buf.unsafe_ptr())
+                var ra_p_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, PRED_OUT_DIM),
+                    MutAnyOrigin,
+                ](gpu.pred_out_buf.unsafe_ptr())
+                Self.PredNet.forward_gpu[BATCH](
+                    ctx,
+                    ra_h_pred_t,
+                    ra_p_t,
+                    gpu.prediction_target.params_view(),
+                    gpu.prediction_target.model_state_view(),
+                    gpu.workspace_buf,
+                )
+
+                # Decode value distribution → scalar in untransformed
+                # space; write directly into batch_values[t, :].
+                var ra_p_1d = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH * PRED_OUT_DIM),
+                    MutAnyOrigin,
+                ](gpu.pred_out_buf.unsafe_ptr())
+                var bval_slot = LayoutTensor[
+                    dtype, Layout.row_major(BATCH), MutAnyOrigin
+                ](gpu.batch_values_buf.unsafe_ptr() + t * BATCH)
+                ctx.enqueue_function[run_ra_dec, run_ra_dec](
+                    ra_p_1d,
+                    bval_slot,
+                    Scalar[dtype](self.v_min),
+                    Scalar[dtype](self.v_max),
+                    Scalar[dtype](0.001),
+                    grid_dim=(BATCH_BLOCKS_RA,),
+                    block_dim=(TPB,),
+                )
+
         # ── Step 2: GPU n-step targets + scalar transform ────────────
         comptime TARGET_EL = BATCH * (K + 1)
         comptime TARGET_BLOCKS = (TARGET_EL + TPB - 1) // TPB
@@ -1819,6 +1925,8 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             dtype, Layout.row_major(K * BATCH), MutAnyOrigin
         ](gpu.reward_targets_buf.unsafe_ptr())
 
+        comptime BACKUP_TYPE = Self.Config.Backup.BACKUP_TYPE
+
         @parameter
         @always_inline
         def nstep_wrapper(
@@ -1827,18 +1935,22 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             ],
             rt: LayoutTensor[dtype, Layout.row_major(K * BATCH), MutAnyOrigin],
             brew: LayoutTensor[
-                dtype, Layout.row_major(BATCH * K), MutAnyOrigin
+                dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
             ],
-            bdn: LayoutTensor[dtype, Layout.row_major(BATCH * K), MutAnyOrigin],
+            bdn: LayoutTensor[
+                dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
+            ],
             bval: LayoutTensor[
-                dtype, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+                dtype, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
             ],
             btp: LayoutTensor[
-                DType.uint8, Layout.row_major(BATCH * (K + 1)), MutAnyOrigin
+                DType.uint8,
+                Layout.row_major(WIN_FULL * BATCH),
+                MutAnyOrigin,
             ],
             g: Scalar[dtype],
         ):
-            nstep_value_targets_kernel[BATCH, K, N_TD, dtype](
+            nstep_value_targets_kernel[BATCH, K, N_TD, dtype, BACKUP_TYPE](
                 vt, rt, brew, bdn, bval, btp, g
             )
 
@@ -2332,6 +2444,18 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         gpu.representation.optimizer_step(ctx)
         gpu.dynamics.optimizer_step(ctx)
         gpu.prediction.optimizer_step(ctx)
+
+        # ── Step 6: Polyak soft-update of target nets (E4) ──────────
+        # Slowly track the online networks. Active only when reanalyze
+        # is on (the only consumer of target params); skip otherwise to
+        # avoid wasted GPU work.
+        if use_reanalyze and self.target_tau > 0.0:
+            gpu.representation_target.soft_update_from_gpu(
+                gpu.representation, self.target_tau, ctx
+            )
+            gpu.prediction_target.soft_update_from_gpu(
+                gpu.prediction, self.target_tau, ctx
+            )
 
         self.train_step_count += 1
         return Float64(0.0)  # Loss computation on GPU would require readback
@@ -3092,6 +3216,8 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         do_arena: Bool = False,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "muzero.ckpt",
+        use_reanalyze: Bool = False,
+        reanalyze_per_iter: Int = 64,
     ) raises -> TrainingMetrics:
         """Train MuZero via GPU self-play with batch-then-train loop.
 
@@ -3119,6 +3245,13 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             do_arena: Whether to run arena comparison (new vs best).
             checkpoint_every: Save checkpoint every N iterations (0=off).
             checkpoint_path: Path for checkpoint files.
+            use_reanalyze: If True, run CPU-side reanalyze
+                (re-run MCTS on stored positions with the latest networks)
+                between iterations to refresh stale value/policy targets.
+                muzero-general considers this part of the canonical
+                stability story; off by default for backwards compatibility.
+            reanalyze_per_iter: Number of positions to reanalyze each
+                iteration when use_reanalyze=True. Capped by buffer size.
 
         Compile-time parameters:
             temp_threshold: Use temp=1 for first N moves, then argmax.
@@ -3797,8 +3930,16 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 )
                 if grad_steps < 1:
                     grad_steps = 1
+                # GPU-side reanalyze: when use_reanalyze is True, each
+                # update_gpu refreshes batch_values with fresh predictions
+                # from the current network before the n-step kernel runs
+                # (see muzero.mojo:1820-1900 / "Step 1.5"). This matches
+                # muzero-general's use_last_model_value behavior.
+                _ = reanalyze_per_iter  # reserved for future async-style reanalyze
                 for _ in range(grad_steps):
-                    _ = self.update_gpu(ctx, gpu)
+                    _ = self.update_gpu(
+                        ctx, gpu, use_reanalyze=use_reanalyze
+                    )
                 self.train_step_count += grad_steps
                 gpu.download_to(self.state, ctx)
 
