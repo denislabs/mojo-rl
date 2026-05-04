@@ -19,7 +19,7 @@ Architecture (all MLPs use NormedLinear blocks):
 Reference: Hansen et al., 2023 — TD-MPC2
 """
 
-from std.math import exp, log, sqrt
+from std.math import exp, log, sqrt, tanh
 from std.random import random_float64
 
 from layout import Layout, LayoutTensor
@@ -423,15 +423,14 @@ struct WorldModel[
             dtype, Layout.row_major(BATCH, POL_OUT), MutAnyOrigin
         ](out.unsafe_ptr())
         Self.PolicyNet.forward[BATCH](z, out_t, self.policy.params_view(), self.policy.model_state_view())
+        # Smooth tanh-based log_std bound (matches reference + GPU kernels):
+        #   log_std = -10 + 6 * (tanh(x) + 1)  ∈ [-10, 2]
+        # The policy network's "log_std" channel emits raw x, not log_std.
         for b in range(BATCH):
             for i in range(Self.ACTION_DIM):
                 mean[b, i] = out[b * POL_OUT + i]
-                # Clamp log_std to [-10, 2] for numerical stability
-                var ls = Float64(out[b * POL_OUT + Self.ACTION_DIM + i])
-                if ls < -10.0:
-                    ls = -10.0
-                if ls > 2.0:
-                    ls = 2.0
+                var x = Float64(out[b * POL_OUT + Self.ACTION_DIM + i])
+                var ls = -10.0 + 6.0 * (Float64(tanh(Float32(x))) + 1.0)
                 log_std[b, i] = Scalar[dtype](ls)
 
     def policy_forward_with_cache[
