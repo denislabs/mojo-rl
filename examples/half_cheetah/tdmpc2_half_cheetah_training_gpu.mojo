@@ -66,7 +66,10 @@ comptime NUM_ITERATIONS = 6
 
 # Replay buffer and batch
 comptime BATCH_SIZE = 256
-comptime BUFFER_CAPACITY = 100_000
+# Match reference TD-MPC2 (config.yaml:29 buffer_size=1_000_000). With n_envs=32
+# and per-env layout this gives 31250 transitions per env (~31 episodes worth),
+# vs the previous 100k → 3 episodes per env.
+comptime BUFFER_CAPACITY = 1_000_000
 
 # Value range for distributional RL
 comptime V_MIN = -10.0
