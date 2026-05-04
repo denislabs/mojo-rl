@@ -141,8 +141,18 @@ def pcn_build_dyn_target_kernel[
     s_obs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
     s_nobs: LayoutTensor[dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin],
     s_rew: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    reward_mean: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+    reward_std: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
 ):
-    """target[b, 0:OBS_DIM] = next_obs[b] - obs[b]; target[b, OBS_DIM] = reward[b].
+    """target[b, d<OBS_DIM] = next_obs[b,d] - obs[b,d]
+       target[b, OBS_DIM]   = (reward[b] - reward_mean) / reward_std
+
+    The reward dim is normalized so PCN's unweighted-MSE loss treats it
+    on the same scale as the Δobs dims. Without this, the reward (raw σ
+    ≈ 1) gets dwarfed by 17 Δobs dims (raw σ ≈ 0.05) in the MSE average,
+    PCN regresses reward to zero, and SAC bootstraps Q with no real
+    reward signal. The rollout kernel un-normalizes by `* std + mean`
+    before storing in the synth buffer.
 
     One thread per output element. Used to build the regression target for
     the PCN dynamics from a sampled minibatch of (obs, next_obs, reward).
@@ -156,7 +166,11 @@ def pcn_build_dyn_target_kernel[
     if d < OBS_DIM:
         target[b, d] = s_nobs[b, d] - s_obs[b, d]
     else:
-        target[b, d] = s_rew[b]
+        var mu = rebind[Scalar[dtype]](reward_mean[0])
+        var sigma = rebind[Scalar[dtype]](reward_std[0])
+        target[b, d] = (
+            rebind[Scalar[dtype]](s_rew[b]) - mu
+        ) / sigma
 
 
 def pcn_sample_elite_output_kernel[
@@ -183,6 +197,8 @@ def pcn_sample_elite_output_kernel[
     noise_scale: Scalar[dtype],
     noise_floor: Scalar[dtype],
     noise_cap: Scalar[dtype],
+    reward_mean: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+    reward_std: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
 ):
     """For each (b, d), sample chosen-elite + ensemble-disagreement Gaussian noise.
 
@@ -266,7 +282,12 @@ def pcn_sample_elite_output_kernel[
     if d < OBS_DIM:
         next_obs[b, d] = obs[b, d] + sample
     else:
-        rewards[b] = sample
+        # Un-normalize reward: model predicts (r - mean)/std, so
+        # actual reward = sample * std + mean. Matches the inverse of
+        # `pcn_build_dyn_target_kernel`'s reward normalization.
+        var rmu = rebind[Scalar[dtype]](reward_mean[0])
+        var rsigma = rebind[Scalar[dtype]](reward_std[0])
+        rewards[b] = sample * rsigma + rmu
 
 
 # =============================================================================
@@ -1366,6 +1387,11 @@ struct PCNMBPOAgent[
         # obs (positions/velocities ±10) saturate tanh and the dynamics
         # learns garbage. Same recipe as vanilla MBPO TensorStandardScaler.
         gpu_dynamics.fit_scaler_gpu[Self.GPU_BUF_CAP](ctx, gpu_buffer)
+        # Refit the reward scaler too (mean + std on the buffer's reward
+        # column). Used by `pcn_build_dyn_target_kernel` to normalize the
+        # reward target so PCN's unweighted MSE doesn't drown the reward
+        # gradient in the 17-dim Δobs gradient.
+        gpu_dynamics.fit_reward_scaler_gpu[Self.GPU_BUF_CAP](ctx, gpu_buffer)
 
         comptime concat_k = concat_obs_action_kernel[
             dtype, DB, Self.Config.obs_dim, Self.Config.action_dim, DYN_IN
@@ -1447,8 +1473,15 @@ struct PCNMBPOAgent[
                 var target_t = LayoutTensor[
                     dtype, Layout.row_major(DB, READOUT), MutAnyOrigin
                 ](gpu_dynamics.target_dbuf.unsafe_ptr())
+                var rmean_t = LayoutTensor[
+                    dtype, Layout.row_major(1), MutAnyOrigin
+                ](gpu_dynamics.reward_mean.unsafe_ptr())
+                var rstd_t = LayoutTensor[
+                    dtype, Layout.row_major(1), MutAnyOrigin
+                ](gpu_dynamics.reward_std.unsafe_ptr())
                 ctx.enqueue_function[build_target_k, build_target_k](
                     target_t, s_obs_t, s_nobs_t, s_rew_t,
+                    rmean_t, rstd_t,
                     grid_dim=(DB_OUT_BLOCKS,),
                     block_dim=(TPB_VAL,),
                 )
@@ -1497,8 +1530,15 @@ struct PCNMBPOAgent[
         var ht_t = LayoutTensor[
             dtype, Layout.row_major(DB, READOUT), MutAnyOrigin
         ](gpu_dynamics.target_dbuf.unsafe_ptr())
+        var hrmean_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu_dynamics.reward_mean.unsafe_ptr())
+        var hrstd_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu_dynamics.reward_std.unsafe_ptr())
         ctx.enqueue_function[build_target_k, build_target_k](
             ht_t, hs_obs_t, hs_nobs_t, hs_rew_t,
+            hrmean_t, hrstd_t,
             grid_dim=(DB_OUT_BLOCKS,),
             block_dim=(TPB_VAL,),
         )
@@ -1702,6 +1742,12 @@ struct PCNMBPOAgent[
             ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
                 elite_rng_t, grid_dim=(1,), block_dim=(1,),
             )
+            var rsamp_mean_t = LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ](gpu_dynamics.reward_mean.unsafe_ptr())
+            var rsamp_std_t = LayoutTensor[
+                dtype, Layout.row_major(1), MutAnyOrigin
+            ](gpu_dynamics.reward_std.unsafe_ptr())
             ctx.enqueue_function[sample_k, sample_k](
                 r_next_t, r_rew_t,
                 r_dyn_out_all_t, r_obs_t, elite_slot_t,
@@ -1709,6 +1755,7 @@ struct PCNMBPOAgent[
                 Scalar[dtype](self.dyn_noise_scale),
                 Scalar[dtype](self.dyn_noise_floor),
                 Scalar[dtype](self.dyn_noise_cap),
+                rsamp_mean_t, rsamp_std_t,
                 grid_dim=(SAMPLE_BLOCKS,),
                 block_dim=(TPB_VAL,),
             )
@@ -3098,22 +3145,27 @@ struct PCNMBPOAgent[
                 # eval per member here for logging only (cheap: NUM_ENSEMBLE
                 # forwards on a DYN_BATCH-sized batch already on device).
                 if logger:
-                    var per_member_loss = List[Float64]()
+                    # Per-member holdout MSE — total + obs-only + reward-only
+                    # so we can see if reward MSE is hidden behind aggregate.
                     var loss_sum: Float64 = 0.0
                     var loss_min: Float64 = 1e30
                     var loss_max: Float64 = -1.0
+                    var obs_sum: Float64 = 0.0
+                    var rew_sum: Float64 = 0.0
                     for m in range(Self.Config.ENSEMBLE_SIZE):
-                        var L = gpu_dynamics.eval_member_holdout_loss(ctx, m)
-                        per_member_loss.append(L)
+                        var (L, L_obs, L_rew) = (
+                            gpu_dynamics.eval_member_holdout_mse_breakdown(ctx, m)
+                        )
                         loss_sum += L
+                        obs_sum += L_obs
+                        rew_sum += L_rew
                         if L < loss_min:
                             loss_min = L
                         if L > loss_max:
                             loss_max = L
+                    var n_ens_f = Float64(Self.Config.ENSEMBLE_SIZE)
                     logger[].log_scalar(
-                        "dyn_holdout_mse_mean",
-                        loss_sum / Float64(Self.Config.ENSEMBLE_SIZE),
-                        total_steps,
+                        "dyn_holdout_mse_mean", loss_sum / n_ens_f, total_steps
                     )
                     logger[].log_scalar(
                         "dyn_holdout_mse_min", loss_min, total_steps
@@ -3124,6 +3176,16 @@ struct PCNMBPOAgent[
                     logger[].log_scalar(
                         "dyn_holdout_spread",
                         loss_max - loss_min,
+                        total_steps,
+                    )
+                    logger[].log_scalar(
+                        "dyn_holdout_mse_obs",
+                        obs_sum / n_ens_f,
+                        total_steps,
+                    )
+                    logger[].log_scalar(
+                        "dyn_holdout_mse_reward",
+                        rew_sum / n_ens_f,
                         total_steps,
                     )
                     var input_std_mean = gpu_dynamics.download_input_std(ctx)

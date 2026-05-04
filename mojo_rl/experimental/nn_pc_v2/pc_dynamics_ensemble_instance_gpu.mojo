@@ -200,6 +200,15 @@ struct PCDynamicsEnsembleInstanceGPU[
     # the first dynamics train (scaler refit there). Sized DYN_IN.
     var input_mean: DeviceBuffer[Self.dtype]  # [DYN_IN]
     var input_std: DeviceBuffer[Self.dtype]  # [DYN_IN]
+    # Reward target scaler — fitted on the buffer's reward column. PCN's
+    # unweighted MSE loss treats every output dim equally, so a single
+    # high-variance reward dim (HalfCheetah: σ ≈ 1, vs Δobs σ ≈ 0.05)
+    # gets averaged-out by 17 obs dims. Without this, PCN regresses to
+    # mean-reward-of-warmup (≈ −0.05) and never learns the policy-induced
+    # forward-velocity reward signal — SAC then bootstraps Q-values from
+    # ~zero-reward synth and the policy never improves. Both size [1].
+    var reward_mean: DeviceBuffer[Self.dtype]
+    var reward_std: DeviceBuffer[Self.dtype]
 
     # =========================================================================
     # Construction / destruction.
@@ -396,6 +405,13 @@ struct PCDynamicsEnsembleInstanceGPU[
         self.input_mean.enqueue_fill(Scalar[Self.dtype](0.0))
         self.input_std.enqueue_fill(Scalar[Self.dtype](1.0))
 
+        # Reward scaler — start at identity (no-op normalization). Caller
+        # refits via `fit_reward_scaler_gpu` each `train_dynamics_gpu` call.
+        self.reward_mean = ctx.enqueue_create_buffer[Self.dtype](1)
+        self.reward_std = ctx.enqueue_create_buffer[Self.dtype](1)
+        self.reward_mean.enqueue_fill(Scalar[Self.dtype](0.0))
+        self.reward_std.enqueue_fill(Scalar[Self.dtype](1.0))
+
         ctx.synchronize()
 
     def __init__(out self, *, deinit take: Self):
@@ -448,6 +464,9 @@ struct PCDynamicsEnsembleInstanceGPU[
         # Input scaler.
         self.input_mean = take.input_mean^
         self.input_std = take.input_std^
+        # Reward scaler.
+        self.reward_mean = take.reward_mean^
+        self.reward_std = take.reward_std^
 
     # =========================================================================
     # Common LayoutTensor views (build once per call from device buffers).
@@ -648,6 +667,66 @@ struct PCDynamicsEnsembleInstanceGPU[
                 var diff = p - t
                 sum_sq += diff * diff
         return sum_sq / Float64(Self.DYN_BATCH * Self.DYN.READOUT)
+
+    def eval_member_holdout_mse_breakdown(
+        mut self,
+        ctx: DeviceContext,
+        m: Int,
+    ) raises -> Tuple[Float64, Float64, Float64]:
+        """Same as `eval_member_holdout_loss` but splits MSE into (total,
+        obs-only, reward-only) so the agent can log them separately.
+
+        Returns `(mse_total, mse_obs, mse_reward)` where:
+          mse_obs    = mean over (BATCH × OBS_DIM) of (out[d<OBS_DIM] - tgt[d])²
+          mse_reward = mean over BATCH       of (out[OBS_DIM] - tgt[OBS_DIM])²
+          mse_total  = mean over (BATCH × READOUT) of (out[d] - tgt[d])²
+
+        Aggregate MSE on its own can hide a per-dim disaster: 17 obs dims
+        averaged with 1 reward dim weight reward at 1/18, so a reward MSE
+        of 5 with obs MSE of 0.2 produces aggregate ≈ 0.47 — looks fine
+        but rewards are useless. This split surfaces that.
+        """
+        var s_a = self._s_a_view()
+        var e_out_t = LayoutTensor[
+            Self.dtype,
+            Layout.row_major(Self.DYN_BATCH, Self.DYN.READOUT),
+            MutAnyOrigin,
+        ](self.e_out_dbuf.unsafe_ptr())
+        var pred_mu = self._mu_eps_view()
+        var pred_a = self._a_below_view()
+        Self.ENS.predict_member_gpu[Self.DYN_BATCH](
+            ctx, m, s_a, self.params_dbuf.unsafe_ptr(),
+            pred_mu, pred_a, e_out_t,
+        )
+        ctx.enqueue_copy(self.e_out_host, self.e_out_dbuf)
+        ctx.enqueue_copy(self.e_target_host, self.target_dbuf)
+        ctx.synchronize()
+        var sum_sq_obs: Float64 = 0.0
+        var sum_sq_rew: Float64 = 0.0
+        for b in range(Self.DYN_BATCH):
+            var row = b * Self.DYN.READOUT
+            for d in range(Self.OBS_DIM):
+                var p = Float64(self.e_out_host.unsafe_ptr()[row + d])
+                var t = Float64(self.e_target_host.unsafe_ptr()[row + d])
+                var diff = p - t
+                sum_sq_obs += diff * diff
+            # Reward dim is at index OBS_DIM (= READOUT - 1).
+            var p_r = Float64(
+                self.e_out_host.unsafe_ptr()[row + Self.OBS_DIM]
+            )
+            var t_r = Float64(
+                self.e_target_host.unsafe_ptr()[row + Self.OBS_DIM]
+            )
+            var diff_r = p_r - t_r
+            sum_sq_rew += diff_r * diff_r
+        var mse_obs = sum_sq_obs / Float64(
+            Self.DYN_BATCH * Self.OBS_DIM
+        )
+        var mse_rew = sum_sq_rew / Float64(Self.DYN_BATCH)
+        var mse_total = (sum_sq_obs + sum_sq_rew) / Float64(
+            Self.DYN_BATCH * Self.DYN.READOUT
+        )
+        return (mse_total, mse_obs, mse_rew)
 
     # =========================================================================
     # Refresh elite_indices using the current training batch's holdout MSE.
@@ -873,6 +952,61 @@ struct PCDynamicsEnsembleInstanceGPU[
             min_std,
             grid_dim=(Self.ACTION_DIM,),
             block_dim=(1,),
+        )
+
+    def fit_reward_scaler_gpu[
+        BUF_CAP: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        buffer: GPUReplayBuffer[BUF_CAP, Self.OBS_DIM, Self.ACTION_DIM],
+    ) raises:
+        """Compute mean and std of the buffer's reward column. Stores into
+        `reward_mean` and `reward_std` (each size [1]).
+
+        Used to normalize the reward target during PCN training and
+        un-normalize during rollouts. Without this, PCN's unweighted-MSE
+        loss treats the (~σ=1) reward dim equally with 17 (~σ=0.05) Δobs
+        dims; reward effectively gets 1/18 weight in the gradient and
+        regresses to mean — synth rollouts then have reward ≈ 0 regardless
+        of policy, and SAC bootstraps Q without a real reward signal.
+
+        Reuses the existing `compute_scaler_*_kernel` with D=1 by viewing
+        rewards as a [BUF_CAP, 1] tensor.
+        """
+        var n = buffer.size
+        if n < 1:
+            return
+
+        var rew_mean_t = LayoutTensor[
+            Self.dtype, Layout.row_major(1), MutAnyOrigin
+        ](self.reward_mean.unsafe_ptr())
+        var rew_std_t = LayoutTensor[
+            Self.dtype, Layout.row_major(1), MutAnyOrigin
+        ](self.reward_std.unsafe_ptr())
+        # Buffer's reward column is a flat 1-D buffer; view as [BUF_CAP, 1].
+        var rew_data_t = LayoutTensor[
+            Self.dtype, Layout.row_major(BUF_CAP, 1), MutAnyOrigin
+        ](
+            rebind[UnsafePointer[Scalar[Self.dtype], origin=MutAnyOrigin]](
+                buffer.rewards_buf.unsafe_ptr()
+            )
+        )
+
+        comptime rew_mean_k = compute_scaler_mean_kernel[
+            Self.dtype, BUF_CAP, 1
+        ]
+        comptime rew_std_k = compute_scaler_std_kernel[
+            Self.dtype, BUF_CAP, 1
+        ]
+        ctx.enqueue_function[rew_mean_k, rew_mean_k](
+            rew_mean_t, rew_data_t, n,
+            grid_dim=(1,), block_dim=(1,),
+        )
+        var min_std = Scalar[Self.dtype](1e-12)
+        ctx.enqueue_function[rew_std_k, rew_std_k](
+            rew_std_t, rew_data_t, rew_mean_t, n, min_std,
+            grid_dim=(1,), block_dim=(1,),
         )
 
     # =========================================================================
