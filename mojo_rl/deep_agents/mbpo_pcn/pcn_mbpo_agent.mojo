@@ -11,7 +11,8 @@ Key components:
 """
 
 from std.random import random_float64
-from std.math import exp, log, sqrt
+from std.random.philox import Random as PhiloxRandom
+from std.math import cos, exp, log, sqrt
 from layout import Layout, LayoutTensor
 from std.memory import UnsafePointer, alloc, memset
 from std.gpu import thread_idx, block_idx, block_dim
@@ -176,16 +177,43 @@ def pcn_sample_elite_output_kernel[
     elite_slot: LayoutTensor[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
     ],
+    rng_counter: LayoutTensor[
+        DType.uint32, Layout.row_major(1), MutAnyOrigin
+    ],
+    noise_scale: Scalar[dtype],
+    noise_floor: Scalar[dtype],
+    noise_cap: Scalar[dtype],
 ):
-    """For each row b, pick elite slot s = elite_slot[b], then write:
+    """For each (b, d), sample chosen-elite + ensemble-disagreement Gaussian noise.
 
-        next_obs[b, :] = obs[b, :] + dyn_output_all[s, b, 0:OBS_DIM]
-        rewards[b]     = dyn_output_all[s, b, OBS_DIM]
+    Vanilla MBPO's sample kernel adds noise scaled by each elite's *learned*
+    Gaussian σ (aleatoric uncertainty). PCN dynamics is deterministic — no
+    σ — so we substitute *epistemic uncertainty from ensemble disagreement*:
 
-    PCN deterministic equivalent of vanilla MBPO's
-    `dynamics_sample_ensemble_learnable_kernel`. No Gaussian sampling —
-    PCN dynamics is deterministic; variance comes from ensemble disagreement
-    via the per-sample elite slot.
+        μ_d  = mean over elites of dyn_output_all[:, b, d]
+        σ_d  = sqrt(mean over elites of (dyn_output_all[:, b, d] - μ_d)²)
+        sample = dyn_output_all[chosen_slot, b, d] + clip(σ_d, floor, cap)
+                                                      · noise_scale · ε
+        ε ~ N(0, 1)  via PhiloxRandom Box-Muller, keyed on (rng_counter, tid)
+
+    Then write:
+        next_obs[b, d] = obs[b, d] + sample            for d in 0..OBS_DIM
+        rewards[b]     = sample                        for d == OBS_DIM
+
+    Without the noise, SAC's critic over-fits to PCN's perfectly-confident
+    point predictions (UTD=40 on 100K deterministic synth transitions per
+    env step → critic loss spikes to 1500+ early, Q-values lock at a
+    suboptimal stable point, policy entropy collapses). Adding ensemble-
+    disagreement noise gives SAC the same kind of uncertainty signal
+    vanilla's Gaussian σ does, just sourced from member disagreement
+    instead of per-member learned variance.
+
+    `noise_scale` lets the caller tune how aggressively to inject noise.
+    `noise_floor` ensures at least *some* noise even in well-converged
+    regions (so SAC never sees a perfectly confident target).
+    `noise_cap` clips runaway disagreement (early in training, ensemble
+    disagreement can be huge — clip prevents the noise from drowning out
+    the signal).
 
     One thread per (batch, output_elem) — total BATCH * (OBS_DIM + 1) threads.
     """
@@ -196,10 +224,49 @@ def pcn_sample_elite_output_kernel[
     var b = tid // READOUT
     var d = tid % READOUT
     var slot = Int(elite_slot[b])
+
+    # Compute ensemble mean + std at (b, d) across all NUM_ELITES members.
+    var mean_acc = Scalar[dtype](0.0)
+    for k in range(NUM_ELITES):
+        mean_acc += rebind[Scalar[dtype]](dyn_output_all[k, b, d])
+    var mu = mean_acc / Scalar[dtype](NUM_ELITES)
+    var var_acc = Scalar[dtype](0.0)
+    for k in range(NUM_ELITES):
+        var diff = (
+            rebind[Scalar[dtype]](dyn_output_all[k, b, d]) - mu
+        )
+        var_acc += diff * diff
+    var sigma = sqrt(var_acc / Scalar[dtype](NUM_ELITES))
+    # Clip to [noise_floor, noise_cap] so we always inject some noise but
+    # never let early-training disagreement dominate the signal.
+    if sigma < noise_floor:
+        sigma = noise_floor
+    if sigma > noise_cap:
+        sigma = noise_cap
+    sigma = sigma * noise_scale
+
+    # Box-Muller Gaussian via PhiloxRandom (matches sac_sample_actions_kernel
+    # / ddpg_exploration_counter_kernel pattern). RNG keyed on the rolling
+    # counter + per-thread offset so each (b, d) gets independent noise.
+    var philox = PhiloxRandom(
+        seed=UInt64(Int(rng_counter[0])) + UInt64(tid),
+        offset=0,
+    )
+    var rand_vals = philox.step_uniform()
+    var u1 = Float32(rand_vals[0]) + Float32(1e-8)
+    var u2 = Float32(rand_vals[1])
+    var mag = sqrt(Float32(-2.0) * log(u1))
+    var z = Scalar[dtype](
+        mag * cos(u2 * Float32(6.283185307179586))
+    )
+
+    var sample = (
+        rebind[Scalar[dtype]](dyn_output_all[slot, b, d]) + sigma * z
+    )
     if d < OBS_DIM:
-        next_obs[b, d] = obs[b, d] + dyn_output_all[slot, b, d]
+        next_obs[b, d] = obs[b, d] + sample
     else:
-        rewards[b] = dyn_output_all[slot, b, OBS_DIM]
+        rewards[b] = sample
 
 
 # =============================================================================
@@ -524,6 +591,20 @@ struct PCNMBPOAgent[
     var dyn_warmup_minibatches: Int
     var _dyn_pretrained: Bool  # one-shot guard for warmup pretrain.
 
+    # Synth-rollout noise injection. PCN's deterministic predictions give SAC
+    # over-confident Q-targets — adding ensemble-disagreement Gaussian noise
+    # to (Δobs, reward) before storing in the synth buffer rescues SAC from
+    # the "critic locks in suboptimal Q" failure mode (mirrors the role of
+    # vanilla MBPO's per-elite learned σ in `dynamics_sample_ensemble_*`).
+    #   noise_scale: multiply ensemble-disagreement std by this factor.
+    #   noise_floor: minimum per-dim std to inject (so well-converged
+    #                regions still see some uncertainty).
+    #   noise_cap:   max per-dim std (so early-training disagreement
+    #                doesn't drown out the signal).
+    var dyn_noise_scale: Float64
+    var dyn_noise_floor: Float64
+    var dyn_noise_cap: Float64
+
     # Checkpointing
     var checkpoint_every: Int
     var checkpoint_path: String
@@ -554,6 +635,9 @@ struct PCNMBPOAgent[
         ere_eta: Float32 = Float32(0.996),
         dyn_train_minibatches_per_call: Int = 50,
         dyn_warmup_minibatches: Int = 500,
+        dyn_noise_scale: Float64 = 1.0,
+        dyn_noise_floor: Float64 = 0.05,
+        dyn_noise_cap: Float64 = 1.0,
         checkpoint_every: Int = 0,
         checkpoint_path: String = "",
         diag_every: Int = 0,
@@ -614,6 +698,9 @@ struct PCNMBPOAgent[
         self.dyn_train_minibatches_per_call = dyn_train_minibatches_per_call
         self.dyn_warmup_minibatches = dyn_warmup_minibatches
         self._dyn_pretrained = False
+        self.dyn_noise_scale = dyn_noise_scale
+        self.dyn_noise_floor = dyn_noise_floor
+        self.dyn_noise_cap = dyn_noise_cap
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = checkpoint_path
@@ -1595,7 +1682,10 @@ struct PCNMBPOAgent[
                 grid_dim=(RB_BLOCKS,), block_dim=(TPB_VAL,),
             )
 
-            # 6. PCN deterministic sample → r_next_obs, r_rewards.
+            # 6. PCN sample with ensemble-disagreement Gaussian noise →
+            #    r_next_obs, r_rewards. The noise replaces vanilla MBPO's
+            #    learned-σ Gaussian; without it, SAC's critic over-fits to
+            #    PCN's perfectly-confident point predictions.
             var r_next_t = LayoutTensor[
                 dtype, Layout.row_major(RB, Self.OBS), MutAnyOrigin
             ](gpu_dynamics.r_next_obs.unsafe_ptr())
@@ -1607,9 +1697,18 @@ struct PCNMBPOAgent[
                 Layout.row_major(NUM_ELITES_C, RB, READOUT),
                 MutAnyOrigin,
             ](gpu_dynamics.r_dyn_output_all.unsafe_ptr())
+            # Bump the elite-RNG counter once per rollout step so each
+            # sample-kernel call uses a fresh Philox seed.
+            ctx.enqueue_function[rollout_incr_k, rollout_incr_k](
+                elite_rng_t, grid_dim=(1,), block_dim=(1,),
+            )
             ctx.enqueue_function[sample_k, sample_k](
                 r_next_t, r_rew_t,
                 r_dyn_out_all_t, r_obs_t, elite_slot_t,
+                elite_rng_t,
+                Scalar[dtype](self.dyn_noise_scale),
+                Scalar[dtype](self.dyn_noise_floor),
+                Scalar[dtype](self.dyn_noise_cap),
                 grid_dim=(SAMPLE_BLOCKS,),
                 block_dim=(TPB_VAL,),
             )
