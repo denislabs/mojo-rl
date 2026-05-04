@@ -20,6 +20,12 @@ def main() raises:
     var ctx = DeviceContext()
     comptime CartPoleGPU = CartPoleEnv[DType.float32]
 
+    # K=N=3: with random-policy CartPole episodes lasting ~4-5 steps,
+    # the previous K=5/N=10 setup meant bootstrap NEVER fired (steps_used
+    # never reached N=10 before terminal). All value targets collapsed
+    # to "sum of K rewards" ≈ 5, giving the value head no learning signal.
+    # K=N=3 lets bootstrap fire whenever the 3-step unroll doesn't hit
+    # terminal, propagating real value information.
     comptime Config = MuZeroMLPConfig[
         CartPoleGPU.OBS_DIM,
         CartPoleGPU.NUM_ACTIONS,
@@ -27,8 +33,8 @@ def main() raises:
         HIDDEN=64,
         BINS=21,
         SIMS=25,
-        K=5,
-        N=10,
+        K=3,
+        N=3,
         BS=64,
         CAP=50000,
     ]
@@ -45,7 +51,7 @@ def main() raises:
         num_steps=50000,
         warmup_steps=1000,
         print_every=2000,
-        use_reanalyze=False,  # A/B test: reanalyze off
+        use_reanalyze=False,  # keep reanalyze off until target net is warm
     )
 
     print()

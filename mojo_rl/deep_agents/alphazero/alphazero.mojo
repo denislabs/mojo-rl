@@ -32,8 +32,12 @@ from mojo_rl.core import (
     TrainingMetrics,
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
-    DataAugmentable,
     Saveable,
+)
+from .strategies import BoardAugmenter
+from mojo_rl.deep_agents.muzero.strategies import (
+    BackupMode,
+    PlayerMode,
 )
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.deep_agents.core.utils import (
@@ -346,25 +350,56 @@ def az_stage_step_kernel[
 
 
 @always_inline
-def az_flush_episodes_kernel[
+def az_stage_reward_kernel[
     dtype: DType,
+    N_ENVS: Int,
+    MAX_EP: Int,
+](
+    rewards_buf: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
+    ],
+    stage_rewards: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_EP), MutAnyOrigin
+    ],
+    stage_len: LayoutTensor[
+        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin
+    ],
+):
+    """Store the reward for the action just taken into the staging buffer.
+
+    One thread per env. Runs AFTER env.step. `stage_len[e]` was already
+    incremented by `az_stage_step_kernel` to `t+1`, so the reward index
+    for the just-taken action is `stage_len[e] - 1`.
+    """
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+    var t = Int(stage_len[e]) - 1
+    if t < 0 or t >= MAX_EP:
+        return
+    stage_rewards[e * MAX_EP + t] = rebind[Scalar[dtype]](rewards_buf[e])
+
+
+@always_inline
+def az_flush_episodes_kernel[
+    Aug: BoardAugmenter,
+    Player: PlayerMode,
+    Backup: BackupMode,
     N_ENVS: Int,
     MAX_EP: Int,
     OBS: Int,
     ACT: Int,
     CAP: Int,
-    NUM_SYMMETRIES: Int,
-    ROWS: Int,
-    COLS: Int,
-    PLANES: Int,
 ](
     dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
-    rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     stage_obs: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_EP * OBS), MutAnyOrigin
     ],
     stage_policy: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_EP * ACT), MutAnyOrigin
+    ],
+    stage_rewards: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_EP), MutAnyOrigin
     ],
     stage_len: LayoutTensor[
         DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin
@@ -376,12 +411,27 @@ def az_flush_episodes_kernel[
     replay_value: LayoutTensor[dtype, Layout.row_major(CAP), MutAnyOrigin],
     write_head: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
     replay_size: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    gamma: Scalar[dtype],
 ):
     """Process completed episodes: retroactive value targets + augmentation.
 
-    Single-threaded (like log_and_reset_completed_kernel). For each done env:
-    compute alternating-sign z from game outcome, apply augmentation, write
-    ep_len * NUM_SYMMETRIES samples to the circular GPU replay buffer.
+    Single-threaded. For each done env, walk the staged reward stream
+    backward computing the value target G_t per step:
+
+        Player.NEGATE_BACKUP=False (single-player):  G_t = r_t + γ · G_{t+1}
+        Player.NEGATE_BACKUP=True  (zero-sum):       G_t = r_t − G_{t+1}
+
+    Then apply `Aug.augment_obs`/`Aug.augment_policy` and write `ep_len *
+    Aug.NUM_SYMMETRIES` samples per env to the circular GPU replay buffer.
+
+    SelfPlay-only: if the terminal reward indicates a draw (|r_T| < 0.01),
+    all targets are bumped to a small constant (1e-4) to give the value head
+    a non-zero gradient on drawn positions. Drop this once draws are
+    distinguishable some other way.
+
+    Note: `Backup.should_bootstrap` is currently *not* honored — AZ episodes
+    run to terminal so n-step bootstrapping has no value source available
+    inside this kernel. The trait is plumbed for future N-step support.
     """
     if thread_idx.x != 0 or block_idx.x != 0:
         return
@@ -397,128 +447,50 @@ def az_flush_episodes_kernel[
         if ep_len == 0:
             continue
 
-        var last_reward = rebind[Scalar[dtype]](rewards[e])
-        var is_draw = last_reward > Scalar[dtype](
-            -0.01
-        ) and last_reward < Scalar[dtype](0.01)
+        var last_reward = rebind[Scalar[dtype]](
+            stage_rewards[e * MAX_EP + ep_len - 1]
+        )
+
+        # Compute value target for each step by walking the reward stream
+        # backward. Final write order matches t=0..ep_len-1 to keep replay
+        # ordering stable; we cache targets in stack-allocated array.
+        var targets = InlineArray[Scalar[dtype], MAX_EP](
+            fill=Scalar[dtype](0.0)
+        )
+        var z = Scalar[dtype](0.0)
+        for t_rev in range(ep_len - 1, -1, -1):
+            var r_t = rebind[Scalar[dtype]](stage_rewards[e * MAX_EP + t_rev])
+            comptime if Player.NEGATE_BACKUP:
+                z = r_t - z
+            else:
+                z = r_t + gamma * z
+            targets[t_rev] = z
+
+        # SelfPlay draw bump: zero terminal reward → flat 1e-4 across episode
+        comptime if Player.NEGATE_BACKUP:
+            var is_draw = last_reward > Scalar[dtype](
+                -0.01
+            ) and last_reward < Scalar[dtype](0.01)
+            if is_draw:
+                for t in range(ep_len):
+                    targets[t] = Scalar[dtype](1e-4)
 
         for t in range(ep_len):
-            var steps_from_end = ep_len - 1 - t
-            var z: Scalar[dtype]
-            if is_draw:
-                z = Scalar[dtype](1e-4)
-            elif steps_from_end % 2 == 0:
-                z = last_reward
-            else:
-                z = -last_reward
-
+            var z_t = targets[t]
             var obs_base = e * MAX_EP * OBS + t * OBS
             var pol_base = e * MAX_EP * ACT + t * ACT
 
-            for s in range(NUM_SYMMETRIES):
+            var src_obs_ptr = stage_obs.ptr + obs_base
+            var src_pol_ptr = stage_policy.ptr + pol_base
+
+            for s in range(Aug.NUM_SYMMETRIES):
                 var dst = head % CAP
+                var dst_obs_ptr = replay_obs.ptr + dst * OBS
+                var dst_pol_ptr = replay_policy.ptr + dst * ACT
 
-                if s == 0:
-                    # Identity copy
-                    for d in range(OBS):
-                        replay_obs[dst * OBS + d] = stage_obs[obs_base + d]
-                    for d in range(ACT):
-                        replay_policy[dst * ACT + d] = stage_policy[
-                            pol_base + d
-                        ]
-                else:
-                    # Apply symmetry s. Two layouts:
-                    #   - Square per-cell (TTT: ROWS==COLS, ACT==ROWS*COLS):
-                    #     full D4 dihedral group, s=1..7. Convention:
-                    #     replay[(r,c)] = stage[perm_s((r,c))].
-                    #     1=h-flip, 2=v-flip, 3=rot180, 4=rot90 CW,
-                    #     5=rot270 CW, 6=main-diag, 7=anti-diag.
-                    #   - Otherwise (e.g. Connect Four, ACT==COLS):
-                    #     s=1 only — horizontal flip with single-row policy
-                    #     reversal.
-                    comptime if ROWS == COLS and ROWS * COLS == ACT:
-                        for plane in range(PLANES):
-                            var p_off = plane * ROWS * COLS
-                            for r in range(ROWS):
-                                for c in range(COLS):
-                                    var sr: Int
-                                    var sc: Int
-                                    if s == 1:  # h-flip
-                                        sr = r
-                                        sc = COLS - 1 - c
-                                    elif s == 2:  # v-flip
-                                        sr = ROWS - 1 - r
-                                        sc = c
-                                    elif s == 3:  # rot180
-                                        sr = ROWS - 1 - r
-                                        sc = COLS - 1 - c
-                                    elif s == 4:  # rot90 CW
-                                        sr = COLS - 1 - c
-                                        sc = r
-                                    elif s == 5:  # rot270 CW
-                                        sr = c
-                                        sc = ROWS - 1 - r
-                                    elif s == 6:  # main diag
-                                        sr = c
-                                        sc = r
-                                    else:  # s == 7: anti-diag
-                                        sr = COLS - 1 - c
-                                        sc = ROWS - 1 - r
-                                    replay_obs[
-                                        dst * OBS + p_off + r * COLS + c
-                                    ] = stage_obs[
-                                        obs_base + p_off + sr * COLS + sc
-                                    ]
-                        for r in range(ROWS):
-                            for c in range(COLS):
-                                var sr: Int
-                                var sc: Int
-                                if s == 1:
-                                    sr = r
-                                    sc = COLS - 1 - c
-                                elif s == 2:
-                                    sr = ROWS - 1 - r
-                                    sc = c
-                                elif s == 3:
-                                    sr = ROWS - 1 - r
-                                    sc = COLS - 1 - c
-                                elif s == 4:
-                                    sr = COLS - 1 - c
-                                    sc = r
-                                elif s == 5:
-                                    sr = c
-                                    sc = ROWS - 1 - r
-                                elif s == 6:
-                                    sr = c
-                                    sc = r
-                                else:
-                                    sr = COLS - 1 - c
-                                    sc = ROWS - 1 - r
-                                replay_policy[
-                                    dst * ACT + r * COLS + c
-                                ] = stage_policy[
-                                    pol_base + sr * COLS + sc
-                                ]
-                    else:
-                        # h-flip on non-square / non-per-cell layout.
-                        for plane in range(PLANES):
-                            var p_off = plane * ROWS * COLS
-                            for row in range(ROWS):
-                                for col in range(COLS):
-                                    replay_obs[
-                                        dst * OBS + p_off + row * COLS + col
-                                    ] = stage_obs[
-                                        obs_base
-                                        + p_off
-                                        + row * COLS
-                                        + (COLS - 1 - col)
-                                    ]
-                        for c in range(ACT):
-                            replay_policy[dst * ACT + c] = stage_policy[
-                                pol_base + (ACT - 1 - c)
-                            ]
-
-                replay_value[dst] = z
+                Aug.augment_obs[OBS](src_obs_ptr, s, dst_obs_ptr)
+                Aug.augment_policy[ACT](src_pol_ptr, s, dst_pol_ptr)
+                replay_value[dst] = z_t
 
                 head += 1
                 if sz < CAP:
@@ -580,15 +552,17 @@ struct GenericAlphaZeroAgent[
     var state: Self.StateType
     var train_step_count: Int
     var total_steps: Int
+    var gamma: Float64
 
     # Logger
     var logger: UnsafePointer[Self.L, MutAnyOrigin]
     var diag_every: Int
 
-    def __init__(out self):
+    def __init__(out self, gamma: Float64 = 1.0):
         self.state = Self.StateType()
         self.train_step_count = 0
         self.total_steps = 0
+        self.gamma = gamma
         self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
         self.diag_every = 0
 
@@ -596,6 +570,7 @@ struct GenericAlphaZeroAgent[
         self.state = take.state^
         self.train_step_count = take.train_step_count
         self.total_steps = take.total_steps
+        self.gamma = take.gamma
         self.logger = take.logger
         self.diag_every = take.diag_every
 
@@ -1924,7 +1899,7 @@ struct GenericAlphaZeroAgent[
     # ══════════════════════════════════════════════════════════════
 
     def _mcts_round_kernels[
-        E: GPUTwoPlayerDiscreteEnv & DataAugmentable,
+        E: GPUTwoPlayerDiscreteEnv,
     ](
         self,
         ctx: DeviceContext,
@@ -2145,55 +2120,6 @@ struct GenericAlphaZeroAgent[
         )
 
     # ══════════════════════════════════════════════════════════════
-    # Data Augmentation (via DataAugmentable trait on environment)
-    # ══════════════════════════════════════════════════════════════
-
-    def _add_with_augmentation[
-        AugEnv: DataAugmentable,
-    ](
-        mut self,
-        obs: List[Scalar[dtype]],
-        policy: List[Scalar[dtype]],
-        value: Scalar[dtype],
-    ):
-        """Add training sample + all symmetries from the environment.
-
-        Uses the DataAugmentable trait to generate augmented samples.
-        The environment knows its own symmetries (rotations, reflections).
-        """
-        comptime ACT = Self.Config.action_dim
-        comptime OBS = Self.Config.obs_dim
-
-        for s in range(AugEnv.NUM_SYMMETRIES):
-            var sym_obs = alloc[Scalar[dtype]](OBS)
-            var sym_pol = alloc[Scalar[dtype]](ACT)
-
-            var obs_in = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                obs.unsafe_ptr()
-            )
-            var pol_in = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                policy.unsafe_ptr()
-            )
-            var obs_out = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                sym_obs
-            )
-            var pol_out = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                sym_pol
-            )
-
-            AugEnv.augment_obs[OBS](obs_in, s, obs_out)
-            AugEnv.augment_policy[ACT](pol_in, s, pol_out)
-
-            self.state.add(
-                rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](sym_obs),
-                rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](sym_pol),
-                value,
-            )
-
-            sym_obs.free()
-            sym_pol.free()
-
-    # ══════════════════════════════════════════════════════════════
     # Arena Comparison (accept/reject new model)
     # ══════════════════════════════════════════════════════════════
 
@@ -2306,7 +2232,7 @@ struct GenericAlphaZeroAgent[
         return accepted
 
     def _gpu_play_games[
-        E: GPUTwoPlayerDiscreteEnv & DataAugmentable,
+        E: GPUTwoPlayerDiscreteEnv,
         N_ENVS: Int,
     ](
         mut self,
@@ -2713,7 +2639,7 @@ struct GenericAlphaZeroAgent[
         return (p0_wins, draws, p1_wins)
 
     def arena_compare_gpu[
-        E: GPUTwoPlayerDiscreteEnv & DataAugmentable,
+        E: GPUTwoPlayerDiscreteEnv,
         N_ENVS: Int,
         origin: MutOrigin,
     ](
@@ -2857,7 +2783,7 @@ struct GenericAlphaZeroAgent[
     # ══════════════════════════════════════════════════════════════
 
     def gpu_eval[
-        E: GPUTwoPlayerDiscreteEnv & DataAugmentable,
+        E: GPUTwoPlayerDiscreteEnv,
         Eval: GPUEvaluator,
         N_ENVS: Int,
     ](
@@ -3300,7 +3226,7 @@ struct GenericAlphaZeroAgent[
     # ══════════════════════════════════════════════════════════════
 
     def train_selfplay_gpu[
-        E: GPUTwoPlayerDiscreteEnv & DataAugmentable,
+        E: GPUTwoPlayerDiscreteEnv,
         GPUEval: GPUEvaluator = RandomOpponent,
         GPUEval2: GPUEvaluator = RandomOpponent,
         USE_CUDA_GRAPH: Bool = True,
@@ -3944,6 +3870,39 @@ struct GenericAlphaZeroAgent[
                     rng_seed=UInt64(0),
                 )
 
+                # Stage per-step reward (must happen AFTER env step).
+                # Reads stage_len[e]-1 (= step index for the action just taken).
+                if use_mcts:
+                    var _r_buf = LayoutTensor[
+                        dtype,
+                        Layout.row_major(Self.n_envs),
+                        MutAnyOrigin,
+                    ](rewards_buf.unsafe_ptr())
+                    var _r_st = LayoutTensor[
+                        dtype,
+                        Layout.row_major(
+                            Self.n_envs * Self.Config.max_episode_length
+                        ),
+                        MutAnyOrigin,
+                    ](gpu.stage_rewards.unsafe_ptr())
+                    var _r_st_len = LayoutTensor[
+                        DType.int32,
+                        Layout.row_major(Self.n_envs),
+                        MutAnyOrigin,
+                    ](gpu.stage_len.unsafe_ptr())
+                    comptime run_stage_rew = az_stage_reward_kernel[
+                        dtype,
+                        Self.n_envs,
+                        Self.Config.max_episode_length,
+                    ]
+                    ctx.enqueue_function[run_stage_rew, run_stage_rew](
+                        _r_buf,
+                        _r_st,
+                        _r_st_len,
+                        grid_dim=(ENV_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+
                 # Episode tracking
                 var rew_t = LayoutTensor[
                     dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
@@ -3989,10 +3948,6 @@ struct GenericAlphaZeroAgent[
                 # GPU episode tracking: flush completed episodes
                 # (no host sync needed — all data stays on GPU)
                 comptime MAX_EP_LEN = Self.Config.max_episode_length
-                comptime NUM_SYM = Self.Config.num_symmetries
-                comptime B_ROWS = Self.Config.board_rows
-                comptime B_COLS = Self.Config.board_cols
-                comptime B_PLANES = Self.Config.board_planes
                 comptime CAP = Self.Config.buffer_capacity
 
                 var st_obs_t = LayoutTensor[
@@ -4005,6 +3960,11 @@ struct GenericAlphaZeroAgent[
                     Layout.row_major(Self.n_envs * MAX_EP_LEN * ACT),
                     MutAnyOrigin,
                 ](gpu.stage_policy.unsafe_ptr())
+                var st_rew_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(Self.n_envs * MAX_EP_LEN),
+                    MutAnyOrigin,
+                ](gpu.stage_rewards.unsafe_ptr())
                 var st_len_t = LayoutTensor[
                     DType.int32,
                     Layout.row_major(Self.n_envs),
@@ -4032,28 +3992,27 @@ struct GenericAlphaZeroAgent[
 
                 if use_mcts:
                     comptime run_flush = az_flush_episodes_kernel[
-                        dtype,
+                        Self.Config.Aug,
+                        Self.Config.Players,
+                        Self.Config.Backup,
                         Self.n_envs,
                         MAX_EP_LEN,
                         OBS,
                         ACT,
                         CAP,
-                        NUM_SYM,
-                        B_ROWS,
-                        B_COLS,
-                        B_PLANES,
                     ]
                     ctx.enqueue_function[run_flush, run_flush](
                         don_t,
-                        rew_t,
                         st_obs_t,
                         st_pol_t,
+                        st_rew_t,
                         st_len_t,
                         r_obs_t,
                         r_pol_t,
                         r_val_t,
                         wh_t,
                         rs_gpu_t,
+                        Scalar[dtype](self.gamma),
                         grid_dim=(1,),
                         block_dim=(1,),
                     )

@@ -38,6 +38,15 @@ from mojo_rl.deep_agents.muzero.strategies import (
     MuZeroPUCT,
     PlayerMode,
     SelfPlay,
+    BackupMode,
+    MonteCarloReturn,
+    NStepBootstrap,
+)
+from .strategies import (
+    BoardAugmenter,
+    IdentityAugmenter,
+    D4SquareAugmenter,
+    HFlipColumnAugmenter,
 )
 
 
@@ -84,15 +93,20 @@ trait AlphaZeroConfig:
 
     # ── GPU episode tracking ────────────────────────────────────────
     comptime max_episode_length: Int  # Max steps per episode (for GPU staging)
-    comptime board_rows: Int  # Board height (for augmentation kernel)
-    comptime board_cols: Int  # Board width (for augmentation kernel)
-    comptime board_planes: Int  # Obs planes (for augmentation kernel)
-    comptime num_symmetries: Int  # Data augmentation symmetries (1=none, 2=flip)
+
+    # ── Board layout (display only — used by replay-buffer dump diagnostics)
+    comptime board_rows: Int
+    comptime board_cols: Int
+    comptime board_planes: Int
 
     # ── Strategies (shared with MuZero) ───────────────────────────
     comptime Noise: ExplorationNoise
     comptime PUCT: PUCTFormula
     comptime Players: PlayerMode
+    comptime Backup: BackupMode
+
+    # ── Strategies (AZ-specific) ──────────────────────────────────
+    comptime Aug: BoardAugmenter
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -140,11 +154,12 @@ struct AlphaZeroTicTacToeConfig[
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 8  # full D4 dihedral group
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Players = SelfPlay
+    comptime Backup = MonteCarloReturn
+    comptime Aug = D4SquareAugmenter[3, 3]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -208,11 +223,12 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 8  # full D4 dihedral group
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Players = SelfPlay
+    comptime Backup = MonteCarloReturn
+    comptime Aug = D4SquareAugmenter[3, 3]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -261,11 +277,12 @@ struct AlphaZeroConnectFourConfig[
     comptime board_rows: Int = 6
     comptime board_cols: Int = 7
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[0.25, 1.0]  # alpha=1.0 for C4
     comptime PUCT = AlphaGoPUCT[2.0]
     comptime Players = SelfPlay
+    comptime Backup = MonteCarloReturn
+    comptime Aug = HFlipColumnAugmenter[6, 7, 3]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -336,13 +353,14 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime board_rows: Int = 6
     comptime board_cols: Int = 7
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[
         0.25, 1.0
     ]  # alpha=1.0 for C4 (AlphaZero.jl)
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Players = SelfPlay
+    comptime Backup = MonteCarloReturn
+    comptime Aug = HFlipColumnAugmenter[6, 7, 3]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -455,11 +473,12 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime board_rows: Int = 6
     comptime board_cols: Int = 7
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[0.25, 1.0]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Players = SelfPlay
+    comptime Backup = MonteCarloReturn
+    comptime Aug = HFlipColumnAugmenter[6, 7, 3]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -536,11 +555,12 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime board_rows: Int = 6
     comptime board_cols: Int = 7
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 2
 
     comptime Noise = DirichletNoise[0.25, 1.0]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Players = SelfPlay
+    comptime Backup = MonteCarloReturn
+    comptime Aug = HFlipColumnAugmenter[6, 7, 3]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -599,11 +619,12 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
     comptime board_planes: Int = 3
-    comptime num_symmetries: Int = 8  # full D4 dihedral group
 
     comptime Noise = DirichletNoise[0.25, 0.25]
     comptime PUCT = AlphaGoPUCT[Self.C_PUCT]
     comptime Players = SelfPlay
+    comptime Backup = MonteCarloReturn
+    comptime Aug = D4SquareAugmenter[3, 3]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -651,10 +672,11 @@ struct AlphaZeroChessConfig[
     comptime board_rows: Int = 8
     comptime board_cols: Int = 8
     comptime board_planes: Int = 14
-    comptime num_symmetries: Int = 1  # No augmentation for chess
 
     comptime Noise = DirichletNoise[
         0.25, 0.03
     ]  # Small alpha for large action space
     comptime PUCT = AlphaGoPUCT[2.5]
     comptime Players = SelfPlay
+    comptime Backup = MonteCarloReturn
+    comptime Aug = IdentityAugmenter

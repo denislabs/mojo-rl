@@ -28,7 +28,6 @@ from mojo_rl.core import (
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
     RenderableEnv,
-    DataAugmentable,
     Saveable,
 )
 from mojo_rl.nn.constants import dtype as nn_dtype
@@ -58,7 +57,6 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     TwoPlayerDiscreteEnv
     & GPUTwoPlayerDiscreteEnv
     & RenderableEnv
-    & DataAugmentable
     & Saveable
 ):
     """TicTacToe environment — CPU+GPU dual path.
@@ -76,9 +74,6 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     comptime STATE_SIZE: Int = 12
     comptime OBS_DIM: Int = 27  # 3 planes × 3×3
     comptime NUM_ACTIONS: Int = 9
-
-    # DataAugmentable: 8 symmetries (4 rotations × 2 reflections)
-    comptime NUM_SYMMETRIES: Int = 8
 
     # Saveable
     comptime SAVE_SIZE: Int = 13  # 12 state + 1 done flag
@@ -441,81 +436,6 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
 
     def renderer_step_once(self) -> Bool:
         return False
-
-    # ========================================================================
-    # DataAugmentable: 3×3 board symmetries (8 total)
-    # ========================================================================
-
-    # Permutation table: 8 symmetries × 9 cells, stored flat
-    # [identity, rot90, rot180, rot270, hflip, vflip, diag, antidiag]
-    @staticmethod
-    def _sym_perm(sym: Int, cell: Int) -> Int:
-        """Return permuted cell index for symmetry `sym`."""
-        # Hard-coded for speed — avoids alloc in hot path
-        if sym == 0:  # Identity
-            return cell
-        var r = cell // 3
-        var c = cell % 3
-        var nr: Int
-        var nc: Int
-        if sym == 1:  # Rot 90° CW: (r,c) → (c, 2-r)
-            nr = c
-            nc = 2 - r
-        elif sym == 2:  # Rot 180°: (r,c) → (2-r, 2-c)
-            nr = 2 - r
-            nc = 2 - c
-        elif sym == 3:  # Rot 270° CW: (r,c) → (2-c, r)
-            nr = 2 - c
-            nc = r
-        elif sym == 4:  # H-flip: (r,c) → (r, 2-c)
-            nr = r
-            nc = 2 - c
-        elif sym == 5:  # V-flip: (r,c) → (2-r, c)
-            nr = 2 - r
-            nc = c
-        elif sym == 6:  # Main diagonal: (r,c) → (c, r)
-            nr = c
-            nc = r
-        else:  # Anti-diagonal: (r,c) → (2-c, 2-r)
-            nr = 2 - c
-            nc = 2 - r
-        return nr * 3 + nc
-
-    @staticmethod
-    def augment_obs[
-        OBS_DIM: Int,
-    ](
-        obs: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-        sym_idx: Int,
-        mut out: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
-        """Permute 27D observation (3 planes × 9 cells) by symmetry."""
-        if sym_idx == 0:
-            for i in range(OBS_DIM):
-                out[i] = obs[i]
-            return
-        # 3 planes of 9 cells each
-        for plane in range(3):
-            for cell in range(9):
-                var src = TicTacToeEnv._sym_perm(sym_idx, cell)
-                out[plane * 9 + cell] = obs[plane * 9 + src]
-
-    @staticmethod
-    def augment_policy[
-        ACT: Int,
-    ](
-        policy: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-        sym_idx: Int,
-        mut out: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
-        """Permute 9D policy vector by symmetry."""
-        if sym_idx == 0:
-            for i in range(ACT):
-                out[i] = policy[i]
-            return
-        for a in range(9):
-            var src = TicTacToeEnv._sym_perm(sym_idx, a)
-            out[a] = policy[src]
 
     # ========================================================================
     # GPU: Inline step/reset kernels (called per-thread on GPU)

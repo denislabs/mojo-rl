@@ -214,6 +214,7 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig, N_ENVS: Int = 512](Movable):
     # GPU episode staging (per-env ring buffers for in-progress episodes)
     var stage_obs: DeviceBuffer[dtype]  # [N_ENVS * MAX_EP * OBS]
     var stage_policy: DeviceBuffer[dtype]  # [N_ENVS * MAX_EP * ACT]
+    var stage_rewards: DeviceBuffer[dtype]  # [N_ENVS * MAX_EP]
     var stage_len: DeviceBuffer[DType.int32]  # [N_ENVS]
     var replay_write_head: DeviceBuffer[DType.int32]  # [1]
     var env_rng_counter: DeviceBuffer[DType.uint32]  # [1] graph-safe seed
@@ -278,6 +279,9 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig, N_ENVS: Int = 512](Movable):
         self.stage_policy = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * Self.MAX_EP * Self.ACT
         )
+        self.stage_rewards = ctx.enqueue_create_buffer[dtype](
+            Self.N_ENVS * Self.MAX_EP
+        )
         self.stage_len = ctx.enqueue_create_buffer[DType.int32](Self.N_ENVS)
         self.replay_write_head = ctx.enqueue_create_buffer[DType.int32](1)
         self.env_rng_counter = ctx.enqueue_create_buffer[DType.uint32](1)
@@ -310,6 +314,7 @@ struct AlphaZeroGPUState[Config: AlphaZeroConfig, N_ENVS: Int = 512](Movable):
         self.replay_size_host = take.replay_size_host^
         self.stage_obs = take.stage_obs^
         self.stage_policy = take.stage_policy^
+        self.stage_rewards = take.stage_rewards^
         self.stage_len = take.stage_len^
         self.replay_write_head = take.replay_write_head^
         self.env_rng_counter = take.env_rng_counter^

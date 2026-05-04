@@ -20,7 +20,6 @@ from .env_traits import (
     NoCurriculumScheduler,
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
-    DataAugmentable,
     Saveable,
 )
 from .space import Space, DiscreteSpace, BoxSpace

@@ -673,6 +673,15 @@ struct MuZeroGPUState[
     # for the per-chunk prediction output.
     var reanalyze_hidden_buf: DeviceBuffer[dtype]  # [BATCH * LATENT]
 
+    # Pinned host mirrors of per-network grads. Used by global-L2 grad
+    # clipping (`_global_clip_grad_norm` in muzero.mojo): we DMA grads
+    # to host, compute the joint L2 norm, scale on host if it exceeds
+    # the threshold, then DMA the scaled grads back. This mirrors the
+    # CPU `_clip_gradients` semantics (which the GPU path was missing).
+    var rep_grads_host: HostBuffer[dtype]
+    var dyn_grads_host: HostBuffer[dtype]
+    var pred_grads_host: HostBuffer[dtype]
+
     # ── Network cache (for backward) ────────────────────────────────
     var rep_cache_buf: DeviceBuffer[dtype]  # [BATCH * RepModel.CACHE_SIZE]
     var dyn_cache_buf: DeviceBuffer[dtype]  # [K * BATCH * DynModel.CACHE_SIZE]
@@ -818,6 +827,14 @@ struct MuZeroGPUState[
             Self.BATCH * Self.LATENT
         )
 
+        # ── Pinned host mirrors for global-L2 grad clip ─────────────
+        comptime REP_PS = Self.RepModel.PARAM_SIZE
+        comptime DYN_PS = Self.DynModel.PARAM_SIZE
+        comptime PRED_PS = Self.PredModel.PARAM_SIZE
+        self.rep_grads_host = ctx.enqueue_create_host_buffer[dtype](REP_PS)
+        self.dyn_grads_host = ctx.enqueue_create_host_buffer[dtype](DYN_PS)
+        self.pred_grads_host = ctx.enqueue_create_host_buffer[dtype](PRED_PS)
+
         # ── Cache ────────────────────────────────────────────────────
         comptime REP_CS = Self.RepModel.CACHE_SIZE
         self.rep_cache_buf = ctx.enqueue_create_buffer[dtype](
@@ -914,6 +931,9 @@ struct MuZeroGPUState[
         self.dyn_input_buf = take.dyn_input_buf^
         self.dyn_output_buf = take.dyn_output_buf^
         self.reanalyze_hidden_buf = take.reanalyze_hidden_buf^
+        self.rep_grads_host = take.rep_grads_host^
+        self.dyn_grads_host = take.dyn_grads_host^
+        self.pred_grads_host = take.pred_grads_host^
         self.rep_cache_buf = take.rep_cache_buf^
         self.dyn_cache_buf = take.dyn_cache_buf^
         self.pred_cache_buf = take.pred_cache_buf^

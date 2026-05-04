@@ -253,6 +253,129 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
     # Episode Management
     # ══════════════════════════════════════════════════════════════════════
 
+    # ══════════════════════════════════════════════════════════════════════
+    # Diagnostics
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _net_param_l2[
+        N_ENVS_P: Int = 64,
+        PER_ENV_CAP_P: Int = 1000,
+    ](
+        self,
+        ctx: DeviceContext,
+        mut gpu: MuZeroGPUState[Self.Config, N_ENVS_P, PER_ENV_CAP_P],
+    ) raises -> Tuple[Float64, Float64, Float64]:
+        """Compute L2 norm of each network's params (rep, dyn, pred).
+
+        Lightweight diagnostic — DMAs all three params to host and
+        computes norms there. Caller pays one synchronize. Use to
+        verify training is actually changing weights (norms should
+        evolve over training; values stuck = optimizer or gradient
+        path is broken).
+        """
+        ctx.enqueue_copy(
+            gpu.representation.params_host, gpu.representation.params_buf
+        )
+        ctx.enqueue_copy(gpu.dynamics.params_host, gpu.dynamics.params_buf)
+        ctx.enqueue_copy(
+            gpu.prediction.params_host, gpu.prediction.params_buf
+        )
+        ctx.synchronize()
+
+        var rep_n = Float64(0.0)
+        for i in range(Self.Config.RepModel.PARAM_SIZE):
+            var v = Float64(gpu.representation.params_host[i])
+            rep_n += v * v
+        var dyn_n = Float64(0.0)
+        for i in range(Self.Config.DynModel.PARAM_SIZE):
+            var v = Float64(gpu.dynamics.params_host[i])
+            dyn_n += v * v
+        var pred_n = Float64(0.0)
+        for i in range(Self.Config.PredModel.PARAM_SIZE):
+            var v = Float64(gpu.prediction.params_host[i])
+            pred_n += v * v
+
+        from std.math import sqrt as _sqrt
+        return (_sqrt(rep_n), _sqrt(dyn_n), _sqrt(pred_n))
+
+    def _global_clip_grad_norm[
+        N_ENVS_P: Int = 64,
+        PER_ENV_CAP_P: Int = 1000,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut gpu: MuZeroGPUState[Self.Config, N_ENVS_P, PER_ENV_CAP_P],
+    ) raises:
+        """Per-network L2 norm grad clip. CPU roundtrip.
+
+        We deliberately clip each network independently rather than
+        jointly: rep+dyn naturally have larger gradient norms (the
+        unrolled chain accumulates K reward+value backprops into them),
+        and a JOINT clip would be dominated by their norms — pred's
+        smaller grads then get scaled to the noise floor and pred stops
+        learning. Per-network clipping matches each net's own scale.
+
+        Mirrors the CPU `_clip_gradients` semantics conceptually but
+        applied per-network. Total ~30KB DMA per train step.
+        """
+        comptime REP_PS = Self.Config.RepModel.PARAM_SIZE
+        comptime DYN_PS = Self.Config.DynModel.PARAM_SIZE
+        comptime PRED_PS = Self.Config.PredModel.PARAM_SIZE
+
+        # DMA grads to host
+        ctx.enqueue_copy(gpu.rep_grads_host, gpu.representation.grads_buf)
+        ctx.enqueue_copy(gpu.dyn_grads_host, gpu.dynamics.grads_buf)
+        ctx.enqueue_copy(gpu.pred_grads_host, gpu.prediction.grads_buf)
+        ctx.synchronize()
+
+        # Per-network norms
+        var rep_sq = Float64(0.0)
+        for i in range(REP_PS):
+            var v = Float64(gpu.rep_grads_host[i])
+            rep_sq += v * v
+        var dyn_sq = Float64(0.0)
+        for i in range(DYN_PS):
+            var v = Float64(gpu.dyn_grads_host[i])
+            dyn_sq += v * v
+        var pred_sq = Float64(0.0)
+        for i in range(PRED_PS):
+            var v = Float64(gpu.pred_grads_host[i])
+            pred_sq += v * v
+
+        var rep_norm = sqrt(rep_sq)
+        var dyn_norm = sqrt(dyn_sq)
+        var pred_norm = sqrt(pred_sq)
+        var thresh = self.max_grad_norm
+
+        var rep_dirty = False
+        var dyn_dirty = False
+        var pred_dirty = False
+
+        if rep_norm > thresh:
+            var s = Scalar[dtype](thresh / rep_norm)
+            for i in range(REP_PS):
+                gpu.rep_grads_host[i] = gpu.rep_grads_host[i] * s
+            rep_dirty = True
+        if dyn_norm > thresh:
+            var s = Scalar[dtype](thresh / dyn_norm)
+            for i in range(DYN_PS):
+                gpu.dyn_grads_host[i] = gpu.dyn_grads_host[i] * s
+            dyn_dirty = True
+        if pred_norm > thresh:
+            var s = Scalar[dtype](thresh / pred_norm)
+            for i in range(PRED_PS):
+                gpu.pred_grads_host[i] = gpu.pred_grads_host[i] * s
+            pred_dirty = True
+
+        if rep_dirty:
+            ctx.enqueue_copy(
+                gpu.representation.grads_buf, gpu.rep_grads_host
+            )
+        if dyn_dirty:
+            ctx.enqueue_copy(gpu.dynamics.grads_buf, gpu.dyn_grads_host)
+        if pred_dirty:
+            ctx.enqueue_copy(gpu.prediction.grads_buf, gpu.pred_grads_host)
+
     def reset_episode(mut self):
         """Reset episode buffers for a new episode."""
         self._episode_obs.clear()
@@ -2440,6 +2563,20 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             gpu.workspace_buf,
         )
 
+        # ── Step 4.5: Global-L2 gradient clipping ────────────────────
+        # Mirrors the CPU `_clip_gradients` exactly: compute joint L2
+        # norm across rep+dyn+pred grads; if it exceeds max_grad_norm,
+        # scale all three by max_grad_norm / total_norm. Implemented
+        # via host roundtrip (DMA grads down, reduce on CPU, DMA scaled
+        # grads back up). The roundtrip is small (~30KB for typical
+        # configs) and matches the CPU semantics.
+        #
+        # Without this the K-step unrolled dynamics chain compounds the
+        # reward/value gradient and rep+dyn param norms balloon ~60%
+        # in the first 1024 steps (verified with the param-norm diag).
+        if self.max_grad_norm > 0.0:
+            self._global_clip_grad_norm[N_ENVS_P, PER_ENV_CAP_P](ctx, gpu)
+
         # ── Step 5: GPU optimizer step ───────────────────────────────
         gpu.representation.optimizer_step(ctx)
         gpu.dynamics.optimizer_step(ctx)
@@ -2507,7 +2644,14 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         comptime OBS = Self.Config.obs_dim
         comptime ENV_BLOCKS = (Self.n_envs + TPB - 1) // TPB
 
-        var grad_steps = gradient_steps if gradient_steps > 0 else 1
+        # Default to one grad step per env step (averaged across n_envs)
+        # — matches MuZero paper's UTD-like cadence and is ~n_envs× the
+        # old default of 1 grad step per env-step batch. The previous
+        # default did roughly 1/n_envs the training of an AZ-comparable
+        # setup, leaving CartPole stuck at random-policy reward.
+        var grad_steps = (
+            gradient_steps if gradient_steps > 0 else Self.n_envs
+        )
 
         # ── Create GPU state with correct Self.n_envs ─────────────────────
         comptime LocalGPUState = MuZeroGPUState[Self.Config, Self.n_envs]
@@ -2630,6 +2774,14 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         var gpu_train_count = 0
         var next_print = print_every
         var next_sync = sync_every
+
+        # Param-norm tracking for the print diagnostic. Initialized to
+        # the params right after upload so the first print shows the
+        # delta over the first interval (not delta-from-zero).
+        var init_norms = self._net_param_l2(ctx, gpu)
+        var last_rep_n = init_norms[0]
+        var last_dyn_n = init_norms[1]
+        var last_pred_n = init_norms[2]
 
         comptime PER_ENV_CAP = LocalGPUState.PER_ENV_CAP
 
@@ -3159,6 +3311,23 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     total_eps
                 ) if total_eps > 0 else Float64(0.0)
 
+                # Diagnostic: per-network param L2 norms — verifies
+                # training is actually moving the weights. Compare
+                # against the previous print to see param-norm delta.
+                var norms = self._net_param_l2(ctx, gpu)
+                var rep_n = norms[0]
+                var dyn_n = norms[1]
+                var pred_n = norms[2]
+                var d_rep = rep_n - last_rep_n
+                var d_dyn = dyn_n - last_dyn_n
+                var d_pred = pred_n - last_pred_n
+                last_rep_n = rep_n
+                last_dyn_n = dyn_n
+                last_pred_n = pred_n
+
+                # Replay size = per-env count × n_envs (true total).
+                var replay_total = gpu.replay.size * Self.n_envs
+
                 clear_progress_bar()
                 print(
                     "Steps: "
@@ -3169,9 +3338,21 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     + String(Int(avg_reward))
                     + " | Train: "
                     + String(self.train_step_count)
-                    + " | Buffer: "
-                    + String(self.state.buffer.len())
-                    + " | GPU"
+                    + " | Replay: "
+                    + String(replay_total)
+                    + " | |W| rep/dyn/pred: "
+                    + String(rep_n)
+                    + "/"
+                    + String(dyn_n)
+                    + "/"
+                    + String(pred_n)
+                    + " (Δ "
+                    + String(d_rep)
+                    + "/"
+                    + String(d_dyn)
+                    + "/"
+                    + String(d_pred)
+                    + ")"
                 )
 
                 # Log to metrics
@@ -3363,6 +3544,14 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             best_params[REP_PS + DYN_PS + i] = self.state.prediction.params[i]
         var arena_accepts = 0
         var arena_rejects = 0
+
+        # Param-norm diagnostic state. Initialized to the params right
+        # after upload so the first iter's print reports delta over
+        # iter 1's training, not delta-from-zero-init.
+        var init_norms = self._net_param_l2(ctx, gpu)
+        var last_rep_n = init_norms[0]
+        var last_dyn_n = init_norms[1]
+        var last_pred_n = init_norms[2]
 
         # ══════════════════════════════════════════════════════════
         # Iteration loop (batch-then-train)
@@ -3924,9 +4113,14 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
 
             # ── 3. Train on collected data ───────────────────────
             if gpu.replay.is_ready[Self.Config.unroll_steps + 1]():
-                var buf_size = gpu.replay.size
+                # gpu.replay.size is PER-ENV (capped at PER_ENV_CAP).
+                # Total buffer across all envs is per-env × N_ENVS;
+                # AlphaZero's `num_train_steps = train_epochs * total / BS`
+                # was doing N_ENVS× more training than the old per-env
+                # formula here. Match AZ's training intensity.
+                var total_buf_size = gpu.replay.size * Self.n_envs
                 var grad_steps = (
-                    train_epochs * buf_size // Self.Config.batch_size
+                    train_epochs * total_buf_size // Self.Config.batch_size
                 )
                 if grad_steps < 1:
                     grad_steps = 1
@@ -4019,6 +4213,18 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 )
 
             # ── 6. Print iteration summary ───────────────────────
+            # Param-norm + replay-size diagnostic. Verifies training
+            # is actually moving the weights and the buffer is filling
+            # at the expected rate.
+            var iter_norms = self._net_param_l2(ctx, gpu)
+            var d_rep = iter_norms[0] - last_rep_n
+            var d_dyn = iter_norms[1] - last_dyn_n
+            var d_pred = iter_norms[2] - last_pred_n
+            last_rep_n = iter_norms[0]
+            last_dyn_n = iter_norms[1]
+            last_pred_n = iter_norms[2]
+            var replay_total = gpu.replay.size * Self.n_envs
+
             clear_progress_bar()
             print(
                 "Iter",
@@ -4033,6 +4239,21 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 Int(avg_rew * 100) if total_eps > 0 else 0,
                 "% | Train:",
                 self.train_step_count,
+                "| Replay:",
+                replay_total,
+                "| |W| rep/dyn/pred:",
+                last_rep_n,
+                "/",
+                last_dyn_n,
+                "/",
+                last_pred_n,
+                "(Δ",
+                d_rep,
+                "/",
+                d_dyn,
+                "/",
+                d_pred,
+                ")",
             )
             if total_eps > 0:
                 metrics.log_episode[dtype](
