@@ -1672,6 +1672,8 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     BATCH_SIMS: Int,
     PRED_OUT: Int,
     STATE_SIZE: Int,
+    NEGATE_BACKUP: Bool,
+    VALUE_SQUASH: Bool,
     dtype: DType where dtype.is_floating_point(),
 ](
     # Node storage
@@ -1718,6 +1720,13 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     step_rewards: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
     ],
+    # Done flags from env.step [N_ENVS * BATCH_SIMS]. Single-player path uses
+    # this to set leaf_value=0 vs V_pred. Two-player path infers terminal
+    # from `|step_rewards| > 0.5` and ignores this buffer (so any value is
+    # safe for board games — typically just pass exp_dones).
+    step_dones: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * BATCH_SIMS), MutAnyOrigin
+    ],
     # Search paths [N_ENVS * BATCH_SIMS * MAX_DEPTH]
     search_paths: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * BATCH_SIMS * MAX_DEPTH), MutAnyOrigin
@@ -1732,12 +1741,32 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
     expansion_legal_masks: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * BATCH_SIMS * ACT), MutAnyOrigin
     ],
+    # Discount factor (used only by single-player backup; ignored when
+    # NEGATE_BACKUP=True).
+    gamma: Scalar[dtype],
 ):
-    """Fused expand + negated backup + remove virtual losses — with child prior masking.
+    """Fused expand + backup + remove virtual losses — with child prior masking.
 
     Like gpu_mcts_batched_expand_backup_kernel but masks child priors with
     legal action masks (matching AlphaZero.jl / alpha-zero-general which mask
     priors at ALL nodes, not just root).
+
+    Comptime branches on game family:
+
+      NEGATE_BACKUP=True  (board games / two-player zero-sum):
+        Leaf value:
+          - terminal (|step_rew| > 0.5): leaf_value = -step_rew
+          - non-terminal: leaf_value = tanh(raw_v) if VALUE_SQUASH else raw_v
+        Backup recurrence: value = -value at each parent (perspective flip,
+        no per-edge reward — board games are terminal-reward-only).
+
+      NEGATE_BACKUP=False (single-player envs with per-step rewards):
+        Leaf value:
+          - terminal (step_dones[sim] >= 0.5): leaf_value = step_rew
+          - non-terminal: leaf_value = step_rew + γ · V_leaf
+            where V_leaf = tanh(raw_v) if VALUE_SQUASH else raw_v.
+        Backup recurrence: value = edge_reward + γ · value at each parent,
+        where `edge_reward` is read from `reward_buf` (set on prior expansions).
 
     One thread per env. Processes all BATCH_SIMS expansions sequentially.
     """
@@ -1854,19 +1883,52 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
 
         # ── Decode leaf value ───────────────────────────────
         var step_rew = rebind[Scalar[dtype]](step_rewards[sim_off])
-        var abs_rew = step_rew if step_rew >= Scalar[dtype](0.0) else -step_rew
         var leaf_value: Scalar[dtype]
-        if abs_rew > Scalar[dtype](0.5):
-            leaf_value = -step_rew  # Terminal: negate
+        comptime if NEGATE_BACKUP:
+            # Two-player: terminal detected by reward magnitude.
+            var abs_rew = (
+                step_rew if step_rew >= Scalar[dtype](0.0) else -step_rew
+            )
+            if abs_rew > Scalar[dtype](0.5):
+                leaf_value = -step_rew  # Terminal: negate
+            else:
+                var raw_v = rebind[Scalar[dtype]](
+                    pred_output[pred_off + ACT]
+                )
+                comptime if VALUE_SQUASH:
+                    if raw_v > Scalar[dtype](10.0):
+                        raw_v = Scalar[dtype](10.0)
+                    elif raw_v < Scalar[dtype](-10.0):
+                        raw_v = Scalar[dtype](-10.0)
+                    var ev_p = exp(raw_v)
+                    var ev_n = exp(-raw_v)
+                    leaf_value = (ev_p - ev_n) / (ev_p + ev_n)
+                else:
+                    leaf_value = raw_v
         else:
-            var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
-            if raw_v > Scalar[dtype](10.0):
-                raw_v = Scalar[dtype](10.0)
-            elif raw_v < Scalar[dtype](-10.0):
-                raw_v = Scalar[dtype](-10.0)
-            var ev_p = exp(raw_v)
-            var ev_n = exp(-raw_v)
-            leaf_value = (ev_p - ev_n) / (ev_p + ev_n)
+            # Single-player: terminal from explicit done flag; leaf value
+            # accumulates step reward + discounted V_pred.
+            var was_done = (
+                rebind[Scalar[dtype]](step_dones[sim_off])
+                > Scalar[dtype](0.5)
+            )
+            if was_done:
+                leaf_value = step_rew
+            else:
+                var raw_v = rebind[Scalar[dtype]](
+                    pred_output[pred_off + ACT]
+                )
+                comptime if VALUE_SQUASH:
+                    if raw_v > Scalar[dtype](10.0):
+                        raw_v = Scalar[dtype](10.0)
+                    elif raw_v < Scalar[dtype](-10.0):
+                        raw_v = Scalar[dtype](-10.0)
+                    var ev_p = exp(raw_v)
+                    var ev_n = exp(-raw_v)
+                    var v_pred = (ev_p - ev_n) / (ev_p + ev_n)
+                    leaf_value = step_rew + gamma * v_pred
+                else:
+                    leaf_value = step_rew + gamma * raw_v
 
         # ── Remove virtual loss ─────────────────────────────
         visit_count[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
@@ -1876,7 +1938,7 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
             total_visits[tv_off + parent]
         ) - Scalar[dtype](VIRTUAL_LOSS)
 
-        # ── Negated backup ──────────────────────────────────
+        # ── Backup ──────────────────────────────────────────
         var value = leaf_value
         var path_off = sim_off * MAX_DEPTH
         var path_len = Int(rebind[Scalar[dtype]](path_lengths[sim_off]))
@@ -1886,7 +1948,8 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
             var node = Int(rebind[Scalar[dtype]](search_paths[path_off + idx]))
             var act = Int(rebind[Scalar[dtype]](action_paths[path_off + idx]))
 
-            value = -value
+            comptime if NEGATE_BACKUP:
+                value = -value
 
             var na_off = tree_off + node * ACT + act
             visit_count[na_off] = rebind[Scalar[dtype]](
@@ -1905,6 +1968,22 @@ def gpu_mcts_batched_expand_backup_masked_kernel[
                 min_q[e] = mean_q
             if mean_q > rebind[Scalar[dtype]](max_q[e]):
                 max_q[e] = mean_q
+
+            # Single-player: accumulate this edge's stored reward into the
+            # value seen by the next ancestor up the path. (Edge reward was
+            # written to reward_buf when this child was first expanded.)
+            comptime if not NEGATE_BACKUP:
+                if idx > 0:
+                    var anc = Int(rebind[Scalar[dtype]](
+                        search_paths[path_off + idx - 1]
+                    ))
+                    var anc_act = Int(rebind[Scalar[dtype]](
+                        action_paths[path_off + idx - 1]
+                    ))
+                    var edge_rew = rebind[Scalar[dtype]](
+                        reward_buf[tree_off + anc * ACT + anc_act]
+                    )
+                    value = edge_rew + gamma * value
 
 
 # ═══════════════════════════════════════════════════════════════════════════

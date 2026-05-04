@@ -509,6 +509,42 @@ trait GPUDiscreteEnv:
         ...
 
 
+trait GPUDiscreteEnvWithExtractObs(GPUDiscreteEnv):
+    """`GPUDiscreteEnv` plus an explicit `extract_obs_kernel_gpu` method.
+
+    Most existing `GPUDiscreteEnv` impls don't need a separate
+    obs-extraction kernel — they rely on `step_kernel_gpu` writing obs
+    as a side effect, and the first action in a training loop seeds obs
+    that way. AlphaZero's `train_gpu` is different: it needs the *current*
+    obs before choosing an action (for the MCTS root prediction), so
+    after `reset_kernel_gpu` / `selective_reset_kernel_gpu` it must
+    populate obs explicitly.
+
+    Conform an env to this trait when you want to use it with AZ's
+    single-player `train_gpu`. Cheap conformance for envs where obs is
+    a state prefix (CartPole, MountainCar, etc.) — just one kernel.
+    """
+
+    @staticmethod
+    def extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states: DeviceBuffer[dtype],
+        mut obs: DeviceBuffer[dtype],
+    ) raises:
+        """Extract observations from state buffer for all environments.
+
+        Args:
+            ctx: GPU device context.
+            states: State buffer [BATCH_SIZE * STATE_SIZE].
+            obs: Observations output [BATCH_SIZE * OBS_DIM].
+        """
+        ...
+
+
 trait GPUContinuousEnv:
     """Trait for GPU-compatible continuous action environments.
 

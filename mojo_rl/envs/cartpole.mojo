@@ -27,6 +27,7 @@ from mojo_rl.core import (
     BoxDiscreteActionEnv,
     PolynomialFeatures,
     GPUDiscreteEnv,
+    GPUDiscreteEnvWithExtractObs,
     RenderableEnv,
 )
 from mojo_rl.render import (
@@ -120,7 +121,11 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
 
 
 struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
-    BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv & RenderableEnv
+    BoxDiscreteActionEnv
+    & DiscreteEnv
+    & GPUDiscreteEnv
+    & GPUDiscreteEnvWithExtractObs
+    & RenderableEnv
 ):
     """Native Mojo CartPole environment with integrated SDL2 rendering.
 
@@ -1076,6 +1081,63 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
             terminated_out,
             obs,
             seed,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    def extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Copy obs = state[0:OBS_DIM] for each env on GPU.
+
+        CartPole's state is `[x, x_dot, theta, theta_dot, step_count]` and
+        the obs is the first 4 entries — a simple per-env prefix copy.
+        Used after `reset_kernel_gpu` / `selective_reset_kernel_gpu` to
+        seed obs (those kernels write state but not obs).
+        """
+        var states = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE * STATE_SIZE),
+            MutAnyOrigin,
+        ](states_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype,
+            Layout.row_major(BATCH_SIZE * OBS_DIM),
+            MutAnyOrigin,
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        @parameter
+        @always_inline
+        def extract_wrapper(
+            s: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE * STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            o: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE * OBS_DIM),
+                MutAnyOrigin,
+            ],
+        ):
+            var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if e >= BATCH_SIZE:
+                return
+            for d in range(OBS_DIM):
+                o[e * OBS_DIM + d] = s[e * STATE_SIZE + d]
+
+        ctx.enqueue_function[extract_wrapper, extract_wrapper](
+            states,
+            obs,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
         )

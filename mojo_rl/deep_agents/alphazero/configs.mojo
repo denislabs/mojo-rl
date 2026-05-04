@@ -38,6 +38,7 @@ from mojo_rl.deep_agents.muzero.strategies import (
     MuZeroPUCT,
     PlayerMode,
     SelfPlay,
+    SinglePlayer,
     BackupMode,
     MonteCarloReturn,
     NStepBootstrap,
@@ -90,6 +91,14 @@ trait AlphaZeroConfig:
     #   value_target = (1 - w) * z + w * q
     # 0.0 = pure z (original AlphaZero), 1.0 = pure q, 0.5 = average
     comptime value_target_q_weight: Float64
+
+    # Whether the value head is squashed through tanh during loss.
+    # True (default for board games): targets ∈ [-1, +1], loss is
+    #   `(tanh(raw) - target)²`. Bounded outputs.
+    # False (single-player envs with unbounded returns): targets are
+    #   the raw discounted return, loss is `(raw - target)²`. Tanh would
+    #   saturate to zero gradient for targets > 1.
+    comptime value_squash: Bool
 
     # ── GPU episode tracking ────────────────────────────────────────
     comptime max_episode_length: Int  # Max steps per episode (for GPU staging)
@@ -150,6 +159,7 @@ struct AlphaZeroTicTacToeConfig[
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
+    comptime value_squash: Bool = True
     comptime max_episode_length: Int = 9  # 3×3 board
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
@@ -219,6 +229,7 @@ struct AlphaZeroTicTacToeCNNConfig[
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
+    comptime value_squash: Bool = True
     comptime max_episode_length: Int = 9
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
@@ -273,6 +284,7 @@ struct AlphaZeroConnectFourConfig[
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
+    comptime value_squash: Bool = True
     comptime max_episode_length: Int = 42  # 6×7 board
     comptime board_rows: Int = 6
     comptime board_cols: Int = 7
@@ -349,6 +361,7 @@ struct AlphaZeroConnectFourCNNConfig[
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
+    comptime value_squash: Bool = True
     comptime max_episode_length: Int = 42
     comptime board_rows: Int = 6
     comptime board_cols: Int = 7
@@ -469,6 +482,7 @@ struct AlphaZeroConnectFourResNetConfig[
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
+    comptime value_squash: Bool = True
     comptime max_episode_length: Int = 42
     comptime board_rows: Int = 6
     comptime board_cols: Int = 7
@@ -551,6 +565,7 @@ struct AlphaZeroConnectFourFusedResNetConfig[
     comptime invalid_action_penalty: Float64 = 1.0  # AlphaZero.jl: nonvalidity_penalty=1.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
+    comptime value_squash: Bool = True
     comptime max_episode_length: Int = 42
     comptime board_rows: Int = 6
     comptime board_cols: Int = 7
@@ -615,6 +630,7 @@ struct AlphaZeroTicTacToeResNetConfig[
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
+    comptime value_squash: Bool = True
     comptime max_episode_length: Int = 9
     comptime board_rows: Int = 3
     comptime board_cols: Int = 3
@@ -668,6 +684,7 @@ struct AlphaZeroChessConfig[
     comptime invalid_action_penalty: Float64 = 0.0
     comptime max_grad_norm: Float64 = 0.0
     comptime value_target_q_weight: Float64 = 0.0
+    comptime value_squash: Bool = True
     comptime max_episode_length: Int = 512
     comptime board_rows: Int = 8
     comptime board_cols: Int = 8
@@ -678,5 +695,68 @@ struct AlphaZeroChessConfig[
     ]  # Small alpha for large action space
     comptime PUCT = AlphaGoPUCT[2.5]
     comptime Players = SelfPlay
+    comptime Backup = MonteCarloReturn
+    comptime Aug = IdentityAugmenter
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CartPole Config (single-player MLP — for AZ-vs-MuZero comparison)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct AlphaZeroCartPoleConfig[
+    HIDDEN: Int = 64,
+    LR: Float64 = 0.001,
+    BS: Int = 64,
+    CAP: Int = 50000,
+    SIMS: Int = 25,
+    NODES: Int = 64,
+    C_PUCT: Float64 = 1.25,
+    MAX_EP: Int = 500,
+](AlphaZeroConfig):
+    """AlphaZero on CartPole — single-player MCTS-with-true-rules baseline.
+
+    Used to validate AZ's value-learning machinery on a non-board-game env
+    where MuZero is currently broken. AZ here uses the env as a perfect
+    model, isolating "MCTS + value learning works" from the learned-model
+    side that MuZero is debugging.
+    """
+
+    comptime NAME: String = "AlphaZero-CartPole"
+    comptime obs_dim: Int = 4
+    comptime action_dim: Int = 2
+
+    comptime PredModel = Sequential[
+        LinearReLU[4, Self.HIDDEN],
+        LinearReLU[Self.HIDDEN, Self.HIDDEN],
+        Parallel[
+            Linear[Self.HIDDEN, 2],  # Policy head
+            Linear[Self.HIDDEN, 1],  # Scalar value head
+        ],
+    ]
+    comptime OptType = Adam[LR=Self.LR]
+
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime history_window: Int = 20
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+    comptime temp_threshold: Int = 50  # Long horizon — broad exploration
+    comptime temp_min: Float64 = 0.0
+    comptime batch_sims: Int = 5
+    comptime invalid_action_penalty: Float64 = 0.0
+    comptime max_grad_norm: Float64 = 0.0
+    comptime value_target_q_weight: Float64 = 0.0
+    comptime value_squash: Bool = False
+    comptime max_episode_length: Int = Self.MAX_EP
+    # Board layout fields are required by the trait but unused for non-board
+    # envs — pick a 1×OBS×1 shape so the diagnostic dump_replay still works.
+    comptime board_rows: Int = 1
+    comptime board_cols: Int = 4
+    comptime board_planes: Int = 1
+
+    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime PUCT = MuZeroPUCT[19652.0, Self.C_PUCT]
+    comptime Players = SinglePlayer
     comptime Backup = MonteCarloReturn
     comptime Aug = IdentityAugmenter

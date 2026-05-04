@@ -16,6 +16,7 @@ from .configs import (
     AlphaZeroConnectFourResNetConfig,
     AlphaZeroConnectFourFusedResNetConfig,
     AlphaZeroChessConfig,
+    AlphaZeroCartPoleConfig,
 )
 from .strategies import (
     BoardAugmenter,
