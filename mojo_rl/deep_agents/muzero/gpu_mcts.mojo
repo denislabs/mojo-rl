@@ -2315,6 +2315,25 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
                     / rew_se
                 )
                 rew_decoded += prob * (v_min + Scalar[dtype](i) * rew_step)
+            # Inverse scalar transform: targets are h(r), so the network
+            # output decodes to h(r); the backup recurrence
+            # `value = reward + γ · value` is only valid in raw space.
+            # h^{-1}(y) = sign(y) * (((sqrt(1+4ε(|y|+1+ε)) - 1)/(2ε))^2 - 1)
+            var sign_r = Scalar[dtype](1.0) if rew_decoded >= Scalar[dtype](
+                0.0
+            ) else Scalar[dtype](-1.0)
+            var abs_r = (
+                rew_decoded if rew_decoded >= Scalar[dtype](0.0) else -rew_decoded
+            )
+            var eps_r = Scalar[dtype](0.001)
+            var inner_r = sqrt(
+                Scalar[dtype](1.0)
+                + Scalar[dtype](4.0) * eps_r * (abs_r + Scalar[dtype](1.0) + eps_r)
+            )
+            var f_r = (inner_r - Scalar[dtype](1.0)) / (
+                Scalar[dtype](2.0) * eps_r
+            )
+            rew_decoded = sign_r * (f_r * f_r - Scalar[dtype](1.0))
         reward_buf[tree_off + parent * ACT + action] = rew_decoded
 
         # 4. Set child prior from prediction softmax
@@ -2382,6 +2401,24 @@ def gpu_mcts_batched_expand_backup_muzero_kernel[
                     / val_se
                 )
                 leaf_value += prob * (v_min + Scalar[dtype](i) * val_step)
+            # Inverse scalar transform: pred net is trained on h(V), so
+            # the categorical decode recovers h(V) (transformed space).
+            # Convert to raw V before entering the backup recurrence.
+            var sign_v = Scalar[dtype](1.0) if leaf_value >= Scalar[dtype](
+                0.0
+            ) else Scalar[dtype](-1.0)
+            var abs_v = (
+                leaf_value if leaf_value >= Scalar[dtype](0.0) else -leaf_value
+            )
+            var eps_v = Scalar[dtype](0.001)
+            var inner_v = sqrt(
+                Scalar[dtype](1.0)
+                + Scalar[dtype](4.0) * eps_v * (abs_v + Scalar[dtype](1.0) + eps_v)
+            )
+            var f_v = (inner_v - Scalar[dtype](1.0)) / (
+                Scalar[dtype](2.0) * eps_v
+            )
+            leaf_value = sign_v * (f_v * f_v - Scalar[dtype](1.0))
 
         # 6. Backup (negated or standard)
         var value = leaf_value
