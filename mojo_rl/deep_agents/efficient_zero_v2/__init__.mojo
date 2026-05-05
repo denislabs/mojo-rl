@@ -4,3 +4,4 @@
 # (Gumbel-MuZero, ICLR 2022).
 
 from .mcts import GumbelMCTS, GumbelMCTSNode
+from .gpu_mcts import EZV2GPUMCTSState, run_gumbel_search_gpu
