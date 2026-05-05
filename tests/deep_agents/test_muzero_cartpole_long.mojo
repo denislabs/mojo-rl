@@ -56,21 +56,25 @@ def main() raises:
     # Zero-init breaks the early-bias attractor; combined with Dirichlet
     # fraction=0.5 (bumped from 0.25 in the MLP config) for stronger root
     # exploration to escape the symmetric fixed point.
-    # v_min/v_max tightened from default ±50 → 0..22 (Phase H8b, 2026-05-05).
-    # CartPole-v1 returns are in [0, 500] → encoded h(x) range is [0, 21.4].
-    # Default ±50 with BINS=21 gave bin width 5; reward target r=0 vs r=1
-    # differed by <10% mass in any bin (h(0)=0 → bin 10 mass=1.0; h(1)=0.41
-    # → bin 10 mass=0.92, bin 11 mass=0.08), so the dynamics network's
-    # reward head had near-zero gradient distinguishing "keep going" from
-    # "terminal" — the only state-conditioned reward signal CartPole offers.
-    # New range 0..22 with BINS=21 gives bin width 1.1, ~5× tighter resolution
-    # for the binary reward signal and ~5× tighter for value targets too.
-    # See docs/MUZERO_AUDIT.md Phase H8b.
+    # v_min/v_max tightened from default ±50 → ±22 (Phase H8b revised, 2026-05-05).
+    # First attempt with [0, 22] had ~5× resolution gain but BROKE the zero-
+    # head init invariant: with asymmetric support, zero-init pred → uniform
+    # softmax → expected value = (v_min+v_max)/2 = 11 → decoded raw = ~140 at
+    # init, miles from the intended "value=0" zero-head behavior. MCTS then
+    # locked into a biased policy and reward decayed from 20 → 11 over 50K
+    # steps. Symmetric ±22 preserves zero-symmetry (uniform softmax →
+    # expected value 0 → decoded raw 0 ✓) while keeping ~2× resolution gain
+    # over the original ±50 default. CartPole returns are in [0, 500] but
+    # the encoded h(x) range maxes around 21.4, so v_max=22 is just past
+    # the peak — wasted only the negative half. Reward target r=0 vs r=1:
+    # bin mass [0.81, 0.19] vs the old [0.92, 0.08] — ~2.4× larger gradient
+    # signal between terminal and non-terminal. See docs/MUZERO_AUDIT.md
+    # Phase H8b for the full analysis.
     var agent = GenericMuZeroAgent[Config, 32](
         gamma=0.99,
         temperature_decay_steps=50000,
         pred_head_input_dim=64,
-        v_min=0.0,
+        v_min=-22.0,
         v_max=22.0,
     )
 
