@@ -198,16 +198,17 @@ struct MuZeroMLPConfig[
     # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
     # post-scale hidden state to saturate uniform across obs (state-blind).
     # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
-    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
-    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
-    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
-    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
-    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
-    # |W| at 878 by step 10K with pre-min-max activations still in
-    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
-    # identical (sign-symmetric representation collapse). 1e-2 should
-    # keep |W| bounded enough that sign info propagates through min-max.
-    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -299,16 +300,17 @@ struct MuZeroCNNConfig[
     # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
     # post-scale hidden state to saturate uniform across obs (state-blind).
     # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
-    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
-    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
-    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
-    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
-    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
-    # |W| at 878 by step 10K with pre-min-max activations still in
-    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
-    # identical (sign-symmetric representation collapse). 1e-2 should
-    # keep |W| bounded enough that sign info propagates through min-max.
-    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -411,16 +413,17 @@ struct MuZeroResNetConfig[
     # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
     # post-scale hidden state to saturate uniform across obs (state-blind).
     # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
-    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
-    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
-    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
-    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
-    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
-    # |W| at 878 by step 10K with pre-min-max activations still in
-    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
-    # identical (sign-symmetric representation collapse). 1e-2 should
-    # keep |W| bounded enough that sign info propagates through min-max.
-    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     # Training
     comptime batch_size: Int = Self.BS
@@ -497,16 +500,17 @@ struct MuZeroLargeConfig[
     # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
     # post-scale hidden state to saturate uniform across obs (state-blind).
     # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
-    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
-    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
-    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
-    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
-    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
-    # |W| at 878 by step 10K with pre-min-max activations still in
-    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
-    # identical (sign-symmetric representation collapse). 1e-2 should
-    # keep |W| bounded enough that sign info propagates through min-max.
-    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     comptime batch_size: Int = 256
     comptime buffer_capacity: Int = 500000
@@ -586,16 +590,17 @@ struct EfficientZeroConfig[
     # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
     # post-scale hidden state to saturate uniform across obs (state-blind).
     # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
-    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
-    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
-    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
-    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
-    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
-    # |W| at 878 by step 10K with pre-min-max activations still in
-    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
-    # identical (sign-symmetric representation collapse). 1e-2 should
-    # keep |W| bounded enough that sign info propagates through min-max.
-    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     comptime batch_size: Int = 128
     comptime buffer_capacity: Int = 100000
@@ -683,16 +688,17 @@ struct MuZeroTicTacToeConfig[
     # unroll, causing pre-min-max activations to reach 10⁶ magnitude and
     # post-scale hidden state to saturate uniform across obs (state-blind).
     # See docs/MUZERO_AUDIT.md Phase G post-mortem 2026-05-04.
-    # WEIGHT_DECAY=1e-2 — empirical bump from initial 1e-4 (which matches
-    # PyTorch Adam-with-L2 nominally, but PyTorch's L2 gets adaptively
-    # scaled by 1/sqrt(v_hat) ≈ 100×, while AdamW's decoupled WD is a
-    # direct exponential decay. Equilibrium |W| ≈ 1/WD: 1e-4→10000,
-    # 1e-2→100. Phase G post-mortem (2026-05-04) showed 1e-4 left rep
-    # |W| at 878 by step 10K with pre-min-max activations still in
-    # 10⁵-10⁶ range and pred treating theta=+0.1 / theta=-0.1 as
-    # identical (sign-symmetric representation collapse). 1e-2 should
-    # keep |W| bounded enough that sign info propagates through min-max.
-    comptime OptType = AdamW[LR=Self.LR, WEIGHT_DECAY=1e-2]
+    # Adam with PyTorch-style L2-in-gradient weight decay (WEIGHT_DECAY=1e-4
+    # to match muzero-general/games/cartpole.py:86 exactly). Switched from
+    # AdamW (decoupled decay) on 2026-05-05: AdamW's `param *= (1 - LR*W)`
+    # continues shrinking weights at rate LR·W·param indefinitely, which
+    # over-decays small late-training gradients. PyTorch's L2-in-gradient
+    # adds `W·param` to grad before m/v update — when grad → 0 in late
+    # training, v_hat → (W·param)² and the per-step update caps at
+    # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
+    # observed for MuZero CartPole through the AdamW phase. See
+    # docs/MUZERO_AUDIT.md for the full chain of evidence.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
 
     # Training
     comptime batch_size: Int = Self.BS

@@ -15,15 +15,32 @@ struct Adam[
     BETA1: Float64 = 0.9,
     BETA2: Float64 = 0.999,
     EPS: Float64 = 1e-8,
+    WEIGHT_DECAY: Float64 = 0.0,
 ](Optimizer):
     """Adam optimizer with adaptive learning rates.
 
+    Matches PyTorch's `torch.optim.Adam(weight_decay=W)` semantics: when
+    `WEIGHT_DECAY > 0`, the L2 regularization term `W * param` is added to
+    the gradient BEFORE the m/v update. This is the "L2-in-gradient" form
+    used by muzero-general and most reference RL/CV codebases (different
+    from AdamW's decoupled weight decay, which is `param *= (1 - LR*W)`
+    AFTER the Adam update).
+
     Update rule:
-        m = beta1 * m + (1 - beta1) * grad
-        v = beta2 * v + (1 - beta2) * grad^2
+        g = grad + WEIGHT_DECAY * param   (only if WEIGHT_DECAY > 0)
+        m = beta1 * m + (1 - beta1) * g
+        v = beta2 * v + (1 - beta2) * g^2
         m_hat = m / (1 - beta1^step)
         v_hat = v / (1 - beta2^step)
         param = param - lr * m_hat / (sqrt(v_hat) + eps)
+
+    The L2-in-gradient form has an important late-training property the
+    decoupled (AdamW) form lacks: when grad → 0, v_hat → (W·param)², so
+    the per-step update magnitude caps at LR·sign(param) regardless of W.
+    AdamW's decoupled decay continues at rate LR·W·param indefinitely,
+    which over-decays small late-training gradients and bleeds the network
+    to zero weights — exactly what we observed for MuZero CartPole prior
+    to this commit (see docs/MUZERO_AUDIT.md).
 
     STATE_PER_PARAM = 2:
         - state[i, 0] = m (first moment)
@@ -91,9 +108,12 @@ struct Adam[
         var beta2 = Scalar[dtype](Self.BETA2)
         var lr = Scalar[dtype](Self.LR * lr_scale)
         var eps = Scalar[dtype](Self.EPS)
+        var wd = Scalar[dtype](Self.WEIGHT_DECAY)
 
         for i in range(PARAM_SIZE):
-            var g = grads[i]
+            # L2-in-gradient: g = grad + WEIGHT_DECAY * param. The compiler
+            # elides the add when WEIGHT_DECAY == 0 (the comptime default).
+            var g = grads[i] + wd * params[i]
             var m = state[i, 0]
             var v = state[i, 1]
 
@@ -152,8 +172,11 @@ struct Adam[
         var bc1 = one - exp(log_beta1 * step_f)
         var bc2 = one - exp(log_beta2 * step_f)
         var lr = base_lr * rebind[Scalar[dtype]](lr_scale_view[0])
+        var wd = Scalar[dtype](Self.WEIGHT_DECAY)
+        var p_val = rebind[Scalar[dtype]](params[idx])
 
-        var g = rebind[Scalar[dtype]](grads[idx])
+        # L2-in-gradient: g = grad + WEIGHT_DECAY * param (PyTorch-style)
+        var g = rebind[Scalar[dtype]](grads[idx]) + wd * p_val
         var m_val = rebind[Scalar[dtype]](state[idx, 0])
         var v_val = rebind[Scalar[dtype]](state[idx, 1])
 
@@ -166,9 +189,7 @@ struct Adam[
         var m_hat = m_new / bc1
         var v_hat = v_new / bc2
 
-        params[idx] = rebind[Scalar[dtype]](params[idx]) - lr * m_hat / (
-            sqrt(v_hat) + eps
-        )
+        params[idx] = p_val - lr * m_hat / (sqrt(v_hat) + eps)
 
     # =========================================================================
     # GPU launcher
