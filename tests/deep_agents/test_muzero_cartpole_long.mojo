@@ -46,10 +46,15 @@ def main() raises:
         CAP=50000,
     ]
 
+    # Pred head zero-init removed (was a tentative fix for "MCTS amplifies
+    # untrained pred bias into deterministic action" — see Phase G, Bug A/B).
+    # With MinMaxNorm in the autograd graph + Adam-with-L2-WD + Dirichlet
+    # exploration noise, the original failure mode shouldn't fire anymore,
+    # and the zero-init starves pred heads of early gradient signal (matches
+    # muzero-general which uses PyTorch's default Kaiming-style init).
     var agent = GenericMuZeroAgent[Config, 32](
         gamma=0.99,
         temperature_decay_steps=50000,
-        pred_head_input_dim=64,
     )
 
     # Canonical CartPole obs covering tilt directions:
