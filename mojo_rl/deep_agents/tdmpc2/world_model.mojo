@@ -10,7 +10,7 @@ The world model simultaneously learns:
 
 Architecture (all MLPs use NormedLinear blocks):
   encoder:     [NL(OBS, ENC), Linear(ENC, LATENT) + LayerNorm + SimNorm]
-  dynamics:    [NL(LATENT+ACT, MLP), NL(MLP, LATENT), Linear(LATENT, LATENT) + SimNorm]
+  dynamics:    [NL(LATENT+ACT, MLP), NL(MLP, LATENT), Linear(LATENT, LATENT) + LayerNorm + SimNorm]
   reward:      [NL(LATENT+ACT, MLP), NL(MLP, MLP), Linear(MLP, NUM_BINS)]
   termination: [NL(LATENT, MLP), NL(MLP, MLP), Linear(MLP, 1) + Sigmoid]
   policy:      [NL(LATENT, MLP), NL(MLP, MLP), Linear(MLP, 2*ACT)]
@@ -97,10 +97,15 @@ struct WorldModel[
     ]
 
     # Dynamics: (LATENT + ACTION) → LATENT with SimNorm output
+    # Reference: mlp(...,act=SimNorm) → final block is NormedLinear(act=SimNorm)
+    # = Linear → LayerNorm → SimNorm. Without LayerNorm, the per-group softmax
+    # in SimNorm is fed an unbounded scale and saturates (one-hot per group) or
+    # collapses (uniform per group), reducing the effective dimensionality of z.
     comptime DynModel = Sequential[
         NormedLinear[Self.ZA_DIM, Self.MLP_DIM],
         NormedLinear[Self.MLP_DIM, Self.LATENT_DIM],
         Linear[Self.LATENT_DIM, Self.LATENT_DIM],
+        LayerNorm[Self.LATENT_DIM],
         SimNorm[Self.LATENT_DIM, Self.SIMPLEX_DIM],
     ]
 
