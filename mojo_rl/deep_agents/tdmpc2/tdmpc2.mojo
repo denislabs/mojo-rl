@@ -3736,11 +3736,20 @@ struct TDMPC2Agent[
 
                         var mean_reward: Float64 = 0.0
                         var mean_done: Float64 = 0.0
+                        var sumsq_reward: Float64 = 0.0
                         for i in range(Self.BATCH_SCALAR_FLAT):
-                            mean_reward += Float64(gs.diag_rew_host[i])
+                            var r = Float64(gs.diag_rew_host[i])
+                            mean_reward += r
+                            sumsq_reward += r * r
                             mean_done += Float64(gs.diag_done_host[i])
                         mean_reward /= Float64(Self.BATCH_SCALAR_FLAT)
                         mean_done /= Float64(Self.BATCH_SCALAR_FLAT)
+                        var var_reward = (
+                            sumsq_reward / Float64(Self.BATCH_SCALAR_FLAT)
+                        ) - (mean_reward * mean_reward)
+                        if var_reward < 0.0:
+                            var_reward = 0.0
+                        var std_reward = sqrt(var_reward)
 
                         # mean_abs_action computed on tanh(mean) (deterministic
                         # action) and mean_log_std after the smooth tanh-based
@@ -3771,8 +3780,16 @@ struct TDMPC2Agent[
                         # value_loss = soft CE between Q logits and TD target
                         # at horizon step 0; mean_target = symexp-decoded
                         # expected value of the two-hot target.
+                        # std_q / std_target measure batch-wise spread of the
+                        # predicted Q and the bootstrapped TD target — both in
+                        # actual value space (symexp-decoded). Near-zero std
+                        # indicates Q-collapse (predictor is state-action
+                        # invariant).
                         var value_loss: Float64 = 0.0
                         var mean_target: Float64 = 0.0
+                        var sumsq_target: Float64 = 0.0
+                        var mean_q_pred: Float64 = 0.0
+                        var sumsq_q_pred: Float64 = 0.0
                         for b in range(BS):
                             var max_l: Float64 = -1e30
                             for k in range(BNS):
@@ -3790,6 +3807,7 @@ struct TDMPC2Agent[
                             var lse = log(sum_exp) + max_l
                             var ce: Float64 = 0.0
                             var tgt_symlog: Float64 = 0.0
+                            var pred_symlog: Float64 = 0.0
                             for k in range(BNS):
                                 var logit = Float64(
                                     gs.diag_logits_host[b * BNS + k]
@@ -3799,6 +3817,10 @@ struct TDMPC2Agent[
                                 )
                                 ce -= tgt * (logit - lse)
                                 tgt_symlog += tgt * Float64(
+                                    self.state.world_model.bins[k]
+                                )
+                                var sm = exp(logit - lse)
+                                pred_symlog += sm * Float64(
                                     self.state.world_model.bins[k]
                                 )
                             value_loss += ce
@@ -3811,8 +3833,32 @@ struct TDMPC2Agent[
                                 tgt_symlog >= 0.0
                             ) else -(exp(ats) - 1.0)
                             mean_target += dec_target
+                            sumsq_target += dec_target * dec_target
+                            var aps = (
+                                pred_symlog
+                                if pred_symlog >= 0.0
+                                else -pred_symlog
+                            )
+                            var dec_pred_q = (exp(aps) - 1.0) if (
+                                pred_symlog >= 0.0
+                            ) else -(exp(aps) - 1.0)
+                            mean_q_pred += dec_pred_q
+                            sumsq_q_pred += dec_pred_q * dec_pred_q
                         value_loss /= Float64(BS)
                         mean_target /= Float64(BS)
+                        mean_q_pred /= Float64(BS)
+                        var var_target = (sumsq_target / Float64(BS)) - (
+                            mean_target * mean_target
+                        )
+                        if var_target < 0.0:
+                            var_target = 0.0
+                        var std_target = sqrt(var_target)
+                        var var_q_pred = (sumsq_q_pred / Float64(BS)) - (
+                            mean_q_pred * mean_q_pred
+                        )
+                        if var_q_pred < 0.0:
+                            var_q_pred = 0.0
+                        var std_q = sqrt(var_q_pred)
 
                         # reward_loss = soft CE between reward logits and reward
                         # target at horizon step 0; mean_pred_reward = symexp-
@@ -3894,6 +3940,13 @@ struct TDMPC2Agent[
                         )
                         self.logger[].log_scalar(
                             "mean_log_std", mean_log_std, step
+                        )
+                        self.logger[].log_scalar("std_q", std_q, step)
+                        self.logger[].log_scalar(
+                            "std_target", std_target, step
+                        )
+                        self.logger[].log_scalar(
+                            "std_reward", std_reward, step
                         )
                     except:
                         pass
