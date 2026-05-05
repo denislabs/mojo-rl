@@ -4028,14 +4028,14 @@ struct TDMPC2Agent[
 
                 # ──────────────────────────────────────────────────────
                 # NaN/Inf scan on each network's params.
-                # Runs every 10 steps (decoupled from diag_every) so we
-                # can localize the first NaN occurrence with finer
-                # granularity. Prints which networks go bad each time;
-                # tracks the earliest step seen to identify root cause.
+                # Every step for the first 100 (where the cascade
+                # likely starts) so we can pin the first network to
+                # NaN. After 100, back off to every 10 steps to keep
+                # the scan cheap.
                 # ──────────────────────────────────────────────────────
-                comptime NAN_SCAN_EVERY = 10
+                var nan_scan_every = 1 if self.train_step_count < 100 else 10
                 if (
-                    self.train_step_count % NAN_SCAN_EVERY == 0
+                    self.train_step_count % nan_scan_every == 0
                 ):
                     var nan_names = List[String]()
 
