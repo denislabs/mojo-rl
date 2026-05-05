@@ -25,6 +25,13 @@ def main() raises:
     var ctx = DeviceContext()
     comptime CartPoleGPU = CartPoleEnv[DType.float32]
 
+    # K=5, BS=64 — match muzero-general's CartPole config exactly. Phase G
+    # post-mortem 2026-05-05: with K=3 + BS=16, |dyn| stayed flat at 2.86
+    # the entire run because the value-supervision unroll was too shallow
+    # to teach dyn pole physics, and small batches produced too-noisy
+    # gradients. Reference's K=5 gives 5 dyn applications per sample
+    # (vs our 3) so value targets at k=5 diverge more across states,
+    # and BS=64 reduces gradient variance.
     comptime Config = MuZeroMLPConfig[
         CartPoleGPU.OBS_DIM,
         CartPoleGPU.NUM_ACTIONS,
@@ -33,9 +40,9 @@ def main() raises:
         BINS=21,
         LR=2e-2,
         SIMS=50,
-        K=3,
+        K=5,
         N=10,
-        BS=16,
+        BS=64,
         CAP=50000,
     ]
 
