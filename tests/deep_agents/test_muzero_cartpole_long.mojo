@@ -25,57 +25,58 @@ def main() raises:
     var ctx = DeviceContext()
     comptime CartPoleGPU = CartPoleEnv[DType.float32]
 
-    # K=5, BS=64 — match muzero-general's CartPole config exactly. Phase G
-    # post-mortem 2026-05-05: with K=3 + BS=16, |dyn| stayed flat at 2.86
-    # the entire run because the value-supervision unroll was too shallow
-    # to teach dyn pole physics, and small batches produced too-noisy
-    # gradients. Reference's K=5 gives 5 dyn applications per sample
-    # (vs our 3) so value targets at k=5 diverge more across states,
-    # and BS=64 reduces gradient variance.
+    # Phase H12 (2026-05-05): full alignment with muzero-general's CartPole
+    # config (references/muzero-general-master/games/cartpole.py), excluding
+    # PER (requires implementation). Their config is RADICALLY smaller and
+    # uses LONGER N-step horizons:
+    #
+    #   muzero-general              ours (was)        ours (now, aligned)
+    #   ─────────────────────────   ──────────        ────────────────────
+    #   encoding_size = 8           LATENT=64         LATENT=8
+    #   fc_*_layers = [16]          HIDDEN=64         HIDDEN=16
+    #   support_size = 10           v_min/max=±22     v_min/max=±10
+    #   num_unroll_steps = 10       K=5               K=10
+    #   td_steps = 50               N=10              N=50
+    #   batch_size = 128            BS=64             BS=128
+    #   root_exploration_fr = 0.25  Dirichlet fr=0.5  Dirichlet fr=0.25
     comptime Config = MuZeroMLPConfig[
         CartPoleGPU.OBS_DIM,
         CartPoleGPU.NUM_ACTIONS,
-        LATENT=64,
-        HIDDEN=64,
+        LATENT=8,
+        HIDDEN=16,
         BINS=21,
         LR=2e-2,
         SIMS=50,
-        K=5,
-        N=10,
-        BS=64,
+        K=10,
+        N=50,
+        BS=128,
         CAP=50000,
     ]
-
-    # Pred head zero-init RE-ENABLED (2026-05-05). The "removal" experiment
-    # showed Kaiming-init pred heads produce logits ~[+2.4, -0.9] (softmax
-    # 96/4) and value ~-440 at init; MCTS visits become identical [32,16]
-    # across all obs from step 1, locking the network into a state-blind
-    # attractor that survives even with all reference hyperparams matched
-    # (LR=0.02, K=5, BS=64, MinMaxNorm-in-autograd, Adam-L2-WD=1e-4) — final
-    # state had bit-identical hidden/policy/value across LEFT/CENTER/RIGHT.
-    # Zero-init breaks the early-bias attractor; combined with Dirichlet
-    # fraction=0.5 (bumped from 0.25 in the MLP config) for stronger root
-    # exploration to escape the symmetric fixed point.
-    # v_min/v_max tightened from default ±50 → ±22 (Phase H8b revised, 2026-05-05).
-    # First attempt with [0, 22] had ~5× resolution gain but BROKE the zero-
-    # head init invariant: with asymmetric support, zero-init pred → uniform
-    # softmax → expected value = (v_min+v_max)/2 = 11 → decoded raw = ~140 at
-    # init, miles from the intended "value=0" zero-head behavior. MCTS then
-    # locked into a biased policy and reward decayed from 20 → 11 over 50K
-    # steps. Symmetric ±22 preserves zero-symmetry (uniform softmax →
-    # expected value 0 → decoded raw 0 ✓) while keeping ~2× resolution gain
-    # over the original ±50 default. CartPole returns are in [0, 500] but
-    # the encoded h(x) range maxes around 21.4, so v_max=22 is just past
-    # the peak — wasted only the negative half. Reward target r=0 vs r=1:
-    # bin mass [0.81, 0.19] vs the old [0.92, 0.08] — ~2.4× larger gradient
-    # signal between terminal and non-terminal. See docs/MUZERO_AUDIT.md
-    # Phase H8b for the full analysis.
+    #
+    # Why each matters:
+    # - Smaller networks (LATENT 8, HIDDEN 16): less capacity to memorize
+    #   biased data → forced to find generalizing features. The bias-
+    #   amplification loop we saw locks in faster with bigger nets.
+    # - Tighter support (±10 vs ±22): bin width = 1.0 in encoded space
+    #   (vs 2.2). Reward r=0 vs r=1 differ by 41% mass in bin 11 (vs 19%
+    #   with ±22) — 2× larger gradient on the only state-conditioned
+    #   reward signal CartPole offers. Values >100 raw get clipped to
+    #   encoded ±10, but that's a trade muzero-general accepts.
+    # - K=10, N=50 (longest leverage): with N=50 the value target is
+    #   dominated by 50 steps of ACTUAL observed reward, not by the
+    #   undertrained value head's bootstrap. Most CartPole episodes are
+    #   <50 steps so MOST sample positions get exact MC-style targets.
+    #   This is our biggest single deviation from reference and likely
+    #   the main reason we plateau where they converge.
+    # - BS=128: 2× gradient variance reduction.
+    # - Dirichlet fraction 0.25 (reverted from 0.5): the 0.5 bump was a
+    #   band-aid that didn't help; reverting to align with reference.
     var agent = GenericMuZeroAgent[Config, 32](
         gamma=0.99,
         temperature_decay_steps=50000,
-        pred_head_input_dim=64,
-        v_min=-22.0,
-        v_max=22.0,
+        pred_head_input_dim=16,
+        v_min=-10.0,
+        v_max=10.0,
     )
 
     # Canonical CartPole obs covering tilt directions:
