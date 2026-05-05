@@ -69,30 +69,87 @@ def main():
     comptime EVAL_WINDOW = 100   # final assertion looks at last N episodes
     comptime CONVERGENCE_TARGET = 450.0
 
-    # Paper-Table-3-inspired config sized for CartPole (2 actions, 4-d
-    # observation). Bumped from the smoke config.
+    # Reanalyze schedule (paper App. A). The first 50k-step run *without*
+    # reanalyze peaked at mean ep return 41 around step 5k then regressed
+    # to ~13 by step 50k — classic stale-MCTS-target failure mode where
+    # the agent fits its old self's MCTS guesses while its real-policy
+    # behavior on fresh states quietly degrades. Refreshing stored
+    # policies/values from a target net every few hundred train_steps
+    # keeps the loop convergent — but the target net itself needs to
+    # have trained somewhat before its policies are useful, hence the
+    # warmup gate.
+    comptime TARGET_SYNC_INTERVAL = 200   # train_steps between target←online
+    comptime REANALYZE_INTERVAL = 200     # train_steps between reanalyze cycles
+    comptime REANALYZE_SAMPLES = 32       # buffer indices refreshed per cycle
+    comptime REANALYZE_WARMUP = 1000      # don't reanalyze before this many train_steps
+
+    # Config matches the smoke-test values that visibly learn
+    # (`tests/deep_agents/test_ezv2_cartpole.mojo` — episode return
+    # 14 → 32 in 3000 steps; 15 → 37 in 6000 steps). Two pre-flight
+    # gotchas worth knowing:
+    #
+    #   • BINS=51 (paper Table 3) instead of 21 stalls learning at this
+    #     scale: the value-CE on a finer support has bigger initial loss
+    #     and the optimizer never digs out. Stick with BINS=21 for
+    #     CartPole. (The paper's BINS=51 is paired with much bigger
+    #     networks + λ_G + LR than we have here.)
+    #
+    #   • Bigger networks (LATENT=96-128, BS=32-64, SIMS=16-32) made
+    #     L_G saturate to −0.9999 within ~250 train_steps and the agent
+    #     started regressing — the larger projector + predictor seem to
+    #     memorize the consistency target trivially, and the saturated
+    #     gradient still drags the rep net.
+    #
+    # ── Empirical findings, in priority order ──────────────────────────
+    # Two 50k-step runs both regressed past step ~8-12k with last-100
+    # mean ≈ 13. The diagnostic signature in both: **L_P frozen at
+    # log(2) = 0.69**, i.e. policy head outputting near-uniform logits.
+    # MCTS uses the policy head as its prior; uniform prior → random
+    # search → ~22 mean return (the collapse state).
+    #
+    # The hypothesis is L_G saturation dragging the rep network into
+    # a degenerate fixed point. L_G saturates to −0.9999 within ~1k
+    # train_steps; the projector + predictor are perfectly aligned;
+    # the small residual gradient back through projector → rep is
+    # apparently fighting the policy/value gradients enough to keep
+    # rep from being informative.
+    #
+    # Levers to try (priority order):
+    #
+    #   1. **LAMBDA_G = 0.0** — runs as "MuZero with Gumbel search"
+    #      without consistency. If this converges, the saturating-L_G
+    #      hypothesis is confirmed and the fix is one of: stop-grad
+    #      on rep from L_G's path, gradient clipping on L_G, smaller
+    #      PROJ, or scheduling λ_G → 0 once saturated.
+    #
+    #   2. SIMS → 16 — at SIMS=8, K_GUMBEL=2 the MCTS only does 4
+    #      visits per action on average; the policy targets may be
+    #      too noisy for the policy head to extract signal from.
+    #
+    #   3. TRAIN_INTERVAL → 2 or 1 (more updates per env step).
+    #
+    #   4. REANALYZE_INTERVAL → 100 + REANALYZE_SAMPLES → 64 (more
+    #      aggressive refresh — moderate help in the second run,
+    #      stretched the peak from 114 → 174 best episode).
+    #
+    #   5. NUM_ENV_STEPS up to 100k.
     comptime Config = EZV2DiscreteMLPConfig[
         OBS=4,
         ACT=2,
-        LATENT=128,
-        HIDDEN=128,
-        PROJ=256,
-        PRED_BOTTLENECK=128,
-        BINS=51,
-        BS=64,
-        K_UNROLL=5,
-        N_TD=10,
-        SIMS=32,
-        NODES=128,
-        # CartPole has only 2 actions, so K_GUMBEL is bounded by 2 anyway.
+        LATENT=64,
+        HIDDEN=64,
+        PROJ=128,
+        PRED_BOTTLENECK=64,
+        BINS=21,
+        BS=16,
+        K_UNROLL=3,
+        N_TD=5,
+        SIMS=8,
+        NODES=32,
+        # CartPole has only 2 actions, so K_GUMBEL clips to 2 anyway.
         K_GUMBEL=2,
         LR=Float64(5e-4),
-        # Halve paper's λ_G=2.0 so the consistency loss doesn't saturate
-        # at −1.0 in the early-buffer phase (observed in the smoke run).
         LAMBDA_G=Float64(1.0),
-        # Mixed value target: blend SVE → TD over ~quarter of the run.
-        T_FRESH=4_000,
-        T_STALE=12_000,
     ]
 
     # ── Setup ────────────────────────────────────────────────────────────
@@ -112,12 +169,15 @@ def main():
 
     print()
     print("--- Run config ---")
-    print("    NUM_ENV_STEPS      =", NUM_ENV_STEPS)
-    print("    TRAIN_INTERVAL     =", TRAIN_INTERVAL)
-    print("    EVAL_WINDOW        =", EVAL_WINDOW, "episodes")
-    print("    CONVERGENCE_TARGET =", CONVERGENCE_TARGET)
+    print("    NUM_ENV_STEPS         =", NUM_ENV_STEPS)
+    print("    TRAIN_INTERVAL        =", TRAIN_INTERVAL)
+    print("    TARGET_SYNC_INTERVAL  =", TARGET_SYNC_INTERVAL, "train_steps")
+    print("    REANALYZE_INTERVAL    =", REANALYZE_INTERVAL, "train_steps")
+    print("    REANALYZE_SAMPLES     =", REANALYZE_SAMPLES)
+    print("    REANALYZE_WARMUP      =", REANALYZE_WARMUP, "train_steps")
+    print("    EVAL_WINDOW           =", EVAL_WINDOW, "episodes")
+    print("    CONVERGENCE_TARGET    =", CONVERGENCE_TARGET)
     print("    Config: LATENT=", Config.latent_dim,
-          " HIDDEN=", 128,
           " PROJ=", Config.proj_dim,
           " BINS=", Config.num_bins)
     print("    BS=", Config.batch_size,
@@ -143,7 +203,6 @@ def main():
     var last_L_P = Float64(0.0)
     var last_L_V = Float64(0.0)
     var last_L_G = Float64(0.0)
-    var last_L_total = Float64(0.0)
     var best_ep_return = Float64(0.0)
 
     var t0 = perf_counter_ns()
@@ -178,13 +237,31 @@ def main():
         ):
             var t = agent.train_step()
             num_train_calls += 1
-            last_L_total = t[0]
             last_L_R = t[1]
             last_L_P = t[2]
             last_L_V = t[3]
             last_L_G = t[4]
-            if not _is_finite(last_L_total):
+            if not _is_finite(t[0]):
                 any_nan_loss = True
+
+            # Reanalyze stale buffer entries with the target networks.
+            # Hard-sync target ← online every TARGET_SYNC_INTERVAL train
+            # steps; refresh REANALYZE_SAMPLES random buffer indices
+            # every REANALYZE_INTERVAL train steps once we're past the
+            # warmup. The warmup matters: a 6k-env-step probe with
+            # reanalyze firing from step 1 showed *worse* early-phase
+            # behavior than the no-reanalyze baseline (best ep 85 vs
+            # 114), because the lagging target was polluting good
+            # online-MCTS targets. Once online has trained enough that
+            # target ≈ online's earlier checkpoint, reanalyze starts
+            # paying off.
+            if num_train_calls % TARGET_SYNC_INTERVAL == 0:
+                agent.update_target_networks(tau=1.0)
+            if (
+                num_train_calls >= REANALYZE_WARMUP
+                and num_train_calls % REANALYZE_INTERVAL == 0
+            ):
+                _ = agent.reanalyze(num_samples=REANALYZE_SAMPLES)
 
         if (env_step + 1) % LOG_EVERY == 0:
             var t_now = perf_counter_ns()

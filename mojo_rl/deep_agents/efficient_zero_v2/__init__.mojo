@@ -21,6 +21,7 @@ from .networks import (
     ActionEmbedding,
     ProjectionMLP,
     PredictionMLP,
+    RewardPrefixHeadMLP,
 )
 from .consistency import (
     cosine_consistency_loss_forward,

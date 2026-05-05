@@ -83,6 +83,22 @@ struct EZV2DiscreteCPUState[
         Self.Config.PredictorModel, Self.Config.OptType
     ]
 
+    # Target networks for MuZero-style Reanalyze (paper App. A): a
+    # slowly-tracking copy of rep / dyn / pred is used to re-run Gumbel
+    # search on stale replay-buffer transitions and refresh their stored
+    # MCTS policies + root values. The projector and predictor are
+    # SimSiam-training-only — no consistency loss is computed during
+    # reanalyze — so they don't need a target copy.
+    var representation_target: NetworkState[
+        Self.Config.RepModel, Self.Config.OptType
+    ]
+    var dynamics_target: NetworkState[
+        Self.Config.DynModel, Self.Config.OptType
+    ]
+    var prediction_target: NetworkState[
+        Self.Config.PredModel, Self.Config.OptType
+    ]
+
     # ── Replay buffer ────────────────────────────────────────────────────
     # Use `Self.Config.X` directly (rather than `Self.X` aliases) so the
     # buffer's type parameters expose to callers as `Config.obs_dim` /
@@ -205,6 +221,24 @@ struct EZV2DiscreteCPUState[
         self.predictor = NetworkState[Self.Config.PredictorModel, Self.Config.OptType]()
         self.predictor.initialize[Kaiming[]]()
 
+        # Target networks: independent Kaiming init; the agent
+        # `update_target_networks(tau=1.0)` call in __init__ overwrites
+        # them with the online params so they start synced.
+        self.representation_target = NetworkState[
+            Self.Config.RepModel, Self.Config.OptType
+        ]()
+        self.representation_target.initialize[Kaiming[]]()
+
+        self.dynamics_target = NetworkState[
+            Self.Config.DynModel, Self.Config.OptType
+        ]()
+        self.dynamics_target.initialize[Kaiming[]]()
+
+        self.prediction_target = NetworkState[
+            Self.Config.PredModel, Self.Config.OptType
+        ]()
+        self.prediction_target.initialize[Kaiming[]]()
+
         # ── Replay buffer + MCTS targets ─────────────────────────────────
         self.buffer = SequenceReplayBuffer[
             Self._CAP, Self.Config.obs_dim, Self.Config.action_dim
@@ -311,6 +345,9 @@ struct EZV2DiscreteCPUState[
         self.prediction = take.prediction^
         self.projector = take.projector^
         self.predictor = take.predictor^
+        self.representation_target = take.representation_target^
+        self.dynamics_target = take.dynamics_target^
+        self.prediction_target = take.prediction_target^
         self.buffer = take.buffer^
         self.mcts_policies = take.mcts_policies
         self.mcts_values = take.mcts_values

@@ -122,3 +122,42 @@ comptime PredictionMLP[
     LinearReLU[PROJ, BOTTLENECK],
     Linear[BOTTLENECK, PROJ],
 ]
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# RewardPrefixHeadMLP — post-LSTM MLP for the EZ-V1 reward-prefix head
+# ═════════════════════════════════════════════════════════════════════════
+#
+# The full reward-prefix head is **LSTMCell + this MLP**, applied at every
+# unroll step k:
+#
+#     (h[k], c[k]) = LSTMCell.step_forward(z_dyn[k], h[k-1], c[k-1])
+#     reward_prefix_logits[k] = RewardPrefixHeadMLP(h[k])
+#
+# Hidden states `h, c` reset to zero every `lstm_horizon_len = 5` unroll
+# steps (paper App. G) to cap BPTT depth.
+#
+# Loss is cross-entropy against `two_hot(scalar_transform(cumulative_
+# reward_so_far))` — i.e. a *prefix sum* of rewards through step k, not
+# the per-step reward that vanilla MuZero predicts. Reduces variance,
+# better aligned with n-step return targets, kept from EfficientZero v1
+# (Ye et al. 2021).
+#
+# `LSTMCell` lives in `mojo_rl.nn.model.lstm` and is *not* Model-trait
+# (explicit (h, c) plumbing for BPTT use cases), so we don't try to
+# wrap it in `Sequential[…]`. The head is assembled at call time:
+# the agent runs `LSTMCell.step_forward_with_cache` then forwards the
+# resulting `h_t` through this MLP.
+#
+# Wiring into the K-step train loop is deferred (paper-Eq.-3 reward
+# target needs to switch from per-step to cumulative, and the agent's
+# state struct needs `(h, c)` buffers). This file just provides the MLP
+# building block.
+comptime RewardPrefixHeadMLP[
+    LSTM_HIDDEN: Int,
+    MLP_HIDDEN: Int = 64,
+    BINS: Int = 51,
+] = Sequential[
+    LinearReLU[LSTM_HIDDEN, MLP_HIDDEN],
+    Linear[MLP_HIDDEN, BINS],
+]

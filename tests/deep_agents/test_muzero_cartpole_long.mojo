@@ -108,12 +108,13 @@ def main() raises:
     print("########## SINGLE TRAINING CALL: 50K env steps ##########")
     var metrics = agent.train_gpu[CartPoleGPU](
         ctx,
-        num_steps=50000,
+        num_steps=4000,
         warmup_steps=1000,
         print_every=2000,
         use_reanalyze=True,
         lr_decay_rate=0.8,
         lr_decay_steps=1000,
+        use_per=True,
     )
     _ = metrics
 

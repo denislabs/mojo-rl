@@ -137,6 +137,11 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         self._episode_policies = List[InlineArray[Float64, Self.ACT]]()
         self._episode_values = List[Float64]()
 
+        # Sync target networks to online at startup so the first reanalyze
+        # uses a meaningful (if still untrained) target rather than an
+        # independently-initialized random network.
+        self.update_target_networks(tau=1.0)
+
     def __init__(out self, *, deinit take: Self):
         self.state = take.state^
         self.mcts = take.mcts^
@@ -345,6 +350,119 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             )
 
         self.reset_episode()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Reanalyze (paper App. A) + target-network sync
+    # ══════════════════════════════════════════════════════════════════════
+
+    def update_target_networks(mut self, tau: Float64 = 1.0):
+        """Polyak-update target networks from online networks.
+            target ← τ · online + (1 − τ) · target
+        `tau=1.0` is a hard copy (used after `__init__` to sync targets
+        and at coarse intervals during training); `tau ≪ 1` slowly
+        tracks the online network the way a SAC target net does.
+
+        Only rep / dyn / pred get target copies — the SimSiam projector
+        and predictor are training-only and aren't used during reanalyze
+        search.
+        """
+        for i in range(Self.Config.RepModel.PARAM_SIZE):
+            var src = Float64(self.state.representation.params[i])
+            var tgt = Float64(self.state.representation_target.params[i])
+            self.state.representation_target.params[i] = Scalar[dtype](
+                tau * src + (1.0 - tau) * tgt
+            )
+        for i in range(Self.Config.DynModel.PARAM_SIZE):
+            var src = Float64(self.state.dynamics.params[i])
+            var tgt = Float64(self.state.dynamics_target.params[i])
+            self.state.dynamics_target.params[i] = Scalar[dtype](
+                tau * src + (1.0 - tau) * tgt
+            )
+        for i in range(Self.Config.PredModel.PARAM_SIZE):
+            var src = Float64(self.state.prediction.params[i])
+            var tgt = Float64(self.state.prediction_target.params[i])
+            self.state.prediction_target.params[i] = Scalar[dtype](
+                tau * src + (1.0 - tau) * tgt
+            )
+
+    def reanalyze(mut self, num_samples: Int = 16) -> Int:
+        """Re-run Gumbel search on `num_samples` random replay-buffer
+        positions using the **target** networks. Overwrites the stored
+        MCTS policies + root values + age stamp at those indices so
+        they reflect the current target model rather than whatever the
+        online model looked like at collection time.
+
+        Skips work if the buffer isn't ready (returns 0). Otherwise
+        returns the number of indices it actually refreshed.
+
+        Convention: callers should run this every
+        `target_network_updating_interval` train steps (paper default
+        400), typically right after a target-network sync, so the
+        targets reflect the latest policy.
+        """
+        if not self.state.is_ready():
+            return 0
+
+        comptime CAP = 50000
+        var buf_size = self.state.buffer.size
+        var buf_ptr = self.state.buffer.ptr
+        var oldest = (buf_ptr - buf_size + CAP) % CAP
+        var n_refreshed = 0
+
+        for _ in range(num_samples):
+            var rand_offset = Int(random_float64() * Float64(buf_size))
+            if rand_offset >= buf_size:
+                rand_offset = buf_size - 1
+            if rand_offset < 0:
+                rand_offset = 0
+            var idx = (oldest + rand_offset) % CAP
+
+            # Build obs from buffer at this index.
+            var obs = List[Scalar[dtype]](capacity=Self.Config.obs_dim)
+            for d in range(Self.Config.obs_dim):
+                obs.append(
+                    self.state.buffer.obs[
+                        idx * Self.Config.obs_dim + d
+                    ]
+                )
+
+            # Run Gumbel search with target networks.
+            var policy = self.mcts.search(
+                obs,
+                self.state.representation_target,
+                self.state.dynamics_target,
+                self.state.prediction_target,
+                self.v_min,
+                self.v_max,
+                List[Bool](),
+            )
+
+            # Fresh SVE root value from the search.
+            var sum_value = Float64(0.0)
+            var sum_visits = 0
+            if len(self.mcts.nodes) > 0:
+                var root = self.mcts.nodes[0]
+                for a in range(Self.ACT):
+                    sum_value += root.total_value[a]
+                    sum_visits += root.visit_count[a]
+            var sve = compute_sve(sum_value, sum_visits)
+
+            # Overwrite the stored targets at this index.
+            for a in range(Self.ACT):
+                self.state.mcts_policies[
+                    idx * Self.ACT + a
+                ] = Scalar[dtype](policy[a])
+            self.state.mcts_values[idx] = Scalar[dtype](sve)
+            # Treat this as fresh data — the mixed-value-target's age
+            # term should now blend toward SVE since the stored value
+            # was just produced by the current target net.
+            self.state.step_at_write[idx] = Scalar[DType.uint32](
+                self.train_step_count
+            )
+
+            n_refreshed += 1
+
+        return n_refreshed
 
     # ══════════════════════════════════════════════════════════════════════
     # Training (stub — landing in step 5b)
