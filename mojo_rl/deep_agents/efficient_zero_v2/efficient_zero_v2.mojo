@@ -27,7 +27,10 @@ from mojo_rl.nn.training import Network
 from mojo_rl.deep_agents.efficient_zero_v2.configs import EZV2DiscreteConfig
 from mojo_rl.deep_agents.efficient_zero_v2.state import EZV2DiscreteCPUState
 from mojo_rl.deep_agents.efficient_zero_v2.mcts import GumbelMCTS
-from mojo_rl.deep_agents.efficient_zero_v2.strategies import compute_sve
+from mojo_rl.deep_agents.efficient_zero_v2.strategies import (
+    compute_sve,
+    MixedValueTarget,
+)
 from mojo_rl.deep_agents.muzero.utils import (
     scalar_transform,
     encode_categorical,
@@ -78,6 +81,13 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
     var total_steps: Int
     var train_step_count: Int
 
+    # Running max of per-transition priority. Used as the default for
+    # newly-stored transitions (paper App. A: "fresh transitions get
+    # max-seen priority so they're guaranteed to be sampled at least
+    # once") and bumped after each `train_step` whenever a sampled
+    # window's per-sample value-CE loss exceeds the current max.
+    var max_priority: Float64
+
     # Per-episode buffers — flushed to replay at done.
     var _episode_obs: List[List[Scalar[dtype]]]
     var _episode_actions: List[Int]
@@ -115,6 +125,11 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         self.max_grad_norm = max_grad_norm
         self.total_steps = 0
         self.train_step_count = 0
+        # Initial value matches a typical untrained value-CE loss
+        # magnitude on a 51-bin support — high enough that fresh
+        # transitions are competitive with already-seen ones in the
+        # priority distribution. Updated dynamically by train_step.
+        self.max_priority = 1.0
 
         self._episode_obs = List[List[Scalar[dtype]]]()
         self._episode_actions = List[Int]()
@@ -133,6 +148,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         self.max_grad_norm = take.max_grad_norm
         self.total_steps = take.total_steps
         self.train_step_count = take.train_step_count
+        self.max_priority = take.max_priority
         self._episode_obs = take._episode_obs^
         self._episode_actions = take._episode_actions^
         self._episode_rewards = take._episode_rewards^
@@ -317,6 +333,16 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             self.state.mcts_values[buf_idx] = Scalar[dtype](
                 self._episode_values[t]
             )
+            # Stamp the transition with current train-step count so the
+            # mixed-value-target blend can compute per-sample data age.
+            self.state.step_at_write[buf_idx] = Scalar[DType.uint32](
+                self.train_step_count
+            )
+            # Default priority = max-seen so fresh transitions compete
+            # for sampling with previously-seen high-priority windows.
+            self.state.priorities[buf_idx] = Scalar[dtype](
+                self.max_priority
+            )
 
         self.reset_episode()
 
@@ -366,6 +392,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         """
         comptime BATCH = Self.Config.batch_size
         comptime K = Self.Config.unroll_steps
+        comptime N_TD = Self.Config.td_steps
         comptime OBS = Self.Config.obs_dim
         comptime ACT = Self.Config.action_dim
         comptime LATENT = Self.Config.latent_dim
@@ -385,46 +412,81 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Float64(0.0),
             )
 
-        # ── 1. Sample (same code path as compute_loss_components) ────────
+        # ── 1. Sample (priority-weighted; matches compute_loss_components)
         var batch_obs = alloc[Scalar[dtype]](BATCH * (K + 1) * OBS)
         var batch_actions = alloc[Scalar[dtype]](BATCH * K * ACT)
         var batch_rewards = alloc[Scalar[dtype]](BATCH * K)
         var batch_mcts_pol = alloc[Scalar[dtype]](BATCH * (K + 1) * ACT)
         var batch_mcts_val = alloc[Scalar[dtype]](BATCH * (K + 1))
+        var batch_age = alloc[Scalar[DType.int32]](BATCH * (K + 1))
+        var batch_start_idx = alloc[Int](BATCH)
         memset(batch_obs, 0, BATCH * (K + 1) * OBS)
         memset(batch_actions, 0, BATCH * K * ACT)
         memset(batch_rewards, 0, BATCH * K)
         memset(batch_mcts_pol, 0, BATCH * (K + 1) * ACT)
         memset(batch_mcts_val, 0, BATCH * (K + 1))
+        memset(batch_age, 0, BATCH * (K + 1))
 
-        var sampled = 0
-        var max_attempts = BATCH * 100
-        var attempts = 0
         var buf_size = self.state.buffer.size
         var buf_ptr = self.state.buffer.ptr
+        var current_train_step = self.train_step_count
+        var oldest = (buf_ptr - buf_size + CAP) % CAP
 
-        while sampled < BATCH and attempts < max_attempts:
-            attempts += 1
-            if buf_size < K + 1:
-                break
-            var rand_offset = Int(
-                random_float64() * Float64(buf_size - K)
+        # Build cumulative-priority array over valid window starts. A
+        # window of length K is invalid if any of its K transitions has
+        # the episode-boundary `dones` flag set.
+        var n_cands_alloc = buf_size - K if buf_size > K else 1
+        var cum_prio = alloc[Float64](n_cands_alloc)
+        var cand_starts = alloc[Int](n_cands_alloc)
+        var n_valid = 0
+        var total_prio = Float64(0.0)
+        if buf_size > K:
+            for offset in range(buf_size - K):
+                var idx = (oldest + offset) % CAP
+                var valid = True
+                for k in range(K):
+                    var iidx = (idx + k) % CAP
+                    if Float64(self.state.buffer.dones[iidx]) > 0.5:
+                        valid = False
+                        break
+                if not valid:
+                    continue
+                var p = Float64(self.state.priorities[idx])
+                if p < 1e-8:
+                    p = 1e-8
+                total_prio += p
+                cum_prio[n_valid] = total_prio
+                cand_starts[n_valid] = idx
+                n_valid += 1
+
+        if n_valid < BATCH or total_prio < 1e-8:
+            batch_obs.free()
+            batch_actions.free()
+            batch_rewards.free()
+            batch_mcts_pol.free()
+            batch_mcts_val.free()
+            batch_age.free()
+            batch_start_idx.free()
+            cum_prio.free()
+            cand_starts.free()
+            return (
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
             )
-            if rand_offset >= buf_size - K:
-                rand_offset = buf_size - K - 1
-            if rand_offset < 0:
-                rand_offset = 0
-            var oldest = (buf_ptr - buf_size + CAP) % CAP
-            var start = (oldest + rand_offset) % CAP
 
-            var valid = True
-            for k in range(K):
-                var idx = (start + k) % CAP
-                if Float64(self.state.buffer.dones[idx]) > 0.5:
-                    valid = False
+        # Sample BATCH window starts proportional to priority.
+        for sampled in range(BATCH):
+            var u = random_float64() * total_prio
+            var picked = 0
+            for i in range(n_valid):
+                if cum_prio[i] >= u:
+                    picked = i
                     break
-            if not valid:
-                continue
+            var start = cand_starts[picked]
+            batch_start_idx[sampled] = start
 
             for k in range(K + 1):
                 var idx = (start + k) % CAP
@@ -439,6 +501,12 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 batch_mcts_val[
                     sampled * (K + 1) + k
                 ] = self.state.mcts_values[idx]
+                var age = current_train_step - Int(
+                    self.state.step_at_write[idx]
+                )
+                if age < 0:
+                    age = 0
+                batch_age[sampled * (K + 1) + k] = Scalar[DType.int32](age)
             for k in range(K):
                 var idx = (start + k) % CAP
                 for a in range(ACT):
@@ -449,21 +517,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     sampled * K + k
                 ] = self.state.buffer.rewards[(start + k) % CAP]
 
-            sampled += 1
-
-        if sampled < BATCH:
-            batch_obs.free()
-            batch_actions.free()
-            batch_rewards.free()
-            batch_mcts_pol.free()
-            batch_mcts_val.free()
-            return (
-                Float64(0.0),
-                Float64(0.0),
-                Float64(0.0),
-                Float64(0.0),
-                Float64(0.0),
-            )
+        cum_prio.free()
+        cand_starts.free()
 
         # ── Param/state LayoutTensor views (bypass `.params_view()`) ────
         var rep_params = LayoutTensor[
@@ -908,12 +963,30 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                         lp_scale * (probs[i] - pol_target_dbl[i])
                     )
 
-        # ── L_V + grad: value CE at each k=0..K ──────────────────────────
+        # ── L_V + grad: value CE with mixed value target (paper Eq. 16) ─
+        # blend SVE (= stored MCTS root value) and the n-step TD return
+        # computed from the K-window rewards + bootstrap from the stored
+        # MCTS value at position min(N_TD, K-k) ahead.
         var n_V = Float64(BATCH * (K + 1))
         var lv_scale = self.Config.lambda_value / n_V
         for k in range(K + 1):
+            var n_eff = N_TD if N_TD < K - k else K - k
             for b in range(BATCH):
-                var v_target = Float64(batch_mcts_val[b * (K + 1) + k])
+                var sve = Float64(batch_mcts_val[b * (K + 1) + k])
+                var td = Float64(0.0)
+                var disc = Float64(1.0)
+                for j in range(n_eff):
+                    td += disc * Float64(
+                        batch_rewards[b * K + k + j]
+                    )
+                    disc *= self.gamma
+                td += disc * Float64(
+                    batch_mcts_val[b * (K + 1) + k + n_eff]
+                )
+                var age = Int(batch_age[b * (K + 1) + k])
+                var v_target = MixedValueTarget[
+                    Self.Config.t_fresh, Self.Config.t_stale
+                ].compute(sve, td, age)
                 encode_categorical[BINS](
                     scalar_transform(v_target),
                     self.v_min,
@@ -923,9 +996,22 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 var off = k * BATCH * PRED_OUT + b * PRED_OUT + ACT
                 for i in range(BINS):
                     logits_dbl[i] = Float64(pred_out[off + i])
-                L_V += cross_entropy_with_softmax[BINS](
+                var per_sample_v_loss = cross_entropy_with_softmax[BINS](
                     logits_dbl, two_hot_target
                 )
+                L_V += per_sample_v_loss
+                # Update per-transition priority at unroll position k=0
+                # (the window's root). |TD error| is approximated by the
+                # cross-entropy loss in scalar-transformed log-bin space —
+                # it dominates the absolute error and avoids re-decoding
+                # the value here.
+                if k == 0:
+                    var new_p = per_sample_v_loss + 1e-3
+                    self.state.priorities[
+                        batch_start_idx[b]
+                    ] = Scalar[dtype](new_p)
+                    if new_p > self.max_priority:
+                        self.max_priority = new_p
                 # softmax + grad
                 var max_l = logits_dbl[0]
                 for i in range(1, BINS):
@@ -1295,6 +1381,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         batch_rewards.free()
         batch_mcts_pol.free()
         batch_mcts_val.free()
+        batch_age.free()
+        batch_start_idx.free()
         dyn_out_buf.free()
         rep_input.free()
         proj_dyn_buf.free()
@@ -1339,6 +1427,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         """
         comptime BATCH = Self.Config.batch_size
         comptime K = Self.Config.unroll_steps
+        comptime N_TD = Self.Config.td_steps
         comptime OBS = Self.Config.obs_dim
         comptime ACT = Self.Config.action_dim
         comptime LATENT = Self.Config.latent_dim
@@ -1352,53 +1441,77 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         if not self.state.is_ready():
             return (Float64(0.0), Float64(0.0), Float64(0.0), Float64(0.0))
 
-        # ── 1. Inline batch sampling ─────────────────────────────────────
+        # ── 1. Inline priority-weighted batch sampling ───────────────────
         # We can't use buffer.sample_sequences directly — it doesn't return
         # the buffer indices, but we need them to look up MCTS targets in
-        # `self.state.mcts_policies` / `mcts_values`. Re-implement sampling
-        # inline; both buffer and target arrays use the same indexing.
+        # `self.state.mcts_policies` / `mcts_values`. Re-implement
+        # sampling inline; both buffer and target arrays use the same
+        # indexing. Sampling is proportional to per-transition priority
+        # (paper App. A "Priority Precalculation").
         var batch_obs = alloc[Scalar[dtype]](BATCH * (K + 1) * OBS)
         var batch_actions = alloc[Scalar[dtype]](BATCH * K * ACT)
         var batch_rewards = alloc[Scalar[dtype]](BATCH * K)
         var batch_mcts_pol = alloc[Scalar[dtype]](BATCH * (K + 1) * ACT)
         var batch_mcts_val = alloc[Scalar[dtype]](BATCH * (K + 1))
+        # Per-sample data age (in train-steps) used for the mixed value
+        # target's SVE→TD blend.
+        var batch_age = alloc[Scalar[DType.int32]](BATCH * (K + 1))
         memset(batch_obs, 0, BATCH * (K + 1) * OBS)
         memset(batch_actions, 0, BATCH * K * ACT)
         memset(batch_rewards, 0, BATCH * K)
         memset(batch_mcts_pol, 0, BATCH * (K + 1) * ACT)
         memset(batch_mcts_val, 0, BATCH * (K + 1))
+        memset(batch_age, 0, BATCH * (K + 1))
 
-        var sampled = 0
-        var max_attempts = BATCH * 100
-        var attempts = 0
         var buf_size = self.state.buffer.size
         var buf_ptr = self.state.buffer.ptr
+        var current_train_step = self.train_step_count
+        var oldest = (buf_ptr - buf_size + CAP) % CAP
 
-        while sampled < BATCH and attempts < max_attempts:
-            attempts += 1
-            if buf_size < K + 1:
-                break
-            var rand_offset = Int(
-                random_float64() * Float64(buf_size - K)
-            )
-            if rand_offset >= buf_size - K:
-                rand_offset = buf_size - K - 1
-            if rand_offset < 0:
-                rand_offset = 0
-            # Map random offset within the valid window of the circular
-            # buffer to an absolute index.
-            var oldest = (buf_ptr - buf_size + CAP) % CAP
-            var start = (oldest + rand_offset) % CAP
+        # Build cumulative-priority array over valid window starts.
+        var n_cands_alloc = buf_size - K if buf_size > K else 1
+        var cum_prio = alloc[Float64](n_cands_alloc)
+        var cand_starts = alloc[Int](n_cands_alloc)
+        var n_valid = 0
+        var total_prio = Float64(0.0)
+        if buf_size > K:
+            for offset in range(buf_size - K):
+                var idx = (oldest + offset) % CAP
+                var valid = True
+                for k in range(K):
+                    var iidx = (idx + k) % CAP
+                    if Float64(self.state.buffer.dones[iidx]) > 0.5:
+                        valid = False
+                        break
+                if not valid:
+                    continue
+                var p = Float64(self.state.priorities[idx])
+                if p < 1e-8:
+                    p = 1e-8
+                total_prio += p
+                cum_prio[n_valid] = total_prio
+                cand_starts[n_valid] = idx
+                n_valid += 1
 
-            # Reject windows that span an episode boundary.
-            var valid = True
-            for k in range(K):
-                var idx = (start + k) % CAP
-                if Float64(self.state.buffer.dones[idx]) > 0.5:
-                    valid = False
+        if n_valid < BATCH or total_prio < 1e-8:
+            batch_obs.free()
+            batch_actions.free()
+            batch_rewards.free()
+            batch_mcts_pol.free()
+            batch_mcts_val.free()
+            batch_age.free()
+            cum_prio.free()
+            cand_starts.free()
+            return (Float64(0.0), Float64(0.0), Float64(0.0), Float64(0.0))
+
+        for sampled in range(BATCH):
+            var u = random_float64() * total_prio
+            var picked = 0
+            for i in range(n_valid):
+                if cum_prio[i] >= u:
+                    picked = i
                     break
-            if not valid:
-                continue
+            var start = cand_starts[picked]
 
             for k in range(K + 1):
                 var idx = (start + k) % CAP
@@ -1413,6 +1526,12 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 batch_mcts_val[
                     sampled * (K + 1) + k
                 ] = self.state.mcts_values[idx]
+                var age = current_train_step - Int(
+                    self.state.step_at_write[idx]
+                )
+                if age < 0:
+                    age = 0
+                batch_age[sampled * (K + 1) + k] = Scalar[DType.int32](age)
             for k in range(K):
                 var idx = (start + k) % CAP
                 for a in range(ACT):
@@ -1423,15 +1542,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     sampled * K + k
                 ] = self.state.buffer.rewards[(start + k) % CAP]
 
-            sampled += 1
-
-        if sampled < BATCH:
-            batch_obs.free()
-            batch_actions.free()
-            batch_rewards.free()
-            batch_mcts_pol.free()
-            batch_mcts_val.free()
-            return (Float64(0.0), Float64(0.0), Float64(0.0), Float64(0.0))
+        cum_prio.free()
+        cand_starts.free()
 
         # ── 2. K-step forward through rep + dyn + pred ───────────────────
         # Time-major scratch [(K+1) * BATCH * LATENT] / [(K+1) * BATCH * PRED_OUT]
@@ -1705,12 +1817,32 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         pol_logits_dbl.free()
         pol_target_dbl.free()
 
-        # L_V: value CE — targets are stored MCTS root values, scalar-transformed
-        #      and two-hot'd. (Mixed-value-target with n-step TD lands in step 5c.)
+        # L_V: value CE with the EZ-V2 mixed value target (paper Eq. 16) —
+        #      blend SVE (= stored MCTS root value at this position) with
+        #      n-step TD return computed from the K-window rewards +
+        #      bootstrap from the stored MCTS value at position
+        #      `min(N_TD, K-k)` ahead.
         var L_V = Float64(0.0)
         for k in range(K + 1):
+            var n_eff = N_TD if N_TD < K - k else K - k
             for b in range(BATCH):
-                var v_target = Float64(batch_mcts_val[b * (K + 1) + k])
+                var sve = Float64(batch_mcts_val[b * (K + 1) + k])
+                # n-step TD return from position k of this sample.
+                var td = Float64(0.0)
+                var disc = Float64(1.0)
+                for j in range(n_eff):
+                    td += disc * Float64(
+                        batch_rewards[b * K + k + j]
+                    )
+                    disc *= self.gamma
+                td += disc * Float64(
+                    batch_mcts_val[b * (K + 1) + k + n_eff]
+                )
+                # Blend by data age (paper Eq. 16).
+                var age = Int(batch_age[b * (K + 1) + k])
+                var v_target = MixedValueTarget[
+                    Self.Config.t_fresh, Self.Config.t_stale
+                ].compute(sve, td, age)
                 encode_categorical[BINS](
                     scalar_transform(v_target),
                     self.v_min,
@@ -1761,6 +1893,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         batch_rewards.free()
         batch_mcts_pol.free()
         batch_mcts_val.free()
+        batch_age.free()
         hidden.free()
         pred_out.free()
         dyn_out.free()

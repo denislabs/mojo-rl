@@ -101,6 +101,22 @@ struct EZV2DiscreteCPUState[
         Scalar[DType.uint8], MutAnyOrigin
     ]  # [_CAP]
 
+    # `train_step_count` at the time each transition was written. Used by
+    # the mixed-value-target blend (paper Eq. 16) to compute per-sample
+    # data age in train-steps. uint32 wraps at ~4·10⁹ which is well past
+    # any practical training run.
+    var step_at_write: UnsafePointer[
+        Scalar[DType.uint32], MutAnyOrigin
+    ]  # [_CAP]
+
+    # Per-transition priority (paper App. A "Priority Precalculation").
+    # New transitions are stamped with `max_priority` so they're sampled
+    # at least once; thereafter `train_step` overwrites the entry with
+    # |TD error| (= the per-sample value-CE loss at unroll position k=0)
+    # so future samples bias toward the windows where the current model
+    # is most uncertain.
+    var priorities: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [_CAP]
+
     # ── K-step unroll scratch (dynamics branch) ──────────────────────────
     var _hidden_states: UnsafePointer[
         Scalar[dtype], MutAnyOrigin
@@ -204,6 +220,12 @@ struct EZV2DiscreteCPUState[
         self.mcts_to_play = alloc[Scalar[DType.uint8]](Self._CAP)
         memset(self.mcts_to_play, 0, Self._CAP)
 
+        self.step_at_write = alloc[Scalar[DType.uint32]](Self._CAP)
+        memset(self.step_at_write, 0, Self._CAP)
+
+        self.priorities = alloc[Scalar[dtype]](Self._CAP)
+        memset(self.priorities, 0, Self._CAP)
+
         # ── K-step unroll scratch (dynamics branch) ──────────────────────
         comptime HIDDEN_SIZE = (Self.K + 1) * Self.BATCH * Self.LATENT
         self._hidden_states = alloc[Scalar[dtype]](HIDDEN_SIZE)
@@ -293,6 +315,8 @@ struct EZV2DiscreteCPUState[
         self.mcts_policies = take.mcts_policies
         self.mcts_values = take.mcts_values
         self.mcts_to_play = take.mcts_to_play
+        self.step_at_write = take.step_at_write
+        self.priorities = take.priorities
         self._hidden_states = take._hidden_states
         self._pred_outputs = take._pred_outputs
         self._dyn_reward_logits = take._dyn_reward_logits
@@ -317,6 +341,8 @@ struct EZV2DiscreteCPUState[
         self.mcts_policies.free()
         self.mcts_values.free()
         self.mcts_to_play.free()
+        self.step_at_write.free()
+        self.priorities.free()
         self._hidden_states.free()
         self._pred_outputs.free()
         self._dyn_reward_logits.free()
