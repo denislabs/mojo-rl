@@ -149,7 +149,7 @@ def main() raises:
             episode_length=HalfCheetahConfig.MAX_STEPS,  # dynamic gamma: 0.995
             rho=0.5,
             tau=0.01,
-            consistency_coef=5.0,
+            consistency_coef=20.0,
             reward_coef=0.1,  # Reference default
             value_coef=0.1,
             terminal_coef=1.0,
@@ -198,7 +198,7 @@ def main() raises:
         print("  - gamma: 0.995 (dynamic, from episode_length=1000)")
         print("  - rho: 0.5 (temporal weight decay per horizon step)")
         print("  - tau: 0.01 (target Q soft update)")
-        print("  - consistency_coef: 5.0 (latent consistency loss weight)")
+        print("  - consistency_coef: 20.0 (latent consistency loss weight)")
         print("  - reward_coef: 0.1 (distributional reward loss weight)")
         print("  - value_coef: 0.1 (distributional Q loss weight)")
         print("  - entropy_coef: 1e-4 (policy entropy regularization)")
