@@ -224,7 +224,16 @@ struct MuZeroMLPConfig[
     comptime Search = LearnedDynamics
     comptime Encoding = CategoricalEncoding
     comptime Scaling = MinMaxScale
-    comptime Noise = DirichletNoise[0.25, 0.25]
+    # Dirichlet fraction bumped 0.25 → 0.5 (2026-05-05) to escape the
+    # state-blind attractor on CartPole. With fraction=0.25 + Kaiming-init
+    # pred (96/4 logits bias) the MCTS root visits collapsed to identical
+    # counts across all obs from step 1, and even after re-enabling the
+    # pred-head zero-init the symmetric fixed point still pulls hard on a
+    # state-blind 4D obs. fraction=0.5 forces 50% of root prior weight onto
+    # uniform-ish noise, breaking the symmetry early enough that rep can
+    # discover state-dependent features. Alpha=0.25 unchanged (small-game
+    # default, sharp-but-not-degenerate Dirichlet samples).
+    comptime Noise = DirichletNoise[0.5, 0.25]
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
     comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer

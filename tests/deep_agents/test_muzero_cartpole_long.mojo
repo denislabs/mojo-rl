@@ -46,15 +46,20 @@ def main() raises:
         CAP=50000,
     ]
 
-    # Pred head zero-init removed (was a tentative fix for "MCTS amplifies
-    # untrained pred bias into deterministic action" — see Phase G, Bug A/B).
-    # With MinMaxNorm in the autograd graph + Adam-with-L2-WD + Dirichlet
-    # exploration noise, the original failure mode shouldn't fire anymore,
-    # and the zero-init starves pred heads of early gradient signal (matches
-    # muzero-general which uses PyTorch's default Kaiming-style init).
+    # Pred head zero-init RE-ENABLED (2026-05-05). The "removal" experiment
+    # showed Kaiming-init pred heads produce logits ~[+2.4, -0.9] (softmax
+    # 96/4) and value ~-440 at init; MCTS visits become identical [32,16]
+    # across all obs from step 1, locking the network into a state-blind
+    # attractor that survives even with all reference hyperparams matched
+    # (LR=0.02, K=5, BS=64, MinMaxNorm-in-autograd, Adam-L2-WD=1e-4) — final
+    # state had bit-identical hidden/policy/value across LEFT/CENTER/RIGHT.
+    # Zero-init breaks the early-bias attractor; combined with Dirichlet
+    # fraction=0.5 (bumped from 0.25 in the MLP config) for stronger root
+    # exploration to escape the symmetric fixed point.
     var agent = GenericMuZeroAgent[Config, 32](
         gamma=0.99,
         temperature_decay_steps=50000,
+        pred_head_input_dim=64,
     )
 
     # Canonical CartPole obs covering tilt directions:
