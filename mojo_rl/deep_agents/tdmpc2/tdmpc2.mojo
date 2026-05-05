@@ -3718,6 +3718,49 @@ struct TDMPC2Agent[
                             gs.rew_batch_ws_buf,
                         )
                         ctx.enqueue_copy(gs.diag_rew_logits_host, gs.logits_buf)
+                        # ── Consistency-loss diagnostic ──
+                        # Roll dynamics one step from (z_0, a_buffer_0) and
+                        # encode obs_1; their MSE is the consistency component
+                        # of the WM loss (multiplied by consistency_coef=20 in
+                        # the combined "World Model Losses" chart).
+                        Self.WM.DynamicsNet.MODEL.forward_gpu_no_cache[
+                            Self.BATCH
+                        ](
+                            ctx,
+                            z_pred_tensor,
+                            za_tensor,
+                            dyn_params_tensor,
+                            dyn_model_state_tensor,
+                            gs.dyn_batch_ws_buf,
+                        )
+                        ctx.enqueue_function[
+                            tdmpc2_extract_obs_step_kernel[
+                                dtype, Self.BATCH, Self.OBS, Self.H
+                            ],
+                            tdmpc2_extract_obs_step_kernel[
+                                dtype, Self.BATCH, Self.OBS, Self.H
+                            ],
+                        ](
+                            batch_obs_flat_tensor,
+                            1,
+                            obs_next_step_tensor,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[
+                            Self.BATCH
+                        ](
+                            ctx,
+                            z_next_tensor,
+                            obs_next_step_tensor,
+                            enc_params_tensor,
+                            enc_model_state_tensor,
+                            gs.enc_batch_ws_buf,
+                        )
+                        ctx.enqueue_copy(gs.diag_z_pred_host, gs.z_pred_buf)
+                        ctx.enqueue_copy(
+                            gs.diag_z_enc_next_host, gs.z_next_buf
+                        )
                         # Download targets + raw signals + policy out
                         ctx.enqueue_copy(gs.diag_rew_host, gs.batch_rew_buf)
                         ctx.enqueue_copy(gs.diag_done_host, gs.batch_done_buf)
@@ -3750,6 +3793,27 @@ struct TDMPC2Agent[
                         if var_reward < 0.0:
                             var_reward = 0.0
                         var std_reward = sqrt(var_reward)
+
+                        # consistency_loss = mean((z_pred - z_enc_next)^2),
+                        # i.e. the raw MSE between rolled and encoded next
+                        # latent at horizon step 0. This is the same form as
+                        # the consistency_loss term in the WM total loss
+                        # (the dashboard "World Model Losses" multiplies it
+                        # by consistency_coef = 20).
+                        var consistency_loss: Float64 = 0.0
+                        for b in range(Self.BATCH):
+                            for k in range(Self.LATENT):
+                                var diff = Float64(
+                                    gs.diag_z_pred_host[b * Self.LATENT + k]
+                                ) - Float64(
+                                    gs.diag_z_enc_next_host[
+                                        b * Self.LATENT + k
+                                    ]
+                                )
+                                consistency_loss += diff * diff
+                        consistency_loss /= Float64(
+                            Self.BATCH * Self.LATENT
+                        )
 
                         # mean_abs_action computed on tanh(mean) (deterministic
                         # action) and mean_log_std after the smooth tanh-based
@@ -3947,6 +4011,9 @@ struct TDMPC2Agent[
                         )
                         self.logger[].log_scalar(
                             "std_reward", std_reward, step
+                        )
+                        self.logger[].log_scalar(
+                            "consistency_loss", consistency_loss, step
                         )
                     except:
                         pass

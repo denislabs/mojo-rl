@@ -673,6 +673,12 @@ struct TDMPC2GPUState[
     var diag_rew_targets_host: HostBuffer[
         dtype
     ]  # [H * BATCH * BINS] reward targets (only first BATCH*BINS chunk read)
+    var diag_z_pred_host: HostBuffer[
+        dtype
+    ]  # [BATCH * LATENT] dynamics(z_0, a_buffer_0) for consistency-loss diag
+    var diag_z_enc_next_host: HostBuffer[
+        dtype
+    ]  # [BATCH * LATENT] encoder(obs_1) (stop-grad target) for consistency-loss diag
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU and host buffers."""
@@ -894,6 +900,12 @@ struct TDMPC2GPUState[
         )
         self.diag_rew_targets_host = ctx.enqueue_create_host_buffer[dtype](
             Self.BATCH_TGTS_FLAT
+        )
+        self.diag_z_pred_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_LATENT
+        )
+        self.diag_z_enc_next_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.B_LATENT
         )
 
 

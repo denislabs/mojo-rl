@@ -99,7 +99,34 @@ struct NormedLinear[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        INIT.init[Self.PARAM_SIZE, Self.IN_DIM, Self.OUT_DIM](params)
+        """Initialize W via INIT, b=0, gamma=1, beta=0.
+
+        Layout is [W | b | gamma | beta]. Previously called INIT on the
+        whole buffer, which gave gamma random near-zero values (with sign
+        flips) instead of the identity 1.0 — the internal LayerNorm
+        `y = γ·x̂ + β` was dampened and randomly sign-flipped per feature
+        at init, slowing convergence. Standalone `LayerNorm` already had
+        the correct fix; this ports the same pattern here.
+        """
+        # W slice [0 : in_dim * out_dim] — apply chosen initializer
+        var W_view = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim * Self.out_dim), MutAnyOrigin
+        ](params.ptr)
+        INIT.init[Self.in_dim * Self.out_dim, Self.IN_DIM, Self.OUT_DIM](
+            W_view
+        )
+
+        # b = 0 (standard linear-layer bias init)
+        for i in range(Self.out_dim):
+            params.ptr[Self._B_OFFSET + i] = Scalar[dtype](0.0)
+
+        # gamma = 1 (LayerNorm identity scale)
+        for i in range(Self.out_dim):
+            params.ptr[Self._GAMMA_OFFSET + i] = Scalar[dtype](1.0)
+
+        # beta = 0 (LayerNorm identity shift)
+        for i in range(Self.out_dim):
+            params.ptr[Self._BETA_OFFSET + i] = Scalar[dtype](0.0)
 
     # =========================================================================
     # CPU Forward
