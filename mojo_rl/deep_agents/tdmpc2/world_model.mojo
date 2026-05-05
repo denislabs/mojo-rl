@@ -34,7 +34,7 @@ from mojo_rl.nn.model import (
     LayerNorm,
 )
 from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.initializer import Kaiming, Normal
 from mojo_rl.nn.training import Network, NetworkState
 from mojo_rl.nn.loss.two_hot import (
     compute_bins,
@@ -196,30 +196,30 @@ struct WorldModel[
     ):
         """Initialize WorldModel with all sub-networks."""
         self.encoder = NetworkState[Self.EncModel, Adam[LR=Self.ENC_LR]]()
-        self.encoder.initialize[Kaiming[]]()
+        self.encoder.initialize[Normal[0.0, 0.02]]()
 
         self.dynamics = NetworkState[Self.DynModel, Adam[LR=Self.WM_LR]]()
-        self.dynamics.initialize[Kaiming[]]()
+        self.dynamics.initialize[Normal[0.0, 0.02]]()
 
         self.reward_head = NetworkState[Self.RewModel, Adam[LR=Self.WM_LR]]()
-        self.reward_head.initialize[Kaiming[]]()
+        self.reward_head.initialize[Normal[0.0, 0.02]]()
 
         self.termination = NetworkState[Self.TermModel, Adam[LR=Self.WM_LR]]()
-        self.termination.initialize[Kaiming[]]()
+        self.termination.initialize[Normal[0.0, 0.02]]()
 
         self.policy = NetworkState[Self.PolModel, Adam[LR=Self.PI_LR]]()
-        self.policy.initialize[Kaiming[]]()
+        self.policy.initialize[Normal[0.0, 0.02]]()
 
         self.q1 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q1.initialize[Kaiming[]]()
+        self.q1.initialize[Normal[0.0, 0.02]]()
         self.q2 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q2.initialize[Kaiming[]]()
+        self.q2.initialize[Normal[0.0, 0.02]]()
         self.q3 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q3.initialize[Kaiming[]]()
+        self.q3.initialize[Normal[0.0, 0.02]]()
         self.q4 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q4.initialize[Kaiming[]]()
+        self.q4.initialize[Normal[0.0, 0.02]]()
         self.q5 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q5.initialize[Kaiming[]]()
+        self.q5.initialize[Normal[0.0, 0.02]]()
 
         # Initialize target Q networks with same weights as live Q networks
         self.q1_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
