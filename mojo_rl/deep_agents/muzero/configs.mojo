@@ -235,7 +235,21 @@ struct MuZeroMLPConfig[
     # default, sharp-but-not-degenerate Dirichlet samples).
     comptime Noise = DirichletNoise[0.5, 0.25]
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
-    comptime Backup = NStepBootstrap
+    # Backup: MonteCarloReturn (2026-05-05). Switched from NStepBootstrap
+    # following AlphaZero's CartPole adaptation. With N-step bootstrap, the
+    # target = Σ γⁱ rᵢ + γⁿ V(s_{t+n}) injects the value head's prediction
+    # into every target — and our value head was learning ~10 (the
+    # unconditional mean episode length) regardless of state, so targets
+    # were state-blind by construction (self-fulfilling). MC removes the
+    # bootstrap entirely; for transitions that terminate inside the N=10
+    # window, target = exact discounted episode return — a precise,
+    # state-conditioned signal independent of the (broken) value head.
+    # AZ's CartPole config uses MonteCarloReturn for the same reason.
+    # Caveat: with N=10, sample positions that don't terminate within 10
+    # steps get target = Σ_10 γⁱ ≈ 9.56 regardless of state — only an
+    # incomplete fix. If MC alone doesn't break the plateau, raising N is
+    # the next lever (board games have N ≥ ep length so this is moot there).
+    comptime Backup = MonteCarloReturn
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = False

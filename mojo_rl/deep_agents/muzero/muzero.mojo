@@ -3246,7 +3246,18 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         )
 
         # ── Create GPU state with correct Self.n_envs ─────────────────────
-        comptime LocalGPUState = MuZeroGPUState[Self.Config, Self.n_envs]
+        # PER_ENV_CAP derived from Config.buffer_capacity (Bug G, 2026-05-05):
+        # MuZeroGPUState's PER_ENV_CAP defaulted to 1000, so with n_envs=32
+        # the actual buffer capped at 32k transitions regardless of
+        # Config.buffer_capacity. For CAP=50000 + 32 envs, ~18k env steps
+        # never made it into the training distribution. Now ceil-divides so
+        # n_envs × PER_ENV_CAP ≥ buffer_capacity.
+        comptime _PER_ENV_CAP = (
+            Self.Config.buffer_capacity + Self.n_envs - 1
+        ) // Self.n_envs
+        comptime LocalGPUState = MuZeroGPUState[
+            Self.Config, Self.n_envs, _PER_ENV_CAP
+        ]
         var gpu = LocalGPUState(ctx)
         gpu.upload_from(self.state, ctx)
 
