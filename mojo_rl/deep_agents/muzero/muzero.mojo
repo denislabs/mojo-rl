@@ -4113,6 +4113,26 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 action_hist_buf.enqueue_fill(Scalar[dtype](0.0))
                 switch_count_buf.enqueue_fill(Scalar[dtype](0.0))
 
+                # MCTS-discrimination tick (Phase H8a probe, 2026-05-05): run
+                # MCTS on a fixed canonical obs (pole tilting +0.05) using the
+                # CURRENT online weights. If visits drift toward state-discriminating
+                # over training, full reanalyze (refreshing stored MCTS policy
+                # targets) is the right next move. If visits stay [N0, N1] for
+                # any value-head magnitude, MCTS itself is the bottleneck and
+                # full reanalyze won't help. The download_to is needed because
+                # diagnose_init_state allocates its own GPU state from
+                # self.state (CPU mirror), which would otherwise be stale
+                # since training started.
+                gpu.download_to(self.state, ctx)
+                var canonical_obs = List[Float64]()
+                canonical_obs.append(0.0)
+                canonical_obs.append(0.0)
+                canonical_obs.append(0.05)
+                canonical_obs.append(0.0)
+                self.diagnose_init_state(
+                    ctx, canonical_obs, String("tick @") + String(total_steps)
+                )
+
                 # Log to metrics
                 if total_eps > 0:
                     metrics.log_episode[dtype](
