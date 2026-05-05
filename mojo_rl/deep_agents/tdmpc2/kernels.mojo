@@ -35,7 +35,7 @@ Kernels provided:
 from layout import LayoutTensor, Layout
 from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.memory import AddressSpace
-from std.math import exp, log, sqrt, cos, tanh
+from std.math import exp, log, sqrt, cos, tanh, isnan, isinf
 from std.random.philox import Random as PhiloxRandom
 from std.math import abs as math_abs
 
@@ -73,6 +73,33 @@ def _symexp[
         return exp(x) - Scalar[dtype](1.0)
     else:
         return -(exp(-x) - Scalar[dtype](1.0))
+
+
+# =============================================================================
+# Diagnostic Kernels
+# =============================================================================
+
+
+@always_inline
+def tdmpc2_has_nan_kernel[
+    dtype: DType,
+    SIZE: Int,
+](
+    buf: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin],
+    flag: LayoutTensor[DType.uint32, Layout.row_major(1), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Set flag[0] to 1 if any element of `buf` is NaN or Inf.
+
+    Race-tolerant: any thread that finds a bad value writes 1; all writes
+    have the same value, so no atomics or barriers needed. Caller must
+    pre-zero `flag` before launch (this kernel never writes 0).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= SIZE:
+        return
+    var v = Scalar[dtype](buf[i][0])
+    if isnan(v) or isinf(v):
+        flag[0] = UInt32(1)
 
 
 # =============================================================================

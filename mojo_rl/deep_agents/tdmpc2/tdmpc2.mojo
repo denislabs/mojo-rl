@@ -102,6 +102,7 @@ from .kernels import (
     tdmpc2_gradient_norm_5q_kernel,
     tdmpc2_gradient_reduce_apply_5q_kernel,
     tdmpc2_adam_step_5q_kernel,
+    tdmpc2_has_nan_kernel,
 )
 
 
@@ -2345,6 +2346,13 @@ struct TDMPC2Agent[
         comptime WS_ALLOC = TOTAL_WS if TOTAL_WS > 0 else 1
         var step_ws_buf = ctx.enqueue_create_buffer[dtype](WS_ALLOC)
         var terminated_buf = ctx.enqueue_create_buffer[dtype](n_envs)
+
+        # Diagnostic: 1-element flag for per-network NaN/Inf scan. Set to
+        # 1 by `tdmpc2_has_nan_kernel` if any param goes bad. Reset to 0
+        # before each scan via enqueue_memset.
+        var nan_flag_buf = ctx.enqueue_create_buffer[DType.uint32](1)
+        var nan_flag_host = ctx.enqueue_create_host_buffer[DType.uint32](1)
+        var first_nan_step: Int = -1  # tracks earliest step any net hit NaN
         ENV.init_step_workspace_gpu[n_envs](ctx, step_ws_buf)
         ctx.synchronize()
 
@@ -2360,10 +2368,11 @@ struct TDMPC2Agent[
         # =================================================================
         var completed_episodes = 0
         var total_steps = 0
-        # Seed-step pretraining burst is currently disabled (see comment
-        # at the burst site below). Flag retained as a stub in case we
-        # re-enable selectively.
-        var did_seed_pretraining = True
+        # Seed-step pretraining burst: on the first training iteration after
+        # warmup, do `warmup_steps` updates in a row on the random-policy
+        # seed data — matches reference TD-MPC2 (online_trainer.py:117).
+        # Bootstraps the world model before the policy starts moving.
+        var did_seed_pretraining = False
         var last_avg_reward: Float64 = 0.0
         var recent_reward_sum: Float64 = 0.0
         var recent_episode_count: Int = 0
@@ -2701,12 +2710,20 @@ struct TDMPC2Agent[
                 continue
 
             # Seed-step pretraining burst (matches reference TD-MPC2
-            # online_trainer.py:115-122) is DISABLED for now — the burst
-            # over-trains on the small ~5000-transition random-action seed
-            # set and drives WM weights to NaN with healthy init (post
-            # NormedLinear gamma=1 fix). Re-enable cautiously once the
-            # gradient pipeline is verified stable.
+            # online_trainer.py:115-122). On the first training iteration after
+            # warmup, do `warmup_steps` updates in a row to bootstrap the world
+            # model on the random-policy seed data before regular UTD=1 begins.
             var num_updates = updates_per_step
+            if not did_seed_pretraining:
+                num_updates = self.warmup_steps
+                did_seed_pretraining = True
+                if verbose:
+                    clear_progress_bar()
+                    print(
+                        "TD-MPC2 (GPU) | Pretraining agent on seed data ("
+                        + String(num_updates)
+                        + " updates)..."
+                    )
 
             for _upd in range(num_updates):
                 # Sample BATCH sequences directly on GPU (no CPU round-trip)
@@ -4008,6 +4025,81 @@ struct TDMPC2Agent[
                         )
                     except:
                         pass
+
+                # ──────────────────────────────────────────────────────
+                # NaN/Inf scan on each network's params (every diag step).
+                # Prints the first time any network goes bad, with which
+                # network, so we can localize where the divergence starts.
+                # ──────────────────────────────────────────────────────
+                if (
+                    self.diag_every > 0
+                    and self.train_step_count % self.diag_every == 0
+                ):
+                    var nan_names = List[String]()
+
+                    @parameter
+                    @always_inline
+                    def _scan_nan[
+                        SIZE: Int
+                    ](
+                        net_name: String,
+                        params_buf: DeviceBuffer[dtype],
+                    ) raises:
+                        ctx.enqueue_memset(nan_flag_buf, 0)
+                        var params_t = LayoutTensor[
+                            dtype, Layout.row_major(SIZE), MutAnyOrigin
+                        ](params_buf.unsafe_ptr())
+                        var flag_t = LayoutTensor[
+                            DType.uint32,
+                            Layout.row_major(1),
+                            MutAnyOrigin,
+                        ](nan_flag_buf.unsafe_ptr())
+                        comptime SCAN_BLOCKS = (SIZE + TPB - 1) // TPB
+                        ctx.enqueue_function[
+                            tdmpc2_has_nan_kernel[dtype, SIZE],
+                            tdmpc2_has_nan_kernel[dtype, SIZE],
+                        ](
+                            params_t,
+                            flag_t,
+                            grid_dim=(SCAN_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        ctx.enqueue_copy(nan_flag_host, nan_flag_buf)
+                        ctx.synchronize()
+                        if nan_flag_host[0] != UInt32(0):
+                            nan_names.append(net_name)
+
+                    _scan_nan[Self.ENC_P]("encoder", gs.enc.params_buf)
+                    _scan_nan[Self.DYN_P]("dynamics", gs.dyn.params_buf)
+                    _scan_nan[Self.REW_P]("reward", gs.rew.params_buf)
+                    _scan_nan[Self.TERM_P]("term", gs.term.params_buf)
+                    _scan_nan[Self.POL_P]("policy", gs.pol.params_buf)
+                    _scan_nan[Self.Q_P]("q1", gs.q1.params_buf)
+                    _scan_nan[Self.Q_P]("q2", gs.q2.params_buf)
+                    _scan_nan[Self.Q_P]("q3", gs.q3.params_buf)
+                    _scan_nan[Self.Q_P]("q4", gs.q4.params_buf)
+                    _scan_nan[Self.Q_P]("q5", gs.q5.params_buf)
+
+                    if len(nan_names) > 0:
+                        clear_progress_bar()
+                        var step = self.train_step_count
+                        if first_nan_step < 0:
+                            first_nan_step = step
+                            print(
+                                "*** FIRST NaN at train_step",
+                                step,
+                                ":",
+                                String(", ").join(nan_names),
+                            )
+                        else:
+                            print(
+                                "    NaN at train_step",
+                                step,
+                                "(first @",
+                                first_nan_step,
+                                "):",
+                                String(", ").join(nan_names),
+                            )
 
         # =================================================================
         # Print timing summary
