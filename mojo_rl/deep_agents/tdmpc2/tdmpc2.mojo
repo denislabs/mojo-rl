@@ -3808,19 +3808,57 @@ struct TDMPC2Agent[
                         # the consistency_loss term in the WM total loss
                         # (the dashboard "World Model Losses" multiplies it
                         # by consistency_coef = 20).
+                        # Trivial-collapse detector: per-feature batch std of
+                        # z_pred and z_enc_next, averaged across LATENT. If
+                        # either drops near zero while consistency_loss = 0,
+                        # the world model has settled at the constant-output
+                        # trivial minimum. A genuine consistency-loss=0 with
+                        # healthy representations keeps both ~0.05–0.2.
                         var consistency_loss: Float64 = 0.0
-                        for b in range(Self.BATCH):
-                            for k in range(Self.LATENT):
-                                var diff = Float64(
+                        var sum_std_z_pred: Float64 = 0.0
+                        var sum_std_z_enc: Float64 = 0.0
+                        for k in range(Self.LATENT):
+                            var mean_p: Float64 = 0.0
+                            var sumsq_p: Float64 = 0.0
+                            var mean_e: Float64 = 0.0
+                            var sumsq_e: Float64 = 0.0
+                            for b in range(Self.BATCH):
+                                var p = Float64(
                                     gs.diag_z_pred_host[b * Self.LATENT + k]
-                                ) - Float64(
+                                )
+                                var e = Float64(
                                     gs.diag_z_enc_next_host[
                                         b * Self.LATENT + k
                                     ]
                                 )
+                                var diff = p - e
                                 consistency_loss += diff * diff
+                                mean_p += p
+                                sumsq_p += p * p
+                                mean_e += e
+                                sumsq_e += e * e
+                            mean_p /= Float64(Self.BATCH)
+                            mean_e /= Float64(Self.BATCH)
+                            var var_p = (
+                                sumsq_p / Float64(Self.BATCH)
+                            ) - (mean_p * mean_p)
+                            var var_e = (
+                                sumsq_e / Float64(Self.BATCH)
+                            ) - (mean_e * mean_e)
+                            if var_p < 0.0:
+                                var_p = 0.0
+                            if var_e < 0.0:
+                                var_e = 0.0
+                            sum_std_z_pred += sqrt(var_p)
+                            sum_std_z_enc += sqrt(var_e)
                         consistency_loss /= Float64(
                             Self.BATCH * Self.LATENT
+                        )
+                        var std_z_pred = (
+                            sum_std_z_pred / Float64(Self.LATENT)
+                        )
+                        var std_z_enc_next = (
+                            sum_std_z_enc / Float64(Self.LATENT)
                         )
 
                         # mean_abs_action computed on tanh(mean) (deterministic
@@ -4022,6 +4060,12 @@ struct TDMPC2Agent[
                         )
                         self.logger[].log_scalar(
                             "consistency_loss", consistency_loss, step
+                        )
+                        self.logger[].log_scalar(
+                            "std_z_pred", std_z_pred, step
+                        )
+                        self.logger[].log_scalar(
+                            "std_z_enc_next", std_z_enc_next, step
                         )
                     except:
                         pass
