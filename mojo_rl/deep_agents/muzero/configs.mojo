@@ -23,6 +23,7 @@ from mojo_rl.nn.model import (
     LinearReLU,
     LinearMish,
     LayerNorm,
+    MinMaxNorm,
     Sequential,
     Parallel,
 )
@@ -146,24 +147,39 @@ struct MuZeroMLPConfig[
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
 
     # Networks
-    # LayerNorm at end of rep — Phase G post-mortem (2026-05-04) showed
-    # rep produced same-direction-different-magnitude outputs for LEFT
-    # vs RIGHT obs (theta=±0.1), so min-max scaling collapsed them to
-    # bit-identical hiddens (sign-symmetric representation collapse).
-    # LayerNorm normalizes per-sample to zero-mean/unit-var, preserving
-    # directional differences across obs. Aligns with `feedback_layernorm_in_rl`
-    # memory: mojo-rl deep nets in RL need LayerNorm where PyTorch doesn't.
+    # MinMaxNorm at end of rep — Phase G post-mortem 2026-05-05: muzero-general's
+    # `representation()` does min-max via PyTorch tensor ops (`.min`/`.max`/
+    # subtract/divide) which PyTorch tracks in autograd, so gradient flows
+    # through min-max during training. Our previous post-hoc
+    # `scale_hidden_kernel` was OUTSIDE the autodiff graph, leaving the rep
+    # network with no gradient signal about its raw output magnitudes →
+    # activations exploded to 10⁶ and direction collapsed (sign-symmetric).
+    # MinMaxNorm is a proper Model with forward + backward, so gradient now
+    # flows through it like in the reference. The post-hoc kernel call after
+    # rep_net forward is redundant on already-normalized output (idempotent
+    # on [0,1]).
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.LATENT],
-        LayerNorm[Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
+    # DynModel — split output into [hidden + reward_logits] via Parallel so
+    # MinMaxNorm only normalizes the hidden portion (BINS reward bins are
+    # categorical logits and should NOT be min-max-normalized). Matches
+    # muzero-general/models.py:147-170 where `next_encoded_state` is
+    # min-max'd via PyTorch tensor ops while `reward` is left unnormalized.
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
 
     comptime PredModel = Sequential[

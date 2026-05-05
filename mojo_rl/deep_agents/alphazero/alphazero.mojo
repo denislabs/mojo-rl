@@ -33,7 +33,6 @@ from mojo_rl.core import (
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
     GPUDiscreteEnv,
-    GPUDiscreteEnvWithExtractObs,
     Saveable,
 )
 from .strategies import BoardAugmenter
@@ -2190,7 +2189,7 @@ struct GenericAlphaZeroAgent[
     # ══════════════════════════════════════════════════════════════
 
     def _mcts_round_kernels_sp[
-        E: GPUDiscreteEnvWithExtractObs,
+        E: GPUDiscreteEnv,
     ](
         self,
         ctx: DeviceContext,
@@ -4698,7 +4697,7 @@ struct GenericAlphaZeroAgent[
     # ══════════════════════════════════════════════════════════════
 
     def train_gpu[
-        E: GPUDiscreteEnvWithExtractObs,
+        E: GPUDiscreteEnv,
     ](
         mut self,
         ctx: DeviceContext,

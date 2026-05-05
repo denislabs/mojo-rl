@@ -20,7 +20,6 @@ from .env_traits import (
     NoCurriculumScheduler,
     TwoPlayerDiscreteEnv,
     GPUTwoPlayerDiscreteEnv,
-    GPUDiscreteEnvWithExtractObs,
     Saveable,
 )
 from .space import Space, DiscreteSpace, BoxSpace
