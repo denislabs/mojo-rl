@@ -2360,11 +2360,10 @@ struct TDMPC2Agent[
         # =================================================================
         var completed_episodes = 0
         var total_steps = 0
-        # Seed-step pretraining burst: on the first training iteration after
-        # warmup, do `warmup_steps` updates in a row on the random-policy
-        # seed data — matches reference TD-MPC2 (online_trainer.py:117).
-        # Bootstraps the world model before the policy starts moving.
-        var did_seed_pretraining = False
+        # Seed-step pretraining burst is currently disabled (see comment
+        # at the burst site below). Flag retained as a stub in case we
+        # re-enable selectively.
+        var did_seed_pretraining = True
         var last_avg_reward: Float64 = 0.0
         var recent_reward_sum: Float64 = 0.0
         var recent_episode_count: Int = 0
@@ -2702,20 +2701,12 @@ struct TDMPC2Agent[
                 continue
 
             # Seed-step pretraining burst (matches reference TD-MPC2
-            # online_trainer.py:115-122). On the first training iteration after
-            # warmup, do `warmup_steps` updates in a row to bootstrap the world
-            # model on the random-policy seed data before regular UTD=1 begins.
+            # online_trainer.py:115-122) is DISABLED for now — the burst
+            # over-trains on the small ~5000-transition random-action seed
+            # set and drives WM weights to NaN with healthy init (post
+            # NormedLinear gamma=1 fix). Re-enable cautiously once the
+            # gradient pipeline is verified stable.
             var num_updates = updates_per_step
-            if not did_seed_pretraining:
-                num_updates = self.warmup_steps
-                did_seed_pretraining = True
-                if verbose:
-                    clear_progress_bar()
-                    print(
-                        "TD-MPC2 (GPU) | Pretraining agent on seed data ("
-                        + String(num_updates)
-                        + " updates)..."
-                    )
 
             for _upd in range(num_updates):
                 # Sample BATCH sequences directly on GPU (no CPU round-trip)
