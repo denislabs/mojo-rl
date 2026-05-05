@@ -210,18 +210,51 @@ struct WorldModel[
         self.policy = NetworkState[Self.PolModel, Adam[LR=Self.PI_LR]]()
         self.policy.initialize[Normal[0.0, 0.02]]()
 
+        # Per-Q SEED so the 5 Q networks don't get bitwise-identical
+        # parameters at init (PhiloxRandom seeded by Self.SEED depends only
+        # on architecture, not network instance — same SEED + same shape =
+        # same params). The "ensemble" needs diversity from step 0; without
+        # different seeds the random 2-of-5 target subsampling is the only
+        # source of divergence and it's slow.
         self.q1 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q1.initialize[Normal[0.0, 0.02]]()
+        self.q1.initialize[Normal[0.0, 0.02, SEED=101]]()
         self.q2 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q2.initialize[Normal[0.0, 0.02]]()
+        self.q2.initialize[Normal[0.0, 0.02, SEED=102]]()
         self.q3 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q3.initialize[Normal[0.0, 0.02]]()
+        self.q3.initialize[Normal[0.0, 0.02, SEED=103]]()
         self.q4 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q4.initialize[Normal[0.0, 0.02]]()
+        self.q4.initialize[Normal[0.0, 0.02, SEED=104]]()
         self.q5 = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
-        self.q5.initialize[Normal[0.0, 0.02]]()
+        self.q5.initialize[Normal[0.0, 0.02, SEED=105]]()
 
-        # Initialize target Q networks with same weights as live Q networks
+        # Zero-init the last Linear's W for reward and each Q net. Matches
+        # reference TD-MPC2's `init.zero_([self._reward[-1].weight,
+        # self._Qs.params["2", "weight"]])` (init.py:32 of common/world_model.py).
+        # With W=0 in the last layer, initial logits = bias only ≈ 0
+        # (Normal(0, 0.02)), so softmax is near-uniform and decoded Q ≈ 0.
+        # Stops the heads from giving early erratic predictions that pull
+        # the dynamics into a bad basin.
+        comptime LAST_W_SIZE = Self.MLP_DIM * Self.NUM_BINS
+        comptime REW_LAST_OFFSET = Self.RewModel._param_offset[2]()
+        comptime Q_LAST_OFFSET = Self.QModel._param_offset[2]()
+        var rew_p = self.reward_head.params_view()
+        for i in range(LAST_W_SIZE):
+            rew_p[REW_LAST_OFFSET + i] = 0
+        var q1_p = self.q1.params_view()
+        var q2_p = self.q2.params_view()
+        var q3_p = self.q3.params_view()
+        var q4_p = self.q4.params_view()
+        var q5_p = self.q5.params_view()
+        for i in range(LAST_W_SIZE):
+            q1_p[Q_LAST_OFFSET + i] = 0
+            q2_p[Q_LAST_OFFSET + i] = 0
+            q3_p[Q_LAST_OFFSET + i] = 0
+            q4_p[Q_LAST_OFFSET + i] = 0
+            q5_p[Q_LAST_OFFSET + i] = 0
+
+        # Initialize target Q networks AFTER live-Q init + zero-W so they
+        # inherit the proper init values (reference soft_update_target_Q's
+        # them in lockstep going forward).
         self.q1_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
         self.q1_target.copy_params_from(self.q1)
         self.q2_target = NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]()
