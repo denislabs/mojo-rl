@@ -56,10 +56,22 @@ def main() raises:
     # Zero-init breaks the early-bias attractor; combined with Dirichlet
     # fraction=0.5 (bumped from 0.25 in the MLP config) for stronger root
     # exploration to escape the symmetric fixed point.
+    # v_min/v_max tightened from default ±50 → 0..22 (Phase H8b, 2026-05-05).
+    # CartPole-v1 returns are in [0, 500] → encoded h(x) range is [0, 21.4].
+    # Default ±50 with BINS=21 gave bin width 5; reward target r=0 vs r=1
+    # differed by <10% mass in any bin (h(0)=0 → bin 10 mass=1.0; h(1)=0.41
+    # → bin 10 mass=0.92, bin 11 mass=0.08), so the dynamics network's
+    # reward head had near-zero gradient distinguishing "keep going" from
+    # "terminal" — the only state-conditioned reward signal CartPole offers.
+    # New range 0..22 with BINS=21 gives bin width 1.1, ~5× tighter resolution
+    # for the binary reward signal and ~5× tighter for value targets too.
+    # See docs/MUZERO_AUDIT.md Phase H8b.
     var agent = GenericMuZeroAgent[Config, 32](
         gamma=0.99,
         temperature_decay_steps=50000,
         pred_head_input_dim=64,
+        v_min=0.0,
+        v_max=22.0,
     )
 
     # Canonical CartPole obs covering tilt directions:

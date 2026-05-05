@@ -235,21 +235,20 @@ struct MuZeroMLPConfig[
     # default, sharp-but-not-degenerate Dirichlet samples).
     comptime Noise = DirichletNoise[0.5, 0.25]
     comptime PUCT = MuZeroPUCT[19652.0, 1.25]
-    # Backup: MonteCarloReturn (2026-05-05). Switched from NStepBootstrap
-    # following AlphaZero's CartPole adaptation. With N-step bootstrap, the
-    # target = Σ γⁱ rᵢ + γⁿ V(s_{t+n}) injects the value head's prediction
-    # into every target — and our value head was learning ~10 (the
-    # unconditional mean episode length) regardless of state, so targets
-    # were state-blind by construction (self-fulfilling). MC removes the
-    # bootstrap entirely; for transitions that terminate inside the N=10
-    # window, target = exact discounted episode return — a precise,
-    # state-conditioned signal independent of the (broken) value head.
-    # AZ's CartPole config uses MonteCarloReturn for the same reason.
-    # Caveat: with N=10, sample positions that don't terminate within 10
-    # steps get target = Σ_10 γⁱ ≈ 9.56 regardless of state — only an
-    # incomplete fix. If MC alone doesn't break the plateau, raising N is
-    # the next lever (board games have N ≥ ep length so this is moot there).
-    comptime Backup = MonteCarloReturn
+    # Backup: NStepBootstrap. We tried MonteCarloReturn (2026-05-05,
+    # following AZ-CartPole's adaptation) and it was strictly worse — full
+    # representation collapse returned (post-train hiddens bit-identical
+    # across LEFT/CENTER/RIGHT, |rep| shrank to 0.27). Root cause:
+    # `nstep_value_targets_kernel` truncates at N steps, and with N=10 +
+    # CartPole avg episode ~22, the majority of sample positions don't
+    # terminate within the window, so MC target = Σ₀⁹ γⁱ ≈ 9.56 —
+    # state-independent constant. The bootstrap γⁿV(s_{t+N}), even from an
+    # undertrained value head, was the only state-dependent signal in
+    # late-trajectory targets. AZ-CartPole's MC works because their replay
+    # accesses full episodes, not an N-step window. Re-enabling MC for our
+    # path would require N ≥ episode length (~50 instead of 10), which is
+    # a separate experiment from the backup-mode change itself.
+    comptime Backup = NStepBootstrap
     comptime Players = SinglePlayer
 
     comptime USE_REANALYZE: Bool = False
