@@ -61,6 +61,7 @@ from mojo_rl.deep_agents.core.kernels import (
     build_dynamics_target_kernel,
     gaussian_nll_grad_kernel,
     gaussian_nll_grad_learnable_kernel,
+    reduce_loss_scratch_kernel,
     reduce_bounds_grad_l2_adam_kernel,
     dynamics_sample_kernel,
     dynamics_sample_learnable_kernel,
@@ -622,6 +623,11 @@ struct GPUDynamicsEnsemble[
     var t_grad_in: DeviceBuffer[dtype]  # [train_batch * DYN_IN]
     var t_ws: DeviceBuffer[dtype]  # workspace
     var t_loss: DeviceBuffer[dtype]  # [train_batch]
+    # [train_batch * DYN_PRED] per-(b, d) sample-loss contributions written by
+    # the NLL kernel, then reduced to t_loss[b] via reduce_loss_scratch_kernel.
+    # Replaces a non-atomic multi-thread RMW on t_loss[b] that corrupted the
+    # holdout loss readings used for early-stop / elite ranking.
+    var t_loss_scratch: DeviceBuffer[dtype]
     var t_loss_host: HostBuffer[dtype]  # [1] reduced mean loss for CPU readback
     var t_loss_scalar: DeviceBuffer[dtype]  # [1] GPU-side reduced mean loss
 
@@ -728,6 +734,9 @@ struct GPUDynamicsEnsemble[
         self.t_grad_in = ctx.enqueue_create_buffer[dtype](TB * Self.DYN_IN)
         self.t_ws = ctx.enqueue_create_buffer[dtype](WS_SIZE)
         self.t_loss = ctx.enqueue_create_buffer[dtype](TB)
+        self.t_loss_scratch = ctx.enqueue_create_buffer[dtype](
+            TB * Self.DYN_PRED
+        )
         self.t_loss_host = ctx.enqueue_create_host_buffer[dtype](1)
         self.t_loss_scalar = ctx.enqueue_create_buffer[dtype](1)
 
@@ -834,6 +843,7 @@ struct GPUDynamicsEnsemble[
         self.t_grad_in = take.t_grad_in^
         self.t_ws = take.t_ws^
         self.t_loss = take.t_loss^
+        self.t_loss_scratch = take.t_loss_scratch^
         self.t_loss_host = take.t_loss_host^
         self.t_loss_scalar = take.t_loss_scalar^
         self.r_obs = take.r_obs^
@@ -1047,9 +1057,10 @@ struct GPUDynamicsEnsemble[
         var grad_out_t = LayoutTensor[
             dtype, Layout.row_major(TB, Self.DynModel.OUT_DIM), MutAnyOrigin
         ](self.t_grad_out.unsafe_ptr())
-        var loss_t = LayoutTensor[
-            dtype, Layout.row_major(TB), MutAnyOrigin
-        ](self.t_loss.unsafe_ptr())
+        # 2D scratch — race-free per-(b, d) write; only holdout reduces it.
+        var loss_scratch_t = LayoutTensor[
+            dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+        ](self.t_loss_scratch.unsafe_ptr())
         # Per-member bounds views (offset pointer into [num_ensemble * DYN_PRED]).
         var max_lv_t = LayoutTensor[
             dtype, Layout.row_major(Self.DYN_PRED), MutAnyOrigin
@@ -1067,7 +1078,7 @@ struct GPUDynamicsEnsemble[
             grad_out_t,
             output_t,
             target_t,
-            loss_t,
+            loss_scratch_t,
             max_lv_t,
             min_lv_t,
             max_grad_t,
@@ -1353,6 +1364,9 @@ struct GPUDynamicsEnsemble[
                         Layout.row_major(TB, Self.DynModel.OUT_DIM),
                         MutAnyOrigin,
                     ](self.t_grad_out.unsafe_ptr())
+                    var h_loss_scratch_t = LayoutTensor[
+                        dtype, Layout.row_major(TB, Self.DYN_PRED), MutAnyOrigin
+                    ](self.t_loss_scratch.unsafe_ptr())
                     var h_loss_t = LayoutTensor[
                         dtype, Layout.row_major(TB), MutAnyOrigin
                     ](self.t_loss.unsafe_ptr())
@@ -1373,12 +1387,24 @@ struct GPUDynamicsEnsemble[
                         h_grad_t,
                         h_output_t,
                         h_target_t,
-                        h_loss_t,
+                        h_loss_scratch_t,
                         h_max_lv_t,
                         h_min_lv_t,
                         h_max_grad_t,
                         h_min_grad_t,
                         grid_dim=(PRED_BLOCKS,),
+                        block_dim=(TPB_VAL,),
+                    )
+
+                    # Race-free reduction across PRED_DIM → per-sample loss.
+                    comptime reduce_loss_k = reduce_loss_scratch_kernel[
+                        dtype, TB, Self.DYN_PRED
+                    ]
+                    comptime LOSS_BLOCKS = (TB + TPB_VAL - 1) // TPB_VAL
+                    ctx.enqueue_function[reduce_loss_k, reduce_loss_k](
+                        h_loss_scratch_t,
+                        h_loss_t,
+                        grid_dim=(LOSS_BLOCKS,),
                         block_dim=(TPB_VAL,),
                     )
 

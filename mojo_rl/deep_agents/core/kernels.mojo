@@ -3350,7 +3350,9 @@ def gaussian_nll_grad_kernel[
     target: LayoutTensor[
         dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
     ],
-    loss_per_sample: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    loss_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
     min_logvar: Scalar[dtype],
     max_logvar: Scalar[dtype],
 ):
@@ -3362,10 +3364,19 @@ def gaussian_nll_grad_kernel[
       var = exp(logvar)
       diff = target[b, d] - mean
 
-      grad_mean = (mean - target) / var / BATCH
-      grad_logvar = 0.5 * (1 - diff^2 / var) / BATCH
+      grad_mean   = 2 * (mean - target) / var / (BATCH * PRED_DIM)
+      grad_logvar = (1 - diff^2 / var) / (BATCH * PRED_DIM)
 
-      loss = 0.5 * diff^2 / var + 0.5 * logvar  (accumulated into loss_per_sample)
+      loss_scratch[b, d] = (diff^2 / var + logvar) / PRED_DIM
+
+    Reduction matches reference `bnn.py:582-584`:
+      reduce_mean(reduce_mean(square(mean-targets)*inv_var + log_var, -1), -1).
+
+    Per-(b, d) sample-loss contributions are written into `loss_scratch` and
+    must be reduced over PRED_DIM with `reduce_loss_scratch_kernel` to obtain
+    the per-sample loss. The previous one-thread-per-batch accumulation into
+    a 1D buffer was racy (d=0 overwrote, d>0 RMW'd) and corrupted holdout
+    rankings.
 
     Grid: ceil(BATCH * PRED_DIM / TPB), block: TPB.
     One thread per (batch, pred_dim) element.
@@ -3405,7 +3416,11 @@ def gaussian_nll_grad_kernel[
     var tgt = rebind[Scalar[dtype]](target[b, d])
     var diff = tgt - mean_val
     var diff_sq = diff * diff
-    var inv_batch = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
+    # Reference reduces by mean over both BATCH and PRED_DIM (bnn.py:582);
+    # the factor of 2 absorbs the d/dmu derivative of diff² so a single
+    # constant scales every gradient and the forward loss consistently.
+    var inv_norm = Scalar[dtype](2.0) / Scalar[dtype](BATCH * PRED_DIM)
+    var inv_pred_dim = Scalar[dtype](1.0) / Scalar[dtype](PRED_DIM)
 
     # Gradient chain through softplus:
     #   d lv / d raw = sigmoid(lv_inter - min) * sigmoid(max - raw)
@@ -3423,27 +3438,20 @@ def gaussian_nll_grad_kernel[
         g2 = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-a2))
     var chain = g1 * g2
 
-    # Gradients
-    grad_output[b, d] = (mean_val - tgt) / var_val * inv_batch
+    # Gradients (PyTorch parity: scaled by 2/(BATCH*PRED_DIM) so the literal
+    # ±0.01 bounds-L2 in reduce_bounds_grad_l2_adam_kernel stays correctly
+    # balanced against the data term).
+    grad_output[b, d] = (mean_val - tgt) / var_val * inv_norm
     grad_output[b, PRED_DIM + d] = (
         Scalar[dtype](0.5)
         * (Scalar[dtype](1.0) - diff_sq / var_val)
         * chain
-        * inv_batch
+        * inv_norm
     )
 
-    # Accumulate loss (atomic-free: each thread writes one dimension,
-    # we sum across dims on CPU after download)
-    # Store per-dim contribution; caller sums across PRED_DIM
-    var sample_loss = (
-        Scalar[dtype](0.5) * diff_sq / var_val + Scalar[dtype](0.5) * lv
-    )
-    # Use atomic add simulation: just store dim contribution
-    # The loss_per_sample is accumulated via a separate reduce if needed
-    if d == 0:
-        loss_per_sample[b] = sample_loss
-    else:
-        loss_per_sample[b] = loss_per_sample[b] + sample_loss
+    # Per-(b, d) sample-loss contribution; race-free 2D scratch write.
+    # Reduce across PRED_DIM with `reduce_loss_scratch_kernel` to get per-sample.
+    loss_scratch[b, d] = (diff_sq / var_val + lv) * inv_pred_dim
 
 
 @always_inline
@@ -3462,7 +3470,9 @@ def gaussian_nll_grad_learnable_kernel[
     target: LayoutTensor[
         dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
     ],
-    loss_per_sample: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+    loss_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
     max_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
     min_lv: LayoutTensor[dtype, Layout.row_major(PRED_DIM), MutAnyOrigin],
     max_lv_grad_scratch: LayoutTensor[
@@ -3477,7 +3487,9 @@ def gaussian_nll_grad_learnable_kernel[
     Matches `gaussian_nll_grad_kernel` but reads per-dim bounds from device
     buffers and writes per-(b, d) gradient contributions for max_lv and
     min_lv into scratch buffers. A follow-up reduce kernel sums over batch
-    and Adam-updates the bounds.
+    and Adam-updates the bounds. `loss_scratch` likewise receives per-(b, d)
+    sample-loss contributions; reduce with `reduce_loss_scratch_kernel` to
+    obtain per-sample loss.
 
     Gradient chain through double softplus clamp (ref bnn.py:556-557):
       lv_inter = max - softplus(max - raw),  a1 = max - raw, g1 = sigmoid(a1)
@@ -3487,7 +3499,9 @@ def gaussian_nll_grad_learnable_kernel[
       d lv / d max_logvar   = g2 * (1 - g1)    (new — flows to max_lv)
       d lv / d min_logvar   = 1 - g2           (new — flows to min_lv)
 
-    Per-element contribution to loss is d NLL / d lv = 0.5 * (1 - diff²/var) / BATCH.
+    Reduction matches reference `bnn.py:582-584` (mean over BATCH *and* PRED_DIM):
+      d NLL / d lv = (1 - diff²/var) / (BATCH * PRED_DIM)
+      d NLL / d mu = 2 * (mu - tgt) * inv_var / (BATCH * PRED_DIM)
 
     Grid: ceil(BATCH * PRED_DIM / TPB), block: TPB. One thread per (b, d).
     """
@@ -3523,7 +3537,12 @@ def gaussian_nll_grad_learnable_kernel[
     var tgt = rebind[Scalar[dtype]](target[b, d])
     var diff = tgt - mean_val
     var diff_sq = diff * diff
-    var inv_batch = Scalar[dtype](1.0) / Scalar[dtype](BATCH)
+    # Reference reduces by mean over both BATCH and PRED_DIM (bnn.py:582);
+    # factor of 2 absorbs d/dmu(diff²) so one constant scales every gradient
+    # and keeps the literal ±0.01 bounds-L2 (in reduce_bounds_grad_l2_adam_kernel)
+    # correctly balanced against the data term.
+    var inv_norm = Scalar[dtype](2.0) / Scalar[dtype](BATCH * PRED_DIM)
+    var inv_pred_dim = Scalar[dtype](1.0) / Scalar[dtype](PRED_DIM)
 
     var g1 = Scalar[dtype](0.0)
     if a1 > Scalar[dtype](20.0):
@@ -3539,24 +3558,50 @@ def gaussian_nll_grad_learnable_kernel[
     var grad_lv = (
         Scalar[dtype](0.5)
         * (Scalar[dtype](1.0) - diff_sq / var_val)
-        * inv_batch
+        * inv_norm
     )
 
     # Existing grads wrt network output (mean + raw logvar).
-    grad_output[b, d] = (mean_val - tgt) / var_val * inv_batch
+    grad_output[b, d] = (mean_val - tgt) / var_val * inv_norm
     grad_output[b, PRED_DIM + d] = grad_lv * g1 * g2
 
     # New: per-element grad contributions for bounds (reduced over batch next).
     max_lv_grad_scratch[b, d] = grad_lv * g2 * (Scalar[dtype](1.0) - g1)
     min_lv_grad_scratch[b, d] = grad_lv * (Scalar[dtype](1.0) - g2)
 
-    var sample_loss = (
-        Scalar[dtype](0.5) * diff_sq / var_val + Scalar[dtype](0.5) * lv
-    )
-    if d == 0:
-        loss_per_sample[b] = sample_loss
-    else:
-        loss_per_sample[b] = loss_per_sample[b] + sample_loss
+    # Per-(b, d) sample-loss contribution; race-free 2D scratch write.
+    loss_scratch[b, d] = (diff_sq / var_val + lv) * inv_pred_dim
+
+
+@always_inline
+def reduce_loss_scratch_kernel[
+    dtype: DType where dtype.is_floating_point(),
+    BATCH: Int,
+    PRED_DIM: Int,
+](
+    loss_scratch: LayoutTensor[
+        dtype, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin
+    ],
+    loss_per_sample: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """Sum `loss_scratch[b, :]` into `loss_per_sample[b]`.
+
+    Pair with `gaussian_nll_grad_kernel` / `gaussian_nll_grad_learnable_kernel`,
+    which now write per-(b, d) sample-loss contributions into a 2D scratch to
+    avoid the multi-thread RMW race that previously corrupted the 1D
+    `loss_per_sample` buffer (used by holdout early-stopping and elite
+    ranking).
+
+    Grid: ceil(BATCH / TPB), block: TPB. One thread per batch.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+    var s = Scalar[dtype](0.0)
+
+    comptime for d in range(PRED_DIM):
+        s = s + rebind[Scalar[dtype]](loss_scratch[b, d])
+    loss_per_sample[b] = s
 
 
 @always_inline
