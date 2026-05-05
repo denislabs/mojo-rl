@@ -399,9 +399,9 @@ struct GPUSequenceReplayBuffer[
             ctx: GPU device context.
             actions: Actions taken [N_ENVS * ACTION_DIM].
             rewards: Rewards received [N_ENVS].
-            dones: term|trunc flags [N_ENVS] — used for sequence-boundary
+            dones: Term|trunc flags [N_ENVS] — used for sequence-boundary
                 detection so we never sample sequences that cross a reset.
-            terminations: term-only flags [N_ENVS] — returned at sample
+            terminations: Term-only flags [N_ENVS] — returned at sample
                 time as `batch_dones` and consumed by the trainer as
                 `(1 - terminated) * V_next`. Must be 0 on time-limit
                 truncation, otherwise V is biased toward

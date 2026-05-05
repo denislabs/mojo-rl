@@ -22,6 +22,7 @@ from mojo_rl.nn.model import (
     Linear,
     LinearReLU,
     LinearMish,
+    LayerNorm,
     Sequential,
     Parallel,
 )
@@ -145,10 +146,18 @@ struct MuZeroMLPConfig[
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
 
     # Networks
+    # LayerNorm at end of rep — Phase G post-mortem (2026-05-04) showed
+    # rep produced same-direction-different-magnitude outputs for LEFT
+    # vs RIGHT obs (theta=±0.1), so min-max scaling collapsed them to
+    # bit-identical hiddens (sign-symmetric representation collapse).
+    # LayerNorm normalizes per-sample to zero-mean/unit-var, preserving
+    # directional differences across obs. Aligns with `feedback_layernorm_in_rl`
+    # memory: mojo-rl deep nets in RL need LayerNorm where PyTorch doesn't.
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.LATENT],
+        LayerNorm[Self.LATENT],
     ]
 
     comptime DynModel = Sequential[
