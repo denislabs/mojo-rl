@@ -107,6 +107,7 @@ from .kernels import (
     scalar_transform_kernel,
     to_play_from_episode_step_kernel,
     decode_value_dist_kernel,
+    action_histogram_kernel,
 )
 
 
@@ -3302,6 +3303,17 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         var reward_sum_host = ctx.enqueue_create_host_buffer[dtype](1)
         var episode_count_host = ctx.enqueue_create_host_buffer[dtype](1)
 
+        # Action histogram — counts how many times each action was actually
+        # executed in the env between print boundaries. Diagnostic for the
+        # "MuZero produces sub-random episode lengths" failure mode: if
+        # diagnose-time visit policy is ~uniform but executed actions are
+        # heavily biased (or temporally correlated within an episode), the
+        # bug is in the MCTS-visits-to-action sampling path, not in the
+        # representation network.
+        var action_hist_buf = ctx.enqueue_create_buffer[dtype](ACT)
+        action_hist_buf.enqueue_fill(Scalar[dtype](0.0))
+        var action_hist_host = ctx.enqueue_create_host_buffer[dtype](ACT)
+
         # GPU MCTS state
         comptime LATENT = Self.Config.latent_dim
         comptime BINS = Self.Config.num_bins
@@ -3764,6 +3776,20 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     block_dim=(TPB,),
                 )
 
+                # Tally per-action selection counts for diagnostics.
+                var hist_t = LayoutTensor[
+                    dtype, Layout.row_major(ACT), MutAnyOrigin
+                ](action_hist_buf.unsafe_ptr())
+                comptime run_hist = action_histogram_kernel[
+                    Self.n_envs, ACT, dtype
+                ]
+                ctx.enqueue_function[run_hist, run_hist](
+                    act_out_t,
+                    hist_t,
+                    grid_dim=(1,),
+                    block_dim=(1,),
+                )
+
                 # Compute root values for MCTS value targets via
                 # Σ_a total_value[root,a] / Σ_a visit_count[root,a] — the
                 # MCTS-improved value at the root, in raw scalar space (the
@@ -3989,6 +4015,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 # Sync episode stats from GPU
                 ctx.enqueue_copy(reward_sum_host, gpu_reward_sum_buf)
                 ctx.enqueue_copy(episode_count_host, gpu_episode_count_buf)
+                ctx.enqueue_copy(action_hist_host, action_hist_buf)
                 ctx.synchronize()
 
                 var total_reward = Float64(reward_sum_host[0])
@@ -4040,6 +4067,23 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     + String(d_pred)
                     + ")"
                 )
+
+                # Action histogram across this print window — counts how
+                # many times each action was actually executed in the env.
+                var act_line = String("    actions: [")
+                var hist_total = Float64(0.0)
+                for ai in range(ACT):
+                    hist_total += Float64(action_hist_host[ai])
+                for ai in range(ACT):
+                    var c = Float64(action_hist_host[ai])
+                    var pct = (c / hist_total * 100.0) if hist_total > 0 else Float64(0.0)
+                    act_line += String("a") + String(ai) + String("=") + String(Int(c))
+                    act_line += String(" (") + String(Int(pct)) + String("%)")
+                    if ai < ACT - 1:
+                        act_line += String(", ")
+                act_line += String("]  total=") + String(Int(hist_total))
+                print(act_line)
+                action_hist_buf.enqueue_fill(Scalar[dtype](0.0))
 
                 # Log to metrics
                 if total_eps > 0:

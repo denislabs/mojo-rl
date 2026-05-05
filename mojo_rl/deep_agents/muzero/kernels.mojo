@@ -942,3 +942,26 @@ def scalar_transform_kernel[
     data[idx] = (
         sign * (sqrt(abs_x + Scalar[dtype](1.0)) - Scalar[dtype](1.0)) + eps * x
     )
+
+
+def action_histogram_kernel[
+    N_ENVS: Int,
+    ACT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    hist: LayoutTensor[dtype, Layout.row_major(ACT), MutAnyOrigin],
+):
+    """Tally per-action selection counts. Single-threaded — N_ENVS is small
+    and ACT is tiny (2-19 typical). Increments hist[actions[i]] by 1 for
+    each env i. Used to detect bias in MuZero's MCTS visit-policy sampling
+    (e.g. CartPole producing sub-random episode lengths despite uniform-
+    looking diagnose-time visits indicates the executed action distribution
+    is far from uniform).
+    """
+    if thread_idx.x != 0 or block_idx.x != 0:
+        return
+    for i in range(N_ENVS):
+        var a = Int(rebind[Scalar[dtype]](actions[i]))
+        if a >= 0 and a < ACT:
+            hist[a] = hist[a] + Scalar[dtype](1.0)
