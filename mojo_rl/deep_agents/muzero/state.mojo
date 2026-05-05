@@ -29,6 +29,7 @@ from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
 from mojo_rl.deep_agents.core.replay.gpu_sequence_replay_buffer import (
     GPUSequenceReplayBuffer,
 )
+from mojo_rl.core.sum_tree import SumTree
 from .configs import MuZeroConfig
 
 
@@ -712,6 +713,36 @@ struct MuZeroGPUState[
     var batch_policies_host: HostBuffer[dtype]
     var value_targets_host: HostBuffer[dtype]
     var reward_targets_host: HostBuffer[dtype]
+    # PER priority computation needs the predicted value (raw scalar from
+    # reanalyze fresh-forward) at k=0 to compare against the n-step value
+    # target. Sized for (K+N+1)*BATCH (matches batch_values_buf) so we can
+    # download the whole window if needed; only [0..BATCH] is read by the
+    # priority calc.
+    var batch_values_host: HostBuffer[dtype]
+
+    # ── Prioritized Experience Replay (PER) ─────────────────────────
+    # Phase H13 (2026-05-05). Sum-tree priorities live on host (CPU);
+    # GPU only sees pre-sampled (env, start) pairs + IS weights, plus
+    # downloads per-sample TD errors after backward to refresh the tree.
+    # Capacity = N_ENVS × PER_ENV_CAP — one priority per (env, slot)
+    # circular-buffer position, treating each position as a separate
+    # trajectory window (matches muzero-general's per-game-position
+    # priority granularity, scaled to our per-env circular layout).
+    # PER state is always allocated; consumed only when use_per=True.
+    var per_tree: SumTree[dtype]
+    var per_max_priority: Scalar[dtype]
+    # Pre-sampled indices (CPU → GPU): which (env, start_slot) each
+    # batch element should gather its sequence from.
+    var per_sampled_envs_host: HostBuffer[DType.int32]
+    var per_sampled_starts_host: HostBuffer[DType.int32]
+    var per_is_weights_host: HostBuffer[dtype]
+    var per_sampled_envs_buf: DeviceBuffer[DType.int32]
+    var per_sampled_starts_buf: DeviceBuffer[DType.int32]
+    var per_is_weights_buf: DeviceBuffer[dtype]
+    # Per-sample priority output from compute_per_sample_priority_kernel.
+    # Downloaded after backward; used to refresh the sum-tree.
+    var per_sample_priorities_buf: DeviceBuffer[dtype]
+    var per_sample_priorities_host: HostBuffer[dtype]
 
     # ══════════════════════════════════════════════════════════════════
     # Constructor
@@ -902,6 +933,47 @@ struct MuZeroGPUState[
         self.reward_targets_host = ctx.enqueue_create_host_buffer[dtype](
             Self.K * Self.BATCH
         )
+        self.batch_values_host = ctx.enqueue_create_host_buffer[dtype](
+            (Self.K + Self.N_TD + 1) * Self.BATCH
+        )
+
+        # ── PER (Phase H13) ──────────────────────────────────────────
+        # Sum-tree on host with one leaf per (env, slot) circular-buffer
+        # position. Always allocated; consumed only when use_per=True.
+        comptime PER_TREE_CAP = Self.N_ENVS * Self.PER_ENV_CAP
+        self.per_tree = SumTree[dtype](capacity=PER_TREE_CAP)
+        self.per_max_priority = Scalar[dtype](1.0)
+        self.per_sampled_envs_host = ctx.enqueue_create_host_buffer[
+            DType.int32
+        ](Self.BATCH)
+        self.per_sampled_starts_host = ctx.enqueue_create_host_buffer[
+            DType.int32
+        ](Self.BATCH)
+        self.per_is_weights_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH
+        )
+        self.per_sampled_envs_buf = ctx.enqueue_create_buffer[DType.int32](
+            Self.BATCH
+        )
+        self.per_sampled_starts_buf = ctx.enqueue_create_buffer[DType.int32](
+            Self.BATCH
+        )
+        self.per_is_weights_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH
+        )
+        self.per_sample_priorities_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH
+        )
+        self.per_sample_priorities_host = ctx.enqueue_create_host_buffer[
+            dtype
+        ](Self.BATCH)
+        # Fill IS-weights with 1.0 by default so the CE grad kernels behave
+        # identically to pre-PER (non-weighted) when use_per=False. PER path
+        # overwrites with sum-tree-derived weights at sample time.
+        for _b in range(Self.BATCH):
+            self.per_is_weights_host[_b] = Scalar[dtype](1.0)
+        ctx.enqueue_copy(self.per_is_weights_buf, self.per_is_weights_host)
+        ctx.enqueue_memset(self.per_sample_priorities_buf, 0)
 
     def __init__(out self, *, deinit take: Self):
         """Move constructor."""
@@ -955,6 +1027,17 @@ struct MuZeroGPUState[
         self.batch_policies_host = take.batch_policies_host^
         self.value_targets_host = take.value_targets_host^
         self.reward_targets_host = take.reward_targets_host^
+        self.batch_values_host = take.batch_values_host^
+        self.per_tree = take.per_tree^
+        self.per_max_priority = take.per_max_priority
+        self.per_sampled_envs_host = take.per_sampled_envs_host^
+        self.per_sampled_starts_host = take.per_sampled_starts_host^
+        self.per_is_weights_host = take.per_is_weights_host^
+        self.per_sampled_envs_buf = take.per_sampled_envs_buf^
+        self.per_sampled_starts_buf = take.per_sampled_starts_buf^
+        self.per_is_weights_buf = take.per_is_weights_buf^
+        self.per_sample_priorities_buf = take.per_sample_priorities_buf^
+        self.per_sample_priorities_host = take.per_sample_priorities_host^
 
     def upload_from[
         _C: Int

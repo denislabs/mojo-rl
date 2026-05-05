@@ -103,6 +103,7 @@ from .kernels import (
     set_hidden_grad_for_dyn_kernel,
     store_mcts_targets_kernel,
     sample_seq_with_targets_kernel,
+    sample_seq_with_targets_priority_kernel,
     nstep_value_targets_kernel,
     scalar_transform_kernel,
     to_play_from_episode_step_kernel,
@@ -163,6 +164,14 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
     # only when use_reanalyze is True. τ=1.0 → hard sync each step (no
     # decoupling); τ=0.0 → frozen target. Typical: 0.005–0.01.
     var target_tau: Float64
+    # Prioritized Experience Replay (Phase H13 / muzero-general PER):
+    # priority = (|TD-error| + per_eps)^per_alpha, sampled with probability
+    # ∝ priority, IS-corrected with weight w = (N·P)^(-beta) / max_w. Beta
+    # is linearly annealed from per_beta_init → 1.0 over training steps
+    # (passed in via _per_beta(progress) at sample time).
+    var per_alpha: Float64
+    var per_beta_init: Float64
+    var per_eps: Float64
 
     # Step counters
     var total_steps: Int
@@ -194,6 +203,9 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         max_grad_norm: Float64 = 10.0,
         target_tau: Float64 = 0.01,
         pred_head_input_dim: Int = 0,
+        per_alpha: Float64 = 0.5,
+        per_beta_init: Float64 = 0.4,
+        per_eps: Float64 = 1e-6,
     ):
         """Initialize MuZero agent with all networks and MCTS engine.
 
@@ -239,6 +251,9 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         self.temperature_decay_steps = temperature_decay_steps
         self.max_grad_norm = max_grad_norm
         self.target_tau = target_tau
+        self.per_alpha = per_alpha
+        self.per_beta_init = per_beta_init
+        self.per_eps = per_eps
         self.total_steps = 0
         self.train_step_count = 0
         self._episode_obs = List[List[Scalar[dtype]]]()
@@ -262,6 +277,9 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         self.temperature_decay_steps = take.temperature_decay_steps
         self.max_grad_norm = take.max_grad_norm
         self.target_tau = take.target_tau
+        self.per_alpha = take.per_alpha
+        self.per_beta_init = take.per_beta_init
+        self.per_eps = take.per_eps
         self.total_steps = take.total_steps
         self.train_step_count = take.train_step_count
         self._episode_obs = take._episode_obs^
@@ -274,6 +292,153 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
     # ══════════════════════════════════════════════════════════════════════
     # Episode Management
     # ══════════════════════════════════════════════════════════════════════
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Prioritized Experience Replay (Phase H13)
+    # ══════════════════════════════════════════════════════════════════════
+
+    @always_inline
+    def _per_beta(self, progress: Float64) -> Float64:
+        """Linearly anneal IS-correction beta from per_beta_init → 1.0.
+
+        Args:
+            progress: Training progress in [0, 1] (e.g. train_step/num_steps).
+        """
+        var p = progress
+        if p < 0.0:
+            p = 0.0
+        if p > 1.0:
+            p = 1.0
+        return self.per_beta_init + (1.0 - self.per_beta_init) * p
+
+    def _per_record_new_transitions[
+        N_ENVS_P: Int = 64,
+        PER_ENV_CAP_P: Int = 1000,
+    ](
+        mut self,
+        mut gpu: MuZeroGPUState[Self.Config, N_ENVS_P, PER_ENV_CAP_P],
+        slot: Int,
+    ):
+        """Set tree priority = max_priority for each env's new transition.
+
+        Called immediately after gpu.replay.store_with_termination(). All
+        envs step in lockstep so they share the same write slot. New
+        transitions get the max priority seen so far so they're guaranteed
+        to be sampled at least once before being prioritized down.
+        """
+        comptime PER_ENV_CAP = PER_ENV_CAP_P
+        var p = gpu.per_max_priority
+        for e in range(N_ENVS_P):
+            gpu.per_tree.update(e * PER_ENV_CAP + slot, p)
+
+    def _per_sample_indices[
+        N_ENVS_P: Int = 64,
+        PER_ENV_CAP_P: Int = 1000,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut gpu: MuZeroGPUState[Self.Config, N_ENVS_P, PER_ENV_CAP_P],
+        progress: Float64,
+    ) raises:
+        """Stratified sum-tree sampling — fills (env, start, weight) host
+        buffers and uploads to GPU for the priority sample kernel.
+        """
+        comptime BATCH = Self.Config.batch_size
+        comptime PER_ENV_CAP = PER_ENV_CAP_P
+
+        var beta = self._per_beta(progress)
+        var total = Float64(gpu.per_tree.total_sum())
+        var n = Float64(
+            gpu.per_tree.size if gpu.per_tree.size > 0 else 1
+        )
+
+        if total <= 0.0:
+            # Empty/uniform tree — fall back to round-robin sample positions
+            # near the head of the buffer with weight 1.0. Should only fire
+            # before the first transition is stored.
+            for b in range(BATCH):
+                gpu.per_sampled_envs_host[b] = Int32(b % N_ENVS_P)
+                gpu.per_sampled_starts_host[b] = Int32(0)
+                gpu.per_is_weights_host[b] = Scalar[dtype](1.0)
+        else:
+            var segment = total / Float64(BATCH)
+            var min_p = Float64(gpu.per_tree.min_priority())
+            var min_prob = min_p / total if min_p > 0.0 else 1.0 / n
+            var max_w = (n * min_prob) ** (-beta)
+            for b in range(BATCH):
+                var lo = segment * Float64(b)
+                var hi = segment * Float64(b + 1)
+                var target = lo + random_float64() * (hi - lo)
+                var idx = gpu.per_tree.sample(Scalar[dtype](target))
+                var env_idx = idx // PER_ENV_CAP
+                var slot = idx % PER_ENV_CAP
+                gpu.per_sampled_envs_host[b] = Int32(env_idx)
+                gpu.per_sampled_starts_host[b] = Int32(slot)
+                var p_b = Float64(gpu.per_tree.get(idx))
+                if p_b <= 0.0:
+                    p_b = min_p if min_p > 0.0 else 1.0
+                var prob = p_b / total
+                var w = ((n * prob) ** (-beta)) / max_w
+                gpu.per_is_weights_host[b] = Scalar[dtype](w)
+
+        ctx.enqueue_copy(
+            gpu.per_sampled_envs_buf, gpu.per_sampled_envs_host
+        )
+        ctx.enqueue_copy(
+            gpu.per_sampled_starts_buf, gpu.per_sampled_starts_host
+        )
+        ctx.enqueue_copy(
+            gpu.per_is_weights_buf, gpu.per_is_weights_host
+        )
+
+    def _per_update_priorities[
+        N_ENVS_P: Int = 64,
+        PER_ENV_CAP_P: Int = 1000,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut gpu: MuZeroGPUState[Self.Config, N_ENVS_P, PER_ENV_CAP_P],
+    ) raises:
+        """Recompute per-sample priorities from value-head TD error and
+        update the sum-tree. Called after the K-step backward.
+
+        Priority = (|h(pred_value_k=0) − value_target_k=0| + ε)^α
+        where pred is in raw scalar space (from reanalyze) and value_target
+        is in encoded h-space, so we apply h() to pred before subtracting.
+        Mirrors muzero-general's `priorities = |target - pred|^α` (their pred
+        is already in scalar space; we apply h to bring both sides to the
+        same representation).
+        """
+        comptime BATCH = Self.Config.batch_size
+        comptime PER_ENV_CAP = PER_ENV_CAP_P
+        var EPS_H = Float64(0.001)
+
+        # Download value targets (encoded) and predicted values (raw scalar).
+        ctx.enqueue_copy(gpu.value_targets_host, gpu.value_targets_buf)
+        ctx.enqueue_copy(gpu.batch_values_host, gpu.batch_values_buf)
+        ctx.synchronize()
+
+        var max_p_seen = Float64(gpu.per_max_priority)
+        for b in range(BATCH):
+            var env_idx = Int(gpu.per_sampled_envs_host[b])
+            var slot = Int(gpu.per_sampled_starts_host[b])
+            var target_h = Float64(gpu.value_targets_host[0 * BATCH + b])
+            var pred_raw = Float64(gpu.batch_values_host[0 * BATCH + b])
+            # h(x) = sign(x)*(sqrt(|x|+1)-1) + EPS_H * x — same formula
+            # used in scalar_transform_kernel. Closed-form on host.
+            var sgn = 1.0 if pred_raw >= 0.0 else -1.0
+            var abs_p = pred_raw if pred_raw >= 0.0 else -pred_raw
+            var pred_h = sgn * (sqrt(abs_p + 1.0) - 1.0) + EPS_H * pred_raw
+            var diff = target_h - pred_h
+            if diff < 0.0:
+                diff = -diff
+            var priority = (diff + self.per_eps) ** self.per_alpha
+            if priority > max_p_seen:
+                max_p_seen = priority
+            gpu.per_tree.update(
+                env_idx * PER_ENV_CAP + slot, Scalar[dtype](priority)
+            )
+        gpu.per_max_priority = Scalar[dtype](max_p_seen)
 
     # ══════════════════════════════════════════════════════════════════════
     # Diagnostics
@@ -1778,6 +1943,8 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         ctx: DeviceContext,
         mut gpu: MuZeroGPUState[Self.Config, N_ENVS_P, PER_ENV_CAP_P],
         use_reanalyze: Bool = False,
+        use_per: Bool = False,
+        per_progress: Float64 = 0.0,
     ) raises -> Float64:
         """Run one GPU-accelerated training step.
 
@@ -1972,28 +2139,135 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 bsz, bwi, seed,
             )
 
-        ctx.enqueue_function[sample_wrapper, sample_wrapper](
-            buf_obs_t,
-            buf_act_t,
-            buf_rew_t,
-            buf_done_t,
-            buf_term_t,
-            buf_pol_t,
-            buf_val_t,
-            buf_tp_t,
-            b_obs_t,
-            b_act_t,
-            b_rew_t,
-            b_done_t,
-            b_pol_t,
-            b_val_t,
-            b_tp_t,
-            buf_size_s,
-            buf_wptr_s,
-            sample_seed,
-            grid_dim=(BATCH_BLOCKS_S,),
-            block_dim=(TPB,),
-        )
+        if use_per:
+            # CPU sum-tree sampling → fills (env, start, weight) host buffers
+            # then uploads to GPU. The priority kernel gathers using the
+            # pre-sampled indices instead of running internal RNG.
+            self._per_sample_indices[N_ENVS_P, PER_ENV_CAP_P](
+                ctx, gpu, per_progress
+            )
+            var per_envs_t = LayoutTensor[
+                DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+            ](gpu.per_sampled_envs_buf.unsafe_ptr())
+            var per_starts_t = LayoutTensor[
+                DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+            ](gpu.per_sampled_starts_buf.unsafe_ptr())
+
+            @parameter
+            @always_inline
+            def per_sample_wrapper(
+                bo: LayoutTensor[
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP * OBS),
+                    MutAnyOrigin,
+                ],
+                ba: LayoutTensor[
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP * ACT),
+                    MutAnyOrigin,
+                ],
+                br: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                ],
+                bd: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                ],
+                bd_term: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                ],
+                bp: LayoutTensor[
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP * ACT),
+                    MutAnyOrigin,
+                ],
+                bv: LayoutTensor[
+                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                ],
+                btp: LayoutTensor[
+                    DType.uint8,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                    MutAnyOrigin,
+                ],
+                oo: LayoutTensor[
+                    dtype, Layout.row_major(WIN_FULL * BATCH * OBS), MutAnyOrigin
+                ],
+                oa: LayoutTensor[
+                    dtype, Layout.row_major(K * BATCH * ACT), MutAnyOrigin
+                ],
+                orw: LayoutTensor[
+                    dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
+                ],
+                od: LayoutTensor[
+                    dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
+                ],
+                op: LayoutTensor[
+                    dtype, Layout.row_major(WIN_FULL * BATCH * ACT), MutAnyOrigin
+                ],
+                ov: LayoutTensor[
+                    dtype, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
+                ],
+                otp: LayoutTensor[
+                    DType.uint8, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
+                ],
+                pe: LayoutTensor[
+                    DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+                ],
+                ps: LayoutTensor[
+                    DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+                ],
+            ):
+                sample_seq_with_targets_priority_kernel[
+                    BATCH, K, N_TD, N_ENVS_GPU, PER_ENV_CAP, OBS, ACT, dtype
+                ](
+                    bo, ba, br, bd, bd_term, bp, bv, btp,
+                    oo, oa, orw, od, op, ov, otp,
+                    pe, ps,
+                )
+
+            ctx.enqueue_function[per_sample_wrapper, per_sample_wrapper](
+                buf_obs_t,
+                buf_act_t,
+                buf_rew_t,
+                buf_done_t,
+                buf_term_t,
+                buf_pol_t,
+                buf_val_t,
+                buf_tp_t,
+                b_obs_t,
+                b_act_t,
+                b_rew_t,
+                b_done_t,
+                b_pol_t,
+                b_val_t,
+                b_tp_t,
+                per_envs_t,
+                per_starts_t,
+                grid_dim=(BATCH_BLOCKS_S,),
+                block_dim=(TPB,),
+            )
+        else:
+            ctx.enqueue_function[sample_wrapper, sample_wrapper](
+                buf_obs_t,
+                buf_act_t,
+                buf_rew_t,
+                buf_done_t,
+                buf_term_t,
+                buf_pol_t,
+                buf_val_t,
+                buf_tp_t,
+                b_obs_t,
+                b_act_t,
+                b_rew_t,
+                b_done_t,
+                b_pol_t,
+                b_val_t,
+                b_tp_t,
+                buf_size_s,
+                buf_wptr_s,
+                sample_seed,
+                grid_dim=(BATCH_BLOCKS_S,),
+                block_dim=(TPB,),
+            )
 
         # ── Step 1.5: GPU reanalyze (use_last_model_value) ───────────
         # When enabled, refresh batch_values with fresh predictions from
@@ -2317,6 +2591,14 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         # ── Step 4: GPU backward pass ────────────────────────────────
         var inv_k_s = Scalar[dtype](1.0 / Float64(K + 1) / Float64(BATCH))
 
+        # PER IS-weights view (constant 1.0 when use_per=False — caller fills
+        # gpu.per_is_weights_buf with 1s; under use_per=True caller writes
+        # the sum-tree-derived weights). Passed into the 3 CE grad kernels
+        # to scale per-sample gradient contribution.
+        var is_weights_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu.per_is_weights_buf.unsafe_ptr())
+
         # Zero hidden gradient carry
         ctx.enqueue_memset(gpu.grad_hidden_buf, 0)
 
@@ -2363,6 +2645,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 grad_pred_1d,
                 pred_1d,
                 policy_targets_k,
+                is_weights_t,
                 inv_k_s,
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),
@@ -2393,6 +2676,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 grad_pred_1d,
                 pred_1d,
                 val_dist,
+                is_weights_t,
                 inv_k_s,
                 grid_dim=(BATCH_BLOCKS,),
                 block_dim=(TPB,),
@@ -2529,6 +2813,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     grad_dyn_1d,
                     dyn_out_1d_bwd,
                     rew_dist,
+                    is_weights_t,
                     inv_k_s,
                     grid_dim=(BATCH_BLOCKS,),
                     block_dim=(TPB,),
@@ -2643,6 +2928,16 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             gpu.prediction_target.soft_update_from_gpu(
                 gpu.prediction, self.target_tau, ctx
             )
+
+        # ── Step 7: PER priority refresh (Phase H13) ────────────────
+        # Recompute priority = (|target - pred|)^α for each sampled
+        # position and update the sum-tree. Cheap: BATCH host-side calc
+        # + ~BATCH×log(tree) tree updates. Most accurate when reanalyze
+        # is on (batch_values_buf holds fresh predictions); without
+        # reanalyze it holds the stored MCTS root value at collection
+        # time, which is still meaningful but staler.
+        if use_per:
+            self._per_update_priorities[N_ENVS_P, PER_ENV_CAP_P](ctx, gpu)
 
         self.train_step_count += 1
         return Float64(0.0)  # Loss computation on GPU would require readback
@@ -3200,6 +3495,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         sync_every: Int = 5000,
         lr_decay_rate: Float64 = 1.0,
         lr_decay_steps: Int = 1000,
+        use_per: Bool = False,
     ) raises -> TrainingMetrics:
         """Train MuZero with GPU environment stepping and GPU training.
 
@@ -3850,9 +4146,19 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             # terminated_buf (term-only) is the bootstrap mask returned in
             # batch_dones — the n-step TD target uses `(1 - terminated) *
             # V(s_{t+n})` so truncation does NOT zero the bootstrap.
+            var pre_store_slot = gpu.replay.write_idx
             gpu.replay.store_with_termination(
                 ctx, actions_buf, rewards_buf, dones_buf, terminated_buf
             )
+            # PER hook (Phase H13): assign max_priority to the slot just
+            # written for every env, so new transitions get sampled at
+            # least once before being prioritized down. No-op when use_per
+            # is False — `_per_record_new_transitions` only updates the
+            # tree, which is unused unless _per_sample_indices is called.
+            if use_per:
+                self._per_record_new_transitions[Self.n_envs, PER_ENV_CAP](
+                    gpu, pre_store_slot
+                )
 
             # Store MCTS targets (policies from extract_actions, values from staging)
             var mcts_pol_in_t = LayoutTensor[
@@ -4004,8 +4310,17 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 total_steps >= warmup_steps
                 and gpu.replay.is_ready[Self.Config.unroll_steps + 1]()
             ):
+                var per_progress = (
+                    Float64(total_steps) / Float64(num_steps)
+                ) if num_steps > 0 else Float64(0.0)
                 for _ in range(grad_steps):
-                    _ = self.update_gpu(ctx, gpu, use_reanalyze=use_reanalyze)
+                    _ = self.update_gpu(
+                        ctx,
+                        gpu,
+                        use_reanalyze=use_reanalyze,
+                        use_per=use_per,
+                        per_progress=per_progress,
+                    )
                 gpu_train_count += grad_steps
 
                 # No periodic CPU sync needed — MCTS runs on GPU

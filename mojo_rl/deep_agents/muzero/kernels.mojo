@@ -76,12 +76,14 @@ def ce_policy_grad_kernel[
     policy_targets: LayoutTensor[
         dtype, Layout.row_major(BATCH * ACT), MutAnyOrigin
     ],
+    is_weights: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     scale: Scalar[dtype],
 ):
-    """Compute policy CE gradient: scale * (softmax(logits) - target).
+    """Compute policy CE gradient: scale * w[b] * (softmax(logits) - target).
 
     One thread per batch sample. Writes to the first ACT elements of grad_out
-    for each sample.
+    for each sample. is_weights[b] is the PER importance-sampling weight for
+    sample b (1.0 when PER is disabled — caller fills constant buffer).
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -89,6 +91,7 @@ def ce_policy_grad_kernel[
 
     var pred_off = b * PRED_OUT
     var pol_off = b * ACT
+    var w = rebind[Scalar[dtype]](is_weights[b])
 
     # Numerically stable softmax over policy logits
     var max_val = rebind[Scalar[dtype]](pred_outputs[pred_off])
@@ -110,7 +113,7 @@ def ce_policy_grad_kernel[
             * inv_sum
         )
         var target = rebind[Scalar[dtype]](policy_targets[pol_off + a])
-        grad_out[pred_off + a] = (prob - target) * scale
+        grad_out[pred_off + a] = (prob - target) * scale * w
 
 
 def ce_value_grad_kernel[
@@ -129,12 +132,14 @@ def ce_value_grad_kernel[
     value_targets: LayoutTensor[
         dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
     ],
+    is_weights: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     scale: Scalar[dtype],
 ):
-    """Compute value CE gradient: scale * (softmax(value_logits) - target).
+    """Compute value CE gradient: scale * w[b] * (softmax(value_logits) - target).
 
     One thread per batch sample. Writes to elements [ACT..ACT+BINS) of grad_out.
     value_targets is pre-encoded as two-hot distribution [BATCH * BINS].
+    is_weights is PER IS-correction (1.0 when PER off).
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -142,6 +147,7 @@ def ce_value_grad_kernel[
 
     var pred_off = b * PRED_OUT + ACT  # Value logits start after policy
     var tgt_off = b * BINS
+    var w = rebind[Scalar[dtype]](is_weights[b])
 
     # Softmax over value logits
     var max_val = rebind[Scalar[dtype]](pred_outputs[pred_off])
@@ -163,7 +169,7 @@ def ce_value_grad_kernel[
             * inv_sum
         )
         var target = rebind[Scalar[dtype]](value_targets[tgt_off + i])
-        grad_out[b * PRED_OUT + ACT + i] = (prob - target) * scale
+        grad_out[b * PRED_OUT + ACT + i] = (prob - target) * scale * w
 
 
 def ce_reward_grad_kernel[
@@ -182,11 +188,13 @@ def ce_reward_grad_kernel[
     reward_targets: LayoutTensor[
         dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
     ],
+    is_weights: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
     scale: Scalar[dtype],
 ):
-    """Compute reward CE gradient: scale * (softmax(reward_logits) - target).
+    """Compute reward CE gradient: scale * w[b] * (softmax(reward_logits) - target).
 
     One thread per batch sample. Writes to elements [LATENT..LATENT+BINS) of grad_out.
+    is_weights is PER IS-correction (1.0 when PER off).
     """
     var b = Int(block_dim.x * block_idx.x + thread_idx.x)
     if b >= BATCH:
@@ -194,6 +202,7 @@ def ce_reward_grad_kernel[
 
     var rew_off = b * DYN_OUT + LATENT  # Reward logits start after hidden
     var tgt_off = b * BINS
+    var w = rebind[Scalar[dtype]](is_weights[b])
 
     var max_val = rebind[Scalar[dtype]](dyn_outputs[rew_off])
     for i in range(1, BINS):
@@ -214,7 +223,7 @@ def ce_reward_grad_kernel[
             * inv_sum
         )
         var target = rebind[Scalar[dtype]](reward_targets[tgt_off + i])
-        grad_out[rew_off + i] = (prob - target) * scale
+        grad_out[rew_off + i] = (prob - target) * scale * w
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -715,6 +724,137 @@ def sample_seq_with_targets_kernel[
         # kernel doesn't zero the bootstrap on time-limit truncations. The
         # boundary check above uses term|trunc so we don't sample across
         # any episode boundary. See gpu_sequence_replay_buffer.mojo:1-44.
+        batch_dones[t * BATCH + tid] = buf_terminations[
+            env_idx * PER_ENV_CAP + buf_idx
+        ]
+
+
+def sample_seq_with_targets_priority_kernel[
+    BATCH: Int,
+    H: Int,
+    N_TD: Int,
+    N_ENVS: Int,
+    PER_ENV_CAP: Int,
+    OBS_DIM: Int,
+    ACT_DIM: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    # Same circular-buffer storage as the non-PER kernel.
+    buf_obs: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP * OBS_DIM), MutAnyOrigin
+    ],
+    buf_actions: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP * ACT_DIM), MutAnyOrigin
+    ],
+    buf_rewards: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
+    buf_dones: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
+    buf_terminations: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
+    buf_policies: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP * ACT_DIM), MutAnyOrigin
+    ],
+    buf_values: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
+    buf_to_play: LayoutTensor[
+        DType.uint8, Layout.row_major(N_ENVS * PER_ENV_CAP), MutAnyOrigin
+    ],
+    # Output batch buffers — same time-major layout.
+    batch_obs: LayoutTensor[
+        dtype,
+        Layout.row_major((H + N_TD + 1) * BATCH * OBS_DIM),
+        MutAnyOrigin,
+    ],
+    batch_actions: LayoutTensor[
+        dtype, Layout.row_major(H * BATCH * ACT_DIM), MutAnyOrigin
+    ],
+    batch_rewards: LayoutTensor[
+        dtype, Layout.row_major((H + N_TD) * BATCH), MutAnyOrigin
+    ],
+    batch_dones: LayoutTensor[
+        dtype, Layout.row_major((H + N_TD) * BATCH), MutAnyOrigin
+    ],
+    batch_policies: LayoutTensor[
+        dtype,
+        Layout.row_major((H + N_TD + 1) * BATCH * ACT_DIM),
+        MutAnyOrigin,
+    ],
+    batch_values: LayoutTensor[
+        dtype, Layout.row_major((H + N_TD + 1) * BATCH), MutAnyOrigin
+    ],
+    batch_to_play: LayoutTensor[
+        DType.uint8,
+        Layout.row_major((H + N_TD + 1) * BATCH),
+        MutAnyOrigin,
+    ],
+    # PER inputs — pre-sampled (env, start) per batch element. The CPU
+    # sum-tree picks these via priority-proportional stratified sampling
+    # in `_per_sample_indices` (see GenericMuZeroAgent in muzero.mojo).
+    sampled_envs: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    sampled_starts: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+):
+    """PER-aware variant of sample_seq_with_targets_kernel.
+
+    Identical gather logic, but reads (env_idx, start_slot) from pre-sampled
+    arrays instead of running internal RNG rejection-sampling. The CPU
+    sum-tree owns boundary-validity (positions whose unroll window would
+    cross an episode boundary should have priority=0 in the tree, set when
+    the episode terminates).
+    """
+    var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if tid >= BATCH:
+        return
+
+    var env_idx = Int(rebind[Scalar[DType.int32]](sampled_envs[tid]))
+    var start = Int(rebind[Scalar[DType.int32]](sampled_starts[tid]))
+
+    comptime WIN = H + N_TD
+
+    # ── Gather full window (time-major output) ────────────────────────
+    # Same as non-PER kernel — only the (env_idx, start) source differs.
+    for t in range(WIN + 1):
+        var buf_idx = (start + t) % PER_ENV_CAP
+        var env_obs_base = env_idx * PER_ENV_CAP * OBS_DIM + buf_idx * OBS_DIM
+        var obs_out_base = t * BATCH * OBS_DIM + tid * OBS_DIM
+        for d in range(OBS_DIM):
+            batch_obs[obs_out_base + d] = buf_obs[env_obs_base + d]
+
+        var env_pol_base = env_idx * PER_ENV_CAP * ACT_DIM + buf_idx * ACT_DIM
+        var pol_out_base = t * BATCH * ACT_DIM + tid * ACT_DIM
+        for a in range(ACT_DIM):
+            batch_policies[pol_out_base + a] = buf_policies[env_pol_base + a]
+
+        batch_values[t * BATCH + tid] = buf_values[
+            env_idx * PER_ENV_CAP + buf_idx
+        ]
+        batch_to_play[t * BATCH + tid] = buf_to_play[
+            env_idx * PER_ENV_CAP + buf_idx
+        ]
+
+    for t in range(WIN):
+        var buf_idx = (start + t) % PER_ENV_CAP
+        if t < H:
+            var env_act_base = (
+                env_idx * PER_ENV_CAP * ACT_DIM + buf_idx * ACT_DIM
+            )
+            var act_out_base = t * BATCH * ACT_DIM + tid * ACT_DIM
+            for d in range(ACT_DIM):
+                batch_actions[act_out_base + d] = buf_actions[
+                    env_act_base + d
+                ]
+
+        batch_rewards[t * BATCH + tid] = buf_rewards[
+            env_idx * PER_ENV_CAP + buf_idx
+        ]
         batch_dones[t * BATCH + tid] = buf_terminations[
             env_idx * PER_ENV_CAP + buf_idx
         ]
