@@ -3366,35 +3366,14 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         E.reset_kernel_gpu[Self.n_envs, E.STATE_SIZE](
             ctx, states_buf, rng_seed=42
         )
-
-        # Extract initial observations
-        # Use a step with no-op to get initial obs (reset already randomized state)
         actions_buf.enqueue_fill(Scalar[dtype](0.0))
-        E.step_kernel_gpu[Self.n_envs, E.STATE_SIZE, OBS](
-            ctx,
-            states_buf,
-            actions_buf,
-            rewards_buf,
-            dones_buf,
-            terminated_buf,
-            obs_buf,
-            rng_seed=0,
-            workspace_ptr=workspace_buf.unsafe_ptr(),
-        )
-        # Re-reset since step may have changed state
-        E.reset_kernel_gpu[Self.n_envs, E.STATE_SIZE](
-            ctx, states_buf, rng_seed=123
-        )
-        E.step_kernel_gpu[Self.n_envs, E.STATE_SIZE, OBS](
-            ctx,
-            states_buf,
-            actions_buf,
-            rewards_buf,
-            dones_buf,
-            terminated_buf,
-            obs_buf,
-            rng_seed=0,
-            workspace_ptr=workspace_buf.unsafe_ptr(),
+        # Extract obs from the just-reset state (no physics step). The
+        # previous "step + re-reset + step" double-tap was the original
+        # source of Bug F's per-step double-step (the loop re-extract
+        # copy-pasted the no-op pattern), and even at init it advanced
+        # all envs by one phantom action-0 step before training started.
+        E.extract_obs_kernel_gpu[Self.n_envs, E.STATE_SIZE, OBS](
+            ctx, states_buf, obs_buf
         )
 
         # Initialize workspace
@@ -3992,17 +3971,18 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 dones_buf,
                 rng_seed=UInt64(total_steps),
             )
-            # Re-extract obs after reset
-            E.step_kernel_gpu[Self.n_envs, E.STATE_SIZE, OBS](
-                ctx,
-                states_buf,
-                actions_buf,
-                rewards_buf,
-                dones_buf,
-                terminated_buf,
-                obs_buf,
-                rng_seed=0,
-                workspace_ptr=workspace_buf.unsafe_ptr(),
+            # Re-extract obs after reset. Bug F (2026-05-05): the previous
+            # `step_kernel_gpu` call here applied actions_buf a SECOND time,
+            # silently advancing physics by an extra step per outer iteration
+            # while overwriting rewards_buf/dones_buf without accumulating
+            # them. Net effect: env ran at 2× speed but rewards counted only
+            # half of steps → MuZero CartPole reported ~10-step episodes
+            # vs the random-policy baseline of ~22 steps, masking the actual
+            # learning signal. Replaced with read-only extract_obs that
+            # populates obs_buf from the just-reset state without touching
+            # physics or counters.
+            E.extract_obs_kernel_gpu[Self.n_envs, E.STATE_SIZE, OBS](
+                ctx, states_buf, obs_buf
             )
 
             total_steps += Self.n_envs
