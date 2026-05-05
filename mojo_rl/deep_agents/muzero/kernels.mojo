@@ -965,3 +965,36 @@ def action_histogram_kernel[
         var a = Int(rebind[Scalar[dtype]](actions[i]))
         if a >= 0 and a < ACT:
             hist[a] = hist[a] + Scalar[dtype](1.0)
+
+
+def action_switch_kernel[
+    N_ENVS: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    prev_actions: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    switch_count: LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin],
+):
+    """Count per-env action switches: increment switch_count[0] for each env i
+    where actions[i] != prev_actions[i], then copy actions[i] into prev_actions[i].
+    Single-threaded: scalar accumulation over N_ENVS.
+
+    Distinguishes two failure modes when marginal action distribution is uniform
+    but episode length is sub-random:
+      - High switch rate (~50%): per-step actions are independent uniform; sub-
+        random length must come from some other mechanism (env, scoring).
+      - Low switch rate (<50%): actions are temporally correlated within an
+        env (long same-direction streaks → pole falls faster than random).
+      - Per-env-locked (≈0%): each env commits to one action for its full
+        episode; aggregate balances 50/50 because half the envs picked each.
+    """
+    if thread_idx.x != 0 or block_idx.x != 0:
+        return
+    var s = switch_count[0]
+    for i in range(N_ENVS):
+        var cur = rebind[Scalar[dtype]](actions[i])
+        var prv = rebind[Scalar[dtype]](prev_actions[i])
+        if cur != prv:
+            s = s + Scalar[dtype](1.0)
+        prev_actions[i] = cur
+    switch_count[0] = s

@@ -108,6 +108,7 @@ from .kernels import (
     to_play_from_episode_step_kernel,
     decode_value_dist_kernel,
     action_histogram_kernel,
+    action_switch_kernel,
 )
 
 
@@ -3314,6 +3315,17 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         action_hist_buf.enqueue_fill(Scalar[dtype](0.0))
         var action_hist_host = ctx.enqueue_create_host_buffer[dtype](ACT)
 
+        # Switch-rate counter — number of times action[t] != action[t-1] per
+        # env, summed across the print interval. Random uniform = 50% switch
+        # rate. Sub-50% = temporal correlation (sticky actions); near-0% =
+        # per-env episode-long action commitment. Used jointly with the
+        # marginal histogram to distinguish failure modes.
+        var prev_actions_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs)
+        prev_actions_buf.enqueue_fill(Scalar[dtype](0.0))
+        var switch_count_buf = ctx.enqueue_create_buffer[dtype](1)
+        switch_count_buf.enqueue_fill(Scalar[dtype](0.0))
+        var switch_count_host = ctx.enqueue_create_host_buffer[dtype](1)
+
         # GPU MCTS state
         comptime LATENT = Self.Config.latent_dim
         comptime BINS = Self.Config.num_bins
@@ -3790,6 +3802,25 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     block_dim=(1,),
                 )
 
+                # Switch-rate counter — increments by #{i : action[t,i] != action[t-1,i]}
+                # then snapshots actions into prev_actions for the next step.
+                var prev_act_t = LayoutTensor[
+                    dtype, Layout.row_major(Self.n_envs), MutAnyOrigin
+                ](prev_actions_buf.unsafe_ptr())
+                var switch_t = LayoutTensor[
+                    dtype, Layout.row_major(1), MutAnyOrigin
+                ](switch_count_buf.unsafe_ptr())
+                comptime run_switch = action_switch_kernel[
+                    Self.n_envs, dtype
+                ]
+                ctx.enqueue_function[run_switch, run_switch](
+                    act_out_t,
+                    prev_act_t,
+                    switch_t,
+                    grid_dim=(1,),
+                    block_dim=(1,),
+                )
+
                 # Compute root values for MCTS value targets via
                 # Σ_a total_value[root,a] / Σ_a visit_count[root,a] — the
                 # MCTS-improved value at the root, in raw scalar space (the
@@ -4016,6 +4047,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 ctx.enqueue_copy(reward_sum_host, gpu_reward_sum_buf)
                 ctx.enqueue_copy(episode_count_host, gpu_episode_count_buf)
                 ctx.enqueue_copy(action_hist_host, action_hist_buf)
+                ctx.enqueue_copy(switch_count_host, switch_count_buf)
                 ctx.synchronize()
 
                 var total_reward = Float64(reward_sum_host[0])
@@ -4082,8 +4114,13 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     if ai < ACT - 1:
                         act_line += String(", ")
                 act_line += String("]  total=") + String(Int(hist_total))
+                var switches = Float64(switch_count_host[0])
+                var switch_pct = (switches / hist_total * 100.0) if hist_total > 0 else Float64(0.0)
+                act_line += String("  switches=") + String(Int(switches))
+                act_line += String(" (") + String(Int(switch_pct)) + String("%)")
                 print(act_line)
                 action_hist_buf.enqueue_fill(Scalar[dtype](0.0))
+                switch_count_buf.enqueue_fill(Scalar[dtype](0.0))
 
                 # Log to metrics
                 if total_eps > 0:
