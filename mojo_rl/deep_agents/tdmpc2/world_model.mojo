@@ -32,6 +32,8 @@ from mojo_rl.nn.model import (
     NormedLinear,
     SimNorm,
     LayerNorm,
+    Mish,
+    Dropout,
 )
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.initializer import Kaiming, Normal
@@ -134,9 +136,25 @@ struct WorldModel[
         ],
     ]
 
+    # Q-network first layer: Linear → Dropout → LayerNorm → Mish.
+    # Mirrors reference TD-MPC2 (layers.py:107-111) where the first hidden
+    # layer of each Q net has dropout=0.01 — applied to the linear output
+    # BEFORE LayerNorm + Mish. Dropout is identity in `forward_gpu_no_cache`
+    # (used for target Q), active in `forward_gpu_with_cache` (used for
+    # online Q in BPTT and policy update). Matches reference's train()/eval()
+    # mode switch where target nets are forced into eval mode.
+    comptime Q_DROPOUT_P: Float64 = 0.01
+    comptime QFirstLayer = Sequential[
+        Linear[Self.ZA_DIM, Self.MLP_DIM],
+        Dropout[Self.MLP_DIM, Self.Q_DROPOUT_P, 0xD13D7, True],
+        LayerNorm[Self.MLP_DIM],
+        Mish[Self.MLP_DIM],
+    ]
     # Q-network: (LATENT + ACTION) → NUM_BINS logits
+    # Reference: mlp(za, [mlp_dim, mlp_dim], num_bins, dropout=0.01) which
+    # builds NormedLinear(dropout=0.01) → NormedLinear(dropout=0) → Linear.
     comptime QModel = Sequential[
-        NormedLinear[Self.ZA_DIM, Self.MLP_DIM],
+        Self.QFirstLayer,
         NormedLinear[Self.MLP_DIM, Self.MLP_DIM],
         Linear[Self.MLP_DIM, Self.NUM_BINS],
     ]
