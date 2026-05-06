@@ -134,7 +134,7 @@ def bound(x: Float64, m: Float64, M: Float64) -> Float64:
 
 
 struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
-    BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv
+    BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv & Movable
 ):
     """Native Mojo Acrobot environment with integrated SDL2 rendering.
 
@@ -244,6 +244,35 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         # Renderer
         self._renderer = UnsafePointer[Renderer2D, MutAnyOrigin]()
         self._renderer_initialized = False
+
+    def __init__(out self, *, deinit take: Self):
+        """Move-init — required for `Movable` conformance, used by
+        `UnsafePointer.init_pointee_move(...)` in multi-env demos."""
+        self.gravity = take.gravity
+        self.link_length_1 = take.link_length_1
+        self.link_length_2 = take.link_length_2
+        self.link_mass_1 = take.link_mass_1
+        self.link_mass_2 = take.link_mass_2
+        self.link_com_pos_1 = take.link_com_pos_1
+        self.link_com_pos_2 = take.link_com_pos_2
+        self.link_moi = take.link_moi
+        self.max_vel_1 = take.max_vel_1
+        self.max_vel_2 = take.max_vel_2
+        self.avail_torque = take.avail_torque
+        self.torque_noise_max = take.torque_noise_max
+        self.dt = take.dt
+        self.theta1 = take.theta1
+        self.theta2 = take.theta2
+        self.theta1_dot = take.theta1_dot
+        self.theta2_dot = take.theta2_dot
+        self.steps = take.steps
+        self.max_steps = take.max_steps
+        self.done = take.done
+        self.total_reward = take.total_reward
+        self.num_bins = take.num_bins
+        self.use_book_dynamics = take.use_book_dynamics
+        self._renderer = take._renderer
+        self._renderer_initialized = take._renderer_initialized
 
     # ========================================================================
     # DiscreteEnv trait methods
