@@ -15,6 +15,7 @@ Reference: Hansen et al., 2023 — TD-MPC2
 from std.math import exp, sqrt, cos, log
 from std.memory import UnsafePointer
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
@@ -39,6 +40,8 @@ from .kernels import (
     tdmpc2_apply_tanh_build_za_deterministic_kernel,
     tdmpc2_q_decode_kernel,
     tdmpc2_decode_and_min_kernel,
+    tdmpc2_decode_scaled_kernel,
+    tdmpc2_decode_add_scaled_kernel,
     tdmpc2_min5_q_values_kernel,
     tdmpc2_zero_kernel,
     # Fused kernels
@@ -1266,52 +1269,71 @@ def plan_gpu_batched[
             block_dim=(TPB,),
         )
 
-        # Q1..Q5: 5 separate forward passes using nn framework (with MMA)
-        comptime q_decode = tdmpc2_q_decode_kernel[dtype, BATCH_TOTAL, NUM_BINS]
-        comptime decode_min = tdmpc2_decode_and_min_kernel[
+        # Q-ensemble for MPPI value estimation: avg of 2 random Q-nets.
+        # Reference TD-MPC2 (`tdmpc2.py:137`, `Q(..., return_type='avg')`)
+        # subsamples 2 of NUM_Q target Qs and averages them; min-of-all-N
+        # is over-pessimistic and undervalues exploratory trajectories.
+        # We pick the pair on host per-MPPI-iter so each iter samples a
+        # different random subset (matches reference's per-call randperm).
+        comptime decode_scaled = tdmpc2_decode_scaled_kernel[
             dtype, BATCH_TOTAL, NUM_BINS
         ]
+        comptime decode_add_scaled = tdmpc2_decode_add_scaled_kernel[
+            dtype, BATCH_TOTAL, NUM_BINS
+        ]
+        var q_pair_rng = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(0xA1B2C3D4),
+            offset=0,
+        )
+        var q_pair_uniform = q_pair_rng.step_uniform()
+        var qa = Int(Float64(q_pair_uniform[0]) * Float64(NUM_Q)) % NUM_Q
+        var qb = (
+            qa + 1 + Int(Float64(q_pair_uniform[1]) * Float64(NUM_Q - 1))
+            % (NUM_Q - 1)
+        ) % NUM_Q
+        var half_scalar = Scalar[dtype](0.5)
 
-        # Q1: forward → decode → initialize q_min
-        var qt1_p = LayoutTensor[dtype, Layout.row_major(Q_PS), MutAnyOrigin](
-            qt_param_ptrs[0]
+        # Q[qa]: forward → decode * 0.5 → init q_avg
+        var qta_p = LayoutTensor[dtype, Layout.row_major(Q_PS), MutAnyOrigin](
+            qt_param_ptrs[qa]
         )
         QModel.forward_gpu_no_cache[BATCH_TOTAL](
             ctx,
             q_out_tensor,
             q_in_tensor,
-            qt1_p,
+            qta_p,
             q_state,
             mb.q_ws_buf,
         )
-        ctx.enqueue_function[q_decode, q_decode](
+        ctx.enqueue_function[decode_scaled, decode_scaled](
             q_logits_tensor,
             bins_tensor,
-            q_min_tensor,
+            q_min_tensor,  # repurposed as q_avg accumulator
+            half_scalar,
             grid_dim=(MPPI_BLOCKS,),
             block_dim=(TPB,),
         )
 
-        # Q2..Q5: forward → decode + min update
-        comptime for qi in range(1, NUM_Q):
-            var qt_p = LayoutTensor[
-                dtype, Layout.row_major(Q_PS), MutAnyOrigin
-            ](qt_param_ptrs[qi])
-            QModel.forward_gpu_no_cache[BATCH_TOTAL](
-                ctx,
-                q_out_tensor,
-                q_in_tensor,
-                qt_p,
-                q_state,
-                mb.q_ws_buf,
-            )
-            ctx.enqueue_function[decode_min, decode_min](
-                q_logits_tensor,
-                bins_tensor,
-                q_min_tensor,
-                grid_dim=(MPPI_BLOCKS,),
-                block_dim=(TPB,),
-            )
+        # Q[qb]: forward → q_avg += decode * 0.5
+        var qtb_p = LayoutTensor[dtype, Layout.row_major(Q_PS), MutAnyOrigin](
+            qt_param_ptrs[qb]
+        )
+        QModel.forward_gpu_no_cache[BATCH_TOTAL](
+            ctx,
+            q_out_tensor,
+            q_in_tensor,
+            qtb_p,
+            q_state,
+            mb.q_ws_buf,
+        )
+        ctx.enqueue_function[decode_add_scaled, decode_add_scaled](
+            q_logits_tensor,
+            bins_tensor,
+            q_min_tensor,
+            half_scalar,
+            grid_dim=(MPPI_BLOCKS,),
+            block_dim=(TPB,),
+        )
 
         # Add terminal value to returns
         comptime add_terminal = mppi_add_terminal_value_kernel[

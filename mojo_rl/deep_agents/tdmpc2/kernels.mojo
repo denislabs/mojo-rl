@@ -1174,6 +1174,105 @@ def tdmpc2_decode_and_min_kernel[
 
 
 @always_inline
+def tdmpc2_decode_scaled_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    BINS: Int,
+](
+    logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, BINS), MutAnyOrigin
+    ],
+    bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+    q_out: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    scale: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Decode Q logits to actual value, multiply by `scale`, OVERWRITE q_out.
+
+    Used to initialize q_avg buffer for the avg-of-2-random Q ensemble in
+    MPPI value estimation. Reference TD-MPC2 (`tdmpc2.py:137`) uses
+    `Q(..., return_type='avg')` which subsamples 2 of N Q-networks and
+    averages them — less pessimistic than min-of-N, important for MPPI to
+    fairly evaluate exploratory trajectories.
+
+    Args:
+        logits: Q-network logit output [BATCH, BINS].
+        bins: Value bin centers in symlog space [BINS].
+        q_out: Output buffer [BATCH] (written with scale * symexp(E[bins])).
+        scale: Multiplier (typically 0.5 = 1/N_Q_AVG).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    var max_l = Scalar[dtype](logits[i, 0][0])
+    for k in range(1, BINS):
+        var v = Scalar[dtype](logits[i, k][0])
+        if v > max_l:
+            max_l = v
+
+    var sum_exp = Scalar[dtype](0.0)
+    for k in range(BINS):
+        sum_exp = sum_exp + exp(Scalar[dtype](logits[i, k][0]) - max_l)
+
+    var expected_val = Scalar[dtype](0.0)
+    for k in range(BINS):
+        var sm_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
+        expected_val = expected_val + sm_k * Scalar[dtype](bins[k][0])
+
+    var actual_val = _symexp[dtype](expected_val)
+    q_out[i] = scale * actual_val
+
+
+@always_inline
+def tdmpc2_decode_add_scaled_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    BINS: Int,
+](
+    logits: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, BINS), MutAnyOrigin
+    ],
+    bins: LayoutTensor[dtype, Layout.row_major(BINS), MutAnyOrigin],
+    q_out: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin],
+    scale: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Decode Q logits to actual value, multiply by `scale`, ACCUMULATE into q_out.
+
+    Companion to tdmpc2_decode_scaled_kernel; together they implement
+    `q_avg[i] = (1/N) * sum_n symexp(E[bins_n])` for the random N-of-NUM_Q
+    Q-ensemble averaging used in MPPI.
+
+    Args:
+        logits: Q-network logit output [BATCH, BINS].
+        bins: Value bin centers in symlog space [BINS].
+        q_out: Accumulator buffer [BATCH] (q_out[i] += scale * symexp(...)).
+        scale: Multiplier (typically 0.5 = 1/N_Q_AVG).
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    var max_l = Scalar[dtype](logits[i, 0][0])
+    for k in range(1, BINS):
+        var v = Scalar[dtype](logits[i, k][0])
+        if v > max_l:
+            max_l = v
+
+    var sum_exp = Scalar[dtype](0.0)
+    for k in range(BINS):
+        sum_exp = sum_exp + exp(Scalar[dtype](logits[i, k][0]) - max_l)
+
+    var expected_val = Scalar[dtype](0.0)
+    for k in range(BINS):
+        var sm_k = exp(Scalar[dtype](logits[i, k][0]) - max_l) / sum_exp
+        expected_val = expected_val + sm_k * Scalar[dtype](bins[k][0])
+
+    var actual_val = _symexp[dtype](expected_val)
+    var cur = Scalar[dtype](q_out[i][0])
+    q_out[i] = cur + scale * actual_val
+
+
+@always_inline
 def tdmpc2_extract_all_build_za_kernel[
     dtype: DType,
     BATCH_SIZE: Int,
@@ -2039,9 +2138,13 @@ def mppi_add_terminal_value_kernel[
     returns: LayoutTensor[dtype, Layout.row_major(TOTAL_SAMPLES), MutAnyOrigin],
     discount: Scalar[dtype],
 ) where dtype.is_floating_point():
-    """Add discounted terminal Q-value to returns.
+    """Add discounted terminal Q-value to returns + replace NaN/Inf with 0.
 
-    returns[i] += discount * q_min[i]
+    Computes `returns[i] += discount * q_min[i]`, then guards against
+    NaN/Inf in the result by zeroing them out. Matches reference TD-MPC2
+    (`tdmpc2.py:185`, `value.nan_to_num(0)`) — without this, a single
+    NaN sample from saturating activations early in training pollutes
+    the entire env's softmax (because exp(NaN) = NaN propagates).
 
     Args:
         q_min: Min-Q terminal values [TOTAL_SAMPLES].
@@ -2052,7 +2155,10 @@ def mppi_add_terminal_value_kernel[
     if i >= TOTAL_SAMPLES:
         return
 
-    returns[i] = returns[i] + discount * q_min[i]
+    var v = Scalar[dtype](returns[i][0]) + discount * Scalar[dtype](q_min[i][0])
+    if isnan(v) or isinf(v):
+        v = Scalar[dtype](0.0)
+    returns[i] = v
 
 
 @always_inline
