@@ -31,7 +31,7 @@ struct NormedLinear[
     in_dim: Int,
     out_dim: Int,
     EPSILON: Float64 = 1e-5,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](Model):
     """Fused NormedLinear block: Linear → LayerNorm → Mish.
 

@@ -58,7 +58,7 @@ struct ScaledDotProductAttention[
     n_heads: Int,
     seq_len: Int,
     causal: Bool = False,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](DiffOp):
     """Scaled dot-product attention with multi-head support.
 

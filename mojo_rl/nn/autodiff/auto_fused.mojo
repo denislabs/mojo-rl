@@ -210,7 +210,7 @@ def _auto_fused_forward[
     *OPS: DiffOp,
     START: Int = 0,
     dtype: DType = DType.float32,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](
     in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     final_out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -506,7 +506,7 @@ def _auto_fused_backward[
     *OPS: DiffOp,
     START: Int = 0,
     dtype: DType = DType.float32,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](
     grad_in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     grad_chain_out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -857,7 +857,7 @@ def _auto_fused_forward_gpu[
     *OPS: DiffOp,
     START: Int = 0,
     dtype: DType = DType.float32,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](
     ctx: DeviceContext,
     in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -1139,7 +1139,7 @@ def _auto_fused_forward_gpu_on_stream[
     *OPS: DiffOp,
     START: Int = 0,
     dtype: DType = DType.float32,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](
     ctx: DeviceContext,
     stream: DeviceStream,
@@ -1449,7 +1449,7 @@ def _auto_fused_backward_gpu[
     *OPS: DiffOp,
     START: Int = 0,
     dtype: DType = DType.float32,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](
     ctx: DeviceContext,
     grad_in_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -1791,7 +1791,7 @@ def _auto_fused_backward_gpu[
 
 
 @fieldwise_init
-struct AutoFused[*OPS: DiffOp, USE_MAX_KERNELS: Bool = False](Model):
+struct AutoFused[*OPS: DiffOp, USE_MAX_KERNELS: Bool = True](Model):
     """Automatically fuses a DiffOp chain into optimized fused groups.
 
     Pattern matching (greedy, left-to-right):

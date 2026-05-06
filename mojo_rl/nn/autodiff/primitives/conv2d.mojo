@@ -33,7 +33,7 @@ struct Conv2D[
     padding: Int,
     in_h: Int,
     in_w: Int,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ](DiffOp):
     """2D Convolution via im2col reduction to MatMul.
 

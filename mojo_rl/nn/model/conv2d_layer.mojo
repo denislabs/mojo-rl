@@ -33,7 +33,7 @@ comptime Conv2DLayer[
     p: Int,
     h: Int,
     w: Int,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ] = AutoFused[Conv2D[ic, oc, k, s, p, h, w, USE_MAX_KERNELS]]
 
 comptime Conv2DReLU[
@@ -44,7 +44,7 @@ comptime Conv2DReLU[
     p: Int,
     h: Int,
     w: Int,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ] = AutoFused[
     FusedConv2DActivation[ic, oc, k, s, p, h, w, ReLUActivation, USE_MAX_KERNELS]
 ]
@@ -57,7 +57,7 @@ comptime Conv2DTanh[
     p: Int,
     h: Int,
     w: Int,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ] = AutoFused[
     FusedConv2DActivation[ic, oc, k, s, p, h, w, TanhActivation, USE_MAX_KERNELS]
 ]
@@ -70,7 +70,7 @@ comptime Conv2DSigmoid[
     p: Int,
     h: Int,
     w: Int,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ] = AutoFused[
     FusedConv2DActivation[
         ic, oc, k, s, p, h, w, SigmoidActivation, USE_MAX_KERNELS
@@ -85,7 +85,7 @@ comptime Conv2DMish[
     p: Int,
     h: Int,
     w: Int,
-    USE_MAX_KERNELS: Bool = False,
+    USE_MAX_KERNELS: Bool = True,
 ] = AutoFused[
     FusedConv2DActivation[ic, oc, k, s, p, h, w, MishActivation, USE_MAX_KERNELS]
 ]
