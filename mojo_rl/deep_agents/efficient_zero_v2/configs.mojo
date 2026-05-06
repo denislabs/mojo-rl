@@ -67,6 +67,45 @@ from mojo_rl.deep_agents.efficient_zero_v2.networks import (
 
 
 # ═════════════════════════════════════════════════════════════════════════
+# Value-target mode constants (paper Eq. 16, EZ-V2 reference
+# `value_target` config field). Mode is comptime — pick once per agent.
+#
+#   VALUE_TARGET_SEARCH = 0  → pure stored MCTS root value (`sve`).
+#                              Default. The bootstrap (boot_v) is not
+#                              computed at all in this mode. This was
+#                              EZ-V2's original "search" value-target
+#                              mode and the de-facto behaviour of the
+#                              agent before Lever 1 was wired in.
+#
+#   VALUE_TARGET_SARSA  = 1  → pure n-step TD with **fresh** target-net
+#                              bootstrap (Lever 1, EZ-V2 paper App. A.4).
+#                              `boot_v[k+n_eff]` from a forward through
+#                              `representation_target + prediction_target`
+#                              on `o_{t+k+n_eff}` replaces the stored MCTS
+#                              value at the bootstrap position.
+#
+#   VALUE_TARGET_MIXED  = 2  → blend SVE → SARSA based on transition age,
+#                              gated by `t_fresh` / `t_stale`. Matches
+#                              `MixedValueTarget.compute(sve, td, age)`.
+#                              Note: thresholds are inverted vs the EZ-V2
+#                              reference's `value_target='mixed'` mode
+#                              (which uses pure n-step TD for early
+#                              training and blends in fresh search later).
+#                              See work-unit 8 in
+#                              `docs/EFFICIENTZERO_V2_PLAN.md` for the
+#                              empirical rationale: at smoke configs the
+#                              stored MCTS root carries more reward
+#                              signal than a single value-head forward,
+#                              so SVE is preferred while training is
+#                              young and the value head is uninformative.
+# ═════════════════════════════════════════════════════════════════════════
+
+comptime VALUE_TARGET_SEARCH: Int = 0
+comptime VALUE_TARGET_SARSA: Int = 1
+comptime VALUE_TARGET_MIXED: Int = 2
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # Config trait
 # ═════════════════════════════════════════════════════════════════════════
 
@@ -107,6 +146,14 @@ trait EZV2DiscreteConfig(MuZeroConfig):
     comptime lambda_value: Float64
     comptime lambda_consistency: Float64
     comptime entropy_weight: Float64
+
+    # ── Value-target mode (paper Eq. 16, EZ-V2 reference `value_target`) ─
+    comptime value_target_mode: Int
+    """One of `VALUE_TARGET_SEARCH` (0), `VALUE_TARGET_SARSA` (1), or
+    `VALUE_TARGET_MIXED` (2). See module docstring for semantics. Defaults
+    to SEARCH so existing agents keep their behaviour. Only `t_fresh`/
+    `t_stale` are consulted when mode == MIXED; SARSA always uses the
+    fresh target-net bootstrap and SEARCH never computes it."""
 
     # ── Mixed-value-target staleness thresholds (paper Eq. 16) ───────────
     comptime t_fresh: Int
@@ -166,6 +213,11 @@ struct EZV2DiscreteMLPConfig[
     LAMBDA_V: Float64 = 0.25,
     LAMBDA_G: Float64 = 2.0,
     ENT_WEIGHT: Float64 = 5e-3,
+    # Value-target mode. Default = SEARCH = pure stored MCTS root value.
+    # Set to VALUE_TARGET_SARSA (1) to enable Lever 1 (fresh target-net
+    # bootstrap for n-step TD), or VALUE_TARGET_MIXED (2) for the age-
+    # gated blend.
+    VALUE_TARGET_MODE: Int = VALUE_TARGET_SEARCH,
     T_FRESH: Int = 20000,
     T_STALE: Int = 40000,
     # Reward-prefix LSTM head (paper App. G). Off by default — the head
@@ -268,6 +320,7 @@ struct EZV2DiscreteMLPConfig[
     comptime lambda_consistency: Float64 = Self.LAMBDA_G
     comptime entropy_weight: Float64 = Self.ENT_WEIGHT
 
+    comptime value_target_mode: Int = Self.VALUE_TARGET_MODE
     comptime t_fresh: Int = Self.T_FRESH
     comptime t_stale: Int = Self.T_STALE
 

@@ -137,6 +137,13 @@ def main():
     #      low-K_GUMBEL configs — would help when σ(Q) is small.
     #   4. TRAIN_INTERVAL → 2 or 1 (more updates per env step).
     #   5. NUM_ENV_STEPS → 100k.
+    # Default `VALUE_TARGET_MODE=VALUE_TARGET_SEARCH` (= stored MCTS root
+    # value). Empirically this is what works on CartPole at smoke config:
+    # the stored MCTS root carries reward signal from a search tree of
+    # depth ~3-4, which is more informative than a single-pass target-net
+    # value forward when the value head is still untrained. To opt into
+    # Lever 1 (fresh target-net bootstrap for n-step TD) on a richer
+    # config, pass `VALUE_TARGET_MODE=VALUE_TARGET_SARSA`.
     comptime Config = EZV2DiscreteMLPConfig[
         OBS=4,
         ACT=2,

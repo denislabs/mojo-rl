@@ -675,6 +675,12 @@ struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
     # ── Network workspace (max across all 5 networks) ────────────────────
     var workspace_buf: DeviceBuffer[dtype]
 
+    # ── Gradient-clipping partial-sums scratch ───────────────────────────
+    # Sized for the largest network's `(PARAM_SIZE + TPB - 1) // TPB`
+    # (TPB=256). Reused sequentially across networks during the per-
+    # network clip pass before each `optimizer_step`.
+    var grad_clip_ps: DeviceBuffer[dtype]
+
     # ── Host buffers (pinned) for upload/download ────────────────────────
     var batch_obs_host: HostBuffer[dtype]
     var batch_actions_host: HostBuffer[dtype]
@@ -962,6 +968,39 @@ struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
         )
         self.workspace_buf = ctx.enqueue_create_buffer[dtype](WS_TOTAL)
 
+        # Gradient-clipping partial-sums scratch — sized for the largest
+        # of the 5 networks (TPB=256 matches the kernel constant in
+        # efficient_zero_v2.train_step_gpu). Reused sequentially.
+        comptime _CLIP_TPB: Int = 256
+        comptime _CLIP_PS_REP = (
+            Self.Config.RepModel.PARAM_SIZE + _CLIP_TPB - 1
+        ) // _CLIP_TPB
+        comptime _CLIP_PS_DYN = (
+            Self.Config.DynModel.PARAM_SIZE + _CLIP_TPB - 1
+        ) // _CLIP_TPB
+        comptime _CLIP_PS_PRED = (
+            Self.Config.PredModel.PARAM_SIZE + _CLIP_TPB - 1
+        ) // _CLIP_TPB
+        comptime _CLIP_PS_PROJ = (
+            Self.Config.ProjectorModel.PARAM_SIZE + _CLIP_TPB - 1
+        ) // _CLIP_TPB
+        comptime _CLIP_PS_PREDR = (
+            Self.Config.PredictorModel.PARAM_SIZE + _CLIP_TPB - 1
+        ) // _CLIP_TPB
+        comptime _CLIP_M1 = (
+            _CLIP_PS_REP if _CLIP_PS_REP > _CLIP_PS_DYN else _CLIP_PS_DYN
+        )
+        comptime _CLIP_M2 = (
+            _CLIP_M1 if _CLIP_M1 > _CLIP_PS_PRED else _CLIP_PS_PRED
+        )
+        comptime _CLIP_M3 = (
+            _CLIP_M2 if _CLIP_M2 > _CLIP_PS_PROJ else _CLIP_PS_PROJ
+        )
+        comptime _CLIP_PS_MAX = (
+            _CLIP_M3 if _CLIP_M3 > _CLIP_PS_PREDR else _CLIP_PS_PREDR
+        )
+        self.grad_clip_ps = ctx.enqueue_create_buffer[dtype](_CLIP_PS_MAX)
+
         # ── Host pinned buffers ─────────────────────────────────────────
         self.batch_obs_host = ctx.enqueue_create_host_buffer[dtype](
             Self.BATCH * (Self.K + 1) * Self.OBS
@@ -1147,6 +1186,7 @@ struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
         self.per_sample_v_loss_k0_buf = take.per_sample_v_loss_k0_buf^
         self.priorities_out_buf = take.priorities_out_buf^
         self.workspace_buf = take.workspace_buf^
+        self.grad_clip_ps = take.grad_clip_ps^
         self.batch_obs_host = take.batch_obs_host^
         self.batch_actions_host = take.batch_actions_host^
         self.batch_rewards_host = take.batch_rewards_host^

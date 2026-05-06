@@ -27,6 +27,12 @@ from .consistency import (
     cosine_consistency_loss_forward,
     cosine_consistency_loss,
 )
-from .configs import EZV2DiscreteConfig, EZV2DiscreteMLPConfig
+from .configs import (
+    EZV2DiscreteConfig,
+    EZV2DiscreteMLPConfig,
+    VALUE_TARGET_SEARCH,
+    VALUE_TARGET_SARSA,
+    VALUE_TARGET_MIXED,
+)
 from .state import EZV2DiscreteCPUState, EZV2DiscreteGPUState
 from .efficient_zero_v2 import GenericEfficientZeroV2Agent

@@ -25,6 +25,7 @@ from std.random import seed
 from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2DiscreteMLPConfig,
     GenericEfficientZeroV2Agent,
+    VALUE_TARGET_MIXED,
 )
 from mojo_rl.envs.cartpole import CartPoleEnv
 from mojo_rl.nn.constants import dtype
@@ -67,6 +68,8 @@ def main():
         # regimes by forcing step_at_write.
         T_FRESH=10,
         T_STALE=20,
+        # Test specifically validates the MixedValueTarget blend.
+        VALUE_TARGET_MODE=VALUE_TARGET_MIXED,
     ]
 
     seed(2026)

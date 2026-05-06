@@ -26,7 +26,12 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.model import LSTMCell
 from mojo_rl.nn.training import Network
-from mojo_rl.deep_agents.efficient_zero_v2.configs import EZV2DiscreteConfig
+from mojo_rl.deep_agents.efficient_zero_v2.configs import (
+    EZV2DiscreteConfig,
+    VALUE_TARGET_SEARCH,
+    VALUE_TARGET_SARSA,
+    VALUE_TARGET_MIXED,
+)
 from mojo_rl.deep_agents.efficient_zero_v2.networks import RewardPrefixHeadMLP
 from mojo_rl.deep_agents.efficient_zero_v2.state import (
     EZV2DiscreteCPUState,
@@ -59,12 +64,42 @@ from mojo_rl.deep_agents.efficient_zero_v2.kernels import (
 from mojo_rl.deep_agents.muzero.utils import (
     scalar_transform,
     encode_categorical,
+    decode_categorical,
+    inverse_scalar_transform,
     cross_entropy_with_softmax,
 )
 from mojo_rl.deep_agents.muzero.kernels import (
     scalar_transform_kernel,
     two_hot_encode_kernel,
 )
+from mojo_rl.deep_agents.core.kernels import (
+    gradient_norm_kernel,
+    gradient_reduce_apply_fused_kernel,
+)
+
+
+def _clip_grads_inplace(
+    grads: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    n: Int,
+    max_norm: Float64,
+):
+    """Clip gradient L2-norm in-place to `max_norm`.
+
+    Computes `norm = sqrt(Σ grads[i]^2)`, then if `norm > max_norm`
+    multiplies every entry by `max_norm / (norm + 1e-8)`. No-op when
+    `norm <= max_norm`. Matches PyTorch's `clip_grad_norm_` per-parameter-
+    group semantics.
+    """
+    var sq_sum = Float64(0.0)
+    for i in range(n):
+        var g = Float64(grads[i])
+        sq_sum += g * g
+    var norm = sqrt(sq_sum)
+    if norm <= max_norm:
+        return
+    var scale = max_norm / (norm + Float64(1e-8))
+    for i in range(n):
+        grads[i] = Scalar[dtype](Float64(grads[i]) * scale)
 
 
 struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
@@ -1279,10 +1314,102 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                         lp_scale * (probs[i] - pol_target_dbl[i])
                     )
 
-        # ── L_V + grad: value CE with mixed value target (paper Eq. 16) ─
-        # blend SVE (= stored MCTS root value) and the n-step TD return
-        # computed from the K-window rewards + bootstrap from the stored
-        # MCTS value at position min(N_TD, K-k) ahead.
+        # ── Fresh bootstrap values from target nets (Lever 1). ───────────
+        # Only computed when the value-target mode actually consumes
+        # `boot_v` — SARSA always does, MIXED can (when age > t_fresh).
+        # SEARCH ignores it entirely so we skip the (K+1) target-net
+        # forwards, saving ~K+1 small CPU rep+pred calls per train_step.
+        var boot_v = alloc[Scalar[dtype]](BATCH * (K + 1))
+        memset(boot_v, 0, BATCH * (K + 1))
+        comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
+            var tgt_rep_input = alloc[Scalar[dtype]](BATCH * OBS)
+            var tgt_z = alloc[Scalar[dtype]](BATCH * LATENT)
+            var tgt_pred_out = alloc[Scalar[dtype]](BATCH * PRED_OUT)
+            var tgt_logits_dbl = alloc[Float64](BINS)
+
+            var tgt_rep_params = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.RepModel.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.representation_target.params)
+            var tgt_rep_state = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.RepModel.STATE_SIZE),
+                MutAnyOrigin,
+            ](self.state.representation_target.model_state)
+            var tgt_pred_params = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.PredModel.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.prediction_target.params)
+            var tgt_pred_state = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.PredModel.STATE_SIZE),
+                MutAnyOrigin,
+            ](self.state.prediction_target.model_state)
+
+            for k in range(K + 1):
+                for b in range(BATCH):
+                    for d in range(OBS):
+                        tgt_rep_input[b * OBS + d] = batch_obs[
+                            (b * (K + 1) + k) * OBS + d
+                        ]
+                var tgt_rep_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
+                    MutAnyOrigin,
+                ](tgt_rep_input)
+                var tgt_z_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
+                    MutAnyOrigin,
+                ](tgt_z)
+                Network[
+                    Self.Config.RepModel, Self.Config.OptType
+                ].forward[BATCH](
+                    tgt_rep_in_t,
+                    tgt_z_t,
+                    tgt_rep_params,
+                    tgt_rep_state,
+                )
+                var tgt_pred_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.PredModel.IN_DIM),
+                    MutAnyOrigin,
+                ](tgt_z)
+                var tgt_pred_out_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
+                    MutAnyOrigin,
+                ](tgt_pred_out)
+                Network[
+                    Self.Config.PredModel, Self.Config.OptType
+                ].forward[BATCH](
+                    tgt_pred_in_t,
+                    tgt_pred_out_t,
+                    tgt_pred_params,
+                    tgt_pred_state,
+                )
+                for b in range(BATCH):
+                    var off = b * PRED_OUT + ACT
+                    for i in range(BINS):
+                        tgt_logits_dbl[i] = Float64(tgt_pred_out[off + i])
+                    var v_raw = decode_categorical[BINS](
+                        tgt_logits_dbl, self.v_min, self.v_max
+                    )
+                    boot_v[b * (K + 1) + k] = Scalar[dtype](
+                        inverse_scalar_transform(v_raw)
+                    )
+
+            tgt_rep_input.free()
+            tgt_z.free()
+            tgt_pred_out.free()
+            tgt_logits_dbl.free()
+
+        # ── L_V + grad: value CE under one of three modes ────────────────
+        #   SEARCH: target = stored MCTS root value `sve`.
+        #   SARSA:  target = n-step TD with fresh target-net bootstrap.
+        #   MIXED:  target = MixedValueTarget(sve, td, age) blend.
         var n_V = Float64(BATCH * (K + 1))
         var lv_scale = self.Config.lambda_value / n_V
         for k in range(K + 1):
@@ -1290,19 +1417,26 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             for b in range(BATCH):
                 var sve = Float64(batch_mcts_val[b * (K + 1) + k])
                 var td = Float64(0.0)
-                var disc = Float64(1.0)
-                for j in range(n_eff):
+                comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
+                    var disc = Float64(1.0)
+                    for j in range(n_eff):
+                        td += disc * Float64(
+                            batch_rewards[b * K + k + j]
+                        )
+                        disc *= self.gamma
                     td += disc * Float64(
-                        batch_rewards[b * K + k + j]
+                        boot_v[b * (K + 1) + k + n_eff]
                     )
-                    disc *= self.gamma
-                td += disc * Float64(
-                    batch_mcts_val[b * (K + 1) + k + n_eff]
-                )
                 var age = Int(batch_age[b * (K + 1) + k])
-                var v_target = MixedValueTarget[
-                    Self.Config.t_fresh, Self.Config.t_stale
-                ].compute(sve, td, age)
+                var v_target = Float64(0.0)
+                comptime if Self.Config.value_target_mode == VALUE_TARGET_SEARCH:
+                    v_target = sve
+                elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
+                    v_target = td
+                else:  # VALUE_TARGET_MIXED
+                    v_target = MixedValueTarget[
+                        Self.Config.t_fresh, Self.Config.t_stale
+                    ].compute(sve, td, age)
                 encode_categorical[BINS](
                     scalar_transform(v_target),
                     self.v_min,
@@ -1469,6 +1603,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         logits_dbl.free()
         pol_logits_dbl.free()
         pol_target_dbl.free()
+        boot_v.free()
 
         # ── 4. Backward ──────────────────────────────────────────────────
         # Zero all 5 networks' grad buffers.
@@ -1915,7 +2050,38 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         )
         grad_rep_in.free()
 
-        # ── 5. Optimizer step on every network. ─────────────────────────
+        # ── 5. Per-network gradient clipping + optimizer step. ──────────
+        # Paper applies a single global clip-norm 5.0 across all params;
+        # we approximate with per-network clips at the same threshold,
+        # which gives a similar magnitude bound and matches the pattern
+        # used in `offpolicy_agent`. Skipped when `max_grad_norm <= 0`.
+        if self.max_grad_norm > 0.0:
+            _clip_grads_inplace(
+                self.state.representation.grads,
+                Self.Config.RepModel.PARAM_SIZE,
+                self.max_grad_norm,
+            )
+            _clip_grads_inplace(
+                self.state.dynamics.grads,
+                Self.Config.DynModel.PARAM_SIZE,
+                self.max_grad_norm,
+            )
+            _clip_grads_inplace(
+                self.state.prediction.grads,
+                Self.Config.PredModel.PARAM_SIZE,
+                self.max_grad_norm,
+            )
+            _clip_grads_inplace(
+                self.state.projector.grads,
+                Self.Config.ProjectorModel.PARAM_SIZE,
+                self.max_grad_norm,
+            )
+            _clip_grads_inplace(
+                self.state.predictor.grads,
+                Self.Config.PredictorModel.PARAM_SIZE,
+                self.max_grad_norm,
+            )
+
         self.train_step_count += 1
         var step_num = self.train_step_count
 
@@ -1962,6 +2128,17 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
 
         # Reward-prefix LSTM + MLP head Adam step (only when wired in).
         comptime if Self.Config.use_reward_prefix:
+            if self.max_grad_norm > 0.0:
+                _clip_grads_inplace(
+                    self.state.lstm_grads,
+                    _LSTMHead.PARAM_SIZE,
+                    self.max_grad_norm,
+                )
+                _clip_grads_inplace(
+                    self.state.reward_prefix_mlp.grads,
+                    _RewardPrefixMLP.PARAM_SIZE,
+                    self.max_grad_norm,
+                )
             var lstm_params_v_o = LayoutTensor[
                 dtype,
                 Layout.row_major(_LSTMHead.PARAM_SIZE),
@@ -2211,32 +2388,6 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     sampled * K + k
                 ] = self.state.buffer.rewards[(start + k) % CAP]
 
-            # Mixed-value-target (paper Eq. 16) precomputed on host so
-            # the GPU side just sees a plain scalar tensor it can scalar-
-            # transform + two-hot-encode per k.
-            for k in range(K + 1):
-                var sve = Float64(
-                    gpu.batch_mcts_val_host[sampled * (K + 1) + k]
-                )
-                var n_eff = N_TD if N_TD < K - k else K - k
-                var td = Float64(0.0)
-                var disc = Float64(1.0)
-                for j in range(n_eff):
-                    td += disc * Float64(
-                        gpu.batch_rewards_host[sampled * K + k + j]
-                    )
-                    disc *= self.gamma
-                td += disc * Float64(
-                    gpu.batch_mcts_val_host[sampled * (K + 1) + k + n_eff]
-                )
-                var age = Int(gpu.batch_age_host[sampled * (K + 1) + k])
-                var v_target = MixedValueTarget[
-                    Self.Config.t_fresh, Self.Config.t_stale
-                ].compute(sve, td, age)
-                gpu.value_target_full_host[
-                    sampled * (K + 1) + k
-                ] = Scalar[dtype](v_target)
-
             # Cumulative-reward target for the reward-prefix LSTM head
             # (paper App. G). Computed even when use_reward_prefix=False
             # so the upload path stays the same; the kernel just doesn't
@@ -2250,6 +2401,134 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
 
         cum_prio.free()
         cand_starts.free()
+
+        # ── Fresh bootstrap values from target nets (Lever 1). ───────────
+        # Computed on host using the CPU target nets — only when the
+        # value-target mode actually consumes them. SEARCH skips the
+        # forward and zeroes `boot_v_host`; SARSA always uses it; MIXED
+        # may use it depending on age.
+        var boot_v_host = alloc[Scalar[dtype]](BATCH * (K + 1))
+        memset(boot_v_host, 0, BATCH * (K + 1))
+        comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
+            var tgt_rep_input = alloc[Scalar[dtype]](BATCH * OBS)
+            var tgt_z = alloc[Scalar[dtype]](BATCH * LATENT)
+            var tgt_pred_out = alloc[Scalar[dtype]](BATCH * PRED_OUT)
+            var tgt_logits_dbl = alloc[Float64](BINS)
+
+            var tgt_rep_params = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.RepModel.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.representation_target.params)
+            var tgt_rep_state = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.RepModel.STATE_SIZE),
+                MutAnyOrigin,
+            ](self.state.representation_target.model_state)
+            var tgt_pred_params = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.PredModel.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.prediction_target.params)
+            var tgt_pred_state = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.PredModel.STATE_SIZE),
+                MutAnyOrigin,
+            ](self.state.prediction_target.model_state)
+
+            for k in range(K + 1):
+                for b in range(BATCH):
+                    for d in range(OBS):
+                        tgt_rep_input[b * OBS + d] = gpu.batch_obs_host[
+                            (b * (K + 1) + k) * OBS + d
+                        ]
+                var tgt_rep_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
+                    MutAnyOrigin,
+                ](tgt_rep_input)
+                var tgt_z_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
+                    MutAnyOrigin,
+                ](tgt_z)
+                Network[
+                    Self.Config.RepModel, Self.Config.OptType
+                ].forward[BATCH](
+                    tgt_rep_in_t,
+                    tgt_z_t,
+                    tgt_rep_params,
+                    tgt_rep_state,
+                )
+                var tgt_pred_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.PredModel.IN_DIM),
+                    MutAnyOrigin,
+                ](tgt_z)
+                var tgt_pred_out_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
+                    MutAnyOrigin,
+                ](tgt_pred_out)
+                Network[
+                    Self.Config.PredModel, Self.Config.OptType
+                ].forward[BATCH](
+                    tgt_pred_in_t,
+                    tgt_pred_out_t,
+                    tgt_pred_params,
+                    tgt_pred_state,
+                )
+                for b in range(BATCH):
+                    var off = b * PRED_OUT + ACT
+                    for i in range(BINS):
+                        tgt_logits_dbl[i] = Float64(tgt_pred_out[off + i])
+                    var v_raw = decode_categorical[BINS](
+                        tgt_logits_dbl, self.v_min, self.v_max
+                    )
+                    boot_v_host[b * (K + 1) + k] = Scalar[dtype](
+                        inverse_scalar_transform(v_raw)
+                    )
+
+            tgt_rep_input.free()
+            tgt_z.free()
+            tgt_pred_out.free()
+            tgt_logits_dbl.free()
+
+        # ── Value target (SEARCH / SARSA / MIXED) precomputed on host
+        # so the GPU side just sees a plain scalar tensor it can scalar-
+        # transform + two-hot-encode per k.
+        for sampled in range(BATCH):
+            for k in range(K + 1):
+                var sve = Float64(
+                    gpu.batch_mcts_val_host[sampled * (K + 1) + k]
+                )
+                var n_eff = N_TD if N_TD < K - k else K - k
+                var td = Float64(0.0)
+                comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
+                    var disc = Float64(1.0)
+                    for j in range(n_eff):
+                        td += disc * Float64(
+                            gpu.batch_rewards_host[sampled * K + k + j]
+                        )
+                        disc *= self.gamma
+                    td += disc * Float64(
+                        boot_v_host[sampled * (K + 1) + k + n_eff]
+                    )
+                var age = Int(gpu.batch_age_host[sampled * (K + 1) + k])
+                var v_target = Float64(0.0)
+                comptime if Self.Config.value_target_mode == VALUE_TARGET_SEARCH:
+                    v_target = sve
+                elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
+                    v_target = td
+                else:  # VALUE_TARGET_MIXED
+                    v_target = MixedValueTarget[
+                        Self.Config.t_fresh, Self.Config.t_stale
+                    ].compute(sve, td, age)
+                gpu.value_target_full_host[
+                    sampled * (K + 1) + k
+                ] = Scalar[dtype](v_target)
+
+        boot_v_host.free()
 
         # ── 2. Upload host → device ─────────────────────────────────────
         ctx.enqueue_copy(gpu.batch_obs_buf, gpu.batch_obs_host)
@@ -3568,6 +3847,127 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         )
 
         # ── 7. Optimizer step on every network. ─────────────────────────
+        # Per-network gradient clipping (paper: max_grad_norm=5.0). Same
+        # threshold applied independently per network — same pattern as
+        # `offpolicy_agent`. Reuses `gpu.grad_clip_ps` sequentially.
+        if self.max_grad_norm > 0.0:
+            comptime _CLIP_TPB: Int = TPB
+
+            comptime _R_PS = Self.Config.RepModel.PARAM_SIZE
+            comptime _R_BLK = (_R_PS + _CLIP_TPB - 1) // _CLIP_TPB
+            comptime _r_norm_k = gradient_norm_kernel[
+                dtype, _R_PS, _R_BLK, _CLIP_TPB
+            ]
+            comptime _r_clip_k = gradient_reduce_apply_fused_kernel[
+                dtype, _R_PS, _R_BLK, _CLIP_TPB
+            ]
+            var _r_ps_t = LayoutTensor[
+                dtype, Layout.row_major(_R_BLK), MutAnyOrigin
+            ](gpu.grad_clip_ps.unsafe_ptr())
+            var _r_g = gpu.representation.grads_view()
+            ctx.enqueue_function[_r_norm_k, _r_norm_k](
+                _r_ps_t, _r_g, grid_dim=(_R_BLK,), block_dim=(_CLIP_TPB,)
+            )
+            ctx.enqueue_function[_r_clip_k, _r_clip_k](
+                _r_g,
+                _r_ps_t,
+                Scalar[dtype](self.max_grad_norm),
+                grid_dim=(_R_BLK,),
+                block_dim=(_CLIP_TPB,),
+            )
+
+            comptime _D_PS = Self.Config.DynModel.PARAM_SIZE
+            comptime _D_BLK = (_D_PS + _CLIP_TPB - 1) // _CLIP_TPB
+            comptime _d_norm_k = gradient_norm_kernel[
+                dtype, _D_PS, _D_BLK, _CLIP_TPB
+            ]
+            comptime _d_clip_k = gradient_reduce_apply_fused_kernel[
+                dtype, _D_PS, _D_BLK, _CLIP_TPB
+            ]
+            var _d_ps_t = LayoutTensor[
+                dtype, Layout.row_major(_D_BLK), MutAnyOrigin
+            ](gpu.grad_clip_ps.unsafe_ptr())
+            var _d_g = gpu.dynamics.grads_view()
+            ctx.enqueue_function[_d_norm_k, _d_norm_k](
+                _d_ps_t, _d_g, grid_dim=(_D_BLK,), block_dim=(_CLIP_TPB,)
+            )
+            ctx.enqueue_function[_d_clip_k, _d_clip_k](
+                _d_g,
+                _d_ps_t,
+                Scalar[dtype](self.max_grad_norm),
+                grid_dim=(_D_BLK,),
+                block_dim=(_CLIP_TPB,),
+            )
+
+            comptime _P_PS = Self.Config.PredModel.PARAM_SIZE
+            comptime _P_BLK = (_P_PS + _CLIP_TPB - 1) // _CLIP_TPB
+            comptime _p_norm_k = gradient_norm_kernel[
+                dtype, _P_PS, _P_BLK, _CLIP_TPB
+            ]
+            comptime _p_clip_k = gradient_reduce_apply_fused_kernel[
+                dtype, _P_PS, _P_BLK, _CLIP_TPB
+            ]
+            var _p_ps_t = LayoutTensor[
+                dtype, Layout.row_major(_P_BLK), MutAnyOrigin
+            ](gpu.grad_clip_ps.unsafe_ptr())
+            var _p_g = gpu.prediction.grads_view()
+            ctx.enqueue_function[_p_norm_k, _p_norm_k](
+                _p_ps_t, _p_g, grid_dim=(_P_BLK,), block_dim=(_CLIP_TPB,)
+            )
+            ctx.enqueue_function[_p_clip_k, _p_clip_k](
+                _p_g,
+                _p_ps_t,
+                Scalar[dtype](self.max_grad_norm),
+                grid_dim=(_P_BLK,),
+                block_dim=(_CLIP_TPB,),
+            )
+
+            comptime _PJ_PS = Self.Config.ProjectorModel.PARAM_SIZE
+            comptime _PJ_BLK = (_PJ_PS + _CLIP_TPB - 1) // _CLIP_TPB
+            comptime _pj_norm_k = gradient_norm_kernel[
+                dtype, _PJ_PS, _PJ_BLK, _CLIP_TPB
+            ]
+            comptime _pj_clip_k = gradient_reduce_apply_fused_kernel[
+                dtype, _PJ_PS, _PJ_BLK, _CLIP_TPB
+            ]
+            var _pj_ps_t = LayoutTensor[
+                dtype, Layout.row_major(_PJ_BLK), MutAnyOrigin
+            ](gpu.grad_clip_ps.unsafe_ptr())
+            var _pj_g = gpu.projector.grads_view()
+            ctx.enqueue_function[_pj_norm_k, _pj_norm_k](
+                _pj_ps_t, _pj_g, grid_dim=(_PJ_BLK,), block_dim=(_CLIP_TPB,)
+            )
+            ctx.enqueue_function[_pj_clip_k, _pj_clip_k](
+                _pj_g,
+                _pj_ps_t,
+                Scalar[dtype](self.max_grad_norm),
+                grid_dim=(_PJ_BLK,),
+                block_dim=(_CLIP_TPB,),
+            )
+
+            comptime _PR_PS = Self.Config.PredictorModel.PARAM_SIZE
+            comptime _PR_BLK = (_PR_PS + _CLIP_TPB - 1) // _CLIP_TPB
+            comptime _pr_norm_k = gradient_norm_kernel[
+                dtype, _PR_PS, _PR_BLK, _CLIP_TPB
+            ]
+            comptime _pr_clip_k = gradient_reduce_apply_fused_kernel[
+                dtype, _PR_PS, _PR_BLK, _CLIP_TPB
+            ]
+            var _pr_ps_t = LayoutTensor[
+                dtype, Layout.row_major(_PR_BLK), MutAnyOrigin
+            ](gpu.grad_clip_ps.unsafe_ptr())
+            var _pr_g = gpu.predictor.grads_view()
+            ctx.enqueue_function[_pr_norm_k, _pr_norm_k](
+                _pr_ps_t, _pr_g, grid_dim=(_PR_BLK,), block_dim=(_CLIP_TPB,)
+            )
+            ctx.enqueue_function[_pr_clip_k, _pr_clip_k](
+                _pr_g,
+                _pr_ps_t,
+                Scalar[dtype](self.max_grad_norm),
+                grid_dim=(_PR_BLK,),
+                block_dim=(_CLIP_TPB,),
+            )
+
         gpu.representation.optimizer_step(ctx)
         gpu.dynamics.optimizer_step(ctx)
         gpu.prediction.optimizer_step(ctx)
@@ -4083,32 +4483,122 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         pol_logits_dbl.free()
         pol_target_dbl.free()
 
-        # L_V: value CE with the EZ-V2 mixed value target (paper Eq. 16) —
-        #      blend SVE (= stored MCTS root value at this position) with
-        #      n-step TD return computed from the K-window rewards +
-        #      bootstrap from the stored MCTS value at position
-        #      `min(N_TD, K-k)` ahead.
+        # L_V: value CE under the configured value-target mode. Same
+        # SEARCH/SARSA/MIXED branching as `train_step` so the diagnostic
+        # is a faithful snapshot of the training-time loss.
+        var boot_v_diag = alloc[Scalar[dtype]](BATCH * (K + 1))
+        memset(boot_v_diag, 0, BATCH * (K + 1))
+        comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
+            var tgt_rep_input = alloc[Scalar[dtype]](BATCH * OBS)
+            var tgt_z = alloc[Scalar[dtype]](BATCH * LATENT)
+            var tgt_pred_out = alloc[Scalar[dtype]](BATCH * PRED_OUT)
+            var tgt_logits_dbl = alloc[Float64](BINS)
+
+            var tgt_rep_params = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.RepModel.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.representation_target.params)
+            var tgt_rep_state = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.RepModel.STATE_SIZE),
+                MutAnyOrigin,
+            ](self.state.representation_target.model_state)
+            var tgt_pred_params = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.PredModel.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.prediction_target.params)
+            var tgt_pred_state = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.PredModel.STATE_SIZE),
+                MutAnyOrigin,
+            ](self.state.prediction_target.model_state)
+
+            for k in range(K + 1):
+                for b in range(BATCH):
+                    for d in range(OBS):
+                        tgt_rep_input[b * OBS + d] = batch_obs[
+                            (b * (K + 1) + k) * OBS + d
+                        ]
+                var tgt_rep_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
+                    MutAnyOrigin,
+                ](tgt_rep_input)
+                var tgt_z_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
+                    MutAnyOrigin,
+                ](tgt_z)
+                Network[
+                    Self.Config.RepModel, Self.Config.OptType
+                ].forward[BATCH](
+                    tgt_rep_in_t,
+                    tgt_z_t,
+                    tgt_rep_params,
+                    tgt_rep_state,
+                )
+                var tgt_pred_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.PredModel.IN_DIM),
+                    MutAnyOrigin,
+                ](tgt_z)
+                var tgt_pred_out_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
+                    MutAnyOrigin,
+                ](tgt_pred_out)
+                Network[
+                    Self.Config.PredModel, Self.Config.OptType
+                ].forward[BATCH](
+                    tgt_pred_in_t,
+                    tgt_pred_out_t,
+                    tgt_pred_params,
+                    tgt_pred_state,
+                )
+                for b in range(BATCH):
+                    var off = b * PRED_OUT + ACT
+                    for i in range(BINS):
+                        tgt_logits_dbl[i] = Float64(tgt_pred_out[off + i])
+                    var v_raw = decode_categorical[BINS](
+                        tgt_logits_dbl, self.v_min, self.v_max
+                    )
+                    boot_v_diag[b * (K + 1) + k] = Scalar[dtype](
+                        inverse_scalar_transform(v_raw)
+                    )
+
+            tgt_rep_input.free()
+            tgt_z.free()
+            tgt_pred_out.free()
+            tgt_logits_dbl.free()
+
         var L_V = Float64(0.0)
         for k in range(K + 1):
             var n_eff = N_TD if N_TD < K - k else K - k
             for b in range(BATCH):
                 var sve = Float64(batch_mcts_val[b * (K + 1) + k])
-                # n-step TD return from position k of this sample.
                 var td = Float64(0.0)
-                var disc = Float64(1.0)
-                for j in range(n_eff):
+                comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
+                    var disc = Float64(1.0)
+                    for j in range(n_eff):
+                        td += disc * Float64(
+                            batch_rewards[b * K + k + j]
+                        )
+                        disc *= self.gamma
                     td += disc * Float64(
-                        batch_rewards[b * K + k + j]
+                        boot_v_diag[b * (K + 1) + k + n_eff]
                     )
-                    disc *= self.gamma
-                td += disc * Float64(
-                    batch_mcts_val[b * (K + 1) + k + n_eff]
-                )
-                # Blend by data age (paper Eq. 16).
                 var age = Int(batch_age[b * (K + 1) + k])
-                var v_target = MixedValueTarget[
-                    Self.Config.t_fresh, Self.Config.t_stale
-                ].compute(sve, td, age)
+                var v_target = Float64(0.0)
+                comptime if Self.Config.value_target_mode == VALUE_TARGET_SEARCH:
+                    v_target = sve
+                elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
+                    v_target = td
+                else:  # VALUE_TARGET_MIXED
+                    v_target = MixedValueTarget[
+                        Self.Config.t_fresh, Self.Config.t_stale
+                    ].compute(sve, td, age)
                 encode_categorical[BINS](
                     scalar_transform(v_target),
                     self.v_min,
@@ -4121,6 +4611,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 L_V += cross_entropy_with_softmax[BINS](
                     logits_dbl, two_hot_target
                 )
+        boot_v_diag.free()
         two_hot_target.free()
         logits_dbl.free()
 

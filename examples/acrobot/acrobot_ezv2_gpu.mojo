@@ -1,44 +1,45 @@
-"""EfficientZero V2 CartPole convergence demo — GPU training path.
+"""EfficientZero V2 Acrobot convergence demo — GPU training path.
 
-Mirrors `cartpole_ezv2.mojo` but trains on GPU via `train_step_gpu`.
-The MCTS / action-selection path stays on CPU (Gumbel search hasn't
-been wired into the GPU training loop yet — `gpu_mcts.mojo` is used
-for batched search at action-selection time, but the agent's single
-`GumbelMCTS` engine that `select_action` drives is CPU-only). To
-keep MCTS using fresh weights, we periodically download GPU → CPU.
+Acrobot-v1 is the closest analog in our env suite to the "discrete
+state-based control" target the paper places EZ-V2 against (their
+`config/exp/state.yaml` literally points at Acrobot-v1, even though
+the released `state_agent` placeholder is incomplete). It's a much
+better stress test than CartPole at smoke configs because:
 
-GPU/CPU split:
+  • 3 actions (vs CartPole's 2) — Sequential Halving with K_GUMBEL=2,
+    SIMS=8 can produce asymmetric visit allocations (e.g. 4-2-2)
+    rather than collapsing to perfect 4-4 ties.
+  • Sparse reward (-1 per step until the free end reaches the goal
+    height; episodes capped at 500 steps) — n-step returns + value
+    targets carry real magnitude spread instead of CartPole's
+    constant +1 feed.
+  • Goal-state asymmetry — value head can actually discriminate
+    "near goal" from "far from goal" once it's learned anything.
 
-    Action selection (CPU)
-      └─ agent.select_action(obs)  ← reads CPU networks via state.*
-    Replay buffer + MCTS targets (CPU)
-      └─ agent.store_transition(...)
-    Training (GPU)
-      └─ agent.train_step_gpu(gpu, ctx)  ← reads GPU networks
-                                          ← samples + uploads from CPU buffer
-                                          ← writes GPU param/grad/Adam buffers
-                                          ← downloads loss components
-    Periodic sync (GPU → CPU)
-      └─ gpu.download_to(agent.state, ctx)  every SYNC_INTERVAL train_steps
-    Reanalyze + target networks (CPU)
-      └─ agent.update_target_networks(tau)  ← run AFTER a GPU→CPU sync so
-      └─ agent.reanalyze(num_samples)         the targets reflect GPU progress
+Hyperparameters in this demo are aligned with EZ-V2's `dmc_state.yaml`
+where they map onto our discrete-action MLP setup (paper's DMC config
+is the closest paper config to a small-MLP discrete-state run; their
+Atari config also tracked but uses SGD + image CNN). Notable picks:
 
-`SYNC_INTERVAL` is the load-bearing knob. With TRAIN_INTERVAL=4 and
-SYNC_INTERVAL=50, MCTS sees updated weights every 200 env steps —
-plenty fresh for a single-env discrete loop. Smaller SYNC_INTERVAL =
-fresher CPU mirror but more DMA bandwidth.
+    discount         = 0.997   (paper, vs our previous 0.99)
+    unroll_steps     = 5       (paper, vs our previous 3)
+    td_steps         = 5
+    batch_size       = 128     (compromise vs paper 256 — fewer
+                                episodes per buffer at 50k env steps)
+    bins             = 51      (paper, vs our previous 21)
+    LAMBDA_V         = 0.5     (paper, vs our previous 0.25)
+    LAMBDA_G         = 2.0     (DMC paper, vs our previous 1.0)
+    max_grad_norm    = 5.0     (paper) — wired into the agent now.
+    SIMS             = 16      (Atari paper; DMC uses 32 but the
+                                action space asymmetry from 3 vs 2
+                                makes 16 enough for Acrobot)
+
+The convergence target is Gymnasium's "solved" threshold for
+Acrobot-v1: mean episode return ≥ -100 over the last 100 episodes.
 
 Run:
-    pixi run -e apple mojo run -I . examples/cartpole/cartpole_ezv2_gpu.mojo
-    pixi run -e nvidia mojo run -I . examples/cartpole/cartpole_ezv2_gpu.mojo
-
-Expected wall on Apple Silicon: ~1-3 minutes for the default 10k env steps,
-depending on SIMS. The CPU demo at NUM_ENV_STEPS=10000 / BS=16 takes
-similar wall (training was already not the bottleneck at small scale);
-the value of this demo is letting BS=64 / LATENT=128 / SIMS=16 stay
-practical — those are the configs the convergence diagnosis flagged as
-worth trying.
+    pixi run -e apple mojo run -I . examples/acrobot/acrobot_ezv2_gpu.mojo
+    pixi run -e nvidia mojo run -I . examples/acrobot/acrobot_ezv2_gpu.mojo
 """
 
 from std.math import abs
@@ -50,7 +51,7 @@ from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2DiscreteGPUState,
     GenericEfficientZeroV2Agent,
 )
-from mojo_rl.envs.cartpole import CartPoleEnv
+from mojo_rl.envs.acrobot import AcrobotEnv
 from mojo_rl.nn.constants import dtype
 
 
@@ -72,92 +73,63 @@ def _mean(xs: List[Float64]) -> Float64:
 
 
 def main() raises:
-    print("=== EZ-V2 CartPole demo — GPU train_step ===")
+    print("=== EZ-V2 Acrobot demo — GPU train_step ===")
 
     # ── Knobs ────────────────────────────────────────────────────────────
-    # Targets the same convergence window as `cartpole_ezv2.mojo` (CPU):
-    # mean episode return ≥ 450 over the last EVAL_WINDOW episodes,
-    # within NUM_ENV_STEPS env transitions. With the GPU port the
-    # paper-leaning config (LATENT=128, BS=64, SIMS=16) is practical
-    # at full 50k steps — that's the convergence experiment the
-    # work-unit 8 diagnosis identified as the next thing to try.
-    comptime NUM_ENV_STEPS = 50_000
+    comptime NUM_ENV_STEPS = 100_000
     comptime TRAIN_INTERVAL = 4
     comptime LOG_EVERY = 2_000
     comptime EVAL_WINDOW = 100
-    comptime CONVERGENCE_TARGET = 450.0
+    # Gymnasium's "solved" threshold for Acrobot-v1 is mean ≥ -100.
+    comptime CONVERGENCE_TARGET = -100.0
 
-    # GPU → CPU weight sync cadence (in train_steps). Every SYNC_INTERVAL
-    # train calls we download the GPU networks back to the CPU
-    # `EZV2DiscreteCPUState` so the next batch of MCTS calls + any
-    # reanalyze fire-off sees fresh weights.
+    # GPU → CPU weight sync cadence (in train_steps).
     comptime SYNC_INTERVAL = 50
-
-    # Reanalyze schedule (paper App. A). Same shape as the CPU demo —
-    # warmup gate + interval-based refresh; runs on CPU after a GPU→CPU
-    # sync so the targets reflect the latest GPU progress.
     comptime TARGET_SYNC_INTERVAL = 200
     comptime REANALYZE_INTERVAL = 200
     comptime REANALYZE_SAMPLES = 32
     comptime REANALYZE_WARMUP = 1000
 
-    # Paper-Table-3-leaning config. Two of the three "next thing to try"
-    # levers from the diagnosis are baked in here:
-    #   • LATENT=128 + HIDDEN=128 + PROJ=256 + BS=64 + SIMS=16 — the
-    #     bigger network / bigger batch / more MCTS sims combo. The
-    #     CPU demo at BS=16/SIMS=8 gets stuck in a chicken-and-egg
-    #     between policy and value heads; this config gives σ(Q)
-    #     enough signal AND enough batch coverage that the value
-    #     head should bootstrap.
-    #   • BINS=21 (NOT paper's 51) — the finer-bin value-CE has been
-    #     seen to stall learning at our LR/λ. Stick with 21 unless
-    #     paired with paper-Table-3 LR/λ schedule too.
-    #
-    # The third lever from the diagnosis (online target-net forward
-    # for n-step TD bootstrap, replacing the stored MCTS value) is a
-    # net-new code change — kept as a follow-up.
-    #
-    # On NVIDIA the run should land in roughly the same wall as the
-    # CPU smoke (5-10 min); on Apple Silicon it's 30-60 min. Trim
-    # NUM_ENV_STEPS / SIMS for a faster sanity sweep.
-    # Default `VALUE_TARGET_MODE=VALUE_TARGET_SEARCH` (= stored MCTS root
-    # value). Empirically this is what works on CartPole at smoke config
-    # (see work-unit 8 in `docs/EFFICIENTZERO_V2_PLAN.md`). To opt into
-    # Lever 1 (fresh target-net bootstrap for n-step TD) on a paper-
-    # leaning config, pass `VALUE_TARGET_MODE=VALUE_TARGET_SARSA` — that
-    # mode matches EZ-V2 reference's `value_target='sarsa'`. To get the
-    # paper Eq. 16 age-gated blend, pass `VALUE_TARGET_MODE=VALUE_TARGET_MIXED`
-    # alongside `T_FRESH` / `T_STALE` thresholds.
+    # Paper-aligned config (`dmc_state.yaml`-leaning where applicable
+    # to discrete control). The biggest deltas vs the CartPole demo:
+    #   • discount 0.997, unroll 5, BINS=51
+    #   • LAMBDA_V=0.5, LAMBDA_G=2.0
+    #   • BS=128 (compromise vs paper 256 — Acrobot trajectories are
+    #     ~80-200 steps; 128-batch keeps replay coverage healthy at
+    #     100k env steps)
+    #   • SIMS=16 — same as Atari paper, plenty for ACT=3.
     comptime Config = EZV2DiscreteMLPConfig[
-        OBS=4,
-        ACT=2,
+        OBS=6,
+        ACT=3,
         LATENT=128,
         HIDDEN=128,
         PROJ=256,
         PRED_BOTTLENECK=128,
-        BINS=21,
-        BS=64,
-        K_UNROLL=3,
+        BINS=51,
+        BS=128,
+        K_UNROLL=5,
         N_TD=5,
         SIMS=16,
         NODES=64,
         K_GUMBEL=2,
-        LR=Float64(5e-4),
-        LAMBDA_G=Float64(1.0),
+        LR=Float64(3e-4),
+        LAMBDA_V=Float64(0.5),
+        LAMBDA_G=Float64(2.0),
     ]
 
     seed(2026)
     var agent = GenericEfficientZeroV2Agent[Config](
-        gamma=0.99,
-        v_min=-15.0,
-        v_max=15.0,
+        # Acrobot reward is -1/step, episodes ≤ 500. With γ=0.997 the
+        # max return is ~-(1-γ^500)/(1-γ) ≈ -334. Set v_min/v_max wide
+        # enough to cover the full support without wasting bins.
+        gamma=0.997,
+        v_min=-400.0,
+        v_max=0.0,
         temperature=1.0,
-        # Don't decay temperature within this run — same reasoning as
-        # the CPU demo (going greedy on an imperfect policy collapses
-        # CartPole returns).
         temperature_decay_steps=10_000_000,
+        max_grad_norm=5.0,
     )
-    var env = CartPoleEnv[DType.float32]()
+    var env = AcrobotEnv[DType.float32]()
     var ctx = DeviceContext()
 
     print()
@@ -189,6 +161,8 @@ def main() raises:
         " λ_V=", Config.lambda_value,
         " λ_G=", Config.lambda_consistency,
     )
+    print("    γ=", agent.gamma, " v_min=", agent.v_min, " v_max=", agent.v_max)
+    print("    max_grad_norm =", agent.max_grad_norm)
     print()
 
     # ── Allocate GPU state + initial upload ──────────────────────────────
@@ -210,7 +184,7 @@ def main() raises:
     var last_L_P = Float64(0.0)
     var last_L_V = Float64(0.0)
     var last_L_G = Float64(0.0)
-    var best_ep_return = Float64(0.0)
+    var best_ep_return = Float64(-1e9)
 
     var t0 = perf_counter_ns()
 
@@ -237,7 +211,6 @@ def main() raises:
         else:
             obs = next_obs^
 
-        # Train periodically on GPU once we have a full window.
         if (
             agent.state.is_ready()
             and (env_step + 1) % TRAIN_INTERVAL == 0
@@ -251,17 +224,11 @@ def main() raises:
             if not _is_finite(t[0]):
                 any_nan_loss = True
 
-            # Periodic GPU → CPU weight sync. Done OUTSIDE the
-            # target-update / reanalyze blocks so those see fresh
-            # weights regardless of whether their schedule fires
-            # this iteration.
             if num_train_calls % SYNC_INTERVAL == 0:
                 gpu.download_to(agent.state, ctx)
                 ctx.synchronize()
                 num_gpu_syncs += 1
 
-            # Hard-sync target ← online + reanalyze on CPU (now
-            # reflecting GPU-trained weights, after the sync above).
             if num_train_calls % TARGET_SYNC_INTERVAL == 0:
                 agent.update_target_networks(tau=1.0)
             if (
@@ -298,15 +265,12 @@ def main() raises:
     var t_end = perf_counter_ns()
     var wall_s_total = Float64(t_end - t0) / 1.0e9
 
-    # Final GPU → CPU sync so the agent's weights reflect the
-    # full training run (not just up to the last SYNC_INTERVAL boundary).
     print()
     print("--- Final GPU → CPU sync ---")
     gpu.download_to(agent.state, ctx)
     ctx.synchronize()
     num_gpu_syncs += 1
 
-    # ── Final assessment ─────────────────────────────────────────────────
     print()
     print("=== Run summary ===")
     print("    wall time             =", wall_s_total, "s")
@@ -361,15 +325,15 @@ def main() raises:
         print("FAIL: NaN/Inf loss during training")
     elif final_mean >= CONVERGENCE_TARGET:
         print(
-            "PASS: CartPole converged ≥",
+            "PASS: Acrobot solved (mean ≥",
             CONVERGENCE_TARGET,
-            "(got",
+            ", got",
             final_mean,
             ")",
         )
     else:
         print(
-            "INCONCLUSIVE: CartPole did not hit",
+            "INCONCLUSIVE: Acrobot did not hit",
             CONVERGENCE_TARGET,
             "— got",
             final_mean,
@@ -381,7 +345,3 @@ def main() raises:
             final_mean - initial_mean,
             ")",
         )
-        print("    GPU training infrastructure is working — see")
-        print("    EFFICIENTZERO_V2_PLAN.md work-unit 8 for the")
-        print("    chicken-and-egg diagnosis between policy and value")
-        print("    heads at our config scale.")
