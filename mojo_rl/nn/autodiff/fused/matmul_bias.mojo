@@ -28,7 +28,7 @@ from layout.tile_tensor import lt_to_tt
 struct FusedMatMulBias[
     in_dim: Int,
     out_dim: Int,
-    USE_MAX_KERNELS: Bool = True,
+    USE_MAX_KERNELS: Bool = False,
 ](FusedOp):
     """Fused y = x @ W + b in a single operation.
 

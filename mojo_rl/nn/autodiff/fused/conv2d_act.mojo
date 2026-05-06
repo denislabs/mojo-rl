@@ -46,7 +46,7 @@ struct FusedConv2DActivation[
     in_h: Int,
     in_w: Int,
     ACT: Activation,
-    USE_MAX_KERNELS: Bool = True,
+    USE_MAX_KERNELS: Bool = False,
 ](FusedOp):
     """Fused y = act(Conv2D(x)) in a single operation.
 

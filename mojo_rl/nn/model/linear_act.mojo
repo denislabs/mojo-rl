@@ -21,7 +21,7 @@ from ..autodiff import (
 comptime Linear[
     in_dim: Int,
     out_dim: Int,
-    USE_MAX_KERNELS: Bool = True,
+    USE_MAX_KERNELS: Bool = False,
 ] = AutoFused[
     MatMul[in_dim, out_dim, USE_MAX_KERNELS],
     BiasAdd[out_dim],
@@ -31,7 +31,7 @@ comptime Linear[
 comptime LinearReLU[
     in_dim: Int,
     out_dim: Int,
-    USE_MAX_KERNELS: Bool = True,
+    USE_MAX_KERNELS: Bool = False,
 ] = AutoFused[
     MatMul[in_dim, out_dim, USE_MAX_KERNELS],
     BiasAdd[out_dim],
@@ -42,7 +42,7 @@ comptime LinearReLU[
 comptime LinearTanh[
     in_dim: Int,
     out_dim: Int,
-    USE_MAX_KERNELS: Bool = True,
+    USE_MAX_KERNELS: Bool = False,
 ] = AutoFused[
     MatMul[in_dim, out_dim, USE_MAX_KERNELS],
     BiasAdd[out_dim],
@@ -53,7 +53,7 @@ comptime LinearTanh[
 comptime LinearSigmoid[
     in_dim: Int,
     out_dim: Int,
-    USE_MAX_KERNELS: Bool = True,
+    USE_MAX_KERNELS: Bool = False,
 ] = AutoFused[
     MatMul[in_dim, out_dim, USE_MAX_KERNELS],
     BiasAdd[out_dim],
@@ -64,7 +64,7 @@ comptime LinearSigmoid[
 comptime LinearMish[
     in_dim: Int,
     out_dim: Int,
-    USE_MAX_KERNELS: Bool = True,
+    USE_MAX_KERNELS: Bool = False,
 ] = AutoFused[
     MatMul[in_dim, out_dim, USE_MAX_KERNELS],
     BiasAdd[out_dim],
@@ -75,7 +75,7 @@ comptime LinearMish[
 comptime LinearSwish[
     in_dim: Int,
     out_dim: Int,
-    USE_MAX_KERNELS: Bool = True,
+    USE_MAX_KERNELS: Bool = False,
 ] = AutoFused[
     MatMul[in_dim, out_dim, USE_MAX_KERNELS],
     BiasAdd[out_dim],
