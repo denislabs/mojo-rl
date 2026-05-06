@@ -720,6 +720,17 @@ struct MuZeroGPUState[
     # priority calc.
     var batch_values_host: HostBuffer[dtype]
 
+    # ── Diagnostic loss host buffers (Logger) ───────────────────────
+    # Pre-allocated once at training start (caller's responsibility) so
+    # update_gpu can do its diag DMAs without recreating host buffers
+    # per call (which surfaced as "not enough data in src" under hot-
+    # loop allocation pressure on NVIDIA). Sized to match the device
+    # buffers they mirror at k=0 (whole K+1-step buffers for targets so
+    # we can extract the k=0 slice without sub-buffer plumbing).
+    var diag_pred_host: HostBuffer[dtype]
+    var diag_pol_host: HostBuffer[dtype]
+    var diag_val_host: HostBuffer[dtype]
+
     # ── Prioritized Experience Replay (PER) ─────────────────────────
     # Phase H13 (2026-05-05). Sum-tree priorities live on host (CPU);
     # GPU only sees pre-sampled (env, start) pairs + IS weights, plus
@@ -937,6 +948,17 @@ struct MuZeroGPUState[
             (Self.K + Self.N_TD + 1) * Self.BATCH
         )
 
+        # Diagnostic loss host buffers (see field declaration for why).
+        self.diag_pred_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.PRED_OUT
+        )
+        self.diag_pol_host = ctx.enqueue_create_host_buffer[dtype](
+            (Self.K + 1) * Self.BATCH * Self.ACT
+        )
+        self.diag_val_host = ctx.enqueue_create_host_buffer[dtype](
+            (Self.K + 1) * Self.BATCH * Self.BINS
+        )
+
         # ── PER (Phase H13) ──────────────────────────────────────────
         # Sum-tree on host with one leaf per (env, slot) circular-buffer
         # position. Always allocated; consumed only when use_per=True.
@@ -1025,6 +1047,9 @@ struct MuZeroGPUState[
         self.batch_obs_host = take.batch_obs_host^
         self.batch_actions_host = take.batch_actions_host^
         self.batch_policies_host = take.batch_policies_host^
+        self.diag_pred_host = take.diag_pred_host^
+        self.diag_pol_host = take.diag_pol_host^
+        self.diag_val_host = take.diag_val_host^
         self.value_targets_host = take.value_targets_host^
         self.reward_targets_host = take.reward_targets_host^
         self.batch_values_host = take.batch_values_host^

@@ -2949,22 +2949,15 @@ struct GenericMuZeroAgent[
             self.diag_every <= 0
             or self.train_step_count % self.diag_every == 0
         ):
-            # Copy whole K+1-step target buffers to host; the loss calc
-            # below reads only the k=0 slice (first BATCH*ACT /
-            # BATCH*BINS entries). Cheap for TTT-scale (BATCH=64,
-            # K=5 → 60KB total per diag).
-            var diag_pred_host = ctx.enqueue_create_host_buffer[dtype](
-                BATCH * PRED_OUT
-            )
-            var diag_pol_host = ctx.enqueue_create_host_buffer[dtype](
-                (K + 1) * BATCH * ACT
-            )
-            var diag_val_host = ctx.enqueue_create_host_buffer[dtype](
-                (K + 1) * BATCH * BINS
-            )
-            ctx.enqueue_copy(diag_pred_host, gpu.pred_out_buf)
-            ctx.enqueue_copy(diag_pol_host, gpu.batch_policies_buf)
-            ctx.enqueue_copy(diag_val_host, gpu.batch_values_buf)
+            # Copy whole K+1-step target buffers to pre-allocated host
+            # buffers; the loss calc below reads only the k=0 slice
+            # (first BATCH*ACT / BATCH*BINS entries). Buffers live on
+            # gpu state so they aren't re-created in this hot loop —
+            # repeated host buffer creation triggered "not enough data
+            # in src" on NVIDIA under high call frequency.
+            ctx.enqueue_copy(gpu.diag_pred_host, gpu.pred_out_buf)
+            ctx.enqueue_copy(gpu.diag_pol_host, gpu.batch_policies_buf)
+            ctx.enqueue_copy(gpu.diag_val_host, gpu.batch_values_buf)
             ctx.synchronize()
 
             var step = self.train_step_count
@@ -2978,22 +2971,22 @@ struct GenericMuZeroAgent[
                 # Policy softmax + CE + entropy (numerically stable)
                 var max_p: Float64 = -1e18
                 for a in range(ACT):
-                    var l = Float64(diag_pred_host[pred_off + a])
+                    var l = Float64(gpu.diag_pred_host[pred_off + a])
                     if l > max_p:
                         max_p = l
                 var sum_e_p: Float64 = 0.0
                 for a in range(ACT):
                     sum_e_p += exp(
-                        Float64(diag_pred_host[pred_off + a]) - max_p
+                        Float64(gpu.diag_pred_host[pred_off + a]) - max_p
                     )
                 for a in range(ACT):
                     var prob = (
                         exp(
-                            Float64(diag_pred_host[pred_off + a]) - max_p
+                            Float64(gpu.diag_pred_host[pred_off + a]) - max_p
                         )
                         / sum_e_p
                     )
-                    var tgt = Float64(diag_pol_host[b * ACT + a])
+                    var tgt = Float64(gpu.diag_pol_host[b * ACT + a])
                     if tgt > 1e-8 and prob > 1e-8:
                         sum_policy_ce -= tgt * log(prob)
                     if prob > 1e-8:
@@ -3003,13 +2996,13 @@ struct GenericMuZeroAgent[
                 var val_off = pred_off + ACT
                 var max_v: Float64 = -1e18
                 for i in range(BINS):
-                    var l = Float64(diag_pred_host[val_off + i])
+                    var l = Float64(gpu.diag_pred_host[val_off + i])
                     if l > max_v:
                         max_v = l
                 var sum_e_v: Float64 = 0.0
                 for i in range(BINS):
                     sum_e_v += exp(
-                        Float64(diag_pred_host[val_off + i]) - max_v
+                        Float64(gpu.diag_pred_host[val_off + i]) - max_v
                     )
                 # Decode predicted scalar value from softmax (bin
                 # centers from v_min..v_max under categorical encoding).
@@ -3019,10 +3012,10 @@ struct GenericMuZeroAgent[
                 var pred_val_scalar: Float64 = 0.0
                 for i in range(BINS):
                     var prob_v = (
-                        exp(Float64(diag_pred_host[val_off + i]) - max_v)
+                        exp(Float64(gpu.diag_pred_host[val_off + i]) - max_v)
                         / sum_e_v
                     )
-                    var tgt_v = Float64(diag_val_host[b * BINS + i])
+                    var tgt_v = Float64(gpu.diag_val_host[b * BINS + i])
                     if tgt_v > 1e-8 and prob_v > 1e-8:
                         sum_value_ce -= tgt_v * log(prob_v)
                     var bin_center = self.v_min + Float64(i) * v_step
