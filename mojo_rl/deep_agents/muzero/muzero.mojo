@@ -346,13 +346,18 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         comptime BATCH = Self.Config.batch_size
         comptime PER_ENV_CAP = PER_ENV_CAP_P
 
-        var beta = self._per_beta(progress)
+        # IS-weight formula from muzero-general (replay_buffer.py:113-118):
+        #   w_b_raw = 1 / (N · P_b)        # beta=1 (no annealing)
+        #   w_b = w_b_raw / max(w_b_raw over batch)
+        # Normalize by MAX OVER THE BATCH, not max-over-tree. This is
+        # algebraically simpler and avoids needing tree-wide min_priority
+        # (which is broken in our SumTree because we use update() not add()
+        # so its `size` field stays 0 and its min_priority falls back to 1.0).
+        # Note: muzero-general uses beta=1 always; we ignore the annealing
+        # progress kwarg to match. _per_beta is kept for completeness.
+        _ = progress  # currently unused; beta=1 fixed
         var total = Float64(gpu.per_tree.total_sum())
         # n = number of filled (env, slot) positions in the circular buffer.
-        # SumTree.size is only incremented by add() (we use update() exclusively),
-        # so we derive n from the replay buffer's per-env size × N_ENVS instead.
-        # Without this, n falls back to 1 and IS weights inflate by ~N^beta
-        # (50000^0.4 ≈ 75×), amplifying gradients catastrophically.
         var n_filled = gpu.replay.size * N_ENVS_P
         var n = Float64(n_filled if n_filled > 0 else 1)
 
@@ -366,9 +371,8 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 gpu.per_is_weights_host[b] = Scalar[dtype](1.0)
         else:
             var segment = total / Float64(BATCH)
-            var min_p = Float64(gpu.per_tree.min_priority())
-            var min_prob = min_p / total if min_p > 0.0 else 1.0 / n
-            var max_w = (n * min_prob) ** (-beta)
+            # Pass 1: sample, compute raw weights w_b = 1/(N*P_b)
+            var raw_w = List[Float64](capacity=BATCH)
             for b in range(BATCH):
                 var lo = segment * Float64(b)
                 var hi = segment * Float64(b + 1)
@@ -380,10 +384,20 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 gpu.per_sampled_starts_host[b] = Int32(slot)
                 var p_b = Float64(gpu.per_tree.get(idx))
                 if p_b <= 0.0:
-                    p_b = min_p if min_p > 0.0 else 1.0
+                    p_b = total / n  # fallback to uniform prob slot
                 var prob = p_b / total
-                var w = ((n * prob) ** (-beta)) / max_w
-                gpu.per_is_weights_host[b] = Scalar[dtype](w)
+                raw_w.append(1.0 / (n * prob))
+            # Pass 2: normalize by max within batch
+            var max_raw = raw_w[0]
+            for b in range(1, BATCH):
+                if raw_w[b] > max_raw:
+                    max_raw = raw_w[b]
+            if max_raw <= 0.0:
+                max_raw = 1.0
+            for b in range(BATCH):
+                gpu.per_is_weights_host[b] = Scalar[dtype](
+                    raw_w[b] / max_raw
+                )
 
         ctx.enqueue_copy(
             gpu.per_sampled_envs_buf, gpu.per_sampled_envs_host
@@ -426,14 +440,22 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         for b in range(BATCH):
             var env_idx = Int(gpu.per_sampled_envs_host[b])
             var slot = Int(gpu.per_sampled_starts_host[b])
+            # Reference (muzero-general/trainer.py:204) computes priority in
+            # RAW scalar space: |pred_value_scalar - target_value_scalar|^α.
+            # Our `value_targets_host` is in encoded h-space (post
+            # scalar_transform), and `batch_values_host` is already raw
+            # scalar (decode_value_dist → inverse h). Apply h⁻¹ to target
+            # to bring both to raw space and match reference.
             var target_h = Float64(gpu.value_targets_host[0 * BATCH + b])
+            # Inverse h: x = sign(y) * ((((1+4·eps·(|y|+1+eps))^0.5 - 1)
+            # /(2·eps))^2 - 1). Same closed form as utils.inverse_scalar_transform.
+            var sgn_t = 1.0 if target_h >= 0.0 else -1.0
+            var abs_t = target_h if target_h >= 0.0 else -target_h
+            var inner = sqrt(1.0 + 4.0 * EPS_H * (abs_t + 1.0 + EPS_H))
+            var f = (inner - 1.0) / (2.0 * EPS_H)
+            var target_raw = sgn_t * (f * f - 1.0)
             var pred_raw = Float64(gpu.batch_values_host[0 * BATCH + b])
-            # h(x) = sign(x)*(sqrt(|x|+1)-1) + EPS_H * x — same formula
-            # used in scalar_transform_kernel. Closed-form on host.
-            var sgn = 1.0 if pred_raw >= 0.0 else -1.0
-            var abs_p = pred_raw if pred_raw >= 0.0 else -pred_raw
-            var pred_h = sgn * (sqrt(abs_p + 1.0) - 1.0) + EPS_H * pred_raw
-            var diff = target_h - pred_h
+            var diff = target_raw - pred_raw
             if diff < 0.0:
                 diff = -diff
             var priority = (diff + self.per_eps) ** self.per_alpha
