@@ -273,22 +273,33 @@ def tdmpc2_extract_z_from_za_grad_kernel[
         dtype, Layout.row_major(BATCH_SIZE, LATENT_DIM), MutAnyOrigin
     ],
 ) where dtype.is_floating_point():
-    """Extract the z-part gradient from grad_za (accumulates into grad_z).
+    """Extract the z-part gradient from grad_za (OVERWRITES grad_z).
 
-    When dynamics backward produces grad_za[BATCH, LATENT+ACT], only the
-    first LATENT elements flow back through the encoder. This kernel copies
-    grad_za[:, :LATENT] into grad_z (accumulating, not overwriting).
+    When dynamics / reward / Q backward produces grad_za[BATCH, LATENT+ACT],
+    only the first LATENT elements flow back through the encoder. This
+    kernel copies grad_za[:, :LATENT] into grad_z, *overwriting* whatever
+    was there.
+
+    OVERWRITE (not accumulate) is required: every BPTT iter calls this
+    kernel six times (dyn, rew, Q1..Q5) reading-and-writing the *same*
+    grad_z_dyn_buf. Each call must produce the contribution of that head
+    alone — the per-iter accumulation into grad_z_carry happens externally
+    via tdmpc2_add_into_kernel. If this kernel accumulated, every head's
+    contribution would be added multiple times into the carry (e.g., dyn
+    would weigh 7x relative to Q5 in a 1-rew-5-Q chain), which over-
+    weights consistency-via-dynamics on the encoder gradient and is the
+    classic cause of trivial encoder-collapse in TD-MPC2.
 
     Args:
         grad_za: Gradient w.r.t. (z, a) input [BATCH_SIZE, LATENT+ACT].
-        grad_z: Gradient accumulation buffer for z [BATCH_SIZE, LATENT_DIM].
+        grad_z: Output buffer for z gradient [BATCH_SIZE, LATENT_DIM].
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH_SIZE:
         return
 
     for k in range(LATENT_DIM):
-        grad_z[i, k] = grad_z[i, k] + grad_za[i, k]
+        grad_z[i, k] = grad_za[i, k]
 
 
 @always_inline
