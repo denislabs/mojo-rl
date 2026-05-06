@@ -22,9 +22,17 @@ from mojo_rl.nn.model import (
 
 
 def gradcheck[M: Model, BS: Int = 4](
-    ctx: DeviceContext, name: String, eps: Float64 = 1e-3, max_check: Int = 200,
+    ctx: DeviceContext, name: String, eps: Float64 = 1e-2, max_check: Int = 200,
 ) raises:
-    """Compact GPU gradcheck: perturb via host upload to avoid kernel issues."""
+    """Compact GPU gradcheck: perturb via host upload to avoid kernel issues.
+
+    NOTE eps temporarily bumped 1e-3 → 1e-2 (2026-05-06) to sanity-check
+    the TF32-noise theory of NVIDIA gradcheck failures. With 10× larger
+    eps, finite-diff signal grows 10× while TF32 noise on `forward(p±eps)`
+    stays the same → expected S/N improves from ~10:1 to ~100:1, so
+    NVIDIA max_rel should collapse from ~0.099 to ~0.01 if the theory
+    is right. Revert to 1e-3 after diagnostic.
+    """
     comptime IN = M.IN_DIM
     comptime OUT = M.OUT_DIM
     comptime PS = M.PARAM_SIZE

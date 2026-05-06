@@ -1,0 +1,87 @@
+[intercept] CUDA interceptor loaded (dlsym hooking mode)
+[intercept] dlsym hook installed successfully
+[intercept] CUDA interceptor loaded (dlsym hooking mode)
+[intercept] dlsym hook installed successfully
+=== AlphaZero Architecture Tests ===
+
+[intercept] Hooked cuLaunchKernel -> 0x7faf78fb74b0
+[intercept] Hooked cuLaunchKernelEx -> 0x7faf78fb7510
+--- Isolation tests ---
+Forward-only: Conv2DBatchNormReLU 3x3 (3->128) (IN= 126 OUT= 5376 PS= 3840 WS= 11100 )
+[intercept] Captured Mojo stream: 0x55a407301320
+  [PASS]
+Forward-only: Conv2DBatchNormReLU 1x1 (128->32) (IN= 5376 OUT= 1344 PS= 4192 WS= 16192 )
+  [PASS]
+Forward-only: Sequential[Conv1x1+BN+ReLU, Flatten, Linear] (IN= 5376 OUT= 7 PS= 13607 WS= 20224 )
+  [PASS]
+Forward-only: ValueHead Sequential alone (IN= 5376 OUT= 1 PS= 176481 WS= 20608 )
+  [PASS]
+Forward-only: Parallel[Linear, Linear] from 5376-dim (IN= 5376 OUT= 8 PS= 43020 WS= 21520 )
+  [PASS]
+Forward-only: Parallel[PolicyHead only] (IN= 5376 OUT= 7 PS= 13608 WS= 25608 )
+  [PASS]
+Forward-only: Parallel[ValueHead only] (IN= 5376 OUT= 1 PS= 176484 WS= 25992 )
+  [PASS]
+Forward-only: Parallel[PolicyHead, PolicyHead] (identical branches) (IN= 5376 OUT= 14 PS= 27216 WS= 51216 )
+  [PASS]
+Forward-only: Parallel[FC 2-layer, FC 3-layer] (different FC branches) (IN= 5376 OUT= 8 PS= 2074892 WS= 22864 )
+  [PASS]
+Forward-only: Parallel[Conv branch, FC branch] (mixed) (IN= 5376 OUT= 8 PS= 701996 WS= 36752 )
+  [PASS]
+Forward-only: Parallel[PolicyHead, ValueHead(padded to 8)] — tests BS*8 theory (IN= 5376 OUT= 15 PS= 190992 WS= 51600 )
+  [PASS]
+Forward-only: Parallel[PolicyHead, ValueHead] (the dual-head) (IN= 5376 OUT= 8 PS= 190092 WS= 51600 )
+  [PASS]
+
+--- Full tests ---
+Testing: TicTacToe MLP
+  IN_DIM: 27 OUT_DIM: 10 PARAM_SIZE: 21392 CACHE_SIZE: 667
+  [PASS] Forward: all outputs finite
+  Policy L2: 1.6500678754792129 Value L2: 1.234403192381498
+  Gradients: nonzero= 11030 zero= 10362 nan= 0 / total= 21392
+  Grad norm: 19.732785325600194 max: 1.277587890625
+  [PASS] Backward: gradients flow through 51.56133133881825 % of params
+  Grad input: nonzero= 108 / 108
+
+Testing: ConnectFour FusedResNet (1 block, quick)
+  IN_DIM: 126 OUT_DIM: 8 PARAM_SIZE: 489612 CACHE_SIZE: 136238
+  [PASS] Forward: all outputs finite
+  Policy L2: 2.397761459606177 Value L2: 1.38968825340271
+  Gradients: nonzero= 355001 zero= 134611 nan= 0 / total= 489612
+  Grad norm: 183.3703355297352 max: 3.873227834701538
+  [PASS] Backward: gradients flow through 72.50659706052957 % of params
+  Grad input: nonzero= 504 / 504
+
+Gradcheck: TicTacToe MLP (PS= 21392 )
+    MISMATCH param[ 0 ]: analytical= 0.10541963577270508 numerical= 0.10128896036870616 rel_err= 0.01998308479233774
+    MISMATCH param[ 284 ]: analytical= 0.16464592516422272 numerical= 0.16005949189168422 rel_err= 0.014124905319176774
+    MISMATCH param[ 355 ]: analytical= 0.11481023579835892 numerical= 0.1265612818380224 rel_err= 0.048684476754900584
+    MISMATCH param[ 497 ]: analytical= -0.3592583239078522 numerical= -0.3513015742114822 rel_err= 0.011197859205718442
+    MISMATCH param[ 568 ]: analytical= -0.037924736738204956 numerical= -0.025757901673639783 rel_err= 0.1910541926023936
+  [FAIL] 42 params with rel_err > 1% out of 302 checked. max_rel= 0.6321443284037452
+
+Gradcheck: BN-free Parallel[Sequential, Sequential] dual-head (PS= 13068 IN= 126 OUT= 8 )
+    MISMATCH param[ 43 ]: analytical= 0.15628114342689514 numerical= 0.10029474347206246 rel_err= 0.21820600770983883
+    MISMATCH param[ 86 ]: analytical= 0.17184734344482422 numerical= 0.15573345616726186 rel_err= 0.04919057312468882
+    MISMATCH param[ 172 ]: analytical= 0.00783541053533554 numerical= -0.010100856786543488 rel_err= 1.0
+    MISMATCH param[ 215 ]: analytical= -0.22280314564704895 numerical= -0.2760642334620478 rel_err= 0.10676402195332003
+    MISMATCH param[ 301 ]: analytical= -0.03042260743677616 numerical= -0.0012878849871000853 rel_err= 0.9187723123384625
+  [FAIL] 153 params with rel_err > 1% out of 304 checked. max_rel= 1.0
+
+Gradcheck: Conv+Parallel dual-head (no BN — isolates conv grad path) (PS= 4492 IN= 126 OUT= 8 )
+    MISMATCH param[ 0 ]: analytical= 0.013598522171378136 numerical= 0.01852649018246888 rel_err= 0.1533997234556896
+    MISMATCH param[ 14 ]: analytical= 0.043350495398044586 numerical= 0.048222375275908114 rel_err= 0.05320221853926549
+    MISMATCH param[ 28 ]: analytical= 0.12138631194829941 numerical= 0.12422180165821972 rel_err= 0.01154477215057708
+    MISMATCH param[ 56 ]: analytical= -0.013468332588672638 numerical= -0.012780895534275638 rel_err= 0.026188848341639842
+    MISMATCH param[ 70 ]: analytical= -0.016789354383945465 numerical= -0.01799137957805841 rel_err= 0.03456008707079307
+  [FAIL] 84 params with rel_err > 1% out of 321 checked. max_rel= 1.0
+
+Gradcheck: FusedResNet 1-block BS=32 (larger batch reduces BN noise) (PS= 489612 IN= 126 OUT= 8 )
+    MISMATCH param[ 0 ]: analytical= -2.7050085067749023 numerical= 5.102062967165533 rel_err= 1.0
+    MISMATCH param[ 2448 ]: analytical= -0.7680590152740479 numerical= 5.323915031802295 rel_err= 1.0
+    MISMATCH param[ 4896 ]: analytical= -0.35196545720100403 numerical= 1.1031528973408644 rel_err= 1.0
+    MISMATCH param[ 7344 ]: analytical= -0.3305237293243408 numerical= -3.6496903250942125 rel_err= 0.8339166060893551
+    MISMATCH param[ 9792 ]: analytical= -0.0914018526673317 numerical= -3.8830737529911286 rel_err= 0.9540055787298315
+  [FAIL] 126 params with rel_err > 1% out of 201 checked. max_rel= 1.0
+
+=== Done ===

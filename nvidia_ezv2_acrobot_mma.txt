@@ -1,0 +1,106 @@
+[intercept] CUDA interceptor loaded (dlsym hooking mode)
+[intercept] dlsym hook installed successfully
+[intercept] CUDA interceptor loaded (dlsym hooking mode)
+[intercept] dlsym hook installed successfully
+Included from /workspace/mojo-rl/./mojo_rl/deep_agents/efficient_zero_v2/__init__.mojo:1:
+Included from /workspace/mojo-rl/./mojo_rl/deep_agents/efficient_zero_v2/__init__.mojo:38:
+/workspace/mojo-rl/./mojo_rl/deep_agents/efficient_zero_v2/efficient_zero_v2.mojo:2549:39: warning: assignment to 'v_target' was never used; assign to '_' instead?
+                var v_target = Float64(0.0)
+                                      ^
+=== EZ-V2 Acrobot multi-env (Phase A) — GPU train_step ===
+[intercept] Hooked cuLaunchKernel -> 0x7f6e31a9c4b0
+[intercept] Hooked cuLaunchKernelEx -> 0x7f6e31a9c510
+
+--- Run config ---
+    N_ENVS                = 4
+    NUM_ENV_STEPS         = 100000 (total transitions across envs)
+    BATCH_TRAIN_INTERVAL  = 1 batches
+    START_TRANSITIONS     = 2000 (random warmup)
+    SYNC_INTERVAL         = 50 train_steps
+    TARGET_SYNC_INTERVAL  = 200 train_steps
+    REANALYZE_INTERVAL    = 200 train_steps
+    REANALYZE_SAMPLES     = 32
+    REANALYZE_WARMUP      = 1000 train_steps
+    EVAL_WINDOW           = 100 episodes
+    CONVERGENCE_TARGET    = -100.0
+    Config: LATENT= 128  PROJ= 256  BINS= 51
+    BS= 128  K_UNROLL= 5  N_TD= 5  SIMS= 16  K_GUMBEL= 2
+    λ_R= 1.0  λ_P= 1.0  λ_V= 0.5  λ_G= 2.0
+    γ= 0.997  v_min= -400.0  v_max= 0.0
+    max_grad_norm = 5.0
+
+--- Allocating GPU state ---
+    GPU state ready, initial upload complete
+
+[intercept] Captured Mojo stream: 0x55d301f1a460
+[batch  500  step  2000  ep= 4  train= 1  syncs= 0  wall= 0.00766939 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 4.814415359497071 , P 1.3923424084981282 , V 4.605862299601237 , G 0.10510731935501098 )
+[batch  1000  step  4000  ep= 8  train= 501  syncs= 10  wall= 4.676657134 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.20427889823913575 , P 1.0987823009490967 , V 3.494291305541992 , G -0.9976166725158692 )
+[batch  1500  step  6000  ep= 12  train= 1001  syncs= 20  wall= 9.450216258 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.2047736883163452 , P 1.0933857758839924 , V 11.385640462239584 , G -0.992795467376709 )
+[batch  2000  step  8000  ep= 16  train= 1501  syncs= 30  wall= 14.31908646 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.2042696475982666 , P 1.081928014755249 , V 3.1127583185831704 , G -0.9248077392578125 )
+[batch  2500  step  10000  ep= 20  train= 2001  syncs= 40  wall= 19.267608118 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.20424144268035888 , P 1.0785603523254395 , V 2.7174485524495444 , G -0.9929792404174804 )
+[batch  3000  step  12000  ep= 24  train= 2501  syncs= 50  wall= 24.209001581 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.20422399044036865 , P 1.0435761610666912 , V 2.1284157435099282 , G -0.9960906982421875 )
+[batch  3500  step  14000  ep= 28  train= 3001  syncs= 60  wall= 29.233513819 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.20421092510223388 , P 1.0352373123168945 , V 1.8453888893127441 , G -0.9988021850585938 )
+[batch  4000  step  16000  ep= 32  train= 3501  syncs= 70  wall= 34.240674399 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.2042745590209961 , P 1.038535515467326 , V 1.8651221593221028 , G -0.9956104278564453 )
+[batch  4500  step  18000  ep= 36  train= 4001  syncs= 80  wall= 39.327016886 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.20423176288604736 , P 1.013391415278117 , V 1.7907295227050781 , G -0.9970468521118164 )
+[batch  5000  step  20000  ep= 40  train= 4501  syncs= 90  wall= 44.396989135 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.20435338020324706 , P 1.054439385732015 , V 1.772558053334554 , G -0.9984000205993653 )
+[batch  5500  step  22000  ep= 44  train= 5001  syncs= 100  wall= 49.543946737 s ] recent_mean_ret= -496.7   best= -401.0   L=(R 0.2042896032333374 , P 1.0640379587809246 , V 1.776437759399414 , G -0.9991363525390625 )
+[batch  6000  step  24000  ep= 48  train= 5501  syncs= 110  wall= 54.671168094 s ] recent_mean_ret= -496.7   best= -401.0   L=(R 0.20422096252441407 , P 1.048078457514445 , V 1.6030526161193848 , G -0.9976957321166993 )
+[batch  6500  step  26000  ep= 52  train= 6001  syncs= 120  wall= 59.882190204 s ] recent_mean_ret= -494.8333333333333   best= -401.0   L=(R 0.20432024002075194 , P 1.0734968185424805 , V 1.770225207010905 , G -0.9999770164489746 )
+[batch  7000  step  28000  ep= 56  train= 6501  syncs= 130  wall= 65.081388627 s ] recent_mean_ret= -491.43333333333334   best= -398.0   L=(R 0.20424287319183348 , P 1.0600018501281738 , V 1.66675599416097 , G -0.9996634483337402 )
+[batch  7500  step  30000  ep= 60  train= 7001  syncs= 140  wall= 70.36270205 s ] recent_mean_ret= -491.43333333333334   best= -398.0   L=(R 0.20422084331512452 , P 1.0699459711710613 , V 1.6510217984517415 , G -0.9996272087097168 )
+[batch  8000  step  32000  ep= 64  train= 7501  syncs= 150  wall= 75.630698823 s ] recent_mean_ret= -488.93333333333334   best= -398.0   L=(R 0.20421788692474366 , P 1.0584490299224854 , V 1.6340594291687012 , G -0.9980549812316895 )
+[batch  8500  step  34000  ep= 68  train= 8001  syncs= 160  wall= 80.982053873 s ] recent_mean_ret= -482.73333333333335   best= -314.0   L=(R 0.20423564910888672 , P 1.0584304332733154 , V 1.7342535654703777 , G -0.9977888107299805 )
+[batch  9000  step  36000  ep= 72  train= 8501  syncs= 170  wall= 86.312455191 s ] recent_mean_ret= -486.03333333333336   best= -314.0   L=(R 0.20426981449127196 , P 1.0516335169474285 , V 1.7497070630391438 , G -0.9966121673583984 )
+[batch  9500  step  38000  ep= 76  train= 9001  syncs= 180  wall= 91.724199215 s ] recent_mean_ret= -483.03333333333336   best= -314.0   L=(R 0.20418159961700438 , P 1.063246250152588 , V 1.705942948659261 , G -0.9983293533325195 )
+[batch  10000  step  40000  ep= 80  train= 9501  syncs= 190  wall= 97.11553574 s ] recent_mean_ret= -484.8333333333333   best= -314.0   L=(R 0.20421957969665527 , P 1.0614067713419597 , V 1.7507335344950359 , G -0.9980764389038086 )
+[batch  10500  step  42000  ep= 84  train= 10001  syncs= 200  wall= 102.591352465 s ] recent_mean_ret= -479.53333333333336   best= -314.0   L=(R 0.20420501232147217 , P 1.0546143054962158 , V 1.6373197237650554 , G -0.996891975402832 )
+[batch  11000  step  44000  ep= 88  train= 10501  syncs= 210  wall= 108.046407548 s ] recent_mean_ret= -476.6   best= -314.0   L=(R 0.20421667098999025 , P 1.0665381749471028 , V 1.6850401560465496 , G -0.9966609954833985 )
+[batch  11500  step  46000  ep= 93  train= 11001  syncs= 220  wall= 113.585208021 s ] recent_mean_ret= -465.93333333333334   best= -245.0   L=(R 0.20421595573425294 , P 1.049641768137614 , V 1.6317753791809082 , G -0.9984367370605469 )
+[batch  12000  step  48000  ep= 98  train= 11501  syncs= 230  wall= 119.114992733 s ] recent_mean_ret= -451.3666666666667   best= -170.0   L=(R 0.2041985273361206 , P 1.0408052603403728 , V 1.5729708671569824 , G -0.9990577697753906 )
+[batch  12500  step  50000  ep= 104  train= 12001  syncs= 240  wall= 124.723949485 s ] recent_mean_ret= -424.3   best= -170.0   L=(R 0.2042088508605957 , P 1.0372593402862549 , V 1.4382805824279785 , G -0.9990984916687011 )
+[batch  13000  step  52000  ep= 109  train= 12501  syncs= 250  wall= 130.30231771 s ] recent_mean_ret= -394.3   best= -170.0   L=(R 0.2042259693145752 , P 1.0574657122294109 , V 1.7758390108744304 , G -0.9917311668395996 )
+[batch  13500  step  54000  ep= 115  train= 13001  syncs= 260  wall= 135.933199118 s ] recent_mean_ret= -390.1333333333333   best= -170.0   L=(R 0.20418615341186525 , P 1.0296985308329265 , V 1.3349393208821614 , G -0.999386215209961 )
+[batch  14000  step  56000  ep= 121  train= 13501  syncs= 270  wall= 141.524480363 s ] recent_mean_ret= -363.7   best= -170.0   L=(R 0.20418157577514648 , P 1.0249707698822021 , V 1.2659083207448323 , G -0.9994616508483887 )
+[batch  14500  step  58000  ep= 128  train= 14001  syncs= 280  wall= 147.177522351 s ] recent_mean_ret= -341.2   best= -169.0   L=(R 0.20416586399078368 , P 1.0108354886372883 , V 0.9821782906850179 , G -0.9994184494018554 )
+[batch  15000  step  60000  ep= 136  train= 14501  syncs= 290  wall= 152.809365379 s ] recent_mean_ret= -329.3666666666667   best= -156.0   L=(R 0.20418775081634521 , P 0.9889758427937826 , V 1.060806671778361 , G -0.9996480941772461 )
+[batch  15500  step  62000  ep= 144  train= 15001  syncs= 300  wall= 158.499764675 s ] recent_mean_ret= -280.5   best= -156.0   L=(R 0.20417978763580322 , P 0.9999258518218994 , V 0.8084384600321451 , G -0.9995984077453614 )
+[batch  16000  step  64000  ep= 151  train= 15501  syncs= 310  wall= 164.148732847 s ] recent_mean_ret= -272.6666666666667   best= -156.0   L=(R 0.20415937900543213 , P 0.9613051414489746 , V 0.8094964027404785 , G -0.9992193222045899 )
+[batch  16500  step  66000  ep= 157  train= 16001  syncs= 320  wall= 169.844389033 s ] recent_mean_ret= -285.1666666666667   best= -156.0   L=(R 0.20416746139526368 , P 0.9629809856414795 , V 0.7856175899505615 , G -0.9994921684265137 )
+[batch  17000  step  68000  ep= 164  train= 16501  syncs= 330  wall= 175.497367054 s ] recent_mean_ret= -273.4   best= -150.0   L=(R 0.20416955947875975 , P 0.9455171426137289 , V 0.782484213511149 , G -0.9992595672607422 )
+[batch  17500  step  70000  ep= 170  train= 17001  syncs= 340  wall= 181.206229572 s ] recent_mean_ret= -293.53333333333336   best= -150.0   L=(R 0.20417044162750245 , P 0.935470183690389 , V 0.7904970645904541 , G -0.9955881118774415 )
+[batch  18000  step  72000  ep= 178  train= 17501  syncs= 350  wall= 186.873660436 s ] recent_mean_ret= -308.96666666666664   best= -150.0   L=(R 0.20415549278259276 , P 0.8864899476369222 , V 0.7432031631469727 , G -0.9941117286682128 )
+[batch  18500  step  74000  ep= 185  train= 18001  syncs= 360  wall= 192.58000143 s ] recent_mean_ret= -271.43333333333334   best= -117.0   L=(R 0.20415358543395995 , P 0.9231182734171549 , V 0.7969043254852295 , G -0.9997087478637695 )
+[batch  19000  step  76000  ep= 191  train= 18501  syncs= 370  wall= 198.242588615 s ] recent_mean_ret= -279.6333333333333   best= -117.0   L=(R 0.20415868759155273 , P 0.9118953545888265 , V 0.7877772649129232 , G -0.9994599342346191 )
+[batch  19500  step  78000  ep= 198  train= 19001  syncs= 380  wall= 203.953410939 s ] recent_mean_ret= -281.2   best= -117.0   L=(R 0.2041496753692627 , P 0.8608565330505371 , V 0.745416005452474 , G -0.9994717597961426 )
+[batch  20000  step  80000  ep= 203  train= 19501  syncs= 390  wall= 209.614544861 s ] recent_mean_ret= -299.46666666666664   best= -117.0   L=(R 0.20415501594543456 , P 0.8942320346832275 , V 0.7649964491526285 , G -0.9994050979614257 )
+[batch  20500  step  82000  ep= 209  train= 20001  syncs= 400  wall= 215.324113954 s ] recent_mean_ret= -314.8333333333333   best= -117.0   L=(R 0.2041450023651123 , P 0.8501591682434082 , V 0.7329568862915039 , G -0.9992170333862305 )
+[batch  21000  step  84000  ep= 216  train= 20501  syncs= 410  wall= 220.997522232 s ] recent_mean_ret= -322.8333333333333   best= -117.0   L=(R 0.2041480779647827 , P 0.8444343407948812 , V 0.7540779113769531 , G -0.9989399909973145 )
+[batch  21500  step  86000  ep= 223  train= 21001  syncs= 420  wall= 226.706272549 s ] recent_mean_ret= -323.46666666666664   best= -117.0   L=(R 0.20415132045745848 , P 0.797256867090861 , V 0.7416018644968668 , G -0.9959030151367188 )
+[batch  22000  step  88000  ep= 231  train= 21501  syncs= 430  wall= 232.3628396 s ] recent_mean_ret= -296.26666666666665   best= -117.0   L=(R 0.20414111614227295 , P 0.7977253595987955 , V 0.755030632019043 , G -0.9988925933837891 )
+[batch  22500  step  90000  ep= 238  train= 22001  syncs= 440  wall= 238.074315758 s ] recent_mean_ret= -277.0   best= -117.0   L=(R 0.2041778564453125 , P 0.8246211210886637 , V 0.7839383284250895 , G -0.9976696014404297 )
+[batch  23000  step  92000  ep= 245  train= 22501  syncs= 450  wall= 243.737951662 s ] recent_mean_ret= -291.1666666666667   best= -117.0   L=(R 0.20413594245910643 , P 0.766578753789266 , V 0.7443000475565592 , G -0.9980502128601074 )
+[batch  23500  step  94000  ep= 251  train= 23001  syncs= 460  wall= 249.437401125 s ] recent_mean_ret= -264.93333333333334   best= -117.0   L=(R 0.20415701866149902 , P 0.7731207211812338 , V 0.7549873193105062 , G -0.9973033905029297 )
+[batch  24000  step  96000  ep= 262  train= 23501  syncs= 470  wall= 255.10491581 s ] recent_mean_ret= -259.93333333333334   best= -102.0   L=(R 0.2041532278060913 , P 0.7553240458170573 , V 0.7592558860778809 , G -0.9963513374328613 )
+[batch  24500  step  98000  ep= 271  train= 24001  syncs= 480  wall= 260.800636287 s ] recent_mean_ret= -247.06666666666666   best= -102.0   L=(R 0.20414652824401855 , P 0.7395129998524984 , V 0.7712621688842773 , G -0.9981908798217773 )
+[batch  25000  step  100000  ep= 280  train= 24501  syncs= 490  wall= 266.44881437 s ] recent_mean_ret= -220.1   best= -102.0   L=(R 0.20415401458740234 , P 0.7095077832539877 , V 0.7821738719940186 , G -0.9989053726196289 )
+
+--- Final GPU → CPU sync ---
+
+=== Run summary ===
+    wall time             = 266.448828561 s
+    total env transitions = 100000  (across 4 envs)
+    train_step_gpu calls  = 24501
+    GPU→CPU syncs         = 491
+    episodes finished     = 280
+    best episode return   = -102.0
+    any NaN loss          = False
+    final loss components:
+        L_R = 0.20415401458740234
+        L_P = 0.7095077832539877
+        L_V = 0.7821738719940186
+        L_G = -0.9989053726196289
+    first  100  ep mean return = -476.71
+    last  100  ep mean return = -271.42
+    convergence target    = -100.0
+
+INCONCLUSIVE: Acrobot did not hit -100.0 — got -271.42 (improvement -476.71 → -271.42 =  205.28999999999996 )

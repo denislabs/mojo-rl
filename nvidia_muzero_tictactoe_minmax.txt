@@ -1,0 +1,321 @@
+[intercept] CUDA interceptor loaded (dlsym hooking mode)
+[intercept] dlsym hook installed successfully
+[intercept] CUDA interceptor loaded (dlsym hooking mode)
+[intercept] dlsym hook installed successfully
+=== MuZero on TicTacToe ===
+
+[intercept] Hooked cuLaunchKernel -> 0x7f23d4d494b0
+[intercept] Hooked cuLaunchKernelEx -> 0x7f23d4d49510
+[intercept] Captured Mojo stream: 0x55878b2bbf60
+                                                                                                                        Iter 1 / 100 | Steps: 1024 | Games: 112 | Avg Rew: 93 % | Train: 320 | Replay: 1024 | |W| rep/dyn/pred: 27.24286459464279 / 29.20254634166822 / 24.45624423236198 (Δ -0.6484453284557645 / -0.47783788049359543 / 4.875303401083812 )
+                                                                                                                          Iter 1 | Eval vs Random | W: 47 D: 1 L: 16
+    vs Minimax : W 0 D 1 L 63
+                                                                                                                          Arena: new 55 draw 21 old 52 | Accepted ( 1 / 1 )
+                                                                                                                        Iter 2 / 100 | Steps: 2048 | Games: 133 | Avg Rew: 80 % | Train: 960 | Replay: 2048 | |W| rep/dyn/pred: 27.129542936492598 / 28.006856466736174 / 46.81184883868906 (Δ -0.11332165815019124 / -1.1956898749320466 / 22.35560460632708 )
+                                                                                                                          Iter 2 | Eval vs Random | W: 42 D: 5 L: 17
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 52 draw 17 old 59 | Rejected ( 1 / 2 )
+                                                                                                                        Iter 3 / 100 | Steps: 3072 | Games: 130 | Avg Rew: 83 % | Train: 1920 | Replay: 3072 | |W| rep/dyn/pred: 27.129542936492598 / 28.006856466736174 / 46.81184883868906 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 3 | Eval vs Random | W: 30 D: 14 L: 20
+    vs Minimax : W 0 D 63 L 1
+                                                                                                                          Arena: new 49 draw 19 old 60 | Rejected ( 1 / 3 )
+                                                                                                                        Iter 4 / 100 | Steps: 4096 | Games: 136 | Avg Rew: 86 % | Train: 3200 | Replay: 4096 | |W| rep/dyn/pred: 27.129542936492598 / 28.006856466736174 / 46.81184883868906 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 4 | Eval vs Random | W: 26 D: 6 L: 32
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 40 draw 7 old 81 | Rejected ( 1 / 4 )
+                                                                                                                        Iter 5 / 100 | Steps: 5120 | Games: 139 | Avg Rew: 80 % | Train: 4800 | Replay: 5120 | |W| rep/dyn/pred: 27.129542936492598 / 28.006856466736174 / 46.81184883868906 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 5 | Eval vs Random | W: 41 D: 12 L: 11
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 49 draw 18 old 61 | Rejected ( 1 / 5 )
+                                                                                                                        Iter 6 / 100 | Steps: 6144 | Games: 143 | Avg Rew: 90 % | Train: 6720 | Replay: 6144 | |W| rep/dyn/pred: 27.129542936492598 / 28.006856466736174 / 46.81184883868906 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 6 | Eval vs Random | W: 39 D: 12 L: 13
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 55 draw 29 old 44 | Accepted ( 2 / 6 )
+                                                                                                                        Iter 7 / 100 | Steps: 7168 | Games: 133 | Avg Rew: 87 % | Train: 8960 | Replay: 7168 | |W| rep/dyn/pred: 28.143806787746513 / 24.168746000070136 / 104.80156428463695 (Δ 1.014263851253915 / -3.8381104666660377 / 57.989715445947894 )
+                                                                                                                          Iter 7 | Eval vs Random | W: 34 D: 14 L: 16
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 51 draw 32 old 45 | Accepted ( 3 / 7 )
+                                                                                                                        Iter 8 / 100 | Steps: 8192 | Games: 135 | Avg Rew: 90 % | Train: 11520 | Replay: 8192 | |W| rep/dyn/pred: 29.781082549628717 / 24.450920942168736 / 142.44615789271202 (Δ 1.6372757618822043 / 0.2821749420985995 / 37.64459360807507 )
+                                                                                                                          Iter 8 | Eval vs Random | W: 36 D: 4 L: 24
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 49 draw 22 old 57 | Rejected ( 3 / 8 )
+                                                                                                                        Iter 9 / 100 | Steps: 9216 | Games: 129 | Avg Rew: 86 % | Train: 14400 | Replay: 9216 | |W| rep/dyn/pred: 29.781082549628717 / 24.450920942168736 / 142.44615789271202 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 9 | Eval vs Random | W: 26 D: 19 L: 19
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 49 draw 36 old 43 | Accepted ( 4 / 9 )
+                                                                                                                        Iter 10 / 100 | Steps: 10240 | Games: 133 | Avg Rew: 96 % | Train: 17600 | Replay: 10240 | |W| rep/dyn/pred: 33.00328460388742 / 27.436046426331437 / 201.93855115271012 (Δ 3.2222020542587053 / 2.985125484162701 / 59.492393259998096 )
+  Saved checkpoint: tictactoe_muzero.ckpt
+                                                                                                                          Iter 10 | Eval vs Random | W: 37 D: 9 L: 18
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 57 draw 20 old 51 | Accepted ( 5 / 10 )
+                                                                                                                        Iter 11 / 100 | Steps: 11264 | Games: 135 | Avg Rew: 87 % | Train: 21120 | Replay: 11264 | |W| rep/dyn/pred: 35.87873271122917 / 32.000987798720224 / 253.73546941140924 (Δ 2.8754481073417466 / 4.5649413723887875 / 51.79691825869912 )
+                                                                                                                          Iter 11 | Eval vs Random | W: 30 D: 10 L: 24
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 54 draw 16 old 58 | Rejected ( 5 / 11 )
+                                                                                                                        Iter 12 / 100 | Steps: 12288 | Games: 132 | Avg Rew: 91 % | Train: 24960 | Replay: 12288 | |W| rep/dyn/pred: 35.87873271122917 / 32.000987798720224 / 253.73546941140924 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 12 | Eval vs Random | W: 44 D: 7 L: 13
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 74 draw 8 old 46 | Accepted ( 6 / 12 )
+                                                                                                                        Iter 13 / 100 | Steps: 13312 | Games: 132 | Avg Rew: 92 % | Train: 29120 | Replay: 13312 | |W| rep/dyn/pred: 41.46822844102947 / 37.58687366688151 / 296.6085651426323 (Δ 5.589495729800298 / 5.585885868161284 / 42.87309573122306 )
+                                                                                                                          Iter 13 | Eval vs Random | W: 35 D: 15 L: 14
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 42 draw 16 old 70 | Rejected ( 6 / 13 )
+                                                                                                                        Iter 14 / 100 | Steps: 14336 | Games: 139 | Avg Rew: 86 % | Train: 33600 | Replay: 14336 | |W| rep/dyn/pred: 41.46822844102947 / 37.58687366688151 / 296.6085651426323 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 14 | Eval vs Random | W: 47 D: 8 L: 9
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 46 draw 19 old 63 | Rejected ( 6 / 14 )
+                                                                                                                        Iter 15 / 100 | Steps: 15360 | Games: 141 | Avg Rew: 90 % | Train: 38400 | Replay: 15360 | |W| rep/dyn/pred: 41.46822844102947 / 37.58687366688151 / 296.6085651426323 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 15 | Eval vs Random | W: 41 D: 5 L: 18
+    vs Minimax : W 0 D 64 L 0
+                                                                                                                          Arena: new 47 draw 11 old 70 | Rejected ( 6 / 15 )
+                                                                                                                        Iter 16 / 100 | Steps: 16384 | Games: 132 | Avg Rew: 90 % | Train: 43520 | Replay: 16384 | |W| rep/dyn/pred: 41.46822844102947 / 37.58687366688151 / 296.6085651426323 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 16 | Eval vs Random | W: 45 D: 5 L: 14
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 53 draw 13 old 62 | Rejected ( 6 / 16 )
+                                                                                                                        Iter 17 / 100 | Steps: 17408 | Games: 134 | Avg Rew: 78 % | Train: 48960 | Replay: 17408 | |W| rep/dyn/pred: 41.46822844102947 / 37.58687366688151 / 296.6085651426323 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 17 | Eval vs Random | W: 52 D: 5 L: 7
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 55 draw 12 old 61 | Rejected ( 6 / 17 )
+                                                                                                                        Iter 18 / 100 | Steps: 18432 | Games: 134 | Avg Rew: 83 % | Train: 54720 | Replay: 18432 | |W| rep/dyn/pred: 41.46822844102947 / 37.58687366688151 / 296.6085651426323 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 18 | Eval vs Random | W: 36 D: 7 L: 21
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 46 draw 12 old 70 | Rejected ( 6 / 18 )
+                                                                                                                        Iter 19 / 100 | Steps: 19456 | Games: 136 | Avg Rew: 90 % | Train: 60800 | Replay: 19456 | |W| rep/dyn/pred: 41.46822844102947 / 37.58687366688151 / 296.6085651426323 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 19 | Eval vs Random | W: 53 D: 5 L: 6
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 55 draw 16 old 57 | Rejected ( 6 / 19 )
+                                                                                                                        Iter 20 / 100 | Steps: 20480 | Games: 133 | Avg Rew: 86 % | Train: 67200 | Replay: 20480 | |W| rep/dyn/pred: 41.46822844102947 / 37.58687366688151 / 296.6085651426323 (Δ 0.0 / 0.0 / 0.0 )
+  Saved checkpoint: tictactoe_muzero.ckpt
+                                                                                                                          Iter 20 | Eval vs Random | W: 52 D: 3 L: 9
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 62 draw 6 old 60 | Accepted ( 7 / 20 )
+                                                                                                                        Iter 21 / 100 | Steps: 21504 | Games: 143 | Avg Rew: 89 % | Train: 73920 | Replay: 21504 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 2.727334269342073 / -1.9438138943394563 / -26.109582393678693 )
+                                                                                                                          Iter 21 | Eval vs Random | W: 49 D: 1 L: 14
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 60 draw 3 old 65 | Rejected ( 7 / 21 )
+                                                                                                                        Iter 22 / 100 | Steps: 22528 | Games: 132 | Avg Rew: 88 % | Train: 80960 | Replay: 22528 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 22 | Eval vs Random | W: 34 D: 9 L: 21
+    vs Minimax : W 0 D 64 L 0
+                                                                                                                          Arena: new 38 draw 9 old 81 | Rejected ( 7 / 22 )
+                                                                                                                        Iter 23 / 100 | Steps: 23552 | Games: 135 | Avg Rew: 91 % | Train: 88320 | Replay: 23552 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 23 | Eval vs Random | W: 44 D: 6 L: 14
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 53 draw 8 old 67 | Rejected ( 7 / 23 )
+                                                                                                                        Iter 24 / 100 | Steps: 24576 | Games: 132 | Avg Rew: 86 % | Train: 96000 | Replay: 24576 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 24 | Eval vs Random | W: 25 D: 6 L: 33
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 35 draw 8 old 85 | Rejected ( 7 / 24 )
+                                                                                                                        Iter 25 / 100 | Steps: 25600 | Games: 131 | Avg Rew: 85 % | Train: 104000 | Replay: 25600 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 25 | Eval vs Random | W: 39 D: 12 L: 13
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 53 draw 11 old 64 | Rejected ( 7 / 25 )
+                                                                                                                        Iter 26 / 100 | Steps: 26624 | Games: 135 | Avg Rew: 86 % | Train: 112320 | Replay: 26624 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 26 | Eval vs Random | W: 47 D: 1 L: 16
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 45 draw 4 old 79 | Rejected ( 7 / 26 )
+                                                                                                                        Iter 27 / 100 | Steps: 27648 | Games: 130 | Avg Rew: 86 % | Train: 120960 | Replay: 27648 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 27 | Eval vs Random | W: 40 D: 9 L: 15
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 53 draw 9 old 66 | Rejected ( 7 / 27 )
+                                                                                                                        Iter 28 / 100 | Steps: 28672 | Games: 132 | Avg Rew: 87 % | Train: 129920 | Replay: 28672 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 28 | Eval vs Random | W: 53 D: 5 L: 6
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 61 draw 3 old 64 | Rejected ( 7 / 28 )
+                                                                                                                        Iter 29 / 100 | Steps: 29696 | Games: 139 | Avg Rew: 85 % | Train: 139200 | Replay: 29696 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 29 | Eval vs Random | W: 24 D: 13 L: 27
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 35 draw 10 old 83 | Rejected ( 7 / 29 )
+                                                                                                                        Iter 30 / 100 | Steps: 30720 | Games: 130 | Avg Rew: 88 % | Train: 148800 | Replay: 30720 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+  Saved checkpoint: tictactoe_muzero.ckpt
+                                                                                                                          Iter 30 | Eval vs Random | W: 32 D: 11 L: 21
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 41 draw 7 old 80 | Rejected ( 7 / 30 )
+                                                                                                                        Iter 31 / 100 | Steps: 31744 | Games: 131 | Avg Rew: 87 % | Train: 158720 | Replay: 31744 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 31 | Eval vs Random | W: 28 D: 6 L: 30
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 37 draw 6 old 85 | Rejected ( 7 / 31 )
+                                                                                                                        Iter 32 / 100 | Steps: 32768 | Games: 131 | Avg Rew: 85 % | Train: 168960 | Replay: 32768 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 32 | Eval vs Random | W: 46 D: 9 L: 9
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 49 draw 12 old 67 | Rejected ( 7 / 32 )
+                                                                                                                        Iter 33 / 100 | Steps: 33792 | Games: 132 | Avg Rew: 87 % | Train: 179520 | Replay: 33792 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 33 | Eval vs Random | W: 40 D: 10 L: 14
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 53 draw 7 old 68 | Rejected ( 7 / 33 )
+                                                                                                                        Iter 34 / 100 | Steps: 34816 | Games: 130 | Avg Rew: 86 % | Train: 190400 | Replay: 34816 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 34 | Eval vs Random | W: 48 D: 5 L: 11
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 45 draw 11 old 72 | Rejected ( 7 / 34 )
+                                                                                                                        Iter 35 / 100 | Steps: 35840 | Games: 144 | Avg Rew: 88 % | Train: 201600 | Replay: 35840 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 35 | Eval vs Random | W: 29 D: 4 L: 31
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 36 draw 6 old 86 | Rejected ( 7 / 35 )
+                                                                                                                        Iter 36 / 100 | Steps: 36864 | Games: 128 | Avg Rew: 85 % | Train: 213120 | Replay: 36864 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 36 | Eval vs Random | W: 50 D: 4 L: 10
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 62 draw 2 old 64 | Rejected ( 7 / 36 )
+                                                                                                                        Iter 37 / 100 | Steps: 37888 | Games: 128 | Avg Rew: 87 % | Train: 224960 | Replay: 37888 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 37 | Eval vs Random | W: 41 D: 8 L: 15
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 42 draw 10 old 76 | Rejected ( 7 / 37 )
+                                                                                                                        Iter 38 / 100 | Steps: 38912 | Games: 134 | Avg Rew: 85 % | Train: 237120 | Replay: 38912 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 38 | Eval vs Random | W: 41 D: 16 L: 7
+    vs Minimax : W 0 D 64 L 0
+                                                                                                                          Arena: new 44 draw 18 old 66 | Rejected ( 7 / 38 )
+                                                                                                                        Iter 39 / 100 | Steps: 39936 | Games: 134 | Avg Rew: 85 % | Train: 249600 | Replay: 39936 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 39 | Eval vs Random | W: 32 D: 11 L: 21
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 35 draw 13 old 80 | Rejected ( 7 / 39 )
+                                                                                                                        Iter 40 / 100 | Steps: 40960 | Games: 129 | Avg Rew: 91 % | Train: 262400 | Replay: 40960 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+  Saved checkpoint: tictactoe_muzero.ckpt
+                                                                                                                          Iter 40 | Eval vs Random | W: 26 D: 6 L: 32
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 28 draw 6 old 94 | Rejected ( 7 / 40 )
+                                                                                                                        Iter 41 / 100 | Steps: 41984 | Games: 133 | Avg Rew: 87 % | Train: 275520 | Replay: 41984 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 41 | Eval vs Random | W: 30 D: 6 L: 28
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 35 draw 5 old 88 | Rejected ( 7 / 41 )
+                                                                                                                        Iter 42 / 100 | Steps: 43008 | Games: 136 | Avg Rew: 90 % | Train: 288960 | Replay: 43008 | |W| rep/dyn/pred: 44.19556271037154 / 35.64305977254205 / 270.4989827489536 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 42 | Eval vs Random | W: 53 D: 4 L: 7
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 62 draw 4 old 62 | Accepted ( 8 / 42 )
+                                                                                                                        Iter 43 / 100 | Steps: 44032 | Games: 130 | Avg Rew: 87 % | Train: 302720 | Replay: 44032 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ -9.251321316165146 / -10.498658625592267 / -59.26857174970934 )
+                                                                                                                          Iter 43 | Eval vs Random | W: 42 D: 10 L: 12
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 55 draw 10 old 63 | Rejected ( 8 / 43 )
+                                                                                                                        Iter 44 / 100 | Steps: 45056 | Games: 140 | Avg Rew: 85 % | Train: 316800 | Replay: 45056 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 44 | Eval vs Random | W: 46 D: 4 L: 14
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 49 draw 4 old 75 | Rejected ( 8 / 44 )
+                                                                                                                        Iter 45 / 100 | Steps: 46080 | Games: 134 | Avg Rew: 83 % | Train: 331200 | Replay: 46080 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 45 | Eval vs Random | W: 25 D: 3 L: 36
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 21 draw 17 old 90 | Rejected ( 8 / 45 )
+                                                                                                                        Iter 46 / 100 | Steps: 47104 | Games: 142 | Avg Rew: 85 % | Train: 345920 | Replay: 47104 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 46 | Eval vs Random | W: 32 D: 6 L: 26
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 31 draw 4 old 93 | Rejected ( 8 / 46 )
+                                                                                                                        Iter 47 / 100 | Steps: 48128 | Games: 134 | Avg Rew: 82 % | Train: 360960 | Replay: 48128 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 47 | Eval vs Random | W: 40 D: 5 L: 19
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 49 draw 6 old 73 | Rejected ( 8 / 47 )
+                                                                                                                        Iter 48 / 100 | Steps: 49152 | Games: 138 | Avg Rew: 83 % | Train: 376320 | Replay: 49152 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 48 | Eval vs Random | W: 30 D: 12 L: 22
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 32 draw 10 old 86 | Rejected ( 8 / 48 )
+                                                                                                                        Iter 49 / 100 | Steps: 50176 | Games: 139 | Avg Rew: 84 % | Train: 392000 | Replay: 50176 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 49 | Eval vs Random | W: 35 D: 4 L: 25
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 43 draw 3 old 82 | Rejected ( 8 / 49 )
+                                                                                                                        Iter 50 / 100 | Steps: 51200 | Games: 136 | Avg Rew: 83 % | Train: 408000 | Replay: 51200 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+  Saved checkpoint: tictactoe_muzero.ckpt
+                                                                                                                          Iter 50 | Eval vs Random | W: 23 D: 10 L: 31
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 46 draw 3 old 79 | Rejected ( 8 / 50 )
+                                                                                                                        Iter 51 / 100 | Steps: 52224 | Games: 138 | Avg Rew: 88 % | Train: 424320 | Replay: 52224 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 51 | Eval vs Random | W: 45 D: 13 L: 6
+    vs Minimax : W 0 D 64 L 0
+                                                                                                                          Arena: new 44 draw 11 old 73 | Rejected ( 8 / 51 )
+                                                                                                                        Iter 52 / 100 | Steps: 53248 | Games: 132 | Avg Rew: 85 % | Train: 440960 | Replay: 53248 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 52 | Eval vs Random | W: 39 D: 11 L: 14
+    vs Minimax : W 0 D 64 L 0
+                                                                                                                          Arena: new 43 draw 10 old 75 | Rejected ( 8 / 52 )
+                                                                                                                        Iter 53 / 100 | Steps: 54272 | Games: 138 | Avg Rew: 86 % | Train: 457920 | Replay: 54272 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 53 | Eval vs Random | W: 41 D: 9 L: 14
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 53 draw 7 old 68 | Rejected ( 8 / 53 )
+                                                                                                                        Iter 54 / 100 | Steps: 55296 | Games: 136 | Avg Rew: 88 % | Train: 475200 | Replay: 55296 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 54 | Eval vs Random | W: 37 D: 8 L: 19
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 41 draw 8 old 79 | Rejected ( 8 / 54 )
+                                                                                                                        Iter 55 / 100 | Steps: 56320 | Games: 134 | Avg Rew: 83 % | Train: 492800 | Replay: 56320 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 55 | Eval vs Random | W: 28 D: 5 L: 31
+    vs Minimax : W 0 D 64 L 0
+                                                                                                                          Arena: new 26 draw 7 old 95 | Rejected ( 8 / 55 )
+                                                                                                                        Iter 56 / 100 | Steps: 57344 | Games: 134 | Avg Rew: 87 % | Train: 510720 | Replay: 57344 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 56 | Eval vs Random | W: 30 D: 11 L: 23
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 31 draw 20 old 77 | Rejected ( 8 / 56 )
+                                                                                                                        Iter 57 / 100 | Steps: 58368 | Games: 134 | Avg Rew: 82 % | Train: 528960 | Replay: 58368 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 57 | Eval vs Random | W: 39 D: 4 L: 21
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 45 draw 4 old 79 | Rejected ( 8 / 57 )
+                                                                                                                        Iter 58 / 100 | Steps: 59392 | Games: 134 | Avg Rew: 79 % | Train: 547520 | Replay: 59392 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 58 | Eval vs Random | W: 22 D: 8 L: 34
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 38 draw 6 old 84 | Rejected ( 8 / 58 )
+                                                                                                                        Iter 59 / 100 | Steps: 60416 | Games: 131 | Avg Rew: 83 % | Train: 566400 | Replay: 60416 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 59 | Eval vs Random | W: 39 D: 11 L: 14
+    vs Minimax : W 0 D 64 L 0
+                                                                                                                          Arena: new 47 draw 9 old 72 | Rejected ( 8 / 59 )
+                                                                                                                        Iter 60 / 100 | Steps: 61440 | Games: 136 | Avg Rew: 83 % | Train: 585600 | Replay: 61440 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+  Saved checkpoint: tictactoe_muzero.ckpt
+                                                                                                                          Iter 60 | Eval vs Random | W: 44 D: 2 L: 18
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 48 draw 5 old 75 | Rejected ( 8 / 60 )
+                                                                                                                        Iter 61 / 100 | Steps: 62464 | Games: 138 | Avg Rew: 85 % | Train: 605120 | Replay: 62464 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 61 | Eval vs Random | W: 49 D: 2 L: 13
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 51 draw 3 old 74 | Rejected ( 8 / 61 )
+                                                                                                                        Iter 62 / 100 | Steps: 63488 | Games: 136 | Avg Rew: 84 % | Train: 624960 | Replay: 63488 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 62 | Eval vs Random | W: 37 D: 6 L: 21
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 35 draw 5 old 88 | Rejected ( 8 / 62 )
+                                                                                                                        Iter 63 / 100 | Steps: 64512 | Games: 136 | Avg Rew: 87 % | Train: 644960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 63 | Eval vs Random | W: 52 D: 5 L: 7
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 62 draw 3 old 63 | Rejected ( 8 / 63 )
+                                                                                                                        Iter 64 / 100 | Steps: 65536 | Games: 136 | Avg Rew: 89 % | Train: 664960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 64 | Eval vs Random | W: 48 D: 4 L: 12
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 61 draw 2 old 65 | Rejected ( 8 / 64 )
+                                                                                                                        Iter 65 / 100 | Steps: 66560 | Games: 134 | Avg Rew: 90 % | Train: 684960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 65 | Eval vs Random | W: 40 D: 7 L: 17
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 52 draw 6 old 70 | Rejected ( 8 / 65 )
+                                                                                                                        Iter 66 / 100 | Steps: 67584 | Games: 139 | Avg Rew: 87 % | Train: 704960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 66 | Eval vs Random | W: 45 D: 5 L: 14
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 54 draw 5 old 69 | Rejected ( 8 / 66 )
+                                                                                                                        Iter 67 / 100 | Steps: 68608 | Games: 133 | Avg Rew: 84 % | Train: 724960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 67 | Eval vs Random | W: 44 D: 11 L: 9
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 59 draw 1 old 68 | Rejected ( 8 / 67 )
+                                                                                                                        Iter 68 / 100 | Steps: 69632 | Games: 130 | Avg Rew: 78 % | Train: 744960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 68 | Eval vs Random | W: 40 D: 5 L: 19
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 54 draw 3 old 71 | Rejected ( 8 / 68 )
+                                                                                                                        Iter 69 / 100 | Steps: 70656 | Games: 136 | Avg Rew: 81 % | Train: 764960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 69 | Eval vs Random | W: 37 D: 10 L: 17
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 51 draw 4 old 73 | Rejected ( 8 / 69 )
+                                                                                                                        Iter 70 / 100 | Steps: 71680 | Games: 137 | Avg Rew: 83 % | Train: 784960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+  Saved checkpoint: tictactoe_muzero.ckpt
+                                                                                                                          Iter 70 | Eval vs Random | W: 41 D: 5 L: 18
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 56 draw 3 old 69 | Rejected ( 8 / 70 )
+                                                                                                                        Iter 71 / 100 | Steps: 72704 | Games: 134 | Avg Rew: 79 % | Train: 804960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 71 | Eval vs Random | W: 48 D: 6 L: 10
+    vs Minimax : W 0 D 1 L 63
+                                                                                                                          Arena: new 62 draw 1 old 65 | Rejected ( 8 / 71 )
+                                                                                                                        Iter 72 / 100 | Steps: 73728 | Games: 133 | Avg Rew: 87 % | Train: 824960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 72 | Eval vs Random | W: 50 D: 4 L: 10
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 54 draw 2 old 72 | Rejected ( 8 / 72 )
+                                                                                                                        Iter 73 / 100 | Steps: 74752 | Games: 137 | Avg Rew: 87 % | Train: 844960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 73 | Eval vs Random | W: 45 D: 5 L: 14
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 54 draw 2 old 72 | Rejected ( 8 / 73 )
+                                                                                                                        Iter 74 / 100 | Steps: 75776 | Games: 136 | Avg Rew: 88 % | Train: 864960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 74 | Eval vs Random | W: 46 D: 6 L: 12
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 60 draw 1 old 67 | Rejected ( 8 / 74 )
+                                                                                                                        Iter 75 / 100 | Steps: 76800 | Games: 133 | Avg Rew: 86 % | Train: 884960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 75 | Eval vs Random | W: 40 D: 7 L: 17
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 52 draw 9 old 67 | Rejected ( 8 / 75 )
+                                                                                                                        Iter 76 / 100 | Steps: 77824 | Games: 145 | Avg Rew: 86 % | Train: 904960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )
+                                                                                                                          Iter 76 | Eval vs Random | W: 46 D: 8 L: 10
+    vs Minimax : W 0 D 0 L 64
+                                                                                                                          Arena: new 49 draw 8 old 71 | Rejected ( 8 / 76 )
+                                                                                                                        Iter 77 / 100 | Steps: 78848 | Games: 134 | Avg Rew: 85 % | Train: 924960 | Replay: 64000 | |W| rep/dyn/pred: 34.944241394206394 / 25.144401146949786 / 211.23041099924427 (Δ 0.0 / 0.0 / 0.0 )

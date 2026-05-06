@@ -1,0 +1,104 @@
+[intercept] CUDA interceptor loaded (dlsym hooking mode)
+[intercept] dlsym hook installed successfully
+[intercept] CUDA interceptor loaded (dlsym hooking mode)
+[intercept] dlsym hook installed successfully
+Included from /workspace/mojo-rl/./mojo_rl/deep_agents/efficient_zero_v2/__init__.mojo:1:
+Included from /workspace/mojo-rl/./mojo_rl/deep_agents/efficient_zero_v2/__init__.mojo:38:
+/workspace/mojo-rl/./mojo_rl/deep_agents/efficient_zero_v2/efficient_zero_v2.mojo:2518:39: warning: assignment to 'v_target' was never used; assign to '_' instead?
+                var v_target = Float64(0.0)
+                                      ^
+=== EZ-V2 Acrobot demo — GPU train_step ===
+[intercept] Hooked cuLaunchKernel -> 0x7f8591c6f4b0
+[intercept] Hooked cuLaunchKernelEx -> 0x7f8591c6f510
+
+--- Run config ---
+    NUM_ENV_STEPS         = 100000
+    TRAIN_INTERVAL        = 4
+    SYNC_INTERVAL         = 50 train_steps
+    TARGET_SYNC_INTERVAL  = 200 train_steps
+    REANALYZE_INTERVAL    = 200 train_steps
+    REANALYZE_SAMPLES     = 32
+    REANALYZE_WARMUP      = 1000 train_steps
+    EVAL_WINDOW           = 100 episodes
+    CONVERGENCE_TARGET    = -100.0
+    Config: LATENT= 128  PROJ= 256  BINS= 51
+    BS= 128  K_UNROLL= 5  N_TD= 5  SIMS= 16  K_GUMBEL= 2
+    λ_R= 1.0  λ_P= 1.0  λ_V= 0.5  λ_G= 2.0
+    γ= 0.997  v_min= -400.0  v_max= 0.0
+    max_grad_norm = 5.0
+
+--- Allocating GPU state ---
+    GPU state ready, initial upload complete
+
+[intercept] Captured Mojo stream: 0x5625830e4180
+[step  2000  ep= 4  train= 376  syncs= 7  wall= 4.542683242 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.20434491634368895 , P 0.991134246190389 , V 4.147972742716472 , G -0.9953658103942871 )
+[step  4000  ep= 8  train= 876  syncs= 17  wall= 9.483025453 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.20415616035461426 , P 0.9686919848124186 , V 1.6694806416829426 , G -0.9962068557739258 )
+[step  6000  ep= 12  train= 1376  syncs= 27  wall= 14.560213422 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.2041553020477295 , P 0.979147752126058 , V 1.4769611358642578 , G -0.995806884765625 )
+[step  8000  ep= 16  train= 1876  syncs= 37  wall= 19.722353068 s ] recent_mean_ret= -500.0   best= -500.0   L=(R 0.20419731140136718 , P 0.9587693214416504 , V 1.3963257471720378 , G -0.995667839050293 )
+[step  10000  ep= 20  train= 2376  syncs= 47  wall= 24.872450409 s ] recent_mean_ret= -490.15   best= -354.0   L=(R 0.20463180541992188 , P 0.9564318656921387 , V 1.4773890177408855 , G -0.9955241203308105 )
+[step  12000  ep= 24  train= 2876  syncs= 57  wall= 30.104779743 s ] recent_mean_ret= -491.7916666666667   best= -354.0   L=(R 0.204396390914917 , P 0.9684837659200033 , V 1.4070242245992024 , G -0.9963946342468262 )
+[step  14000  ep= 28  train= 3376  syncs= 67  wall= 35.323871457 s ] recent_mean_ret= -492.9642857142857   best= -354.0   L=(R 0.2044071674346924 , P 0.9853364626566569 , V 1.4337058067321777 , G -0.9998306274414063 )
+[step  16000  ep= 32  train= 3876  syncs= 77  wall= 40.623376782 s ] recent_mean_ret= -493.43333333333334   best= -354.0   L=(R 0.20442602634429932 , P 0.9635732173919678 , V 1.3190796375274658 , G -0.9997970581054687 )
+[step  18000  ep= 36  train= 4376  syncs= 87  wall= 45.908089181 s ] recent_mean_ret= -493.43333333333334   best= -354.0   L=(R 0.20436062812805175 , P 0.9746716817220052 , V 1.3028736114501953 , G -0.9997103691101075 )
+[step  20000  ep= 40  train= 4876  syncs= 97  wall= 51.275669532 s ] recent_mean_ret= -493.43333333333334   best= -354.0   L=(R 0.20426511764526367 , P 0.9515762329101563 , V 1.2345848083496094 , G -0.9990645408630371 )
+[step  22000  ep= 45  train= 5376  syncs= 107  wall= 56.630929669 s ] recent_mean_ret= -479.5   best= -292.0   L=(R 0.20425646305084227 , P 0.9529514312744141 , V 1.1914578278859456 , G -0.9999879837036133 )
+[step  24000  ep= 49  train= 5876  syncs= 117  wall= 62.068533726 s ] recent_mean_ret= -481.2   best= -292.0   L=(R 0.20425715446472167 , P 0.9617660840352377 , V 1.1374512513478596 , G -0.9999540328979493 )
+[step  26000  ep= 53  train= 6376  syncs= 127  wall= 67.496242999 s ] recent_mean_ret= -484.96666666666664   best= -292.0   L=(R 0.20426669120788574 , P 0.9562873840332031 , V 1.1652100086212158 , G -0.9998958587646485 )
+[step  28000  ep= 57  train= 6876  syncs= 137  wall= 73.010652604 s ] recent_mean_ret= -484.96666666666664   best= -292.0   L=(R 0.20430390834808348 , P 0.9458207289377848 , V 1.1230725447336833 , G -0.9999971389770508 )
+[step  30000  ep= 61  train= 7376  syncs= 147  wall= 78.511727004 s ] recent_mean_ret= -484.96666666666664   best= -292.0   L=(R 0.20422811508178712 , P 0.9339606761932373 , V 0.9931456247965494 , G -0.9999937057495117 )
+[step  32000  ep= 65  train= 7876  syncs= 157  wall= 84.096165863 s ] recent_mean_ret= -484.96666666666664   best= -292.0   L=(R 0.2042316198348999 , P 0.9381852944691976 , V 1.1409599781036377 , G -0.9999820709228515 )
+[step  34000  ep= 69  train= 8376  syncs= 167  wall= 89.652527196 s ] recent_mean_ret= -482.3666666666667   best= -292.0   L=(R 0.20418787002563477 , P 0.9344261487325033 , V 1.063695748647054 , G -0.9999396324157714 )
+[step  36000  ep= 73  train= 8876  syncs= 177  wall= 95.290830263 s ] recent_mean_ret= -494.43333333333334   best= -292.0   L=(R 0.20421671867370605 , P 0.9538403352101644 , V 1.2774780591328938 , G -0.9999994277954102 )
+[step  38000  ep= 77  train= 9376  syncs= 187  wall= 100.916139829 s ] recent_mean_ret= -494.43333333333334   best= -292.0   L=(R 0.20423665046691894 , P 0.9277439117431641 , V 1.1395751635233562 , G -0.999998664855957 )
+[step  40000  ep= 81  train= 9876  syncs= 197  wall= 106.627947853 s ] recent_mean_ret= -495.53333333333336   best= -292.0   L=(R 0.20422403812408446 , P 0.9385871887207031 , V 1.0913578669230144 , G -0.9999969482421875 )
+[step  42000  ep= 85  train= 10376  syncs= 207  wall= 112.323974391 s ] recent_mean_ret= -495.53333333333336   best= -292.0   L=(R 0.20424966812133788 , P 0.9244664510091146 , V 1.1129787762959797 , G -0.9999897003173828 )
+[step  44000  ep= 89  train= 10876  syncs= 217  wall= 118.104263173 s ] recent_mean_ret= -492.73333333333335   best= -292.0   L=(R 0.20427496433258058 , P 0.9247296651204427 , V 0.9644986788431803 , G -0.999968147277832 )
+[step  46000  ep= 94  train= 11376  syncs= 227  wall= 123.871413535 s ] recent_mean_ret= -485.23333333333335   best= -292.0   L=(R 0.2041994094848633 , P 0.9703455766042074 , V 1.1588508288065593 , G -0.9997180938720703 )
+[step  48000  ep= 98  train= 11876  syncs= 237  wall= 129.719388515 s ] recent_mean_ret= -487.8333333333333   best= -292.0   L=(R 0.20422968864440919 , P 0.9300477504730225 , V 1.0193475087483723 , G -0.9999761581420898 )
+[step  50000  ep= 102  train= 12376  syncs= 247  wall= 135.555742426 s ] recent_mean_ret= -487.8333333333333   best= -292.0   L=(R 0.20423858165740966 , P 0.926395575205485 , V 0.9703332583109537 , G -0.9999598503112793 )
+[step  52000  ep= 106  train= 12876  syncs= 257  wall= 141.471492509 s ] recent_mean_ret= -489.7   best= -292.0   L=(R 0.20427470207214354 , P 0.9286612669626871 , V 0.800145149230957 , G -0.9999178886413574 )
+[step  54000  ep= 110  train= 13376  syncs= 267  wall= 147.362583853 s ] recent_mean_ret= -489.7   best= -292.0   L=(R 0.204185152053833 , P 0.8894277413686117 , V 0.6932590007781982 , G -0.9998064041137695 )
+[step  56000  ep= 114  train= 13876  syncs= 277  wall= 153.297691204 s ] recent_mean_ret= -489.7   best= -292.0   L=(R 0.20415110588073732 , P 0.8778422673543295 , V 0.6590098142623901 , G -0.999998664855957 )
+[step  58000  ep= 118  train= 14376  syncs= 287  wall= 159.181720038 s ] recent_mean_ret= -489.56666666666666   best= -292.0   L=(R 0.20415267944335938 , P 0.9116550286610922 , V 0.6887400150299072 , G -0.9999940872192383 )
+[step  60000  ep= 122  train= 14876  syncs= 297  wall= 165.112434877 s ] recent_mean_ret= -489.1666666666667   best= -292.0   L=(R 0.20416793823242188 , P 0.9150044123331705 , V 0.6680026849110922 , G -0.9516961097717285 )
+[step  62000  ep= 126  train= 15376  syncs= 307  wall= 170.993907601 s ] recent_mean_ret= -492.53333333333336   best= -292.0   L=(R 0.20415728092193602 , P 0.8957226276397705 , V 0.6537829240163168 , G -0.9999990463256836 )
+[step  64000  ep= 130  train= 15876  syncs= 317  wall= 176.922513793 s ] recent_mean_ret= -492.53333333333336   best= -292.0   L=(R 0.20417468547821044 , P 0.8673094113667806 , V 0.6678526401519775 , G -0.999206256866455 )
+[step  66000  ep= 134  train= 16376  syncs= 327  wall= 182.809827665 s ] recent_mean_ret= -490.26666666666665   best= -292.0   L=(R 0.2041924238204956 , P 0.8786717255910238 , V 0.6650196313858032 , G -0.9999923706054688 )
+[step  68000  ep= 138  train= 16876  syncs= 337  wall= 188.74199091 s ] recent_mean_ret= -487.8   best= -292.0   L=(R 0.20421383380889893 , P 0.8690516153971354 , V 0.6955998738606771 , G -0.9999999046325684 )
+[step  70000  ep= 142  train= 17376  syncs= 347  wall= 194.632884868 s ] recent_mean_ret= -487.8   best= -292.0   L=(R 0.2042107105255127 , P 0.8423569202423096 , V 0.6686641375223795 , G -0.9999996185302734 )
+[step  72000  ep= 146  train= 17876  syncs= 357  wall= 200.577091418 s ] recent_mean_ret= -490.73333333333335   best= -292.0   L=(R 0.20421576499938965 , P 0.8217534224192301 , V 0.6567113796869913 , G -0.9999972343444824 )
+[step  74000  ep= 150  train= 18376  syncs= 367  wall= 206.473855718 s ] recent_mean_ret= -495.26666666666665   best= -292.0   L=(R 0.20422759056091308 , P 0.8639943599700928 , V 0.70107634862264 , G -0.9999798774719239 )
+[step  76000  ep= 154  train= 18876  syncs= 377  wall= 212.420888809 s ] recent_mean_ret= -495.26666666666665   best= -292.0   L=(R 0.2042409896850586 , P 0.7921250661214193 , V 0.6502694288889567 , G -0.9999403953552246 )
+[step  78000  ep= 158  train= 19376  syncs= 387  wall= 218.324404922 s ] recent_mean_ret= -495.26666666666665   best= -292.0   L=(R 0.20419156551361084 , P 0.8096927801767985 , V 0.7035015424092611 , G -0.9999990463256836 )
+[step  80000  ep= 162  train= 19876  syncs= 397  wall= 224.280035759 s ] recent_mean_ret= -495.26666666666665   best= -292.0   L=(R 0.20418951511383057 , P 0.8209664821624756 , V 0.6883535385131836 , G -0.9999992370605468 )
+[step  82000  ep= 166  train= 20376  syncs= 407  wall= 230.195258069 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.20420365333557128 , P 0.7749955654144287 , V 0.6896621386210123 , G -0.9999739646911621 )
+[step  84000  ep= 170  train= 20876  syncs= 417  wall= 236.165043527 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.20416476726531982 , P 0.739560604095459 , V 0.6610842943191528 , G -0.9999900817871094 )
+[step  86000  ep= 174  train= 21376  syncs= 427  wall= 242.092521404 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.20421044826507567 , P 0.6876197655995687 , V 0.6826424598693848 , G -0.999997901916504 )
+[step  88000  ep= 178  train= 21876  syncs= 437  wall= 248.072773589 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.20417239665985107 , P 0.6543066501617432 , V 0.7021690209706625 , G -0.9999985694885254 )
+[step  90000  ep= 182  train= 22376  syncs= 447  wall= 254.015193875 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.20419278144836425 , P 0.682200034459432 , V 0.6855519612630209 , G -0.9999913215637207 )
+[step  92000  ep= 186  train= 22876  syncs= 457  wall= 260.008624129 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.20416481494903566 , P 0.6368186473846436 , V 0.7321593761444092 , G -0.999990177154541 )
+[step  94000  ep= 190  train= 23376  syncs= 467  wall= 265.958203132 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.20417208671569825 , P 0.6163208882013956 , V 0.6788121859232584 , G -0.9999782562255859 )
+[step  96000  ep= 194  train= 23876  syncs= 477  wall= 271.957731643 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.20418930053710938 , P 0.6020855903625488 , V 0.6737534205118815 , G -0.9997646331787109 )
+[step  98000  ep= 198  train= 24376  syncs= 487  wall= 277.912225488 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.2041975736618042 , P 0.6056129137674967 , V 0.6631149450937907 , G -0.9996055603027344 )
+[step  100000  ep= 202  train= 24876  syncs= 497  wall= 283.912965245 s ] recent_mean_ret= -500.0   best= -292.0   L=(R 0.20419621467590332 , P 0.5939768552780151 , V 0.6510588328043619 , G -0.9996827125549317 )
+
+--- Final GPU → CPU sync ---
+
+=== Run summary ===
+    wall time             = 283.912979827 s
+    env steps             = 100000
+    train_step_gpu calls  = 24876
+    GPU→CPU syncs         = 498
+    episodes finished     = 202
+    best episode return   = -292.0
+    any NaN loss          = False
+    final loss components:
+        L_R = 0.20419621467590332
+        L_P = 0.5939768552780151
+        L_V = 0.6510588328043619
+        L_G = -0.9996827125549317
+    first  100  ep mean return = -489.09
+    last  100  ep mean return = -496.34
+    convergence target    = -100.0
+
+INCONCLUSIVE: Acrobot did not hit -100.0 — got -496.34 (improvement -489.09 → -496.34 =  -7.25 )
