@@ -348,9 +348,13 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
 
         var beta = self._per_beta(progress)
         var total = Float64(gpu.per_tree.total_sum())
-        var n = Float64(
-            gpu.per_tree.size if gpu.per_tree.size > 0 else 1
-        )
+        # n = number of filled (env, slot) positions in the circular buffer.
+        # SumTree.size is only incremented by add() (we use update() exclusively),
+        # so we derive n from the replay buffer's per-env size × N_ENVS instead.
+        # Without this, n falls back to 1 and IS weights inflate by ~N^beta
+        # (50000^0.4 ≈ 75×), amplifying gradients catastrophically.
+        var n_filled = gpu.replay.size * N_ENVS_P
+        var n = Float64(n_filled if n_filled > 0 else 1)
 
         if total <= 0.0:
             # Empty/uniform tree — fall back to round-robin sample positions
