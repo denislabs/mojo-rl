@@ -188,7 +188,7 @@ def main() raises:
             "  Per-env buffer: "
             + String(max(BATCH_SIZE + HORIZON + 2, BUFFER_CAPACITY // N_ENVS))
         )
-        print("  Updates per step: " + String(N_ENVS) + " (1:1 UTD ratio)")
+        print("  Updates per step: 1 (matches reference TD-MPC2 UTD=1)")
         print("  Warmup steps: 5000 (random actions before training)")
         print("  World model LR: 3e-4")
         print("  Encoder LR scale: 0.3 (enc_lr = 9e-5)")
@@ -235,7 +235,7 @@ def main() raises:
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
-                updates_per_step=N_ENVS,
+                updates_per_step=1,
             )
 
             var end_time = perf_counter_ns()
