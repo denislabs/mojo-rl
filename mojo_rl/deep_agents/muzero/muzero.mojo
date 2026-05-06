@@ -44,6 +44,7 @@ from mojo_rl.core import (
     GPUTwoPlayerDiscreteEnv,
     TwoPlayerDiscreteEnv,
 )
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.deep_agents.core.kernels import (
     accumulate_rewards_kernel,
     increment_steps_kernel,
@@ -118,7 +119,9 @@ from .kernels import (
 # =============================================================================
 
 
-struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
+struct GenericMuZeroAgent[
+    Config: MuZeroConfig, n_envs: Int = 64, L: Logger = NoOpLogger
+](Movable):
     """MuZero agent for discrete action environments.
 
     Combines learned representation/dynamics/prediction networks with
@@ -129,6 +132,7 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         Config: MuZeroConfig trait providing all dimensions, network types,
                 and training hyperparameters.
         n_envs: Number of parallel GPU environments (default: 64).
+        L: Logger type for diagnostic logging (default: NoOpLogger — zero overhead).
     """
 
     # ── State type alias ──────────────────────────────────────────────────
@@ -176,6 +180,10 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
     # Step counters
     var total_steps: Int
     var train_step_count: Int
+
+    # Logger (NoOpLogger = zero-overhead default)
+    var logger: UnsafePointer[Self.L, MutAnyOrigin]
+    var diag_every: Int
 
     # Episode data storage for MCTS targets
     var _episode_obs: List[List[Scalar[dtype]]]
@@ -256,6 +264,8 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         self.per_eps = per_eps
         self.total_steps = 0
         self.train_step_count = 0
+        self.logger = UnsafePointer[Self.L, MutAnyOrigin]()
+        self.diag_every = 0
         self._episode_obs = List[List[Scalar[dtype]]]()
         self._episode_actions = List[Int]()
         self._episode_rewards = List[Float64]()
@@ -282,6 +292,8 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         self.per_eps = take.per_eps
         self.total_steps = take.total_steps
         self.train_step_count = take.train_step_count
+        self.logger = take.logger
+        self.diag_every = take.diag_every
         self._episode_obs = take._episode_obs^
         self._episode_actions = take._episode_actions^
         self._episode_rewards = take._episode_rewards^
@@ -2924,6 +2936,134 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
             gpu.workspace_buf,
         )
 
+        # ── Step 4.4: Loss diagnostics (logger) ──────────────────────
+        # At end of backward loop, pred_out_buf holds predictions at
+        # k=0 (last backward iter recomputes pred forward there). Copy
+        # one batch's worth of pred + targets (policy, value at k=0)
+        # to host and compute the CE losses + entropy + value mean.
+        # Reward loss is omitted — would need dyn forward re-run at
+        # k=0 since dyn_output_buf is reused across K dyn steps.
+        # Cost: 3 small DMAs + 1 sync per diag step (gated by
+        # diag_every; default 0 = log every update).
+        if self.logger and (
+            self.diag_every <= 0
+            or self.train_step_count % self.diag_every == 0
+        ):
+            try:
+                var diag_pred_host = (
+                    ctx.enqueue_create_host_buffer[dtype](BATCH * PRED_OUT)
+                )
+                var diag_pol_host = ctx.enqueue_create_host_buffer[dtype](
+                    BATCH * ACT
+                )
+                var diag_val_host = ctx.enqueue_create_host_buffer[dtype](
+                    BATCH * BINS
+                )
+                ctx.enqueue_copy(diag_pred_host, gpu.pred_out_buf)
+                # Slice copy of k=0 targets (first BATCH*ACT / BATCH*BINS
+                # entries of the K+1-step buffer).
+                var pol_dev_view = gpu.batch_policies_buf.create_sub_buffer[
+                    dtype
+                ](0, BATCH * ACT)
+                var val_dev_view = gpu.batch_values_buf.create_sub_buffer[
+                    dtype
+                ](0, BATCH * BINS)
+                ctx.enqueue_copy(diag_pol_host, pol_dev_view)
+                ctx.enqueue_copy(diag_val_host, val_dev_view)
+                ctx.synchronize()
+
+                var step = self.train_step_count
+                var sum_policy_ce: Float64 = 0.0
+                var sum_policy_entropy: Float64 = 0.0
+                var sum_value_ce: Float64 = 0.0
+                var sum_value_mean: Float64 = 0.0
+
+                for b in range(BATCH):
+                    var pred_off = b * PRED_OUT
+                    # Policy softmax + CE + entropy (numerically stable)
+                    var max_p: Float64 = -1e18
+                    for a in range(ACT):
+                        var l = Float64(diag_pred_host[pred_off + a])
+                        if l > max_p:
+                            max_p = l
+                    var sum_e_p: Float64 = 0.0
+                    for a in range(ACT):
+                        sum_e_p += exp(
+                            Float64(diag_pred_host[pred_off + a]) - max_p
+                        )
+                    for a in range(ACT):
+                        var prob = (
+                            exp(
+                                Float64(diag_pred_host[pred_off + a]) - max_p
+                            )
+                            / sum_e_p
+                        )
+                        var tgt = Float64(diag_pol_host[b * ACT + a])
+                        if tgt > 1e-8 and prob > 1e-8:
+                            sum_policy_ce -= tgt * log(prob)
+                        if prob > 1e-8:
+                            sum_policy_entropy -= prob * log(prob)
+
+                    # Value softmax + CE (categorical / two-hot encoded)
+                    var val_off = pred_off + ACT
+                    var max_v: Float64 = -1e18
+                    for i in range(BINS):
+                        var l = Float64(diag_pred_host[val_off + i])
+                        if l > max_v:
+                            max_v = l
+                    var sum_e_v: Float64 = 0.0
+                    for i in range(BINS):
+                        sum_e_v += exp(
+                            Float64(diag_pred_host[val_off + i]) - max_v
+                        )
+                    # Decode predicted scalar value from softmax (bin
+                    # centers from v_min..v_max under categorical encoding).
+                    var v_step = (
+                        self.v_max - self.v_min
+                    ) / Float64(BINS - 1) if BINS > 1 else 1.0
+                    var pred_val_scalar: Float64 = 0.0
+                    for i in range(BINS):
+                        var prob_v = (
+                            exp(
+                                Float64(diag_pred_host[val_off + i]) - max_v
+                            )
+                            / sum_e_v
+                        )
+                        var tgt_v = Float64(diag_val_host[b * BINS + i])
+                        if tgt_v > 1e-8 and prob_v > 1e-8:
+                            sum_value_ce -= tgt_v * log(prob_v)
+                        var bin_center = self.v_min + Float64(i) * v_step
+                        pred_val_scalar += prob_v * bin_center
+                    sum_value_mean += pred_val_scalar
+
+                var n = Float64(BATCH)
+                var policy_ce = sum_policy_ce / n
+                var policy_entropy = sum_policy_entropy / n
+                var value_ce = sum_value_ce / n
+                var value_mean = sum_value_mean / n
+
+                # Clamp NaN/inf so logger doesn't silently drop
+                if policy_ce != policy_ce or policy_ce > 1e10:
+                    policy_ce = 0.0
+                if value_ce != value_ce or value_ce > 1e10:
+                    value_ce = 0.0
+                if value_mean != value_mean:
+                    value_mean = 0.0
+
+                self.logger[].log_scalar("loss/policy_ce", policy_ce, step)
+                self.logger[].log_scalar(
+                    "loss/policy_entropy", policy_entropy, step
+                )
+                self.logger[].log_scalar("loss/value_ce", value_ce, step)
+                self.logger[].log_scalar(
+                    "loss/value_mean", value_mean, step
+                )
+                self.logger[].log_scalar(
+                    "loss/total", policy_ce + value_ce, step
+                )
+            except e:
+                pass
+
         # ── Step 4.5: Global-L2 gradient clipping ────────────────────
         # Mirrors the CPU `_clip_gradients` exactly: compute joint L2
         # norm across rep+dyn+pred grads; if it exceeds max_grad_norm,
@@ -4536,6 +4676,10 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         checkpoint_path: String = "muzero.ckpt",
         use_reanalyze: Bool = False,
         reanalyze_per_iter: Int = 64,
+        logger: UnsafePointer[Self.L, MutAnyOrigin] = UnsafePointer[
+            Self.L, MutAnyOrigin
+        ](),
+        diag_every: Int = 0,
     ) raises -> TrainingMetrics:
         """Train MuZero via GPU self-play with batch-then-train loop.
 
@@ -4666,6 +4810,10 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
 
         var metrics = TrainingMetrics(algorithm_name="MuZero-SelfPlay")
         var total_steps = 0
+
+        # Plug logger into self for downstream methods.
+        self.logger = logger
+        self.diag_every = diag_every
 
         # Save initial params for arena comparison
         comptime REP_PS = RepModel.PARAM_SIZE
@@ -5329,6 +5477,22 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     "L:",
                     eval_r[2],
                 )
+                if self.logger:
+                    self.logger[].log_scalar(
+                        "eval/" + GPUEval.NAME + "/wins",
+                        Float64(eval_r[0]),
+                        iter,
+                    )
+                    self.logger[].log_scalar(
+                        "eval/" + GPUEval.NAME + "/draws",
+                        Float64(eval_r[1]),
+                        iter,
+                    )
+                    self.logger[].log_scalar(
+                        "eval/" + GPUEval.NAME + "/losses",
+                        Float64(eval_r[2]),
+                        iter,
+                    )
 
             # ── 4b. Second GPU Evaluation ────────────────────────
             if do_eval2 and use_mcts:
@@ -5346,6 +5510,22 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     "L",
                     eval_r2[2],
                 )
+                if self.logger:
+                    self.logger[].log_scalar(
+                        "eval/" + GPUEval2.NAME + "/wins",
+                        Float64(eval_r2[0]),
+                        iter,
+                    )
+                    self.logger[].log_scalar(
+                        "eval/" + GPUEval2.NAME + "/draws",
+                        Float64(eval_r2[1]),
+                        iter,
+                    )
+                    self.logger[].log_scalar(
+                        "eval/" + GPUEval2.NAME + "/losses",
+                        Float64(eval_r2[2]),
+                        iter,
+                    )
 
             # ── 5. Arena comparison (new vs best) ────────────────
             if do_arena and use_mcts:
@@ -5387,6 +5567,25 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                     arena_accepts + arena_rejects,
                     ")",
                 )
+                if self.logger:
+                    self.logger[].log_scalar(
+                        "arena/new_wins", Float64(ar[1]), iter
+                    )
+                    self.logger[].log_scalar(
+                        "arena/draws", Float64(ar[2]), iter
+                    )
+                    self.logger[].log_scalar(
+                        "arena/old_wins", Float64(ar[3]), iter
+                    )
+                    self.logger[].log_scalar(
+                        "arena/accepted", 1.0 if ar[0] else 0.0, iter
+                    )
+                    self.logger[].log_scalar(
+                        "arena/accept_rate",
+                        Float64(arena_accepts)
+                        / Float64(arena_accepts + arena_rejects),
+                        iter,
+                    )
 
             # ── 6. Print iteration summary ───────────────────────
             # Param-norm + replay-size diagnostic. Verifies training
@@ -5435,6 +5634,47 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
                 metrics.log_episode[dtype](
                     total_eps, Scalar[dtype](avg_rew), 0, 0.0
                 )
+
+            # Log iter summary metrics. Param norms are the key signal for
+            # spotting weight runaway (we saw NVIDIA explode pre-MinMaxNorm
+            # with pred_norm growing 25 → 297 over 6 iters before NaN).
+            if self.logger:
+                self.logger[].log_scalar(
+                    "param_norm/rep", last_rep_n, iter
+                )
+                self.logger[].log_scalar(
+                    "param_norm/dyn", last_dyn_n, iter
+                )
+                self.logger[].log_scalar(
+                    "param_norm/pred", last_pred_n, iter
+                )
+                self.logger[].log_scalar(
+                    "param_norm/d_rep", d_rep, iter
+                )
+                self.logger[].log_scalar(
+                    "param_norm/d_dyn", d_dyn, iter
+                )
+                self.logger[].log_scalar(
+                    "param_norm/d_pred", d_pred, iter
+                )
+                self.logger[].log_scalar(
+                    "train/avg_reward", avg_rew, iter
+                )
+                self.logger[].log_scalar(
+                    "train/games", Float64(total_eps), iter
+                )
+                self.logger[].log_scalar(
+                    "train/total_steps", Float64(total_steps), iter
+                )
+                self.logger[].log_scalar(
+                    "train/replay_size", Float64(replay_total), iter
+                )
+                self.logger[].log_scalar(
+                    "train/grad_steps_total",
+                    Float64(self.train_step_count),
+                    iter,
+                )
+                self.logger[].flush()
 
             # ── 7. Checkpoint ────────────────────────────────────
             if checkpoint_every > 0 and (iter + 1) % checkpoint_every == 0:
