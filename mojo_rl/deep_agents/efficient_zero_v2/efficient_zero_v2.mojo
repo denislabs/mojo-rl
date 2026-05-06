@@ -152,12 +152,18 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
     # window's per-sample value-CE loss exceeds the current max.
     var max_priority: Float64
 
-    # Per-episode buffers — flushed to replay at done.
-    var _episode_obs: List[List[Scalar[dtype]]]
-    var _episode_actions: List[Int]
-    var _episode_rewards: List[Float64]
-    var _episode_policies: List[InlineArray[Float64, Self.ACT]]
-    var _episode_values: List[Float64]
+    # Number of parallel envs serviced by this agent. Single-env runs
+    # use n_envs=1 (default) and pass `env_id=0` everywhere — identical
+    # behavior to the pre-multi-env code path.
+    var n_envs: Int
+
+    # Per-episode buffers, parallelized across envs — flushed to
+    # replay at done. Outer index = env_id, inner = transition index.
+    var _episode_obs: List[List[List[Scalar[dtype]]]]
+    var _episode_actions: List[List[Int]]
+    var _episode_rewards: List[List[Float64]]
+    var _episode_policies: List[List[InlineArray[Float64, Self.ACT]]]
+    var _episode_values: List[List[Float64]]
 
     # ══════════════════════════════════════════════════════════════════════
     # Constructors
@@ -171,6 +177,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         temperature: Float64 = 1.0,
         temperature_decay_steps: Int = 50000,
         max_grad_norm: Float64 = 5.0,
+        n_envs: Int = 1,
     ):
         self.state = EZV2DiscreteCPUState[Self.Config]()
         self.mcts = GumbelMCTS[
@@ -195,11 +202,24 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         # priority distribution. Updated dynamically by train_step.
         self.max_priority = 1.0
 
-        self._episode_obs = List[List[Scalar[dtype]]]()
-        self._episode_actions = List[Int]()
-        self._episode_rewards = List[Float64]()
-        self._episode_policies = List[InlineArray[Float64, Self.ACT]]()
-        self._episode_values = List[Float64]()
+        # Multi-env Phase A: outer list indexed by env_id, sized at
+        # construction. n_envs=1 reproduces single-env behavior.
+        self.n_envs = n_envs if n_envs > 0 else 1
+        self._episode_obs = List[List[List[Scalar[dtype]]]]()
+        self._episode_actions = List[List[Int]]()
+        self._episode_rewards = List[List[Float64]]()
+        self._episode_policies = List[
+            List[InlineArray[Float64, Self.ACT]]
+        ]()
+        self._episode_values = List[List[Float64]]()
+        for _ in range(self.n_envs):
+            self._episode_obs.append(List[List[Scalar[dtype]]]())
+            self._episode_actions.append(List[Int]())
+            self._episode_rewards.append(List[Float64]())
+            self._episode_policies.append(
+                List[InlineArray[Float64, Self.ACT]]()
+            )
+            self._episode_values.append(List[Float64]())
 
         # Sync target networks to online at startup so the first reanalyze
         # uses a meaningful (if still untrained) target rather than an
@@ -218,6 +238,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         self.total_steps = take.total_steps
         self.train_step_count = take.train_step_count
         self.max_priority = take.max_priority
+        self.n_envs = take.n_envs
         self._episode_obs = take._episode_obs^
         self._episode_actions = take._episode_actions^
         self._episode_rewards = take._episode_rewards^
@@ -327,12 +348,14 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
     # Episode management
     # ══════════════════════════════════════════════════════════════════════
 
-    def reset_episode(mut self):
-        self._episode_obs.clear()
-        self._episode_actions.clear()
-        self._episode_rewards.clear()
-        self._episode_policies.clear()
-        self._episode_values.clear()
+    def reset_episode(mut self, env_id: Int = 0):
+        """Clear `env_id`'s episode buffer. Default env_id=0 preserves
+        single-env behavior."""
+        self._episode_obs[env_id].clear()
+        self._episode_actions[env_id].clear()
+        self._episode_rewards[env_id].clear()
+        self._episode_policies[env_id].clear()
+        self._episode_values[env_id].clear()
 
     def store_transition(
         mut self,
@@ -342,32 +365,34 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         policy: InlineArray[Float64, Self.ACT],
         value: Float64,
         done: Bool,
+        env_id: Int = 0,
     ):
-        """Append a transition to the episode buffer. Flushes the entire
-        episode to the replay buffer at `done`."""
-        self._episode_obs.append(obs.copy())
-        self._episode_actions.append(action)
-        self._episode_rewards.append(reward)
-        self._episode_policies.append(policy)
-        self._episode_values.append(value)
+        """Append a transition to env_id's episode buffer. Flushes that
+        env's episode to the replay buffer at `done`. Default env_id=0
+        preserves single-env behavior."""
+        self._episode_obs[env_id].append(obs.copy())
+        self._episode_actions[env_id].append(action)
+        self._episode_rewards[env_id].append(reward)
+        self._episode_policies[env_id].append(policy)
+        self._episode_values[env_id].append(value)
         self.total_steps += 1
 
         if done:
-            self._flush_episode()
+            self._flush_episode(env_id)
 
-    def _flush_episode(mut self):
-        """Write the accumulated episode to the SequenceReplayBuffer plus
-        the parallel MCTS-target arrays."""
-        var ep_len = len(self._episode_obs)
+    def _flush_episode(mut self, env_id: Int = 0):
+        """Write env_id's accumulated episode to the SequenceReplayBuffer
+        plus the parallel MCTS-target arrays."""
+        var ep_len = len(self._episode_obs[env_id])
 
         for t in range(ep_len):
             var obs_arr = InlineArray[
                 Scalar[DType.float32], Self.Config.obs_dim
             ](uninitialized=True)
             for i in range(Self.Config.obs_dim):
-                if i < len(self._episode_obs[t]):
+                if i < len(self._episode_obs[env_id][t]):
                     obs_arr[i] = Scalar[DType.float32](
-                        self._episode_obs[t][i]
+                        self._episode_obs[env_id][t][i]
                     )
                 else:
                     obs_arr[i] = Scalar[DType.float32](0.0)
@@ -378,14 +403,18 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             ](uninitialized=True)
             for i in range(Self.ACT):
                 act_arr[i] = Scalar[DType.float32](0.0)
-            act_arr[self._episode_actions[t]] = Scalar[DType.float32](1.0)
+            act_arr[
+                self._episode_actions[env_id][t]
+            ] = Scalar[DType.float32](1.0)
 
             var is_done = t == ep_len - 1
 
             self.state.buffer.add(
                 obs_arr,
                 act_arr,
-                Scalar[DType.float32](self._episode_rewards[t]),
+                Scalar[DType.float32](
+                    self._episode_rewards[env_id][t]
+                ),
                 is_done,
             )
 
@@ -398,9 +427,11 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             for a in range(Self.ACT):
                 self.state.mcts_policies[
                     buf_idx * Self.ACT + a
-                ] = Scalar[dtype](self._episode_policies[t][a])
+                ] = Scalar[dtype](
+                    self._episode_policies[env_id][t][a]
+                )
             self.state.mcts_values[buf_idx] = Scalar[dtype](
-                self._episode_values[t]
+                self._episode_values[env_id][t]
             )
             # Stamp the transition with current train-step count so the
             # mixed-value-target blend can compute per-sample data age.
@@ -413,7 +444,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 self.max_priority
             )
 
-        self.reset_episode()
+        self.reset_episode(env_id)
 
     # ══════════════════════════════════════════════════════════════════════
     # Reanalyze (paper App. A) + target-network sync
