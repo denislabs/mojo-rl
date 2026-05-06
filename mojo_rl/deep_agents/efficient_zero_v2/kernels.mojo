@@ -641,3 +641,105 @@ def ezv2_priority_from_v_loss_kernel[
     priorities_out[b] = rebind[Scalar[dtype]](per_sample_v_loss[b]) + Scalar[
         dtype
     ](1e-3)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Reward-prefix LSTM head — GPU helpers
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# These are the EZ-V2-specific kernels that don't already exist in
+# muzero/kernels.mojo and aren't covered by the kernels above. The
+# LSTM cell + MLP head themselves use `LSTMCell.step_forward_gpu` /
+# `Network.forward_gpu_with_cache` directly.
+
+
+def ezv2_copy_lstm_input_kernel[
+    BATCH: Int,
+    LSTM_HIDDEN: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    lstm_h_states: LayoutTensor[
+        dtype, Layout.row_major(BATCH * LSTM_HIDDEN), MutAnyOrigin
+    ],
+    lstm_c_states: LayoutTensor[
+        dtype, Layout.row_major(BATCH * LSTM_HIDDEN), MutAnyOrigin
+    ],
+    h_input: LayoutTensor[
+        dtype, Layout.row_major(BATCH * LSTM_HIDDEN), MutAnyOrigin
+    ],
+    c_input: LayoutTensor[
+        dtype, Layout.row_major(BATCH * LSTM_HIDDEN), MutAnyOrigin
+    ],
+):
+    """Copy a single-step slice of `lstm_h_states` / `lstm_c_states` into
+    the per-step input scratch. The host pre-views the right time-slot
+    via ptr-offset arithmetic before the call so the kernel sees only
+    `[BATCH * LSTM_HIDDEN]`-shaped tensors."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH * LSTM_HIDDEN:
+        return
+    h_input[i] = lstm_h_states[i]
+    c_input[i] = lstm_c_states[i]
+
+
+def ezv2_reward_prefix_loss_grad_kernel[
+    BATCH: Int,
+    BINS: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    rew_pref_logits_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
+    ],
+    rew_target_dist: LayoutTensor[
+        dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
+    ],
+    grad_rew_pref_logits_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
+    ],
+    per_sample_loss: LayoutTensor[
+        dtype, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    scale: Scalar[dtype],
+):
+    """CE(softmax(reward-prefix logits) || two_hot(cumulative reward target))
+    + grad on one time-slice.
+
+    Differs from `ezv2_value_loss_grad_kernel` / `ezv2_reward_loss_grad_kernel`
+    in that the logits live in their own dense `[BATCH * BINS]` buffer
+    (one per unroll position) — there's no enclosing `[..., PRED_OUT]`
+    or `[..., DYN_OUT]` wrapper, so logits start at offset `b * BINS`."""
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var logits_off = b * BINS
+    var tgt_off = b * BINS
+
+    var max_l = rebind[Scalar[dtype]](rew_pref_logits_step[logits_off])
+    for i in range(1, BINS):
+        var v = rebind[Scalar[dtype]](rew_pref_logits_step[logits_off + i])
+        if v > max_l:
+            max_l = v
+
+    var sum_e = Scalar[dtype](0.0)
+    for i in range(BINS):
+        sum_e = sum_e + exp(
+            rebind[Scalar[dtype]](rew_pref_logits_step[logits_off + i])
+            - max_l
+        )
+    var log_z = log(sum_e) + max_l
+    var inv_sum = Scalar[dtype](1.0) / sum_e
+
+    var loss = Scalar[dtype](0.0)
+    for i in range(BINS):
+        var l_i = rebind[Scalar[dtype]](
+            rew_pref_logits_step[logits_off + i]
+        )
+        var t_i = rebind[Scalar[dtype]](rew_target_dist[tgt_off + i])
+        var p_i = exp(l_i - max_l) * inv_sum
+        grad_rew_pref_logits_step[logits_off + i] = (
+            (p_i - t_i) * scale
+        )
+        loss = loss + t_i * (log_z - l_i)
+
+    per_sample_loss[b] = loss

@@ -34,12 +34,14 @@ from std.memory import alloc, memset
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.initializer import Kaiming, Xavier
 from mojo_rl.nn.training import NetworkState, GPUNetworkState
+from mojo_rl.nn.model import LSTMCell
 from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
     SequenceReplayBuffer,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.configs import EZV2DiscreteConfig
+from mojo_rl.deep_agents.efficient_zero_v2.networks import RewardPrefixHeadMLP
 
 
 struct EZV2DiscreteCPUState[
@@ -199,6 +201,62 @@ struct EZV2DiscreteCPUState[
         Scalar[dtype], MutAnyOrigin
     ]  # [BATCH * PROJ]   — d L_G / d (projector dyn output)
 
+    # ── Reward-prefix LSTM head (paper App. G) ───────────────────────────
+    # Always-allocated. Used only when `Config.use_reward_prefix=True`;
+    # storage cost at LSTM_HIDDEN=64 is on the order of 100KB so we keep
+    # it simple and skip conditional-field gymnastics. The training loop
+    # branches at compile time on `use_reward_prefix`.
+    #
+    # The cell itself is parameterized as `LSTMCell[LATENT, LSTM_HIDDEN]`
+    # since its input is the post-dynamics latent `hidden[k+1]`. The cell
+    # is *not* Model-trait-conforming (it has explicit (h, c) plumbing
+    # for BPTT), so we manage its params/grads/Adam state by hand — but
+    # the post-LSTM MLP head IS a `Sequential` that fits `NetworkState`.
+    comptime _LSTMHead = LSTMCell[Self.Config.latent_dim, Self.Config.lstm_hidden]
+    comptime _RewardPrefixMLPModel = RewardPrefixHeadMLP[
+        Self.Config.lstm_hidden,
+        Self.Config.lstm_mlp_hidden,
+        Self.Config.num_bins,
+    ]
+    comptime _LSTM_PS: Int = Self._LSTMHead.PARAM_SIZE
+    comptime _LSTM_CS: Int = Self._LSTMHead.CACHE_SIZE
+    comptime _MLP_HEAD_CS: Int = Self._RewardPrefixMLPModel.CACHE_SIZE
+
+    # LSTM trainable state — params, grads, Adam (m, v).
+    var lstm_params: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [PS]
+    var lstm_grads: UnsafePointer[Scalar[dtype], MutAnyOrigin]  # [PS]
+    var lstm_opt_state: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [PS * 2] — Adam m, v interleaved per-param
+
+    # MLP head NetworkState — has its own params/grads/Adam state.
+    var reward_prefix_mlp: NetworkState[
+        Self._RewardPrefixMLPModel, Self.Config.OptType
+    ]
+
+    # Per-step LSTM hidden + cell state (time-major: layout matches
+    # `_hidden_states`). Indexed at k=0..K so we can BPTT through it; h_lstm[0]
+    # = c_lstm[0] = 0 at horizon-aligned start, and at every horizon
+    # boundary the input slot for the *next* step is reset to zero.
+    var _lstm_h_states: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
+    var _lstm_c_states: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
+    var _lstm_caches: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [K * BATCH * LSTM_CS]
+    var _mlp_head_caches: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [K * BATCH * MLP_HEAD_CS]
+
+    # Cumulative reward target scratch — `cum_rewards[b, k] = Σ_{j≤k} reward[b, j]`,
+    # filled on-the-fly per batch.
+    var _cum_rewards: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [BATCH * K]
+
     # ══════════════════════════════════════════════════════════════════════
     # Constructors
     # ══════════════════════════════════════════════════════════════════════
@@ -340,6 +398,52 @@ struct EZV2DiscreteCPUState[
         self._grad_proj_dyn = alloc[Scalar[dtype]](GRAD_PROJ_SIZE)
         memset(self._grad_proj_dyn, 0, GRAD_PROJ_SIZE)
 
+        # ── Reward-prefix LSTM head (always allocated) ──────────────────
+        comptime LSTM_PS = Self._LSTM_PS
+        comptime LSTM_CS = Self._LSTM_CS
+        comptime LSTM_HIDDEN = Self.Config.lstm_hidden
+        comptime MLP_HEAD_CS = Self._MLP_HEAD_CS
+
+        self.lstm_params = alloc[Scalar[dtype]](LSTM_PS)
+        var lstm_params_view = LayoutTensor[
+            dtype, Layout.row_major(LSTM_PS), MutAnyOrigin
+        ](self.lstm_params)
+        Self._LSTMHead.initialize_params[Xavier[]](lstm_params_view)
+
+        self.lstm_grads = alloc[Scalar[dtype]](LSTM_PS)
+        memset(self.lstm_grads, 0, LSTM_PS)
+
+        # Adam state — STATE_PER_PARAM=2 (m, v). We don't go through the
+        # `Optimizer.step` trait method (LSTMCell isn't a Model so the
+        # NetworkState plumbing doesn't apply); the agent calls
+        # `Self.Config.OptType.step[LSTM_PS](...)` directly.
+        comptime LSTM_OPT_STATE_SIZE = LSTM_PS * Self.Config.OptType.STATE_PER_PARAM
+        self.lstm_opt_state = alloc[Scalar[dtype]](LSTM_OPT_STATE_SIZE)
+        memset(self.lstm_opt_state, 0, LSTM_OPT_STATE_SIZE)
+
+        self.reward_prefix_mlp = NetworkState[
+            Self._RewardPrefixMLPModel, Self.Config.OptType
+        ]()
+        self.reward_prefix_mlp.initialize[Kaiming[]]()
+
+        comptime LSTM_HC_SIZE = (Self.K + 1) * Self.BATCH * LSTM_HIDDEN
+        self._lstm_h_states = alloc[Scalar[dtype]](LSTM_HC_SIZE)
+        memset(self._lstm_h_states, 0, LSTM_HC_SIZE)
+        self._lstm_c_states = alloc[Scalar[dtype]](LSTM_HC_SIZE)
+        memset(self._lstm_c_states, 0, LSTM_HC_SIZE)
+
+        comptime LSTM_CACHES_SIZE = Self.K * Self.BATCH * LSTM_CS
+        self._lstm_caches = alloc[Scalar[dtype]](LSTM_CACHES_SIZE)
+        memset(self._lstm_caches, 0, LSTM_CACHES_SIZE)
+
+        comptime MLP_HEAD_CACHES_SIZE = Self.K * Self.BATCH * MLP_HEAD_CS
+        self._mlp_head_caches = alloc[Scalar[dtype]](MLP_HEAD_CACHES_SIZE)
+        memset(self._mlp_head_caches, 0, MLP_HEAD_CACHES_SIZE)
+
+        comptime CUM_REW_SIZE = Self.BATCH * Self.K
+        self._cum_rewards = alloc[Scalar[dtype]](CUM_REW_SIZE)
+        memset(self._cum_rewards, 0, CUM_REW_SIZE)
+
     def __init__(out self, *, deinit take: Self):
         self.representation = take.representation^
         self.dynamics = take.dynamics^
@@ -374,6 +478,15 @@ struct EZV2DiscreteCPUState[
         self._grad_dyn_out = take._grad_dyn_out
         self._grad_pred_dyn = take._grad_pred_dyn
         self._grad_proj_dyn = take._grad_proj_dyn
+        self.lstm_params = take.lstm_params
+        self.lstm_grads = take.lstm_grads
+        self.lstm_opt_state = take.lstm_opt_state
+        self.reward_prefix_mlp = take.reward_prefix_mlp^
+        self._lstm_h_states = take._lstm_h_states
+        self._lstm_c_states = take._lstm_c_states
+        self._lstm_caches = take._lstm_caches
+        self._mlp_head_caches = take._mlp_head_caches
+        self._cum_rewards = take._cum_rewards
 
     def __del__(deinit self):
         self.mcts_policies.free()
@@ -400,6 +513,14 @@ struct EZV2DiscreteCPUState[
         self._grad_dyn_out.free()
         self._grad_pred_dyn.free()
         self._grad_proj_dyn.free()
+        self.lstm_params.free()
+        self.lstm_grads.free()
+        self.lstm_opt_state.free()
+        self._lstm_h_states.free()
+        self._lstm_c_states.free()
+        self._lstm_caches.free()
+        self._mlp_head_caches.free()
+        self._cum_rewards.free()
 
     # ══════════════════════════════════════════════════════════════════════
     # Convenience accessors
@@ -568,6 +689,98 @@ struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
     var L_V_host: HostBuffer[dtype]
     var L_G_host: HostBuffer[dtype]
     var priorities_out_host: HostBuffer[dtype]
+
+    # ── Reward-prefix LSTM head — GPU buffers (always allocated) ─────────
+    # Mirrors the CPU state's LSTM/MLP head fields. Used only when
+    # `Config.use_reward_prefix=True`; otherwise the buffers exist but
+    # the kernels aren't dispatched. Same comptime aliases as the CPU
+    # state so dimensional resolution stays consistent.
+    comptime _LSTMHead = LSTMCell[
+        Self.Config.latent_dim, Self.Config.lstm_hidden
+    ]
+    comptime _RewardPrefixMLPModel = RewardPrefixHeadMLP[
+        Self.Config.lstm_hidden,
+        Self.Config.lstm_mlp_hidden,
+        Self.Config.num_bins,
+    ]
+    comptime _LSTM_PS: Int = Self._LSTMHead.PARAM_SIZE
+    comptime _LSTM_CS: Int = Self._LSTMHead.CACHE_SIZE
+    comptime _MLP_HEAD_CS: Int = Self._RewardPrefixMLPModel.CACHE_SIZE
+    comptime _LSTM_HIDDEN: Int = Self.Config.lstm_hidden
+
+    # LSTM trainable state (the cell isn't Model-conforming, so we manage
+    # by hand instead of using GPUNetworkState). Adam state spans
+    # `LSTM_PS * STATE_PER_PARAM`; opt-global is `OptType.GLOBAL_STATE_SIZE`.
+    var lstm_params_buf: DeviceBuffer[dtype]
+    var lstm_grads_buf: DeviceBuffer[dtype]
+    var lstm_opt_state_buf: DeviceBuffer[dtype]
+    var lstm_opt_global_buf: DeviceBuffer[dtype]
+    var lstm_params_host: HostBuffer[dtype]
+    var lstm_opt_state_host: HostBuffer[dtype]
+    var lstm_opt_global_host: HostBuffer[dtype]
+    # Track the host-side step counter used for Adam's bias correction;
+    # the real on-device counter lives in `lstm_opt_global_buf` slot 0
+    # for graph-safe replay (matches GPUNetworkState's `optimizer_step`
+    # bookkeeping for the full networks).
+    var lstm_step_num: Int
+
+    # MLP head — Model-conforming so we use a full GPUNetworkState.
+    var reward_prefix_mlp_gpu: GPUNetworkState[
+        Self._RewardPrefixMLPModel, Self.Config.OptType
+    ]
+
+    # Per-step state buffers (TIME-MAJOR like `hidden_buf`).
+    var lstm_h_states_buf: DeviceBuffer[
+        dtype
+    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
+    var lstm_c_states_buf: DeviceBuffer[
+        dtype
+    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
+    var lstm_caches_buf: DeviceBuffer[
+        dtype
+    ]  # [K * BATCH * LSTM_CS]
+    var mlp_head_caches_buf: DeviceBuffer[
+        dtype
+    ]  # [K * BATCH * MLP_HEAD_CS]
+
+    # Per-step input scratch (filled per-k with either the corresponding
+    # h/c state slot or zeros at horizon boundary).
+    var lstm_h_input_buf: DeviceBuffer[dtype]  # [BATCH * LSTM_HIDDEN]
+    var lstm_c_input_buf: DeviceBuffer[dtype]  # [BATCH * LSTM_HIDDEN]
+
+    # Reward-prefix loss + grad scratch.
+    var rew_pref_logits_buf: DeviceBuffer[dtype]  # [K * BATCH * BINS]
+    var grad_rew_pref_logits_buf: DeviceBuffer[
+        dtype
+    ]  # [K * BATCH * BINS]
+    var rew_pref_target_dist_buf: DeviceBuffer[dtype]  # [BATCH * BINS]
+
+    # Backward grad accumulators across LSTM time steps.
+    var grad_h_lstm_buf: DeviceBuffer[
+        dtype
+    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
+    var grad_c_lstm_buf: DeviceBuffer[
+        dtype
+    ]  # [(K+1) * BATCH * LSTM_HIDDEN]
+
+    # Backward per-step scratch.
+    var grad_mlp_in_step_buf: DeviceBuffer[dtype]  # [BATCH * LSTM_HIDDEN]
+    var grad_x_lstm_buf: DeviceBuffer[dtype]  # [BATCH * LATENT]
+    var grad_h_prev_lstm_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * LSTM_HIDDEN]
+    var grad_c_prev_lstm_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * LSTM_HIDDEN]
+    # `d_combined` workspace required by `LSTMCell.step_backward_gpu` —
+    # passes the assembled per-gate pre-activation gradient between the
+    # input-grad and param-grad GPU kernels. Shape `[BATCH, 4 * HIDDEN]`.
+    var lstm_d_combined_ws_buf: DeviceBuffer[dtype]
+
+    # Cumulative reward target — computed on host during sampling, then
+    # uploaded once per train step.
+    var cum_rewards_buf: DeviceBuffer[dtype]  # [BATCH * K]
+    var cum_rewards_host: HostBuffer[dtype]
 
     # ══════════════════════════════════════════════════════════════════════
     # Constructor
@@ -779,6 +992,109 @@ struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
             Self.BATCH
         )
 
+        # ── Reward-prefix LSTM head GPU buffers ─────────────────────────
+        comptime LSTM_PS = Self._LSTM_PS
+        comptime LSTM_CS = Self._LSTM_CS
+        comptime LSTM_HIDDEN = Self._LSTM_HIDDEN
+        comptime MLP_HEAD_CS = Self._MLP_HEAD_CS
+        comptime LSTM_OPT_STATE_SIZE = (
+            LSTM_PS * Self.Config.OptType.STATE_PER_PARAM
+        )
+        comptime OPT_GLOBAL_SIZE = Self.Config.OptType.GLOBAL_STATE_SIZE
+
+        self.lstm_params_buf = ctx.enqueue_create_buffer[dtype](LSTM_PS)
+        self.lstm_grads_buf = ctx.enqueue_create_buffer[dtype](LSTM_PS)
+        ctx.enqueue_memset(self.lstm_grads_buf, 0)
+        self.lstm_opt_state_buf = ctx.enqueue_create_buffer[dtype](
+            LSTM_OPT_STATE_SIZE
+        )
+        ctx.enqueue_memset(self.lstm_opt_state_buf, 0)
+        self.lstm_opt_global_buf = ctx.enqueue_create_buffer[dtype](
+            OPT_GLOBAL_SIZE
+        )
+        ctx.enqueue_memset(self.lstm_opt_global_buf, 0)
+
+        self.lstm_params_host = ctx.enqueue_create_host_buffer[dtype](
+            LSTM_PS
+        )
+        self.lstm_opt_state_host = ctx.enqueue_create_host_buffer[dtype](
+            LSTM_OPT_STATE_SIZE
+        )
+        self.lstm_opt_global_host = ctx.enqueue_create_host_buffer[dtype](
+            OPT_GLOBAL_SIZE
+        )
+        self.lstm_step_num = 0
+
+        self.reward_prefix_mlp_gpu = GPUNetworkState[
+            Self._RewardPrefixMLPModel, Self.Config.OptType
+        ](ctx)
+
+        comptime LSTM_HC_SIZE = (Self.K + 1) * Self.BATCH * LSTM_HIDDEN
+        self.lstm_h_states_buf = ctx.enqueue_create_buffer[dtype](
+            LSTM_HC_SIZE
+        )
+        self.lstm_c_states_buf = ctx.enqueue_create_buffer[dtype](
+            LSTM_HC_SIZE
+        )
+        ctx.enqueue_memset(self.lstm_h_states_buf, 0)
+        ctx.enqueue_memset(self.lstm_c_states_buf, 0)
+
+        comptime LSTM_CACHES_SIZE = Self.K * Self.BATCH * LSTM_CS
+        self.lstm_caches_buf = ctx.enqueue_create_buffer[dtype](
+            LSTM_CACHES_SIZE if LSTM_CACHES_SIZE > 0 else 1
+        )
+        comptime MLP_HEAD_CACHES_SIZE = Self.K * Self.BATCH * MLP_HEAD_CS
+        self.mlp_head_caches_buf = ctx.enqueue_create_buffer[dtype](
+            MLP_HEAD_CACHES_SIZE if MLP_HEAD_CACHES_SIZE > 0 else 1
+        )
+
+        self.lstm_h_input_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * LSTM_HIDDEN
+        )
+        self.lstm_c_input_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * LSTM_HIDDEN
+        )
+
+        self.rew_pref_logits_buf = ctx.enqueue_create_buffer[dtype](
+            Self.K * Self.BATCH * Self.BINS
+        )
+        self.grad_rew_pref_logits_buf = ctx.enqueue_create_buffer[dtype](
+            Self.K * Self.BATCH * Self.BINS
+        )
+        self.rew_pref_target_dist_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.BINS
+        )
+
+        self.grad_h_lstm_buf = ctx.enqueue_create_buffer[dtype](
+            LSTM_HC_SIZE
+        )
+        self.grad_c_lstm_buf = ctx.enqueue_create_buffer[dtype](
+            LSTM_HC_SIZE
+        )
+
+        self.grad_mlp_in_step_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * LSTM_HIDDEN
+        )
+        self.grad_x_lstm_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.LATENT
+        )
+        self.grad_h_prev_lstm_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * LSTM_HIDDEN
+        )
+        self.grad_c_prev_lstm_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * LSTM_HIDDEN
+        )
+        self.lstm_d_combined_ws_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * 4 * LSTM_HIDDEN
+        )
+
+        self.cum_rewards_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.K
+        )
+        self.cum_rewards_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.K
+        )
+
     def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.representation = take.representation^
@@ -843,6 +1159,33 @@ struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
         self.L_V_host = take.L_V_host^
         self.L_G_host = take.L_G_host^
         self.priorities_out_host = take.priorities_out_host^
+        self.lstm_params_buf = take.lstm_params_buf^
+        self.lstm_grads_buf = take.lstm_grads_buf^
+        self.lstm_opt_state_buf = take.lstm_opt_state_buf^
+        self.lstm_opt_global_buf = take.lstm_opt_global_buf^
+        self.lstm_params_host = take.lstm_params_host^
+        self.lstm_opt_state_host = take.lstm_opt_state_host^
+        self.lstm_opt_global_host = take.lstm_opt_global_host^
+        self.lstm_step_num = take.lstm_step_num
+        self.reward_prefix_mlp_gpu = take.reward_prefix_mlp_gpu^
+        self.lstm_h_states_buf = take.lstm_h_states_buf^
+        self.lstm_c_states_buf = take.lstm_c_states_buf^
+        self.lstm_caches_buf = take.lstm_caches_buf^
+        self.mlp_head_caches_buf = take.mlp_head_caches_buf^
+        self.lstm_h_input_buf = take.lstm_h_input_buf^
+        self.lstm_c_input_buf = take.lstm_c_input_buf^
+        self.rew_pref_logits_buf = take.rew_pref_logits_buf^
+        self.grad_rew_pref_logits_buf = take.grad_rew_pref_logits_buf^
+        self.rew_pref_target_dist_buf = take.rew_pref_target_dist_buf^
+        self.grad_h_lstm_buf = take.grad_h_lstm_buf^
+        self.grad_c_lstm_buf = take.grad_c_lstm_buf^
+        self.grad_mlp_in_step_buf = take.grad_mlp_in_step_buf^
+        self.grad_x_lstm_buf = take.grad_x_lstm_buf^
+        self.grad_h_prev_lstm_buf = take.grad_h_prev_lstm_buf^
+        self.grad_c_prev_lstm_buf = take.grad_c_prev_lstm_buf^
+        self.lstm_d_combined_ws_buf = take.lstm_d_combined_ws_buf^
+        self.cum_rewards_buf = take.cum_rewards_buf^
+        self.cum_rewards_host = take.cum_rewards_host^
 
     # ══════════════════════════════════════════════════════════════════════
     # CPU → GPU upload
@@ -866,6 +1209,40 @@ struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
         self.projector.upload_from(cpu.projector, ctx)
         self.predictor.upload_from(cpu.predictor, ctx)
 
+        # ── Reward-prefix LSTM head ─────────────────────────────────────
+        # Always upload (the host-side LSTM/MLP head buffers exist
+        # regardless of `use_reward_prefix`, just untouched when False).
+        comptime LSTM_PS = Self._LSTM_PS
+        comptime LSTM_OPT_STATE_SIZE = (
+            LSTM_PS * Self.Config.OptType.STATE_PER_PARAM
+        )
+        comptime OPT_GLOBAL_SIZE = Self.Config.OptType.GLOBAL_STATE_SIZE
+
+        for i in range(LSTM_PS):
+            self.lstm_params_host[i] = (cpu.lstm_params + i)[]
+        ctx.enqueue_copy(self.lstm_params_buf, self.lstm_params_host)
+
+        for i in range(LSTM_OPT_STATE_SIZE):
+            self.lstm_opt_state_host[i] = (cpu.lstm_opt_state + i)[]
+        ctx.enqueue_copy(self.lstm_opt_state_buf, self.lstm_opt_state_host)
+
+        # CPU LSTM has no opt-global mirror; seed device opt-global to
+        # zero (the lr_scale slot defaults to 1.0 via `set_lr_scale` for
+        # the GPU networks above; the LSTM's separate global state stays
+        # zero — Adam's bias correction reads slot 0 as the step counter
+        # which `optimizer_step` bumps each call.) For graph-safety we
+        # zero on init and let the kernel manage from there.
+        for i in range(OPT_GLOBAL_SIZE):
+            self.lstm_opt_global_host[i] = Scalar[dtype](0.0)
+        ctx.enqueue_copy(
+            self.lstm_opt_global_buf, self.lstm_opt_global_host
+        )
+        self.lstm_step_num = 0
+
+        self.reward_prefix_mlp_gpu.upload_from(
+            cpu.reward_prefix_mlp, ctx
+        )
+
     def download_to(
         mut self,
         mut cpu: EZV2DiscreteCPUState[Self.Config],
@@ -880,3 +1257,22 @@ struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
         self.prediction.download_to(cpu.prediction, ctx)
         self.projector.download_to(cpu.projector, ctx)
         self.predictor.download_to(cpu.predictor, ctx)
+
+        # ── Reward-prefix LSTM head ─────────────────────────────────────
+        comptime LSTM_PS = Self._LSTM_PS
+        comptime LSTM_OPT_STATE_SIZE = (
+            LSTM_PS * Self.Config.OptType.STATE_PER_PARAM
+        )
+        ctx.enqueue_copy(self.lstm_params_host, self.lstm_params_buf)
+        ctx.enqueue_copy(
+            self.lstm_opt_state_host, self.lstm_opt_state_buf
+        )
+        ctx.synchronize()
+        for i in range(LSTM_PS):
+            (cpu.lstm_params + i)[] = self.lstm_params_host[i]
+        for i in range(LSTM_OPT_STATE_SIZE):
+            (cpu.lstm_opt_state + i)[] = self.lstm_opt_state_host[i]
+
+        self.reward_prefix_mlp_gpu.download_to(
+            cpu.reward_prefix_mlp, ctx
+        )

@@ -24,8 +24,10 @@ from std.random import random_float64
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.model import LSTMCell
 from mojo_rl.nn.training import Network
 from mojo_rl.deep_agents.efficient_zero_v2.configs import EZV2DiscreteConfig
+from mojo_rl.deep_agents.efficient_zero_v2.networks import RewardPrefixHeadMLP
 from mojo_rl.deep_agents.efficient_zero_v2.state import (
     EZV2DiscreteCPUState,
     EZV2DiscreteGPUState,
@@ -51,6 +53,8 @@ from mojo_rl.deep_agents.efficient_zero_v2.kernels import (
     ezv2_gather_value_target_kernel,
     ezv2_gather_policy_target_kernel,
     ezv2_priority_from_v_loss_kernel,
+    ezv2_copy_lstm_input_kernel,
+    ezv2_reward_prefix_loss_grad_kernel,
 )
 from mojo_rl.deep_agents.muzero.utils import (
     scalar_transform,
@@ -1049,6 +1053,175 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         rep_obs_step.free()
         obs_input_step.free()
 
+        # ── 2.5 Reward-prefix LSTM forward (paper App. G) ────────────────
+        # When `use_reward_prefix=True`, we replace the per-step reward
+        # CE through the dyn-network's reward output with a CE on
+        #     reward_prefix_logits[k] = MLP_head(LSTM(hidden[k+1]))
+        # against `two_hot(scalar_transform(Σ_{j≤k} reward[j]))`. The LSTM
+        # state resets to zero every `lstm_horizon_len` unroll steps to
+        # cap BPTT depth.
+        comptime LSTM_HIDDEN = Self.Config.lstm_hidden
+        comptime LSTM_HORIZON = Self.Config.lstm_horizon_len
+        comptime _LSTMHead = LSTMCell[LATENT, LSTM_HIDDEN]
+        comptime _RewardPrefixMLP = RewardPrefixHeadMLP[
+            LSTM_HIDDEN,
+            Self.Config.lstm_mlp_hidden,
+            BINS,
+        ]
+
+        var rew_pref_logits = alloc[Scalar[dtype]](K * BATCH * BINS)
+        var grad_rew_pref_logits = alloc[Scalar[dtype]](K * BATCH * BINS)
+        memset(rew_pref_logits, 0, K * BATCH * BINS)
+        memset(grad_rew_pref_logits, 0, K * BATCH * BINS)
+
+        # Per-step zero scratch + mutable input slot for reset boundaries.
+        # We can't memset h_lstm[k] / c_lstm[k] directly (we still need
+        # those values for backward), so we use this tiny slot to feed
+        # the LSTM a zeroed h_prev / c_prev at horizon boundaries while
+        # leaving the time-major arrays intact.
+        var lstm_h_input = alloc[Scalar[dtype]](BATCH * LSTM_HIDDEN)
+        var lstm_c_input = alloc[Scalar[dtype]](BATCH * LSTM_HIDDEN)
+
+        comptime if Self.Config.use_reward_prefix:
+            # Reset h_lstm[0], c_lstm[0] = 0 at the start of every batch
+            # — h_lstm/c_lstm storage is allocated zeroed but train_step
+            # is called many times so we must clear at every entry.
+            memset(
+                self.state._lstm_h_states,
+                0,
+                (K + 1) * BATCH * LSTM_HIDDEN,
+            )
+            memset(
+                self.state._lstm_c_states,
+                0,
+                (K + 1) * BATCH * LSTM_HIDDEN,
+            )
+
+            var lstm_params_v = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.lstm_params)
+
+            var mlp_head_params = LayoutTensor[
+                dtype,
+                Layout.row_major(_RewardPrefixMLP.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.reward_prefix_mlp.params)
+            var mlp_head_state = LayoutTensor[
+                dtype,
+                Layout.row_major(_RewardPrefixMLP.STATE_SIZE),
+                MutAnyOrigin,
+            ](self.state.reward_prefix_mlp.model_state)
+
+            for k in range(K):
+                # Decide LSTM input (h_prev, c_prev): either previous
+                # output or zeros at horizon boundary (where the chain
+                # is reset BEFORE step k).
+                var reset_now = (k > 0) and (k % LSTM_HORIZON == 0)
+                if reset_now:
+                    memset(lstm_h_input, 0, BATCH * LSTM_HIDDEN)
+                    memset(lstm_c_input, 0, BATCH * LSTM_HIDDEN)
+                else:
+                    # Copy h_lstm[k], c_lstm[k] into the input slots.
+                    for i in range(BATCH * LSTM_HIDDEN):
+                        lstm_h_input[i] = self.state._lstm_h_states[
+                            k * BATCH * LSTM_HIDDEN + i
+                        ]
+                        lstm_c_input[i] = self.state._lstm_c_states[
+                            k * BATCH * LSTM_HIDDEN + i
+                        ]
+
+                # LSTM step k: input is hidden[k+1] (the post-dyn-step-k
+                # latent — same alignment as the dyn-network's reward
+                # logits, which predicted reward[k]).
+                var z_t = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin
+                ](hidden + (k + 1) * BATCH * LATENT)
+                var h_prev_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](lstm_h_input)
+                var c_prev_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](lstm_c_input)
+                var h_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](
+                    self.state._lstm_h_states
+                    + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var c_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](
+                    self.state._lstm_c_states
+                    + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var lstm_cache_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _LSTMHead.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](
+                    self.state._lstm_caches
+                    + k * BATCH * _LSTMHead.CACHE_SIZE
+                )
+                _LSTMHead.step_forward[BATCH](
+                    z_t,
+                    h_prev_t,
+                    c_prev_t,
+                    lstm_params_v,
+                    h_t,
+                    c_t,
+                    lstm_cache_t,
+                )
+
+                # MLP head forward on h_lstm[k+1] → reward_prefix_logits[k]
+                var mlp_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.IN_DIM),
+                    MutAnyOrigin,
+                ](
+                    self.state._lstm_h_states
+                    + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var mlp_out_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.OUT_DIM),
+                    MutAnyOrigin,
+                ](rew_pref_logits + k * BATCH * BINS)
+                var mlp_cache_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](
+                    self.state._mlp_head_caches
+                    + k * BATCH * _RewardPrefixMLP.CACHE_SIZE
+                )
+                Network[
+                    _RewardPrefixMLP, Self.Config.OptType
+                ].forward_with_cache[BATCH](
+                    mlp_in_t,
+                    mlp_out_t,
+                    mlp_head_params,
+                    mlp_head_state,
+                    mlp_cache_t,
+                )
+
+            # Build cumulative-reward target on host: cum_rew[b, k] =
+            # Σ_{j=0..k} batch_rewards[b, j].
+            for b in range(BATCH):
+                var cum = Float64(0.0)
+                for k in range(K):
+                    cum += Float64(batch_rewards[b * K + k])
+                    self.state._cum_rewards[b * K + k] = Scalar[dtype](cum)
+
         # ── 3. Compute scalar losses for return + per-output upstream
         #       gradients for backward. We compute loss values alongside
         #       the gradient for L_R, L_P, L_V; for L_G we use the
@@ -1175,40 +1348,87 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     )
 
         # ── L_R + grad: reward CE at each k=0..K-1 ───────────────────────
+        # Two paths:
+        #   • `use_reward_prefix=False`: classic per-step reward CE through
+        #     the dyn-network's reward output slice. Default.
+        #   • `use_reward_prefix=True`: cumulative-reward CE through the
+        #     reward-prefix LSTM head; dyn-output's reward grad stays zero
+        #     so no gradient flows through that branch.
         var n_R = Float64(BATCH * K)
         var lr_scale = self.Config.lambda_reward / n_R
-        for k in range(K):
-            for b in range(BATCH):
-                var rew = Float64(batch_rewards[b * K + k])
-                encode_categorical[BINS](
-                    scalar_transform(rew),
-                    self.v_min,
-                    self.v_max,
-                    two_hot_target,
-                )
-                var off = k * BATCH * DYN_OUT + b * DYN_OUT + LATENT
-                for i in range(BINS):
-                    logits_dbl[i] = Float64(dyn_out_buf[off + i])
-                L_R += cross_entropy_with_softmax[BINS](
-                    logits_dbl, two_hot_target
-                )
-                var max_l = logits_dbl[0]
-                for i in range(1, BINS):
-                    if logits_dbl[i] > max_l:
-                        max_l = logits_dbl[i]
-                var sum_e = Float64(0.0)
-                var probs_r = InlineArray[Float64, BINS](uninitialized=True)
-                for i in range(BINS):
-                    probs_r[i] = exp(logits_dbl[i] - max_l)
-                    sum_e += probs_r[i]
-                if sum_e <= 0.0:
-                    sum_e = 1.0
-                for i in range(BINS):
-                    probs_r[i] /= sum_e
-                for i in range(BINS):
-                    grad_dyn_out[off + i] = Scalar[dtype](
-                        lr_scale * (probs_r[i] - two_hot_target[i])
+
+        comptime if not Self.Config.use_reward_prefix:
+            for k in range(K):
+                for b in range(BATCH):
+                    var rew = Float64(batch_rewards[b * K + k])
+                    encode_categorical[BINS](
+                        scalar_transform(rew),
+                        self.v_min,
+                        self.v_max,
+                        two_hot_target,
                     )
+                    var off = k * BATCH * DYN_OUT + b * DYN_OUT + LATENT
+                    for i in range(BINS):
+                        logits_dbl[i] = Float64(dyn_out_buf[off + i])
+                    L_R += cross_entropy_with_softmax[BINS](
+                        logits_dbl, two_hot_target
+                    )
+                    var max_l = logits_dbl[0]
+                    for i in range(1, BINS):
+                        if logits_dbl[i] > max_l:
+                            max_l = logits_dbl[i]
+                    var sum_e = Float64(0.0)
+                    var probs_r = InlineArray[Float64, BINS](
+                        uninitialized=True
+                    )
+                    for i in range(BINS):
+                        probs_r[i] = exp(logits_dbl[i] - max_l)
+                        sum_e += probs_r[i]
+                    if sum_e <= 0.0:
+                        sum_e = 1.0
+                    for i in range(BINS):
+                        probs_r[i] /= sum_e
+                    for i in range(BINS):
+                        grad_dyn_out[off + i] = Scalar[dtype](
+                            lr_scale * (probs_r[i] - two_hot_target[i])
+                        )
+        else:
+            # Reward-prefix CE on `rew_pref_logits[k][b]` against
+            # two_hot(scalar_transform(cum_rewards[b, k])).
+            for k in range(K):
+                for b in range(BATCH):
+                    var cum = Float64(self.state._cum_rewards[b * K + k])
+                    encode_categorical[BINS](
+                        scalar_transform(cum),
+                        self.v_min,
+                        self.v_max,
+                        two_hot_target,
+                    )
+                    var off = (k * BATCH + b) * BINS
+                    for i in range(BINS):
+                        logits_dbl[i] = Float64(rew_pref_logits[off + i])
+                    L_R += cross_entropy_with_softmax[BINS](
+                        logits_dbl, two_hot_target
+                    )
+                    var max_l = logits_dbl[0]
+                    for i in range(1, BINS):
+                        if logits_dbl[i] > max_l:
+                            max_l = logits_dbl[i]
+                    var sum_e = Float64(0.0)
+                    var probs_r = InlineArray[Float64, BINS](
+                        uninitialized=True
+                    )
+                    for i in range(BINS):
+                        probs_r[i] = exp(logits_dbl[i] - max_l)
+                        sum_e += probs_r[i]
+                    if sum_e <= 0.0:
+                        sum_e = 1.0
+                    for i in range(BINS):
+                        probs_r[i] /= sum_e
+                    for i in range(BINS):
+                        grad_rew_pref_logits[off + i] = Scalar[dtype](
+                            lr_scale * (probs_r[i] - two_hot_target[i])
+                        )
 
         # ── L_G + grad: cosine consistency at each k=1..K ────────────────
         var n_G = Float64(BATCH * K)
@@ -1395,6 +1615,228 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         grad_proj_dyn.free()
         grad_proj_in.free()
 
+        # 4b'. Reward-prefix LSTM head backward (when use_reward_prefix=True)
+        # — adds into grad_hidden[k+1] for k=0..K-1.
+        #
+        # Order: MLP-head backward at every k first → fills grad_h_lstm[k+1]
+        # initially. Then LSTM backward in REVERSE time order (k = K-1..0):
+        # at step k we read grad_h_lstm[k+1] / grad_c_lstm[k+1] (already
+        # holding MLP contribution + any later step's dh_prev/dc_prev),
+        # the cell's `step_backward` outputs grad_x = ∂L/∂hidden[k+1]
+        # (which we add to `grad_hidden[k+1]`) plus grad_h_prev /
+        # grad_c_prev contributions to step k's input. Reset boundaries
+        # break the chain: dh_prev/dc_prev at a reset step are discarded
+        # (the LSTM saw zero input there).
+        comptime if Self.Config.use_reward_prefix:
+            memset(self.state.lstm_grads, 0, _LSTMHead.PARAM_SIZE)
+            memset(
+                self.state.reward_prefix_mlp.grads,
+                0,
+                _RewardPrefixMLP.PARAM_SIZE,
+            )
+
+            var grad_h_lstm = alloc[Scalar[dtype]](
+                (K + 1) * BATCH * LSTM_HIDDEN
+            )
+            var grad_c_lstm = alloc[Scalar[dtype]](
+                (K + 1) * BATCH * LSTM_HIDDEN
+            )
+            memset(grad_h_lstm, 0, (K + 1) * BATCH * LSTM_HIDDEN)
+            memset(grad_c_lstm, 0, (K + 1) * BATCH * LSTM_HIDDEN)
+
+            var lstm_params_v_b = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.lstm_params)
+            var lstm_grads_v_b = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.lstm_grads)
+            var mlp_head_params_b = LayoutTensor[
+                dtype,
+                Layout.row_major(_RewardPrefixMLP.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.reward_prefix_mlp.params)
+            var mlp_head_state_b = LayoutTensor[
+                dtype,
+                Layout.row_major(_RewardPrefixMLP.STATE_SIZE),
+                MutAnyOrigin,
+            ](self.state.reward_prefix_mlp.model_state)
+            var mlp_head_grads_b = LayoutTensor[
+                dtype,
+                Layout.row_major(_RewardPrefixMLP.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.reward_prefix_mlp.grads)
+
+            # Pass 1 — MLP-head backward at k = 0..K-1 → adds into grad_h_lstm[k+1]
+            var grad_mlp_in_step = alloc[Scalar[dtype]](
+                BATCH * LSTM_HIDDEN
+            )
+            for k in range(K):
+                var grad_logits_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.OUT_DIM),
+                    MutAnyOrigin,
+                ](grad_rew_pref_logits + k * BATCH * BINS)
+                var grad_mlp_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.IN_DIM),
+                    MutAnyOrigin,
+                ](grad_mlp_in_step)
+                var mlp_cache_t_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](
+                    self.state._mlp_head_caches
+                    + k * BATCH * _RewardPrefixMLP.CACHE_SIZE
+                )
+                Network[
+                    _RewardPrefixMLP, Self.Config.OptType
+                ].backward[BATCH](
+                    grad_logits_t,
+                    grad_mlp_in_t,
+                    mlp_head_params_b,
+                    mlp_head_state_b,
+                    mlp_cache_t_b,
+                    mlp_head_grads_b,
+                )
+                # Accumulate grad_mlp_in_step → grad_h_lstm[k+1]
+                for b in range(BATCH):
+                    for d in range(LSTM_HIDDEN):
+                        grad_h_lstm[
+                            (k + 1) * BATCH * LSTM_HIDDEN
+                            + b * LSTM_HIDDEN
+                            + d
+                        ] = grad_h_lstm[
+                            (k + 1) * BATCH * LSTM_HIDDEN
+                            + b * LSTM_HIDDEN
+                            + d
+                        ] + grad_mlp_in_step[b * LSTM_HIDDEN + d]
+            grad_mlp_in_step.free()
+
+            # Pass 2 — LSTM backward in REVERSE time. At step k we need
+            # the original h_prev / c_prev forward inputs (zeroed at reset
+            # boundaries, otherwise = h_lstm[k] / c_lstm[k]) — re-build
+            # in `lstm_h_input` / `lstm_c_input` scratch.
+            var grad_x_lstm = alloc[Scalar[dtype]](BATCH * LATENT)
+            var grad_h_prev_lstm = alloc[Scalar[dtype]](
+                BATCH * LSTM_HIDDEN
+            )
+            var grad_c_prev_lstm = alloc[Scalar[dtype]](
+                BATCH * LSTM_HIDDEN
+            )
+            for kk in range(K):
+                var k = K - 1 - kk
+                var reset_now = (k > 0) and (k % LSTM_HORIZON == 0)
+                if reset_now:
+                    memset(lstm_h_input, 0, BATCH * LSTM_HIDDEN)
+                    memset(lstm_c_input, 0, BATCH * LSTM_HIDDEN)
+                else:
+                    for i in range(BATCH * LSTM_HIDDEN):
+                        lstm_h_input[i] = self.state._lstm_h_states[
+                            k * BATCH * LSTM_HIDDEN + i
+                        ]
+                        lstm_c_input[i] = self.state._lstm_c_states[
+                            k * BATCH * LSTM_HIDDEN + i
+                        ]
+
+                var dh_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](
+                    grad_h_lstm + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var dc_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](
+                    grad_c_lstm + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var z_t_b = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin
+                ](hidden + (k + 1) * BATCH * LATENT)
+                var h_prev_t_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](lstm_h_input)
+                var c_prev_t_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](lstm_c_input)
+                var lstm_cache_t_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _LSTMHead.CACHE_SIZE),
+                    MutAnyOrigin,
+                ](
+                    self.state._lstm_caches
+                    + k * BATCH * _LSTMHead.CACHE_SIZE
+                )
+                var grad_x_t = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin
+                ](grad_x_lstm)
+                var grad_h_prev_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](grad_h_prev_lstm)
+                var grad_c_prev_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](grad_c_prev_lstm)
+                _LSTMHead.step_backward[BATCH](
+                    dh_t,
+                    dc_t,
+                    z_t_b,
+                    h_prev_t_b,
+                    c_prev_t_b,
+                    lstm_params_v_b,
+                    lstm_cache_t_b,
+                    grad_x_t,
+                    grad_h_prev_t,
+                    grad_c_prev_t,
+                    lstm_grads_v_b,
+                )
+
+                # Accumulate grad_x = ∂L/∂hidden[k+1] into grad_hidden[k+1].
+                for b in range(BATCH):
+                    for d in range(LATENT):
+                        grad_hidden[
+                            (k + 1) * BATCH * LATENT + b * LATENT + d
+                        ] = grad_hidden[
+                            (k + 1) * BATCH * LATENT + b * LATENT + d
+                        ] + grad_x_lstm[b * LATENT + d]
+
+                # Thread dh_prev / dc_prev back to step k UNLESS this
+                # step was a reset boundary (input was zeros, so the
+                # gradient w.r.t. those zeros is meaningless and the
+                # chain breaks here).
+                if not reset_now:
+                    for i in range(BATCH * LSTM_HIDDEN):
+                        grad_h_lstm[
+                            k * BATCH * LSTM_HIDDEN + i
+                        ] = grad_h_lstm[
+                            k * BATCH * LSTM_HIDDEN + i
+                        ] + grad_h_prev_lstm[i]
+                        grad_c_lstm[
+                            k * BATCH * LSTM_HIDDEN + i
+                        ] = grad_c_lstm[
+                            k * BATCH * LSTM_HIDDEN + i
+                        ] + grad_c_prev_lstm[i]
+
+            grad_x_lstm.free()
+            grad_h_prev_lstm.free()
+            grad_c_prev_lstm.free()
+            grad_h_lstm.free()
+            grad_c_lstm.free()
+
         # 4c. dyn backward k=K-1..0. Walks BACKWARD in time.
         var grad_dyn_in_t_buf = alloc[Scalar[dtype]](BATCH * DYN_IN)
         for kk in range(K):
@@ -1518,6 +1960,80 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             1.0,
         )
 
+        # Reward-prefix LSTM + MLP head Adam step (only when wired in).
+        comptime if Self.Config.use_reward_prefix:
+            var lstm_params_v_o = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.lstm_params)
+            var lstm_grads_v_o = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.lstm_grads)
+            var lstm_opt_state_v = LayoutTensor[
+                dtype,
+                Layout.row_major(
+                    _LSTMHead.PARAM_SIZE,
+                    Self.Config.OptType.STATE_PER_PARAM,
+                ),
+                MutAnyOrigin,
+            ](self.state.lstm_opt_state)
+            # The LSTM's optimizer-global state is a private one-element
+            # scratch; matches the trait shape but stays empty / unused
+            # on the CPU step path.
+            var _lstm_opt_global_arr = InlineArray[
+                Scalar[dtype], Self.Config.OptType.GLOBAL_STATE_SIZE
+            ](uninitialized=True)
+            for _gi in range(Self.Config.OptType.GLOBAL_STATE_SIZE):
+                _lstm_opt_global_arr[_gi] = Scalar[dtype](0.0)
+            var lstm_opt_global_v = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.OptType.GLOBAL_STATE_SIZE),
+                MutAnyOrigin,
+            ](_lstm_opt_global_arr.unsafe_ptr())
+            Self.Config.OptType.step[_LSTMHead.PARAM_SIZE](
+                lstm_params_v_o,
+                lstm_grads_v_o,
+                lstm_opt_state_v,
+                lstm_opt_global_v,
+                step_num,
+                1.0,
+            )
+
+            var mlp_head_params_o = LayoutTensor[
+                dtype,
+                Layout.row_major(_RewardPrefixMLP.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.reward_prefix_mlp.params)
+            var mlp_head_grads_o = LayoutTensor[
+                dtype,
+                Layout.row_major(_RewardPrefixMLP.PARAM_SIZE),
+                MutAnyOrigin,
+            ](self.state.reward_prefix_mlp.grads)
+            var mlp_head_opt_state_o = LayoutTensor[
+                dtype,
+                Layout.row_major(
+                    _RewardPrefixMLP.PARAM_SIZE,
+                    Self.Config.OptType.STATE_PER_PARAM,
+                ),
+                MutAnyOrigin,
+            ](self.state.reward_prefix_mlp.optimizer_state)
+            var mlp_head_opt_global_o = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.OptType.GLOBAL_STATE_SIZE),
+                MutAnyOrigin,
+            ](self.state.reward_prefix_mlp.opt_global_state)
+            Self.Config.OptType.step[_RewardPrefixMLP.PARAM_SIZE](
+                mlp_head_params_o,
+                mlp_head_grads_o,
+                mlp_head_opt_state_o,
+                mlp_head_opt_global_o,
+                step_num,
+                1.0,
+            )
+
         # ── Free scratch ─────────────────────────────────────────────────
         batch_obs.free()
         batch_actions.free()
@@ -1535,6 +2051,10 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         grad_dyn_out.free()
         grad_pred_dyn.free()
         grad_hidden.free()
+        rew_pref_logits.free()
+        grad_rew_pref_logits.free()
+        lstm_h_input.free()
+        lstm_c_input.free()
 
         var L_total = (
             Self.Config.lambda_reward * L_R
@@ -1717,6 +2237,17 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     sampled * (K + 1) + k
                 ] = Scalar[dtype](v_target)
 
+            # Cumulative-reward target for the reward-prefix LSTM head
+            # (paper App. G). Computed even when use_reward_prefix=False
+            # so the upload path stays the same; the kernel just doesn't
+            # consume it then.
+            var cum = Float64(0.0)
+            for k in range(K):
+                cum += Float64(
+                    gpu.batch_rewards_host[sampled * K + k]
+                )
+                gpu.cum_rewards_host[sampled * K + k] = Scalar[dtype](cum)
+
         cum_prio.free()
         cand_starts.free()
 
@@ -1730,6 +2261,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         ctx.enqueue_copy(
             gpu.value_target_full_buf, gpu.value_target_full_host
         )
+        comptime if Self.Config.use_reward_prefix:
+            ctx.enqueue_copy(gpu.cum_rewards_buf, gpu.cum_rewards_host)
 
         # ── 3. Zero loss accumulators + per-network grads ───────────────
         ctx.enqueue_memset(gpu.L_R_buf, 0)
@@ -2059,6 +2592,164 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 gpu.workspace_buf,
             )
 
+        # ── 4.5 Reward-prefix LSTM forward (paper App. G, when enabled) ─
+        comptime LSTM_HIDDEN = Self.Config.lstm_hidden
+        comptime LSTM_HORIZON = Self.Config.lstm_horizon_len
+        comptime _LSTMHead = LSTMCell[LATENT, LSTM_HIDDEN]
+        comptime _RewardPrefixMLP = RewardPrefixHeadMLP[
+            LSTM_HIDDEN,
+            Self.Config.lstm_mlp_hidden,
+            BINS,
+        ]
+        comptime _LSTM_CS = _LSTMHead.CACHE_SIZE
+        comptime _MLP_HEAD_CS = _RewardPrefixMLP.CACHE_SIZE
+        comptime LSTM_HIDDEN_BLOCKS = (
+            BATCH * LSTM_HIDDEN + TPB - 1
+        ) // TPB
+        comptime copy_lstm_input = ezv2_copy_lstm_input_kernel[
+            BATCH, LSTM_HIDDEN, dtype
+        ]
+        comptime add_kernel_lstm_h = ezv2_add_kernel[
+            BATCH * LSTM_HIDDEN, dtype
+        ]
+        comptime add_kernel_latent = ezv2_add_kernel[BATCH * LATENT, dtype]
+
+        comptime if Self.Config.use_reward_prefix:
+            # Reset h_lstm[0], c_lstm[0] = 0 at the start of every batch.
+            ctx.enqueue_memset(gpu.lstm_h_states_buf, 0)
+            ctx.enqueue_memset(gpu.lstm_c_states_buf, 0)
+
+            var lstm_params_v_f = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](gpu.lstm_params_buf.unsafe_ptr())
+
+            for k in range(K):
+                var reset_now = (k > 0) and (k % LSTM_HORIZON == 0)
+                if reset_now:
+                    ctx.enqueue_memset(gpu.lstm_h_input_buf, 0)
+                    ctx.enqueue_memset(gpu.lstm_c_input_buf, 0)
+                else:
+                    # Copy lstm_h_states[k], lstm_c_states[k] → input scratch.
+                    var hs_k_flat = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](
+                        gpu.lstm_h_states_buf.unsafe_ptr()
+                        + k * BATCH * LSTM_HIDDEN
+                    )
+                    var cs_k_flat = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](
+                        gpu.lstm_c_states_buf.unsafe_ptr()
+                        + k * BATCH * LSTM_HIDDEN
+                    )
+                    var h_in_flat = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](gpu.lstm_h_input_buf.unsafe_ptr())
+                    var c_in_flat = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](gpu.lstm_c_input_buf.unsafe_ptr())
+                    ctx.enqueue_function[copy_lstm_input, copy_lstm_input](
+                        hs_k_flat,
+                        cs_k_flat,
+                        h_in_flat,
+                        c_in_flat,
+                        grid_dim=(LSTM_HIDDEN_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+
+                # LSTM step k: input is hidden[k+1] (post-dyn-step-k latent).
+                var z_t = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin
+                ](gpu.hidden_buf.unsafe_ptr() + (k + 1) * BATCH * LATENT)
+                var h_prev_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](gpu.lstm_h_input_buf.unsafe_ptr())
+                var c_prev_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](gpu.lstm_c_input_buf.unsafe_ptr())
+                var h_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](
+                    gpu.lstm_h_states_buf.unsafe_ptr()
+                    + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var c_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](
+                    gpu.lstm_c_states_buf.unsafe_ptr()
+                    + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var lstm_cache_t_f = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _LSTM_CS),
+                    MutAnyOrigin,
+                ](gpu.lstm_caches_buf.unsafe_ptr() + k * BATCH * _LSTM_CS)
+                _LSTMHead.step_forward_gpu[BATCH](
+                    ctx,
+                    z_t,
+                    h_prev_t,
+                    c_prev_t,
+                    lstm_params_v_f,
+                    h_t,
+                    c_t,
+                    lstm_cache_t_f,
+                )
+
+                # MLP head forward(h_lstm[k+1]) → rew_pref_logits[k]
+                var mlp_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.IN_DIM),
+                    MutAnyOrigin,
+                ](
+                    gpu.lstm_h_states_buf.unsafe_ptr()
+                    + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var mlp_out_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.OUT_DIM),
+                    MutAnyOrigin,
+                ](
+                    gpu.rew_pref_logits_buf.unsafe_ptr()
+                    + k * BATCH * BINS
+                )
+                var mlp_cache_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _MLP_HEAD_CS),
+                    MutAnyOrigin,
+                ](
+                    gpu.mlp_head_caches_buf.unsafe_ptr()
+                    + k * BATCH * _MLP_HEAD_CS
+                )
+                Network[
+                    _RewardPrefixMLP, Self.Config.OptType
+                ].forward_gpu_with_cache[BATCH](
+                    ctx,
+                    mlp_in_t,
+                    mlp_out_t,
+                    gpu.reward_prefix_mlp_gpu.params_view(),
+                    gpu.reward_prefix_mlp_gpu.model_state_view(),
+                    mlp_cache_t,
+                    gpu.workspace_buf,
+                )
+
         # ── 5. Per-output upstream gradients + per-sample loss reductions ─
 
         # 5.1 Policy CE at every k = 0..K
@@ -2200,11 +2891,21 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 )
 
         # 5.3 Reward CE at every k = 0..K-1.
+        # Two paths (matches CPU):
+        #   • use_reward_prefix=False: classic per-step reward CE through
+        #     the dyn-network's reward output slice.
+        #   • use_reward_prefix=True: cumulative-reward CE through the
+        #     reward-prefix LSTM head (rew_pref_logits_buf). The dyn-
+        #     output's reward grad slice MUST be zeroed so dyn-backward
+        #     sees no gradient through that path.
         comptime gather_rew = ezv2_gather_reward_at_step_kernel[
             BATCH, K, dtype
         ]
         comptime reward_grad = ezv2_reward_loss_grad_kernel[
             BATCH, BINS, LATENT, DYN_OUT, dtype
+        ]
+        comptime rew_pref_grad = ezv2_reward_prefix_loss_grad_kernel[
+            BATCH, BINS, dtype
         ]
         var reward_target_scalar_t = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
@@ -2215,52 +2916,122 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         var L_R_t = LayoutTensor[
             dtype, Layout.row_major(1), MutAnyOrigin
         ](gpu.L_R_buf.unsafe_ptr())
+        var cum_rewards_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * K), MutAnyOrigin
+        ](gpu.cum_rewards_buf.unsafe_ptr())
+        var rew_pref_target_dist_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
+        ](gpu.rew_pref_target_dist_buf.unsafe_ptr())
 
         var n_R = Float64(BATCH * K)
         var lr_scale = self.Config.lambda_reward / n_R
-        for k in range(K):
-            ctx.enqueue_function[gather_rew, gather_rew](
-                batch_rewards_t,
-                reward_target_scalar_t,
-                k,
-                grid_dim=(BATCH_BLOCKS_BS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[st_kernel, st_kernel](
-                reward_target_scalar_t,
-                Scalar[dtype](0.001),
-                grid_dim=(BATCH_BLOCKS_BS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[th_kernel, th_kernel](
-                reward_target_dist_t,
-                reward_target_scalar_t,
-                Scalar[dtype](self.v_min),
-                Scalar[dtype](self.v_max),
-                grid_dim=(BINS_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            var dyn_out_k_flat = LayoutTensor[
-                dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
-            ](gpu.dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
-            var grad_dyn_out_k_flat = LayoutTensor[
-                dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
-            ](gpu.grad_dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
-            ctx.enqueue_function[reward_grad, reward_grad](
-                dyn_out_k_flat,
-                reward_target_dist_t,
-                grad_dyn_out_k_flat,
-                per_sample_loss_t,
-                Scalar[dtype](lr_scale),
-                grid_dim=(BATCH_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            ctx.enqueue_function[reduce_one, reduce_one](
-                per_sample_loss_t,
-                L_R_t,
-                grid_dim=(1,),
-                block_dim=(1,),
-            )
+
+        comptime if not Self.Config.use_reward_prefix:
+            for k in range(K):
+                ctx.enqueue_function[gather_rew, gather_rew](
+                    batch_rewards_t,
+                    reward_target_scalar_t,
+                    k,
+                    grid_dim=(BATCH_BLOCKS_BS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[st_kernel, st_kernel](
+                    reward_target_scalar_t,
+                    Scalar[dtype](0.001),
+                    grid_dim=(BATCH_BLOCKS_BS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[th_kernel, th_kernel](
+                    reward_target_dist_t,
+                    reward_target_scalar_t,
+                    Scalar[dtype](self.v_min),
+                    Scalar[dtype](self.v_max),
+                    grid_dim=(BINS_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                var dyn_out_k_flat = LayoutTensor[
+                    dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+                ](gpu.dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
+                var grad_dyn_out_k_flat = LayoutTensor[
+                    dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+                ](gpu.grad_dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
+                ctx.enqueue_function[reward_grad, reward_grad](
+                    dyn_out_k_flat,
+                    reward_target_dist_t,
+                    grad_dyn_out_k_flat,
+                    per_sample_loss_t,
+                    Scalar[dtype](lr_scale),
+                    grid_dim=(BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[reduce_one, reduce_one](
+                    per_sample_loss_t,
+                    L_R_t,
+                    grid_dim=(1,),
+                    block_dim=(1,),
+                )
+        else:
+            # Zero the dyn-output reward grad slice so dyn-backward sees
+            # no gradient through that path. (Without this, stale data
+            # from previous train_step calls would flow through.) The
+            # whole grad_dyn_out_buf is fine to zero — the pred-out
+            # grad and the K-1 hidden-slice piece get rebuilt anyway.
+            ctx.enqueue_memset(gpu.grad_dyn_out_buf, 0)
+
+            for k in range(K):
+                # Gather cum_rewards[:, k] → reward_target_scalar.
+                ctx.enqueue_function[gather_rew, gather_rew](
+                    cum_rewards_t,
+                    reward_target_scalar_t,
+                    k,
+                    grid_dim=(BATCH_BLOCKS_BS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[st_kernel, st_kernel](
+                    reward_target_scalar_t,
+                    Scalar[dtype](0.001),
+                    grid_dim=(BATCH_BLOCKS_BS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[th_kernel, th_kernel](
+                    rew_pref_target_dist_t,
+                    reward_target_scalar_t,
+                    Scalar[dtype](self.v_min),
+                    Scalar[dtype](self.v_max),
+                    grid_dim=(BINS_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                var rpl_k_flat = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH * BINS),
+                    MutAnyOrigin,
+                ](
+                    gpu.rew_pref_logits_buf.unsafe_ptr()
+                    + k * BATCH * BINS
+                )
+                var grad_rpl_k_flat = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH * BINS),
+                    MutAnyOrigin,
+                ](
+                    gpu.grad_rew_pref_logits_buf.unsafe_ptr()
+                    + k * BATCH * BINS
+                )
+                ctx.enqueue_function[rew_pref_grad, rew_pref_grad](
+                    rpl_k_flat,
+                    rew_pref_target_dist_t,
+                    grad_rpl_k_flat,
+                    per_sample_loss_t,
+                    Scalar[dtype](lr_scale),
+                    grid_dim=(BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+                ctx.enqueue_function[reduce_one, reduce_one](
+                    per_sample_loss_t,
+                    L_R_t,
+                    grid_dim=(1,),
+                    block_dim=(1,),
+                )
 
         # 5.4 Cosine consistency at every k_offset = 0..K-1.
         comptime cosine_grad = ezv2_cosine_loss_grad_kernel[
@@ -2429,6 +3200,270 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 block_dim=(TPB,),
             )
 
+        # 6.2'. Reward-prefix LSTM head backward (when use_reward_prefix=True)
+        # — pass 1: MLP head backward at every k → adds to grad_h_lstm[k+1].
+        # pass 2: LSTM step_backward in REVERSE time, threading dh/dc back to
+        # the previous step (or discarding at horizon-reset boundary), and
+        # accumulating ∂L/∂hidden[k+1] into the existing grad_hidden buffer.
+        comptime if Self.Config.use_reward_prefix:
+            ctx.enqueue_memset(gpu.lstm_grads_buf, 0)
+            gpu.reward_prefix_mlp_gpu.zero_grads(ctx)
+            ctx.enqueue_memset(gpu.grad_h_lstm_buf, 0)
+            ctx.enqueue_memset(gpu.grad_c_lstm_buf, 0)
+
+            # Pass 1: MLP head backward k = 0..K-1.
+            for k in range(K):
+                var grad_logits_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.OUT_DIM),
+                    MutAnyOrigin,
+                ](
+                    gpu.grad_rew_pref_logits_buf.unsafe_ptr()
+                    + k * BATCH * BINS
+                )
+                var grad_mlp_in_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _RewardPrefixMLP.IN_DIM),
+                    MutAnyOrigin,
+                ](gpu.grad_mlp_in_step_buf.unsafe_ptr())
+                var mlp_cache_t_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _MLP_HEAD_CS),
+                    MutAnyOrigin,
+                ](
+                    gpu.mlp_head_caches_buf.unsafe_ptr()
+                    + k * BATCH * _MLP_HEAD_CS
+                )
+                var mlp_grads_v = gpu.reward_prefix_mlp_gpu.grads_view()
+                Network[
+                    _RewardPrefixMLP, Self.Config.OptType
+                ].backward_gpu[BATCH](
+                    ctx,
+                    grad_logits_t,
+                    grad_mlp_in_t,
+                    gpu.reward_prefix_mlp_gpu.params_view(),
+                    gpu.reward_prefix_mlp_gpu.model_state_view(),
+                    mlp_cache_t_b,
+                    mlp_grads_v,
+                    gpu.workspace_buf,
+                )
+
+                # Accumulate grad_mlp_in_step → grad_h_lstm[k+1]
+                var grad_h_lstm_kp1_flat = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH * LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](
+                    gpu.grad_h_lstm_buf.unsafe_ptr()
+                    + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var grad_mlp_in_step_flat = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH * LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](gpu.grad_mlp_in_step_buf.unsafe_ptr())
+                ctx.enqueue_function[
+                    add_kernel_lstm_h, add_kernel_lstm_h
+                ](
+                    grad_h_lstm_kp1_flat,
+                    grad_mlp_in_step_flat,
+                    grid_dim=(LSTM_HIDDEN_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+            # Pass 2: LSTM backward in REVERSE time, kk = 0..K-1, k = K-1..0.
+            var lstm_params_v_b = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](gpu.lstm_params_buf.unsafe_ptr())
+            var lstm_grads_v_b = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](gpu.lstm_grads_buf.unsafe_ptr())
+
+            for kk in range(K):
+                var k = K - 1 - kk
+                var reset_now_b = (k > 0) and (k % LSTM_HORIZON == 0)
+                if reset_now_b:
+                    ctx.enqueue_memset(gpu.lstm_h_input_buf, 0)
+                    ctx.enqueue_memset(gpu.lstm_c_input_buf, 0)
+                else:
+                    # Re-fill the input scratch with h_lstm[k] / c_lstm[k]
+                    # (same values used during forward at this step).
+                    var hs_k_flat_b = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](
+                        gpu.lstm_h_states_buf.unsafe_ptr()
+                        + k * BATCH * LSTM_HIDDEN
+                    )
+                    var cs_k_flat_b = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](
+                        gpu.lstm_c_states_buf.unsafe_ptr()
+                        + k * BATCH * LSTM_HIDDEN
+                    )
+                    var h_in_flat_b = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](gpu.lstm_h_input_buf.unsafe_ptr())
+                    var c_in_flat_b = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](gpu.lstm_c_input_buf.unsafe_ptr())
+                    ctx.enqueue_function[copy_lstm_input, copy_lstm_input](
+                        hs_k_flat_b,
+                        cs_k_flat_b,
+                        h_in_flat_b,
+                        c_in_flat_b,
+                        grid_dim=(LSTM_HIDDEN_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+
+                var dh_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](
+                    gpu.grad_h_lstm_buf.unsafe_ptr()
+                    + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var dc_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](
+                    gpu.grad_c_lstm_buf.unsafe_ptr()
+                    + (k + 1) * BATCH * LSTM_HIDDEN
+                )
+                var z_t_b = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin
+                ](gpu.hidden_buf.unsafe_ptr() + (k + 1) * BATCH * LATENT)
+                var h_prev_t_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](gpu.lstm_h_input_buf.unsafe_ptr())
+                var c_prev_t_b = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](gpu.lstm_c_input_buf.unsafe_ptr())
+                var lstm_cache_t_bw = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, _LSTM_CS),
+                    MutAnyOrigin,
+                ](gpu.lstm_caches_buf.unsafe_ptr() + k * BATCH * _LSTM_CS)
+                var grad_x_t = LayoutTensor[
+                    dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin
+                ](gpu.grad_x_lstm_buf.unsafe_ptr())
+                var grad_h_prev_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](gpu.grad_h_prev_lstm_buf.unsafe_ptr())
+                var grad_c_prev_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](gpu.grad_c_prev_lstm_buf.unsafe_ptr())
+                var d_combined_ws_t = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH, 4 * LSTM_HIDDEN),
+                    MutAnyOrigin,
+                ](gpu.lstm_d_combined_ws_buf.unsafe_ptr())
+                _LSTMHead.step_backward_gpu[BATCH](
+                    ctx,
+                    dh_t,
+                    dc_t,
+                    z_t_b,
+                    h_prev_t_b,
+                    c_prev_t_b,
+                    lstm_params_v_b,
+                    lstm_cache_t_bw,
+                    grad_x_t,
+                    grad_h_prev_t,
+                    grad_c_prev_t,
+                    lstm_grads_v_b,
+                    d_combined_ws_t,
+                )
+
+                # Accumulate grad_x → grad_hidden[k+1].
+                var grad_hidden_kp1_flat_lstm = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH * LATENT),
+                    MutAnyOrigin,
+                ](
+                    gpu.grad_hidden_buf.unsafe_ptr()
+                    + (k + 1) * BATCH * LATENT
+                )
+                var grad_x_lstm_flat = LayoutTensor[
+                    dtype,
+                    Layout.row_major(BATCH * LATENT),
+                    MutAnyOrigin,
+                ](gpu.grad_x_lstm_buf.unsafe_ptr())
+                ctx.enqueue_function[
+                    add_kernel_latent, add_kernel_latent
+                ](
+                    grad_hidden_kp1_flat_lstm,
+                    grad_x_lstm_flat,
+                    grid_dim=(LATENT_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+                # Thread dh_prev / dc_prev → grad_h_lstm[k] / grad_c_lstm[k]
+                # unless this step was a reset boundary (input was zero).
+                if not reset_now_b:
+                    var grad_h_lstm_k_flat = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](
+                        gpu.grad_h_lstm_buf.unsafe_ptr()
+                        + k * BATCH * LSTM_HIDDEN
+                    )
+                    var grad_c_lstm_k_flat = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](
+                        gpu.grad_c_lstm_buf.unsafe_ptr()
+                        + k * BATCH * LSTM_HIDDEN
+                    )
+                    var grad_h_prev_flat = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](gpu.grad_h_prev_lstm_buf.unsafe_ptr())
+                    var grad_c_prev_flat = LayoutTensor[
+                        dtype,
+                        Layout.row_major(BATCH * LSTM_HIDDEN),
+                        MutAnyOrigin,
+                    ](gpu.grad_c_prev_lstm_buf.unsafe_ptr())
+                    ctx.enqueue_function[
+                        add_kernel_lstm_h, add_kernel_lstm_h
+                    ](
+                        grad_h_lstm_k_flat,
+                        grad_h_prev_flat,
+                        grid_dim=(LSTM_HIDDEN_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+                    ctx.enqueue_function[
+                        add_kernel_lstm_h, add_kernel_lstm_h
+                    ](
+                        grad_c_lstm_k_flat,
+                        grad_c_prev_flat,
+                        grid_dim=(LSTM_HIDDEN_BLOCKS,),
+                        block_dim=(TPB,),
+                    )
+
         # 6.3 dyn backward in REVERSE topological order: kk = K-1..0.
         # Walks BACKWARD in time so grad_hidden[k+1] is fully accumulated
         # (pred + projector + later dyn-backwards) before we consume it
@@ -2538,6 +3573,45 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         gpu.prediction.optimizer_step(ctx)
         gpu.projector.optimizer_step(ctx)
         gpu.predictor.optimizer_step(ctx)
+
+        comptime if Self.Config.use_reward_prefix:
+            # LSTM Adam step (the cell isn't in a GPUNetworkState so we
+            # call OptType.step_gpu directly with the device buffers).
+            var lstm_params_v_o = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](gpu.lstm_params_buf.unsafe_ptr())
+            var lstm_grads_v_o = LayoutTensor[
+                dtype,
+                Layout.row_major(_LSTMHead.PARAM_SIZE),
+                MutAnyOrigin,
+            ](gpu.lstm_grads_buf.unsafe_ptr())
+            var lstm_opt_state_v_o = LayoutTensor[
+                dtype,
+                Layout.row_major(
+                    _LSTMHead.PARAM_SIZE,
+                    Self.Config.OptType.STATE_PER_PARAM,
+                ),
+                MutAnyOrigin,
+            ](gpu.lstm_opt_state_buf.unsafe_ptr())
+            var lstm_opt_global_v_o = LayoutTensor[
+                dtype,
+                Layout.row_major(Self.Config.OptType.GLOBAL_STATE_SIZE),
+                MutAnyOrigin,
+            ](gpu.lstm_opt_global_buf.unsafe_ptr())
+            gpu.lstm_step_num += 1
+            Self.Config.OptType.step_gpu[_LSTMHead.PARAM_SIZE](
+                ctx,
+                lstm_params_v_o,
+                lstm_grads_v_o,
+                lstm_opt_state_v_o,
+                lstm_opt_global_v_o,
+                gpu.lstm_step_num,
+            )
+
+            # MLP head Adam step.
+            gpu.reward_prefix_mlp_gpu.optimizer_step(ctx)
 
         self.train_step_count += 1
 

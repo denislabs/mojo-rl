@@ -116,6 +116,28 @@ trait EZV2DiscreteConfig(MuZeroConfig):
     """Above this train-step age use pure n-step TD (paper default 40000).
     Linear blend in between."""
 
+    # ── Reward-prefix LSTM head (EZ-V1 carry-over, paper App. G) ─────────
+    # When `use_reward_prefix=True`, the per-step reward CE through the
+    # dynamics network's reward head is replaced with a CE on
+    #     reward_prefix_logits[k] = MLP_head( LSTM(hidden[k+1]) )
+    # against `two_hot(scalar_transform( Σ_{j=0..k} reward[j] ))`. The
+    # LSTM state resets to zero every `lstm_horizon_len` unroll steps to
+    # cap BPTT depth. When `use_reward_prefix=False` the head buffers are
+    # still allocated (small footprint) but no gradient flows through
+    # them — the existing per-step reward CE through the dyn-network's
+    # reward output stays the loss.
+    comptime use_reward_prefix: Bool
+    comptime lstm_hidden: Int
+    """LSTM hidden / cell state dim. Paper App. G default 64."""
+
+    comptime lstm_horizon_len: Int
+    """Number of unroll steps before resetting the LSTM (h, c) to zero.
+    Paper App. G default 5. Caps BPTT depth."""
+
+    comptime lstm_mlp_hidden: Int
+    """Hidden dim of the post-LSTM MLP that maps h_lstm → reward-prefix
+    logits. Paper App. G default 64."""
+
 
 # ═════════════════════════════════════════════════════════════════════════
 # MLP variant
@@ -146,6 +168,14 @@ struct EZV2DiscreteMLPConfig[
     ENT_WEIGHT: Float64 = 5e-3,
     T_FRESH: Int = 20000,
     T_STALE: Int = 40000,
+    # Reward-prefix LSTM head (paper App. G). Off by default — the head
+    # is wired into `train_step` only when `USE_REWARD_PREFIX=True`. Even
+    # when off, the LSTM/MLP buffers are still allocated (small footprint)
+    # so the state struct's field layout doesn't depend on the flag.
+    USE_REWARD_PREFIX: Bool = False,
+    LSTM_HIDDEN: Int = 64,
+    LSTM_HORIZON_LEN: Int = 5,
+    LSTM_MLP_HIDDEN: Int = 64,
 ](EZV2DiscreteConfig):
     """Standalone-MLP EZ-V2 for clean state-based observations.
 
@@ -240,3 +270,9 @@ struct EZV2DiscreteMLPConfig[
 
     comptime t_fresh: Int = Self.T_FRESH
     comptime t_stale: Int = Self.T_STALE
+
+    # ── Reward-prefix LSTM head ──────────────────────────────────────────
+    comptime use_reward_prefix: Bool = Self.USE_REWARD_PREFIX
+    comptime lstm_hidden: Int = Self.LSTM_HIDDEN
+    comptime lstm_horizon_len: Int = Self.LSTM_HORIZON_LEN
+    comptime lstm_mlp_hidden: Int = Self.LSTM_MLP_HIDDEN
