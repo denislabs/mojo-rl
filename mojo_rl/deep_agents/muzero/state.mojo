@@ -948,15 +948,22 @@ struct MuZeroGPUState[
             (Self.K + Self.N_TD + 1) * Self.BATCH
         )
 
-        # Diagnostic loss host buffers (see field declaration for why).
+        # Diagnostic loss host buffers — sized to the device buffers
+        # they mirror exactly. `batch_policies_buf` is the full window
+        # (K+N+1)*BATCH*ACT (n-step targets, only k=0 read for diag).
+        # `value_targets_buf` is per-step scalar (K+1)*BATCH (post
+        # n-step + h-transform; loss diag computes MSE against decoded
+        # predicted scalar, matching AlphaZero's pattern). Mismatched
+        # sizes here previously triggered "not enough data in src" on
+        # NVIDIA — see Phase H17 audit.
         self.diag_pred_host = ctx.enqueue_create_host_buffer[dtype](
             Self.BATCH * Self.PRED_OUT
         )
         self.diag_pol_host = ctx.enqueue_create_host_buffer[dtype](
-            (Self.K + 1) * Self.BATCH * Self.ACT
+            (Self.K + Self.N_TD + 1) * Self.BATCH * Self.ACT
         )
         self.diag_val_host = ctx.enqueue_create_host_buffer[dtype](
-            (Self.K + 1) * Self.BATCH * Self.BINS
+            (Self.K + 1) * Self.BATCH
         )
 
         # ── PER (Phase H13) ──────────────────────────────────────────

@@ -2957,7 +2957,12 @@ struct GenericMuZeroAgent[
             # in src" on NVIDIA under high call frequency.
             ctx.enqueue_copy(gpu.diag_pred_host, gpu.pred_out_buf)
             ctx.enqueue_copy(gpu.diag_pol_host, gpu.batch_policies_buf)
-            ctx.enqueue_copy(gpu.diag_val_host, gpu.batch_values_buf)
+            # value_targets_buf is the per-step h-transformed scalar
+            # target ((K+1)*BATCH); diag computes MSE against decoded
+            # predicted scalar instead of TwoHot CE (the encoding
+            # buffer `value_target_dist_buf` is recycled per-step
+            # inside the backward loop and would not survive to here).
+            ctx.enqueue_copy(gpu.diag_val_host, gpu.value_targets_buf)
             ctx.synchronize()
 
             var step = self.train_step_count
@@ -2992,7 +2997,8 @@ struct GenericMuZeroAgent[
                     if prob > 1e-8:
                         sum_policy_entropy -= prob * log(prob)
 
-                # Value softmax + CE (categorical / two-hot encoded)
+                # Value softmax → decode to scalar; loss = MSE vs
+                # scalar target at k=0 (value_targets_buf[0..BATCH]).
                 var val_off = pred_off + ACT
                 var max_v: Float64 = -1e18
                 for i in range(BINS):
@@ -3004,8 +3010,6 @@ struct GenericMuZeroAgent[
                     sum_e_v += exp(
                         Float64(gpu.diag_pred_host[val_off + i]) - max_v
                     )
-                # Decode predicted scalar value from softmax (bin
-                # centers from v_min..v_max under categorical encoding).
                 var v_step = (
                     self.v_max - self.v_min
                 ) / Float64(BINS - 1) if BINS > 1 else 1.0
@@ -3015,11 +3019,11 @@ struct GenericMuZeroAgent[
                         exp(Float64(gpu.diag_pred_host[val_off + i]) - max_v)
                         / sum_e_v
                     )
-                    var tgt_v = Float64(gpu.diag_val_host[b * BINS + i])
-                    if tgt_v > 1e-8 and prob_v > 1e-8:
-                        sum_value_ce -= tgt_v * log(prob_v)
                     var bin_center = self.v_min + Float64(i) * v_step
                     pred_val_scalar += prob_v * bin_center
+                var tgt_scalar = Float64(gpu.diag_val_host[b])
+                var diff = pred_val_scalar - tgt_scalar
+                sum_value_ce += diff * diff  # MSE; reuses sum_value_ce slot
                 sum_value_mean += pred_val_scalar
 
             var n = Float64(BATCH)
@@ -3040,7 +3044,7 @@ struct GenericMuZeroAgent[
             self.logger[].log_scalar(
                 "loss/policy_entropy", policy_entropy, step
             )
-            self.logger[].log_scalar("loss/value_ce", value_ce, step)
+            self.logger[].log_scalar("loss/value_mse", value_ce, step)
             self.logger[].log_scalar("loss/value_mean", value_mean, step)
             self.logger[].log_scalar(
                 "loss/total", policy_ce + value_ce, step
