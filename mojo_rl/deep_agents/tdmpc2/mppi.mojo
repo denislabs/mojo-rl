@@ -33,6 +33,7 @@ from .kernels import (
     mppi_broadcast_z0_batched_kernel,
     mppi_sample_actions_batched_kernel,
     mppi_softmax_weights_kernel,
+    mppi_select_action_kernel,
     mppi_weighted_mean_std_kernel,
     tdmpc2_build_za_kernel,
     tdmpc2_apply_tanh_build_za_deterministic_kernel,
@@ -944,6 +945,7 @@ def plan_gpu_batched[
     HORIZON: Int,
     NUM_SAMPLES: Int,
     NUM_PI_TRAJS: Int,
+    NUM_ELITES: Int,
     NUM_ITERATIONS: Int,
     # Network types for GPU forward passes
     DynModel: Model,
@@ -1003,8 +1005,12 @@ def plan_gpu_batched[
     # Per-env warm-start state (mutated in-place)
     mut env_prev_means: List[List[Float64]],
     mut env_t0_flags: List[Bool],
-    # Host buffer to write selected actions [N_ENVS * ACTION_DIM]
-    act_host: HostBuffer[dtype],
+    # GPU buffer to write selected actions [N_ENVS * ACTION_DIM].
+    # Action selection (gumbel-max + noise + clamp) now runs on GPU
+    # via mppi_select_action_kernel, so this is a DeviceBuffer view.
+    out_act_dev: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACTION_DIM), MutAnyOrigin
+    ],
     action_scale: Float64 = 1.0,
     deterministic: Bool = False,
     rng_base_seed: UInt32 = 42,
@@ -1117,7 +1123,7 @@ def plan_gpu_batched[
         dtype, BATCH_TOTAL, ACTION_DIM, LATENT_DIM, POL_OUT
     ]
     comptime softmax_weights = mppi_softmax_weights_kernel[
-        dtype, N_ENVS, TOTAL_SAMPLES, TPB
+        dtype, N_ENVS, TOTAL_SAMPLES, NUM_ELITES, TPB
     ]
     comptime weighted_mean_std = mppi_weighted_mean_std_kernel[
         dtype, N_ENVS, TOTAL_SAMPLES, HORIZON, ACTION_DIM
@@ -1339,38 +1345,37 @@ def plan_gpu_batched[
         # Next iteration's sample_build_za will naturally wait for
         # weighted_mean_std to finish writing mean/std.
 
-    # ─── Download results ─────────────────────────────────────────────────
-    ctx.enqueue_copy(mb.all_actions_host, mb.all_actions_buf)
-    ctx.enqueue_copy(mb.weights_host, mb.weights_buf)
+    # ─── GPU action selection (replaces CPU download + _weighted_sample
+    # + _gaussian_sample + _clamp loop). Now in one kernel call after the
+    # MPPI iterations, with no host roundtrip for weights/all_actions/std.
+    # ─────────────────────────────────────────────────────────────────────
+    comptime select_action = mppi_select_action_kernel[
+        dtype, N_ENVS, TOTAL_SAMPLES, ACTION_DIM, HORIZON, TPB
+    ]
+    var act_select_seed = rng_base_seed + UInt32(0x5E1EC7ED)
+    var det_flag: UInt32 = 1 if deterministic else 0
+    ctx.enqueue_function[select_action, select_action](
+        weights_tensor,
+        all_actions_tensor,
+        std_tensor,
+        out_act_dev,
+        Scalar[DType.uint32](act_select_seed),
+        Scalar[dtype](action_scale),
+        det_flag,
+        grid_dim=(N_ENVS,),
+        block_dim=(TPB,),
+    )
+
+    # ─── Download mean only (still needed for CPU-side warm-start state) ──
+    # weights/all_actions/std no longer need to be downloaded — selection
+    # runs entirely on GPU and writes directly into out_act_dev.
     ctx.enqueue_copy(mb.mean_host, mb.mean_buf)
-    ctx.enqueue_copy(mb.std_host, mb.std_buf)
     ctx.synchronize()
 
-    # ─── Store final means + action selection per env ──────────────────────
+    # ─── Store final means for next-step warm-start ───────────────────────
     for env_idx in range(N_ENVS):
         var mean_base = env_idx * HORIZON * ACTION_DIM
-        var env_act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
-        var w_off = env_idx * TOTAL_SAMPLES
-
-        # Store final mean for warm-starting next timestep
         env_prev_means[env_idx] = List[Float64](capacity=HORIZON * ACTION_DIM)
         for i in range(HORIZON * ACTION_DIM):
             env_prev_means[env_idx].append(Float64(mb.mean_host[mean_base + i]))
         env_t0_flags[env_idx] = False
-
-        # Weighted random sample for this env using final weights
-        var env_w = List[Float64](capacity=TOTAL_SAMPLES)
-        for s in range(TOTAL_SAMPLES):
-            env_w.append(Float64(mb.weights_host[w_off + s]))
-        var selected_s = _weighted_sample(env_w, TOTAL_SAMPLES)
-
-        for a in range(ACTION_DIM):
-            var act = Float64(
-                mb.all_actions_host[
-                    env_act_off + selected_s * HORIZON * ACTION_DIM + a
-                ]
-            )
-            if not deterministic:
-                act += _gaussian_sample() * Float64(mb.std_host[mean_base + a])
-            act = _clamp(act * action_scale, -action_scale, action_scale)
-            act_host[env_idx * ACTION_DIM + a] = Scalar[dtype](act)

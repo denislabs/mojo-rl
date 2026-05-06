@@ -2201,6 +2201,7 @@ def mppi_softmax_weights_kernel[
     dtype: DType,
     N_ENVS: Int,
     TOTAL_SAMPLES: Int,
+    NUM_ELITES: Int,
     BLOCK_SIZE: Int,
 ](
     returns: LayoutTensor[
@@ -2211,11 +2212,27 @@ def mppi_softmax_weights_kernel[
     ],
     temperature: Scalar[dtype],
 ) where dtype.is_floating_point():
-    """Per-env softmax over returns → normalized weights. All on GPU.
+    """Per-env top-K elite softmax over returns → normalized weights.
 
     Grid: N_ENVS blocks. Block: BLOCK_SIZE threads.
     Each block handles one env's TOTAL_SAMPLES returns.
-    Uses shared memory for max-reduction and sum-reduction.
+
+    Reference TD-MPC2 (tdmpc2.py:186) selects num_elites=64 of num_samples
+    (=512+24=536) by value, then computes softmax over only those
+    elites. Without the elite filter the bottom 90% of trajectories still
+    contribute small but nonzero weight (exp(temp*(value-max)) for typical
+    value gaps), biasing the MPPI mean update toward averaging-in bad
+    samples and preventing commitment to elite directions. This was the
+    likely cause of the HalfCheetah training plateau at ~-800 reward.
+
+    Algorithm:
+      1. Find max return per env (existing reduction).
+      2. For each sample s, compute its rank = #{k : returns[k] > returns[s]
+         OR (returns[k] == returns[s] AND k < s)}. O(N²/BLOCK_SIZE) per
+         thread — cheap at TOTAL_SAMPLES~536.
+      3. Sample is elite iff rank < NUM_ELITES.
+      4. weights[s] = exp(temp * (returns[s] - max)) if elite, else 0.
+      5. Sum + normalize over elites.
     """
     var env_idx = Int(block_idx.x)
     var tid = Int(thread_idx.x)
@@ -2255,15 +2272,29 @@ def mppi_softmax_weights_kernel[
     var max_ret = smem[0]
     barrier()
 
-    # ── Pass 2: compute exp weights and local sum ──
+    # ── Pass 2: per-sample rank + masked exp weight + local sum ──
+    # Each thread iterates over its assigned samples (stride BLOCK_SIZE).
+    # For each sample s it counts how many other samples have strictly
+    # higher return (with a tiebreak by index) → rank. If rank < NUM_ELITES,
+    # the sample is in the top-K and contributes weight = exp(temp*(v-max));
+    # otherwise weight = 0.
     var local_sum: smem.element_type = 0.0
     s = tid
     while s < TOTAL_SAMPLES:
-        var w = exp(
-            temperature * (Scalar[dtype](returns[base + s][0]) - max_ret)
-        )
-        weights[base + s] = w
-        local_sum += w
+        var v_s = Scalar[dtype](returns[base + s][0])
+        var rank = 0
+        for k in range(TOTAL_SAMPLES):
+            var v_k = Scalar[dtype](returns[base + k][0])
+            if v_k > v_s:
+                rank += 1
+            elif v_k == v_s and k < s:
+                rank += 1
+        if rank < NUM_ELITES:
+            var w = exp(temperature * (v_s - max_ret))
+            weights[base + s] = w
+            local_sum += w
+        else:
+            weights[base + s] = Scalar[dtype](0.0)
         s += BLOCK_SIZE
     smem[tid] = local_sum
 
@@ -2366,6 +2397,155 @@ def mppi_weighted_mean_std_kernel[
         std_val = Scalar[dtype](2.0)
 
     std_out[tid] = std_val
+
+
+# =============================================================================
+# MPPI action selection (GPU-side replacement for CPU loop)
+# =============================================================================
+
+
+@always_inline
+def mppi_select_action_kernel[
+    dtype: DType,
+    N_ENVS: Int,
+    TOTAL_SAMPLES: Int,
+    ACTION_DIM: Int,
+    HORIZON: Int,
+    BLOCK_SIZE: Int,
+](
+    weights: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * TOTAL_SAMPLES), MutAnyOrigin
+    ],
+    all_actions: LayoutTensor[
+        dtype,
+        Layout.row_major(N_ENVS * TOTAL_SAMPLES * HORIZON * ACTION_DIM),
+        MutAnyOrigin,
+    ],
+    std: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * HORIZON * ACTION_DIM), MutAnyOrigin
+    ],
+    out_action: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACTION_DIM), MutAnyOrigin
+    ],
+    rng_seed: Scalar[DType.uint32],
+    action_scale: Scalar[dtype],
+    deterministic: UInt32,
+) where dtype.is_floating_point():
+    """Per-env action selection via gumbel-max trick + Gaussian noise.
+
+    Replaces the CPU loop in plan_gpu_batched (was: download weights/std/
+    actions, _weighted_sample, add noise, clamp). Now done in one kernel
+    so plan_gpu_batched no longer needs to sync mid-step.
+
+    Algorithm matches reference TD-MPC2 (tdmpc2.py:201-207):
+      1. Sample idx ~ Categorical(weights) via gumbel-max:
+           idx = argmax_s (log(weights[s]) + Gumbel(0,1)[s])
+         where weights are post-softmax (already normalized in
+         mppi_softmax_weights_kernel; non-elite weights are 0).
+      2. Take action = all_actions[env, idx, t=0, :].
+      3. If not deterministic: action += std[env, 0, :] * N(0, 1).
+      4. action = clamp(action * action_scale, ±action_scale).
+
+    Grid: N_ENVS blocks. Block: BLOCK_SIZE threads.
+    Block-wide argmax via shared memory tree-reduction.
+    """
+    var env_idx = Int(block_idx.x)
+    var tid = Int(thread_idx.x)
+    var w_off = env_idx * TOTAL_SAMPLES
+    var act_off = env_idx * TOTAL_SAMPLES * HORIZON * ACTION_DIM
+
+    # Shared memory: BLOCK_SIZE values + BLOCK_SIZE indices.
+    var smem_val = LayoutTensor[
+        dtype,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+    var smem_idx = LayoutTensor[
+        DType.uint32,
+        Layout.row_major(BLOCK_SIZE),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    # ── Phase 1: per-thread local argmax of (log(w) + gumbel) ──
+    var local_max = Scalar[dtype](-1e30)
+    var local_idx: UInt32 = 0
+    var s = tid
+    while s < TOTAL_SAMPLES:
+        var w = Scalar[dtype](weights[w_off + s][0])
+        if w > Scalar[dtype](1e-20):
+            # gumbel(0,1) = -log(-log(u)), u ~ Uniform(0, 1).
+            var philox = PhiloxRandom(
+                seed=UInt64(rng_seed) + UInt64(env_idx) * UInt64(TOTAL_SAMPLES) + UInt64(s),
+                offset=0,
+            )
+            var rand_vals = philox.step_uniform()
+            var u = Scalar[DType.float32](rand_vals[0]) + Scalar[DType.float32](1e-12)
+            var g = -log(-log(u) + Scalar[DType.float32](1e-12))
+            var score = log(w) + Scalar[dtype](g)
+            if score > local_max:
+                local_max = score
+                local_idx = UInt32(s)
+        s += BLOCK_SIZE
+    smem_val[tid] = local_max
+    smem_idx[tid] = local_idx
+
+    barrier()
+
+    # ── Phase 2: tree-reduce argmax across block ──
+    var stride = BLOCK_SIZE >> 1
+    while stride > 0:
+        if tid < stride:
+            var other_v = Scalar[dtype](smem_val[tid + stride][0])
+            var mine_v = Scalar[dtype](smem_val[tid][0])
+            if other_v > mine_v:
+                smem_val[tid] = other_v
+                smem_idx[tid] = smem_idx[tid + stride]
+        barrier()
+        stride >>= 1
+
+    var selected_s = Int(smem_idx[0])
+    barrier()
+
+    # ── Phase 3: thread 0..ACTION_DIM copies action, adds noise, clamps ──
+    if tid < ACTION_DIM:
+        var a = tid
+        var act_idx = (
+            act_off
+            + selected_s * HORIZON * ACTION_DIM
+            + 0 * ACTION_DIM  # t = 0
+            + a
+        )
+        var act_val = Scalar[dtype](all_actions[act_idx][0])
+
+        if deterministic == UInt32(0):
+            # Box-Muller for N(0, 1).
+            var noise_philox = PhiloxRandom(
+                seed=(
+                    UInt64(rng_seed)
+                    + UInt64(0xA5A5A5A5)
+                    + UInt64(env_idx) * UInt64(ACTION_DIM)
+                    + UInt64(a)
+                ),
+                offset=0,
+            )
+            var noise_vals = noise_philox.step_uniform()
+            var u1 = Scalar[DType.float32](noise_vals[0]) + Scalar[DType.float32](1e-8)
+            var u2 = Scalar[DType.float32](noise_vals[1])
+            var mag = sqrt(Float32(-2.0) * log(u1))
+            var z = mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+            var std_val = Scalar[dtype](
+                std[env_idx * HORIZON * ACTION_DIM + 0 * ACTION_DIM + a][0]
+            )
+            act_val = act_val + std_val * Scalar[dtype](z)
+
+        act_val = act_val * action_scale
+        if act_val > action_scale:
+            act_val = action_scale
+        if act_val < -action_scale:
+            act_val = -action_scale
+        out_action[env_idx * ACTION_DIM + a] = act_val
 
 
 # =============================================================================

@@ -120,6 +120,7 @@ struct TDMPC2Agent[
     buffer_capacity: Int = 100000,
     num_samples: Int = 512,
     num_pi_trajs: Int = 24,
+    num_elites: Int = 64,
     num_iterations: Int = 6,
     v_min: Float64 = -10.0,
     v_max: Float64 = 10.0,
@@ -2458,6 +2459,7 @@ struct TDMPC2Agent[
                     Self.H,
                     Self.num_samples,
                     Self.num_pi_trajs,
+                    Self.num_elites,
                     Self.num_iterations,
                     Self.WM.DynModel,
                     Self.WMOpt,
@@ -2481,14 +2483,17 @@ struct TDMPC2Agent[
                     self.temperature,
                     env_prev_means,
                     env_t0_flags,
-                    gs.env_act_host,
+                    LayoutTensor[
+                        dtype,
+                        Layout.row_major(n_envs * Self.ACT),
+                        MutAnyOrigin,
+                    ](gs.env_act_buf.unsafe_ptr()),
                     self.action_scale,
                     False,  # not deterministic (exploration)
                     mppi_seed,
                 )
-
-                # Upload all actions to GPU
-                ctx.enqueue_copy(gs.env_act_buf, gs.env_act_host)
+                # action selection now happens inside plan_gpu_batched on
+                # GPU; env_act_buf is populated directly. No host roundtrip.
             else:
                 # Policy-based exploration: encode obs → policy → sample actions
                 Self.WM.EncoderNet.MODEL.forward_gpu_no_cache[n_envs](
