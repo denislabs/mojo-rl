@@ -232,7 +232,9 @@ struct TDMPC2Agent[
     # Use make_gpu_state[n_envs, env_state_size](ctx) to construct.
     comptime EncOpt = Adam[LR=Self.WM.ENC_LR]
     comptime WMOpt = Adam[LR=Self.WM.WM_LR]
-    comptime PIOpt = Adam[LR=Self.WM.PI_LR]
+    # Match reference TD-MPC2 (tdmpc2.py:32) policy-only eps=1e-5; world
+    # model networks stay at PyTorch default eps=1e-8.
+    comptime PIOpt = Adam[LR=Self.WM.PI_LR, EPS=1e-5]
 
     var state: Self.CPUStateType
 

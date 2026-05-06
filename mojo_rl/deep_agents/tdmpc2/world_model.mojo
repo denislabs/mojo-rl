@@ -174,9 +174,14 @@ struct WorldModel[
         Self.TermModel,
         Adam[LR=Self.WM_LR],
     ]
+    # Reference TD-MPC2 explicitly sets eps=1e-5 on the policy optimizer
+    # (tdmpc2.py:32) while leaving the world-model optimizer at PyTorch's
+    # default eps=1e-8. The larger policy eps prevents the policy update
+    # from over-reacting when the v_t (second moment) accumulator dips —
+    # important early in training when policy gradients are tiny.
     comptime PolicyNet = Network[
         Self.PolModel,
-        Adam[LR=Self.PI_LR],
+        Adam[LR=Self.PI_LR, EPS=1e-5],
     ]
     comptime QNet = Network[
         Self.QModel,
@@ -190,7 +195,7 @@ struct WorldModel[
     var dynamics: NetworkState[Self.DynModel, Adam[LR=Self.WM_LR]]
     var reward_head: NetworkState[Self.RewModel, Adam[LR=Self.WM_LR]]
     var termination: NetworkState[Self.TermModel, Adam[LR=Self.WM_LR]]
-    var policy: NetworkState[Self.PolModel, Adam[LR=Self.PI_LR]]
+    var policy: NetworkState[Self.PolModel, Adam[LR=Self.PI_LR, EPS=1e-5]]
 
     # Q-ensemble (NUM_Q=5 networks)
     var q1: NetworkState[Self.QModel, Adam[LR=Self.WM_LR]]
@@ -213,8 +218,17 @@ struct WorldModel[
         out self,
     ):
         """Initialize WorldModel with all sub-networks."""
+        # Encoder uses 2.5x the std of every other network (0.05 vs 0.02)
+        # to break out of the SimNorm trivial-collapse attractor at init.
+        # With Normal(0, 0.02) on HalfCheetah obs, the post-Linear pre-
+        # SimNorm activations are tiny so per-group softmax is nearly
+        # uniform and z is constant across the batch (std ~0.022 at step 0,
+        # decaying to ~0.0005). 0.05 keeps inputs in a regime where SimNorm
+        # outputs vary across samples. Reference uses 0.02 with trunc-
+        # normal but evidently doesn't hit this attractor; the difference
+        # is likely subtle (input distribution, init seed clustering).
         self.encoder = NetworkState[Self.EncModel, Adam[LR=Self.ENC_LR]]()
-        self.encoder.initialize[Normal[0.0, 0.02]]()
+        self.encoder.initialize[Normal[0.0, 0.05]]()
 
         self.dynamics = NetworkState[Self.DynModel, Adam[LR=Self.WM_LR]]()
         self.dynamics.initialize[Normal[0.0, 0.02]]()
@@ -225,7 +239,7 @@ struct WorldModel[
         self.termination = NetworkState[Self.TermModel, Adam[LR=Self.WM_LR]]()
         self.termination.initialize[Normal[0.0, 0.02]]()
 
-        self.policy = NetworkState[Self.PolModel, Adam[LR=Self.PI_LR]]()
+        self.policy = NetworkState[Self.PolModel, Adam[LR=Self.PI_LR, EPS=1e-5]]()
         self.policy.initialize[Normal[0.0, 0.02]]()
 
         # Per-Q SEED so the 5 Q networks don't get bitwise-identical
