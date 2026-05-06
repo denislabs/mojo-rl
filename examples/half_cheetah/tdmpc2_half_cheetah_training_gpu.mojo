@@ -75,8 +75,12 @@ comptime BUFFER_CAPACITY = 1_000_000
 comptime V_MIN = -10.0
 comptime V_MAX = 10.0
 
-# Number of parallel GPU environments
-comptime N_ENVS = 32
+# Number of parallel GPU environments — single env to match reference
+# TD-MPC2's data-collection setup. With N_ENVS=32 all envs are
+# temporally synchronized so the buffer doesn't see episode endings
+# until ~1000 env steps in × 32 envs = 32k transitions; single env
+# gives temporal diversity ~32× faster.
+comptime N_ENVS = 1
 
 # Training duration
 comptime NUM_EPISODES = 2_000
@@ -188,7 +192,10 @@ def main() raises:
             "  Per-env buffer: "
             + String(max(BATCH_SIZE + HORIZON + 2, BUFFER_CAPACITY // N_ENVS))
         )
-        print("  Updates per step: 1 (matches reference TD-MPC2 UTD=1)")
+        print(
+            "  Updates per step: " + String(N_ENVS)
+            + " (= N_ENVS, gives UTD=1 per transition matching reference)"
+        )
         print("  Warmup steps: 5000 (random actions before training)")
         print("  World model LR: 3e-4")
         print("  Encoder LR scale: 0.3 (enc_lr = 9e-5)")
@@ -235,7 +242,7 @@ def main() raises:
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
-                updates_per_step=1,
+                updates_per_step=N_ENVS,
             )
 
             var end_time = perf_counter_ns()
