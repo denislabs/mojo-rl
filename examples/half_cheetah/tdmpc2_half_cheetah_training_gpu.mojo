@@ -243,7 +243,7 @@ def main() raises:
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
-                use_mppi=False,
+                use_mppi=True,
                 updates_per_step=N_ENVS,
             )
 
