@@ -22,19 +22,44 @@ from std.math import exp, log, sqrt
 from std.memory import alloc, memset
 from std.random import random_float64
 from layout import Layout, LayoutTensor
+from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.training import Network
 from mojo_rl.deep_agents.efficient_zero_v2.configs import EZV2DiscreteConfig
-from mojo_rl.deep_agents.efficient_zero_v2.state import EZV2DiscreteCPUState
+from mojo_rl.deep_agents.efficient_zero_v2.state import (
+    EZV2DiscreteCPUState,
+    EZV2DiscreteGPUState,
+)
 from mojo_rl.deep_agents.efficient_zero_v2.mcts import GumbelMCTS
 from mojo_rl.deep_agents.efficient_zero_v2.strategies import (
     compute_sve,
     MixedValueTarget,
 )
+from mojo_rl.deep_agents.efficient_zero_v2.kernels import (
+    ezv2_copy_obs_at_step_kernel,
+    ezv2_build_dyn_input_kernel,
+    ezv2_extract_hidden_after_dyn_kernel,
+    ezv2_policy_loss_grad_kernel,
+    ezv2_value_loss_grad_kernel,
+    ezv2_reward_loss_grad_kernel,
+    ezv2_cosine_loss_grad_kernel,
+    ezv2_reduce_add_kernel,
+    ezv2_add_kernel,
+    ezv2_assemble_grad_dyn_step_kernel,
+    ezv2_accumulate_dyn_grad_in_kernel,
+    ezv2_gather_reward_at_step_kernel,
+    ezv2_gather_value_target_kernel,
+    ezv2_gather_policy_target_kernel,
+    ezv2_priority_from_v_loss_kernel,
+)
 from mojo_rl.deep_agents.muzero.utils import (
     scalar_transform,
     encode_categorical,
     cross_entropy_with_softmax,
+)
+from mojo_rl.deep_agents.muzero.kernels import (
+    scalar_transform_kernel,
+    two_hot_encode_kernel,
 )
 
 
@@ -1510,6 +1535,1055 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         grad_dyn_out.free()
         grad_pred_dyn.free()
         grad_hidden.free()
+
+        var L_total = (
+            Self.Config.lambda_reward * L_R
+            + Self.Config.lambda_policy * L_P
+            + Self.Config.lambda_value * L_V
+            + Self.Config.lambda_consistency * L_G
+        )
+        return (L_total, L_R, L_P, L_V, L_G)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # GPU train step (item #7 — work-units priority list)
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # Hybrid CPU/GPU layout:
+    #   * Sampling (priority-weighted, done-flag-aware) and the
+    #     mixed-value-target (paper Eq. 16) computation stay on host —
+    #     both need the per-transition `priorities` / `step_at_write` /
+    #     `dones` arrays that already live in `EZV2DiscreteCPUState`.
+    #   * Sampled batch + mixed-value-target are uploaded ONCE per train
+    #     step into pinned host buffers → device buffers.
+    #   * Forward / backward / optimizer step / priority update all run
+    #     on GPU.
+    #   * Loss-component scalars + per-sample priority deltas come back
+    #     to host so the reported `(L_total, L_R, L_P, L_V, L_G)` and
+    #     the host-side `state.priorities[]` array stay in sync with
+    #     the CPU `train_step` implementation.
+
+    def train_step_gpu(
+        mut self,
+        mut gpu: EZV2DiscreteGPUState[Self.Config],
+        ctx: DeviceContext,
+    ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64]:
+        """GPU mirror of `train_step`. Returns `(L_total, L_R, L_P, L_V, L_G)`.
+
+        Caller owns `gpu` (a `EZV2DiscreteGPUState[Self.Config]` created
+        once at training start) and the `DeviceContext`. The GPU state's
+        network params are assumed to already reflect the agent's CPU
+        state — call `gpu.upload_from(self.state, ctx)` once at training
+        start, and `gpu.download_to(self.state, ctx)` whenever the host
+        path (Gumbel search at action-selection, reanalyze) needs fresh
+        weights.
+        """
+        comptime BATCH = Self.Config.batch_size
+        comptime K = Self.Config.unroll_steps
+        comptime N_TD = Self.Config.td_steps
+        comptime OBS = Self.Config.obs_dim
+        comptime ACT = Self.Config.action_dim
+        comptime LATENT = Self.Config.latent_dim
+        comptime PROJ = Self.Config.proj_dim
+        comptime BINS = Self.Config.num_bins
+        comptime DYN_IN = LATENT + ACT
+        comptime DYN_OUT = LATENT + BINS
+        comptime PRED_OUT = ACT + BINS
+        comptime CAP = 50000
+
+        comptime TPB: Int = 256
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
+        comptime BATCH_BINS_BLOCKS = (BATCH * BINS + TPB - 1) // TPB
+        comptime LATENT_BLOCKS = (BATCH * LATENT + TPB - 1) // TPB
+
+        if not self.state.is_ready():
+            return (
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+            )
+
+        # ── 1. CPU-side sampling (priority-weighted, with mixed value target) ─
+        # Build cumulative-priority array over valid window starts.
+        # Mirrors `train_step`'s sampling block + the mixed-value-target
+        # block, but emits the result into pinned host buffers.
+        var buf_size = self.state.buffer.size
+        var buf_ptr = self.state.buffer.ptr
+        var current_train_step = self.train_step_count
+        var oldest = (buf_ptr - buf_size + CAP) % CAP
+
+        var n_cands_alloc = buf_size - K if buf_size > K else 1
+        var cum_prio = alloc[Float64](n_cands_alloc)
+        var cand_starts = alloc[Int](n_cands_alloc)
+        var n_valid = 0
+        var total_prio = Float64(0.0)
+        if buf_size > K:
+            for offset in range(buf_size - K):
+                var idx = (oldest + offset) % CAP
+                var valid = True
+                for k in range(K):
+                    var iidx = (idx + k) % CAP
+                    if Float64(self.state.buffer.dones[iidx]) > 0.5:
+                        valid = False
+                        break
+                if not valid:
+                    continue
+                var p = Float64(self.state.priorities[idx])
+                if p < 1e-8:
+                    p = 1e-8
+                total_prio += p
+                cum_prio[n_valid] = total_prio
+                cand_starts[n_valid] = idx
+                n_valid += 1
+
+        if n_valid < BATCH or total_prio < 1e-8:
+            cum_prio.free()
+            cand_starts.free()
+            return (
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+            )
+
+        var batch_start_idx = alloc[Int](BATCH)
+        # Fill the upload host buffers in per-sample-time-major layout.
+        for sampled in range(BATCH):
+            var u = random_float64() * total_prio
+            var picked = 0
+            for i in range(n_valid):
+                if cum_prio[i] >= u:
+                    picked = i
+                    break
+            var start = cand_starts[picked]
+            batch_start_idx[sampled] = start
+
+            for k in range(K + 1):
+                var idx = (start + k) % CAP
+                for d in range(OBS):
+                    gpu.batch_obs_host[
+                        (sampled * (K + 1) + k) * OBS + d
+                    ] = self.state.buffer.obs[idx * OBS + d]
+                for a in range(ACT):
+                    gpu.batch_mcts_pol_host[
+                        (sampled * (K + 1) + k) * ACT + a
+                    ] = self.state.mcts_policies[idx * ACT + a]
+                gpu.batch_mcts_val_host[
+                    sampled * (K + 1) + k
+                ] = self.state.mcts_values[idx]
+                var age = current_train_step - Int(
+                    self.state.step_at_write[idx]
+                )
+                if age < 0:
+                    age = 0
+                gpu.batch_age_host[sampled * (K + 1) + k] = Scalar[
+                    DType.int32
+                ](age)
+            for k in range(K):
+                var idx = (start + k) % CAP
+                for a in range(ACT):
+                    gpu.batch_actions_host[
+                        (sampled * K + k) * ACT + a
+                    ] = self.state.buffer.actions[idx * ACT + a]
+                gpu.batch_rewards_host[
+                    sampled * K + k
+                ] = self.state.buffer.rewards[(start + k) % CAP]
+
+            # Mixed-value-target (paper Eq. 16) precomputed on host so
+            # the GPU side just sees a plain scalar tensor it can scalar-
+            # transform + two-hot-encode per k.
+            for k in range(K + 1):
+                var sve = Float64(
+                    gpu.batch_mcts_val_host[sampled * (K + 1) + k]
+                )
+                var n_eff = N_TD if N_TD < K - k else K - k
+                var td = Float64(0.0)
+                var disc = Float64(1.0)
+                for j in range(n_eff):
+                    td += disc * Float64(
+                        gpu.batch_rewards_host[sampled * K + k + j]
+                    )
+                    disc *= self.gamma
+                td += disc * Float64(
+                    gpu.batch_mcts_val_host[sampled * (K + 1) + k + n_eff]
+                )
+                var age = Int(gpu.batch_age_host[sampled * (K + 1) + k])
+                var v_target = MixedValueTarget[
+                    Self.Config.t_fresh, Self.Config.t_stale
+                ].compute(sve, td, age)
+                gpu.value_target_full_host[
+                    sampled * (K + 1) + k
+                ] = Scalar[dtype](v_target)
+
+        cum_prio.free()
+        cand_starts.free()
+
+        # ── 2. Upload host → device ─────────────────────────────────────
+        ctx.enqueue_copy(gpu.batch_obs_buf, gpu.batch_obs_host)
+        ctx.enqueue_copy(gpu.batch_actions_buf, gpu.batch_actions_host)
+        ctx.enqueue_copy(gpu.batch_rewards_buf, gpu.batch_rewards_host)
+        ctx.enqueue_copy(gpu.batch_mcts_pol_buf, gpu.batch_mcts_pol_host)
+        ctx.enqueue_copy(gpu.batch_mcts_val_buf, gpu.batch_mcts_val_host)
+        ctx.enqueue_copy(gpu.batch_age_buf, gpu.batch_age_host)
+        ctx.enqueue_copy(
+            gpu.value_target_full_buf, gpu.value_target_full_host
+        )
+
+        # ── 3. Zero loss accumulators + per-network grads ───────────────
+        ctx.enqueue_memset(gpu.L_R_buf, 0)
+        ctx.enqueue_memset(gpu.L_P_buf, 0)
+        ctx.enqueue_memset(gpu.L_V_buf, 0)
+        ctx.enqueue_memset(gpu.L_G_buf, 0)
+        ctx.enqueue_memset(gpu.grad_hidden_buf, 0)
+        # The CE/cosine kernels overwrite (not accumulate into) the
+        # per-output grad slices they're responsible for, so we don't
+        # need to zero the grad_pred_out / grad_dyn_out / grad_pred_dyn
+        # buffers across train steps — every position they care about
+        # gets re-written before being read.
+        gpu.representation.zero_grads(ctx)
+        gpu.dynamics.zero_grads(ctx)
+        gpu.prediction.zero_grads(ctx)
+        gpu.projector.zero_grads(ctx)
+        gpu.predictor.zero_grads(ctx)
+
+        # ── 4. Forward pass ─────────────────────────────────────────────
+
+        # 4.0 Pre-built LayoutTensor views that we reuse across calls.
+        var batch_obs_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * (K + 1) * OBS),
+            MutAnyOrigin,
+        ](gpu.batch_obs_buf.unsafe_ptr())
+        var batch_actions_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * K * ACT),
+            MutAnyOrigin,
+        ](gpu.batch_actions_buf.unsafe_ptr())
+        var batch_rewards_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * K),
+            MutAnyOrigin,
+        ](gpu.batch_rewards_buf.unsafe_ptr())
+        var batch_mcts_pol_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * (K + 1) * ACT),
+            MutAnyOrigin,
+        ](gpu.batch_mcts_pol_buf.unsafe_ptr())
+        var value_target_full_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * (K + 1)),
+            MutAnyOrigin,
+        ](gpu.value_target_full_buf.unsafe_ptr())
+
+        var rep_input_t_in = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu.rep_input_buf.unsafe_ptr())
+        var rep_input_t_flat = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * OBS),
+            MutAnyOrigin,
+        ](gpu.rep_input_buf.unsafe_ptr())
+        var dyn_input_t_in = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.Config.DynModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu.dyn_input_buf.unsafe_ptr())
+        var dyn_input_t_flat = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * DYN_IN),
+            MutAnyOrigin,
+        ](gpu.dyn_input_buf.unsafe_ptr())
+        var obs_step_t_in = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu.obs_step_buf.unsafe_ptr())
+        var obs_step_t_flat = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH * OBS),
+            MutAnyOrigin,
+        ](gpu.obs_step_buf.unsafe_ptr())
+        var rep_obs_t_out = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu.rep_obs_buf.unsafe_ptr())
+        var rep_obs_t_in_proj = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.Config.ProjectorModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu.rep_obs_buf.unsafe_ptr())
+
+        # 4.1 rep(o[0]) → hidden[0]
+        # Gather batch_obs[:, 0, :] into rep_input_buf.
+        comptime gather_obs = ezv2_copy_obs_at_step_kernel[
+            BATCH, K + 1, OBS, dtype
+        ]
+        ctx.enqueue_function[gather_obs, gather_obs](
+            batch_obs_t,
+            rep_input_t_flat,
+            0,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        var hidden0_t_out = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu.hidden_buf.unsafe_ptr())
+        var rep_cache_t_w = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.Config.RepModel.CACHE_SIZE),
+            MutAnyOrigin,
+        ](gpu.rep_cache_buf.unsafe_ptr())
+        Network[Self.Config.RepModel, Self.Config.OptType].forward_gpu_with_cache[
+            BATCH
+        ](
+            ctx,
+            rep_input_t_in,
+            hidden0_t_out,
+            gpu.representation.params_view(),
+            gpu.representation.model_state_view(),
+            rep_cache_t_w,
+            gpu.workspace_buf,
+        )
+
+        # 4.2 K dynamics steps: for k=0..K-1 build dyn_input from hidden[k]
+        # + actions[:, k, :], call dyn.forward_with_cache → dyn_out[k],
+        # extract hidden[k+1].
+        comptime build_dyn_in = ezv2_build_dyn_input_kernel[
+            BATCH, LATENT, ACT, K, dtype
+        ]
+        comptime extract_hidden = ezv2_extract_hidden_after_dyn_kernel[
+            BATCH, LATENT, BINS, dtype
+        ]
+        comptime DYN_CS = Self.Config.DynModel.CACHE_SIZE
+
+        for k in range(K):
+            # hidden[k] view (single time-slice).
+            var hidden_k_flat = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * LATENT),
+                MutAnyOrigin,
+            ](gpu.hidden_buf.unsafe_ptr() + k * BATCH * LATENT)
+
+            ctx.enqueue_function[build_dyn_in, build_dyn_in](
+                hidden_k_flat,
+                batch_actions_t,
+                dyn_input_t_flat,
+                k,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            var dyn_out_k_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.DynModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
+            var dyn_cache_k_w = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.DynModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](gpu.dyn_caches_buf.unsafe_ptr() + k * BATCH * DYN_CS)
+            Network[
+                Self.Config.DynModel, Self.Config.OptType
+            ].forward_gpu_with_cache[BATCH](
+                ctx,
+                dyn_input_t_in,
+                dyn_out_k_in,
+                gpu.dynamics.params_view(),
+                gpu.dynamics.model_state_view(),
+                dyn_cache_k_w,
+                gpu.workspace_buf,
+            )
+
+            # Extract hidden part: dyn_out_buf[k][:, :LATENT] → hidden[k+1].
+            var dyn_out_k_flat = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * DYN_OUT),
+                MutAnyOrigin,
+            ](gpu.dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
+            var hidden_kp1_flat = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH * LATENT),
+                MutAnyOrigin,
+            ](gpu.hidden_buf.unsafe_ptr() + (k + 1) * BATCH * LATENT)
+            ctx.enqueue_function[extract_hidden, extract_hidden](
+                dyn_out_k_flat,
+                hidden_kp1_flat,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # 4.3 Pred at k = 0..K
+        comptime PRED_CS = Self.Config.PredModel.CACHE_SIZE
+        for k in range(K + 1):
+            var hidden_k_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredModel.IN_DIM),
+                MutAnyOrigin,
+            ](gpu.hidden_buf.unsafe_ptr() + k * BATCH * LATENT)
+            var pred_out_k_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
+            var pred_cache_k_w = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](gpu.pred_caches_buf.unsafe_ptr() + k * BATCH * PRED_CS)
+            Network[
+                Self.Config.PredModel, Self.Config.OptType
+            ].forward_gpu_with_cache[BATCH](
+                ctx,
+                hidden_k_in,
+                pred_out_k_in,
+                gpu.prediction.params_view(),
+                gpu.prediction.model_state_view(),
+                pred_cache_k_w,
+                gpu.workspace_buf,
+            )
+
+        # 4.4 SimSiam branches for k_offset = 0..K-1 (k = k_offset + 1).
+        comptime PROJ_CS = Self.Config.ProjectorModel.CACHE_SIZE
+        comptime PREDR_CS = Self.Config.PredictorModel.CACHE_SIZE
+
+        for k_offset in range(K):
+            var k = k_offset + 1
+
+            # Online projector: projector(hidden[k]) → proj_dyn[k_offset]
+            var hidden_k_in_proj = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.ProjectorModel.IN_DIM),
+                MutAnyOrigin,
+            ](gpu.hidden_buf.unsafe_ptr() + k * BATCH * LATENT)
+            var proj_dyn_k_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.ProjectorModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.proj_dyn_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+            var proj_dyn_cache_k_w = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.ProjectorModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](
+                gpu.proj_dyn_caches_buf.unsafe_ptr()
+                + k_offset * BATCH * PROJ_CS
+            )
+            Network[
+                Self.Config.ProjectorModel, Self.Config.OptType
+            ].forward_gpu_with_cache[BATCH](
+                ctx,
+                hidden_k_in_proj,
+                proj_dyn_k_in,
+                gpu.projector.params_view(),
+                gpu.projector.model_state_view(),
+                proj_dyn_cache_k_w,
+                gpu.workspace_buf,
+            )
+
+            # Predictor: predictor(proj_dyn[k_offset]) → pred_dyn[k_offset]
+            var proj_dyn_k_input = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredictorModel.IN_DIM),
+                MutAnyOrigin,
+            ](gpu.proj_dyn_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+            var pred_dyn_k_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredictorModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.pred_dyn_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+            var pred_dyn_cache_k_w = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredictorModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](
+                gpu.pred_dyn_caches_buf.unsafe_ptr()
+                + k_offset * BATCH * PREDR_CS
+            )
+            Network[
+                Self.Config.PredictorModel, Self.Config.OptType
+            ].forward_gpu_with_cache[BATCH](
+                ctx,
+                proj_dyn_k_input,
+                pred_dyn_k_in,
+                gpu.predictor.params_view(),
+                gpu.predictor.model_state_view(),
+                pred_dyn_cache_k_w,
+                gpu.workspace_buf,
+            )
+
+            # Target branch (no cache, no gradient).
+            # Gather batch_obs[:, k, :] → obs_step.
+            ctx.enqueue_function[gather_obs, gather_obs](
+                batch_obs_t,
+                obs_step_t_flat,
+                k,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # rep(obs_step) → rep_obs (no cache; stop-grad target)
+            Network[
+                Self.Config.RepModel, Self.Config.OptType
+            ].forward_gpu[BATCH](
+                ctx,
+                obs_step_t_in,
+                rep_obs_t_out,
+                gpu.representation.params_view(),
+                gpu.representation.model_state_view(),
+                gpu.workspace_buf,
+            )
+
+            # projector(rep_obs) → proj_obs[k_offset] (no cache)
+            var proj_obs_k_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.ProjectorModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.proj_obs_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+            Network[
+                Self.Config.ProjectorModel, Self.Config.OptType
+            ].forward_gpu[BATCH](
+                ctx,
+                rep_obs_t_in_proj,
+                proj_obs_k_in,
+                gpu.projector.params_view(),
+                gpu.projector.model_state_view(),
+                gpu.workspace_buf,
+            )
+
+        # ── 5. Per-output upstream gradients + per-sample loss reductions ─
+
+        # 5.1 Policy CE at every k = 0..K
+        comptime gather_pol = ezv2_gather_policy_target_kernel[
+            BATCH, K + 1, ACT, dtype
+        ]
+        comptime policy_grad = ezv2_policy_loss_grad_kernel[
+            BATCH, ACT, PRED_OUT, dtype
+        ]
+        comptime reduce_one = ezv2_reduce_add_kernel[BATCH, dtype]
+        var policy_target_step_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * ACT), MutAnyOrigin
+        ](gpu.policy_target_step_buf.unsafe_ptr())
+        var per_sample_loss_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu.per_sample_loss_scratch_buf.unsafe_ptr())
+        var L_P_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu.L_P_buf.unsafe_ptr())
+
+        var n_P = Float64(BATCH * (K + 1))
+        var lp_scale = self.Config.lambda_policy / n_P
+        for k in range(K + 1):
+            ctx.enqueue_function[gather_pol, gather_pol](
+                batch_mcts_pol_t,
+                policy_target_step_t,
+                k,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            var pred_out_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+            ](gpu.pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
+            var grad_pred_out_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+            ](gpu.grad_pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
+            ctx.enqueue_function[policy_grad, policy_grad](
+                pred_out_k_flat,
+                policy_target_step_t,
+                grad_pred_out_k_flat,
+                per_sample_loss_t,
+                Scalar[dtype](lp_scale),
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[reduce_one, reduce_one](
+                per_sample_loss_t,
+                L_P_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+
+        # 5.2 Value CE at every k = 0..K, using pre-uploaded mixed value
+        # target. Build two-hot dist by gathering scalar → scalar_transform
+        # → two_hot_encode, then run value_loss_grad_kernel. At k = 0,
+        # additionally copy per_sample_loss to per_sample_v_loss_k0 for
+        # the priority refresh.
+        comptime gather_val = ezv2_gather_value_target_kernel[
+            BATCH, K + 1, dtype
+        ]
+        comptime st_kernel = scalar_transform_kernel[BATCH, dtype]
+        comptime th_kernel = two_hot_encode_kernel[BATCH, BINS, dtype]
+        comptime value_grad = ezv2_value_loss_grad_kernel[
+            BATCH, BINS, ACT, PRED_OUT, dtype
+        ]
+        comptime BATCH_BLOCKS_BS = (BATCH + TPB - 1) // TPB
+        comptime BINS_BLOCKS = (BATCH + TPB - 1) // TPB
+
+        var value_target_scalar_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu.value_target_scalar_buf.unsafe_ptr())
+        var value_target_dist_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
+        ](gpu.value_target_dist_buf.unsafe_ptr())
+        var L_V_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu.L_V_buf.unsafe_ptr())
+        var per_sample_v_loss_k0_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu.per_sample_v_loss_k0_buf.unsafe_ptr())
+
+        var n_V = Float64(BATCH * (K + 1))
+        var lv_scale = self.Config.lambda_value / n_V
+        comptime copy_kernel_b = ezv2_add_kernel[BATCH, dtype]
+        # NOTE: at k=0 we want a *copy* of per_sample_loss into
+        # per_sample_v_loss_k0_buf, not an add. Easiest: zero
+        # per_sample_v_loss_k0_buf via memset before the loop, then add.
+        ctx.enqueue_memset(gpu.per_sample_v_loss_k0_buf, 0)
+
+        for k in range(K + 1):
+            ctx.enqueue_function[gather_val, gather_val](
+                value_target_full_t,
+                value_target_scalar_t,
+                k,
+                grid_dim=(BATCH_BLOCKS_BS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[st_kernel, st_kernel](
+                value_target_scalar_t,
+                Scalar[dtype](0.001),
+                grid_dim=(BATCH_BLOCKS_BS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[th_kernel, th_kernel](
+                value_target_dist_t,
+                value_target_scalar_t,
+                Scalar[dtype](self.v_min),
+                Scalar[dtype](self.v_max),
+                grid_dim=(BINS_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            var pred_out_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+            ](gpu.pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
+            var grad_pred_out_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+            ](gpu.grad_pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
+            ctx.enqueue_function[value_grad, value_grad](
+                pred_out_k_flat,
+                value_target_dist_t,
+                grad_pred_out_k_flat,
+                per_sample_loss_t,
+                Scalar[dtype](lv_scale),
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[reduce_one, reduce_one](
+                per_sample_loss_t,
+                L_V_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+            if k == 0:
+                ctx.enqueue_function[copy_kernel_b, copy_kernel_b](
+                    per_sample_v_loss_k0_t,
+                    per_sample_loss_t,
+                    grid_dim=(BATCH_BLOCKS,),
+                    block_dim=(TPB,),
+                )
+
+        # 5.3 Reward CE at every k = 0..K-1.
+        comptime gather_rew = ezv2_gather_reward_at_step_kernel[
+            BATCH, K, dtype
+        ]
+        comptime reward_grad = ezv2_reward_loss_grad_kernel[
+            BATCH, BINS, LATENT, DYN_OUT, dtype
+        ]
+        var reward_target_scalar_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu.reward_target_scalar_buf.unsafe_ptr())
+        var reward_target_dist_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH * BINS), MutAnyOrigin
+        ](gpu.reward_target_dist_buf.unsafe_ptr())
+        var L_R_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu.L_R_buf.unsafe_ptr())
+
+        var n_R = Float64(BATCH * K)
+        var lr_scale = self.Config.lambda_reward / n_R
+        for k in range(K):
+            ctx.enqueue_function[gather_rew, gather_rew](
+                batch_rewards_t,
+                reward_target_scalar_t,
+                k,
+                grid_dim=(BATCH_BLOCKS_BS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[st_kernel, st_kernel](
+                reward_target_scalar_t,
+                Scalar[dtype](0.001),
+                grid_dim=(BATCH_BLOCKS_BS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[th_kernel, th_kernel](
+                reward_target_dist_t,
+                reward_target_scalar_t,
+                Scalar[dtype](self.v_min),
+                Scalar[dtype](self.v_max),
+                grid_dim=(BINS_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            var dyn_out_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+            ](gpu.dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
+            var grad_dyn_out_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+            ](gpu.grad_dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
+            ctx.enqueue_function[reward_grad, reward_grad](
+                dyn_out_k_flat,
+                reward_target_dist_t,
+                grad_dyn_out_k_flat,
+                per_sample_loss_t,
+                Scalar[dtype](lr_scale),
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[reduce_one, reduce_one](
+                per_sample_loss_t,
+                L_R_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+
+        # 5.4 Cosine consistency at every k_offset = 0..K-1.
+        comptime cosine_grad = ezv2_cosine_loss_grad_kernel[
+            BATCH, PROJ, dtype
+        ]
+        var L_G_t = LayoutTensor[
+            dtype, Layout.row_major(1), MutAnyOrigin
+        ](gpu.L_G_buf.unsafe_ptr())
+
+        var n_G = Float64(BATCH * K)
+        var lg_scale = self.Config.lambda_consistency / n_G
+        for k_offset in range(K):
+            var pred_dyn_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * PROJ), MutAnyOrigin
+            ](gpu.pred_dyn_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+            var proj_obs_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * PROJ), MutAnyOrigin
+            ](gpu.proj_obs_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+            var grad_pred_dyn_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * PROJ), MutAnyOrigin
+            ](gpu.grad_pred_dyn_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+            ctx.enqueue_function[cosine_grad, cosine_grad](
+                pred_dyn_k_flat,
+                proj_obs_k_flat,
+                grad_pred_dyn_k_flat,
+                per_sample_loss_t,
+                Scalar[dtype](lg_scale),
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[reduce_one, reduce_one](
+                per_sample_loss_t,
+                L_G_t,
+                grid_dim=(1,),
+                block_dim=(1,),
+            )
+
+        # ── 6. Backward pass ────────────────────────────────────────────
+
+        # 6.1 pred backward at k = 0..K → adds into grad_hidden[k].
+        comptime add_kernel_lat = ezv2_add_kernel[BATCH * LATENT, dtype]
+        for k in range(K + 1):
+            var grad_pred_out_k_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.grad_pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
+            var grad_pred_in_step_t_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredModel.IN_DIM),
+                MutAnyOrigin,
+            ](gpu.grad_pred_in_step_buf.unsafe_ptr())
+            var pred_cache_k_r = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](gpu.pred_caches_buf.unsafe_ptr() + k * BATCH * PRED_CS)
+            var pred_grads_v = gpu.prediction.grads_view()
+            Network[
+                Self.Config.PredModel, Self.Config.OptType
+            ].backward_gpu[BATCH](
+                ctx,
+                grad_pred_out_k_in,
+                grad_pred_in_step_t_in,
+                gpu.prediction.params_view(),
+                gpu.prediction.model_state_view(),
+                pred_cache_k_r,
+                pred_grads_v,
+                gpu.workspace_buf,
+            )
+            # grad_hidden[k] += grad_pred_in_step
+            var grad_hidden_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+            ](gpu.grad_hidden_buf.unsafe_ptr() + k * BATCH * LATENT)
+            var grad_pred_in_step_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+            ](gpu.grad_pred_in_step_buf.unsafe_ptr())
+            ctx.enqueue_function[add_kernel_lat, add_kernel_lat](
+                grad_hidden_k_flat,
+                grad_pred_in_step_flat,
+                grid_dim=(LATENT_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # 6.2 SimSiam backward (predictor + projector online branch) at
+        # k_offset = 0..K-1 → adds into grad_hidden[k_offset + 1].
+        for k_offset in range(K):
+            var k = k_offset + 1
+            # predictor.backward(grad_pred_dyn[k_offset]) → grad_predr_in_step
+            var grad_pred_dyn_k_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredictorModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.grad_pred_dyn_buf.unsafe_ptr() + k_offset * BATCH * PROJ)
+            var grad_predr_in_step_t_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredictorModel.IN_DIM),
+                MutAnyOrigin,
+            ](gpu.grad_predr_in_step_buf.unsafe_ptr())
+            var pred_dyn_cache_k_r = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.PredictorModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](
+                gpu.pred_dyn_caches_buf.unsafe_ptr()
+                + k_offset * BATCH * PREDR_CS
+            )
+            var predr_grads_v = gpu.predictor.grads_view()
+            Network[
+                Self.Config.PredictorModel, Self.Config.OptType
+            ].backward_gpu[BATCH](
+                ctx,
+                grad_pred_dyn_k_in,
+                grad_predr_in_step_t_in,
+                gpu.predictor.params_view(),
+                gpu.predictor.model_state_view(),
+                pred_dyn_cache_k_r,
+                predr_grads_v,
+                gpu.workspace_buf,
+            )
+
+            # projector.backward(grad_predr_in_step → grad_proj_in_step)
+            var grad_predr_in_step_in_proj = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.ProjectorModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.grad_predr_in_step_buf.unsafe_ptr())
+            var grad_proj_in_step_t_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.ProjectorModel.IN_DIM),
+                MutAnyOrigin,
+            ](gpu.grad_proj_in_step_buf.unsafe_ptr())
+            var proj_dyn_cache_k_r = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.ProjectorModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](
+                gpu.proj_dyn_caches_buf.unsafe_ptr()
+                + k_offset * BATCH * PROJ_CS
+            )
+            var proj_grads_v = gpu.projector.grads_view()
+            Network[
+                Self.Config.ProjectorModel, Self.Config.OptType
+            ].backward_gpu[BATCH](
+                ctx,
+                grad_predr_in_step_in_proj,
+                grad_proj_in_step_t_in,
+                gpu.projector.params_view(),
+                gpu.projector.model_state_view(),
+                proj_dyn_cache_k_r,
+                proj_grads_v,
+                gpu.workspace_buf,
+            )
+
+            # grad_hidden[k] += grad_proj_in_step
+            var grad_hidden_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+            ](gpu.grad_hidden_buf.unsafe_ptr() + k * BATCH * LATENT)
+            var grad_proj_in_step_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+            ](gpu.grad_proj_in_step_buf.unsafe_ptr())
+            ctx.enqueue_function[add_kernel_lat, add_kernel_lat](
+                grad_hidden_k_flat,
+                grad_proj_in_step_flat,
+                grid_dim=(LATENT_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # 6.3 dyn backward in REVERSE topological order: kk = K-1..0.
+        # Walks BACKWARD in time so grad_hidden[k+1] is fully accumulated
+        # (pred + projector + later dyn-backwards) before we consume it
+        # at the current step.
+        comptime assemble_dyn_grad = (
+            ezv2_assemble_grad_dyn_step_kernel[BATCH, LATENT, BINS, dtype]
+        )
+        comptime accum_dyn_grad_in = (
+            ezv2_accumulate_dyn_grad_in_kernel[BATCH, LATENT, ACT, dtype]
+        )
+        for kk in range(K):
+            var k = K - 1 - kk
+            # Build grad_dyn_out_step[b] = [grad_hidden[k+1, b] || grad_dyn_out[k, b, LATENT:]]
+            var grad_hidden_kp1_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+            ](
+                gpu.grad_hidden_buf.unsafe_ptr() + (k + 1) * BATCH * LATENT
+            )
+            var grad_dyn_out_k_full = LayoutTensor[
+                dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+            ](gpu.grad_dyn_out_buf.unsafe_ptr() + k * BATCH * DYN_OUT)
+            var grad_dyn_out_step_t = LayoutTensor[
+                dtype, Layout.row_major(BATCH * DYN_OUT), MutAnyOrigin
+            ](gpu.grad_dyn_out_step_buf.unsafe_ptr())
+            ctx.enqueue_function[assemble_dyn_grad, assemble_dyn_grad](
+                grad_hidden_kp1_flat,
+                grad_dyn_out_k_full,
+                grad_dyn_out_step_t,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+            # dyn.backward(grad_dyn_out_step → grad_dyn_in_step)
+            var grad_dyn_out_step_t_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.DynModel.OUT_DIM),
+                MutAnyOrigin,
+            ](gpu.grad_dyn_out_step_buf.unsafe_ptr())
+            var grad_dyn_in_step_t_in = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.DynModel.IN_DIM),
+                MutAnyOrigin,
+            ](gpu.grad_dyn_in_step_buf.unsafe_ptr())
+            var dyn_cache_k_r = LayoutTensor[
+                dtype,
+                Layout.row_major(BATCH, Self.Config.DynModel.CACHE_SIZE),
+                MutAnyOrigin,
+            ](gpu.dyn_caches_buf.unsafe_ptr() + k * BATCH * DYN_CS)
+            var dyn_grads_v = gpu.dynamics.grads_view()
+            Network[
+                Self.Config.DynModel, Self.Config.OptType
+            ].backward_gpu[BATCH](
+                ctx,
+                grad_dyn_out_step_t_in,
+                grad_dyn_in_step_t_in,
+                gpu.dynamics.params_view(),
+                gpu.dynamics.model_state_view(),
+                dyn_cache_k_r,
+                dyn_grads_v,
+                gpu.workspace_buf,
+            )
+
+            # grad_hidden[k] += grad_dyn_in_step[:, :LATENT]
+            var grad_dyn_in_step_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * DYN_IN), MutAnyOrigin
+            ](gpu.grad_dyn_in_step_buf.unsafe_ptr())
+            var grad_hidden_k_flat = LayoutTensor[
+                dtype, Layout.row_major(BATCH * LATENT), MutAnyOrigin
+            ](gpu.grad_hidden_buf.unsafe_ptr() + k * BATCH * LATENT)
+            ctx.enqueue_function[accum_dyn_grad_in, accum_dyn_grad_in](
+                grad_dyn_in_step_flat,
+                grad_hidden_k_flat,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+
+        # 6.4 rep backward at k=0 (only — the target-branch rep forwards
+        # at k=1..K were stop-grad / no-cache, so no gradients flow
+        # through them).
+        var grad_hidden_0_in = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
+            MutAnyOrigin,
+        ](gpu.grad_hidden_buf.unsafe_ptr())
+        var grad_rep_in_t = LayoutTensor[
+            dtype,
+            Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
+            MutAnyOrigin,
+        ](gpu.grad_rep_in_buf.unsafe_ptr())
+        var rep_grads_v = gpu.representation.grads_view()
+        Network[
+            Self.Config.RepModel, Self.Config.OptType
+        ].backward_gpu[BATCH](
+            ctx,
+            grad_hidden_0_in,
+            grad_rep_in_t,
+            gpu.representation.params_view(),
+            gpu.representation.model_state_view(),
+            rep_cache_t_w,
+            rep_grads_v,
+            gpu.workspace_buf,
+        )
+
+        # ── 7. Optimizer step on every network. ─────────────────────────
+        gpu.representation.optimizer_step(ctx)
+        gpu.dynamics.optimizer_step(ctx)
+        gpu.prediction.optimizer_step(ctx)
+        gpu.projector.optimizer_step(ctx)
+        gpu.predictor.optimizer_step(ctx)
+
+        self.train_step_count += 1
+
+        # ── 8. Priority refresh — kernel writes priorities_out_buf[b] =
+        #       per_sample_v_loss_k0[b] + 1e-3, downloaded below.
+        comptime prio_kernel = ezv2_priority_from_v_loss_kernel[
+            BATCH, dtype
+        ]
+        var priorities_out_t = LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ](gpu.priorities_out_buf.unsafe_ptr())
+        ctx.enqueue_function[prio_kernel, prio_kernel](
+            per_sample_v_loss_k0_t,
+            priorities_out_t,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+        # ── 9. Download losses + per-sample priorities ───────────────────
+        ctx.enqueue_copy(gpu.L_R_host, gpu.L_R_buf)
+        ctx.enqueue_copy(gpu.L_P_host, gpu.L_P_buf)
+        ctx.enqueue_copy(gpu.L_V_host, gpu.L_V_buf)
+        ctx.enqueue_copy(gpu.L_G_host, gpu.L_G_buf)
+        ctx.enqueue_copy(gpu.priorities_out_host, gpu.priorities_out_buf)
+        ctx.synchronize()
+
+        var L_R_sum = Float64(gpu.L_R_host[0])
+        var L_P_sum = Float64(gpu.L_P_host[0])
+        var L_V_sum = Float64(gpu.L_V_host[0])
+        var L_G_sum = Float64(gpu.L_G_host[0])
+
+        var L_R = L_R_sum / n_R if n_R > 0.0 else 0.0
+        var L_P = L_P_sum / n_P if n_P > 0.0 else 0.0
+        var L_V = L_V_sum / n_V if n_V > 0.0 else 0.0
+        var L_G = L_G_sum / n_G if n_G > 0.0 else 0.0
+
+        # ── 10. Update CPU-side priorities array at the matching slot ───
+        for b in range(BATCH):
+            var new_p = Float64(gpu.priorities_out_host[b])
+            self.state.priorities[batch_start_idx[b]] = Scalar[dtype](
+                new_p
+            )
+            if new_p > self.max_priority:
+                self.max_priority = new_p
+
+        batch_start_idx.free()
 
         var L_total = (
             Self.Config.lambda_reward * L_R

@@ -100,39 +100,43 @@ def main():
     #     memorize the consistency target trivially, and the saturated
     #     gradient still drags the rep net.
     #
-    # ── Empirical findings, in priority order ──────────────────────────
-    # Two 50k-step runs both regressed past step ~8-12k with last-100
-    # mean ≈ 13. The diagnostic signature in both: **L_P frozen at
-    # log(2) = 0.69**, i.e. policy head outputting near-uniform logits.
-    # MCTS uses the policy head as its prior; uniform prior → random
-    # search → ~22 mean return (the collapse state).
+    # ── Empirical findings (full diagnosis) ────────────────────────────
+    # Two 50k-step runs (no-reanalyze and with-reanalyze) both regress
+    # past step ~8-12k with last-100 mean ≈ 13. Two ablation probes
+    # rule out the obvious suspects:
     #
-    # The hypothesis is L_G saturation dragging the rep network into
-    # a degenerate fixed point. L_G saturates to −0.9999 within ~1k
-    # train_steps; the projector + predictor are perfectly aligned;
-    # the small residual gradient back through projector → rep is
-    # apparently fighting the policy/value gradients enough to keep
-    # rep from being informative.
+    #   • LAMBDA_G = 0.0 doesn't help — same trajectory shape.
+    #     Consistency-loss saturation isn't the cause.
+    #   • SIMS = 32 makes L_P drop from log(2)=0.69 → 0.24 (the
+    #     policy IS learning when σ(Q) is informative) but episode
+    #     returns get *worse* (best ep 27 vs 124 at SIMS=8). The
+    #     agent commits to a wrong action confidently.
     #
-    # Levers to try (priority order):
+    # Root cause: chicken-and-egg between policy and value.
     #
-    #   1. **LAMBDA_G = 0.0** — runs as "MuZero with Gumbel search"
-    #      without consistency. If this converges, the saturating-L_G
-    #      hypothesis is confirmed and the fix is one of: stop-grad
-    #      on rep from L_G's path, gradient clipping on L_G, smaller
-    #      PROJ, or scheduling λ_G → 0 once saturated.
+    #   • At SIMS=8, K_GUMBEL=2, Sequential Halving allocates
+    #     symmetric 4-4 visits and σ(Q) ≈ 0 on untrained Q estimates,
+    #     so the improved policy collapses to softmax(logits) and
+    #     L_P's gradient ≈ 0. Policy stays uniform → MCTS does
+    #     random rollouts (≈ 22 mean = baseline).
+    #   • At SIMS=32, σ(Q) breaks the symmetry but the value head
+    #     hasn't trained yet (no reward-signal coverage diverse
+    #     enough to differentiate states). Policy commits to bad
+    #     actions confidently.
     #
-    #   2. SIMS → 16 — at SIMS=8, K_GUMBEL=2 the MCTS only does 4
-    #      visits per action on average; the policy targets may be
-    #      too noisy for the policy head to extract signal from.
+    # Tuning paths (none cheap):
     #
-    #   3. TRAIN_INTERVAL → 2 or 1 (more updates per env step).
-    #
-    #   4. REANALYZE_INTERVAL → 100 + REANALYZE_SAMPLES → 64 (more
-    #      aggressive refresh — moderate help in the second run,
-    #      stretched the peak from 114 → 174 best episode).
-    #
-    #   5. NUM_ENV_STEPS up to 100k.
+    #   1. **Bigger paper-config + GPU**: LATENT=128, BS=64, SIMS=16,
+    #      BINS=51, paper λ/LR schedule. ~1-2 hr CPU per run; would
+    #      fit nicely on GPU (item 7 in the plan).
+    #   2. **Online target-net bootstrap for n-step TD**: replace
+    #      `batch_mcts_val[k+n_eff]` in train_step's L_V section
+    #      with a fresh target-rep+target-pred forward on the
+    #      bootstrap obs. Closer to muzero-general's reanalyze.
+    #   3. **Visit-count target instead of improved policy** for
+    #      low-K_GUMBEL configs — would help when σ(Q) is small.
+    #   4. TRAIN_INTERVAL → 2 or 1 (more updates per env step).
+    #   5. NUM_ENV_STEPS → 100k.
     comptime Config = EZV2DiscreteMLPConfig[
         OBS=4,
         ACT=2,

@@ -28,5 +28,5 @@ from .consistency import (
     cosine_consistency_loss,
 )
 from .configs import EZV2DiscreteConfig, EZV2DiscreteMLPConfig
-from .state import EZV2DiscreteCPUState
+from .state import EZV2DiscreteCPUState, EZV2DiscreteGPUState
 from .efficient_zero_v2 import GenericEfficientZeroV2Agent
