@@ -286,7 +286,8 @@ struct MuZeroCNNConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
 
-    # CNN Representation (NatureDQN downsampling → latent)
+    # CNN Representation (NatureDQN downsampling → latent) + MinMaxNorm.
+    # See MuZeroMLPConfig (configs.mojo:150-183) for latent-norm rationale.
     comptime RepModel = Sequential[
         Conv2DReLU[4, 32, 8, 4, 0, 84, 84],     # → 20x20
         Conv2DReLU[32, 64, 4, 2, 0, 20, 20],    # → 9x9
@@ -294,13 +295,20 @@ struct MuZeroCNNConfig[
         FlattenLayer[64 * 7 * 7],                 # → 3136
         LinearReLU[64 * 7 * 7, 512],
         Linear[512, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
-    # Dynamics + Prediction in latent space (same MLP as standard MuZero)
+    # Dynamics in latent space; MinMaxNorm only on hidden split, reward raw.
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, 256],
         LinearMish[256, 256],
-        Linear[256, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[256, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[256, Self.BINS],
+        ],
     ]
 
     comptime PredModel = Sequential[
@@ -390,7 +398,8 @@ struct MuZeroResNetConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
 
-    # Representation with ResBlocks
+    # Representation with ResBlocks + MinMaxNorm. See MuZeroMLPConfig
+    # (configs.mojo:150-183) for the latent-norm rationale.
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, Self.HIDDEN],
         Residual[Sequential[
@@ -402,16 +411,23 @@ struct MuZeroResNetConfig[
             Linear[Self.HIDDEN, Self.HIDDEN],
         ]],
         Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
-    # Dynamics with ResBlock
+    # Dynamics with ResBlock; MinMaxNorm only on hidden split, reward raw.
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         Residual[Sequential[
             LinearMish[Self.HIDDEN, Self.HIDDEN],
             Linear[Self.HIDDEN, Self.HIDDEN],
         ]],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
 
     # Prediction with deeper heads
@@ -492,17 +508,26 @@ struct MuZeroLargeConfig[
     comptime DYN_OUT: Int = 512 + 301
     comptime PRED_OUT: Int = Self.ACT + 301
 
+    # MinMaxNorm appended to rep + on dynamics hidden split. See
+    # MuZeroMLPConfig (configs.mojo:150-183) for the latent-norm rationale.
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, 512],
         LinearMish[512, 512],
         Residual[Sequential[LinearMish[512, 512], Linear[512, 512]]],
         Linear[512, 512],
+        MinMaxNorm[512],
     ]
 
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, 512],
         Residual[Sequential[LinearMish[512, 512], Linear[512, 512]]],
-        Linear[512, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[512, 512],
+                MinMaxNorm[512],
+            ],
+            Linear[512, 301],
+        ],
     ]
 
     comptime PredModel = Sequential[
@@ -584,15 +609,24 @@ struct EfficientZeroConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = Self.ACT + Self.BINS
 
+    # MinMaxNorm at end of rep + on dynamics hidden split. See
+    # MuZeroMLPConfig (configs.mojo:150-183) for the latent-norm rationale.
     comptime RepModel = Sequential[
         LinearMish[Self.OBS, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
     comptime PredModel = Sequential[
         LinearMish[Self.LATENT, Self.HIDDEN],
@@ -678,17 +712,26 @@ struct MuZeroTicTacToeConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = 9 + Self.BINS
 
-    # Networks
+    # Networks. MinMaxNorm at end of rep + on dynamics hidden split — see
+    # MuZeroMLPConfig (configs.mojo:150-183) for the rationale; matches
+    # muzero-general/models.py:147-170 latent normalization.
     comptime RepModel = Sequential[
         LinearMish[27, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
         Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         LinearMish[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
 
     comptime PredModel = Sequential[
@@ -779,7 +822,8 @@ struct MuZeroConnectFourConfig[
     comptime DYN_OUT: Int = Self.LATENT + Self.BINS
     comptime PRED_OUT: Int = 7 + Self.BINS
 
-    # Representation with ResBlock
+    # Representation with ResBlock + MinMaxNorm. See MuZeroMLPConfig
+    # (configs.mojo:150-183) for the latent-norm rationale.
     comptime RepModel = Sequential[
         LinearMish[126, Self.HIDDEN],
         Residual[Sequential[
@@ -787,16 +831,23 @@ struct MuZeroConnectFourConfig[
             Linear[Self.HIDDEN, Self.HIDDEN],
         ]],
         Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
     ]
 
-    # Dynamics with ResBlock
+    # Dynamics with ResBlock; MinMaxNorm only on hidden split, reward bins raw.
     comptime DynModel = Sequential[
         LinearMish[Self.DYN_IN, Self.HIDDEN],
         Residual[Sequential[
             LinearMish[Self.HIDDEN, Self.HIDDEN],
             Linear[Self.HIDDEN, Self.HIDDEN],
         ]],
-        Linear[Self.HIDDEN, Self.DYN_OUT],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
     ]
 
     # Prediction with deeper heads
