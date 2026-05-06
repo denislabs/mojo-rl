@@ -79,10 +79,10 @@ def main() raises:
         # use_last_model_value=True.
         use_reanalyze=True,
         logger=UnsafePointer(to=logger),
-        # Log loss diagnostics every 50 grad steps (avoids drowning the
-        # logger — TTT does ~3K grad steps/iter, so this is ~60 loss
-        # samples per iter, plenty for spotting trends).
-        diag_every=50,
+        # Log loss diagnostics every 500 grad steps. TTT does ~3K grad
+        # steps/iter so this gives ~6 loss samples per iter — enough to
+        # spot trends without drowning the logger.
+        diag_every=500,
     )
 
     logger.close()
