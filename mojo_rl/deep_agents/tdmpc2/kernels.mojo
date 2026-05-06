@@ -846,14 +846,22 @@ def tdmpc2_action_tanh_chain_kernel[
       da/d(mean) = tanh'(u)
       da/d(log_std) = tanh'(u) * exp(log_std) * eps
 
-    Entropy gradient: matches reference TD-MPC2 `scaled_entropy = -LP_pre*ACT`
-    where LP_pre is the *unsquashed* Gaussian log-prob (world_model.py:166-176
-    constructs `entropy_scale = scaled_log_prob/log_prob_post` to cancel the
-    tanh squash correction). So:
-      d(scaled_entropy)/d(mean)    = 0
-      d(scaled_entropy)/d(log_std) = ACT  (per action dim)
-    The ACT factor is absorbed into `entropy_coef` by the caller, so per-
-    action gradient on log_std is just `-ent_scale`.
+    Entropy gradient (tanh-squashed Gaussian, with u = mean + std*eps):
+      d(log_pi)/d(mean)    = 2*tanh(u)
+        (squash correction d/dmean[-log(1-tanh(u)²)] = 2*tanh(u)*tanh'(u)/tanh'(u))
+      d(log_pi)/d(log_std) = -1 + 2*tanh(u) * std * eps
+        (-1 from Gaussian -log_std term; +2*tanh(u)*std*eps from squash via du/dlog_std)
+
+    NOTE: reference TD-MPC2 mathematically cancels the squash correction via
+    `entropy_scale = scaled_log_prob/log_prob_post` (world_model.py:166-176),
+    so its analytical entropy gradient on (mean, log_std) is (0, ACT). We
+    implement the squashed form here on purpose — empirically, removing the
+    squash-correction terms makes log_std saturate at the upper bound (+2)
+    in Mojo training. Hypothesis: the squash-correction terms add (a)
+    consistent positive bias to log_std grad when std is large (tanh(u) ≈
+    sign(eps), so 2·tanh(u)·std·eps > 0) and (b) extra variance to v_t,
+    both of which check Adam's tendency to drive log_std up under tiny
+    consistent entropy bias. See TDMPC2_AUDIT.md item 11.
 
     ACCUMULATES into grad_pi_out.
 
@@ -913,16 +921,23 @@ def tdmpc2_action_tanh_chain_kernel[
             Scalar[dtype](0.5) * LOG_STD_DIF * (Scalar[dtype](1.0) - tanh_x * tanh_x)
         )
 
-        # d(loss)/d(mean) = d(-Q)/d(a) * da/d(mean)
-        # (No entropy contribution — reference's unsquashed scaled_entropy has
-        # zero gradient on mean.)
-        grad_pi_out[i, j] = grad_pi_out[i, j] + grad_action * tanh_deriv
+        # d(loss)/d(mean) = d(-Q)/d(a) * da/d(mean) + ent * d(log_pi)/d(mean)
+        #                  = grad_action * tanh'(u) + ent * 2*tanh(u) / B
+        grad_pi_out[i, j] = (
+            grad_pi_out[i, j]
+            + grad_action * tanh_deriv
+            + ent_scale * Scalar[dtype](2.0) * t
+        )
 
-        # d(loss)/d(log_std) = d(-Q)/d(a) * da/d(log_std) + ent_grad
-        #                    = grad_action * tanh'(u) * std * eps - ent_scale
-        # ent_scale already absorbs the ACT factor + rho^t * 1/((H+1)*B).
+        # d(loss)/d(log_std) = d(-Q)/d(a) * da/d(log_std) + ent * d(log_pi)/d(log_std)
+        #                    = grad_action * tanh'(u) * std * eps
+        #                      + ent_scale * (-1 + 2*tanh(u) * std * eps)
         # Then chain through d(log_std)/d(x).
-        var grad_log_std = grad_action * tanh_deriv * std * eps - ent_scale
+        var grad_log_std = (
+            grad_action * tanh_deriv * std * eps
+            - ent_scale
+            + ent_scale * Scalar[dtype](2.0) * t * std * eps
+        )
         grad_pi_out[i, ACTION_DIM + j] = (
             grad_pi_out[i, ACTION_DIM + j] + grad_log_std * log_std_deriv
         )
