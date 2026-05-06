@@ -50,7 +50,7 @@ def main() raises:
         arena_threshold=0.5,
         do_eval=True,
         do_eval2=True,
-        do_arena=True,
+        do_arena=False,
         checkpoint_every=10,
         checkpoint_path="tictactoe_muzero.ckpt",
         # Enable GPU reanalyze + Polyak target net (E2 / E4): bootstrap

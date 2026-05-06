@@ -5974,13 +5974,22 @@ struct GenericMuZeroAgent[Config: MuZeroConfig, n_envs: Int = 64](Movable):
         var draws = r1[1] + r2[1]
         var old_wins = r1[2] + r2[0]
 
-        var decisive = new_wins + old_wins
+        # Elo-style score with draws counting as half-wins. Earlier formula
+        # `wins / (wins + losses)` excluded draws and so two strong models
+        # (e.g., a perfect-play TicTacToe candidate vs the prior best) could
+        # not surpass threshold even when they were strictly equivalent —
+        # most games drew. Score = (W + 0.5·D) / (W + D + L) lets a model
+        # that ties on score with the prior best (50%) cross any threshold
+        # ≤ 0.5 and lets surpluses of half-points from extra wins also count.
+        var total = new_wins + draws + old_wins
         var accepted: Bool
-        if decisive == 0:
+        if total == 0:
             accepted = False
         else:
-            var win_rate = Float64(new_wins) / Float64(decisive)
-            accepted = win_rate >= threshold
+            var score = (
+                Float64(new_wins) + 0.5 * Float64(draws)
+            ) / Float64(total)
+            accepted = score >= threshold
 
         if not accepted:
             # Revert to previous best params
