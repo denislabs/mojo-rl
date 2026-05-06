@@ -2766,6 +2766,23 @@ struct TDMPC2Agent[
                 var vmin_scalar = Scalar[dtype](Self.v_min)
                 var vmax_scalar = Scalar[dtype](Self.v_max)
 
+                # Sample target-Q subset ONCE per `_compute_td_targets` call
+                # (matches reference TD-MPC2 `_td_target` calling Q with one
+                # `torch.randperm(num_q)[:2]` whose result is broadcast across
+                # all H horizon steps). Previously redrawn per-t which added
+                # variance to the TD target estimate.
+                var td_rng = PhiloxRandom(seed=td_q_rng_counter, offset=0)
+                td_q_rng_counter += 1
+                var td_rng_vals = td_rng.step_uniform()
+                var td_qi_a = Int(td_rng_vals[0] * 5.0) % 5
+                var td_qi_b = (td_qi_a + 1 + Int(td_rng_vals[1] * 4.0) % 4) % 5
+                var qta_p_const = LayoutTensor[
+                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                ](qt_param_ptrs[td_qi_a])
+                var qtb_p_const = LayoutTensor[
+                    dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
+                ](qt_param_ptrs[td_qi_b])
+
                 for t in range(Self.H):
                     # Fused: extract obs_{t+1} + rew/done at step t (2 kernels → 1)
                     ctx.enqueue_function[
@@ -2829,23 +2846,17 @@ struct TDMPC2Agent[
                         block_dim=(TPB,),
                     )
 
-                    # Random 2-of-5 target Q subsampling (reference TD-MPC2)
-                    var td_rng = PhiloxRandom(seed=td_q_rng_counter, offset=0)
-                    td_q_rng_counter += 1
-                    var td_rng_vals = td_rng.step_uniform()
-                    var td_qi_a = Int(td_rng_vals[0] * 5.0) % 5
-                    var td_qi_b = (td_qi_a + 1 + Int(td_rng_vals[1] * 4.0) % 4) % 5
+                    # Target Q subset (qta_p_const / qtb_p_const) was sampled
+                    # ONCE above the H loop — same pair is reused across all
+                    # horizon steps to match reference TD-MPC2.
 
                     # First target Q → decode → init q_min
-                    var qta_p = LayoutTensor[
-                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                    ](qt_param_ptrs[td_qi_a])
                     # Target Q nets share stateless QModel; any q*_model_state_tensor works
                     Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                         ctx,
                         logits_tensor,
                         za_tensor,
-                        qta_p,
+                        qta_p_const,
                         q1_model_state_tensor,
                         gs.qt_batch_ws_buf,
                     )
@@ -2861,14 +2872,11 @@ struct TDMPC2Agent[
                     )
 
                     # Second target Q → decode + min-reduce
-                    var qtb_p = LayoutTensor[
-                        dtype, Layout.row_major(Self.Q_P), MutAnyOrigin
-                    ](qt_param_ptrs[td_qi_b])
                     Self.WM.QNet.MODEL.forward_gpu_no_cache[Self.BATCH](
                         ctx,
                         logits_tensor,
                         za_tensor,
-                        qtb_p,
+                        qtb_p_const,
                         q1_model_state_tensor,
                         gs.qt_batch_ws_buf,
                     )
@@ -3340,6 +3348,16 @@ struct TDMPC2Agent[
                 var scale_scalar = Scalar[dtype](self.running_scale)
                 var inv_HP1 = Scalar[dtype](1.0) / Scalar[dtype](Self.H + 1)
 
+                # Sample live-Q subset ONCE per `update_pi` invocation (matches
+                # reference TD-MPC2 `update_pi` calling `Q(zs, action,
+                # return_type='avg')` once with one randperm pair broadcast
+                # across all H+1 horizon steps). Previously redrawn per-t.
+                var pi_rng = PhiloxRandom(seed=pi_q_rng_counter, offset=0)
+                pi_q_rng_counter += 1
+                var rng_vals = pi_rng.step_uniform()
+                var qi_a = Int(rng_vals[0] * 5.0) % 5
+                var qi_b = (qi_a + 1 + Int(rng_vals[1] * 4.0) % 4) % 5
+
                 for t in range(Self.H + 1):
                     # Load z_t from world-model rollout history (buffer-action
                     # rollout, computed pre-update — matches reference's
@@ -3395,13 +3413,8 @@ struct TDMPC2Agent[
                     )
 
                     # ── Proper DPG: backprop through avg of 2 random Q-nets ──
-                    # Reference TD-MPC2: randomly subsample 2 of 5 Q-networks,
-                    # average their gradients for the policy update.
-                    var pi_rng = PhiloxRandom(seed=pi_q_rng_counter, offset=0)
-                    pi_q_rng_counter += 1
-                    var rng_vals = pi_rng.step_uniform()
-                    var qi_a = Int(rng_vals[0] * 5.0) % 5
-                    var qi_b = (qi_a + 1 + Int(rng_vals[1] * 4.0) % 4) % 5
+                    # qi_a / qi_b were sampled ONCE above the H+1 loop and are
+                    # reused at every t (matches reference TD-MPC2 update_pi).
                     # /(H+1) matches reference's trailing .mean() over the
                     # H+1-element horizon dimension; /2 averages over the 2
                     # random Q-nets used for DPG.
@@ -3451,11 +3464,33 @@ struct TDMPC2Agent[
                                 j -= 1
                             sorted_q[j + 1] = key
 
-                        var idx_5 = Int(0.05 * Float64(Self.BATCH))
-                        var idx_95 = Int(0.95 * Float64(Self.BATCH))
-                        if idx_95 >= Self.BATCH:
-                            idx_95 = Self.BATCH - 1
-                        var pct_range = sorted_q[idx_95] - sorted_q[idx_5]
+                        # Linearly interpolate the 5th and 95th percentiles
+                        # to match reference TD-MPC2 RunningScale._positions
+                        # (scale.py:21-37): pos = pct * (N-1) / 100, then
+                        # weighted blend of sorted[floor] and sorted[ceil].
+                        var pos_5 = 0.05 * Float64(Self.BATCH - 1)
+                        var pos_95 = 0.95 * Float64(Self.BATCH - 1)
+                        var floor_5 = Int(pos_5)
+                        var floor_95 = Int(pos_95)
+                        var ceil_5 = floor_5 + 1
+                        var ceil_95 = floor_95 + 1
+                        if ceil_5 > Self.BATCH - 1:
+                            ceil_5 = Self.BATCH - 1
+                        if ceil_95 > Self.BATCH - 1:
+                            ceil_95 = Self.BATCH - 1
+                        var w_ceil_5 = pos_5 - Float64(floor_5)
+                        var w_floor_5 = 1.0 - w_ceil_5
+                        var w_ceil_95 = pos_95 - Float64(floor_95)
+                        var w_floor_95 = 1.0 - w_ceil_95
+                        var p5_val = (
+                            sorted_q[floor_5] * w_floor_5
+                            + sorted_q[ceil_5] * w_ceil_5
+                        )
+                        var p95_val = (
+                            sorted_q[floor_95] * w_floor_95
+                            + sorted_q[ceil_95] * w_ceil_95
+                        )
+                        var pct_range = p95_val - p5_val
                         if pct_range < 1.0:
                             pct_range = 1.0
 

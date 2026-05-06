@@ -99,14 +99,17 @@ struct WorldModel[
     ]
 
     # Dynamics: (LATENT + ACTION) → LATENT with SimNorm output
-    # Reference: mlp(...,act=SimNorm) → final block is NormedLinear(act=SimNorm)
-    # = Linear → LayerNorm → SimNorm. Without LayerNorm, the per-group softmax
-    # in SimNorm is fed an unbounded scale and saturates (one-hot per group) or
-    # collapses (uniform per group), reducing the effective dimensionality of z.
+    # Reference: mlp(ZA, [MLP, MLP], LATENT, act=SimNorm) decomposes to
+    #   NL(ZA, MLP)  →  NL(MLP, MLP)  →  NL(MLP, LATENT, act=SimNorm)
+    # where the final NormedLinear with SimNorm-activation =
+    #   Linear(MLP, LATENT) → LayerNorm(LATENT) → SimNorm.
+    # For HalfCheetah model_size=5 (MLP=LATENT=512) the middle-layer width is
+    # the same; for larger model sizes (19M+: mlp_dim=1024, latent_dim=768)
+    # the bottleneck happens in the final layer instead of middle.
     comptime DynModel = Sequential[
         NormedLinear[Self.ZA_DIM, Self.MLP_DIM],
-        NormedLinear[Self.MLP_DIM, Self.LATENT_DIM],
-        Linear[Self.LATENT_DIM, Self.LATENT_DIM],
+        NormedLinear[Self.MLP_DIM, Self.MLP_DIM],
+        Linear[Self.MLP_DIM, Self.LATENT_DIM],
         LayerNorm[Self.LATENT_DIM],
         SimNorm[Self.LATENT_DIM, Self.SIMPLEX_DIM],
     ]
