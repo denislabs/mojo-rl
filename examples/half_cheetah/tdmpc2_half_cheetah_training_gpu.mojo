@@ -193,7 +193,8 @@ def main() raises:
             + String(max(BATCH_SIZE + HORIZON + 2, BUFFER_CAPACITY // N_ENVS))
         )
         print(
-            "  Updates per step: " + String(N_ENVS)
+            "  Updates per step: "
+            + String(N_ENVS)
             + " (= N_ENVS, gives UTD=1 per transition matching reference)"
         )
         print("  Warmup steps: 5000 (random actions before training)")
@@ -242,6 +243,7 @@ def main() raises:
                 ctx,
                 num_episodes=NUM_EPISODES,
                 verbose=True,
+                use_mppi=False,
                 updates_per_step=N_ENVS,
             )
 
@@ -274,7 +276,9 @@ def main() raises:
                 "Final average reward (last 100 episodes): "
                 + String(metrics.mean_reward_last_n(100))[byte=:8]
             )
-            print("Best episode reward: " + String(metrics.max_reward())[byte=:8])
+            print(
+                "Best episode reward: " + String(metrics.max_reward())[byte=:8]
+            )
             print()
 
             var final_avg = metrics.mean_reward_last_n(100)
