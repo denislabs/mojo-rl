@@ -2949,120 +2949,109 @@ struct GenericMuZeroAgent[
             self.diag_every <= 0
             or self.train_step_count % self.diag_every == 0
         ):
-            try:
-                var diag_pred_host = (
-                    ctx.enqueue_create_host_buffer[dtype](BATCH * PRED_OUT)
-                )
-                var diag_pol_host = ctx.enqueue_create_host_buffer[dtype](
-                    BATCH * ACT
-                )
-                var diag_val_host = ctx.enqueue_create_host_buffer[dtype](
-                    BATCH * BINS
-                )
-                ctx.enqueue_copy(diag_pred_host, gpu.pred_out_buf)
-                # Slice copy of k=0 targets (first BATCH*ACT / BATCH*BINS
-                # entries of the K+1-step buffer).
-                var pol_dev_view = gpu.batch_policies_buf.create_sub_buffer[
-                    dtype
-                ](0, BATCH * ACT)
-                var val_dev_view = gpu.batch_values_buf.create_sub_buffer[
-                    dtype
-                ](0, BATCH * BINS)
-                ctx.enqueue_copy(diag_pol_host, pol_dev_view)
-                ctx.enqueue_copy(diag_val_host, val_dev_view)
-                ctx.synchronize()
+            # Copy whole K+1-step target buffers to host; the loss calc
+            # below reads only the k=0 slice (first BATCH*ACT /
+            # BATCH*BINS entries). Cheap for TTT-scale (BATCH=64,
+            # K=5 → 60KB total per diag).
+            var diag_pred_host = ctx.enqueue_create_host_buffer[dtype](
+                BATCH * PRED_OUT
+            )
+            var diag_pol_host = ctx.enqueue_create_host_buffer[dtype](
+                (K + 1) * BATCH * ACT
+            )
+            var diag_val_host = ctx.enqueue_create_host_buffer[dtype](
+                (K + 1) * BATCH * BINS
+            )
+            ctx.enqueue_copy(diag_pred_host, gpu.pred_out_buf)
+            ctx.enqueue_copy(diag_pol_host, gpu.batch_policies_buf)
+            ctx.enqueue_copy(diag_val_host, gpu.batch_values_buf)
+            ctx.synchronize()
 
-                var step = self.train_step_count
-                var sum_policy_ce: Float64 = 0.0
-                var sum_policy_entropy: Float64 = 0.0
-                var sum_value_ce: Float64 = 0.0
-                var sum_value_mean: Float64 = 0.0
+            var step = self.train_step_count
+            var sum_policy_ce: Float64 = 0.0
+            var sum_policy_entropy: Float64 = 0.0
+            var sum_value_ce: Float64 = 0.0
+            var sum_value_mean: Float64 = 0.0
 
-                for b in range(BATCH):
-                    var pred_off = b * PRED_OUT
-                    # Policy softmax + CE + entropy (numerically stable)
-                    var max_p: Float64 = -1e18
-                    for a in range(ACT):
-                        var l = Float64(diag_pred_host[pred_off + a])
-                        if l > max_p:
-                            max_p = l
-                    var sum_e_p: Float64 = 0.0
-                    for a in range(ACT):
-                        sum_e_p += exp(
+            for b in range(BATCH):
+                var pred_off = b * PRED_OUT
+                # Policy softmax + CE + entropy (numerically stable)
+                var max_p: Float64 = -1e18
+                for a in range(ACT):
+                    var l = Float64(diag_pred_host[pred_off + a])
+                    if l > max_p:
+                        max_p = l
+                var sum_e_p: Float64 = 0.0
+                for a in range(ACT):
+                    sum_e_p += exp(
+                        Float64(diag_pred_host[pred_off + a]) - max_p
+                    )
+                for a in range(ACT):
+                    var prob = (
+                        exp(
                             Float64(diag_pred_host[pred_off + a]) - max_p
                         )
-                    for a in range(ACT):
-                        var prob = (
-                            exp(
-                                Float64(diag_pred_host[pred_off + a]) - max_p
-                            )
-                            / sum_e_p
-                        )
-                        var tgt = Float64(diag_pol_host[b * ACT + a])
-                        if tgt > 1e-8 and prob > 1e-8:
-                            sum_policy_ce -= tgt * log(prob)
-                        if prob > 1e-8:
-                            sum_policy_entropy -= prob * log(prob)
+                        / sum_e_p
+                    )
+                    var tgt = Float64(diag_pol_host[b * ACT + a])
+                    if tgt > 1e-8 and prob > 1e-8:
+                        sum_policy_ce -= tgt * log(prob)
+                    if prob > 1e-8:
+                        sum_policy_entropy -= prob * log(prob)
 
-                    # Value softmax + CE (categorical / two-hot encoded)
-                    var val_off = pred_off + ACT
-                    var max_v: Float64 = -1e18
-                    for i in range(BINS):
-                        var l = Float64(diag_pred_host[val_off + i])
-                        if l > max_v:
-                            max_v = l
-                    var sum_e_v: Float64 = 0.0
-                    for i in range(BINS):
-                        sum_e_v += exp(
-                            Float64(diag_pred_host[val_off + i]) - max_v
-                        )
-                    # Decode predicted scalar value from softmax (bin
-                    # centers from v_min..v_max under categorical encoding).
-                    var v_step = (
-                        self.v_max - self.v_min
-                    ) / Float64(BINS - 1) if BINS > 1 else 1.0
-                    var pred_val_scalar: Float64 = 0.0
-                    for i in range(BINS):
-                        var prob_v = (
-                            exp(
-                                Float64(diag_pred_host[val_off + i]) - max_v
-                            )
-                            / sum_e_v
-                        )
-                        var tgt_v = Float64(diag_val_host[b * BINS + i])
-                        if tgt_v > 1e-8 and prob_v > 1e-8:
-                            sum_value_ce -= tgt_v * log(prob_v)
-                        var bin_center = self.v_min + Float64(i) * v_step
-                        pred_val_scalar += prob_v * bin_center
-                    sum_value_mean += pred_val_scalar
+                # Value softmax + CE (categorical / two-hot encoded)
+                var val_off = pred_off + ACT
+                var max_v: Float64 = -1e18
+                for i in range(BINS):
+                    var l = Float64(diag_pred_host[val_off + i])
+                    if l > max_v:
+                        max_v = l
+                var sum_e_v: Float64 = 0.0
+                for i in range(BINS):
+                    sum_e_v += exp(
+                        Float64(diag_pred_host[val_off + i]) - max_v
+                    )
+                # Decode predicted scalar value from softmax (bin
+                # centers from v_min..v_max under categorical encoding).
+                var v_step = (
+                    self.v_max - self.v_min
+                ) / Float64(BINS - 1) if BINS > 1 else 1.0
+                var pred_val_scalar: Float64 = 0.0
+                for i in range(BINS):
+                    var prob_v = (
+                        exp(Float64(diag_pred_host[val_off + i]) - max_v)
+                        / sum_e_v
+                    )
+                    var tgt_v = Float64(diag_val_host[b * BINS + i])
+                    if tgt_v > 1e-8 and prob_v > 1e-8:
+                        sum_value_ce -= tgt_v * log(prob_v)
+                    var bin_center = self.v_min + Float64(i) * v_step
+                    pred_val_scalar += prob_v * bin_center
+                sum_value_mean += pred_val_scalar
 
-                var n = Float64(BATCH)
-                var policy_ce = sum_policy_ce / n
-                var policy_entropy = sum_policy_entropy / n
-                var value_ce = sum_value_ce / n
-                var value_mean = sum_value_mean / n
+            var n = Float64(BATCH)
+            var policy_ce = sum_policy_ce / n
+            var policy_entropy = sum_policy_entropy / n
+            var value_ce = sum_value_ce / n
+            var value_mean = sum_value_mean / n
 
-                # Clamp NaN/inf so logger doesn't silently drop
-                if policy_ce != policy_ce or policy_ce > 1e10:
-                    policy_ce = 0.0
-                if value_ce != value_ce or value_ce > 1e10:
-                    value_ce = 0.0
-                if value_mean != value_mean:
-                    value_mean = 0.0
+            # Clamp NaN/inf so logger doesn't silently drop
+            if policy_ce != policy_ce or policy_ce > 1e10:
+                policy_ce = 0.0
+            if value_ce != value_ce or value_ce > 1e10:
+                value_ce = 0.0
+            if value_mean != value_mean:
+                value_mean = 0.0
 
-                self.logger[].log_scalar("loss/policy_ce", policy_ce, step)
-                self.logger[].log_scalar(
-                    "loss/policy_entropy", policy_entropy, step
-                )
-                self.logger[].log_scalar("loss/value_ce", value_ce, step)
-                self.logger[].log_scalar(
-                    "loss/value_mean", value_mean, step
-                )
-                self.logger[].log_scalar(
-                    "loss/total", policy_ce + value_ce, step
-                )
-            except e:
-                pass
+            self.logger[].log_scalar("loss/policy_ce", policy_ce, step)
+            self.logger[].log_scalar(
+                "loss/policy_entropy", policy_entropy, step
+            )
+            self.logger[].log_scalar("loss/value_ce", value_ce, step)
+            self.logger[].log_scalar("loss/value_mean", value_mean, step)
+            self.logger[].log_scalar(
+                "loss/total", policy_ce + value_ce, step
+            )
 
         # ── Step 4.5: Global-L2 gradient clipping ────────────────────
         # Mirrors the CPU `_clip_gradients` exactly: compute joint L2
