@@ -24,6 +24,7 @@ from mojo_rl.nn.model import Linear, LinearMish, Sequential, Parallel
 from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.initializer import Kaiming
 from mojo_rl.nn.training import Network, NetworkState, GPUNetworkState
+from mojo_rl.nn.training.scheduler import OneCycleSchedule
 from mojo_rl.deep_agents.core.utils import (
     print_progress_bar,
     clear_progress_bar,
@@ -4666,6 +4667,7 @@ struct GenericMuZeroAgent[
             Self.L, MutAnyOrigin
         ](),
         diag_every: Int = 0,
+        use_one_cycle: Bool = False,
     ) raises -> TrainingMetrics:
         """Train MuZero via GPU self-play with batch-then-train loop.
 
@@ -5440,7 +5442,22 @@ struct GenericMuZeroAgent[
                 # (see muzero.mojo:1820-1900 / "Step 1.5"). This matches
                 # muzero-general's use_last_model_value behavior.
                 _ = reanalyze_per_iter  # reserved for future async-style reanalyze
-                for _ in range(grad_steps):
+                for s_idx in range(grad_steps):
+                    if use_one_cycle:
+                        # Per-iter 1cycle: ramp up to base LR by 30% of
+                        # iter, cosine-anneal to 1% by end. Applied to
+                        # all 3 networks so rep/dyn/pred stay in lock
+                        # step. Mirrors AlphaZero's pattern at
+                        # alphazero.mojo:4404-4408. Mitigates the late-
+                        # iter gradient-spike collapse we observed at
+                        # iter ~63 (constant LR=1e-3 was too aggressive
+                        # near the perfect-play plateau).
+                        var sc = OneCycleSchedule[].lr_scale_at(
+                            s_idx, grad_steps
+                        )
+                        gpu.representation.set_lr_scale(sc, ctx)
+                        gpu.dynamics.set_lr_scale(sc, ctx)
+                        gpu.prediction.set_lr_scale(sc, ctx)
                     _ = self.update_gpu(
                         ctx, gpu, use_reanalyze=use_reanalyze
                     )

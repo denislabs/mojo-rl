@@ -83,6 +83,11 @@ def main() raises:
         # steps/iter so this gives ~6 loss samples per iter — enough to
         # spot trends without drowning the logger.
         diag_every=500,
+        # Per-iter 1cycle LR schedule (Smith): ramp up to base LR over
+        # the first 30% of grad steps, cosine-anneal to 1% by end.
+        # Mirrors AlphaZero. Helps prevent the late-iter weight-collapse
+        # we saw at iter ~63 with constant LR=1e-3.
+        use_one_cycle=True,
     )
 
     logger.close()
