@@ -42,6 +42,10 @@ from mojo_rl.deep_agents.core.replay.sequence_replay_buffer import (
 )
 from mojo_rl.deep_agents.efficient_zero_v2.configs import EZV2DiscreteConfig
 from mojo_rl.deep_agents.efficient_zero_v2.networks import RewardPrefixHeadMLP
+from mojo_rl.deep_agents.efficient_zero_v2.gpu_mcts import (
+    EZV2GPUMCTSState,
+    run_gumbel_search_gpu,
+)
 
 
 struct EZV2DiscreteCPUState[
@@ -1315,4 +1319,75 @@ struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
 
         self.reward_prefix_mlp_gpu.download_to(
             cpu.reward_prefix_mlp, ctx
+        )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # GPU Gumbel-search wrapper
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # Thin pass-through to `run_gumbel_search_gpu`. Lives here (and not at
+    # the call site) because Mojo nightly's type-checker fails to unify the
+    # alias form `EZV2DiscreteMLPConfig[…].RepModel` (used in `gpu.representation`)
+    # with the literal `Sequential[AutoFused[…], …]` form that an external
+    # type-parameter binding `Config.RepModel` resolves to. Inside this
+    # method, both `Self.Config.RepModel` and `self.representation`'s field
+    # type spell the same alias, so unification succeeds.
+
+    def mcts_search[
+        N_ENVS: Int,
+        NODES: Int,
+        MAX_K: Int,
+        SIMS: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut mcts_state: EZV2GPUMCTSState[
+            N_ENVS, NODES, Self.ACT, Self.LATENT, Self.BINS, MAX_K
+        ],
+        obs_buf: DeviceBuffer[dtype],
+        workspace_buf: DeviceBuffer[dtype],
+        v_min: Float64,
+        v_max: Float64,
+        gamma: Float64 = 0.997,
+        rng_seed: UInt32 = UInt32(0),
+        apply_legal: Bool = False,
+        k_actual: Int = MAX_K,
+        c_visit: Float64 = 50.0,
+        c_scale: Float64 = 0.1,
+    ) raises:
+        """Drive `run_gumbel_search_gpu` over the on-device networks. After
+        return, `mcts_state.policies_out` holds the improved policy
+        distribution and `mcts_state.visit_count` / `total_value` at the
+        root nodes can be downloaded for SVE.
+        """
+        run_gumbel_search_gpu[
+            N_ENVS,
+            NODES,
+            Self.ACT,
+            Self.LATENT,
+            Self.BINS,
+            MAX_K,
+            SIMS,
+            Self.Config.RepModel,
+            Self.Config.DynModel,
+            Self.Config.PredModel,
+            Self.Config.OptType,
+            Self.Config.OptType,
+            Self.Config.OptType,
+        ](
+            ctx,
+            mcts_state,
+            obs_buf,
+            self.representation,
+            self.dynamics,
+            self.prediction,
+            workspace_buf,
+            v_min=v_min,
+            v_max=v_max,
+            apply_legal=apply_legal,
+            k_actual=k_actual,
+            c_visit=c_visit,
+            c_scale=c_scale,
+            gamma=gamma,
+            rng_seed=rng_seed,
         )
