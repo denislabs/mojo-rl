@@ -21,6 +21,7 @@ struct OpID:
     comptime ELEM_ADD = OpID(3)
     comptime ELEM_MUL = OpID(4)
     comptime SCALE = OpID(5)
+    comptime ELEM_DIV = OpID(6)  # element-wise a/(b+eps), two-input
 
     # Activations (10-19)
     comptime RELU = OpID(10)
@@ -31,6 +32,7 @@ struct OpID:
     comptime SWISH = OpID(15)
     comptime SYMLOG = OpID(16)
     comptime GELU = OpID(17)
+    comptime LOG_STD_BOUND = OpID(18)  # smooth tanh-based log_std clamp
 
     # Normalization (20-29)
     comptime LAYER_NORM = OpID(20)

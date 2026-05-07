@@ -610,6 +610,9 @@ struct TDMPC2GPUState[
     var grad_logits_buf: DeviceBuffer[dtype]  # [B_BINS]
     var grad_term_prob_buf: DeviceBuffer[dtype]  # [BATCH]
     var grad_pi_out_buf: DeviceBuffer[dtype]  # [BATCH * 2 * ACT]
+    # Diagnostic-only: holds entropy-only contribution at policy-update t=0
+    # for the diag step (||grad_Q|| / ||grad_ent|| logging).
+    var grad_pi_out_ent_buf: DeviceBuffer[dtype]  # [BATCH * 2 * ACT]
     var dummy_grad_buf: DeviceBuffer[dtype]  # [max(B_ZA, B_OBS)]
 
     # ── TD targets + reward targets + bins ──
@@ -679,6 +682,14 @@ struct TDMPC2GPUState[
     var diag_z_enc_next_host: HostBuffer[
         dtype
     ]  # [BATCH * LATENT] encoder(obs_1) (stop-grad target) for consistency-loss diag
+    # Stage-3 diagnostic: download grad_pi_out (Q+ent) and grad_pi_out_ent at
+    # policy-update t=0 to compute ||Q_grad|| / ||ent_grad|| ratio.
+    var diag_grad_pi_full_host: HostBuffer[
+        dtype
+    ]  # [BATCH * POL_OUT] = full grad_pi_out at t=0 (Q + entropy)
+    var diag_grad_pi_ent_host: HostBuffer[
+        dtype
+    ]  # [BATCH * POL_OUT] = entropy-only contribution at t=0
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Allocate all GPU and host buffers."""
@@ -814,6 +825,9 @@ struct TDMPC2GPUState[
         self.grad_pi_out_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * Self.POL_OUT
         )
+        self.grad_pi_out_ent_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * Self.POL_OUT
+        )
         self.dummy_grad_buf = ctx.enqueue_create_buffer[dtype](Self.DUMMY_SIZE)
 
         # ── TD targets + reward targets + bins ──
@@ -906,6 +920,12 @@ struct TDMPC2GPUState[
         )
         self.diag_z_enc_next_host = ctx.enqueue_create_host_buffer[dtype](
             Self.B_LATENT
+        )
+        self.diag_grad_pi_full_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.POL_OUT
+        )
+        self.diag_grad_pi_ent_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * Self.POL_OUT
         )
 
 

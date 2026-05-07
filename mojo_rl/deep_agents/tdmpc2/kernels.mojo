@@ -943,6 +943,92 @@ def tdmpc2_action_tanh_chain_kernel[
         )
 
 
+@always_inline
+def tdmpc2_compute_entropy_grad_kernel[
+    dtype: DType,
+    BATCH_SIZE: Int,
+    ACTION_DIM: Int,
+    POL_OUT: Int = ACTION_DIM * 2,
+](
+    pi_out: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
+    ],
+    grad_pi_out_ent: LayoutTensor[
+        dtype, Layout.row_major(BATCH_SIZE, POL_OUT), MutAnyOrigin
+    ],
+    entropy_coef: Scalar[dtype],
+    rng_seed: Scalar[DType.uint32],
+) where dtype.is_floating_point():
+    """Compute *only* the entropy contribution to grad_pi_out (no Q chain).
+
+    Diagnostic-only kernel that recomputes the entropy gradient terms
+    contributed by `tdmpc2_action_tanh_chain_kernel` at qi_iter==0, *without*
+    the Q-chain part. Output is written (not accumulated) to grad_pi_out_ent.
+
+    Used at diagnostic steps to measure ||grad_ent|| separately from
+    ||grad_full|| so the caller can compute ||grad_Q|| = ||grad_full − grad_ent||
+    and the ratio ||grad_Q|| / ||grad_ent||. If the ratio is < 1, the entropy
+    bias is dominating Adam — log_std runs to its bound.
+
+    Must use the same `rng_seed` that was used in the forward sample kernel
+    so eps reconstruction is identical.
+
+    Args:
+        pi_out: Policy output [BATCH, POL_OUT] (mean | log_std_raw).
+        grad_pi_out_ent: Output buffer [BATCH, POL_OUT] (overwritten).
+        entropy_coef: Same scalar passed to action_tanh_chain at qi_iter==0
+                      (= entropy_coef_scalar * pol_rho_t at the calling t).
+        rng_seed: Same seed used in the forward sample kernel.
+    """
+    comptime LOG_STD_MIN: Scalar[dtype] = -10.0
+    comptime LOG_STD_DIF: Scalar[dtype] = 12.0
+
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH_SIZE:
+        return
+
+    var ent_scale = entropy_coef / Scalar[dtype](BATCH_SIZE)
+
+    for j in range(ACTION_DIM):
+        # Reconstruct eps using same RNG seed as forward
+        var philox = PhiloxRandom(
+            seed=UInt64(rng_seed) + UInt64(i) * UInt64(ACTION_DIM) + UInt64(j),
+            offset=0,
+        )
+        var rand_vals = philox.step_uniform()
+        var u1 = Scalar[DType.float32](rand_vals[0]) + 1e-8
+        var u2 = Scalar[DType.float32](rand_vals[1])
+        var mag = sqrt(Float32(-2.0) * log(u1))
+        var eps = Scalar[dtype](
+            mag * cos(u2 * Scalar[DType.float32](6.283185307179586))
+        )
+
+        # Reconstruct log_std (smooth bound) and u
+        var mean_raw = Scalar[dtype](pi_out[i, j][0])
+        var x = Scalar[dtype](pi_out[i, ACTION_DIM + j][0])
+        var tanh_x = Scalar[dtype](tanh(Float32(x)))
+        var log_std = LOG_STD_MIN + Scalar[dtype](0.5) * LOG_STD_DIF * (
+            tanh_x + Scalar[dtype](1.0)
+        )
+        var std = exp(log_std)
+        var u = mean_raw + std * eps
+        var t = Scalar[dtype](tanh(Float32(u)))
+        var log_std_deriv = (
+            Scalar[dtype](0.5)
+            * LOG_STD_DIF
+            * (Scalar[dtype](1.0) - tanh_x * tanh_x)
+        )
+
+        # Entropy contribution on mean (squashed): + ent_scale * 2 * tanh(u)
+        grad_pi_out_ent[i, j] = ent_scale * Scalar[dtype](2.0) * t
+
+        # Entropy contribution on log_std raw: (-1 + 2*tanh(u)*std*eps) * ent_scale * log_std_deriv
+        var grad_log_std = (
+            -ent_scale + ent_scale * Scalar[dtype](2.0) * t * std * eps
+        )
+        grad_pi_out_ent[i, ACTION_DIM + j] = grad_log_std * log_std_deriv
+
+
 # Legacy kernel kept for compatibility but replaced by proper DPG chain above
 @always_inline
 def tdmpc2_policy_grad_kernel[

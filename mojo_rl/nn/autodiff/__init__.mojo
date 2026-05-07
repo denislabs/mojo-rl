@@ -26,6 +26,9 @@ from .primitives import (
     AvgPool2D,
     ScaledDotProductAttention,
     SymlogOp,
+    LogStdBoundOp,
+    DivideOp,
+    ElemMulTwoInputOp,
 )
 from .fused import (
     FusedMatMulBias,

@@ -88,6 +88,7 @@ from .kernels import (
     tdmpc2_policy_grad_kernel,
     tdmpc2_q_decode_backward_kernel,
     tdmpc2_action_tanh_chain_kernel,
+    tdmpc2_compute_entropy_grad_kernel,
     tdmpc2_apply_tanh_kernel,
     tdmpc2_q_min_reduce_kernel,
     tdmpc2_zero_kernel,
@@ -3587,6 +3588,55 @@ struct TDMPC2Agent[
                             block_dim=(TPB,),
                         )
 
+                    # ── Stage-3 diag: snapshot grad_pi_out (Q+ent) and the
+                    # entropy-only contribution at t=0 if this is a diag step.
+                    # See `tdmpc2_compute_entropy_grad_kernel` and
+                    # `docs/TDMPC2_AUDIT.md` Stage 4 plan: log
+                    # ||grad_Q|| / ||grad_ent|| ratio. The kernel +
+                    # enqueue_copy here are async on the same GPU stream as
+                    # the just-completed action_tanh_chain, so the data is
+                    # captured BEFORE next-iter's `enqueue_memset(grad_pi_out, 0)`.
+                    # Host data becomes valid after the existing diag-block
+                    # ctx.synchronize() below.
+                    if (
+                        t == 0
+                        and self.logger
+                        and self.diag_every > 0
+                        and (self.train_step_count + 1) % self.diag_every == 0
+                    ):
+                        # Entropy-only contribution → grad_pi_out_ent_buf (write, not accumulate).
+                        # Pass the same `entropy_coef_scalar * pol_rho_t` (= ent at t=0).
+                        var diag_ent = entropy_coef_scalar * pol_rho_t
+                        var grad_pi_ent_tensor = LayoutTensor[
+                            dtype,
+                            Layout.row_major(Self.BATCH, Self.POL_OUT),
+                            MutAnyOrigin,
+                        ](gs.grad_pi_out_ent_buf.unsafe_ptr())
+                        ctx.enqueue_function[
+                            tdmpc2_compute_entropy_grad_kernel[
+                                dtype, Self.BATCH, Self.ACT
+                            ],
+                            tdmpc2_compute_entropy_grad_kernel[
+                                dtype, Self.BATCH, Self.ACT
+                            ],
+                        ](
+                            pi_out_tensor,
+                            grad_pi_ent_tensor,
+                            diag_ent,
+                            pi_reparam_seed,
+                            grid_dim=(Self.BATCH_BLOCKS,),
+                            block_dim=(TPB,),
+                        )
+                        # Snapshot full grad (= Q + ent) and ent-only via
+                        # async enqueue_copy. Stream-ordered so they capture
+                        # the post-action_tanh_chain values, not later overwrites.
+                        ctx.enqueue_copy(
+                            gs.diag_grad_pi_full_host, gs.grad_pi_out_buf
+                        )
+                        ctx.enqueue_copy(
+                            gs.diag_grad_pi_ent_host, gs.grad_pi_out_ent_buf
+                        )
+
                     # Policy backward → accumulate pol_grads
                     Self.WM.PolicyNet.backward_gpu[Self.BATCH](
                         ctx,
@@ -3929,6 +3979,67 @@ struct TDMPC2Agent[
                         mean_abs_action /= Float64(BS * Self.ACT)
                         mean_log_std /= Float64(BS * Self.ACT)
 
+                        # ── Stage-3 diag: per-component grad-magnitude split ──
+                        # `diag_grad_pi_full_host` holds (Q + entropy) grad on
+                        # pi_out at policy-update t=0; `diag_grad_pi_ent_host`
+                        # holds the entropy-only contribution from the same
+                        # forward sample (recomputed by
+                        # tdmpc2_compute_entropy_grad_kernel). Q = full - ent.
+                        # Layout per row: [mean(0..ACT) | log_std_raw(ACT..2·ACT)].
+                        var sumsq_full_mean: Float64 = 0.0
+                        var sumsq_ent_mean: Float64 = 0.0
+                        var sumsq_q_mean: Float64 = 0.0
+                        var sumsq_full_lstd: Float64 = 0.0
+                        var sumsq_ent_lstd: Float64 = 0.0
+                        var sumsq_q_lstd: Float64 = 0.0
+                        for b in range(BS):
+                            for j in range(Self.ACT):
+                                # Mean half
+                                var f_m = Float64(
+                                    gs.diag_grad_pi_full_host[
+                                        b * Self.POL_OUT + j
+                                    ]
+                                )
+                                var e_m = Float64(
+                                    gs.diag_grad_pi_ent_host[
+                                        b * Self.POL_OUT + j
+                                    ]
+                                )
+                                var q_m = f_m - e_m
+                                sumsq_full_mean += f_m * f_m
+                                sumsq_ent_mean += e_m * e_m
+                                sumsq_q_mean += q_m * q_m
+                                # log_std raw half
+                                var f_l = Float64(
+                                    gs.diag_grad_pi_full_host[
+                                        b * Self.POL_OUT + Self.ACT + j
+                                    ]
+                                )
+                                var e_l = Float64(
+                                    gs.diag_grad_pi_ent_host[
+                                        b * Self.POL_OUT + Self.ACT + j
+                                    ]
+                                )
+                                var q_l = f_l - e_l
+                                sumsq_full_lstd += f_l * f_l
+                                sumsq_ent_lstd += e_l * e_l
+                                sumsq_q_lstd += q_l * q_l
+
+                        var l2_full_mean = sqrt(sumsq_full_mean)
+                        var l2_ent_mean = sqrt(sumsq_ent_mean)
+                        var l2_q_mean = sqrt(sumsq_q_mean)
+                        var l2_full_lstd = sqrt(sumsq_full_lstd)
+                        var l2_ent_lstd = sqrt(sumsq_ent_lstd)
+                        var l2_q_lstd = sqrt(sumsq_q_lstd)
+                        # Ratio: how strong is Q's pull vs entropy's pull?
+                        # If < 1, entropy dominates Adam's effective step on
+                        # that direction → log_std runs to its bound. Eps
+                        # guards against zero division for the very rare case
+                        # where ent is exactly zero (shouldn't happen with
+                        # entropy_coef > 0).
+                        var ratio_mean = l2_q_mean / (l2_ent_mean + 1e-12)
+                        var ratio_lstd = l2_q_lstd / (l2_ent_lstd + 1e-12)
+
                         # value_loss = soft CE between Q logits and TD target
                         # at horizon step 0; mean_target = symexp-decoded
                         # expected value of the two-hot target.
@@ -4108,6 +4219,32 @@ struct TDMPC2Agent[
                         )
                         self.logger[].log_scalar(
                             "std_z_enc_next", std_z_enc_next, step
+                        )
+                        # Stage-3 grad-magnitude split (Q vs entropy on pi_out
+                        # at policy-update t=0). See `tdmpc2_compute_entropy_grad_kernel`.
+                        self.logger[].log_scalar(
+                            "pi_grad_full_mean_l2", l2_full_mean, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_ent_mean_l2", l2_ent_mean, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_q_mean_l2", l2_q_mean, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_q_over_ent_mean", ratio_mean, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_full_lstd_l2", l2_full_lstd, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_ent_lstd_l2", l2_ent_lstd, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_q_lstd_l2", l2_q_lstd, step
+                        )
+                        self.logger[].log_scalar(
+                            "pi_grad_q_over_ent_lstd", ratio_lstd, step
                         )
                     except:
                         pass
