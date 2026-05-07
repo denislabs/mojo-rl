@@ -67,7 +67,9 @@ struct EZV2TrainStats(Movable):
         self.num_gpu_syncs = 0
         self.num_buffer_uploads = 0
         self.num_episodes = 0
-        self.best_episode_return = Float64(0.0)
+        # Init very-negative so envs with non-positive rewards (e.g.
+        # Acrobot at −1/step) update `best` on the first finished episode.
+        self.best_episode_return = Float64(-1.0e308)
         self.any_nan_loss = False
         self.ep_returns = List[Float64]()
         self.last_L_R = 0.0
@@ -128,6 +130,7 @@ def run_ezv2_train_gpu[
     reanalyze_interval: Int = 200,
     reanalyze_samples: Int = 32,
     reanalyze_warmup: Int = 1000,
+    warmup_random_steps: Int = 0,
     log_every: Int = 2_000,
     rng_seed_base: UInt64 = UInt64(2026),
     verbose: Bool = True,
@@ -154,6 +157,11 @@ def run_ezv2_train_gpu[
         reanalyze_interval: Reanalyze every Nth train post-warmup.
         reanalyze_samples: How many windows per reanalyze call.
         reanalyze_warmup: Skip reanalyze until this many train calls.
+        warmup_random_steps: Skip GPU MCTS for the first N env-step
+            transitions and pick uniform-random actions instead. The
+            train_step is also skipped during this window. Matches the
+            paper's `start_transitions` for sparse-reward envs (e.g.
+            Acrobot at 2000). Set to 0 to start MCTS from step 0.
         log_every: Print a log line every Nth env-step.
         rng_seed_base: Initial seed for env reset RNG.
         verbose: Print progress / config / summary.
@@ -274,83 +282,111 @@ def run_ezv2_train_gpu[
     var t0 = perf_counter_ns()
 
     while stats.total_env_steps < NUM_ENV_STEPS:
-        # ── 1. GPU MCTS — batched over N_ENVS ────────────────────────────
-        gpu.mcts_search[N_ENVS, NODES, MAX_K, SIMS](
-            ctx,
-            mcts_gpu,
-            obs_buf,
-            mcts_workspace,
-            v_min=agent.v_min,
-            v_max=agent.v_max,
-            gamma=agent.gamma,
-            rng_seed=mcts_seed,
-            apply_legal=False,
-            k_actual=MAX_K,
-        )
-        mcts_seed += UInt32(1)
+        var in_warmup = stats.total_env_steps < warmup_random_steps
 
-        ctx.enqueue_copy(host_policies.unsafe_ptr(), mcts_gpu.policies_out)
-        ctx.enqueue_copy(host_visits.unsafe_ptr(), mcts_gpu.visit_count)
-        ctx.enqueue_copy(
-            host_total_value.unsafe_ptr(), mcts_gpu.total_value
-        )
-        ctx.synchronize()
-
-        # ── 2. Per-env action sampling + policy/value extract ──────────
         var actions_per_env = List[Int]()
         var policies_per_env = List[InlineArray[Float64, ACT]]()
         var root_value_per_env = List[Float64]()
-        for e in range(N_ENVS):
-            var root_off = e * NODES * ACT
-            var sum_value = Float64(0.0)
-            var sum_visits = 0
-            for a in range(ACT):
-                sum_value += Float64(host_total_value[root_off + a])
-                sum_visits += Int(Float64(host_visits[root_off + a]))
-            root_value_per_env.append(compute_sve(sum_value, sum_visits))
 
-            var policy = InlineArray[Float64, ACT](uninitialized=True)
-            var pol_off = e * ACT
-            for a in range(ACT):
-                policy[a] = Float64(host_policies[pol_off + a])
-            policies_per_env.append(policy)
-
-            var action: Int
-            if agent.temperature < 0.01:
-                action = 0
-                var best = policy[0]
-                for a in range(1, ACT):
-                    if policy[a] > best:
-                        best = policy[a]
-                        action = a
-            else:
-                var temp_policy = InlineArray[Float64, ACT](
-                    uninitialized=True
+        if in_warmup:
+            # Random-action warmup (paper `start_transitions`). Uniform
+            # 1/ACT policy target, root_value=0 — same as the hybrid
+            # multi-env demo. No GPU MCTS launches at all during this
+            # window, so the buffer fills cheaply with random rollouts.
+            for e in range(N_ENVS):
+                var rand_a = Int(
+                    random_float64() * Float64(ACT)
                 )
-                var inv_t = 1.0 / agent.temperature
-                var sum_p = Float64(0.0)
+                if rand_a >= ACT:
+                    rand_a = ACT - 1
+                var policy = InlineArray[Float64, ACT](uninitialized=True)
                 for a in range(ACT):
-                    if policy[a] > 0.0:
-                        temp_policy[a] = exp(inv_t * log(policy[a]))
-                    else:
-                        temp_policy[a] = Float64(0.0)
-                    sum_p += temp_policy[a]
-                if sum_p > 0.0:
-                    for a in range(ACT):
-                        temp_policy[a] /= sum_p
+                    policy[a] = 1.0 / Float64(ACT)
+                policies_per_env.append(policy)
+                root_value_per_env.append(Float64(0.0))
+                actions_per_env.append(rand_a)
+                host_action[e] = Scalar[dtype](Float64(rand_a))
+        else:
+            # ── 1. GPU MCTS — batched over N_ENVS ──────────────────────
+            gpu.mcts_search[N_ENVS, NODES, MAX_K, SIMS](
+                ctx,
+                mcts_gpu,
+                obs_buf,
+                mcts_workspace,
+                v_min=agent.v_min,
+                v_max=agent.v_max,
+                gamma=agent.gamma,
+                rng_seed=mcts_seed,
+                apply_legal=False,
+                k_actual=MAX_K,
+            )
+            mcts_seed += UInt32(1)
+
+            ctx.enqueue_copy(
+                host_policies.unsafe_ptr(), mcts_gpu.policies_out
+            )
+            ctx.enqueue_copy(
+                host_visits.unsafe_ptr(), mcts_gpu.visit_count
+            )
+            ctx.enqueue_copy(
+                host_total_value.unsafe_ptr(), mcts_gpu.total_value
+            )
+            ctx.synchronize()
+
+            # ── 2. Per-env action sampling + policy/value extract ─────
+            for e in range(N_ENVS):
+                var root_off = e * NODES * ACT
+                var sum_value = Float64(0.0)
+                var sum_visits = 0
+                for a in range(ACT):
+                    sum_value += Float64(host_total_value[root_off + a])
+                    sum_visits += Int(Float64(host_visits[root_off + a]))
+                root_value_per_env.append(
+                    compute_sve(sum_value, sum_visits)
+                )
+
+                var policy = InlineArray[Float64, ACT](uninitialized=True)
+                var pol_off = e * ACT
+                for a in range(ACT):
+                    policy[a] = Float64(host_policies[pol_off + a])
+                policies_per_env.append(policy)
+
+                var action: Int
+                if agent.temperature < 0.01:
+                    action = 0
+                    var best = policy[0]
+                    for a in range(1, ACT):
+                        if policy[a] > best:
+                            best = policy[a]
+                            action = a
                 else:
+                    var temp_policy = InlineArray[Float64, ACT](
+                        uninitialized=True
+                    )
+                    var inv_t = 1.0 / agent.temperature
+                    var sum_p = Float64(0.0)
                     for a in range(ACT):
-                        temp_policy[a] = 1.0 / Float64(ACT)
-                var u = random_float64(0.0, 1.0)
-                var cumsum = Float64(0.0)
-                action = ACT - 1
-                for a in range(ACT):
-                    cumsum += temp_policy[a]
-                    if u <= cumsum:
-                        action = a
-                        break
-            actions_per_env.append(action)
-            host_action[e] = Scalar[dtype](Float64(action))
+                        if policy[a] > 0.0:
+                            temp_policy[a] = exp(inv_t * log(policy[a]))
+                        else:
+                            temp_policy[a] = Float64(0.0)
+                        sum_p += temp_policy[a]
+                    if sum_p > 0.0:
+                        for a in range(ACT):
+                            temp_policy[a] /= sum_p
+                    else:
+                        for a in range(ACT):
+                            temp_policy[a] = 1.0 / Float64(ACT)
+                    var u = random_float64(0.0, 1.0)
+                    var cumsum = Float64(0.0)
+                    action = ACT - 1
+                    for a in range(ACT):
+                        cumsum += temp_policy[a]
+                        if u <= cumsum:
+                            action = a
+                            break
+                actions_per_env.append(action)
+                host_action[e] = Scalar[dtype](Float64(action))
 
         ctx.enqueue_copy(actions_buf, host_action.unsafe_ptr())
 
@@ -417,6 +453,7 @@ def run_ezv2_train_gpu[
         # ── 6. GPU train step (CPU-side priority sampling for now) ─────
         if (
             agent.state.is_ready()
+            and stats.total_env_steps >= warmup_random_steps
             and (stats.total_env_steps // N_ENVS) % train_interval == 0
         ):
             var t = agent.train_step_gpu(gpu, ctx)
