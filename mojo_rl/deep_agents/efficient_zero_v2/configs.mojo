@@ -64,6 +64,10 @@ from mojo_rl.deep_agents.efficient_zero_v2.networks import (
     ProjectionMLP,
     PredictionMLP,
 )
+from mojo_rl.deep_agents.efficient_zero_v2.action_space import (
+    ActionSpace,
+    DiscreteActionSpace,
+)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -139,6 +143,15 @@ trait EZV2DiscreteConfig(MuZeroConfig):
     """K candidates sampled at the root via Gumbel-Top-k. Must be ≤
     action_dim and a power of two; the search machinery clips at runtime
     if not."""
+
+    # ── Action-space dispatch (per `docs/EZV2_MODULAR_ARCHITECTURE.md`) ──
+    comptime ActSpace: ActionSpace
+    """Carries the policy-head loss/grad kernel hook plus dimensional
+    knobs (`POLICY_OUT_DIM`, `POLICY_TARGET_DIM`, `K_ROOT`). For discrete
+    configs, set this to `DiscreteActionSpace[ACT, K_GUMBEL]` —
+    `ActSpace.K_ROOT` then mirrors `num_root_candidates`. The continuous
+    EZ-V2 variant (Phase 3) supplies `ContinuousActionSpace[...]`
+    instead, with a different `policy_loss_grad_gpu` kernel."""
 
     # ── Loss weights (paper Eq. 3 + entropy regularizer) ─────────────────
     comptime lambda_reward: Float64
@@ -313,6 +326,7 @@ struct EZV2DiscreteMLPConfig[
     ]
     comptime proj_dim: Int = Self.PROJ
     comptime num_root_candidates: Int = Self.K_GUMBEL
+    comptime ActSpace = DiscreteActionSpace[Self.ACT, Self.K_GUMBEL]
 
     comptime lambda_reward: Float64 = Self.LAMBDA_R
     comptime lambda_policy: Float64 = Self.LAMBDA_P

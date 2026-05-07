@@ -5,7 +5,7 @@ loop in `train_step_gpu` (lines ~2335-2434, ~4082-4090 of
 `efficient_zero_v2.mojo`).
 
 Reads from `EZV2GPUReplayBuffer` (Step 4's GPU-resident replay), writes
-the sampled batch directly into `EZV2DiscreteGPUState.batch_*_buf`. No
+the sampled batch directly into `EZV2GPUStateBase.batch_*_buf`. No
 host round-trip during the sample/gather phase. The priority writeback
 kernel also runs entirely on device.
 

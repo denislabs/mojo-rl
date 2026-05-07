@@ -34,5 +34,7 @@ from .configs import (
     VALUE_TARGET_SARSA,
     VALUE_TARGET_MIXED,
 )
-from .state import EZV2DiscreteCPUState, EZV2DiscreteGPUState
+from .state import EZV2DiscreteCPUState, EZV2GPUStateBase
+from .action_space import ActionSpace, DiscreteActionSpace
+from .train_step_core import ezv2_train_step_gpu_core
 from .efficient_zero_v2 import GenericEfficientZeroV2Agent

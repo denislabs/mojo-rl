@@ -24,7 +24,7 @@ from layout import Layout, LayoutTensor
 from gpu import block_dim, block_idx, thread_idx
 from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2DiscreteMLPConfig,
-    EZV2DiscreteGPUState,
+    EZV2GPUStateBase,
     GenericEfficientZeroV2Agent,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.gpu_mcts import EZV2GPUMCTSState
@@ -153,7 +153,7 @@ def main() raises:
 
     # ── Allocate GPU state (networks) + initial upload ───────────────────
     print("--- Allocating GPU state ---")
-    var gpu = EZV2DiscreteGPUState[Config](ctx)
+    var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
     ctx.synchronize()
 

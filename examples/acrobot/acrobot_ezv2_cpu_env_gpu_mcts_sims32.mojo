@@ -39,7 +39,7 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2DiscreteMLPConfig,
-    EZV2DiscreteGPUState,
+    EZV2GPUStateBase,
     GenericEfficientZeroV2Agent,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.gpu_mcts import EZV2GPUMCTSState
@@ -183,7 +183,7 @@ def main() raises:
 
     # ── Allocate GPU state + initial upload ──────────────────────────────
     print("--- Allocating GPU state ---")
-    var gpu = EZV2DiscreteGPUState[Config](ctx)
+    var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
     ctx.synchronize()
     print("    GPU state ready, initial upload complete")

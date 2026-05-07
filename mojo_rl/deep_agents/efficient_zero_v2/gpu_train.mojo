@@ -28,7 +28,7 @@ from mojo_rl.deep_agents.efficient_zero_v2.configs import EZV2DiscreteConfig
 from mojo_rl.deep_agents.efficient_zero_v2.efficient_zero_v2 import (
     GenericEfficientZeroV2Agent,
 )
-from mojo_rl.deep_agents.efficient_zero_v2.state import EZV2DiscreteGPUState
+from mojo_rl.deep_agents.efficient_zero_v2.state import EZV2GPUStateBase
 from mojo_rl.deep_agents.efficient_zero_v2.gpu_mcts import EZV2GPUMCTSState
 from mojo_rl.deep_agents.efficient_zero_v2.gpu_replay import (
     EZV2GPUReplayBuffer,
@@ -198,7 +198,7 @@ def run_ezv2_train_gpu[
         print()
 
     # ─── Allocate GPU state + initial upload ─────────────────────────────
-    var gpu = EZV2DiscreteGPUState[Config](ctx)
+    var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
     ctx.synchronize()
 

@@ -560,7 +560,7 @@ struct EZV2DiscreteCPUState[
 # can be added next to the online ones.
 
 
-struct EZV2DiscreteGPUState[Config: EZV2DiscreteConfig](Movable):
+struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     """GPU-resident state for EZ-V2 (discrete) training.
 
     Owns:

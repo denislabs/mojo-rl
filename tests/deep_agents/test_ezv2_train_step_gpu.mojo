@@ -5,7 +5,7 @@ Mirrors `test_ezv2_train_step.mojo` (CPU) but uses the new
 
   1. Roll out a small fixed dataset on CPU (search runs CPU-side; replay
      buffer + MCTS targets stay CPU-resident).
-  2. Build `EZV2DiscreteGPUState`, upload params from the agent's CPU
+  2. Build `EZV2GPUStateBase`, upload params from the agent's CPU
      state.
   3. Loop `train_step_gpu()` for a few hundred steps.
   4. Verify:
@@ -25,7 +25,7 @@ from std.random import seed
 from std.gpu.host import DeviceContext
 from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2DiscreteMLPConfig,
-    EZV2DiscreteGPUState,
+    EZV2GPUStateBase,
     GenericEfficientZeroV2Agent,
 )
 from mojo_rl.envs.cartpole import CartPoleEnv
@@ -84,7 +84,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     # ── Build GPU state + upload initial weights ────────────────────────
-    var gpu = EZV2DiscreteGPUState[Config](ctx)
+    var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
 
     # ── Roll out replay buffer with a fixed dataset ──────────────────────

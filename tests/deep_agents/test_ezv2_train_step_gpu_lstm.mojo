@@ -16,7 +16,7 @@ from std.random import seed
 from std.gpu.host import DeviceContext
 from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2DiscreteMLPConfig,
-    EZV2DiscreteGPUState,
+    EZV2GPUStateBase,
     GenericEfficientZeroV2Agent,
 )
 from mojo_rl.envs.cartpole import CartPoleEnv
@@ -77,7 +77,7 @@ def main() raises:
     var env = CartPoleEnv[DType.float32]()
     var ctx = DeviceContext()
 
-    var gpu = EZV2DiscreteGPUState[Config](ctx)
+    var gpu = EZV2GPUStateBase[Config](ctx)
     gpu.upload_from(agent.state, ctx)
 
     print()
