@@ -65,7 +65,12 @@ def main() raises:
         ctx,
         num_iters=100,
         steps_per_iter=1000,
-        train_epochs=10,
+        # train_epochs=2 (was 10): with 10 epochs, late iters did ~7800
+        # grad steps over the same replay each iter. Network overfit to
+        # current MCTS-target distribution which softens as Dirichlet
+        # root noise propagates → policy collapses to uniform. AZ-general
+        # uses 1-3 epochs for the same reason.
+        train_epochs=2,
         warmup_iters=1,
         arena_threshold=0.5,
         do_eval=True,
