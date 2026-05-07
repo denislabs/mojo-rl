@@ -157,7 +157,14 @@ def main() raises:
             reward_coef=0.1,  # Reference default
             value_coef=0.1,
             terminal_coef=1.0,
-            entropy_coef=1e-4,  # Reference default
+            # Bumped from reference default 1e-4 → 5e-4 (2026-05-07).
+            # Diagnostic logging on a 92k-step run showed Q dominating entropy
+            # by 24-49× on the mean direction — entropy regularization was
+            # swamped, policy committed to a shuffle-forward local optimum
+            # (mean_log_std ↘ -1.8, mean_abs_action ↘ 0.59, episode reward
+            # plateaued at +20 to +80 mean). 5e-4 brings Q/ent ratio back to
+            # ~5-10× while still letting Q dominate. See docs/TDMPC2_AUDIT.md.
+            entropy_coef=5e-4,
             temperature=0.5,
             action_scale=1.0,
             warmup_steps=5_000,
