@@ -373,8 +373,19 @@ def gz_init_root_kernel[
     # Per-action g_a = -log(-log(U)). Score = logits + g_a. Top-K by repeated
     # argmax with masking. Illegal actions excluded by their -1e9 logit
     # (legal mask was already folded in above).
+    # Stronger inter-call seed mixing via multiplication by the 64-bit
+    # golden ratio (matches `gpu_sampling.mojo:ezv2_sample_starts_kernel`).
+    # Philox already has good avalanche from a +1 seed delta, but adding
+    # this defends against any subtle correlation across consecutive
+    # calls (rng_seed=0,1,2,…) and against any future change to a less
+    # avalanche-y RNG. The per-env LCG offset stays for explicit env-axis
+    # decorrelation.
     var philox = PhiloxRandom(
-        seed=UInt64(rng_seed) + UInt64(e * 1664525 + 1013904223), offset=0
+        seed=(
+            UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15)
+        )
+        + UInt64(e * 1664525 + 1013904223),
+        offset=0,
     )
     # Inline buffer for the Gumbel noise + scores; ACT is comptime small.
     var noises = InlineArray[Scalar[dtype], ACT](uninitialized=True)
