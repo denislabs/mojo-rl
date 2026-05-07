@@ -26,14 +26,11 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     # Reward
     comptime FORWARD_REWARD_WEIGHT = 1.0
     comptime CTRL_COST_WEIGHT = 0.1
-    # Angle penalty (anti-flip). SAC uses 0.5 to discourage the head-running
-    # local optimum; TD-MPC2 saturates Q at very negative values when this is
-    # active because the seed-phase random policy never escapes the
-    # always-negative-reward regime → Q-pessimism collapse (see
-    # docs/TDMPC2_AUDIT.md "What's actually happening" diagnostic, 2026-05-07).
-    # Set to 0.0 to match reference dm_control HalfCheetah and let the agent
-    # bootstrap from any positive forward velocity it stumbles into. Restore
-    # to 0.5 if a SAC run is reported afterwards.
+    # Angle penalty: previously 0.5 to suppress the "running on the head"
+    # local optimum SAC was finding. After 2026-05-07, with the optimizations
+    # accumulated since then, SAC reaches a healthy gait without it, and
+    # the penalty was actively blocking TD-MPC2 (Q-pessimism collapse — see
+    # docs/TDMPC2_AUDIT.md). Set to 0.0 to match reference dm_control HalfCheetah.
     comptime ANGLE_PENALTY_WEIGHT = 0.0
 
     # Termination
