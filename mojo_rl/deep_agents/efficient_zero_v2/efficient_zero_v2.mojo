@@ -40,6 +40,12 @@ from mojo_rl.deep_agents.efficient_zero_v2.state import (
 from mojo_rl.deep_agents.efficient_zero_v2.train_step_core import (
     ezv2_train_step_gpu_core,
 )
+from mojo_rl.deep_agents.efficient_zero_v2.gpu_replay import (
+    EZV2GPUReplayBuffer,
+)
+from mojo_rl.deep_agents.efficient_zero_v2.gpu_sampling import (
+    ezv2_gpu_sample_and_gather,
+)
 from mojo_rl.deep_agents.efficient_zero_v2.mcts import GumbelMCTS
 from mojo_rl.deep_agents.efficient_zero_v2.strategies import (
     compute_sve,
@@ -2587,6 +2593,161 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 self.max_priority = new_p
 
         batch_start_idx.free()
+
+        var L_total = (
+            Self.Config.lambda_reward * L_R
+            + Self.Config.lambda_policy * L_P
+            + Self.Config.lambda_value * L_V
+            + Self.Config.lambda_consistency * L_G
+        )
+        return (L_total, L_R, L_P, L_V, L_G)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # GPU-sampling variant — replaces the host priority sampling in
+    # `train_step_gpu`'s section 1 with `ezv2_gpu_sample_and_gather`
+    # (kernels 1-4 from `gpu_sampling.mojo`). Section 10's CPU priority
+    # writeback is unchanged — still runs on host after a small download
+    # of the GPU-picked `batch_start_idx`. The kernel-5 GPU writeback
+    # (`ezv2_priority_writeback_kernel`) is intentionally **not** wired
+    # here because the CPU `state.priorities` array remains the source of
+    # truth across `_flush_episode` writes and `gpu_replay.upload_from_cpu`
+    # syncs — adding GPU-side writeback would require an extra GPU→CPU
+    # download anyway, so the host writeback is the simpler equivalent.
+    #
+    # Currently restricted to `VALUE_TARGET_MODE == VALUE_TARGET_SEARCH`.
+    # SARSA / MIXED modes still need a host-side target-net forward (see
+    # `EZV2_FULL_GPU_PLAN.md` deferred work item 5) and aren't supported
+    # here yet — the comptime assert at the top will trip if tried.
+    # ══════════════════════════════════════════════════════════════════════
+
+    def train_step_gpu_with_replay(
+        mut self,
+        mut gpu: EZV2GPUStateBase[Self.Config],
+        mut gpu_replay: EZV2GPUReplayBuffer[
+            50000, Self.Config.obs_dim, Self.Config.action_dim
+        ],
+        ctx: DeviceContext,
+        rng_seed: UInt32,
+    ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64]:
+        """GPU-sampling variant of `train_step_gpu`.
+
+        The caller owns `gpu_replay` (a `EZV2GPUReplayBuffer` synced from
+        `agent.state` at coarse intervals). This method:
+
+          1. Runs `ezv2_gpu_sample_and_gather` to pick BATCH window starts
+             via priority-weighted sampling and fill the device batch
+             buffers (`gpu.batch_*_buf`) directly — no host roundtrip.
+          2. Copies `batch_mcts_val_buf → value_target_full_buf` (SEARCH
+             mode: value target = stored MCTS root value).
+          3. Calls `ezv2_train_step_gpu_core` for the K-step BPTT.
+          4. Downloads the GPU-picked `batch_start_idx` and runs the host
+             priorities writeback against `self.state.priorities`. This
+             keeps the CPU buffer's priorities in sync with the per-sample
+             value-CE losses just computed; the next
+             `gpu_replay.upload_from_cpu` will re-mirror them.
+
+        Returns `(L_total, L_R, L_P, L_V, L_G)` like `train_step_gpu`.
+
+        Args:
+            gpu: GPU state (network params + scratch).
+            gpu_replay: GPU mirror of the replay buffer. Caller is
+                responsible for keeping it synced from `agent.state` at
+                a sensible cadence (per the existing Step 4 sync interval).
+            ctx: Device context.
+            rng_seed: Per-call RNG seed for the Philox sampler. Caller
+                should bump this each call to vary the sampled batch.
+        """
+        comptime BATCH = Self.Config.batch_size
+        comptime K = Self.Config.unroll_steps
+        comptime OBS = Self.Config.obs_dim
+        comptime ACT = Self.Config.action_dim
+        comptime CAP = 50000
+        comptime VTM = Self.Config.value_target_mode
+
+        comptime if VTM != VALUE_TARGET_SEARCH:
+            comptime assert False, (
+                "train_step_gpu_with_replay only supports"
+                " VALUE_TARGET_MODE == VALUE_TARGET_SEARCH today; SARSA"
+                " and MIXED need a GPU target-net forward (deferred work"
+                " item 5 in docs/EZV2_FULL_GPU_PLAN.md). Use"
+                " train_step_gpu for SARSA/MIXED."
+            )
+
+        if not self.state.is_ready():
+            return (
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+                Float64(0.0),
+            )
+
+        # ── Section 1: GPU priority sampling + window gather (kernels 1-4)
+        var oldest = (
+            gpu_replay.ptr - gpu_replay.size + CAP
+        ) % CAP
+        ezv2_gpu_sample_and_gather[CAP, BATCH, K, OBS, ACT](
+            ctx,
+            gpu_replay.priorities,
+            gpu_replay.dones,
+            gpu_replay.obs,
+            gpu_replay.actions,
+            gpu_replay.rewards,
+            gpu_replay.mcts_policies,
+            gpu_replay.mcts_values,
+            gpu_replay.step_at_write,
+            gpu.cum_prio_buf,
+            gpu.cand_starts_buf,
+            gpu.n_valid_buf,
+            gpu.total_prio_buf,
+            gpu.batch_start_idx_buf,
+            gpu.batch_obs_buf,
+            gpu.batch_actions_buf,
+            gpu.batch_rewards_buf,
+            gpu.batch_mcts_pol_buf,
+            gpu.batch_mcts_val_buf,
+            gpu.batch_age_buf,
+            gpu.cum_rewards_buf,
+            oldest=oldest,
+            buf_size=gpu_replay.size,
+            current_train_step=UInt32(self.train_step_count),
+            rng_seed=rng_seed,
+        )
+
+        # SEARCH mode: value target = stored MCTS root value at every
+        # window position. Just memcpy the gathered MCTS values into
+        # the value-target buffer the core consumes.
+        ctx.enqueue_copy(
+            gpu.value_target_full_buf, gpu.batch_mcts_val_buf
+        )
+
+        # ── Sections 2-9 — shared core, with section 2 (host upload)
+        # elided since the GPU sampler wrote the device buffers directly.
+        var sums = ezv2_train_step_gpu_core[
+            Self.Config, SKIP_UPLOAD=True
+        ](
+            gpu, ctx, self.v_min, self.v_max, self.max_grad_norm,
+        )
+        var L_R = sums[0]
+        var L_P = sums[1]
+        var L_V = sums[2]
+        var L_G = sums[3]
+
+        self.train_step_count += 1
+
+        # ── Section 10 (host) — download batch_start_idx + writeback ───
+        # priorities_out_host is already populated by the core's section 9
+        # download. We just need batch_start_idx on host to scatter.
+        ctx.enqueue_copy(
+            gpu.batch_start_idx_host, gpu.batch_start_idx_buf
+        )
+        ctx.synchronize()
+        for b in range(BATCH):
+            var idx = Int(gpu.batch_start_idx_host[b])
+            var new_p = Float64(gpu.priorities_out_host[b])
+            self.state.priorities[idx] = Scalar[dtype](new_p)
+            if new_p > self.max_priority:
+                self.max_priority = new_p
 
         var L_total = (
             Self.Config.lambda_reward * L_R

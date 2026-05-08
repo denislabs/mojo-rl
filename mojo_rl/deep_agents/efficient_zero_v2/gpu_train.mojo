@@ -133,6 +133,7 @@ def run_ezv2_train_gpu[
     warmup_random_steps: Int = 0,
     log_every: Int = 2_000,
     rng_seed_base: UInt64 = UInt64(2026),
+    use_gpu_sampling: Bool = False,
     verbose: Bool = True,
 ) raises -> EZV2TrainStats:
     """Drive EfficientZero V2 training fully on GPU (env + MCTS) with a
@@ -164,6 +165,19 @@ def run_ezv2_train_gpu[
             Acrobot at 2000). Set to 0 to start MCTS from step 0.
         log_every: Print a log line every Nth env-step.
         rng_seed_base: Initial seed for env reset RNG.
+        use_gpu_sampling: When `True`, the train step samples its batch
+            via `ezv2_gpu_sample_and_gather` directly from the GPU replay
+            mirror instead of the CPU host loop (legacy default). The
+            `gpu_replay` mirror is uploaded each `sync_interval`
+            train_steps as before, so the GPU sees up to that many
+            train_steps of stale priorities/transitions between syncs —
+            tighten `sync_interval` (or both env-step counts × N_ENVS)
+            for fresher data. Requires
+            `Config.value_target_mode == VALUE_TARGET_SEARCH` (compile-
+            time assert in the agent method); SARSA / MIXED still need
+            the host target-net forward (deferred work item 5 in
+            `EZV2_FULL_GPU_PLAN.md`). Apple-side perf upside is small;
+            the win is on NVIDIA where the host-roundtrip dominates.
         verbose: Print progress / config / summary.
 
     Returns:
@@ -278,6 +292,7 @@ def run_ezv2_train_gpu[
     var stats = EZV2TrainStats()
     var step_seed: UInt64 = rng_seed_base + 1
     var mcts_seed: UInt32 = UInt32(0)
+    var sample_seed: UInt32 = UInt32(0)
 
     var t0 = perf_counter_ns()
 
@@ -450,31 +465,76 @@ def run_ezv2_train_gpu[
             for d in range(OBS_DIM):
                 obs_per_env[e].append(host_obs[e * OBS_DIM + d])
 
-        # ── 6. GPU train step (CPU-side priority sampling for now) ─────
+        # ── 6. GPU train step (host or GPU sampling, dispatched at runtime)
         if (
             agent.state.is_ready()
             and stats.total_env_steps >= warmup_random_steps
             and (stats.total_env_steps // N_ENVS) % train_interval == 0
         ):
-            var t = agent.train_step_gpu(gpu, ctx)
+            # Pre-train-step gpu_replay sync — required for GPU sampling
+            # so the device mirror sees the latest CPU transitions and
+            # priorities. Triggered at train_step=0 and every
+            # `sync_interval` train calls. For the host-sampling path
+            # this block is a no-op (gpu_replay is synced post-train
+            # below, matching the legacy behavior).
+            if use_gpu_sampling:
+                var first_train = stats.num_train_calls == 0
+                var sync_now = (
+                    first_train
+                    or stats.num_train_calls % sync_interval == 0
+                )
+                if sync_now:
+                    gpu_replay.upload_from_cpu(agent.state, ctx)
+                    gpu_replay.max_priority = agent.max_priority
+                    ctx.synchronize()
+                    stats.num_buffer_uploads += 1
+
+            var L_total: Float64
+            var L_R: Float64
+            var L_P: Float64
+            var L_V: Float64
+            var L_G: Float64
+            if use_gpu_sampling:
+                var t = agent.train_step_gpu_with_replay(
+                    gpu, gpu_replay, ctx, sample_seed
+                )
+                L_total = t[0]
+                L_R = t[1]
+                L_P = t[2]
+                L_V = t[3]
+                L_G = t[4]
+                sample_seed += UInt32(1)
+            else:
+                var t = agent.train_step_gpu(gpu, ctx)
+                L_total = t[0]
+                L_R = t[1]
+                L_P = t[2]
+                L_V = t[3]
+                L_G = t[4]
+
             stats.num_train_calls += 1
-            stats.last_L_R = t[1]
-            stats.last_L_P = t[2]
-            stats.last_L_V = t[3]
-            stats.last_L_G = t[4]
-            if not _is_finite(t[0]):
+            stats.last_L_R = L_R
+            stats.last_L_P = L_P
+            stats.last_L_V = L_V
+            stats.last_L_G = L_G
+            if not _is_finite(L_total):
                 stats.any_nan_loss = True
 
             # Sync GPU networks → CPU mirror, plus buffer mirror to GPU.
+            # The buffer mirror sync is suppressed for the GPU-sampling
+            # path because it already happened pre-train-step above —
+            # double-syncing would clobber any GPU-side priority writes
+            # we plan to land later (item 5 in `EZV2_FULL_GPU_PLAN.md`).
             if stats.num_train_calls % sync_interval == 0:
                 gpu.download_to(agent.state, ctx)
                 ctx.synchronize()
                 stats.num_gpu_syncs += 1
 
-                gpu_replay.upload_from_cpu(agent.state, ctx)
-                gpu_replay.max_priority = agent.max_priority
-                ctx.synchronize()
-                stats.num_buffer_uploads += 1
+                if not use_gpu_sampling:
+                    gpu_replay.upload_from_cpu(agent.state, ctx)
+                    gpu_replay.max_priority = agent.max_priority
+                    ctx.synchronize()
+                    stats.num_buffer_uploads += 1
 
             # Hard-sync target ← online + reanalyze on CPU.
             if stats.num_train_calls % target_sync_interval == 0:

@@ -792,6 +792,17 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var cum_rewards_buf: DeviceBuffer[dtype]  # [BATCH * K]
     var cum_rewards_host: HostBuffer[dtype]
 
+    # GPU sampling scratch buffers (consumed by `ezv2_gpu_sample_and_gather`).
+    # Sized at fixed CAP=50000 to match `train_step_gpu`'s comptime CAP. When
+    # `train_step_gpu_with_replay` is the entry point, these replace the host-
+    # side cum_prio / cand_starts / batch_start_idx allocations.
+    var cum_prio_buf: DeviceBuffer[dtype]            # [CAP]
+    var cand_starts_buf: DeviceBuffer[DType.int32]   # [CAP]
+    var n_valid_buf: DeviceBuffer[DType.int32]       # [1]
+    var total_prio_buf: DeviceBuffer[dtype]          # [1]
+    var batch_start_idx_buf: DeviceBuffer[DType.int32]  # [BATCH]
+    var batch_start_idx_host: HostBuffer[DType.int32]   # [BATCH]
+
     # ══════════════════════════════════════════════════════════════════════
     # Constructor
     # ══════════════════════════════════════════════════════════════════════
@@ -1138,6 +1149,25 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
             Self.BATCH * Self.K
         )
 
+        # GPU sampling scratch — sized for CAP=50000 (matches the
+        # comptime CAP in `train_step_gpu`). Allocated unconditionally
+        # so the move ctor / upload paths don't have a comptime branch;
+        # the cost is ~600KB total which is rounding error vs the
+        # network-state buffers.
+        comptime CAP = 50000
+        self.cum_prio_buf = ctx.enqueue_create_buffer[dtype](CAP)
+        self.cand_starts_buf = ctx.enqueue_create_buffer[DType.int32](
+            CAP
+        )
+        self.n_valid_buf = ctx.enqueue_create_buffer[DType.int32](1)
+        self.total_prio_buf = ctx.enqueue_create_buffer[dtype](1)
+        self.batch_start_idx_buf = ctx.enqueue_create_buffer[
+            DType.int32
+        ](Self.BATCH)
+        self.batch_start_idx_host = ctx.enqueue_create_host_buffer[
+            DType.int32
+        ](Self.BATCH)
+
     def __init__(out self, *, deinit take: Self):
         """Move constructor."""
         self.representation = take.representation^
@@ -1230,6 +1260,12 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.lstm_d_combined_ws_buf = take.lstm_d_combined_ws_buf^
         self.cum_rewards_buf = take.cum_rewards_buf^
         self.cum_rewards_host = take.cum_rewards_host^
+        self.cum_prio_buf = take.cum_prio_buf^
+        self.cand_starts_buf = take.cand_starts_buf^
+        self.n_valid_buf = take.n_valid_buf^
+        self.total_prio_buf = take.total_prio_buf^
+        self.batch_start_idx_buf = take.batch_start_idx_buf^
+        self.batch_start_idx_host = take.batch_start_idx_host^
 
     # ══════════════════════════════════════════════════════════════════════
     # CPU → GPU upload

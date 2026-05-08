@@ -58,7 +58,10 @@ from mojo_rl.deep_agents.core.kernels import (
 )
 
 
-def ezv2_train_step_gpu_core[Config: EZV2DiscreteConfig](
+def ezv2_train_step_gpu_core[
+    Config: EZV2DiscreteConfig,
+    SKIP_UPLOAD: Bool = False,
+](
     mut gpu: EZV2GPUStateBase[Config],
     ctx: DeviceContext,
     v_min: Float64,
@@ -77,10 +80,26 @@ def ezv2_train_step_gpu_core[Config: EZV2DiscreteConfig](
     sample counts. The caller composes them via `Config.lambda_*` and
     handles the agent-side priority writeback.
 
+    Parameters:
+        Config: EZ-V2 config trait.
+        SKIP_UPLOAD: When `False` (default), section 2 uploads the host
+            pinned `gpu.batch_*_host` / `gpu.value_target_full_host` /
+            `gpu.cum_rewards_host` buffers to their device counterparts
+            — the legacy host-sampling path. When `True`, section 2 is
+            elided: caller is responsible for ensuring the device
+            `gpu.batch_*_buf` and `gpu.value_target_full_buf` (+
+            `gpu.cum_rewards_buf` if reward-prefix) already hold the
+            sampled batch (e.g. the GPU-sampling path that ran
+            `ezv2_gpu_sample_and_gather` writes them directly).
+
     Pre-conditions:
-      • `gpu.batch_*_host` filled by section 1 on the agent.
+      • `gpu.batch_*_host` filled by section 1 on the agent (when
+        `SKIP_UPLOAD=False`); or `gpu.batch_*_buf` filled by GPU
+        sampling kernels (when `SKIP_UPLOAD=True`).
       • `gpu.value_target_full_host` filled by section 1's mixed-value /
-        SARSA precompute.
+        SARSA precompute (`SKIP_UPLOAD=False`); or
+        `gpu.value_target_full_buf` populated on device
+        (`SKIP_UPLOAD=True`).
       • Network params on `gpu` reflect current online weights.
 
     Post-conditions:
@@ -108,17 +127,22 @@ def ezv2_train_step_gpu_core[Config: EZV2DiscreteConfig](
     comptime LATENT_BLOCKS = (BATCH * LATENT + TPB - 1) // TPB
 
     # ── 2. Upload host → device ─────────────────────────────────────
-    ctx.enqueue_copy(gpu.batch_obs_buf, gpu.batch_obs_host)
-    ctx.enqueue_copy(gpu.batch_actions_buf, gpu.batch_actions_host)
-    ctx.enqueue_copy(gpu.batch_rewards_buf, gpu.batch_rewards_host)
-    ctx.enqueue_copy(gpu.batch_mcts_pol_buf, gpu.batch_mcts_pol_host)
-    ctx.enqueue_copy(gpu.batch_mcts_val_buf, gpu.batch_mcts_val_host)
-    ctx.enqueue_copy(gpu.batch_age_buf, gpu.batch_age_host)
-    ctx.enqueue_copy(
-        gpu.value_target_full_buf, gpu.value_target_full_host
-    )
-    comptime if Config.use_reward_prefix:
-        ctx.enqueue_copy(gpu.cum_rewards_buf, gpu.cum_rewards_host)
+    # Skipped under `SKIP_UPLOAD=True` (GPU-sampling path) — caller's
+    # `ezv2_gpu_sample_and_gather` already populated the device-side
+    # `batch_*_buf` and the GPU-sampling agent method memcpys
+    # `value_target_full_buf` from `batch_mcts_val_buf` (SEARCH mode).
+    comptime if not SKIP_UPLOAD:
+        ctx.enqueue_copy(gpu.batch_obs_buf, gpu.batch_obs_host)
+        ctx.enqueue_copy(gpu.batch_actions_buf, gpu.batch_actions_host)
+        ctx.enqueue_copy(gpu.batch_rewards_buf, gpu.batch_rewards_host)
+        ctx.enqueue_copy(gpu.batch_mcts_pol_buf, gpu.batch_mcts_pol_host)
+        ctx.enqueue_copy(gpu.batch_mcts_val_buf, gpu.batch_mcts_val_host)
+        ctx.enqueue_copy(gpu.batch_age_buf, gpu.batch_age_host)
+        ctx.enqueue_copy(
+            gpu.value_target_full_buf, gpu.value_target_full_host
+        )
+        comptime if Config.use_reward_prefix:
+            ctx.enqueue_copy(gpu.cum_rewards_buf, gpu.cum_rewards_host)
 
     # ── 3. Zero loss accumulators + per-network grads ───────────────
     ctx.enqueue_memset(gpu.L_R_buf, 0)
