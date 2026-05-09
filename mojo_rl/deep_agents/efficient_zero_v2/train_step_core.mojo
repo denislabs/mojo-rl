@@ -118,7 +118,15 @@ def ezv2_train_step_gpu_core[
     comptime BINS = Config.num_bins
     comptime DYN_IN = LATENT + ACT
     comptime DYN_OUT = LATENT + BINS
-    comptime PRED_OUT = ACT + BINS
+    # PRED_OUT is the per-sample stride of the prediction network output —
+    # for discrete this is `ACT + BINS` (policy logits + value logits), for
+    # continuous it is `2 * ACT_DIM + BINS` (μ_raw ‖ σ_raw ‖ value logits).
+    # Use `Config.PRED_OUT` directly so the same body works for both.
+    comptime PRED_OUT = Config.PRED_OUT
+    # Offset of the value-logits slice within each sample's pred-out row.
+    # Equals the policy-output width (= `ACT` for discrete, = `2 * ACT_DIM`
+    # for continuous), which is exactly `PRED_OUT - BINS`.
+    comptime VALUE_OFF = PRED_OUT - BINS
     comptime CAP = 50000
 
     comptime TPB: Int = 256
@@ -698,7 +706,7 @@ def ezv2_train_step_gpu_core[
     comptime st_kernel = scalar_transform_kernel[BATCH, dtype]
     comptime th_kernel = two_hot_encode_kernel[BATCH, BINS, dtype]
     comptime value_grad = ezv2_value_loss_grad_kernel[
-        BATCH, BINS, ACT, PRED_OUT, dtype
+        BATCH, BINS, VALUE_OFF, PRED_OUT, dtype
     ]
     comptime BATCH_BLOCKS_BS = (BATCH + TPB - 1) // TPB
     comptime BINS_BLOCKS = (BATCH + TPB - 1) // TPB
