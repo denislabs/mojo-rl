@@ -4,6 +4,11 @@
 # (Gumbel-MuZero, ICLR 2022).
 
 from .mcts import GumbelMCTS, GumbelMCTSNode
+from .mcts_sampled import SampledGumbelMCTS, SampledGumbelMCTSNode
+from .gpu_mcts_sampled import (
+    EZV2GPUSampledMCTSState,
+    run_sampled_gumbel_search_gpu,
+)
 from .gpu_mcts import EZV2GPUMCTSState, run_gumbel_search_gpu
 from .strategies import (
     ValueTarget,
@@ -30,11 +35,17 @@ from .consistency import (
 from .configs import (
     EZV2DiscreteConfig,
     EZV2DiscreteMLPConfig,
+    EZV2ContinuousMLPConfig,
     VALUE_TARGET_SEARCH,
     VALUE_TARGET_SARSA,
     VALUE_TARGET_MIXED,
 )
 from .state import EZV2DiscreteCPUState, EZV2GPUStateBase
-from .action_space import ActionSpace, DiscreteActionSpace
+from .action_space import (
+    ActionSpace,
+    DiscreteActionSpace,
+    ContinuousActionSpace,
+)
 from .train_step_core import ezv2_train_step_gpu_core
 from .efficient_zero_v2 import GenericEfficientZeroV2Agent
+from .continuous_agent import GenericEZV2ContinuousAgent

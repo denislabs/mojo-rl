@@ -67,6 +67,7 @@ from mojo_rl.deep_agents.efficient_zero_v2.networks import (
 from mojo_rl.deep_agents.efficient_zero_v2.action_space import (
     ActionSpace,
     DiscreteActionSpace,
+    ContinuousActionSpace,
 )
 
 
@@ -327,6 +328,175 @@ struct EZV2DiscreteMLPConfig[
     comptime proj_dim: Int = Self.PROJ
     comptime num_root_candidates: Int = Self.K_GUMBEL
     comptime ActSpace = DiscreteActionSpace[Self.ACT, Self.K_GUMBEL]
+
+    comptime lambda_reward: Float64 = Self.LAMBDA_R
+    comptime lambda_policy: Float64 = Self.LAMBDA_P
+    comptime lambda_value: Float64 = Self.LAMBDA_V
+    comptime lambda_consistency: Float64 = Self.LAMBDA_G
+    comptime entropy_weight: Float64 = Self.ENT_WEIGHT
+
+    comptime value_target_mode: Int = Self.VALUE_TARGET_MODE
+    comptime t_fresh: Int = Self.T_FRESH
+    comptime t_stale: Int = Self.T_STALE
+
+    # ── Reward-prefix LSTM head ──────────────────────────────────────────
+    comptime use_reward_prefix: Bool = Self.USE_REWARD_PREFIX
+    comptime lstm_hidden: Int = Self.LSTM_HIDDEN
+    comptime lstm_horizon_len: Int = Self.LSTM_HORIZON_LEN
+    comptime lstm_mlp_hidden: Int = Self.LSTM_MLP_HIDDEN
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Continuous MLP variant (Phase 3 — squashed-Gaussian policy head)
+# ═════════════════════════════════════════════════════════════════════════
+#
+# Conforms to the same `EZV2DiscreteConfig` trait — the trait is action-
+# space-agnostic at the field level (`Config.ActSpace` carries the
+# discrete-vs-continuous dispatch). The "Discrete" in the trait name is a
+# misnomer kept for git-history continuity; rename to `EZV2Config` is a
+# follow-up rename when continuous landed and shaken down.
+#
+# Key differences from `EZV2DiscreteMLPConfig`:
+#   • `action_dim` = real-vector dimension (not discrete count).
+#   • `PredModel` outputs `2*ACT_DIM + BINS` (μ_raw ‖ σ_raw ‖ value bins).
+#   • `ActSpace` = ContinuousActionSpace[ACT_DIM, K_ROOT, MAX, MIN_STD, ...].
+#   • Replay buffer stores raw [ACT_DIM] action vectors per slot (the
+#     dyn-input concat layer handles the action embedding implicitly —
+#     see `docs/EZV2_CONTINUOUS_PHASE3.md` Option 2).
+
+
+struct EZV2ContinuousMLPConfig[
+    OBS: Int,
+    ACT_DIM: Int,
+    LATENT: Int = 256,
+    HIDDEN: Int = 256,
+    PROJ: Int = 1024,
+    PRED_BOTTLENECK: Int = 512,
+    BINS: Int = 51,
+    LR: Float64 = 1e-3,
+    WD: Float64 = 1e-4,
+    CAP: Int = 50000,
+    BS: Int = 64,
+    K_UNROLL: Int = 5,
+    N_TD: Int = 5,
+    SIMS: Int = 32,
+    NODES: Int = 64,
+    K_ROOT: Int = 16,
+    K_NON_ROOT: Int = 8,
+    LAMBDA_R: Float64 = 1.0,
+    LAMBDA_P: Float64 = 1.0,
+    LAMBDA_V: Float64 = 0.25,
+    LAMBDA_G: Float64 = 2.0,
+    ENT_WEIGHT: Float64 = 5e-3,
+    # Squashed-Gaussian hyperparameters (paper App. G).
+    MAX_ACTION: Float64 = 1.0,
+    MIN_STD: Float64 = 0.1,
+    STD_MAGNIFICATION: Float64 = 3.0,
+    VALUE_TARGET_MODE: Int = VALUE_TARGET_SEARCH,
+    T_FRESH: Int = 20000,
+    T_STALE: Int = 40000,
+    USE_REWARD_PREFIX: Bool = False,
+    LSTM_HIDDEN: Int = 64,
+    LSTM_HORIZON_LEN: Int = 5,
+    LSTM_MLP_HIDDEN: Int = 64,
+](EZV2DiscreteConfig):
+    """Standalone-MLP EZ-V2 for continuous-action proprio environments.
+
+    Defaults track paper Table 3 for DMC Proprio (Pendulum / HalfCheetah /
+    etc.): LATENT=256, PROJ=1024, BINS=51, K_ROOT=16. Override via the
+    parameter list when running smoke tests (smaller/faster) or full
+    convergence (larger BS/PROJ).
+
+    See `docs/EZV2_CONTINUOUS_PHASE3.md` for the design rationale.
+    """
+
+    # ── MuZeroConfig fields ──────────────────────────────────────────────
+    comptime NAME: String = "EZV2-MLP-Continuous"
+
+    comptime obs_dim: Int = Self.OBS
+    # Continuous: action_dim is the real-vector dim. The buffer slot
+    # width per transition matches: `[ACT_DIM]` floats per stored action
+    # and per stored chosen-action policy target.
+    comptime action_dim: Int = Self.ACT_DIM
+    comptime latent_dim: Int = Self.LATENT
+    comptime num_bins: Int = Self.BINS
+    comptime DYN_IN: Int = Self.LATENT + Self.ACT_DIM
+    comptime DYN_OUT: Int = Self.LATENT + Self.BINS
+    # Pred output: μ_raw ‖ σ_raw ‖ value_bins.
+    comptime PRED_OUT: Int = 2 * Self.ACT_DIM + Self.BINS
+
+    # Representation: obs → latent. Same MinMaxNorm pattern as discrete.
+    comptime RepModel = Sequential[
+        LinearMish[Self.OBS, Self.HIDDEN],
+        LinearMish[Self.HIDDEN, Self.HIDDEN],
+        Linear[Self.HIDDEN, Self.LATENT],
+        MinMaxNorm[Self.LATENT],
+    ]
+
+    # Dynamics: (latent, raw_action_vector) → (next_latent, reward_logits).
+    # Per `docs/EZV2_CONTINUOUS_PHASE3.md` Option 2, the action embedding
+    # is folded into the first LinearMish — no explicit ActionEmbedding
+    # network. The dyn input width is `LATENT + ACT_DIM` (vs discrete's
+    # `LATENT + ACT` one-hot, but the kernel layout is identical).
+    comptime DynModel = Sequential[
+        LinearMish[Self.DYN_IN, Self.HIDDEN],
+        LinearMish[Self.HIDDEN, Self.HIDDEN],
+        Parallel[
+            Sequential[
+                Linear[Self.HIDDEN, Self.LATENT],
+                MinMaxNorm[Self.LATENT],
+            ],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
+    ]
+
+    # Prediction f-net: latent → (μ_raw ‖ σ_raw ‖ value_logits).
+    # The 2*ACT_DIM policy outputs feed the squashed-Gaussian — see
+    # `kernels.ezv2_policy_loss_grad_continuous_kernel`.
+    comptime PredModel = Sequential[
+        LinearMish[Self.LATENT, Self.HIDDEN],
+        Parallel[
+            Linear[Self.HIDDEN, 2 * Self.ACT_DIM],
+            Linear[Self.HIDDEN, Self.BINS],
+        ],
+    ]
+
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=Self.WD]
+
+    comptime batch_size: Int = Self.BS
+    comptime buffer_capacity: Int = Self.CAP
+    comptime unroll_steps: Int = Self.K_UNROLL
+    comptime td_steps: Int = Self.N_TD
+
+    comptime num_simulations: Int = Self.SIMS
+    comptime max_nodes: Int = Self.NODES
+
+    comptime Search = LearnedDynamics
+    comptime Encoding = CategoricalEncoding
+    comptime Scaling = MinMaxScale
+    comptime Noise = DirichletNoise[0.25, 0.25]
+    comptime PUCT = AlphaGoPUCT[1.0]
+    comptime Backup = NStepBootstrap
+    comptime Players = SinglePlayer
+
+    comptime USE_REANALYZE: Bool = True
+
+    # ── EZ-V2-specific fields ────────────────────────────────────────────
+    comptime ProjectorModel = ProjectionMLP[
+        HIDDEN=Self.LATENT, PROJ=Self.PROJ
+    ]
+    comptime PredictorModel = PredictionMLP[
+        PROJ=Self.PROJ, BOTTLENECK=Self.PRED_BOTTLENECK
+    ]
+    comptime proj_dim: Int = Self.PROJ
+    comptime num_root_candidates: Int = Self.K_ROOT
+    comptime ActSpace = ContinuousActionSpace[
+        Self.ACT_DIM,
+        Self.K_ROOT,
+        Self.MAX_ACTION,
+        Self.MIN_STD,
+        Self.STD_MAGNIFICATION,
+    ]
 
     comptime lambda_reward: Float64 = Self.LAMBDA_R
     comptime lambda_policy: Float64 = Self.LAMBDA_P

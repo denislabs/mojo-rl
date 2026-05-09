@@ -6,12 +6,16 @@ the policy-head loss + grad. This trait + its concrete impls
 acting-side helpers (root-candidate sampling, action picking) that the
 agent uses outside training.
 
-See `docs/EZV2_MODULAR_ARCHITECTURE.md` for the full design.
+See `docs/EZV2_MODULAR_ARCHITECTURE.md` for the full design and
+`docs/EZV2_CONTINUOUS_PHASE3.md` for the continuous-side rationale.
 
-This file is currently the **dispatch spike** — only the discrete
-`policy_loss_grad_gpu` hook is wired. Continuous-side hooks
-(`ContinuousActionSpace`, `sample_root_candidates_gpu`) land in Phase 3
-once this dispatch pattern is validated.
+Two impls now exist:
+  - `DiscreteActionSpace[ACT, K]` — softmax CE on visit-distribution target.
+  - `ContinuousActionSpace[ACT_DIM, K, MAX_ACTION, MIN_STD, ENT_W]` —
+    squashed-Gaussian NLL + entropy bonus on `a*` target (paper Eq. 8/9).
+
+Sampling-side hooks (`sample_root_candidates_gpu`, etc.) still live on
+the agent struct since the MCTS state types differ between action spaces.
 """
 
 from std.gpu.host import DeviceContext
@@ -19,6 +23,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.deep_agents.efficient_zero_v2.kernels import (
     ezv2_policy_loss_grad_kernel,
+    ezv2_policy_loss_grad_continuous_kernel,
 )
 
 
@@ -166,6 +171,97 @@ struct DiscreteActionSpace[ACT: Int, K: Int = 8](ActionSpace):
             grad_pred_out_step,
             per_sample_loss,
             loss_scale,
+            grid_dim=(BATCH_BLOCKS,),
+            block_dim=(TPB,),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Continuous impl — squashed-Gaussian NLL + entropy bonus
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+struct ContinuousActionSpace[
+    ACT_DIM_: Int,
+    K: Int = 16,
+    MAX_ACTION: Float64 = 1.0,
+    MIN_STD: Float64 = 0.1,
+    STD_MAGNIFICATION: Float64 = 3.0,
+](ActionSpace):
+    """Continuous-action implementation: squashed-Gaussian NLL + entropy
+    bonus on the search-selected target action `a*` (paper Eq. 8/9).
+
+    Wraps `ezv2_policy_loss_grad_continuous_kernel`. The pred net's policy
+    section emits `(μ_raw, σ_raw)` per dim, which the kernel forwards
+    through `μ = MAX·tanh(μ_raw/MAX)` and `σ = softplus(σ_raw) + MIN_STD`
+    before evaluating `−log π(a*) − ent_scale · H[π]`.
+
+    Parameters:
+        ACT_DIM_: Real action vector dimension. Becomes `ACT_DIM`,
+            `POLICY_TARGET_DIM`, and `POLICY_OUT_DIM = 2 * ACT_DIM_`
+            (μ ‖ σ_raw).
+        K: Number of root candidates the sampled-Gumbel MCTS keeps
+            (paper App. A default 16 for proprio).
+        MAX_ACTION: Action vector |a*_d| upper bound. The squash uses
+            `MAX·tanh(·/MAX)`; the kernel atanh-clamps `a*/MAX` to ±0.999
+            for numerical stability.
+        MIN_STD: Floor on σ; bounds `1/σ` from above so pre-training
+            (σ_raw ≈ 0) the gradient stays well-conditioned. Paper App. G
+            default 0.1.
+        STD_MAGNIFICATION: Used by the sampled-MCTS root-candidate
+            sampler (paper App. A: half the K candidates are drawn from
+            `N(μ, STD_MAGNIFICATION·σ)` for exploration). The training
+            kernel here ignores it; lives on the trait so the agent can
+            read it via `Config.ActSpace.STD_MAGNIFICATION` at sample time.
+    """
+
+    comptime ACT_DIM: Int = Self.ACT_DIM_
+    comptime POLICY_OUT_DIM: Int = 2 * Self.ACT_DIM_
+    comptime POLICY_TARGET_DIM: Int = Self.ACT_DIM_
+    comptime IS_CONTINUOUS: Bool = True
+    comptime K_ROOT: Int = Self.K
+
+    @staticmethod
+    def policy_loss_grad_gpu[
+        BATCH: Int,
+        PRED_OUT: Int,
+        POL_TGT_DIM: Int,
+        dtype: DType where dtype.is_floating_point(),
+    ](
+        ctx: DeviceContext,
+        pred_out_step: LayoutTensor[
+            dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+        ],
+        policy_target_step: LayoutTensor[
+            dtype, Layout.row_major(BATCH * POL_TGT_DIM), MutAnyOrigin
+        ],
+        grad_pred_out_step: LayoutTensor[
+            dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+        ],
+        per_sample_loss: LayoutTensor[
+            dtype, Layout.row_major(BATCH), MutAnyOrigin
+        ],
+        loss_scale: Scalar[dtype],
+        ent_scale: Scalar[dtype],
+    ) raises:
+        # `POL_TGT_DIM` arrives equal to `Self.ACT_DIM_` from the caller
+        # (the BPTT core supplies `Config.ActSpace.POLICY_TARGET_DIM`),
+        # so the kernel's ACT_DIM template parameter is bound through it
+        # to keep the LayoutTensor layout types aligned with the
+        # wrapper's signature — same pattern as DiscreteActionSpace.
+        comptime kernel = ezv2_policy_loss_grad_continuous_kernel[
+            BATCH, POL_TGT_DIM, PRED_OUT, dtype
+        ]
+        comptime BATCH_BLOCKS = (BATCH + TPB - 1) // TPB
+        ctx.enqueue_function[kernel, kernel](
+            pred_out_step,
+            policy_target_step,
+            grad_pred_out_step,
+            per_sample_loss,
+            loss_scale,
+            ent_scale,
+            Scalar[dtype](Self.MAX_ACTION),
+            Scalar[dtype](Self.MIN_STD),
             grid_dim=(BATCH_BLOCKS,),
             block_dim=(TPB,),
         )

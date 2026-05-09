@@ -20,7 +20,7 @@ specialization.
 
 from std.gpu import block_dim, block_idx, thread_idx
 from layout import Layout, LayoutTensor
-from std.math import exp, log, sqrt
+from std.math import exp, log, sqrt, tanh
 
 
 comptime TPB: Int = 256
@@ -204,6 +204,165 @@ def ezv2_policy_loss_grad_kernel[
         var p_a = exp(l_a - max_l) * inv_sum
         grad_pred_out_step[logits_off + a] = (p_a - t_a) * scale
         loss = loss + t_a * (log_z - l_a)
+
+    per_sample_loss[b] = loss
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Per-sample squashed-Gaussian NLL + entropy bonus + grad — single time-slice
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Continuous-action counterpart of `ezv2_policy_loss_grad_kernel`. Used by
+# `ContinuousActionSpace.policy_loss_grad_gpu`. The policy section of
+# `pred_out_step[b, 0:2*ACT_DIM]` carries (μ_raw, σ_raw); we forward through
+# the squashed-Gaussian parameterization, evaluate the negative log-prob of
+# the search-selected target action `a*` (paper Eq. 8 — simple-best-action
+# loss), subtract an entropy bonus (paper Eq. 9), and write grads back into
+# the same slice. The trailing BINS value-logit slots are left untouched
+# (the value-loss kernel owns them).
+#
+# Forward:
+#     μ_d         = MAX_ACTION · tanh(μ_raw_d / MAX_ACTION)
+#     σ_d         = softplus(σ_raw_d) + MIN_STD
+#     c_d         = clamp(a*_d / MAX_ACTION, ±0.999)
+#     u*_d        = atanh(c_d) = 0.5 · log((1+c_d) / (1-c_d))
+#     η_d         = (u*_d − μ_d) / σ_d
+#     nlp_d       = 0.5·η_d² + log σ_d + 0.5·log(2π) + log(1 − c_d²)
+#                       (last term is the tanh-squash log-det Jacobian)
+#     H_d         = log σ_d + 0.5·log(2πe)
+#     loss[b]     = Σ_d (nlp_d − ent_scale · H_d)
+#
+# Backward (a* is constant ⇒ tanh-correction has zero grad):
+#     ∂loss/∂μ_d        = (μ_d − u*_d) / σ_d²
+#     ∂loss/∂σ_d        = (1 − η_d² − ent_scale) / σ_d
+#     ∂μ_d/∂μ_raw_d     = 1 − tanh²(μ_raw_d / MAX_ACTION)
+#     ∂σ_d/∂σ_raw_d     = sigmoid(σ_raw_d)
+#
+# Numerical notes:
+#     - softplus uses the max(x,0) + log(1+exp(-|x|)) form for stability.
+#     - σ is bounded below by MIN_STD ⇒ inv_σ is finite even pre-training.
+#     - c_d clipping bounds u*_d ∈ [-3.8, 3.8] for c=±0.999.
+
+
+def ezv2_policy_loss_grad_continuous_kernel[
+    BATCH: Int,
+    ACT_DIM: Int,
+    PRED_OUT: Int,
+    dtype: DType where dtype.is_floating_point(),
+](
+    pred_out_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    policy_target_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH * ACT_DIM), MutAnyOrigin
+    ],
+    grad_pred_out_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    per_sample_loss: LayoutTensor[
+        dtype, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    scale: Scalar[dtype],
+    ent_scale: Scalar[dtype],
+    max_action: Scalar[dtype],
+    min_std: Scalar[dtype],
+):
+    """Squashed-Gaussian NLL + entropy bonus + grad on one time-slice.
+
+    Pred-out layout: `pred_out_step[b, 0:2*ACT_DIM]` = (μ_raw ‖ σ_raw),
+    `pred_out_step[b, 2*ACT_DIM:PRED_OUT]` = value bins (untouched here).
+
+    Writes grad into the first 2·ACT_DIM elements of
+    `grad_pred_out_step[b]` (grads on policy logits — μ_raw then σ_raw).
+    The trailing BINS slots remain untouched. Per-sample loss (UNSCALED,
+    including the constant tanh-squash correction) goes into
+    `per_sample_loss[b]`. `scale` is the loss-weight folded into the grad
+    only, matching the discrete kernel convention.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var po_off = b * PRED_OUT
+    var pt_off = b * ACT_DIM
+
+    var inv_max = Scalar[dtype](1.0) / max_action
+    # log(2π) ≈ 1.8378770664093453, log(2πe) = log(2π) + 1
+    var LOG_2PI = Scalar[dtype](1.8378770664093453)
+    var HALF_LOG_2PI = Scalar[dtype](0.5) * LOG_2PI
+    var HALF_LOG_2PIE = Scalar[dtype](0.5) * (LOG_2PI + Scalar[dtype](1.0))
+
+    var loss = Scalar[dtype](0.0)
+
+    for d in range(ACT_DIM):
+        var mu_raw = rebind[Scalar[dtype]](pred_out_step[po_off + d])
+        var sg_raw = rebind[Scalar[dtype]](
+            pred_out_step[po_off + ACT_DIM + d]
+        )
+        var a_star = rebind[Scalar[dtype]](policy_target_step[pt_off + d])
+
+        # μ = max_action · tanh(μ_raw / max_action)
+        var th = tanh(mu_raw * inv_max)
+        var mu = max_action * th
+
+        # σ = softplus(σ_raw) + min_std, numerically stable softplus.
+        var sg_raw_neg_abs = -sg_raw if sg_raw > Scalar[dtype](0.0) else sg_raw
+        var sp_pos = sg_raw if sg_raw > Scalar[dtype](0.0) else Scalar[dtype](
+            0.0
+        )
+        var sp = sp_pos + log(Scalar[dtype](1.0) + exp(sg_raw_neg_abs))
+        var sg = sp + min_std
+
+        # u* = atanh(clamp(a*/max_action, ±0.999))
+        var c = a_star * inv_max
+        var c_lo = Scalar[dtype](-0.999)
+        var c_hi = Scalar[dtype](0.999)
+        if c > c_hi:
+            c = c_hi
+        if c < c_lo:
+            c = c_lo
+        var u_star = Scalar[dtype](0.5) * log(
+            (Scalar[dtype](1.0) + c) / (Scalar[dtype](1.0) - c)
+        )
+
+        var diff = u_star - mu
+        var inv_sg = Scalar[dtype](1.0) / sg
+        var eta = diff * inv_sg
+
+        var log_sg = log(sg)
+        var corr_d = log(Scalar[dtype](1.0) - c * c)
+
+        var nlp_d = (
+            Scalar[dtype](0.5) * eta * eta
+            + log_sg
+            + HALF_LOG_2PI
+            + corr_d
+        )
+        var H_d = log_sg + HALF_LOG_2PIE
+
+        loss = loss + nlp_d - ent_scale * H_d
+
+        # Grads on (μ, σ):
+        var d_loss_d_mu = (mu - u_star) * inv_sg * inv_sg
+        var d_loss_d_sg = (
+            Scalar[dtype](1.0) - eta * eta - ent_scale
+        ) * inv_sg
+
+        # Chain through (μ_raw, σ_raw):
+        var dmu_dmuraw = Scalar[dtype](1.0) - th * th
+        # sigmoid(σ_raw) — d softplus / d σ_raw
+        var sig_sg_raw: Scalar[dtype]
+        if sg_raw > Scalar[dtype](0.0):
+            var e_neg = exp(-sg_raw)
+            sig_sg_raw = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + e_neg)
+        else:
+            var e_pos = exp(sg_raw)
+            sig_sg_raw = e_pos / (Scalar[dtype](1.0) + e_pos)
+
+        grad_pred_out_step[po_off + d] = scale * d_loss_d_mu * dmu_dmuraw
+        grad_pred_out_step[po_off + ACT_DIM + d] = (
+            scale * d_loss_d_sg * sig_sg_raw
+        )
 
     per_sample_loss[b] = loss
 
