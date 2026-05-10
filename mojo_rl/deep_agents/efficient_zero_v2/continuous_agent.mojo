@@ -279,7 +279,22 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             deterministic=not training,
         )
         var chosen = result[0]
-        var root_value = result[2]
+
+        # SVE (paper Eq. 13): visit-weighted backup of the rollout-bootstrapped
+        # values from the K_ROOT root candidates. Used as the stored value
+        # target instead of the search's returned `result[2]` (= prediction
+        # net's raw V(s) decode at the root, not refined by simulations).
+        # This matches the discrete agent's `select_action` and the
+        # `reanalyze` path so all `mcts_values` entries carry the same kind
+        # of value (search-refined, not raw network output).
+        var sum_value = Float64(0.0)
+        var sum_visits = 0
+        if len(self.mcts.nodes) > 0:
+            var root = self.mcts.nodes[0]
+            for i in range(Self.Config.num_root_candidates):
+                sum_value += root.total_value[i]
+                sum_visits += root.visit_count[i]
+        var root_value = compute_sve(sum_value, sum_visits)
 
         var action_list = List[Scalar[dtype]](capacity=Self.ACT_DIM)
         for d in range(Self.ACT_DIM):
@@ -427,6 +442,107 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             self.state.prediction_target.params[i] = Scalar[dtype](
                 tau * src + (1.0 - tau) * tgt
             )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Reanalyze — refresh stale stored MCTS targets with current target nets
+    # ══════════════════════════════════════════════════════════════════════
+
+    def reanalyze(mut self, num_samples: Int = 16) -> Int:
+        """Re-run sampled-Gumbel search on `num_samples` random replay-buffer
+        positions using the **target** networks. Overwrites the stored
+        chosen-action policy target + root value + age stamp at those
+        indices so they reflect the current target model rather than the
+        (stale) online model state at collection time.
+
+        Mirrors the discrete agent's `reanalyze` — same sampling logic,
+        same target-net plumbing, same buffer fields touched. Two
+        differences for continuous:
+
+          - The stored policy target is the **chosen action vector** (paper
+            Eq. 8 simple-best-action target) rather than a visit
+            distribution, so we copy `chosen` from the search return into
+            `mcts_policies[idx*ACT_DIM:idx*ACT_DIM+ACT_DIM]`.
+          - We use `deterministic=True` so reanalyzed targets are the
+            argmax-visit candidate. Soft-pick at acting time keeps
+            exploration; refreshed targets should be the cleanest
+            best-action estimate under the current target net.
+
+        SVE (search-based value estimation) is computed from the post-
+        search root visit_count + total_value arrays, matching the
+        discrete agent. This is a sharper bootstrap target than the
+        network's V(s) decode that `select_action` stores at acting time.
+
+        Skips work and returns 0 if the buffer isn't ready. Otherwise
+        returns the number of indices it actually refreshed. Callers
+        should run this at a coarse interval (paper default 400 train
+        steps), typically right after a target-network sync.
+        """
+        if not self.state.is_ready():
+            return 0
+
+        comptime CAP = 50000
+        var buf_size = self.state.buffer.size
+        var buf_ptr = self.state.buffer.ptr
+        var oldest = (buf_ptr - buf_size + CAP) % CAP
+        var n_refreshed = 0
+
+        for _ in range(num_samples):
+            var rand_offset = Int(random_float64() * Float64(buf_size))
+            if rand_offset >= buf_size:
+                rand_offset = buf_size - 1
+            if rand_offset < 0:
+                rand_offset = 0
+            var idx = (oldest + rand_offset) % CAP
+
+            # Build obs from buffer at this index.
+            var obs = List[Scalar[dtype]](capacity=Self.Config.obs_dim)
+            for d in range(Self.Config.obs_dim):
+                obs.append(
+                    self.state.buffer.obs[
+                        idx * Self.Config.obs_dim + d
+                    ]
+                )
+
+            # Run sampled-Gumbel search with target networks.
+            # `deterministic=True` → chosen = argmax-visit candidate (a
+            # stable best-action target for the simple-best-action
+            # policy NLL).
+            var result = self.mcts.search(
+                obs,
+                self.state.representation_target,
+                self.state.dynamics_target,
+                self.state.prediction_target,
+                self.v_min,
+                self.v_max,
+                deterministic=True,
+            )
+            var chosen = result[0]
+
+            # SVE from the freshly-built tree. Same algebra as the
+            # discrete agent: Σ_i total_value(s_0, i) / Σ_i visits(s_0, i),
+            # iterated over root candidate slots.
+            var sum_value = Float64(0.0)
+            var sum_visits = 0
+            if len(self.mcts.nodes) > 0:
+                var root = self.mcts.nodes[0]
+                for i in range(Self.Config.num_root_candidates):
+                    sum_value += root.total_value[i]
+                    sum_visits += root.visit_count[i]
+            var sve = compute_sve(sum_value, sum_visits)
+
+            # Overwrite stored targets at this index.
+            for d in range(Self.Config.action_dim):
+                self.state.mcts_policies[
+                    idx * Self.Config.action_dim + d
+                ] = Scalar[dtype](chosen[d])
+            self.state.mcts_values[idx] = Scalar[dtype](sve)
+            self.state.step_at_write[idx] = Scalar[DType.uint32](
+                self.train_step_count
+            )
+
+            n_refreshed += 1
+
+        return n_refreshed
 
     # ══════════════════════════════════════════════════════════════════════
     # GPU training (DUP: copy from GenericEfficientZeroV2Agent.train_step_gpu)
