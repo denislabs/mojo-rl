@@ -1115,7 +1115,7 @@ struct ScaledDotProductAttention[
           1. dot_sum_i = Σ_j attn[i,j] * d_attn[i,j],  d_attn[i,j] = grad_out[i] · V[j]
           2. d_score[i,j] = attn[i,j] * (d_attn[i,j] - dot_sum_i) * scale
              (overwritten into cache.attn so dK can read it)
-          3. dQ[i, h_off+d] += Σ_j d_score[i,j] * K[j, h_off+d]
+          3. dQ[i, h_off+d] += Σ_j d_score[i,j] * K[j, h_off+d].
 
         Per-row d_attn[j] is recomputed (CPU vjp does the same two-pass to
         avoid a per-row scratch buffer).
