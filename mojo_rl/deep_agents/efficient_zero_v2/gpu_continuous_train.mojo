@@ -237,6 +237,13 @@ def run_ezv2_continuous_train_gpu[
     var host_action = ctx.enqueue_create_host_buffer[dtype](N_ENVS * ACTION_DIM)
     var host_reward = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
     var host_done = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
+    # `host_terminated` distinguishes natural termination from time-limit
+    # truncation. The env's `terminated_buf` is 1.0 only on real terminal
+    # states; `dones_buf` combines (terminated OR truncated). We need
+    # both to thread the correct bootstrap mask into the replay buffer
+    # (terminations field) — without it, every truncation kills V_next
+    # in the N-step target and V is systematically biased.
+    var host_terminated = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
 
     # ─── Env step workspace (no-op for envs with STEP_WS_SHARED == 0) ───
     comptime ws_size_total = (
@@ -473,6 +480,7 @@ def run_ezv2_continuous_train_gpu[
 
         ctx.enqueue_copy(host_reward.unsafe_ptr(), rewards_buf)
         ctx.enqueue_copy(host_done.unsafe_ptr(), dones_buf)
+        ctx.enqueue_copy(host_terminated.unsafe_ptr(), terminated_buf)
         ctx.synchronize()
 
         # ── 4. Store transitions on CPU (replay buffer ground truth) ───
@@ -485,9 +493,18 @@ def run_ezv2_continuous_train_gpu[
         for e in range(N_ENVS):
             var reward = Float64(host_reward[e])
             var native_done = host_done[e] > Scalar[dtype](0.5)
+            var natively_terminated = (
+                host_terminated[e] > Scalar[dtype](0.5)
+            )
             ep_steps_per_env[e] += 1
             var truncated = ep_steps_per_env[e] >= max_steps_per_episode
             var done_or_trunc = native_done or truncated
+            # `truly_terminated` is True only on a real terminal state
+            # (env's `terminated_buf=1`). Truncation (step-count clamp
+            # or env-internal truncation that only sets `dones_buf=1`)
+            # leaves it False so the N-step TD target keeps γ^n·V_next.
+            # See SequenceReplayBuffer.add_with_termination's docstring.
+            var truly_terminated = natively_terminated
 
             agent.store_transition(
                 obs_per_env[e],
@@ -498,6 +515,7 @@ def run_ezv2_continuous_train_gpu[
                 improved_policy_per_env[e],
                 done_or_trunc,
                 env_id=e,
+                terminated=truly_terminated,
             )
             ep_return_per_env[e] += reward
             stats.total_env_steps += 1

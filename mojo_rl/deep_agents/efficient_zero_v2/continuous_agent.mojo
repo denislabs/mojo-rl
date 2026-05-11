@@ -456,11 +456,16 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         value: Float64,
         done: Bool,
         env_id: Int = 0,
+        terminated: Bool = False,
     ):
         """Backward-compat 5-arg overload. Fills the K-candidate slots
         with one-hot at the chosen action so the full-π kernel reduces
         exactly to the simple-best NLL on the played action — old
-        training scripts keep their pre-full-π behavior."""
+        training scripts keep their pre-full-π behavior.
+
+        `terminated` defaults to False (truncation semantics). Callers
+        that distinguish natural termination from time-limit truncation
+        should pass it explicitly; see the 7-arg overload below."""
         comptime K_ROOT = Self.Config.num_root_candidates
         var sampled_actions = List[Scalar[dtype]](
             capacity=K_ROOT * Self.ACT_DIM
@@ -484,6 +489,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             improved_policy^,
             done,
             env_id,
+            terminated,
         )
 
     def store_transition(
@@ -496,6 +502,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         improved_policy: List[Scalar[dtype]],
         done: Bool,
         env_id: Int = 0,
+        terminated: Bool = False,
     ):
         """Append a transition to env_id's episode buffer.
 
@@ -510,6 +517,20 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         best loss path still uses this. If a future variant adds
         independent action noise after the search, the search-chosen
         action target should be plumbed separately.
+
+        `done` is the boundary flag (terminated OR truncated) for replay
+        sequence boundaries — the buffer's `dones` field. `terminated`
+        is the bootstrap flag (terminated-only, never truncated) for
+        N-step TD target gating — the buffer's `terminations` field. If
+        you pass `done=True` and `terminated=True` you assert a natural
+        terminal state (V_next clamped to 0 in the target); if you pass
+        `done=True` and `terminated=False` you assert a time-limit
+        truncation (V_next kept in the target, just as if the episode
+        continued). For envs that always truncate (Pendulum, HalfCheetah
+        with TERMINATE_ON_UNHEALTHY=False) callers must pass
+        `terminated=False` at every episode end — otherwise V is biased
+        upward by the missing γ^n·V_next contribution on truncation, and
+        the policy fits MCTS targets refined under that biased V.
 
         Flushes the episode to replay at `done`.
         """
@@ -526,9 +547,11 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         self.total_steps += 1
 
         if done:
-            self._flush_episode(env_id)
+            self._flush_episode(env_id, terminated_at_end=terminated)
 
-    def _flush_episode(mut self, env_id: Int = 0):
+    def _flush_episode(
+        mut self, env_id: Int = 0, terminated_at_end: Bool = False
+    ):
         """Write env_id's accumulated episode to the SequenceReplayBuffer
         plus the parallel MCTS-target arrays."""
         var ep_len = len(self._episode_obs[env_id])
@@ -555,12 +578,20 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                     act_arr[i] = Scalar[dtype](0.0)
 
             var is_done = t == ep_len - 1
+            # Bootstrap mask: only flip to terminated at the FINAL step of
+            # a *naturally* terminated episode. Time-limit truncations
+            # propagate `terminated_at_end=False` so the N-step TD target
+            # keeps γ^n·V_next at the truncation point (paper's Reanalyze
+            # bootstrap semantics; without this V is biased upward when
+            # V_next < 0 and downward when V_next > 0).
+            var is_terminated = is_done and terminated_at_end
 
-            self.state.buffer.add(
+            self.state.buffer.add_with_termination(
                 obs_arr,
                 act_arr,
                 Scalar[dtype](self._episode_rewards[env_id][t]),
                 is_done,
+                is_terminated,
             )
 
             comptime CAP = 50000
