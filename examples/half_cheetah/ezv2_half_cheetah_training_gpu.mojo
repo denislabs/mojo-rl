@@ -49,16 +49,20 @@ def main() raises:
     print("    EZ-V2 HalfCheetah — full GPU path (Phase 4, N_ENVS=8)")
     print("=" * 72)
 
-    comptime NUM_ENV_STEPS = 30_000
+    # Paper budget for HalfCheetah first-convergence on DMC state.
+    comptime NUM_ENV_STEPS = 100_000
     comptime N_ENVS = 8
 
+    # Paper-spec network sizing (`references/EfficientZeroV2-main/ez/config/exp/dmc_state.yaml`).
+    # Previous 128/128/256 pulse-check was undersized for HalfCheetah's
+    # 17D obs × 6D action representational demand.
     comptime Config = EZV2ContinuousMLPConfig[
         OBS=17,
         ACT_DIM=6,
-        LATENT=128,
-        HIDDEN=128,
-        PROJ=256,
-        PRED_BOTTLENECK=128,
+        LATENT=256,
+        HIDDEN=256,
+        PROJ=1024,
+        PRED_BOTTLENECK=512,
         BINS=51,
         BS=128,
         K_UNROLL=5,
@@ -92,6 +96,46 @@ def main() raises:
         max_grad_norm=5.0,
         n_envs=N_ENVS,
     )
+
+    # ── Paper init_zero on output heads ──────────────────────────────────
+    # Reference (`dmc_state.yaml:120`) sets init_zero=True on the
+    # prediction policy/value heads and the dynamics reward head. With
+    # W=b=0 the head's pre-activation is exactly 0 → softmax over BINS is
+    # uniform → expected V/reward = mid-bin in transformed space, which
+    # collapses the multi-thousand-batch overestimation-correction window
+    # that otherwise lands the policy in a bad local mode.
+    # See `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md` (Phase 4 blocker #1).
+    #
+    # PredModel = Sequential[LinearMish, Parallel[PolicyHead, ValueHead]]
+    #   → zero the whole trailing Parallel (last layer).
+    # DynModel  = Sequential[SplitApply, LinearMish, LinearMish,
+    #                        Parallel[NextLatent, RewardHead]]
+    #   → zero only branch 1 (reward head) of the trailing Parallel.
+    #     Zeroing the NextLatent branch would collapse the latent
+    #     representation.
+    #
+    # We can't bury this in a method on `GenericEZV2ContinuousAgent`
+    # because the agent's `Config` is the `EZV2DiscreteConfig` trait,
+    # which types PredModel/DynModel as the generic `Model` trait — its
+    # Sequential/Parallel-specific `_param_offset` and `model_types`
+    # accessors are only visible when we hold the concrete struct type.
+    comptime PRED_N = Config.PredModel.N
+    comptime PRED_HEADS_OFF = Config.PredModel._param_offset[PRED_N - 1]()
+    for i in range(PRED_HEADS_OFF, Config.PredModel.PARAM_SIZE):
+        agent.state.prediction.params[i] = Scalar[dtype](0.0)
+
+    comptime DYN_N = Config.DynModel.N
+    comptime DynLast = Config.DynModel.model_types[DYN_N - 1]
+    comptime DYN_PARALLEL_OFF = Config.DynModel._param_offset[DYN_N - 1]()
+    comptime DYN_REWARD_OFF_IN_PARALLEL = DynLast._param_offset[1]()
+    comptime DYN_REWARD_PS = DynLast.branch_types[1].PARAM_SIZE
+    var _dyn_reward_start = DYN_PARALLEL_OFF + DYN_REWARD_OFF_IN_PARALLEL
+    for i in range(_dyn_reward_start, _dyn_reward_start + DYN_REWARD_PS):
+        agent.state.dynamics.params[i] = Scalar[dtype](0.0)
+
+    # Mirror the zeroing into the target nets so the boot-v decode at
+    # train step 0 sees the same init as the online nets.
+    agent.update_target_networks(tau=1.0)
 
     var ctx = DeviceContext()
 
