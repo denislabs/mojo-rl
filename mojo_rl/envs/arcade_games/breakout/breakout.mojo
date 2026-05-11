@@ -86,7 +86,7 @@ comptime S_STEP_COUNT: Int = 51
 # ============================================================================
 
 
-struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
+struct BreakoutEnv[DTYPE: DType](
     BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv
 ):
     """Native Breakout environment — CPU+GPU dual path."""
@@ -761,8 +761,12 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -891,8 +895,12 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -923,7 +931,11 @@ struct BreakoutEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 ],
             ):
                 Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
-                    states, dones, Scalar[DType.uint32](rebind[Scalar[DType.uint64]](counter[0]))
+                    states,
+                    dones,
+                    Scalar[DType.uint32](
+                        rebind[Scalar[DType.uint64]](counter[0])
+                    ),
                 )
 
             ctx.enqueue_function[sel_reset_counter_wrapper](

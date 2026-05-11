@@ -1062,12 +1062,16 @@ struct GenericOffPolicyAgent[
         # Forward all target critics
         # Zero-length model state slice (critic is stateless; CriticGroup has no model_state_view)
         var critic_state = LayoutTensor[
-            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.Config.CriticModel.STATE_SIZE),
+            MutAnyOrigin,
         ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
         for i in range(Self.Config.NUM_CRITICS):
             var next_qi_t = ws.next_q(i)
             var p_ct = cpu_state.critics.target_params_view(i)
-            Self.CriticNet.forward[Self.BATCH](next_ci_t, next_qi_t, p_ct, critic_state)
+            Self.CriticNet.forward[Self.BATCH](
+                next_ci_t, next_qi_t, p_ct, critic_state
+            )
 
         # Phase 2c: TD targets -- delegate to Config.TargetValue
         var q1_tv = LayoutTensor[
@@ -1520,7 +1524,9 @@ struct GenericOffPolicyAgent[
         var p_critic = gpu_state.critics.online_params_view(0)
         # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
         var s_critic = LayoutTensor[
-            dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.Config.CriticModel.STATE_SIZE),
+            MutAnyOrigin,
         ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
 
         # Phase 2: Target actions — delegate to Config.TargetAction
@@ -1921,12 +1927,22 @@ struct GenericOffPolicyAgent[
                     mean_abs_act /= Float64(BS * Self.ACTIONS)
 
                     var step = self.train_step_count
-                    self.logger.value()[].log_scalar("critic_loss", critic_loss, step)
+                    self.logger.value()[].log_scalar(
+                        "critic_loss", critic_loss, step
+                    )
                     self.logger.value()[].log_scalar("mean_q", mean_q, step)
-                    self.logger.value()[].log_scalar("mean_target", mean_tgt, step)
-                    self.logger.value()[].log_scalar("mean_reward", mean_rew, step)
-                    self.logger.value()[].log_scalar("mean_next_q", mean_nq, step)
-                    self.logger.value()[].log_scalar("mean_done", mean_done, step)
+                    self.logger.value()[].log_scalar(
+                        "mean_target", mean_tgt, step
+                    )
+                    self.logger.value()[].log_scalar(
+                        "mean_reward", mean_rew, step
+                    )
+                    self.logger.value()[].log_scalar(
+                        "mean_next_q", mean_nq, step
+                    )
+                    self.logger.value()[].log_scalar(
+                        "mean_done", mean_done, step
+                    )
                     self.logger.value()[].log_scalar(
                         "mean_abs_action", mean_abs_act, step
                     )
@@ -2509,6 +2525,8 @@ struct GenericOffPolicyAgent[
             reward_scale: Scale rewards before storing in replay buffer (default: 1.0).
                 Higher values (e.g., 5.0) make Q-values larger, reducing relative
                 impact of entropy term and stabilizing training for some environments.
+            eval_every: Evaluate every N steps (default: 0).
+            eval_episodes: Number of evaluation episodes (default: 16).
 
         Returns:
             TrainingMetrics with episode-level statistics.
@@ -2609,6 +2627,14 @@ struct GenericOffPolicyAgent[
             logger: Optional metrics logger.
             gradient_steps: Train updates per collect iteration. 0 → n_envs.
             reward_scale: Multiplier on env reward before storing in buffer.
+            eval_env: Optional separate env pointer used for periodic deterministic
+                eval. Null pointer disables eval regardless of eval_every.
+            eval_every: Run deterministic eval every N transitions (0 disables).
+            eval_episodes: Episodes per eval pass.
+            eval_max_steps: Hard cap per eval episode (default: 1000, matches
+                Gymnasium MuJoCo time-limit truncation).
+            diag_every: Forwarded to the agent so it logs critic_loss / mean_q /
+                mean_abs_action / alpha every N train steps. 0 disables.
 
         Returns:
             TrainingMetrics with episode statistics.

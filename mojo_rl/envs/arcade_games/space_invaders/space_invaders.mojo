@@ -96,7 +96,7 @@ comptime S_STEP_COUNT: Int = 69
 # ============================================================================
 
 
-struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
+struct SpaceInvadersEnv[DTYPE: DType](
     BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv
 ):
     """Native Space Invaders — CPU+GPU dual path."""
@@ -863,8 +863,12 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -992,8 +996,12 @@ struct SpaceInvadersEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin

@@ -37,7 +37,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     # === CPU: Integrator step ===
     @staticmethod
     def physics_substep[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -78,7 +78,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     # === CPU: Custom obs extraction (9D with sin/cos encoding) ===
     @staticmethod
     def custom_extract_obs_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -109,7 +109,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     # === CPU: Pre-step hook ===
     @staticmethod
     def pre_step_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -126,7 +126,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     # === CPU: Reward + termination ===
     @staticmethod
     def compute_reward_and_done_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -166,7 +166,9 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
             Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
         )
 
-        var alive_bonus = Scalar[DTYPE](0.0) if terminated else Scalar[DTYPE](10.0)
+        var alive_bonus = Scalar[DTYPE](0.0) if terminated else Scalar[DTYPE](
+            10.0
+        )
         var reward = alive_bonus - dist_penalty - vel_penalty
 
         return (reward, terminated)
@@ -183,7 +185,7 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     # === GPU: Integrator step ===
     @staticmethod
     def physics_substep_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         NQ: Int,
         NV: Int,
@@ -300,7 +302,9 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
             Scalar[DTYPE](1e-3) * v1 * v1 + Scalar[DTYPE](5e-3) * v2 * v2
         )
 
-        var alive_bonus = Scalar[DTYPE](0.0) if terminated else Scalar[DTYPE](10.0)
+        var alive_bonus = Scalar[DTYPE](0.0) if terminated else Scalar[DTYPE](
+            10.0
+        )
         var reward = alive_bonus - dist_penalty - vel_penalty
 
         return (reward, terminated)

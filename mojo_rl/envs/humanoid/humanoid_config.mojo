@@ -37,7 +37,7 @@ struct HumanoidConfig(Phyics3dEnvConfig):
     # === CPU: Integrator step ===
     @staticmethod
     def physics_substep[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -78,7 +78,7 @@ struct HumanoidConfig(Phyics3dEnvConfig):
     # === CPU: Pre-step hook ===
     @staticmethod
     def pre_step_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -95,7 +95,7 @@ struct HumanoidConfig(Phyics3dEnvConfig):
     # === CPU: Reward + termination ===
     @staticmethod
     def compute_reward_and_done_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -157,7 +157,7 @@ struct HumanoidConfig(Phyics3dEnvConfig):
     # === GPU: Integrator step ===
     @staticmethod
     def physics_substep_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         NQ: Int,
         NV: Int,

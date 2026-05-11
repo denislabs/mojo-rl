@@ -197,7 +197,7 @@ def _resize_and_push[
 
 
 struct PongPixelEnv[
-    DTYPE: DType where DTYPE.is_floating_point(),
+    DTYPE: DType,
     FRAME_SKIP: Int = 1,
 ](BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv):
     """Native Pong with pixel observations for CNN-based training.
@@ -413,8 +413,12 @@ struct PongPixelEnv[
         mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
@@ -473,7 +477,9 @@ struct PongPixelEnv[
             # Frame skip: repeat physics with same action, accumulate rewards
             comptime for _skip in range(Self.FRAME_SKIP - 1):
                 # Skip remaining frames if episode already done
-                if rebind[Scalar[gpu_dtype]](dones[idx]) < Scalar[gpu_dtype](0.5):
+                if rebind[Scalar[gpu_dtype]](dones[idx]) < Scalar[gpu_dtype](
+                    0.5
+                ):
                     var prev_reward = rebind[Scalar[gpu_dtype]](rewards[idx])
                     PongEnv[DType.float32].step_kernel[BATCH_SIZE, STATE_SIZE](
                         states, actions, rewards, dones, rng_seed
@@ -644,8 +650,12 @@ struct PongPixelEnv[
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Reset done environments and clear their frame stacks."""
         var states = LayoutTensor[
@@ -687,7 +697,13 @@ struct PongPixelEnv[
                 # Reset physics
                 PongEnv[DType.float32].selective_reset_kernel[
                     BATCH_SIZE, STATE_SIZE
-                ](states, dones, Scalar[DType.uint32](rebind[Scalar[DType.uint64]](counter[0])))
+                ](
+                    states,
+                    dones,
+                    Scalar[DType.uint32](
+                        rebind[Scalar[DType.uint64]](counter[0])
+                    ),
+                )
 
                 # Clear frame stack for this env
                 var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV

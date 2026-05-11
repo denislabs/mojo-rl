@@ -578,22 +578,25 @@ def mat3_identity[DTYPE: DType]() -> Mat3[DTYPE]:
     return Mat3[DTYPE].identity()
 
 
-def mat3_rotation_x[
-    DTYPE: DType
-](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
+def mat3_rotation_x[DTYPE: DType](angle: Scalar[DTYPE]) -> Mat3[DTYPE]:
     """Create rotation matrix around X axis."""
+    comptime assert (
+        DTYPE.is_floating_point()
+    ), "DTYPE must be a floating point type"
     return Mat3.rotation_x(angle)
 
 
-def mat3_rotation_y[
-    DTYPE: DType
-](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
+def mat3_rotation_y[DTYPE: DType](angle: Scalar[DTYPE]) -> Mat3[DTYPE]:
     """Create rotation matrix around Y axis."""
+    comptime assert (
+        DTYPE.is_floating_point()
+    ), "DTYPE must be a floating point type"
     return Mat3.rotation_y(angle)
 
 
-def mat3_rotation_z[
-    DTYPE: DType
-](angle: Scalar[DTYPE]) -> Mat3[DTYPE] where DTYPE.is_floating_point():
+def mat3_rotation_z[DTYPE: DType](angle: Scalar[DTYPE]) -> Mat3[DTYPE]:
     """Create rotation matrix around Z axis."""
+    comptime assert (
+        DTYPE.is_floating_point()
+    ), "DTYPE must be a floating point type"
     return Mat3.rotation_z(angle)

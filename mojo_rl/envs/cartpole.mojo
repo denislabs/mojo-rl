@@ -119,11 +119,8 @@ struct CartPoleAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=1)
 
 
-struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
-    BoxDiscreteActionEnv
-    & DiscreteEnv
-    & GPUDiscreteEnv
-    & RenderableEnv
+struct CartPoleEnv[DTYPE: DType](
+    BoxDiscreteActionEnv & DiscreteEnv & GPUDiscreteEnv & RenderableEnv
 ):
     """Native Mojo CartPole environment with integrated SDL2 rendering.
 
@@ -425,6 +422,11 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         Returns:
             Tuple of (observation, reward, done).
         """
+
+        comptime assert (
+            Self.dtype.is_floating_point()
+        ), "DTYPE must be a floating point type"
+
         # Inline physics for maximum performance (avoid step() call overhead)
         var force = Scalar[Self.dtype](FORCE_MAG) if action == 1 else Scalar[
             Self.dtype
@@ -980,8 +982,12 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Launch step kernel on GPU with fused obs extraction.
 
@@ -1133,8 +1139,12 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Launch selective reset kernel on GPU - only resets done environments.
 
@@ -1179,7 +1189,11 @@ struct CartPoleEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 ],
             ):
                 Self.selective_reset_kernel[BATCH_SIZE, STATE_SIZE](
-                    states, dones, Scalar[DType.uint32](rebind[Scalar[DType.uint64]](counter[0]))
+                    states,
+                    dones,
+                    Scalar[DType.uint32](
+                        rebind[Scalar[DType.uint64]](counter[0])
+                    ),
                 )
 
             ctx.enqueue_function[selective_reset_counter_wrapper](

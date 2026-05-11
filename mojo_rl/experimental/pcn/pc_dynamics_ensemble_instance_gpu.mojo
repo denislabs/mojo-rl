@@ -52,7 +52,7 @@ struct PCDynamicsEnsembleInstanceGPU[
     # times ROLLOUT_BATCH at instantiation. Kept comptime so allocation is
     # static. Default 1 means the actor doesn't need scratch.
     R_WS_SIZE: Int = 1,
-    dtype: DType where dtype.is_floating_point() = DType.float32,
+    dtype: DType = DType.float32,
 ](Movable):
     """Owning GPU wrapper around `PCDynamicsEnsembleGPU`.
 
@@ -695,8 +695,13 @@ struct PCDynamicsEnsembleInstanceGPU[
         var pred_mu = self._mu_eps_view()
         var pred_a = self._a_below_view()
         Self.ENS.predict_member_gpu[Self.DYN_BATCH](
-            ctx, m, s_a, self.params_dbuf.unsafe_ptr(),
-            pred_mu, pred_a, e_out_t,
+            ctx,
+            m,
+            s_a,
+            self.params_dbuf.unsafe_ptr(),
+            pred_mu,
+            pred_a,
+            e_out_t,
         )
         ctx.enqueue_copy(self.e_out_host, self.e_out_dbuf)
         ctx.enqueue_copy(self.e_target_host, self.target_dbuf)
@@ -711,17 +716,13 @@ struct PCDynamicsEnsembleInstanceGPU[
                 var diff = p - t
                 sum_sq_obs += diff * diff
             # Reward dim is at index OBS_DIM (= READOUT - 1).
-            var p_r = Float64(
-                self.e_out_host.unsafe_ptr()[row + Self.OBS_DIM]
-            )
+            var p_r = Float64(self.e_out_host.unsafe_ptr()[row + Self.OBS_DIM])
             var t_r = Float64(
                 self.e_target_host.unsafe_ptr()[row + Self.OBS_DIM]
             )
             var diff_r = p_r - t_r
             sum_sq_rew += diff_r * diff_r
-        var mse_obs = sum_sq_obs / Float64(
-            Self.DYN_BATCH * Self.OBS_DIM
-        )
+        var mse_obs = sum_sq_obs / Float64(Self.DYN_BATCH * Self.OBS_DIM)
         var mse_rew = sum_sq_rew / Float64(Self.DYN_BATCH)
         var mse_total = (sum_sq_obs + sum_sq_rew) / Float64(
             Self.DYN_BATCH * Self.DYN.READOUT
@@ -993,20 +994,24 @@ struct PCDynamicsEnsembleInstanceGPU[
             )
         )
 
-        comptime rew_mean_k = compute_scaler_mean_kernel[
-            Self.dtype, BUF_CAP, 1
-        ]
-        comptime rew_std_k = compute_scaler_std_kernel[
-            Self.dtype, BUF_CAP, 1
-        ]
+        comptime rew_mean_k = compute_scaler_mean_kernel[Self.dtype, BUF_CAP, 1]
+        comptime rew_std_k = compute_scaler_std_kernel[Self.dtype, BUF_CAP, 1]
         ctx.enqueue_function[rew_mean_k](
-            rew_mean_t, rew_data_t, n,
-            grid_dim=(1,), block_dim=(1,),
+            rew_mean_t,
+            rew_data_t,
+            n,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
         var min_std = Scalar[Self.dtype](1e-12)
         ctx.enqueue_function[rew_std_k](
-            rew_std_t, rew_data_t, rew_mean_t, n, min_std,
-            grid_dim=(1,), block_dim=(1,),
+            rew_std_t,
+            rew_data_t,
+            rew_mean_t,
+            n,
+            min_std,
+            grid_dim=(1,),
+            block_dim=(1,),
         )
 
     # =========================================================================

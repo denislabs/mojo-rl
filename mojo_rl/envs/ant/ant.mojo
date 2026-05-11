@@ -16,7 +16,7 @@ from ..phyics3d_env import Phyics3dEnv
 # =============================================================================
 
 comptime Ant[
-    DTYPE: DType where DTYPE.is_floating_point() = DType.float64,
+    DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = True,
 ] = Phyics3dEnv[
     AntModel,

@@ -499,7 +499,9 @@ struct ScaledDotProductAttention[
         Causal mode: j-loop bounded by `i + 1`. Cache slots for j > i are
         never written and never read (backward respects the same bound).
         """
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var blk = Int(block_idx.x)
         var b = blk // Self.n_heads
         var h = blk % Self.n_heads
@@ -521,14 +523,26 @@ struct ScaledDotProductAttention[
             var i = idx0 // Self.head_dim
             var d = idx0 % Self.head_dim
             var inp_q = b * Self.IN_DIM + i * Self.dim + h_off + d
-            var inp_k = b * Self.IN_DIM + Self._k_offset() + i * Self.dim + h_off + d
-            var inp_v = b * Self.IN_DIM + Self._v_offset() + i * Self.dim + h_off + d
+            var inp_k = (
+                b * Self.IN_DIM + Self._k_offset() + i * Self.dim + h_off + d
+            )
+            var inp_v = (
+                b * Self.IN_DIM + Self._v_offset() + i * Self.dim + h_off + d
+            )
             var c_q = b * Self.CACHE_SIZE + i * Self.dim + h_off + d
             var c_k = (
-                b * Self.CACHE_SIZE + Self._k_offset() + i * Self.dim + h_off + d
+                b * Self.CACHE_SIZE
+                + Self._k_offset()
+                + i * Self.dim
+                + h_off
+                + d
             )
             var c_v = (
-                b * Self.CACHE_SIZE + Self._v_offset() + i * Self.dim + h_off + d
+                b * Self.CACHE_SIZE
+                + Self._v_offset()
+                + i * Self.dim
+                + h_off
+                + d
             )
             cache.ptr[c_q] = rebind[Scalar[dtype]](input.ptr[inp_q])
             cache.ptr[c_k] = rebind[Scalar[dtype]](input.ptr[inp_k])
@@ -619,9 +633,7 @@ struct ScaledDotProductAttention[
                         ]
                     )
                     acc += rebind[Scalar[dtype]](cache.ptr[aidx]) * v
-                output.ptr[
-                    b * Self.OUT_DIM + i * Self.dim + h_off + d
-                ] = acc
+                output.ptr[b * Self.OUT_DIM + i * Self.dim + h_off + d] = acc
 
             i += bs
 
@@ -649,9 +661,7 @@ struct ScaledDotProductAttention[
         ](input.ptr)
 
         comptime if Self.USE_MAX_KERNELS and has_nvidia_gpu_accelerator():
-            Self._eval_gpu_bmm[BATCH, dtype](
-                ctx, output, input_immut, cache
-            )
+            Self._eval_gpu_bmm[BATCH, dtype](ctx, output, input_immut, cache)
         else:
 
             @parameter
@@ -664,7 +674,9 @@ struct ScaledDotProductAttention[
                     dtype, Layout.row_major(BATCH, Self.IN_DIM), ImmutAnyOrigin
                 ],
                 cache: LayoutTensor[
-                    dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(BATCH, Self.CACHE_SIZE),
+                    MutAnyOrigin,
                 ],
             ):
                 Self.eval_kernel_impl[BATCH, dtype](output, input, cache)
@@ -759,20 +771,12 @@ struct ScaledDotProductAttention[
 
             # Source positions in input (input layout: per-sample
             # [Q_0..Q_seq | K_0..K_seq | V_0..V_seq], each Q_t/K_t/V_t is dim-wide)
-            var inp_q = (
-                b * Self.IN_DIM + t * Self.dim + col_in_dim
-            )
+            var inp_q = b * Self.IN_DIM + t * Self.dim + col_in_dim
             var inp_k = (
-                b * Self.IN_DIM
-                + Self._k_offset()
-                + t * Self.dim
-                + col_in_dim
+                b * Self.IN_DIM + Self._k_offset() + t * Self.dim + col_in_dim
             )
             var inp_v = (
-                b * Self.IN_DIM
-                + Self._v_offset()
-                + t * Self.dim
-                + col_in_dim
+                b * Self.IN_DIM + Self._v_offset() + t * Self.dim + col_in_dim
             )
 
             # Cache positions (same layout as before — backward reads here)
@@ -862,7 +866,9 @@ struct ScaledDotProductAttention[
             ],
             scale_v: Scalar[dtype],
         ):
-            comptime assert dtype.is_floating_point(), "dtype must be floating point"
+            comptime assert (
+                dtype.is_floating_point()
+            ), "dtype must be floating point"
             # 1 block per (b, h) — threads stride over rows i.
             var blk = Int(block_idx.x)
             if blk >= BH:
@@ -892,8 +898,7 @@ struct ScaledDotProductAttention[
                 var max_score = Scalar[dtype](-1e30)
                 for j in range(j_end):
                     var s = (
-                        rebind[Scalar[dtype]](scores.ptr[row_off + j])
-                        * scale_v
+                        rebind[Scalar[dtype]](scores.ptr[row_off + j]) * scale_v
                     )
                     scores.ptr[row_off + j] = s
                     if s > max_score:
@@ -916,8 +921,7 @@ struct ScaledDotProductAttention[
                 var inv_sum = Scalar[dtype](1) / sum_exp
                 for j in range(j_end):
                     var w = (
-                        rebind[Scalar[dtype]](scores.ptr[row_off + j])
-                        * inv_sum
+                        rebind[Scalar[dtype]](scores.ptr[row_off + j]) * inv_sum
                     )
                     scores.ptr[row_off + j] = w
                     cache.ptr[cache_row_off + j] = w
@@ -989,9 +993,7 @@ struct ScaledDotProductAttention[
 
             var bh = b * Self.n_heads + h
             var packed_idx = bh * Self.seq_len * hd + t * hd + d
-            var out_idx = (
-                b * Self.OUT_DIM + t * Self.dim + h * hd + d
-            )
+            var out_idx = b * Self.OUT_DIM + t * Self.dim + h * hd + d
             output.ptr[out_idx] = packed_out.ptr[packed_idx]
 
         var packed_out_lt = LayoutTensor[
@@ -1048,12 +1050,14 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """dV[j, h_off+d] = Σ_i attn[i,j] * grad_out[i, h_off+d].
+        """Formula: dV[j, h_off+d] = Σ_i attn[i,j] * grad_out[i, h_off+d].
 
         Causal: only i ≥ j contribute (attn[i,j]=0 for j>i, equivalently for
         i<j). So the inner loop runs i in [j, seq_len).
         """
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var blk = Int(block_idx.x)
         var b = blk // Self.n_heads
         var h = blk % Self.n_heads
@@ -1083,17 +1087,11 @@ struct ScaledDotProductAttention[
                     + j
                 )
                 var go = rebind[Scalar[dtype]](
-                    grad_output.ptr[
-                        b * Self.OUT_DIM + i * Self.dim + h_off + d
-                    ]
+                    grad_output.ptr[b * Self.OUT_DIM + i * Self.dim + h_off + d]
                 )
                 acc += rebind[Scalar[dtype]](cache.ptr[aidx]) * go
             var dv_idx = (
-                b * Self.IN_DIM
-                + Self._v_offset()
-                + j * Self.dim
-                + h_off
-                + d
+                b * Self.IN_DIM + Self._v_offset() + j * Self.dim + h_off + d
             )
             grad_input.ptr[dv_idx] = grad_input.ptr[dv_idx] + acc
             idx0 += bs
@@ -1122,7 +1120,9 @@ struct ScaledDotProductAttention[
         Per-row d_attn[j] is recomputed (CPU vjp does the same two-pass to
         avoid a per-row scratch buffer).
         """
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var blk = Int(block_idx.x)
         var b = blk // Self.n_heads
         var h = blk % Self.n_heads
@@ -1223,9 +1223,7 @@ struct ScaledDotProductAttention[
                         ]
                     )
                     acc += d_score * k
-                var dq_idx = (
-                    b * Self.IN_DIM + i * Self.dim + h_off + d
-                )
+                var dq_idx = b * Self.IN_DIM + i * Self.dim + h_off + d
                 grad_input.ptr[dq_idx] = grad_input.ptr[dq_idx] + acc
 
             i += bs
@@ -1242,12 +1240,14 @@ struct ScaledDotProductAttention[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), ImmutAnyOrigin
         ],
     ):
-        """dK[j, h_off+d] = Σ_i d_score[i,j] * Q[i, h_off+d].
+        """Formula: dK[j, h_off+d] = Σ_i d_score[i,j] * Q[i, h_off+d].
 
         Reads d_score from cache.attn (vjp_dscore_dQ_kernel overwrote it).
         Causal: only i ≥ j contribute.
         """
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var blk = Int(block_idx.x)
         var b = blk // Self.n_heads
         var h = blk % Self.n_heads
@@ -1282,11 +1282,7 @@ struct ScaledDotProductAttention[
                 )
                 acc += d_score * q
             var dk_idx = (
-                b * Self.IN_DIM
-                + Self._k_offset()
-                + j * Self.dim
-                + h_off
-                + d
+                b * Self.IN_DIM + Self._k_offset() + j * Self.dim + h_off + d
             )
             grad_input.ptr[dk_idx] = grad_input.ptr[dk_idx] + acc
             idx0 += bs
@@ -1336,9 +1332,7 @@ struct ScaledDotProductAttention[
         ):
             Self.vjp_zero_grad_input_kernel[BATCH, dtype](grad_input)
 
-        comptime ZERO_BLOCKS = (
-            BATCH * Self.IN_DIM + TPB - 1
-        ) // TPB
+        comptime ZERO_BLOCKS = (BATCH * Self.IN_DIM + TPB - 1) // TPB
         ctx.enqueue_function[zero_wrapper](
             grad_input,
             grid_dim=(ZERO_BLOCKS,),
@@ -1598,7 +1592,9 @@ struct ScaledDotProductAttention[
             ],
             scale_v: Scalar[dtype],
         ):
-            comptime assert dtype.is_floating_point(), "dtype must be floating point"
+            comptime assert (
+                dtype.is_floating_point()
+            ), "dtype must be floating point"
             # 1 block per (b, h); threads stride over rows i.
             var blk = Int(block_idx.x)
             if blk >= BH:
@@ -1623,17 +1619,13 @@ struct ScaledDotProductAttention[
                 # First pass: compute sum_k a_k * dattn_k for this row.
                 var s = Scalar[dtype](0)
                 for j in range(Self.seq_len):
-                    var a = rebind[Scalar[dtype]](
-                        cache.ptr[cache_row_off + j]
-                    )
+                    var a = rebind[Scalar[dtype]](cache.ptr[cache_row_off + j])
                     var d_a = rebind[Scalar[dtype]](dattn.ptr[row_off + j])
                     s += a * d_a
 
                 # Second pass: dscore[j] = scale * a[j] * (dattn[j] - s).
                 for j in range(Self.seq_len):
-                    var a = rebind[Scalar[dtype]](
-                        cache.ptr[cache_row_off + j]
-                    )
+                    var a = rebind[Scalar[dtype]](cache.ptr[cache_row_off + j])
                     var d_a = rebind[Scalar[dtype]](dattn.ptr[row_off + j])
                     dscore.ptr[row_off + j] = scale_v * a * (d_a - s)
 
@@ -1818,16 +1810,10 @@ struct ScaledDotProductAttention[
 
             var gi_q = b * Self.IN_DIM + t * Self.dim + col_in_dim
             var gi_k = (
-                b * Self.IN_DIM
-                + Self._k_offset()
-                + t * Self.dim
-                + col_in_dim
+                b * Self.IN_DIM + Self._k_offset() + t * Self.dim + col_in_dim
             )
             var gi_v = (
-                b * Self.IN_DIM
-                + Self._v_offset()
-                + t * Self.dim
-                + col_in_dim
+                b * Self.IN_DIM + Self._v_offset() + t * Self.dim + col_in_dim
             )
 
             grad_input.ptr[gi_q] = rebind[Scalar[dtype]](dQ.ptr[packed_idx])

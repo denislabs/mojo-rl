@@ -427,6 +427,7 @@ def run_offpolicy_continuous_train_gpu[
         CurriculumType: Curriculum scheduler type.
         USE_CUDA_GRAPH: Use CUDA graph capture for training steps (default: False).
         USE_ENV_CUDA_GRAPH: Use CUDA graph capture for environment steps (default: False).
+        EVAL_ENVS: Number of evaluation environments (default: 16).
 
     Args:
         agent: Off-policy agent with GPU support (updated in-place).
@@ -446,6 +447,8 @@ def run_offpolicy_continuous_train_gpu[
         algorithm_name: Name for metrics labeling.
         target_total_steps: Total steps for curriculum/annealing progress (default: 0 = disabled).
         reward_scale: Reward scale factor (default: 1.0).
+        eval_every: Evaluate every N steps (0 disables).
+        eval_episodes: Episodes per eval pass.
 
     Returns:
         TrainingMetrics with episode-level statistics.
@@ -685,7 +688,9 @@ def run_offpolicy_continuous_train_gpu[
                 var ec_t = LayoutTensor[
                     dtype, Layout.row_major(1), MutAnyOrigin
                 ](gpu_episode_count_buf.unsafe_ptr())
-                ctx.enqueue_function[accum_rewards_wrapper](er_t, rw_t, grid_dim=(env_blocks,), block_dim=(tpb,))
+                ctx.enqueue_function[accum_rewards_wrapper](
+                    er_t, rw_t, grid_dim=(env_blocks,), block_dim=(tpb,)
+                )
                 ctx.enqueue_function[incr_steps_wrapper](
                     es_t, grid_dim=(env_blocks,), block_dim=(tpb,)
                 )
@@ -792,8 +797,12 @@ def run_offpolicy_continuous_train_gpu[
                             obs_buf,
                             terminated_buf,
                         )
-                    ctx.enqueue_function[accum_rewards_wrapper](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
-                    ctx.enqueue_function[incr_steps_wrapper](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[accum_rewards_wrapper](
+                        er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,)
+                    )
+                    ctx.enqueue_function[incr_steps_wrapper](
+                        es_g, grid_dim=(env_blocks,), block_dim=(tpb,)
+                    )
                     ctx.enqueue_function[log_reset_wrapper](
                         dn_g,
                         er_g,
@@ -868,8 +877,12 @@ def run_offpolicy_continuous_train_gpu[
                             obs_buf,
                             terminated_buf,
                         )
-                    ctx.enqueue_function[accum_rewards_wrapper](er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,))
-                    ctx.enqueue_function[incr_steps_wrapper](es_g, grid_dim=(env_blocks,), block_dim=(tpb,))
+                    ctx.enqueue_function[accum_rewards_wrapper](
+                        er_g, rw_g, grid_dim=(env_blocks,), block_dim=(tpb,)
+                    )
+                    ctx.enqueue_function[incr_steps_wrapper](
+                        es_g, grid_dim=(env_blocks,), block_dim=(tpb,)
+                    )
                     ctx.enqueue_function[log_reset_wrapper](
                         dn_g,
                         er_g,
@@ -1172,7 +1185,9 @@ def run_offpolicy_continuous_train_gpu[
 
             # Logger: record metrics
             if Bool(logger):
-                logger.value()[].log_scalar("avg_reward", last_avg_reward, total_steps)
+                logger.value()[].log_scalar(
+                    "avg_reward", last_avg_reward, total_steps
+                )
                 logger.value()[].log_scalar(
                     "episodes", Float64(completed_episodes), total_steps
                 )
@@ -1247,9 +1262,7 @@ def run_offpolicy_continuous_train_gpu[
                 comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
                     var cp = Float64(0.0)
                     if target_total_steps > 0:
-                        cp = Float64(total_steps) / Float64(
-                            target_total_steps
-                        )
+                        cp = Float64(total_steps) / Float64(target_total_steps)
                     if cp > 1.0:
                         cp = 1.0
                     var stage = CurriculumType.get_stage_name[dtype](
@@ -1681,7 +1694,9 @@ def run_offpolicy_discrete_train_gpu[
 
             # Logger: record metrics
             if Bool(logger):
-                logger.value()[].log_scalar("avg_reward", last_avg_reward, total_steps)
+                logger.value()[].log_scalar(
+                    "avg_reward", last_avg_reward, total_steps
+                )
                 logger.value()[].log_scalar(
                     "episodes", Float64(completed_episodes), total_steps
                 )
@@ -1730,9 +1745,7 @@ def run_offpolicy_discrete_train_gpu[
                 comptime if E.STEP_WS_SHARED + E.STEP_WS_PER_ENV > 0:
                     var cp = Float64(0.0)
                     if target_total_steps > 0:
-                        cp = Float64(total_steps) / Float64(
-                            target_total_steps
-                        )
+                        cp = Float64(total_steps) / Float64(target_total_steps)
                     if cp > 1.0:
                         cp = 1.0
                     var stage = CurriculumType.get_stage_name[dtype](

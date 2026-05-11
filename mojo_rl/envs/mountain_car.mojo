@@ -88,7 +88,7 @@ struct MountainCarAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Self(direction=2)
 
 
-struct MountainCarEnv[DTYPE: DType where DTYPE.is_floating_point()](
+struct MountainCarEnv[DTYPE: DType](
     BoxDiscreteActionEnv & DiscreteEnv & RenderableEnv
 ):
     """Native Mojo MountainCar environment with integrated SDL3 rendering.

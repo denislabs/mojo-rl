@@ -43,6 +43,7 @@ struct NormedLinear[
         in_dim: Input dimension.
         out_dim: Output dimension.
         EPSILON: LayerNorm epsilon for numerical stability.
+        USE_MAX_KERNELS: Whether to use the max kernels for the linear and layer norm operations.
 
     Params layout: [W (in*out) | b (out) | gamma (out) | beta (out)]
     PARAM_SIZE = in*out + 3*out
@@ -112,9 +113,7 @@ struct NormedLinear[
         var W_view = LayoutTensor[
             dtype, Layout.row_major(Self.in_dim * Self.out_dim), MutAnyOrigin
         ](params.ptr)
-        INIT.init[Self.in_dim * Self.out_dim, Self.IN_DIM, Self.OUT_DIM](
-            W_view
-        )
+        INIT.init[Self.in_dim * Self.out_dim, Self.IN_DIM, Self.OUT_DIM](W_view)
 
         # b = 0 (standard linear-layer bias init)
         for i in range(Self.out_dim):
@@ -1957,9 +1956,7 @@ struct NormedLinear[
                 # Accumulate (+=) into dW. Multi-call backward (TDMPC2
                 # world-model K-step BPTT) requires accumulation across calls.
                 # Caller pre-zeros grad_params via zero_grads.
-                dW[global_row, global_col] = (
-                    dW[global_row, global_col] + dW_acc
-                )
+                dW[global_row, global_col] = dW[global_row, global_col] + dW_acc
 
             # db reduction
             if dW_block_y == 0 and global_col < Self.OUT_DIM:
@@ -2075,9 +2072,7 @@ struct NormedLinear[
                 DeviceContextPtr(ctx),
             )
 
-            comptime bias_blocks = (
-                BATCH * Self.OUT_DIM + TPB - 1
-            ) // TPB
+            comptime bias_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
             @parameter
             @always_inline
@@ -2240,9 +2235,7 @@ struct NormedLinear[
                 DeviceContextPtr(ctx),
             )
 
-            comptime bias_blocks_nc = (
-                BATCH * Self.OUT_DIM + TPB - 1
-            ) // TPB
+            comptime bias_blocks_nc = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
             @parameter
             @always_inline
@@ -2538,9 +2531,7 @@ struct NormedLinear[
                     ImmutAnyOrigin,
                 ],
             ):
-                Self._backward_dW_kernel[BATCH, dtype](
-                    dW, cache, d_linear_out
-                )
+                Self._backward_dW_kernel[BATCH, dtype](dW, cache, d_linear_out)
 
             ctx.enqueue_function[dW_wrapper_max](
                 dW,

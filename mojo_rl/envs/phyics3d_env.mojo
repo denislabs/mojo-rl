@@ -71,7 +71,7 @@ from mojo_rl.physics3d.model.model_def import ModelDefLike
 struct Phyics3dEnv[
     MODEL_DEF: ModelDefLike,
     CONFIG: Phyics3dEnvConfig,
-    DTYPE: DType where DTYPE.is_floating_point() = DType.float64,
+    DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = False,
 ](
     BoxContinuousActionEnv,
@@ -165,7 +165,9 @@ struct Phyics3dEnv[
     var prev_x: Scalar[Self.DTYPE]
 
     # Renderer (optional)
-    var _renderer: Optional[UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutAnyOrigin]]
+    var _renderer: Optional[
+        UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutAnyOrigin]
+    ]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -463,8 +465,12 @@ struct Phyics3dEnv[
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[gpu_dtype]] = [],
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Batched GPU step function using physics engine."""
         comptime MODEL_SIZE = model_size_with_invweight[
@@ -657,8 +663,12 @@ struct Phyics3dEnv[
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Reset only done environments on GPU."""
         var states = LayoutTensor[
@@ -824,12 +834,8 @@ struct Phyics3dEnv[
             MutAnyOrigin,
         ](obs_buf.unsafe_ptr())
 
-        comptime QPOS_OFF = qpos_offset[
-            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV
-        ]()
-        comptime QVEL_OFF = qvel_offset[
-            Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV
-        ]()
+        comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
+        comptime QVEL_OFF = qvel_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
         comptime XPOS_OFF = xpos_offset[
             Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV, Self.MODEL_DEF.NBODY
         ]()
@@ -910,8 +916,10 @@ struct Phyics3dEnv[
             gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
         ](dones_buf.unsafe_ptr())
         ctx.enqueue_function[term_obs_wrapper](
-            obs_t, dones_t,
-            grid_dim=(BLOCKS,), block_dim=(TPB_VAL,),
+            obs_t,
+            dones_t,
+            grid_dim=(BLOCKS,),
+            block_dim=(TPB_VAL,),
         )
 
     # =========================================================================

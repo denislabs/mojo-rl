@@ -103,7 +103,7 @@ from mojo_rl.physics2d import (
 
 
 struct BipedalWalker[
-    DTYPE: DType where DTYPE.is_floating_point(),
+    DTYPE: DType,
 ](
     BoxContinuousActionEnv,
     Copyable,
@@ -1476,8 +1476,12 @@ struct BipedalWalker[
         mut obs_buf: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """GPU step kernel for batched continuous actions."""
         # Workspace layout (total = SHAPES_SIZE + BATCH * PER_ENV_SIZE):
@@ -1607,8 +1611,12 @@ struct BipedalWalker[
         mut states_buf: DeviceBuffer[dtype],
         mut dones_buf: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """GPU selective reset kernel - resets only done environments."""
         var states = LayoutTensor[
@@ -1629,7 +1637,9 @@ struct BipedalWalker[
             @always_inline
             def selective_reset_counter_wrapper(
                 states: LayoutTensor[
-                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
                 ],
                 dones: LayoutTensor[
                     dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -1643,7 +1653,11 @@ struct BipedalWalker[
                     return
                 var done_val = dones[i]
                 if done_val > Scalar[dtype](0.5):
-                    var combined_seed = Int(rebind[Scalar[DType.uint64]](counter[0])) * 2654435761 + (i + 1) * 12345
+                    var combined_seed = (
+                        Int(rebind[Scalar[DType.uint64]](counter[0]))
+                        * 2654435761
+                        + (i + 1) * 12345
+                    )
                     BipedalWalker[Self.dtype]._reset_env_gpu[
                         BATCH_SIZE, STATE_SIZE
                     ](states, i, combined_seed)
@@ -1662,7 +1676,9 @@ struct BipedalWalker[
             @always_inline
             def selective_reset_wrapper(
                 states: LayoutTensor[
-                    dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                    MutAnyOrigin,
                 ],
                 dones: LayoutTensor[
                     dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin

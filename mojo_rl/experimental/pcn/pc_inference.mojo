@@ -1,4 +1,4 @@
-"""pc_inference — DEPRECATED entry point; inference is now a method on PCTrainer.
+"""DEPRECATED pc_inference — entry point; inference is now a method on PCTrainer.
 
 The local-rule x-update logic now lives at:
     PCTrainer._inference_step  (Phase C: dx update)

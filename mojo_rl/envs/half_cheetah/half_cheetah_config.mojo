@@ -42,7 +42,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     # === CPU: Integrator step ===
     @staticmethod
     def physics_substep[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -83,7 +83,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     # === CPU: Pre-step hook ===
     @staticmethod
     def pre_step_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -99,7 +99,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     # === CPU: Reward + termination ===
     @staticmethod
     def compute_reward_and_done_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -154,7 +154,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     # === GPU: Integrator step ===
     @staticmethod
     def physics_substep_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         NQ: Int,
         NV: Int,
@@ -266,9 +266,7 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
         var abs_angle = y_angle
         if abs_angle < Scalar[DTYPE](0.0):
             abs_angle = -abs_angle
-        var angle_penalty = Scalar[DTYPE](
-            Self.ANGLE_PENALTY_WEIGHT
-        ) * abs_angle
+        var angle_penalty = Scalar[DTYPE](Self.ANGLE_PENALTY_WEIGHT) * abs_angle
 
         var reward = forward_reward - ctrl_cost - angle_penalty
 

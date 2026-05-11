@@ -33,8 +33,10 @@ struct LogStdBoundOp[
 
     Parameters:
         dim: Per-sample feature dimension.
-        log_std_min_num/den: Numerator/denominator of the lower bound.
-        log_std_max_num/den: Numerator/denominator of the upper bound.
+        log_std_min_num: Numerator of the lower bound.
+        log_std_min_den: Denominator of the lower bound.
+        log_std_max_num: Numerator of the upper bound.
+        log_std_max_den: Denominator of the upper bound.
     """
 
     comptime OP_ID: Int = OpID.LOG_STD_BOUND._value
@@ -96,7 +98,9 @@ struct LogStdBoundOp[
             dtype, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var lo = Self._lo[dtype]()
         var half_dif = Self._half_dif[dtype]()
         for b in range(BATCH):
@@ -157,7 +161,9 @@ struct LogStdBoundOp[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
     ):
-        comptime assert dtype.is_floating_point(), "dtype must be floating point"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "dtype must be floating point"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * Self.dim:
             return

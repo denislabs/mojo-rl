@@ -226,6 +226,11 @@ struct GenericMuZeroAgent[
             temperature: Initial action selection temperature (default: 1.0).
             temperature_decay_steps: Steps to decay temperature to 0.
             max_grad_norm: Maximum gradient norm for clipping (default: 10.0).
+            target_tau: Target network update rate (default: 0.01).
+            pred_head_input_dim: Input dimension for the prediction head (default: 0).
+            per_alpha: Prioritized experience replay alpha (default: 0.5).
+            per_beta_init: Prioritized experience replay beta initial value (default: 0.4).
+            per_eps: Prioritized experience replay epsilon (default: 1e-6).
         """
         self.state = Self.StateType()
         # Zero pred policy + value head Linear params (W and b) to fix the
@@ -408,19 +413,13 @@ struct GenericMuZeroAgent[
             if max_raw <= 0.0:
                 max_raw = 1.0
             for b in range(BATCH):
-                gpu.per_is_weights_host[b] = Scalar[dtype](
-                    raw_w[b] / max_raw
-                )
+                gpu.per_is_weights_host[b] = Scalar[dtype](raw_w[b] / max_raw)
 
-        ctx.enqueue_copy(
-            gpu.per_sampled_envs_buf, gpu.per_sampled_envs_host
-        )
+        ctx.enqueue_copy(gpu.per_sampled_envs_buf, gpu.per_sampled_envs_host)
         ctx.enqueue_copy(
             gpu.per_sampled_starts_buf, gpu.per_sampled_starts_host
         )
-        ctx.enqueue_copy(
-            gpu.per_is_weights_buf, gpu.per_is_weights_host
-        )
+        ctx.enqueue_copy(gpu.per_is_weights_buf, gpu.per_is_weights_host)
 
     def _per_update_priorities[
         N_ENVS_P: Int = 64,
@@ -503,9 +502,7 @@ struct GenericMuZeroAgent[
             gpu.representation.params_host, gpu.representation.params_buf
         )
         ctx.enqueue_copy(gpu.dynamics.params_host, gpu.dynamics.params_buf)
-        ctx.enqueue_copy(
-            gpu.prediction.params_host, gpu.prediction.params_buf
-        )
+        ctx.enqueue_copy(gpu.prediction.params_host, gpu.prediction.params_buf)
         ctx.synchronize()
 
         var rep_n = Float64(0.0)
@@ -522,6 +519,7 @@ struct GenericMuZeroAgent[
             pred_n += v * v
 
         from std.math import sqrt as _sqrt
+
         return (_sqrt(rep_n), _sqrt(dyn_n), _sqrt(pred_n))
 
     def _global_clip_grad_norm[
@@ -594,9 +592,7 @@ struct GenericMuZeroAgent[
             pred_dirty = True
 
         if rep_dirty:
-            ctx.enqueue_copy(
-                gpu.representation.grads_buf, gpu.rep_grads_host
-            )
+            ctx.enqueue_copy(gpu.representation.grads_buf, gpu.rep_grads_host)
         if dyn_dirty:
             ctx.enqueue_copy(gpu.dynamics.grads_buf, gpu.dyn_grads_host)
         if pred_dirty:
@@ -994,7 +990,11 @@ struct GenericMuZeroAgent[
         ](self.state._rep_cache)
 
         Self.RepNet.forward_with_cache[BATCH](
-            obs_t, h0_t, self.state.representation.params_view(), self.state.representation.model_state_view(), rep_cache_t
+            obs_t,
+            h0_t,
+            self.state.representation.params_view(),
+            self.state.representation.model_state_view(),
+            rep_cache_t,
         )
 
         # Scale hidden state
@@ -1019,7 +1019,11 @@ struct GenericMuZeroAgent[
             ](self.state._pred_caches + pred_cache_offset)
 
             Self.PredNet.forward_with_cache[BATCH](
-                hk_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view(), pred_cache_t
+                hk_t,
+                pred_t,
+                self.state.prediction.params_view(),
+                self.state.prediction.model_state_view(),
+                pred_cache_t,
             )
 
             # Compute policy and value loss for this step
@@ -1573,7 +1577,10 @@ struct GenericMuZeroAgent[
         ](pred_ptr)
 
         Self.PredNet.forward[B](
-            obs_t, pred_t, self.state.prediction.params_view(), self.state.prediction.model_state_view()
+            obs_t,
+            pred_t,
+            self.state.prediction.params_view(),
+            self.state.prediction.model_state_view(),
         )
 
         # Argmax over legal actions (first ACT elements are policy logits)
@@ -1996,6 +2003,8 @@ struct GenericMuZeroAgent[
             ctx: GPU device context.
             gpu: GPU state with network states and scratch buffers.
             use_reanalyze: Whether to reanalyze old positions.
+            use_per: Whether to use prioritized experience replay.
+            per_progress: Progress of the prioritized experience replay.
 
         Returns:
             Total training loss.
@@ -2173,9 +2182,24 @@ struct GenericMuZeroAgent[
             sample_seq_with_targets_kernel[
                 BATCH, K, N_TD, N_ENVS_GPU, PER_ENV_CAP, OBS, ACT, dtype
             ](
-                bo, ba, br, bd, bd_term, bp, bv, btp,
-                oo, oa, orw, od, op, ov, otp,
-                bsz, bwi, seed,
+                bo,
+                ba,
+                br,
+                bd,
+                bd_term,
+                bp,
+                bv,
+                btp,
+                oo,
+                oa,
+                orw,
+                od,
+                op,
+                ov,
+                otp,
+                bsz,
+                bwi,
+                seed,
             )
 
         if use_per:
@@ -2206,13 +2230,19 @@ struct GenericMuZeroAgent[
                     MutAnyOrigin,
                 ],
                 br: LayoutTensor[
-                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                    MutAnyOrigin,
                 ],
                 bd: LayoutTensor[
-                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                    MutAnyOrigin,
                 ],
                 bd_term: LayoutTensor[
-                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                    MutAnyOrigin,
                 ],
                 bp: LayoutTensor[
                     dtype,
@@ -2220,7 +2250,9 @@ struct GenericMuZeroAgent[
                     MutAnyOrigin,
                 ],
                 bv: LayoutTensor[
-                    dtype, Layout.row_major(N_ENVS_GPU * PER_ENV_CAP), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(N_ENVS_GPU * PER_ENV_CAP),
+                    MutAnyOrigin,
                 ],
                 btp: LayoutTensor[
                     DType.uint8,
@@ -2228,7 +2260,9 @@ struct GenericMuZeroAgent[
                     MutAnyOrigin,
                 ],
                 oo: LayoutTensor[
-                    dtype, Layout.row_major(WIN_FULL * BATCH * OBS), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(WIN_FULL * BATCH * OBS),
+                    MutAnyOrigin,
                 ],
                 oa: LayoutTensor[
                     dtype, Layout.row_major(K * BATCH * ACT), MutAnyOrigin
@@ -2240,13 +2274,17 @@ struct GenericMuZeroAgent[
                     dtype, Layout.row_major(WIN_TRN * BATCH), MutAnyOrigin
                 ],
                 op: LayoutTensor[
-                    dtype, Layout.row_major(WIN_FULL * BATCH * ACT), MutAnyOrigin
+                    dtype,
+                    Layout.row_major(WIN_FULL * BATCH * ACT),
+                    MutAnyOrigin,
                 ],
                 ov: LayoutTensor[
                     dtype, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
                 ],
                 otp: LayoutTensor[
-                    DType.uint8, Layout.row_major(WIN_FULL * BATCH), MutAnyOrigin
+                    DType.uint8,
+                    Layout.row_major(WIN_FULL * BATCH),
+                    MutAnyOrigin,
                 ],
                 pe: LayoutTensor[
                     DType.int32, Layout.row_major(BATCH), MutAnyOrigin
@@ -2258,9 +2296,23 @@ struct GenericMuZeroAgent[
                 sample_seq_with_targets_priority_kernel[
                     BATCH, K, N_TD, N_ENVS_GPU, PER_ENV_CAP, OBS, ACT, dtype
                 ](
-                    bo, ba, br, bd, bd_term, bp, bv, btp,
-                    oo, oa, orw, od, op, ov, otp,
-                    pe, ps,
+                    bo,
+                    ba,
+                    br,
+                    bd,
+                    bd_term,
+                    bp,
+                    bv,
+                    btp,
+                    oo,
+                    oa,
+                    orw,
+                    od,
+                    op,
+                    ov,
+                    otp,
+                    pe,
+                    ps,
                 )
 
             ctx.enqueue_function[per_sample_wrapper](
@@ -2947,8 +2999,7 @@ struct GenericMuZeroAgent[
         # Cost: 3 small DMAs + 1 sync per diag step (gated by
         # diag_every; default 0 = log every update).
         if Bool(self.logger) and (
-            self.diag_every <= 0
-            or self.train_step_count % self.diag_every == 0
+            self.diag_every <= 0 or self.train_step_count % self.diag_every == 0
         ):
             # Copy whole K+1-step target buffers to pre-allocated host
             # buffers; the loss calc below reads only the k=0 slice
@@ -2987,9 +3038,7 @@ struct GenericMuZeroAgent[
                     )
                 for a in range(ACT):
                     var prob = (
-                        exp(
-                            Float64(gpu.diag_pred_host[pred_off + a]) - max_p
-                        )
+                        exp(Float64(gpu.diag_pred_host[pred_off + a]) - max_p)
                         / sum_e_p
                     )
                     var tgt = Float64(gpu.diag_pol_host[b * ACT + a])
@@ -3011,9 +3060,9 @@ struct GenericMuZeroAgent[
                     sum_e_v += exp(
                         Float64(gpu.diag_pred_host[val_off + i]) - max_v
                     )
-                var v_step = (
-                    self.v_max - self.v_min
-                ) / Float64(BINS - 1) if BINS > 1 else 1.0
+                var v_step = (self.v_max - self.v_min) / Float64(
+                    BINS - 1
+                ) if BINS > 1 else 1.0
                 var pred_val_scalar: Float64 = 0.0
                 for i in range(BINS):
                     var prob_v = (
@@ -3046,7 +3095,9 @@ struct GenericMuZeroAgent[
                 "loss/policy_entropy", policy_entropy, step
             )
             self.logger.value()[].log_scalar("loss/value_mse", value_ce, step)
-            self.logger.value()[].log_scalar("loss/value_mean", value_mean, step)
+            self.logger.value()[].log_scalar(
+                "loss/value_mean", value_mean, step
+            )
             self.logger.value()[].log_scalar(
                 "loss/total", policy_ce + value_ce, step
             )
@@ -3146,9 +3197,9 @@ struct GenericMuZeroAgent[
         comptime LocalGPUState = MuZeroGPUState[Self.Config, Self.n_envs]
         var gpu = LocalGPUState(ctx)
         gpu.upload_from(self.state, ctx)
-        var gpu_mcts = GPUMCTSState[
-            Self.n_envs, MAX_NODES, ACT, LATENT, BINS
-        ](ctx)
+        var gpu_mcts = GPUMCTSState[Self.n_envs, MAX_NODES, ACT, LATENT, BINS](
+            ctx
+        )
 
         var obs_buf = ctx.enqueue_create_buffer[dtype](Self.n_envs * OBS)
         var workspace_buf = ctx.enqueue_create_buffer[dtype](WS_TOTAL)
@@ -3314,9 +3365,9 @@ struct GenericMuZeroAgent[
         var eps_h = 0.001
         var sgn = 1.0 if expected_h >= 0.0 else -1.0
         var ah = expected_h if expected_h >= 0.0 else -expected_h
-        var f = (
-            sqrt(1.0 + 4.0 * eps_h * (ah + 1.0 + eps_h)) - 1.0
-        ) / (2.0 * eps_h)
+        var f = (sqrt(1.0 + 4.0 * eps_h * (ah + 1.0 + eps_h)) - 1.0) / (
+            2.0 * eps_h
+        )
         var v_decoded = sgn * (f * f - 1.0) if BINS > 1 else expected_h
         print(
             "[3c] value: expected_h=",
@@ -3584,9 +3635,7 @@ struct GenericMuZeroAgent[
         tv_str += "]"
         print(vc_str)
         print(tv_str)
-        var root_v = (
-            tvsum_root / vsum_root if vsum_root > 0.5 else 0.0
-        )
+        var root_v = tvsum_root / vsum_root if vsum_root > 0.5 else 0.0
         print(
             "[5c] root V (Σtv/Σvc)  =",
             root_v,
@@ -3629,9 +3678,7 @@ struct GenericMuZeroAgent[
                 for a in range(ACT):
                     if a > 0:
                         child_str += ","
-                    child_str += String(
-                        Float64(vc_full_host[nidx * ACT + a])
-                    )
+                    child_str += String(Float64(vc_full_host[nidx * ACT + a]))
                 child_str += "] "
             print(child_str)
 
@@ -3677,6 +3724,9 @@ struct GenericMuZeroAgent[
             print_every: Print interval in transitions.
             use_reanalyze: Enable MuZero Reanalyze.
             sync_every: GPU→CPU weight sync interval in transitions.
+            lr_decay_rate: Learning rate decay rate.
+            lr_decay_steps: Learning rate decay steps.
+            use_per: Whether to use prioritized experience replay.
 
         Returns:
             TrainingMetrics with episode rewards.
@@ -3690,9 +3740,7 @@ struct GenericMuZeroAgent[
         # old default of 1 grad step per env-step batch. The previous
         # default did roughly 1/n_envs the training of an AZ-comparable
         # setup, leaving CartPole stuck at random-policy reward.
-        var grad_steps = (
-            gradient_steps if gradient_steps > 0 else Self.n_envs
-        )
+        var grad_steps = gradient_steps if gradient_steps > 0 else Self.n_envs
 
         # ── Create GPU state with correct Self.n_envs ─────────────────────
         # PER_ENV_CAP derived from Config.buffer_capacity (Bug G, 2026-05-05):
@@ -4249,9 +4297,7 @@ struct GenericMuZeroAgent[
                 var switch_t = LayoutTensor[
                     dtype, Layout.row_major(1), MutAnyOrigin
                 ](switch_count_buf.unsafe_ptr())
-                comptime run_switch = action_switch_kernel[
-                    Self.n_envs, dtype
-                ]
+                comptime run_switch = action_switch_kernel[Self.n_envs, dtype]
                 ctx.enqueue_function[run_switch](
                     act_out_t,
                     prev_act_t,
@@ -4567,16 +4613,24 @@ struct GenericMuZeroAgent[
                     hist_total += Float64(action_hist_host[ai])
                 for ai in range(ACT):
                     var c = Float64(action_hist_host[ai])
-                    var pct = (c / hist_total * 100.0) if hist_total > 0 else Float64(0.0)
-                    act_line += String("a") + String(ai) + String("=") + String(Int(c))
+                    var pct = (
+                        c / hist_total * 100.0
+                    ) if hist_total > 0 else Float64(0.0)
+                    act_line += (
+                        String("a") + String(ai) + String("=") + String(Int(c))
+                    )
                     act_line += String(" (") + String(Int(pct)) + String("%)")
                     if ai < ACT - 1:
                         act_line += String(", ")
                 act_line += String("]  total=") + String(Int(hist_total))
                 var switches = Float64(switch_count_host[0])
-                var switch_pct = (switches / hist_total * 100.0) if hist_total > 0 else Float64(0.0)
+                var switch_pct = (
+                    switches / hist_total * 100.0
+                ) if hist_total > 0 else Float64(0.0)
                 act_line += String("  switches=") + String(Int(switches))
-                act_line += String(" (") + String(Int(switch_pct)) + String("%)")
+                act_line += (
+                    String(" (") + String(Int(switch_pct)) + String("%)")
+                )
                 print(act_line)
                 action_hist_buf.enqueue_fill(Scalar[dtype](0.0))
                 switch_count_buf.enqueue_fill(Scalar[dtype](0.0))
@@ -4680,6 +4734,7 @@ struct GenericMuZeroAgent[
             E: GPU two-player environment (TicTacToe, Chess, Go, etc.).
             GPUEval: GPU evaluator for opponent evaluation.
             GPUEval2: GPU evaluator for opponent evaluation.
+            temp_threshold: Use temp=1 for first N moves, then argmax.
 
         Args:
             ctx: GPU device context.
@@ -4700,6 +4755,9 @@ struct GenericMuZeroAgent[
                 stability story; off by default for backwards compatibility.
             reanalyze_per_iter: Number of positions to reanalyze each
                 iteration when use_reanalyze=True. Capped by buffer size.
+            logger: Optional logger for diagnostic logging.
+            diag_every: Print diagnostic information every N iterations.
+            use_one_cycle: Whether to use one-cycle learning rate schedule.
 
         Compile-time parameters:
             temp_threshold: Use temp=1 for first N moves, then argmax.
@@ -5454,9 +5512,7 @@ struct GenericMuZeroAgent[
                         gpu.representation.set_lr_scale(sc, ctx)
                         gpu.dynamics.set_lr_scale(sc, ctx)
                         gpu.prediction.set_lr_scale(sc, ctx)
-                    _ = self.update_gpu(
-                        ctx, gpu, use_reanalyze=use_reanalyze
-                    )
+                    _ = self.update_gpu(ctx, gpu, use_reanalyze=use_reanalyze)
                 self.train_step_count += grad_steps
                 gpu.download_to(self.state, ctx)
 
@@ -6225,9 +6281,9 @@ struct GenericMuZeroAgent[
         if total == 0:
             accepted = False
         else:
-            var score = (
-                Float64(new_wins) + 0.5 * Float64(draws)
-            ) / Float64(total)
+            var score = (Float64(new_wins) + 0.5 * Float64(draws)) / Float64(
+                total
+            )
             accepted = score >= threshold
 
         if not accepted:

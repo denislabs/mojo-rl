@@ -10,7 +10,7 @@ from ..phyics3d_env import Phyics3dEnv
 
 
 comptime SawyerReach[
-    DTYPE: DType where DTYPE.is_floating_point() = DType.float64,
+    DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = False,
 ] = Phyics3dEnv[
     SawyerReachModel,

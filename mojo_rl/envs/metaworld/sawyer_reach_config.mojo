@@ -73,7 +73,7 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === CPU: Integrator step ===
     @staticmethod
     def physics_substep[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -106,7 +106,7 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === CPU: Custom observation extraction ===
     @staticmethod
     def custom_extract_obs_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -137,7 +137,7 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === CPU: Custom reset — set mocap position + warmup arm ===
     @staticmethod
     def custom_reset_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -211,7 +211,7 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === CPU: Pre-step hook ===
     @staticmethod
     def pre_step_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -227,7 +227,7 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === CPU: Custom action application (mocap position control) ===
     @staticmethod
     def custom_apply_actions_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -280,7 +280,7 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === CPU: Reward + termination ===
     @staticmethod
     def compute_reward_and_done_cpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         NQ: Int,
         NV: Int,
         NBODY: Int,
@@ -334,7 +334,7 @@ struct SawyerReachConfig(Phyics3dEnvConfig):
     # === GPU stubs (CPU-only for now) ===
     @staticmethod
     def physics_substep_gpu[
-        DTYPE: DType where DTYPE.is_floating_point(),
+        DTYPE: DType,
         BATCH_SIZE: Int,
         NQ: Int,
         NV: Int,
