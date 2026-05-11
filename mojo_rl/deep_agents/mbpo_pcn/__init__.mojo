@@ -11,7 +11,7 @@ SAC side is untouched — actor, critic, replay, CUDA-graph capture all
 preserved verbatim from `mojo_rl.deep_agents.core.agents.mbpo_agent`. The
 only swaps live in:
 - the dynamics struct fields on `*CPUState` / `*GPUState` (PCN instance
-  wrappers from `nn_pc_v2`),
+  wrappers from `pcn`),
 - `train_dynamics` / `do_model_rollouts` (CPU + GPU bodies),
 - the rollout sample kernel (deterministic — no Gaussian sampling).
 

@@ -12,4 +12,4 @@ If something here graduates — converges on real results, becomes stable, or ge
 
 | Module | Status | Topic |
 |---|---|---|
-| [`nn_pc/`](nn_pc/) | Closed POC (2026-04-27) | Predictive Coding Networks (Rao-Ballard / Whittington-Bogacz family). Algorithm validated; the paper that motivated it has misleading headline claims. See `nn_pc/README.md` for details. |
+| [`pcn/`](pcn/) | Active | Predictive Coding Networks (Bogacz canonical). See `pcn/README.md` and `docs/PCN_REDESIGN.md`. |

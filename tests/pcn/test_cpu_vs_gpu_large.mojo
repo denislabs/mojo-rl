@@ -1,22 +1,30 @@
-"""Wall-clock benchmark for PCN compute_grads_only (CPU vs GPU).
+"""CPU vs GPU parity test for pcn at realistic dimensions.
 
-Measures the cost of one full PCN inference + grad pass at a
-training-realistic shape:
+Stresses the optimized GPU matmul path (`linalg.matmul` on NVIDIA, 2×2 tile
+on Apple) with a 4-block PCN sized to actually exercise the GEMM tiling:
 
-    BATCH = 64, arch: 64 → 256 → 256 → 128 → 10, T_INFER = 8
+    BATCH = 64, arch: 64 → 256 → 256 → 128 → 10
 
-For Apple, GPU runs through the 2×2 register-tiled kernels. For NVIDIA with
-USE_MAX_KERNELS=True (default), GPU runs through `linalg.matmul` (max_matmul).
+NVIDIA's `linalg.matmul` reduces along K in tile-blocked order, which diverges
+from CPU's row-major sum — float32 addition is non-associative. Over
+T_INFER=4 inference steps with K=256, the absolute differences observed in
+practice are ~1.6e-2 (max) on grads, which is ~5e-4 relative to the
+output-scale magnitudes. We assert a *relative* tolerance (1%) instead of
+absolute so the test scales sanely with workload size; absolute diffs are
+still printed for diagnostics.
+
+Apple's 2×2 tile happens to reduce in the same order as the CPU nested
+loops, so on Apple the diff is typically 0.0 (bitwise).
 
 Run:
-    pixi run -e apple  mojo run -I . benchmarks/benchmark_pcn_gpu.mojo
-    pixi run -e nvidia mojo run -I . benchmarks/benchmark_pcn_gpu.mojo
+    pixi run -e apple  mojo run -I . tests/pcn/test_cpu_vs_gpu_large.mojo
+    pixi run -e nvidia mojo run -I . tests/pcn/test_cpu_vs_gpu_large.mojo
 """
 
+from std.math import abs as mabs
 from std.memory import alloc, memset
 from std.random.philox import Random as PhiloxRandom
 from std.gpu.host import DeviceContext
-from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import dtype
@@ -30,41 +38,43 @@ from mojo_rl.experimental.pcn import (
 )
 
 
-comptime BATCH = 256
-comptime T_INFER = 8
+comptime BATCH = 64
+comptime T_INFER = 4
 comptime LR_X: Float64 = 0.05
 
-comptime WARMUP_ITERS = 5
-comptime BENCH_ITERS = 30
-
-# Larger PCN, training-realistic for MNIST-class workloads.
 comptime NET = PCSequential[
-    PCBlock[784, 512, PCIdentity],
-    PCBlock[512, 512, PCReLU],
-    PCBlock[512, 256, PCReLU],
-    PCBlock[256, 10, PCReLU],
+    PCBlock[64, 256, PCIdentity],
+    PCBlock[256, 256, PCReLU],
+    PCBlock[256, 128, PCReLU],
+    PCBlock[128, 10, PCReLU],
 ]
 comptime TRAINER = PCTrainer[
-    PCBlock[784, 512, PCIdentity],
-    PCBlock[512, 512, PCReLU],
-    PCBlock[512, 256, PCReLU],
-    PCBlock[256, 10, PCReLU],
+    PCBlock[64, 256, PCIdentity],
+    PCBlock[256, 256, PCReLU],
+    PCBlock[256, 128, PCReLU],
+    PCBlock[128, 10, PCReLU],
     dtype=dtype,
 ]
+
+# Relative tolerance: max |cpu - gpu| / max |cpu| must stay under this.
+# 1% is comfortable for a 4-block PCN with K=256 and T_INFER=4 in float32;
+# real algorithmic bugs blow far past this.
+comptime REL_TOL: Float64 = 1.0e-2
 
 
 def main() raises:
     print("=" * 60)
-    print("pcn compute_grads_only benchmark")
+    print("pcn CPU vs GPU parity test (large dims)")
     print("=" * 60)
-    print("  arch       : 784 → 512 → 512 → 256 → 10")
+    print("  arch       : 64 → 256 → 256 → 128 → 10")
     print("  PARAM_SIZE :", NET.PARAM_SIZE)
+    print("  LATENT_DIM :", NET.LATENT_DIM)
     print("  BATCH=", BATCH, " T_INFER=", T_INFER)
-    print("  warmup=", WARMUP_ITERS, " bench=", BENCH_ITERS, "iterations")
+    print("  rel tolerance:", REL_TOL)
 
     var ctx = DeviceContext()
 
-    # ── Init params + input/target (Xavier, deterministic Philox) ─────────────
+    # ── Allocate params on host, init with Xavier (deterministic seed) ────────
     var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
     memset(params_buf, 0, NET.PARAM_SIZE)
     var params = LayoutTensor[
@@ -72,6 +82,7 @@ def main() raises:
     ](params_buf)
     NET.initialize_params[Xavier[], dtype](params)
 
+    # ── Allocate input + target (deterministic Philox) ────────────────────────
     var x_in_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM)
     var y_tgt_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)
     var rng = PhiloxRandom(seed=UInt64(13), offset=UInt64(0))
@@ -91,7 +102,7 @@ def main() raises:
     ](y_tgt_buf)
 
     # =================================================================
-    # CPU benchmark
+    # CPU run
     # =================================================================
     var grads_cpu_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
     var lat_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
@@ -99,6 +110,12 @@ def main() raises:
     var a_below_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
     var z_below_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
     var dx_cpu_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    memset(grads_cpu_buf, 0, NET.PARAM_SIZE)
+    memset(lat_cpu_buf, 0, BATCH * NET.LATENT_DIM)
+    memset(mu_eps_cpu_buf, 0, BATCH * NET.SCRATCH_OUT_DIM)
+    memset(a_below_cpu_buf, 0, BATCH * NET.SCRATCH_IN_DIM)
+    memset(z_below_cpu_buf, 0, BATCH * NET.SCRATCH_IN_DIM)
+    memset(dx_cpu_buf, 0, BATCH * NET.LATENT_DIM)
 
     var grads_cpu = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
@@ -119,30 +136,27 @@ def main() raises:
         dtype, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
     ](dx_cpu_buf)
 
-    print("\n  CPU warmup ...")
-    for _ in range(WARMUP_ITERS):
-        memset(grads_cpu_buf, 0, NET.PARAM_SIZE)
-        _ = TRAINER.compute_grads_only[BATCH](
-            params, grads_cpu, lat_cpu, mu_eps_cpu, a_below_cpu,
-            z_below_cpu, dx_cpu, x_in, y_target,
-            T_infer=T_INFER, lr_x=Scalar[dtype](LR_X),
-        )
+    var cpu_result = TRAINER.compute_grads_only[BATCH](
+        params,
+        grads_cpu,
+        lat_cpu,
+        mu_eps_cpu,
+        a_below_cpu,
+        z_below_cpu,
+        dx_cpu,
+        x_in,
+        y_target,
+        T_infer=T_INFER,
+        lr_x=Scalar[dtype](LR_X),
+    )
 
-    print("  CPU benchmarking ...")
-    var cpu_total_ns: UInt = 0
-    for _ in range(BENCH_ITERS):
-        memset(grads_cpu_buf, 0, NET.PARAM_SIZE)
-        var t0 = perf_counter_ns()
-        _ = TRAINER.compute_grads_only[BATCH](
-            params, grads_cpu, lat_cpu, mu_eps_cpu, a_below_cpu,
-            z_below_cpu, dx_cpu, x_in, y_target,
-            T_infer=T_INFER, lr_x=Scalar[dtype](LR_X),
-        )
-        cpu_total_ns += perf_counter_ns() - t0
-    var cpu_mean_ms = Float64(cpu_total_ns) / Float64(BENCH_ITERS) / 1.0e6
+    print("\n  CPU run:")
+    print("    energy_initial:", cpu_result.energy_initial)
+    print("    energy_final  :", cpu_result.energy_final)
+    print("    output_loss   :", cpu_result.output_loss_final)
 
     # =================================================================
-    # GPU benchmark
+    # GPU run — same params, same input/target
     # =================================================================
     var params_dbuf = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)
     var grads_dbuf = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)
@@ -197,32 +211,80 @@ def main() raises:
         dtype, Layout.row_major(BATCH, NET.OUT_DIM), MutAnyOrigin
     ](y_target_dbuf)
 
-    print("\n  GPU warmup ...")
-    for _ in range(WARMUP_ITERS):
-        TRAINER.compute_grads_only_gpu[BATCH](
-            ctx, params_t_gpu, grads_t_gpu, lat_t_gpu, mu_eps_t_gpu,
-            a_below_t_gpu, z_below_t_gpu, dx_t_gpu, x_in_t_gpu, y_target_t_gpu,
-            T_infer=T_INFER, lr_x=Scalar[dtype](LR_X),
-        )
+    TRAINER.compute_grads_only_gpu[BATCH](
+        ctx,
+        params_t_gpu,
+        grads_t_gpu,
+        lat_t_gpu,
+        mu_eps_t_gpu,
+        a_below_t_gpu,
+        z_below_t_gpu,
+        dx_t_gpu,
+        x_in_t_gpu,
+        y_target_t_gpu,
+        T_infer=T_INFER,
+        lr_x=Scalar[dtype](LR_X),
+    )
     ctx.synchronize()
 
-    print("  GPU benchmarking ...")
-    var gpu_total_ns: UInt = 0
-    for _ in range(BENCH_ITERS):
-        var t0 = perf_counter_ns()
-        TRAINER.compute_grads_only_gpu[BATCH](
-            ctx, params_t_gpu, grads_t_gpu, lat_t_gpu, mu_eps_t_gpu,
-            a_below_t_gpu, z_below_t_gpu, dx_t_gpu, x_in_t_gpu, y_target_t_gpu,
-            T_infer=T_INFER, lr_x=Scalar[dtype](LR_X),
-        )
-        ctx.synchronize()
-        gpu_total_ns += perf_counter_ns() - t0
-    var gpu_mean_ms = Float64(gpu_total_ns) / Float64(BENCH_ITERS) / 1.0e6
+    var grads_gpu_host = ctx.enqueue_create_host_buffer[dtype](NET.PARAM_SIZE)
+    ctx.enqueue_copy(grads_gpu_host, grads_dbuf)
+    var lat_gpu_host = ctx.enqueue_create_host_buffer[dtype](
+        BATCH * NET.LATENT_DIM
+    )
+    ctx.enqueue_copy(lat_gpu_host, lat_dbuf)
+    ctx.synchronize()
 
-    print("\n  Results:")
-    print("    CPU mean :", cpu_mean_ms, "ms / iter")
-    print("    GPU mean :", gpu_mean_ms, "ms / iter")
-    print("    speedup  :", cpu_mean_ms / gpu_mean_ms, "x")
+    # =================================================================
+    # Compare (relative tolerance: max abs diff / max |cpu|)
+    # =================================================================
+    var max_grad_diff: Float64 = 0.0
+    var max_grad_mag: Float64 = 0.0
+    var idx_max_grad: Int = 0
+    for i in range(NET.PARAM_SIZE):
+        var g_cpu = Float64(grads_cpu_buf[i])
+        var g_gpu = Float64(grads_gpu_host.unsafe_ptr()[i])
+        var d = mabs(g_cpu - g_gpu)
+        var m = mabs(g_cpu)
+        if d > max_grad_diff:
+            max_grad_diff = d
+            idx_max_grad = i
+        if m > max_grad_mag:
+            max_grad_mag = m
+
+    var max_lat_diff: Float64 = 0.0
+    var max_lat_mag: Float64 = 0.0
+    var idx_max_lat: Int = 0
+    for i in range(BATCH * NET.LATENT_DIM):
+        var l_cpu = Float64(lat_cpu_buf[i])
+        var l_gpu = Float64(lat_gpu_host.unsafe_ptr()[i])
+        var d = mabs(l_cpu - l_gpu)
+        var m = mabs(l_cpu)
+        if d > max_lat_diff:
+            max_lat_diff = d
+            idx_max_lat = i
+        if m > max_lat_mag:
+            max_lat_mag = m
+
+    var grad_denom = max_grad_mag if max_grad_mag > 1.0e-6 else 1.0
+    var lat_denom = max_lat_mag if max_lat_mag > 1.0e-6 else 1.0
+    var rel_grad = max_grad_diff / grad_denom
+    var rel_lat = max_lat_diff / lat_denom
+
+    print("\n  Parity:")
+    print("    max |grads_cpu - grads_gpu|   :", max_grad_diff, " at idx", idx_max_grad)
+    print("      (max |grads_cpu|             :", max_grad_mag, ")")
+    print("      (relative                    :", rel_grad, ")")
+    print("    max |latents_cpu - latents_gpu|:", max_lat_diff, " at idx", idx_max_lat)
+    print("      (max |latents_cpu|           :", max_lat_mag, ")")
+    print("      (relative                    :", rel_lat, ")")
+    print("    rel tolerance                  :", REL_TOL)
+
+    if rel_grad <= REL_TOL and rel_lat <= REL_TOL:
+        print("\n  [PASS] CPU and GPU agree within relative tolerance")
+    else:
+        print("\n  [FAIL] CPU vs GPU disagreement exceeds relative tolerance")
+        raise Error("parity test failed")
 
     params_buf.free()
     x_in_buf.free()

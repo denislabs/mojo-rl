@@ -52,7 +52,7 @@ from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from mojo_rl.deep_agents.core.utils import obs_to_inline
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.deep_agents.mbpo_pcn.pcn_mbpo_config import PCNMBPOConfig
-from mojo_rl.experimental.nn_pc_v2 import (
+from mojo_rl.experimental.pcn import (
     PCDynamicsEnsembleInstanceCPU,
     PCDynamicsEnsembleInstanceGPU,
 )
