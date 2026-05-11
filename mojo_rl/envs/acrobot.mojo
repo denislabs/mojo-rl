@@ -159,7 +159,7 @@ def bound(x: Float64, m: Float64, M: Float64) -> Float64:
     return x
 
 
-struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
+struct AcrobotEnv[DTYPE: DType](
     BoxDiscreteActionEnv
     & DiscreteEnv
     & GPUDiscreteEnv
@@ -1176,10 +1176,7 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         var k4 = Self._dsdt_gpu(y0 + dt * k3, torque)
 
         var ns = y0 + dt / Scalar[gpu_dtype](6.0) * (
-            k1
-            + Scalar[gpu_dtype](2.0) * k2
-            + Scalar[gpu_dtype](2.0) * k3
-            + k4
+            k1 + Scalar[gpu_dtype](2.0) * k2 + Scalar[gpu_dtype](2.0) * k3 + k4
         )
 
         # Wrap angles, bound velocities
@@ -1204,16 +1201,16 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         states[i, 4] += Scalar[gpu_dtype](1.0)  # step counter
 
         # Termination: free end above target height
-        var terminated = (
-            -cos(theta1) - cos(theta1 + theta2) > Scalar[gpu_dtype](1.0)
-        )
+        var terminated = -cos(theta1) - cos(theta1 + theta2) > Scalar[
+            gpu_dtype
+        ](1.0)
         var truncated = states[i, 4] >= Scalar[gpu_dtype](ACR_MAX_STEPS)
         var done = terminated or truncated
 
         # Reward: 0 on the terminal step, -1 otherwise
-        var reward = Scalar[gpu_dtype](
-            0.0
-        ) if terminated else Scalar[gpu_dtype](-1.0)
+        var reward = Scalar[gpu_dtype](0.0) if terminated else Scalar[
+            gpu_dtype
+        ](-1.0)
 
         rewards[i] = reward
         dones[i] = Scalar[gpu_dtype](done)
@@ -1326,8 +1323,12 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut terminated_buf: DeviceBuffer[gpu_dtype],
         mut obs_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Launch step kernel on GPU with fused obs extraction.
 
@@ -1390,10 +1391,9 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
                 # Acrobot: terminated = goal-height crossed (not truncation).
                 var theta1 = states[i, 0]
                 var theta2 = states[i, 1]
-                var is_terminated = (
-                    -cos(theta1) - cos(theta1 + theta2)
-                    > Scalar[gpu_dtype](1.0)
-                )
+                var is_terminated = -cos(theta1) - cos(
+                    theta1 + theta2
+                ) > Scalar[gpu_dtype](1.0)
                 terminated_out[i] = Scalar[gpu_dtype](is_terminated)
 
                 # Build observation from state
@@ -1458,8 +1458,12 @@ struct AcrobotEnv[DTYPE: DType where DTYPE.is_floating_point()](
         mut states_buf: DeviceBuffer[gpu_dtype],
         mut dones_buf: DeviceBuffer[gpu_dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Launch selective reset kernel on GPU - only resets done envs."""
         var states = LayoutTensor[

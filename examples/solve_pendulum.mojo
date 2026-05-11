@@ -53,7 +53,7 @@ def main() raises:
     print("")
 
     # Create polynomial feature extractor (degree 3 is more expressive)
-    var features = PendulumEnv.make_poly_features(degree=3)
+    var features = PendulumEnv[DType.float64].make_poly_features(degree=3)
     print("Feature configuration:")
     print("  Polynomial degree: 3")
     print("  Feature dimensionality:", features.get_num_features())
@@ -76,12 +76,12 @@ def main() raises:
     print("")
 
     var env_ddpg = PendulumEnv[DType.float64]()
-    var buffer_ddpg = ContinuousReplayBuffer(
+    var buffer_ddpg = ContinuousReplayBuffer[DType.float64](
         capacity=100000,
         feature_dim=features.get_num_features(),
     )
     # Use optimized hyperparameters with noise decay and reward scaling
-    var agent_ddpg = DDPGAgent(
+    var agent_ddpg = DDPGAgent[DType.float64](
         num_state_features=features.get_num_features(),
         action_scale=2.0,  # Pendulum torque range: [-2, 2]
         actor_lr=0.0003,  # Lower actor LR for stability
@@ -126,7 +126,7 @@ def main() raises:
     print("")
 
     var env_td3 = PendulumEnv[DType.float64]()
-    var buffer_td3 = ContinuousReplayBuffer(
+    var buffer_td3 = ContinuousReplayBuffer[DType.float64](
         capacity=100000,
         feature_dim=features.get_num_features(),
     )

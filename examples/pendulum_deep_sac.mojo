@@ -102,3 +102,7 @@ def main() raises:
     print("Final alpha:", String(agent.alpha)[byte=:6])
     print("Final evaluation reward:", String(eval_reward)[byte=:8])
     print("")
+
+    var _ = agent.evaluate(
+        env, num_episodes=1, max_steps_per_episode=200, render=True
+    )
