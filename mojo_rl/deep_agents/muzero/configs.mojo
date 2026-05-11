@@ -760,7 +760,18 @@ struct MuZeroTicTacToeConfig[
     # LR·sign(param), avoiding the "bleed-to-zero" weight collapse we
     # observed for MuZero CartPole through the AdamW phase. See
     # docs/MUZERO_AUDIT.md for the full chain of evidence.
-    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=1e-4]
+    # WEIGHT_DECAY=0 (Phase H17, 2026-05-07). Reference uses 1e-4 with
+    # PyTorch's Adam L2-in-grad, but our batch-then-train pattern leaves
+    # stretches where the true gradient is small; then the L2 term
+    # `WD·param` dominates Adam's m/v and per-step update collapses to
+    # `-LR·sign(param)`, bleeding weights toward zero linearly. The
+    # NVIDIA TTT run (epochs=2) showed pred_norm shrinking 232 → 37 over
+    # iters 39→79 — model still hit perfect play but tipped past iter 85
+    # when MCTS priors became uninformative. Removing decay eliminates
+    # the bleed. The earlier audit comment claiming Adam L2-in-grad
+    # "avoids bleed-to-zero" was incorrect — confirmed by the smooth
+    # `pred_norm` decline in the dashboard.
+    comptime OptType = Adam[LR=Self.LR, WEIGHT_DECAY=0.0]
 
     # Training
     comptime batch_size: Int = Self.BS
