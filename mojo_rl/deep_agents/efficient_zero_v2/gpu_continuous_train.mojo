@@ -302,6 +302,27 @@ def run_ezv2_continuous_train_gpu[
     var host_node_actions = ctx.enqueue_create_host_buffer[dtype](
         N_ENVS * NODES * K_ROOT * ACT_DIM
     )
+    # Additional buffers needed to reconstruct CPU's smooth
+    # `_improved_policy_at(0)` formula on host (paper Eq. 4):
+    #   π_improved(i) = softmax(log_prior + sigma_q)
+    # where sigma_q[i] = (c_visit + max_visit) · c_scale · normalize(Q_i).
+    # The GPU's `root_visits` output is the *normalized visit count
+    # distribution* — semantically different from the agent's intended
+    # full-π target (the smooth softmax form). Without matching CPU's
+    # formula here, the GPU agent's policy loss fits the SH visit-
+    # distribution instead, which is sparse and concentrated on SH
+    # survivors and prevents learning. See mcts_sampled.mojo:695-726.
+    var host_log_prior = ctx.enqueue_create_host_buffer[dtype](
+        N_ENVS * NODES * K_ROOT
+    )
+    var host_node_value = ctx.enqueue_create_host_buffer[dtype](
+        N_ENVS * NODES
+    )
+    var host_node_total_visits = ctx.enqueue_create_host_buffer[dtype](
+        N_ENVS * NODES
+    )
+    var host_min_q = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
+    var host_max_q = ctx.enqueue_create_host_buffer[dtype](N_ENVS)
 
     # ─── GPU-resident replay buffer mirror ──────────────────────────────
     # Only used by the GPU-sampling train path. For the default host-
@@ -456,6 +477,13 @@ def run_ezv2_continuous_train_gpu[
                 host_node_total_value.unsafe_ptr(), mcts_gpu.total_value
             )
             ctx.enqueue_copy(host_node_actions.unsafe_ptr(), mcts_gpu.actions)
+            ctx.enqueue_copy(host_log_prior.unsafe_ptr(), mcts_gpu.log_prior)
+            ctx.enqueue_copy(host_node_value.unsafe_ptr(), mcts_gpu.node_value)
+            ctx.enqueue_copy(
+                host_node_total_visits.unsafe_ptr(), mcts_gpu.total_visits
+            )
+            ctx.enqueue_copy(host_min_q.unsafe_ptr(), mcts_gpu.min_q)
+            ctx.enqueue_copy(host_max_q.unsafe_ptr(), mcts_gpu.max_q)
             ctx.synchronize()
 
             # ── 2. Per-env extract: SVE, chosen action, K-candidates ──
@@ -491,11 +519,100 @@ def run_ezv2_continuous_train_gpu[
                 for j in range(K_ROOT * ACT_DIM):
                     sampled.append(host_node_actions[act_off + j])
 
-                # Improved-policy weights (sum=1 over K candidates).
-                var iv_off = e * K_ROOT
-                var improved = List[Scalar[dtype]](capacity=K_ROOT)
+                # Improved-policy weights — match CPU
+                # `_improved_policy_at(0)`: softmax(log_prior + sigma_q),
+                # not the visit-count distribution. Required for the
+                # full-π policy loss target to match what the agent
+                # expects (mcts_sampled.mojo:695-726).
+                var nk_base = e * NODES * K_ROOT  # root = node 0
+                var ns_idx = e * NODES
+                var v_self = Float64(host_node_value[ns_idx])
+                var n_total = Float64(host_node_total_visits[ns_idx])
+                var mn = Float64(host_min_q[e])
+                var mx = Float64(host_max_q[e])
+
+                # v_mix: visit-weighted blend of root V and the K
+                # candidates' visited mean_Q's, with log_prior weights.
+                var visited_logp_max = Float64(-1.0e18)
+                var any_visited = False
                 for i in range(K_ROOT):
-                    improved.append(host_root_visits[iv_off + i])
+                    var nva_f = Float64(host_node_visit[nk_base + i])
+                    if nva_f > 0.5:
+                        var lp_f = Float64(host_log_prior[nk_base + i])
+                        if lp_f > visited_logp_max:
+                            visited_logp_max = lp_f
+                        any_visited = True
+                var v_mix = v_self
+                if any_visited:
+                    var sum_w = Float64(0.0)
+                    var weighted_q = Float64(0.0)
+                    for i in range(K_ROOT):
+                        var nva_f2 = Float64(host_node_visit[nk_base + i])
+                        if nva_f2 > 0.5:
+                            var lp_f2 = Float64(host_log_prior[nk_base + i])
+                            var w = exp(lp_f2 - visited_logp_max)
+                            sum_w += w
+                            var qa = (
+                                Float64(host_node_total_value[nk_base + i])
+                                / nva_f2
+                            )
+                            weighted_q += w * qa
+                    if sum_w > 1.0e-12:
+                        v_mix = (
+                            v_self + n_total * (weighted_q / sum_w)
+                        ) / (1.0 + n_total)
+
+                # σ scale: (c_visit + max_visit_at_root) · c_scale.
+                var max_visit = Float64(0.0)
+                for i in range(K_ROOT):
+                    var nva_f3 = Float64(host_node_visit[nk_base + i])
+                    if nva_f3 > max_visit:
+                        max_visit = nva_f3
+                var sigma_scale_ = (mcts_c_visit + max_visit) * mcts_c_scale
+                var q_range = mx - mn
+
+                # z[i] = log_prior + sigma_scale · normalize(Q_i)
+                var z = List[Float64](capacity=K_ROOT)
+                var max_z = Float64(-1.0e18)
+                for i in range(K_ROOT):
+                    var nva_f4 = Float64(host_node_visit[nk_base + i])
+                    var qa2: Float64
+                    if nva_f4 > 0.5:
+                        qa2 = (
+                            Float64(host_node_total_value[nk_base + i])
+                            / nva_f4
+                        )
+                    else:
+                        qa2 = v_mix
+                    var qn: Float64
+                    if q_range > 1.0e-8:
+                        qn = (qa2 - mn) / q_range
+                    else:
+                        qn = qa2
+                    var zi = (
+                        Float64(host_log_prior[nk_base + i])
+                        + sigma_scale_ * qn
+                    )
+                    z.append(zi)
+                    if zi > max_z:
+                        max_z = zi
+
+                # softmax with uniform fallback when sum underflows
+                # (matches CPU mcts_sampled.mojo:720-723).
+                var improved = List[Scalar[dtype]](capacity=K_ROOT)
+                var sum_exp = Float64(0.0)
+                var raw_probs = List[Float64](capacity=K_ROOT)
+                for i in range(K_ROOT):
+                    var ev = exp(z[i] - max_z)
+                    raw_probs.append(ev)
+                    sum_exp += ev
+                if sum_exp <= 1.0e-12:
+                    var inv_k = 1.0 / Float64(K_ROOT)
+                    for _ in range(K_ROOT):
+                        improved.append(Scalar[dtype](inv_k))
+                else:
+                    for i in range(K_ROOT):
+                        improved.append(Scalar[dtype](raw_probs[i] / sum_exp))
 
                 actions_per_env.append(action^)
                 sampled_actions_per_env.append(sampled^)
