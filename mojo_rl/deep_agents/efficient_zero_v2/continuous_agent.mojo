@@ -896,18 +896,12 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         # discrete pred-output layout). Comptime-guarded.
         var boot_v_host = alloc[Scalar[dtype]](BATCH * (K + 1))
         memset(boot_v_host, 0, BATCH * (K + 1))
+        # Value-bin offset inside the pred-net output. For discrete this
+        # is `ACT` (action logits, then BINS); for continuous it's
+        # `2*ACT_DIM` (μ_raw ‖ σ_raw, then BINS). `POLICY_OUT_DIM`
+        # abstracts both — `ActSpace` exposes it on the trait.
+        comptime VALUE_OFF = Self.Config.ActSpace.POLICY_OUT_DIM
         comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
-            comptime if Self.Config.ActSpace.IS_CONTINUOUS:
-                # Compile-time error. Continuous + non-SEARCH value
-                # targets need a separate boot_v decode that respects
-                # the `2*ACT_DIM:2*ACT_DIM+BINS` value-bin slice.
-                _ = (
-                    "ContinuousAgent.train_step_gpu: VALUE_TARGET_SARSA /"
-                    " VALUE_TARGET_MIXED not yet supported for continuous"
-                    " configs — use VALUE_TARGET_SEARCH (default) or switch to"
-                    " the discrete agent. Follow-up: port the boot-v decode to"
-                    " read pred_output[b * PRED_OUT + 2*ACT_DIM : ... + BINS]."
-                )
             var tgt_rep_input = alloc[Scalar[dtype]](BATCH * OBS)
             var tgt_z = alloc[Scalar[dtype]](BATCH * LATENT)
             var tgt_pred_out = alloc[Scalar[dtype]](BATCH * PRED_OUT)
@@ -977,7 +971,7 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                     tgt_pred_state,
                 )
                 for b in range(BATCH):
-                    var off = b * PRED_OUT + ACT
+                    var off = b * PRED_OUT + VALUE_OFF
                     for i in range(BINS):
                         tgt_logits_dbl[i] = Float64(tgt_pred_out[off + i])
                     var v_raw = decode_categorical[BINS](

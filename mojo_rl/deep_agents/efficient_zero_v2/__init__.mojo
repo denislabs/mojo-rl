@@ -49,3 +49,5 @@ from .action_space import (
 from .train_step_core import ezv2_train_step_gpu_core
 from .efficient_zero_v2 import GenericEfficientZeroV2Agent
 from .continuous_agent import GenericEZV2ContinuousAgent
+from .gpu_train import EZV2TrainStats, run_ezv2_train_gpu
+from .gpu_continuous_train import run_ezv2_continuous_train_gpu

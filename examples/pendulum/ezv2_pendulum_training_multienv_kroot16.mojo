@@ -20,6 +20,7 @@ from mojo_rl.deep_agents.efficient_zero_v2 import (
     EZV2ContinuousMLPConfig,
     EZV2GPUStateBase,
     GenericEZV2ContinuousAgent,
+    VALUE_TARGET_SARSA,
 )
 from mojo_rl.envs.pendulum import PendulumEnv
 from mojo_rl.nn.constants import dtype
@@ -76,6 +77,11 @@ def main() raises:
         MIN_STD=0.5,               # ← exploration fix (was 0.1)
         STD_MAGNIFICATION=3.0,
         ENT_WEIGHT=0.05,           # ← exploration fix (was 0.005, 10×)
+        # Use bootstrapped TD value targets (reference's choice for DMC
+        # state envs). SVE-based SEARCH targets caused value-head
+        # overestimation feedback — see
+        # `docs/EZV2_CONTINUOUS_PHASE3_POSTMORTEM.md`.
+        VALUE_TARGET_MODE=VALUE_TARGET_SARSA,
     ]
 
     seed(2026)
