@@ -57,12 +57,8 @@ trait PCActivation(Movable & ImplicitlyCopyable):
     def apply[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        mut a: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
         ...
 
@@ -70,12 +66,8 @@ trait PCActivation(Movable & ImplicitlyCopyable):
     def apply_derivative_mul[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
@@ -87,12 +79,8 @@ trait PCActivation(Movable & ImplicitlyCopyable):
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        mut a: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ) raises:
         ...
 
@@ -101,12 +89,8 @@ trait PCActivation(Movable & ImplicitlyCopyable):
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
         ctx: DeviceContext,
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
@@ -130,12 +114,8 @@ struct PCReLU(PCActivation):
     def apply[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        mut a: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
         for b in range(BATCH):
             for i in range(DIM):
@@ -146,12 +126,8 @@ struct PCReLU(PCActivation):
     def apply_derivative_mul[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
@@ -159,17 +135,17 @@ struct PCReLU(PCActivation):
         for b in range(BATCH):
             for i in range(DIM):
                 var xv = rebind[Scalar[dtype]](x[b, i])
-                z_out[b, i] = (
-                    rebind[Scalar[dtype]](z_in[b, i])
-                    if xv > 0
-                    else Scalar[dtype](0)
-                )
+                z_out[b, i] = rebind[Scalar[dtype]](
+                    z_in[b, i]
+                ) if xv > 0 else Scalar[dtype](0)
 
     # ── GPU kernels (naive: one thread per element) ──────────────────────────
 
     @staticmethod
     def _relu_apply_kernel[
-        BATCH: Int, DIM: Int, dtype: DType,
+        BATCH: Int,
+        DIM: Int,
+        dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -184,7 +160,9 @@ struct PCReLU(PCActivation):
 
     @staticmethod
     def _relu_deriv_mul_kernel[
-        BATCH: Int, DIM: Int, dtype: DType,
+        BATCH: Int,
+        DIM: Int,
+        dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -196,11 +174,9 @@ struct PCReLU(PCActivation):
         var b = idx // DIM
         var i = idx % DIM
         var xv = rebind[Scalar[dtype]](x[b, i])
-        z_out[b, i] = (
-            rebind[Scalar[dtype]](z_in[b, i])
-            if xv > 0
-            else Scalar[dtype](0)
-        )
+        z_out[b, i] = rebind[Scalar[dtype]](z_in[b, i]) if xv > 0 else Scalar[
+            dtype
+        ](0)
 
     @staticmethod
     def apply_gpu[
@@ -213,9 +189,7 @@ struct PCReLU(PCActivation):
         comptime k = Self._relu_apply_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k](
-            x, a, grid_dim=(blocks,), block_dim=(TPB,)
-        )
+        ctx.enqueue_function[k](x, a, grid_dim=(blocks,), block_dim=(TPB,))
 
     @staticmethod
     def apply_derivative_mul_gpu[
@@ -223,9 +197,7 @@ struct PCReLU(PCActivation):
     ](
         ctx: DeviceContext,
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
@@ -254,12 +226,8 @@ struct PCIdentity(PCActivation):
     def apply[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        mut a: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
         for b in range(BATCH):
             for i in range(DIM):
@@ -269,12 +237,8 @@ struct PCIdentity(PCActivation):
     def apply_derivative_mul[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
@@ -287,7 +251,9 @@ struct PCIdentity(PCActivation):
 
     @staticmethod
     def _identity_copy_kernel[
-        BATCH: Int, DIM: Int, dtype: DType,
+        BATCH: Int,
+        DIM: Int,
+        dtype: DType,
     ](
         src: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         dst: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -310,9 +276,7 @@ struct PCIdentity(PCActivation):
         comptime k = Self._identity_copy_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k](
-            x, a, grid_dim=(blocks,), block_dim=(TPB,)
-        )
+        ctx.enqueue_function[k](x, a, grid_dim=(blocks,), block_dim=(TPB,))
 
     @staticmethod
     def apply_derivative_mul_gpu[
@@ -320,9 +284,7 @@ struct PCIdentity(PCActivation):
     ](
         ctx: DeviceContext,
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
@@ -357,14 +319,12 @@ struct PCTanh(PCActivation):
     def apply[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        mut a: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
-        comptime assert (dtype.is_floating_point()), "PCTanh requires floating-point dtype"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "PCTanh requires floating-point dtype"
         for b in range(BATCH):
             for i in range(DIM):
                 var v = rebind[Scalar[dtype]](x[b, i])
@@ -374,35 +334,36 @@ struct PCTanh(PCActivation):
     def apply_derivative_mul[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
     ):
-        comptime assert (dtype.is_floating_point()), "PCTanh requires floating-point dtype"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "PCTanh requires floating-point dtype"
         for b in range(BATCH):
             for i in range(DIM):
                 var t = tanh(rebind[Scalar[dtype]](x[b, i]))
-                z_out[b, i] = (
-                    rebind[Scalar[dtype]](z_in[b, i])
-                    * (Scalar[dtype](1) - t * t)
+                z_out[b, i] = rebind[Scalar[dtype]](z_in[b, i]) * (
+                    Scalar[dtype](1) - t * t
                 )
 
     # ── GPU kernels (naive: one thread per element) ──────────────────────────
 
     @staticmethod
     def _tanh_apply_kernel[
-        BATCH: Int, DIM: Int, dtype: DType,
+        BATCH: Int,
+        DIM: Int,
+        dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
-        comptime assert (dtype.is_floating_point()), "PCTanh requires floating-point dtype"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "PCTanh requires floating-point dtype"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * DIM:
             return
@@ -413,22 +374,25 @@ struct PCTanh(PCActivation):
 
     @staticmethod
     def _tanh_deriv_mul_kernel[
-        BATCH: Int, DIM: Int, dtype: DType,
+        BATCH: Int,
+        DIM: Int,
+        dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         z_out: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
-        comptime assert (dtype.is_floating_point()), "PCTanh requires floating-point dtype"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "PCTanh requires floating-point dtype"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * DIM:
             return
         var b = idx // DIM
         var i = idx % DIM
         var t = tanh(rebind[Scalar[dtype]](x[b, i]))
-        z_out[b, i] = (
-            rebind[Scalar[dtype]](z_in[b, i])
-            * (Scalar[dtype](1) - t * t)
+        z_out[b, i] = rebind[Scalar[dtype]](z_in[b, i]) * (
+            Scalar[dtype](1) - t * t
         )
 
     @staticmethod
@@ -442,9 +406,7 @@ struct PCTanh(PCActivation):
         comptime k = Self._tanh_apply_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k](
-            x, a, grid_dim=(blocks,), block_dim=(TPB,)
-        )
+        ctx.enqueue_function[k](x, a, grid_dim=(blocks,), block_dim=(TPB,))
 
     @staticmethod
     def apply_derivative_mul_gpu[
@@ -452,9 +414,7 @@ struct PCTanh(PCActivation):
     ](
         ctx: DeviceContext,
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
@@ -496,14 +456,12 @@ struct PCSwish(PCActivation):
     def apply[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        mut a: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
-        comptime assert (dtype.is_floating_point()), "PCSwish requires floating-point dtype"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "PCSwish requires floating-point dtype"
         for b in range(BATCH):
             for i in range(DIM):
                 var v = rebind[Scalar[dtype]](x[b, i])
@@ -514,17 +472,15 @@ struct PCSwish(PCActivation):
     def apply_derivative_mul[
         BATCH: Int, DIM: Int, dtype: DType = DType.float32
     ](
-        x: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
     ):
-        comptime assert (dtype.is_floating_point()), "PCSwish requires floating-point dtype"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "PCSwish requires floating-point dtype"
         for b in range(BATCH):
             for i in range(DIM):
                 var v = rebind[Scalar[dtype]](x[b, i])
@@ -532,20 +488,22 @@ struct PCSwish(PCActivation):
                 var deriv = s * (
                     Scalar[dtype](1.0) + v * (Scalar[dtype](1.0) - s)
                 )
-                z_out[b, i] = (
-                    rebind[Scalar[dtype]](z_in[b, i]) * deriv
-                )
+                z_out[b, i] = rebind[Scalar[dtype]](z_in[b, i]) * deriv
 
     # ── GPU kernels (naive: one thread per element) ──────────────────────────
 
     @staticmethod
     def _swish_apply_kernel[
-        BATCH: Int, DIM: Int, dtype: DType,
+        BATCH: Int,
+        DIM: Int,
+        dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
-        comptime assert (dtype.is_floating_point()), "PCSwish requires floating-point dtype"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "PCSwish requires floating-point dtype"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * DIM:
             return
@@ -557,13 +515,17 @@ struct PCSwish(PCActivation):
 
     @staticmethod
     def _swish_deriv_mul_kernel[
-        BATCH: Int, DIM: Int, dtype: DType,
+        BATCH: Int,
+        DIM: Int,
+        dtype: DType,
     ](
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         z_out: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
-        comptime assert (dtype.is_floating_point()), "PCSwish requires floating-point dtype"
+        comptime assert (
+            dtype.is_floating_point()
+        ), "PCSwish requires floating-point dtype"
         var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
         if idx >= BATCH * DIM:
             return
@@ -571,12 +533,8 @@ struct PCSwish(PCActivation):
         var i = idx % DIM
         var v = rebind[Scalar[dtype]](x[b, i])
         var s = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + exp(-v))
-        var deriv = s * (
-            Scalar[dtype](1.0) + v * (Scalar[dtype](1.0) - s)
-        )
-        z_out[b, i] = (
-            rebind[Scalar[dtype]](z_in[b, i]) * deriv
-        )
+        var deriv = s * (Scalar[dtype](1.0) + v * (Scalar[dtype](1.0) - s))
+        z_out[b, i] = rebind[Scalar[dtype]](z_in[b, i]) * deriv
 
     @staticmethod
     def apply_gpu[
@@ -589,9 +547,7 @@ struct PCSwish(PCActivation):
         comptime k = Self._swish_apply_kernel[BATCH, DIM, dtype]
         var threads = BATCH * DIM
         var blocks = (threads + TPB - 1) // TPB
-        ctx.enqueue_function[k](
-            x, a, grid_dim=(blocks,), block_dim=(TPB,)
-        )
+        ctx.enqueue_function[k](x, a, grid_dim=(blocks,), block_dim=(TPB,))
 
     @staticmethod
     def apply_derivative_mul_gpu[
@@ -599,9 +555,7 @@ struct PCSwish(PCActivation):
     ](
         ctx: DeviceContext,
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-        z_in: LayoutTensor[
-            dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
-        ],
+        z_in: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut z_out: LayoutTensor[
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
