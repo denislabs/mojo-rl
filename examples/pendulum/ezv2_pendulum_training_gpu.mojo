@@ -103,10 +103,10 @@ def main() raises:
         log_every=2_000,
         rng_seed_base=UInt64(2026),
         use_gpu_sampling=False,
-        # Hybrid diagnostic: CPU MCTS per env, GPU env stepping, GPU
-        # training. Isolates GPU-MCTS bugs from env/training driver bugs.
-        # If Pendulum converges here but not with use_gpu_mcts=True
-        # (default), the bug is in gpu_mcts_sampled.mojo.
-        use_gpu_mcts=False,
+        # Full GPU path including GPU MCTS. The hybrid diagnostic
+        # (use_gpu_mcts=False) confirmed the GPU MCTS was the bug;
+        # `gs_select_kernel` now mirrors the CPU's uniform-fallback when
+        # the softmax denominator underflows, matching mcts_sampled.mojo:720.
+        use_gpu_mcts=True,
         verbose=True,
     )

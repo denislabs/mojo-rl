@@ -690,10 +690,21 @@ def gs_select_kernel[
             var ev = exp(z[i] - max_z)
             probs[i] = ev
             sum_e += ev
+        # Uniform fallback when sum underflows (z spread > ~700 float64
+        # or ~88 float32 → all exp(z[i]-max_z) underflow except the max,
+        # whose sum is dominated by a single 1.0; in pathological cases
+        # of multiple max-tied candidates this can still net to 0). The
+        # CPU implementation (mcts_sampled.mojo:720-723) does the same
+        # uniform-fallback; without it the GPU's `probs` stay at 0 →
+        # visit-balance degenerates to pure round-robin instead of the
+        # uniform-mixture-vs-N rule.
         if sum_e <= Scalar[dtype](1e-12):
-            sum_e = Scalar[dtype](1.0)
-        for i in range(ak_child):
-            probs[i] = probs[i] / sum_e
+            var inv_ak = Scalar[dtype](1.0) / Scalar[dtype](ak_child)
+            for i in range(ak_child):
+                probs[i] = inv_ak
+        else:
+            for i in range(ak_child):
+                probs[i] = probs[i] / sum_e
 
         var denom = Scalar[dtype](1.0) + n_total
         var best_i = 0
