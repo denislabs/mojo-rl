@@ -217,9 +217,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         self._episode_obs = List[List[List[Scalar[dtype]]]]()
         self._episode_actions = List[List[Int]]()
         self._episode_rewards = List[List[Float64]]()
-        self._episode_policies = List[
-            List[InlineArray[Float64, Self.ACT]]
-        ]()
+        self._episode_policies = List[List[InlineArray[Float64, Self.ACT]]]()
         self._episode_values = List[List[Float64]]()
         for _ in range(self.n_envs):
             self._episode_obs.append(List[List[Scalar[dtype]]]())
@@ -305,9 +303,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     best = policy[a]
                     action = a
         else:
-            var temp_policy = InlineArray[Float64, Self.ACT](
-                uninitialized=True
-            )
+            var temp_policy = InlineArray[Float64, Self.ACT](uninitialized=True)
             var inv_t = 1.0 / self.temperature
             var sum_p = Float64(0.0)
             for a in range(Self.ACT):
@@ -407,38 +403,32 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     obs_arr[i] = Scalar[DType.float32](0.0)
 
             # One-hot action for SequenceReplayBuffer's ACT-wide action slot.
-            var act_arr = InlineArray[
-                Scalar[DType.float32], Self.ACT
-            ](uninitialized=True)
+            var act_arr = InlineArray[Scalar[DType.float32], Self.ACT](
+                uninitialized=True
+            )
             for i in range(Self.ACT):
                 act_arr[i] = Scalar[DType.float32](0.0)
-            act_arr[
-                self._episode_actions[env_id][t]
-            ] = Scalar[DType.float32](1.0)
+            act_arr[self._episode_actions[env_id][t]] = Scalar[DType.float32](
+                1.0
+            )
 
             var is_done = t == ep_len - 1
 
             self.state.buffer.add(
                 obs_arr,
                 act_arr,
-                Scalar[DType.float32](
-                    self._episode_rewards[env_id][t]
-                ),
+                Scalar[DType.float32](self._episode_rewards[env_id][t]),
                 is_done,
             )
 
             # Mirror the MCTS targets into the parallel storage at the
             # buffer's just-written index.
             comptime CAP = 50000
-            var buf_idx = (
-                self.state.buffer.ptr - 1 + CAP
-            ) % CAP
+            var buf_idx = (self.state.buffer.ptr - 1 + CAP) % CAP
             for a in range(Self.ACT):
-                self.state.mcts_policies[
-                    buf_idx * Self.ACT + a
-                ] = Scalar[dtype](
-                    self._episode_policies[env_id][t][a]
-                )
+                self.state.mcts_policies[buf_idx * Self.ACT + a] = Scalar[
+                    dtype
+                ](self._episode_policies[env_id][t][a])
             self.state.mcts_values[buf_idx] = Scalar[dtype](
                 self._episode_values[env_id][t]
             )
@@ -449,9 +439,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             )
             # Default priority = max-seen so fresh transitions compete
             # for sampling with previously-seen high-priority windows.
-            self.state.priorities[buf_idx] = Scalar[dtype](
-                self.max_priority
-            )
+            self.state.priorities[buf_idx] = Scalar[dtype](self.max_priority)
 
         self.reset_episode(env_id)
 
@@ -524,11 +512,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             # Build obs from buffer at this index.
             var obs = List[Scalar[dtype]](capacity=Self.Config.obs_dim)
             for d in range(Self.Config.obs_dim):
-                obs.append(
-                    self.state.buffer.obs[
-                        idx * Self.Config.obs_dim + d
-                    ]
-                )
+                obs.append(self.state.buffer.obs[idx * Self.Config.obs_dim + d])
 
             # Run Gumbel search with target networks.
             var policy = self.mcts.search(
@@ -553,9 +537,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
 
             # Overwrite the stored targets at this index.
             for a in range(Self.ACT):
-                self.state.mcts_policies[
-                    idx * Self.ACT + a
-                ] = Scalar[dtype](policy[a])
+                self.state.mcts_policies[idx * Self.ACT + a] = Scalar[dtype](
+                    policy[a]
+                )
             self.state.mcts_values[idx] = Scalar[dtype](sve)
             # Treat this as fresh data — the mixed-value-target's age
             # term should now blend toward SVE since the stored value
@@ -720,9 +704,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     batch_mcts_pol[
                         (sampled * (K + 1) + k) * ACT + a
                     ] = self.state.mcts_policies[idx * ACT + a]
-                batch_mcts_val[
-                    sampled * (K + 1) + k
-                ] = self.state.mcts_values[idx]
+                batch_mcts_val[sampled * (K + 1) + k] = self.state.mcts_values[
+                    idx
+                ]
                 var age = current_train_step - Int(
                     self.state.step_at_write[idx]
                 )
@@ -735,9 +719,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     batch_actions[
                         (sampled * K + k) * ACT + a
                     ] = self.state.buffer.actions[idx * ACT + a]
-                batch_rewards[
-                    sampled * K + k
-                ] = self.state.buffer.rewards[(start + k) % CAP]
+                batch_rewards[sampled * K + k] = self.state.buffer.rewards[
+                    (start + k) % CAP
+                ]
 
         cum_prio.free()
         cand_starts.free()
@@ -903,9 +887,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         var rep_input = alloc[Scalar[dtype]](BATCH * OBS)
         for b in range(BATCH):
             for d in range(OBS):
-                rep_input[b * OBS + d] = batch_obs[
-                    (b * (K + 1) + 0) * OBS + d
-                ]
+                rep_input[b * OBS + d] = batch_obs[(b * (K + 1) + 0) * OBS + d]
 
         # rep(o[0]) → hidden[0]
         var rep_input_t = LayoutTensor[
@@ -923,9 +905,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             Layout.row_major(BATCH, Self.Config.RepModel.CACHE_SIZE),
             MutAnyOrigin,
         ](self.state._rep_cache)
-        Network[
-            Self.Config.RepModel, Self.Config.OptType
-        ].forward_with_cache[BATCH](
+        Network[Self.Config.RepModel, Self.Config.OptType].forward_with_cache[
+            BATCH
+        ](
             rep_input_t,
             hidden0_t,
             rep_params,
@@ -974,9 +956,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 for d in range(LATENT):
                     hidden[
                         (k + 1) * BATCH * LATENT + b * LATENT + d
-                    ] = dyn_out_buf[
-                        k * BATCH * DYN_OUT + b * DYN_OUT + d
-                    ]
+                    ] = dyn_out_buf[k * BATCH * DYN_OUT + b * DYN_OUT + d]
         dyn_input.free()
 
         # Pred at k = 0..K
@@ -1038,10 +1018,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 dtype,
                 Layout.row_major(BATCH, Self.Config.ProjectorModel.CACHE_SIZE),
                 MutAnyOrigin,
-            ](
-                self.state._proj_dyn_caches
-                + k_offset * BATCH * PROJ_CS
-            )
+            ](self.state._proj_dyn_caches + k_offset * BATCH * PROJ_CS)
             Network[
                 Self.Config.ProjectorModel, Self.Config.OptType
             ].forward_with_cache[BATCH](
@@ -1059,19 +1036,14 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             ](proj_dyn_buf + k_offset * BATCH * PROJ)
             var pred_out2_t = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.Config.PredictorModel.OUT_DIM
-                ),
+                Layout.row_major(BATCH, Self.Config.PredictorModel.OUT_DIM),
                 MutAnyOrigin,
             ](pred_dyn_buf + k_offset * BATCH * PROJ)
             var predr_cache_t = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.Config.PredictorModel.CACHE_SIZE),
                 MutAnyOrigin,
-            ](
-                self.state._pred_dyn_caches
-                + k_offset * BATCH * PREDR_CS
-            )
+            ](self.state._pred_dyn_caches + k_offset * BATCH * PREDR_CS)
             Network[
                 Self.Config.PredictorModel, Self.Config.OptType
             ].forward_with_cache[BATCH](
@@ -1098,9 +1070,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
                 MutAnyOrigin,
             ](rep_obs_step)
-            Network[
-                Self.Config.RepModel, Self.Config.OptType
-            ].forward[BATCH](
+            Network[Self.Config.RepModel, Self.Config.OptType].forward[BATCH](
                 obs_step_t, rep_obs_t, rep_params, rep_state_buf
             )
 
@@ -1111,14 +1081,12 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             ](rep_obs_step)
             var proj_obs_t = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.Config.ProjectorModel.OUT_DIM
-                ),
+                Layout.row_major(BATCH, Self.Config.ProjectorModel.OUT_DIM),
                 MutAnyOrigin,
             ](proj_obs_buf + k_offset * BATCH * PROJ)
-            Network[
-                Self.Config.ProjectorModel, Self.Config.OptType
-            ].forward[BATCH](
+            Network[Self.Config.ProjectorModel, Self.Config.OptType].forward[
+                BATCH
+            ](
                 rep_obs_for_proj_t,
                 proj_obs_t,
                 proj_params,
@@ -1227,26 +1195,17 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     dtype,
                     Layout.row_major(BATCH, LSTM_HIDDEN),
                     MutAnyOrigin,
-                ](
-                    self.state._lstm_h_states
-                    + (k + 1) * BATCH * LSTM_HIDDEN
-                )
+                ](self.state._lstm_h_states + (k + 1) * BATCH * LSTM_HIDDEN)
                 var c_t = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, LSTM_HIDDEN),
                     MutAnyOrigin,
-                ](
-                    self.state._lstm_c_states
-                    + (k + 1) * BATCH * LSTM_HIDDEN
-                )
+                ](self.state._lstm_c_states + (k + 1) * BATCH * LSTM_HIDDEN)
                 var lstm_cache_t = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, _LSTMHead.CACHE_SIZE),
                     MutAnyOrigin,
-                ](
-                    self.state._lstm_caches
-                    + k * BATCH * _LSTMHead.CACHE_SIZE
-                )
+                ](self.state._lstm_caches + k * BATCH * _LSTMHead.CACHE_SIZE)
                 _LSTMHead.step_forward[BATCH](
                     z_t,
                     h_prev_t,
@@ -1262,10 +1221,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     dtype,
                     Layout.row_major(BATCH, _RewardPrefixMLP.IN_DIM),
                     MutAnyOrigin,
-                ](
-                    self.state._lstm_h_states
-                    + (k + 1) * BATCH * LSTM_HIDDEN
-                )
+                ](self.state._lstm_h_states + (k + 1) * BATCH * LSTM_HIDDEN)
                 var mlp_out_t = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, _RewardPrefixMLP.OUT_DIM),
@@ -1404,9 +1360,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
                     MutAnyOrigin,
                 ](tgt_z)
-                Network[
-                    Self.Config.RepModel, Self.Config.OptType
-                ].forward[BATCH](
+                Network[Self.Config.RepModel, Self.Config.OptType].forward[
+                    BATCH
+                ](
                     tgt_rep_in_t,
                     tgt_z_t,
                     tgt_rep_params,
@@ -1422,9 +1378,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
                     MutAnyOrigin,
                 ](tgt_pred_out)
-                Network[
-                    Self.Config.PredModel, Self.Config.OptType
-                ].forward[BATCH](
+                Network[Self.Config.PredModel, Self.Config.OptType].forward[
+                    BATCH
+                ](
                     tgt_pred_in_t,
                     tgt_pred_out_t,
                     tgt_pred_params,
@@ -1460,13 +1416,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
                     var disc = Float64(1.0)
                     for j in range(n_eff):
-                        td += disc * Float64(
-                            batch_rewards[b * K + k + j]
-                        )
+                        td += disc * Float64(batch_rewards[b * K + k + j])
                         disc *= self.gamma
-                    td += disc * Float64(
-                        boot_v[b * (K + 1) + k + n_eff]
-                    )
+                    td += disc * Float64(boot_v[b * (K + 1) + k + n_eff])
                 var age = Int(batch_age[b * (K + 1) + k])
                 var v_target = Float64(0.0)
                 comptime if Self.Config.value_target_mode == VALUE_TARGET_SEARCH:
@@ -1497,9 +1449,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 # the value here.
                 if k == 0:
                     var new_p = per_sample_v_loss + 1e-3
-                    self.state.priorities[
-                        batch_start_idx[b]
-                    ] = Scalar[dtype](new_p)
+                    self.state.priorities[batch_start_idx[b]] = Scalar[dtype](
+                        new_p
+                    )
                     if new_p > self.max_priority:
                         self.max_priority = new_p
                 # softmax + grad
@@ -1552,9 +1504,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                         if logits_dbl[i] > max_l:
                             max_l = logits_dbl[i]
                     var sum_e = Float64(0.0)
-                    var probs_r = InlineArray[Float64, BINS](
-                        uninitialized=True
-                    )
+                    var probs_r = InlineArray[Float64, BINS](uninitialized=True)
                     for i in range(BINS):
                         probs_r[i] = exp(logits_dbl[i] - max_l)
                         sum_e += probs_r[i]
@@ -1589,9 +1539,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                         if logits_dbl[i] > max_l:
                             max_l = logits_dbl[i]
                     var sum_e = Float64(0.0)
-                    var probs_r = InlineArray[Float64, BINS](
-                        uninitialized=True
-                    )
+                    var probs_r = InlineArray[Float64, BINS](uninitialized=True)
                     for i in range(BINS):
                         probs_r[i] = exp(logits_dbl[i] - max_l)
                         sum_e += probs_r[i]
@@ -1630,8 +1578,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     var pv = Float64(pred_dyn_buf[p_off + i])
                     var tv = Float64(proj_obs_buf[t_off + i])
                     grad_pred_dyn[p_off + i] = Scalar[dtype](
-                        lg_scale
-                        * (c * pv * inv_na2 - tv * inv_na_nb)
+                        lg_scale * (c * pv * inv_na2 - tv * inv_na_nb)
                     )
 
         L_R = L_R / n_R if n_R > 0.0 else 0.0
@@ -1652,12 +1599,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             0,
             Self.Config.RepModel.PARAM_SIZE,
         )
-        memset(
-            self.state.dynamics.grads, 0, Self.Config.DynModel.PARAM_SIZE
-        )
-        memset(
-            self.state.prediction.grads, 0, Self.Config.PredModel.PARAM_SIZE
-        )
+        memset(self.state.dynamics.grads, 0, Self.Config.DynModel.PARAM_SIZE)
+        memset(self.state.prediction.grads, 0, Self.Config.PredModel.PARAM_SIZE)
         memset(
             self.state.projector.grads,
             0,
@@ -1691,9 +1634,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Layout.row_major(BATCH, Self.Config.PredModel.CACHE_SIZE),
                 MutAnyOrigin,
             ](self.state._pred_caches + k * BATCH * PRED_CS)
-            Network[
-                Self.Config.PredModel, Self.Config.OptType
-            ].backward[BATCH](
+            Network[Self.Config.PredModel, Self.Config.OptType].backward[BATCH](
                 grad_out_t,
                 grad_in_t,
                 pred_params,
@@ -1703,11 +1644,10 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             )
             for b in range(BATCH):
                 for d in range(LATENT):
-                    grad_hidden[
-                        k * BATCH * LATENT + b * LATENT + d
-                    ] = grad_hidden[
-                        k * BATCH * LATENT + b * LATENT + d
-                    ] + grad_pred_in[b * LATENT + d]
+                    grad_hidden[k * BATCH * LATENT + b * LATENT + d] = (
+                        grad_hidden[k * BATCH * LATENT + b * LATENT + d]
+                        + grad_pred_in[b * LATENT + d]
+                    )
         grad_pred_in.free()
 
         # 4b. SimSiam backward — predictor + projector (online branch) at k=1..K.
@@ -1718,29 +1658,22 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             # predictor.backward(grad_pred_dyn[k_offset], → grad_proj_dyn)
             var grad_predr_out_t = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.Config.PredictorModel.OUT_DIM
-                ),
+                Layout.row_major(BATCH, Self.Config.PredictorModel.OUT_DIM),
                 MutAnyOrigin,
             ](grad_pred_dyn + k_offset * BATCH * PROJ)
             var grad_predr_in_t = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.Config.PredictorModel.IN_DIM
-                ),
+                Layout.row_major(BATCH, Self.Config.PredictorModel.IN_DIM),
                 MutAnyOrigin,
             ](grad_proj_dyn)
             var predr_cache_t = LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, Self.Config.PredictorModel.CACHE_SIZE),
                 MutAnyOrigin,
+            ](self.state._pred_dyn_caches + k_offset * BATCH * PREDR_CS)
+            Network[Self.Config.PredictorModel, Self.Config.OptType].backward[
+                BATCH
             ](
-                self.state._pred_dyn_caches
-                + k_offset * BATCH * PREDR_CS
-            )
-            Network[
-                Self.Config.PredictorModel, Self.Config.OptType
-            ].backward[BATCH](
                 grad_predr_out_t,
                 grad_predr_in_t,
                 predr_params,
@@ -1752,9 +1685,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             # projector.backward(grad_proj_dyn → grad on hidden[k])
             var grad_proj_out_t = LayoutTensor[
                 dtype,
-                Layout.row_major(
-                    BATCH, Self.Config.ProjectorModel.OUT_DIM
-                ),
+                Layout.row_major(BATCH, Self.Config.ProjectorModel.OUT_DIM),
                 MutAnyOrigin,
             ](grad_proj_dyn)
             var grad_proj_in_t = LayoutTensor[
@@ -1766,13 +1697,10 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 dtype,
                 Layout.row_major(BATCH, Self.Config.ProjectorModel.CACHE_SIZE),
                 MutAnyOrigin,
+            ](self.state._proj_dyn_caches + k_offset * BATCH * PROJ_CS)
+            Network[Self.Config.ProjectorModel, Self.Config.OptType].backward[
+                BATCH
             ](
-                self.state._proj_dyn_caches
-                + k_offset * BATCH * PROJ_CS
-            )
-            Network[
-                Self.Config.ProjectorModel, Self.Config.OptType
-            ].backward[BATCH](
                 grad_proj_out_t,
                 grad_proj_in_t,
                 proj_params,
@@ -1782,11 +1710,10 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             )
             for b in range(BATCH):
                 for d in range(LATENT):
-                    grad_hidden[
-                        k * BATCH * LATENT + b * LATENT + d
-                    ] = grad_hidden[
-                        k * BATCH * LATENT + b * LATENT + d
-                    ] + grad_proj_in[b * LATENT + d]
+                    grad_hidden[k * BATCH * LATENT + b * LATENT + d] = (
+                        grad_hidden[k * BATCH * LATENT + b * LATENT + d]
+                        + grad_proj_in[b * LATENT + d]
+                    )
         grad_proj_dyn.free()
         grad_proj_in.free()
 
@@ -1846,9 +1773,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             ](self.state.reward_prefix_mlp.grads)
 
             # Pass 1 — MLP-head backward at k = 0..K-1 → adds into grad_h_lstm[k+1]
-            var grad_mlp_in_step = alloc[Scalar[dtype]](
-                BATCH * LSTM_HIDDEN
-            )
+            var grad_mlp_in_step = alloc[Scalar[dtype]](BATCH * LSTM_HIDDEN)
             for k in range(K):
                 var grad_logits_t = LayoutTensor[
                     dtype,
@@ -1868,9 +1793,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     self.state._mlp_head_caches
                     + k * BATCH * _RewardPrefixMLP.CACHE_SIZE
                 )
-                Network[
-                    _RewardPrefixMLP, Self.Config.OptType
-                ].backward[BATCH](
+                Network[_RewardPrefixMLP, Self.Config.OptType].backward[BATCH](
                     grad_logits_t,
                     grad_mlp_in_t,
                     mlp_head_params_b,
@@ -1882,14 +1805,15 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 for b in range(BATCH):
                     for d in range(LSTM_HIDDEN):
                         grad_h_lstm[
-                            (k + 1) * BATCH * LSTM_HIDDEN
-                            + b * LSTM_HIDDEN
-                            + d
-                        ] = grad_h_lstm[
-                            (k + 1) * BATCH * LSTM_HIDDEN
-                            + b * LSTM_HIDDEN
-                            + d
-                        ] + grad_mlp_in_step[b * LSTM_HIDDEN + d]
+                            (k + 1) * BATCH * LSTM_HIDDEN + b * LSTM_HIDDEN + d
+                        ] = (
+                            grad_h_lstm[
+                                (k + 1) * BATCH * LSTM_HIDDEN
+                                + b * LSTM_HIDDEN
+                                + d
+                            ]
+                            + grad_mlp_in_step[b * LSTM_HIDDEN + d]
+                        )
             grad_mlp_in_step.free()
 
             # Pass 2 — LSTM backward in REVERSE time. At step k we need
@@ -1897,12 +1821,8 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             # boundaries, otherwise = h_lstm[k] / c_lstm[k]) — re-build
             # in `lstm_h_input` / `lstm_c_input` scratch.
             var grad_x_lstm = alloc[Scalar[dtype]](BATCH * LATENT)
-            var grad_h_prev_lstm = alloc[Scalar[dtype]](
-                BATCH * LSTM_HIDDEN
-            )
-            var grad_c_prev_lstm = alloc[Scalar[dtype]](
-                BATCH * LSTM_HIDDEN
-            )
+            var grad_h_prev_lstm = alloc[Scalar[dtype]](BATCH * LSTM_HIDDEN)
+            var grad_c_prev_lstm = alloc[Scalar[dtype]](BATCH * LSTM_HIDDEN)
             for kk in range(K):
                 var k = K - 1 - kk
                 var reset_now = (k > 0) and (k % LSTM_HORIZON == 0)
@@ -1922,16 +1842,12 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     dtype,
                     Layout.row_major(BATCH, LSTM_HIDDEN),
                     MutAnyOrigin,
-                ](
-                    grad_h_lstm + (k + 1) * BATCH * LSTM_HIDDEN
-                )
+                ](grad_h_lstm + (k + 1) * BATCH * LSTM_HIDDEN)
                 var dc_t = LayoutTensor[
                     dtype,
                     Layout.row_major(BATCH, LSTM_HIDDEN),
                     MutAnyOrigin,
-                ](
-                    grad_c_lstm + (k + 1) * BATCH * LSTM_HIDDEN
-                )
+                ](grad_c_lstm + (k + 1) * BATCH * LSTM_HIDDEN)
                 var z_t_b = LayoutTensor[
                     dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin
                 ](hidden + (k + 1) * BATCH * LATENT)
@@ -1949,10 +1865,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     dtype,
                     Layout.row_major(BATCH, _LSTMHead.CACHE_SIZE),
                     MutAnyOrigin,
-                ](
-                    self.state._lstm_caches
-                    + k * BATCH * _LSTMHead.CACHE_SIZE
-                )
+                ](self.state._lstm_caches + k * BATCH * _LSTMHead.CACHE_SIZE)
                 var grad_x_t = LayoutTensor[
                     dtype, Layout.row_major(BATCH, LATENT), MutAnyOrigin
                 ](grad_x_lstm)
@@ -1985,9 +1898,12 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     for d in range(LATENT):
                         grad_hidden[
                             (k + 1) * BATCH * LATENT + b * LATENT + d
-                        ] = grad_hidden[
-                            (k + 1) * BATCH * LATENT + b * LATENT + d
-                        ] + grad_x_lstm[b * LATENT + d]
+                        ] = (
+                            grad_hidden[
+                                (k + 1) * BATCH * LATENT + b * LATENT + d
+                            ]
+                            + grad_x_lstm[b * LATENT + d]
+                        )
 
                 # Thread dh_prev / dc_prev back to step k UNLESS this
                 # step was a reset boundary (input was zeros, so the
@@ -1995,16 +1911,14 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 # chain breaks here).
                 if not reset_now:
                     for i in range(BATCH * LSTM_HIDDEN):
-                        grad_h_lstm[
-                            k * BATCH * LSTM_HIDDEN + i
-                        ] = grad_h_lstm[
-                            k * BATCH * LSTM_HIDDEN + i
-                        ] + grad_h_prev_lstm[i]
-                        grad_c_lstm[
-                            k * BATCH * LSTM_HIDDEN + i
-                        ] = grad_c_lstm[
-                            k * BATCH * LSTM_HIDDEN + i
-                        ] + grad_c_prev_lstm[i]
+                        grad_h_lstm[k * BATCH * LSTM_HIDDEN + i] = (
+                            grad_h_lstm[k * BATCH * LSTM_HIDDEN + i]
+                            + grad_h_prev_lstm[i]
+                        )
+                        grad_c_lstm[k * BATCH * LSTM_HIDDEN + i] = (
+                            grad_c_lstm[k * BATCH * LSTM_HIDDEN + i]
+                            + grad_c_prev_lstm[i]
+                        )
 
             grad_x_lstm.free()
             grad_h_prev_lstm.free()
@@ -2020,15 +1934,11 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             var grad_dyn_out_step = alloc[Scalar[dtype]](BATCH * DYN_OUT)
             for b in range(BATCH):
                 for d in range(LATENT):
-                    grad_dyn_out_step[
-                        b * DYN_OUT + d
-                    ] = grad_hidden[
+                    grad_dyn_out_step[b * DYN_OUT + d] = grad_hidden[
                         (k + 1) * BATCH * LATENT + b * LATENT + d
                     ]
                 for i in range(BINS):
-                    grad_dyn_out_step[
-                        b * DYN_OUT + LATENT + i
-                    ] = grad_dyn_out[
+                    grad_dyn_out_step[b * DYN_OUT + LATENT + i] = grad_dyn_out[
                         k * BATCH * DYN_OUT + b * DYN_OUT + LATENT + i
                     ]
             var grad_dyn_out_t = LayoutTensor[
@@ -2046,9 +1956,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Layout.row_major(BATCH, Self.Config.DynModel.CACHE_SIZE),
                 MutAnyOrigin,
             ](self.state._dyn_caches + k * BATCH * DYN_CS)
-            Network[
-                Self.Config.DynModel, Self.Config.OptType
-            ].backward[BATCH](
+            Network[Self.Config.DynModel, Self.Config.OptType].backward[BATCH](
                 grad_dyn_out_t,
                 grad_dyn_in_t,
                 dyn_params,
@@ -2058,11 +1966,10 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             )
             for b in range(BATCH):
                 for d in range(LATENT):
-                    grad_hidden[
-                        k * BATCH * LATENT + b * LATENT + d
-                    ] = grad_hidden[
-                        k * BATCH * LATENT + b * LATENT + d
-                    ] + grad_dyn_in_t_buf[b * DYN_IN + d]
+                    grad_hidden[k * BATCH * LATENT + b * LATENT + d] = (
+                        grad_hidden[k * BATCH * LATENT + b * LATENT + d]
+                        + grad_dyn_in_t_buf[b * DYN_IN + d]
+                    )
             grad_dyn_out_step.free()
         grad_dyn_in_t_buf.free()
 
@@ -2072,15 +1979,15 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             dtype,
             Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
             MutAnyOrigin,
-        ](grad_hidden)  # grad_hidden[0]
+        ](
+            grad_hidden
+        )  # grad_hidden[0]
         var grad_rep_in_t = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, Self.Config.RepModel.IN_DIM),
             MutAnyOrigin,
         ](grad_rep_in)
-        Network[
-            Self.Config.RepModel, Self.Config.OptType
-        ].backward[BATCH](
+        Network[Self.Config.RepModel, Self.Config.OptType].backward[BATCH](
             grad_rep_out_t,
             grad_rep_in_t,
             rep_params,
@@ -2415,9 +2322,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 )
                 if age < 0:
                     age = 0
-                gpu.batch_age_host[sampled * (K + 1) + k] = Scalar[
-                    DType.int32
-                ](age)
+                gpu.batch_age_host[sampled * (K + 1) + k] = Scalar[DType.int32](
+                    age
+                )
             for k in range(K):
                 var idx = (start + k) % CAP
                 for a in range(ACT):
@@ -2434,9 +2341,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             # consume it then.
             var cum = Float64(0.0)
             for k in range(K):
-                cum += Float64(
-                    gpu.batch_rewards_host[sampled * K + k]
-                )
+                cum += Float64(gpu.batch_rewards_host[sampled * K + k])
                 gpu.cum_rewards_host[sampled * K + k] = Scalar[dtype](cum)
 
         cum_prio.free()
@@ -2492,9 +2397,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
                     MutAnyOrigin,
                 ](tgt_z)
-                Network[
-                    Self.Config.RepModel, Self.Config.OptType
-                ].forward[BATCH](
+                Network[Self.Config.RepModel, Self.Config.OptType].forward[
+                    BATCH
+                ](
                     tgt_rep_in_t,
                     tgt_z_t,
                     tgt_rep_params,
@@ -2510,9 +2415,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
                     MutAnyOrigin,
                 ](tgt_pred_out)
-                Network[
-                    Self.Config.PredModel, Self.Config.OptType
-                ].forward[BATCH](
+                Network[Self.Config.PredModel, Self.Config.OptType].forward[
+                    BATCH
+                ](
                     tgt_pred_in_t,
                     tgt_pred_out_t,
                     tgt_pred_params,
@@ -2555,7 +2460,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                         boot_v_host[sampled * (K + 1) + k + n_eff]
                     )
                 var age = Int(gpu.batch_age_host[sampled * (K + 1) + k])
-                var v_target = Float64(0.0)
+                var v_target: Float64
                 comptime if Self.Config.value_target_mode == VALUE_TARGET_SEARCH:
                     v_target = sve
                 elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:
@@ -2564,9 +2469,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     v_target = MixedValueTarget[
                         Self.Config.t_fresh, Self.Config.t_stale
                     ].compute(sve, td, age)
-                gpu.value_target_full_host[
-                    sampled * (K + 1) + k
-                ] = Scalar[dtype](v_target)
+                gpu.value_target_full_host[sampled * (K + 1) + k] = Scalar[
+                    dtype
+                ](v_target)
 
         boot_v_host.free()
 
@@ -2574,7 +2479,11 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         # The action-space dispatch (Config.ActSpace.policy_loss_grad_gpu)
         # fires inside this call at section 5.1.
         var sums = ezv2_train_step_gpu_core[Self.Config](
-            gpu, ctx, self.v_min, self.v_max, self.max_grad_norm,
+            gpu,
+            ctx,
+            self.v_min,
+            self.v_max,
+            self.max_grad_norm,
         )
         var L_R = sums[0]
         var L_P = sums[1]
@@ -2586,9 +2495,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         # ── 10. Update CPU-side priorities array at the matching slot ───
         for b in range(BATCH):
             var new_p = Float64(gpu.priorities_out_host[b])
-            self.state.priorities[batch_start_idx[b]] = Scalar[dtype](
-                new_p
-            )
+            self.state.priorities[batch_start_idx[b]] = Scalar[dtype](new_p)
             if new_p > self.max_priority:
                 self.max_priority = new_p
 
@@ -2683,9 +2590,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
             )
 
         # ── Section 1: GPU priority sampling + window gather (kernels 1-4)
-        var oldest = (
-            gpu_replay.ptr - gpu_replay.size + CAP
-        ) % CAP
+        var oldest = (gpu_replay.ptr - gpu_replay.size + CAP) % CAP
         ezv2_gpu_sample_and_gather[CAP, BATCH, K, OBS, ACT](
             ctx,
             gpu_replay.priorities,
@@ -2717,16 +2622,16 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         # SEARCH mode: value target = stored MCTS root value at every
         # window position. Just memcpy the gathered MCTS values into
         # the value-target buffer the core consumes.
-        ctx.enqueue_copy(
-            gpu.value_target_full_buf, gpu.batch_mcts_val_buf
-        )
+        ctx.enqueue_copy(gpu.value_target_full_buf, gpu.batch_mcts_val_buf)
 
         # ── Sections 2-9 — shared core, with section 2 (host upload)
         # elided since the GPU sampler wrote the device buffers directly.
-        var sums = ezv2_train_step_gpu_core[
-            Self.Config, SKIP_UPLOAD=True
-        ](
-            gpu, ctx, self.v_min, self.v_max, self.max_grad_norm,
+        var sums = ezv2_train_step_gpu_core[Self.Config, SKIP_UPLOAD=True](
+            gpu,
+            ctx,
+            self.v_min,
+            self.v_max,
+            self.max_grad_norm,
         )
         var L_R = sums[0]
         var L_P = sums[1]
@@ -2738,9 +2643,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         # ── Section 10 (host) — download batch_start_idx + writeback ───
         # priorities_out_host is already populated by the core's section 9
         # download. We just need batch_start_idx on host to scatter.
-        ctx.enqueue_copy(
-            gpu.batch_start_idx_host, gpu.batch_start_idx_buf
-        )
+        ctx.enqueue_copy(gpu.batch_start_idx_host, gpu.batch_start_idx_buf)
         ctx.synchronize()
         for b in range(BATCH):
             var idx = Int(gpu.batch_start_idx_host[b])
@@ -2762,7 +2665,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
     # ══════════════════════════════════════════════════════════════════════
 
     def compute_loss_components(
-        mut self
+        mut self,
     ) -> Tuple[Float64, Float64, Float64, Float64]:
         """Sample a batch, run the full K-step forward (rep + dyn × K +
         pred at every k + SimSiam projector/predictor), and return the
@@ -2879,9 +2782,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     batch_mcts_pol[
                         (sampled * (K + 1) + k) * ACT + a
                     ] = self.state.mcts_policies[idx * ACT + a]
-                batch_mcts_val[
-                    sampled * (K + 1) + k
-                ] = self.state.mcts_values[idx]
+                batch_mcts_val[sampled * (K + 1) + k] = self.state.mcts_values[
+                    idx
+                ]
                 var age = current_train_step - Int(
                     self.state.step_at_write[idx]
                 )
@@ -2894,9 +2797,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     batch_actions[
                         (sampled * K + k) * ACT + a
                     ] = self.state.buffer.actions[idx * ACT + a]
-                batch_rewards[
-                    sampled * K + k
-                ] = self.state.buffer.rewards[(start + k) % CAP]
+                batch_rewards[sampled * K + k] = self.state.buffer.rewards[
+                    (start + k) % CAP
+                ]
 
         cum_prio.free()
         cand_starts.free()
@@ -2914,9 +2817,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         var rep_input = alloc[Scalar[dtype]](BATCH * OBS)
         for b in range(BATCH):
             for d in range(OBS):
-                rep_input[b * OBS + d] = batch_obs[
-                    (b * (K + 1) + 0) * OBS + d
-                ]
+                rep_input[b * OBS + d] = batch_obs[(b * (K + 1) + 0) * OBS + d]
 
         # Network.forward expects LayoutTensor params/state. Build views
         # from the raw `.params` / `.model_state` UnsafePointer fields —
@@ -3011,17 +2912,15 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Layout.row_major(BATCH, Self.Config.DynModel.OUT_DIM),
                 MutAnyOrigin,
             ](dyn_out + k * BATCH * DYN_OUT)
-            Network[
-                Self.Config.DynModel, Self.Config.OptType
-            ].forward[BATCH](
+            Network[Self.Config.DynModel, Self.Config.OptType].forward[BATCH](
                 dyn_input_t, dyn_out_t, dyn_params, dyn_state_buf
             )
             # Copy hidden prefix into hidden[k+1].
             for b in range(BATCH):
                 for d in range(LATENT):
-                    hidden[
-                        (k + 1) * BATCH * LATENT + b * LATENT + d
-                    ] = dyn_out[k * BATCH * DYN_OUT + b * DYN_OUT + d]
+                    hidden[(k + 1) * BATCH * LATENT + b * LATENT + d] = dyn_out[
+                        k * BATCH * DYN_OUT + b * DYN_OUT + d
+                    ]
         dyn_input.free()
 
         # Pred at every k = 0..K
@@ -3036,9 +2935,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
                 MutAnyOrigin,
             ](pred_out + k * BATCH * PRED_OUT)
-            Network[
-                Self.Config.PredModel, Self.Config.OptType
-            ].forward[BATCH](
+            Network[Self.Config.PredModel, Self.Config.OptType].forward[BATCH](
                 pred_in_t, pred_out_t, pred_params, pred_state_buf
             )
 
@@ -3055,7 +2952,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
         var obs_input_step = alloc[Scalar[dtype]](BATCH * OBS)
 
         for k_offset in range(K):
-            var k = k_offset + 1  # consistency loss applies at unroll step k=1..K
+            var k = (
+                k_offset + 1
+            )  # consistency loss applies at unroll step k=1..K
 
             # (a) projector(z_dyn[k]) → proj_dyn[k_offset]
             var proj_in_t = LayoutTensor[
@@ -3068,11 +2967,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Layout.row_major(BATCH, Self.Config.ProjectorModel.OUT_DIM),
                 MutAnyOrigin,
             ](proj_dyn_buf + k_offset * BATCH * PROJ)
-            Network[
-                Self.Config.ProjectorModel, Self.Config.OptType
-            ].forward[BATCH](
-                proj_in_t, proj_out_t, proj_params, proj_state_buf
-            )
+            Network[Self.Config.ProjectorModel, Self.Config.OptType].forward[
+                BATCH
+            ](proj_in_t, proj_out_t, proj_params, proj_state_buf)
 
             # (b) predictor(proj_dyn) → pred_dyn[k_offset]
             var pred_in2_t = LayoutTensor[
@@ -3085,11 +2982,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Layout.row_major(BATCH, Self.Config.PredictorModel.OUT_DIM),
                 MutAnyOrigin,
             ](pred_dyn_buf + k_offset * BATCH * PROJ)
-            Network[
-                Self.Config.PredictorModel, Self.Config.OptType
-            ].forward[BATCH](
-                pred_in2_t, pred_out2_t, predr_params, predr_state_buf
-            )
+            Network[Self.Config.PredictorModel, Self.Config.OptType].forward[
+                BATCH
+            ](pred_in2_t, pred_out2_t, predr_params, predr_state_buf)
 
             # (c) Target branch: rep(o[k]) → projector → proj_obs[k_offset]
             for b in range(BATCH):
@@ -3107,9 +3002,7 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
                 MutAnyOrigin,
             ](rep_obs_step)
-            Network[
-                Self.Config.RepModel, Self.Config.OptType
-            ].forward[BATCH](
+            Network[Self.Config.RepModel, Self.Config.OptType].forward[BATCH](
                 obs_step_t, rep_obs_t, rep_params, rep_state_buf
             )
 
@@ -3123,11 +3016,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 Layout.row_major(BATCH, Self.Config.ProjectorModel.OUT_DIM),
                 MutAnyOrigin,
             ](proj_obs_buf + k_offset * BATCH * PROJ)
-            Network[
-                Self.Config.ProjectorModel, Self.Config.OptType
-            ].forward[BATCH](
-                rep_obs_for_proj_t, proj_obs_t, proj_params, proj_state_buf
-            )
+            Network[Self.Config.ProjectorModel, Self.Config.OptType].forward[
+                BATCH
+            ](rep_obs_for_proj_t, proj_obs_t, proj_params, proj_state_buf)
 
         rep_obs_step.free()
         obs_input_step.free()
@@ -3221,9 +3112,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     Layout.row_major(BATCH, Self.Config.RepModel.OUT_DIM),
                     MutAnyOrigin,
                 ](tgt_z)
-                Network[
-                    Self.Config.RepModel, Self.Config.OptType
-                ].forward[BATCH](
+                Network[Self.Config.RepModel, Self.Config.OptType].forward[
+                    BATCH
+                ](
                     tgt_rep_in_t,
                     tgt_z_t,
                     tgt_rep_params,
@@ -3239,9 +3130,9 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                     Layout.row_major(BATCH, Self.Config.PredModel.OUT_DIM),
                     MutAnyOrigin,
                 ](tgt_pred_out)
-                Network[
-                    Self.Config.PredModel, Self.Config.OptType
-                ].forward[BATCH](
+                Network[Self.Config.PredModel, Self.Config.OptType].forward[
+                    BATCH
+                ](
                     tgt_pred_in_t,
                     tgt_pred_out_t,
                     tgt_pred_params,
@@ -3272,15 +3163,11 @@ struct GenericEfficientZeroV2Agent[Config: EZV2DiscreteConfig](Movable):
                 comptime if Self.Config.value_target_mode != VALUE_TARGET_SEARCH:
                     var disc = Float64(1.0)
                     for j in range(n_eff):
-                        td += disc * Float64(
-                            batch_rewards[b * K + k + j]
-                        )
+                        td += disc * Float64(batch_rewards[b * K + k + j])
                         disc *= self.gamma
-                    td += disc * Float64(
-                        boot_v_diag[b * (K + 1) + k + n_eff]
-                    )
+                    td += disc * Float64(boot_v_diag[b * (K + 1) + k + n_eff])
                 var age = Int(batch_age[b * (K + 1) + k])
-                var v_target = Float64(0.0)
+                var v_target: Float64
                 comptime if Self.Config.value_target_mode == VALUE_TARGET_SEARCH:
                     v_target = sve
                 elif Self.Config.value_target_mode == VALUE_TARGET_SARSA:

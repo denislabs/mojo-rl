@@ -44,6 +44,8 @@ from mojo_rl.deep_agents.efficient_zero_v2.kernels import (
     ezv2_gather_reward_at_step_kernel,
     ezv2_gather_value_target_kernel,
     ezv2_gather_policy_target_kernel,
+    ezv2_gather_fullpi_targets_kernel,
+    ezv2_policy_loss_grad_continuous_fullpi_kernel,
     ezv2_priority_from_v_loss_kernel,
     ezv2_copy_lstm_input_kernel,
     ezv2_reward_prefix_loss_grad_kernel,
@@ -146,6 +148,15 @@ def ezv2_train_step_gpu_core[
         ctx.enqueue_copy(gpu.batch_mcts_pol_buf, gpu.batch_mcts_pol_host)
         ctx.enqueue_copy(gpu.batch_mcts_val_buf, gpu.batch_mcts_val_host)
         ctx.enqueue_copy(gpu.batch_age_buf, gpu.batch_age_host)
+        # Full-π targets (paper Eq. 6) for continuous ACT_DIM==1 — extra
+        # uploads. For other configs the buffers are still allocated but
+        # the kernel isn't dispatched, so contents don't matter.
+        ctx.enqueue_copy(
+            gpu.batch_mcts_samp_act_buf, gpu.batch_mcts_samp_act_host
+        )
+        ctx.enqueue_copy(
+            gpu.batch_mcts_imp_pi_buf, gpu.batch_mcts_imp_pi_host
+        )
         ctx.enqueue_copy(
             gpu.value_target_full_buf, gpu.value_target_full_host
         )
@@ -645,14 +656,50 @@ def ezv2_train_step_gpu_core[
     # the only action-space-specific hook in the K-step BPTT body.
     # Discrete uses the existing CE kernel; continuous (Phase 3)
     # supplies a different one. See `docs/EZV2_MODULAR_ARCHITECTURE.md`.
+    #
+    # Continuous ACT_DIM==1 (Pendulum etc., paper Eq. 6 branch in
+    # `ez/utils/loss.py:continuous_loss`) takes a separate full-π path:
+    # K root-sampled candidates + improved-policy weights from the MCTS
+    # search produce a weighted NLL instead of a simple-best NLL.
     comptime POL_TGT_DIM = Config.ActSpace.POLICY_TARGET_DIM
+    comptime _ACT = Config.action_dim
+    comptime _K_ROOT_CFG = Config.num_root_candidates
+    comptime USE_FULLPI = (
+        Config.ActSpace.IS_CONTINUOUS and _ACT == 1
+    )
     comptime gather_pol = ezv2_gather_policy_target_kernel[
         BATCH, K + 1, POL_TGT_DIM, dtype
     ]
+    comptime gather_fullpi = ezv2_gather_fullpi_targets_kernel[
+        BATCH, K + 1, _K_ROOT_CFG, _ACT, dtype
+    ]
+    comptime fullpi_kernel = (
+        ezv2_policy_loss_grad_continuous_fullpi_kernel[
+            BATCH, _ACT, _K_ROOT_CFG, PRED_OUT, dtype
+        ]
+    )
     comptime reduce_one = ezv2_reduce_add_kernel[BATCH, dtype]
     var policy_target_step_t = LayoutTensor[
         dtype, Layout.row_major(BATCH * POL_TGT_DIM), MutAnyOrigin
     ](gpu.policy_target_step_buf.unsafe_ptr())
+    var fullpi_target_actions_step_t = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH * _K_ROOT_CFG * _ACT),
+        MutAnyOrigin,
+    ](gpu.fullpi_target_actions_step_buf.unsafe_ptr())
+    var fullpi_target_policy_step_t = LayoutTensor[
+        dtype, Layout.row_major(BATCH * _K_ROOT_CFG), MutAnyOrigin
+    ](gpu.fullpi_target_policy_step_buf.unsafe_ptr())
+    var batch_mcts_samp_act_t = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH * (K + 1) * _K_ROOT_CFG * _ACT),
+        MutAnyOrigin,
+    ](gpu.batch_mcts_samp_act_buf.unsafe_ptr())
+    var batch_mcts_imp_pi_t = LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH * (K + 1) * _K_ROOT_CFG),
+        MutAnyOrigin,
+    ](gpu.batch_mcts_imp_pi_buf.unsafe_ptr())
     var per_sample_loss_t = LayoutTensor[
         dtype, Layout.row_major(BATCH), MutAnyOrigin
     ](gpu.per_sample_loss_scratch_buf.unsafe_ptr())
@@ -663,31 +710,66 @@ def ezv2_train_step_gpu_core[
     var n_P = Float64(BATCH * (K + 1))
     var lp_scale = Config.lambda_policy / n_P
     var ent_scale = Config.entropy_weight / n_P
+    # `MAX_ACTION` / `MIN_STD` live on `ContinuousActionSpace` only —
+    # bind them at comptime so the discrete path doesn't try to resolve
+    # them on `DiscreteActionSpace`.
+    comptime MAX_ACTION_F: Float64 = (
+        Config.ActSpace.MAX_ACTION if USE_FULLPI else Float64(0.0)
+    )
+    comptime MIN_STD_F: Float64 = (
+        Config.ActSpace.MIN_STD if USE_FULLPI else Float64(0.0)
+    )
+    var max_action_s = Scalar[dtype](MAX_ACTION_F)
+    var min_std_s = Scalar[dtype](MIN_STD_F)
     for k in range(K + 1):
-        ctx.enqueue_function[gather_pol](
-            batch_mcts_pol_t,
-            policy_target_step_t,
-            k,
-            grid_dim=(BATCH_BLOCKS,),
-            block_dim=(TPB,),
-        )
         var pred_out_k_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
         ](gpu.pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
         var grad_pred_out_k_flat = LayoutTensor[
             dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
         ](gpu.grad_pred_out_buf.unsafe_ptr() + k * BATCH * PRED_OUT)
-        Config.ActSpace.policy_loss_grad_gpu[
-            BATCH, PRED_OUT, POL_TGT_DIM, dtype
-        ](
-            ctx,
-            pred_out_k_flat,
-            policy_target_step_t,
-            grad_pred_out_k_flat,
-            per_sample_loss_t,
-            Scalar[dtype](lp_scale),
-            Scalar[dtype](ent_scale),
-        )
+        comptime if USE_FULLPI:
+            ctx.enqueue_function[gather_fullpi](
+                batch_mcts_samp_act_t,
+                batch_mcts_imp_pi_t,
+                fullpi_target_actions_step_t,
+                fullpi_target_policy_step_t,
+                k,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            ctx.enqueue_function[fullpi_kernel](
+                pred_out_k_flat,
+                fullpi_target_actions_step_t,
+                fullpi_target_policy_step_t,
+                grad_pred_out_k_flat,
+                per_sample_loss_t,
+                Scalar[dtype](lp_scale),
+                Scalar[dtype](ent_scale),
+                max_action_s,
+                min_std_s,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+        else:
+            ctx.enqueue_function[gather_pol](
+                batch_mcts_pol_t,
+                policy_target_step_t,
+                k,
+                grid_dim=(BATCH_BLOCKS,),
+                block_dim=(TPB,),
+            )
+            Config.ActSpace.policy_loss_grad_gpu[
+                BATCH, PRED_OUT, POL_TGT_DIM, dtype
+            ](
+                ctx,
+                pred_out_k_flat,
+                policy_target_step_t,
+                grad_pred_out_k_flat,
+                per_sample_loss_t,
+                Scalar[dtype](lp_scale),
+                Scalar[dtype](ent_scale),
+            )
         ctx.enqueue_function[reduce_one](
             per_sample_loss_t,
             L_P_t,

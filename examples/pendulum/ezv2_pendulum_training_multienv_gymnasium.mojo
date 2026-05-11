@@ -92,7 +92,7 @@ def main() raises:
     seed(2026)
     var agent = GenericEZV2ContinuousAgent[Config](
         gamma=0.99,
-        v_min=-20.0,
+        v_min=-50.0,
         v_max=2.0,
         temperature=1.0,
         temperature_decay_steps=10_000_000,

@@ -10,7 +10,7 @@ from layout import Layout, LayoutTensor
 
 
 @fieldwise_init
-struct PendulumV2State[DTYPE: DType where DTYPE.is_floating_point()](
+struct PendulumV2State[DTYPE: DType](
     Copyable, ImplicitlyCopyable, Movable, State
 ):
     """Observation state for Pendulum V2 (3D continuous observation).

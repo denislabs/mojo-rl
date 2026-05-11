@@ -124,6 +124,20 @@ struct EZV2DiscreteCPUState[
         Scalar[DType.uint8], MutAnyOrigin
     ]  # [_CAP]
 
+    # Continuous-action EZ-V2 full-π loss (paper Eq. 6) targets.
+    # `mcts_sampled_actions`: K root-sampled candidate action vectors per
+    # replay slot. `mcts_improved_policy`: softmax(completed_Q + log_prior
+    # + gumbel) weights over those K candidates. Used by the new
+    # `ezv2_policy_loss_grad_continuous_fullpi_kernel` when action_dim==1.
+    # For discrete configs or action_dim>1, these stay zero-initialized
+    # and the simple-best path (which reads `mcts_policies`) is used.
+    var mcts_sampled_actions: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [_CAP * K_ROOT * ACT]
+    var mcts_improved_policy: UnsafePointer[
+        Scalar[dtype], MutAnyOrigin
+    ]  # [_CAP * K_ROOT]
+
     # `train_step_count` at the time each transition was written. Used by
     # the mixed-value-target blend (paper Eq. 16) to compute per-sample
     # data age in train-steps. uint32 wraps at ~4·10⁹ which is well past
@@ -311,6 +325,18 @@ struct EZV2DiscreteCPUState[
         self.mcts_policies = alloc[Scalar[dtype]](POLICY_SIZE)
         memset(self.mcts_policies, 0, POLICY_SIZE)
 
+        comptime SAMP_ACTIONS_SIZE = (
+            Self._CAP * Self.Config.num_root_candidates * Self.ACT
+        )
+        self.mcts_sampled_actions = alloc[Scalar[dtype]](SAMP_ACTIONS_SIZE)
+        memset(self.mcts_sampled_actions, 0, SAMP_ACTIONS_SIZE)
+
+        comptime IPI_SIZE = (
+            Self._CAP * Self.Config.num_root_candidates
+        )
+        self.mcts_improved_policy = alloc[Scalar[dtype]](IPI_SIZE)
+        memset(self.mcts_improved_policy, 0, IPI_SIZE)
+
         self.mcts_values = alloc[Scalar[dtype]](Self._CAP)
         memset(self.mcts_values, 0, Self._CAP)
 
@@ -459,6 +485,8 @@ struct EZV2DiscreteCPUState[
         self.prediction_target = take.prediction_target^
         self.buffer = take.buffer^
         self.mcts_policies = take.mcts_policies
+        self.mcts_sampled_actions = take.mcts_sampled_actions
+        self.mcts_improved_policy = take.mcts_improved_policy
         self.mcts_values = take.mcts_values
         self.mcts_to_play = take.mcts_to_play
         self.step_at_write = take.step_at_write
@@ -494,6 +522,8 @@ struct EZV2DiscreteCPUState[
 
     def __del__(deinit self):
         self.mcts_policies.free()
+        self.mcts_sampled_actions.free()
+        self.mcts_improved_policy.free()
         self.mcts_values.free()
         self.mcts_to_play.free()
         self.step_at_write.free()
@@ -613,6 +643,15 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var batch_mcts_pol_buf: DeviceBuffer[dtype]  # [BATCH * (K+1) * ACT]
     var batch_mcts_val_buf: DeviceBuffer[dtype]  # [BATCH * (K+1)]
     var batch_age_buf: DeviceBuffer[DType.int32]  # [BATCH * (K+1)]
+    # Continuous full-π (paper Eq. 6) targets — K root-sampled candidate
+    # actions and their improved-policy weights per replay slot. Used by
+    # `ezv2_policy_loss_grad_continuous_fullpi_kernel` when action_dim==1.
+    var batch_mcts_samp_act_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * (K+1) * K_ROOT * ACT]
+    var batch_mcts_imp_pi_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * (K+1) * K_ROOT]
 
     # ── Forward scratch (TIME-MAJOR: hidden[k * BATCH * LATENT + b * LATENT + d]) ─
     var hidden_buf: DeviceBuffer[dtype]  # [(K+1) * BATCH * LATENT]
@@ -666,6 +705,14 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     # time-major source layout means we can't just `LayoutTensor`-view a
     # slice — gather kernel runs once per k_step.
     var policy_target_step_buf: DeviceBuffer[dtype]  # [BATCH * ACT]
+    # Per-k full-π targets (paper Eq. 6) gathered from the K-candidate
+    # time-major batch buffers each k_step.
+    var fullpi_target_actions_step_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * K_ROOT * ACT]
+    var fullpi_target_policy_step_buf: DeviceBuffer[
+        dtype
+    ]  # [BATCH * K_ROOT]
 
     # ── Loss accumulators (1 scalar each; downloaded at end of step) ────
     var L_R_buf: DeviceBuffer[dtype]
@@ -692,6 +739,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
     var batch_mcts_pol_host: HostBuffer[dtype]
     var batch_mcts_val_host: HostBuffer[dtype]
     var batch_age_host: HostBuffer[DType.int32]
+    var batch_mcts_samp_act_host: HostBuffer[dtype]
+    var batch_mcts_imp_pi_host: HostBuffer[dtype]
     var value_target_full_host: HostBuffer[dtype]
 
     var L_R_host: HostBuffer[dtype]
@@ -846,6 +895,13 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.batch_age_buf = ctx.enqueue_create_buffer[DType.int32](
             Self.BATCH * (Self.K + 1)
         )
+        comptime _K_ROOT = Self.Config.num_root_candidates
+        self.batch_mcts_samp_act_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * _K_ROOT * Self.ACT
+        )
+        self.batch_mcts_imp_pi_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * _K_ROOT
+        )
 
         # ── Forward scratch ─────────────────────────────────────────────
         self.hidden_buf = ctx.enqueue_create_buffer[dtype](
@@ -954,6 +1010,12 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.policy_target_step_buf = ctx.enqueue_create_buffer[dtype](
             Self.BATCH * Self.ACT
         )
+        self.fullpi_target_actions_step_buf = ctx.enqueue_create_buffer[
+            dtype
+        ](Self.BATCH * _K_ROOT * Self.ACT)
+        self.fullpi_target_policy_step_buf = ctx.enqueue_create_buffer[
+            dtype
+        ](Self.BATCH * _K_ROOT)
 
         # ── Loss accumulators (zeroed at the start of every train step) ─
         self.L_R_buf = ctx.enqueue_create_buffer[dtype](1)
@@ -1034,6 +1096,12 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         )
         self.batch_age_host = ctx.enqueue_create_host_buffer[DType.int32](
             Self.BATCH * (Self.K + 1)
+        )
+        self.batch_mcts_samp_act_host = ctx.enqueue_create_host_buffer[
+            dtype
+        ](Self.BATCH * (Self.K + 1) * _K_ROOT * Self.ACT)
+        self.batch_mcts_imp_pi_host = ctx.enqueue_create_host_buffer[dtype](
+            Self.BATCH * (Self.K + 1) * _K_ROOT
         )
         self.value_target_full_host = ctx.enqueue_create_host_buffer[dtype](
             Self.BATCH * (Self.K + 1)
@@ -1181,6 +1249,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.batch_mcts_pol_buf = take.batch_mcts_pol_buf^
         self.batch_mcts_val_buf = take.batch_mcts_val_buf^
         self.batch_age_buf = take.batch_age_buf^
+        self.batch_mcts_samp_act_buf = take.batch_mcts_samp_act_buf^
+        self.batch_mcts_imp_pi_buf = take.batch_mcts_imp_pi_buf^
         self.hidden_buf = take.hidden_buf^
         self.dyn_out_buf = take.dyn_out_buf^
         self.pred_out_buf = take.pred_out_buf^
@@ -1212,6 +1282,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.reward_target_scalar_buf = take.reward_target_scalar_buf^
         self.reward_target_dist_buf = take.reward_target_dist_buf^
         self.policy_target_step_buf = take.policy_target_step_buf^
+        self.fullpi_target_actions_step_buf = take.fullpi_target_actions_step_buf^
+        self.fullpi_target_policy_step_buf = take.fullpi_target_policy_step_buf^
         self.L_R_buf = take.L_R_buf^
         self.L_P_buf = take.L_P_buf^
         self.L_V_buf = take.L_V_buf^
@@ -1227,6 +1299,8 @@ struct EZV2GPUStateBase[Config: EZV2DiscreteConfig](Movable):
         self.batch_mcts_pol_host = take.batch_mcts_pol_host^
         self.batch_mcts_val_host = take.batch_mcts_val_host^
         self.batch_age_host = take.batch_age_host^
+        self.batch_mcts_samp_act_host = take.batch_mcts_samp_act_host^
+        self.batch_mcts_imp_pi_host = take.batch_mcts_imp_pi_host^
         self.value_target_full_host = take.value_target_full_host^
         self.L_R_host = take.L_R_host^
         self.L_P_host = take.L_P_host^

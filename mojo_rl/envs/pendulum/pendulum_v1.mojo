@@ -99,7 +99,7 @@ struct PendulumAction(Action, Copyable, ImplicitlyCopyable, Movable):
         return Float64(self.direction - 1) * 2.0
 
 
-struct PendulumEnv[DTYPE: DType where DTYPE.is_floating_point()](
+struct PendulumEnv[DTYPE: DType](
     BoxDiscreteActionEnv
     & DiscreteEnv
     & BoxContinuousActionEnv

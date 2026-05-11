@@ -75,7 +75,7 @@ def main() raises:
     var env = PendulumEnv[dtype]()
     var agent = GenericEZV2ContinuousAgent[Config](
         gamma=0.99,
-        v_min=-20.0,
+        v_min=-50.0,
         v_max=2.0,
         temperature=1.0,
         temperature_decay_steps=NUM_ENV_STEPS // 2,
@@ -96,14 +96,18 @@ def main() raises:
     var last_L_P = Float64(0.0)
     var last_L_V = Float64(0.0)
     var last_L_G = Float64(0.0)
-    var last_L_total = Float64(0.0)
     var best_recent_mean = Float64(-1e9)
 
     print()
     print("Starting training...")
     print("    NUM_ENV_STEPS:", NUM_ENV_STEPS)
     print("    BS:", Config.batch_size, " K_UNROLL:", Config.unroll_steps)
-    print("    SIMS:", Config.num_simulations, " K_ROOT:", Config.num_root_candidates)
+    print(
+        "    SIMS:",
+        Config.num_simulations,
+        " K_ROOT:",
+        Config.num_root_candidates,
+    )
     print("    MAX_ACTION:", 2.0, " MIN_STD:", 0.1)
     print()
 
@@ -164,12 +168,28 @@ def main() raises:
             if recent_mean > best_recent_mean:
                 best_recent_mean = recent_mean
             print(
-                "[ep ", episode, "][step ", env_step, "]",
-                " ep_reward=", ep_reward,
-                " mean10=", recent_mean,
-                " best10=", best_recent_mean,
-                " L=(", last_L_R, " ", last_L_P, " ", last_L_V, " ", last_L_G, ")",
-                " T=", agent.temperature,
+                "[ep ",
+                episode,
+                "][step ",
+                env_step,
+                "]",
+                " ep_reward=",
+                ep_reward,
+                " mean10=",
+                recent_mean,
+                " best10=",
+                best_recent_mean,
+                " L=(",
+                last_L_R,
+                " ",
+                last_L_P,
+                " ",
+                last_L_V,
+                " ",
+                last_L_G,
+                ")",
+                " T=",
+                agent.temperature,
             )
 
     print()

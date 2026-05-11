@@ -73,14 +73,15 @@ def main() raises:
         K_ROOT=16,                 # ← experiment knob (was 8)
         K_NON_ROOT=8,              # ← also doubled
         MAX_ACTION=2.0,
-        MIN_STD=0.1,
+        MIN_STD=0.5,               # ← exploration fix (was 0.1)
         STD_MAGNIFICATION=3.0,
+        ENT_WEIGHT=0.05,           # ← exploration fix (was 0.005, 10×)
     ]
 
     seed(2026)
     var agent = GenericEZV2ContinuousAgent[Config](
         gamma=0.99,
-        v_min=-20.0,
+        v_min=-50.0,
         v_max=2.0,
         temperature=1.0,
         temperature_decay_steps=10_000_000,
@@ -139,17 +140,42 @@ def main() raises:
         for env_id in range(N_ENVS):
             var action_vec = List[Scalar[dtype]](capacity=Config.action_dim)
             var root_value = Float64(0.0)
+            comptime K_ROOT_C = Config.num_root_candidates
+            var sampled_actions_vec = List[Scalar[dtype]](
+                capacity=K_ROOT_C * Config.action_dim
+            )
+            var improved_policy_vec = List[Scalar[dtype]](
+                capacity=K_ROOT_C
+            )
             if total_transitions < START_TRANSITIONS:
                 for _ in range(Config.action_dim):
                     action_vec.append(
                         Scalar[dtype](random_float64(-1.0, 1.0) * 2.0)
                     )
+                # Random-action warmup: one-hot improved policy on the
+                # chosen action so the full-π kernel reduces to simple-
+                # best NLL on it (zero candidate variance is fine for
+                # warmup — value head is the dominant signal there).
+                for _ in range(K_ROOT_C * Config.action_dim):
+                    sampled_actions_vec.append(Scalar[dtype](0.0))
+                for _ in range(K_ROOT_C):
+                    improved_policy_vec.append(Scalar[dtype](0.0))
+                for d in range(Config.action_dim):
+                    sampled_actions_vec[d] = action_vec[d]
+                improved_policy_vec[0] = Scalar[dtype](1.0)
             else:
                 var sel = agent.select_action(
                     obs_list[env_id], training=True
                 )
                 action_vec = sel[0].copy()
                 root_value = sel[1]
+                sampled_actions_vec = sel[2].copy()
+                improved_policy_vec = sel[3].copy()
+                # Diagnostic probe: dump root stats every ~3000 batches
+                # for env_id=0 so we can see whether MCTS Q-values
+                # differentiate candidates or stay uniform.
+                if env_id == 0 and (batch + 1) % 3000 == 0:
+                    agent.inspect_root(tag=String("batch=") + String(batch + 1))
 
             var step_result = envs[env_id][].step_continuous_vec(action_vec)
             var next_obs = step_result[0].copy()
@@ -165,6 +191,8 @@ def main() raises:
                 action_vec,
                 reward,
                 root_value,
+                sampled_actions_vec,
+                improved_policy_vec,
                 done_or_trunc,
                 env_id=env_id,
             )

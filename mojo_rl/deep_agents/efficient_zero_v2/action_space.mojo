@@ -68,12 +68,26 @@ trait ActionSpace:
     comptime K_ROOT: Int
     """Gumbel-Top-k K (discrete) or sampled-K (continuous, paper default 16)."""
 
+    comptime MAX_ACTION: Float64
+    """Action magnitude bound (continuous only — discrete supplies 0.0 as
+    a placeholder so trait resolution stays uniform). Read by the full-π
+    loss kernel for the tanh squash. Paper default depends on env."""
+
+    comptime MIN_STD: Float64
+    """Lower bound on σ (continuous only — discrete supplies 0.0). Bounds
+    `1/σ` from above so pre-training the gradient stays well-conditioned.
+    Paper App. G default 0.1."""
+
+    comptime STD_MAGNIFICATION: Float64
+    """σ multiplier for the second half of root candidates (continuous
+    only — discrete supplies 0.0). Paper App. A default 3.0."""
+
     @staticmethod
     def policy_loss_grad_gpu[
         BATCH: Int,
         PRED_OUT: Int,
         POL_TGT_DIM: Int,
-        dtype: DType where dtype.is_floating_point(),
+        dtype: DType,
     ](
         ctx: DeviceContext,
         pred_out_step: LayoutTensor[
@@ -132,13 +146,16 @@ struct DiscreteActionSpace[ACT: Int, K: Int = 8](ActionSpace):
     comptime POLICY_TARGET_DIM: Int = Self.ACT
     comptime IS_CONTINUOUS: Bool = False
     comptime K_ROOT: Int = Self.K
+    comptime MAX_ACTION: Float64 = 0.0
+    comptime MIN_STD: Float64 = 0.0
+    comptime STD_MAGNIFICATION: Float64 = 0.0
 
     @staticmethod
     def policy_loss_grad_gpu[
         BATCH: Int,
         PRED_OUT: Int,
         POL_TGT_DIM: Int,
-        dtype: DType where dtype.is_floating_point(),
+        dtype: DType,
     ](
         ctx: DeviceContext,
         pred_out_step: LayoutTensor[
@@ -184,9 +201,9 @@ struct DiscreteActionSpace[ACT: Int, K: Int = 8](ActionSpace):
 struct ContinuousActionSpace[
     ACT_DIM_: Int,
     K: Int = 16,
-    MAX_ACTION: Float64 = 1.0,
-    MIN_STD: Float64 = 0.1,
-    STD_MAGNIFICATION: Float64 = 3.0,
+    MAX_ACTION_: Float64 = 1.0,
+    MIN_STD_: Float64 = 0.1,
+    STD_MAGNIFICATION_: Float64 = 3.0,
 ](ActionSpace):
     """Continuous-action implementation: squashed-Gaussian NLL + entropy
     bonus on the search-selected target action `a*` (paper Eq. 8/9).
@@ -220,6 +237,9 @@ struct ContinuousActionSpace[
     comptime POLICY_TARGET_DIM: Int = Self.ACT_DIM_
     comptime IS_CONTINUOUS: Bool = True
     comptime K_ROOT: Int = Self.K
+    comptime MAX_ACTION: Float64 = Self.MAX_ACTION_
+    comptime MIN_STD: Float64 = Self.MIN_STD_
+    comptime STD_MAGNIFICATION: Float64 = Self.STD_MAGNIFICATION_
 
     @staticmethod
     def policy_loss_grad_gpu[

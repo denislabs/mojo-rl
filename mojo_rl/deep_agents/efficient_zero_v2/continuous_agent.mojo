@@ -141,7 +141,9 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         Self.Config.num_root_candidates,
         Self.Config.num_root_candidates // 2 if Self.Config.num_root_candidates // 2 >= 1 else 1,
         Self.Config.max_nodes,
-        1.0,
+        Self.Config.ActSpace.MAX_ACTION,
+        Self.Config.ActSpace.MIN_STD,
+        Self.Config.ActSpace.STD_MAGNIFICATION,
     ]
 
     # Hyperparameters
@@ -165,12 +167,20 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
     # Per-episode buffers, parallelized across envs. Continuous
     # action storage: raw `[ACT_DIM]` float vectors (vs discrete's `Int`).
     # `_episode_action_targets` stores the search-chosen-action vector
-    # used as the policy-loss target — same shape as actions, but
-    # semantically distinct (chosen by MCTS visit-count, not the actual
-    # env-stepped action when training mode adds noise).
+    # used as the simple-best policy-loss target (paper Eq. 7) — same
+    # shape as actions, but semantically distinct (chosen by MCTS visit-
+    # count, not the actual env-stepped action when training mode adds
+    # noise).
+    # `_episode_sampled_actions`: per timestep, the K root-sampled
+    # candidate action vectors as a flat [K * ACT_DIM] list.
+    # `_episode_improved_policy`: per timestep, the K improved-policy
+    # weights (softmax over completed_Q + log_prior + gumbel).
+    # Both used by the full-π loss (paper Eq. 6) when ACT_DIM==1.
     var _episode_obs: List[List[List[Scalar[dtype]]]]
     var _episode_actions: List[List[List[Scalar[dtype]]]]
     var _episode_action_targets: List[List[List[Scalar[dtype]]]]
+    var _episode_sampled_actions: List[List[List[Scalar[dtype]]]]
+    var _episode_improved_policy: List[List[List[Scalar[dtype]]]]
     var _episode_rewards: List[List[Float64]]
     var _episode_values: List[List[Float64]]
 
@@ -197,8 +207,10 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             Self.Config.num_root_candidates,
             Self.Config.num_root_candidates // 2 if Self.Config.num_root_candidates // 2 >= 1 else 1,
             Self.Config.max_nodes,
-            1.0,
-        ](gamma=gamma)
+            Self.Config.ActSpace.MAX_ACTION,
+            Self.Config.ActSpace.MIN_STD,
+            Self.Config.ActSpace.STD_MAGNIFICATION,
+        ](gamma=gamma, c_scale=1.0)
         self.gamma = gamma
         self.v_min = v_min
         self.v_max = v_max
@@ -213,12 +225,20 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         self._episode_obs = List[List[List[Scalar[dtype]]]]()
         self._episode_actions = List[List[List[Scalar[dtype]]]]()
         self._episode_action_targets = List[List[List[Scalar[dtype]]]]()
+        self._episode_sampled_actions = List[List[List[Scalar[dtype]]]]()
+        self._episode_improved_policy = List[List[List[Scalar[dtype]]]]()
         self._episode_rewards = List[List[Float64]]()
         self._episode_values = List[List[Float64]]()
         for _ in range(self.n_envs):
             self._episode_obs.append(List[List[Scalar[dtype]]]())
             self._episode_actions.append(List[List[Scalar[dtype]]]())
             self._episode_action_targets.append(List[List[Scalar[dtype]]]())
+            self._episode_sampled_actions.append(
+                List[List[Scalar[dtype]]]()
+            )
+            self._episode_improved_policy.append(
+                List[List[Scalar[dtype]]]()
+            )
             self._episode_rewards.append(List[Float64]())
             self._episode_values.append(List[Float64]())
 
@@ -241,6 +261,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         self._episode_obs = take._episode_obs^
         self._episode_actions = take._episode_actions^
         self._episode_action_targets = take._episode_action_targets^
+        self._episode_sampled_actions = take._episode_sampled_actions^
+        self._episode_improved_policy = take._episode_improved_policy^
         self._episode_rewards = take._episode_rewards^
         self._episode_values = take._episode_values^
 
@@ -252,8 +274,13 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         mut self,
         obs: List[Scalar[dtype]],
         training: Bool = True,
-    ) -> Tuple[List[Scalar[dtype]], Float64]:
-        """Run sampled-Gumbel MCTS, return (action_vector, root_value).
+    ) -> Tuple[
+        List[Scalar[dtype]],
+        Float64,
+        List[Scalar[dtype]],
+        List[Scalar[dtype]],
+    ]:
+        """Run sampled-Gumbel MCTS, return search products.
 
         Args:
             obs: Current observation (zero-padded to RepModel.IN_DIM).
@@ -261,13 +288,19 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                 temperature=1 default — adds exploration). If False,
                 pick the argmax-visit candidate (eval mode).
 
-        Returns:
-            (action: List[Scalar[dtype]] of length ACT_DIM, root_value).
+        Returns 4-tuple:
+            - `action`: ACT_DIM-vector — chosen action to play.
+            - `root_value`: SVE backup at the root (used as value target).
+            - `sampled_actions`: K_ROOT * ACT_DIM flat — the K root
+              candidate action vectors. Used as `target_actions` in the
+              full-π loss (paper Eq. 6) when ACT_DIM==1.
+            - `improved_policy`: K_ROOT — softmax(completed_Q +
+              log_prior + gumbel) over the K candidates. Used as
+              `target_policy` in the full-π loss.
 
-        The returned action vector is also the search-chosen "policy
-        target" a* — pass it back as the `action_target` argument to
-        `store_transition` (the loss kernel uses simple-best-action
-        target form, paper Eq. 8).
+        Caller must thread `sampled_actions` and `improved_policy`
+        through to `store_transition` so the replay buffer can keep
+        them for training.
         """
         var result = self.mcts.search(
             obs,
@@ -289,17 +322,101 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         # of value (search-refined, not raw network output).
         var sum_value = Float64(0.0)
         var sum_visits = 0
+        comptime K_ROOT = Self.Config.num_root_candidates
+        var sampled_actions = List[Scalar[dtype]](
+            capacity=K_ROOT * Self.ACT_DIM
+        )
+        var improved_policy = List[Scalar[dtype]](capacity=K_ROOT)
+        for _ in range(K_ROOT * Self.ACT_DIM):
+            sampled_actions.append(Scalar[dtype](0.0))
+        for _ in range(K_ROOT):
+            improved_policy.append(Scalar[dtype](0.0))
         if len(self.mcts.nodes) > 0:
             var root = self.mcts.nodes[0]
-            for i in range(Self.Config.num_root_candidates):
+            for i in range(K_ROOT):
                 sum_value += root.total_value[i]
                 sum_visits += root.visit_count[i]
+            # Copy K candidate action vectors from the root node.
+            for i in range(K_ROOT):
+                for d in range(Self.ACT_DIM):
+                    sampled_actions[i * Self.ACT_DIM + d] = Scalar[dtype](
+                        root.actions[i * Self.ACT_DIM + d]
+                    )
+            # Compute improved-policy distribution over K candidates.
+            var probs = self.mcts._improved_policy_at(0)
+            for i in range(K_ROOT):
+                improved_policy[i] = Scalar[dtype](probs[i])
         var root_value = compute_sve(sum_value, sum_visits)
 
         var action_list = List[Scalar[dtype]](capacity=Self.ACT_DIM)
         for d in range(Self.ACT_DIM):
             action_list.append(Scalar[dtype](chosen[d]))
-        return (action_list^, root_value)
+        return (action_list^, root_value, sampled_actions^, improved_policy^)
+
+    def inspect_root(self, tag: String = ""):
+        """Print MCTS root stats after the most recent `select_action`
+        call. For instrumentation only — used to verify whether MCTS
+        Q-values differentiate candidates or stay near-uniform.
+        Prints per-candidate: action vector, log_prior, visit_count,
+        mean_value, and the resulting improved_policy probability.
+        """
+        comptime K_ROOT = Self.Config.num_root_candidates
+        if len(self.mcts.nodes) == 0:
+            print("[inspect_root", tag, "] empty tree")
+            return
+        var root = self.mcts.nodes[0]
+        var probs = self.mcts._improved_policy_at(0)
+        var total_visits = 0
+        for i in range(K_ROOT):
+            total_visits += root.visit_count[i]
+        print(
+            "[inspect_root",
+            tag,
+            "] total_visits=",
+            total_visits,
+            " value_estimate=",
+            root.value_estimate,
+        )
+        # Compute pi entropy as a uniform-ness scalar.
+        var H = Float64(0.0)
+        var max_pi = Float64(0.0)
+        for i in range(K_ROOT):
+            var p = Float64(probs[i])
+            if p > 1e-12:
+                H -= p * log(p)
+            if p > max_pi:
+                max_pi = p
+        var H_unif = log(Float64(K_ROOT))
+        print(
+            "       pi entropy =",
+            H,
+            "/ log(K)=",
+            H_unif,
+            "  (ratio=",
+            H / H_unif,
+            ")  max_pi=",
+            max_pi,
+        )
+        for i in range(K_ROOT):
+            var a_str = String("a=[")
+            for d in range(Self.ACT_DIM):
+                a_str += String(root.actions[i * Self.ACT_DIM + d])
+                if d + 1 < Self.ACT_DIM:
+                    a_str += String(",")
+            a_str += String("]")
+            print(
+                "       i=",
+                i,
+                a_str,
+                " log_prior=",
+                root.log_prior[i],
+                " visits=",
+                root.visit_count[i],
+                " mean_v=",
+                root.mean_value(i),
+                " pi=",
+                probs[i],
+            )
 
     def decay_temperature(mut self):
         """Linear decay toward 0 over `temperature_decay_steps`."""
@@ -324,6 +441,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         self._episode_obs[env_id].clear()
         self._episode_actions[env_id].clear()
         self._episode_action_targets[env_id].clear()
+        self._episode_sampled_actions[env_id].clear()
+        self._episode_improved_policy[env_id].clear()
         self._episode_rewards[env_id].clear()
         self._episode_values[env_id].clear()
 
@@ -336,13 +455,59 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         done: Bool,
         env_id: Int = 0,
     ):
+        """Backward-compat 5-arg overload. Fills the K-candidate slots
+        with one-hot at the chosen action so the full-π kernel reduces
+        exactly to the simple-best NLL on the played action — old
+        training scripts keep their pre-full-π behavior."""
+        comptime K_ROOT = Self.Config.num_root_candidates
+        var sampled_actions = List[Scalar[dtype]](
+            capacity=K_ROOT * Self.ACT_DIM
+        )
+        var improved_policy = List[Scalar[dtype]](capacity=K_ROOT)
+        for _ in range(K_ROOT * Self.ACT_DIM):
+            sampled_actions.append(Scalar[dtype](0.0))
+        for _ in range(K_ROOT):
+            improved_policy.append(Scalar[dtype](0.0))
+        for d in range(Self.ACT_DIM):
+            sampled_actions[d] = action[d] if d < len(action) else Scalar[
+                dtype
+            ](0.0)
+        improved_policy[0] = Scalar[dtype](1.0)
+        self.store_transition(
+            obs,
+            action,
+            reward,
+            value,
+            sampled_actions^,
+            improved_policy^,
+            done,
+            env_id,
+        )
+
+    def store_transition(
+        mut self,
+        obs: List[Scalar[dtype]],
+        action: List[Scalar[dtype]],
+        reward: Float64,
+        value: Float64,
+        sampled_actions: List[Scalar[dtype]],
+        improved_policy: List[Scalar[dtype]],
+        done: Bool,
+        env_id: Int = 0,
+    ):
         """Append a transition to env_id's episode buffer.
 
+        `sampled_actions` should be the K_ROOT × ACT_DIM flat list of
+        root candidate actions from `select_action`'s 3rd return slot.
+        `improved_policy` should be the K_ROOT-length improved-policy
+        distribution from `select_action`'s 4th return slot. Both feed
+        the full-π policy loss (paper Eq. 6) when ACT_DIM==1.
+
         For continuous EZ-V2 the search-chosen action vector and the
-        env-stepped action are the same (both `action`) — the loss
-        kernel takes this directly as the policy-loss target. If a
-        future variant adds independent action noise after the search,
-        the search-chosen action target should be plumbed separately.
+        env-stepped action are the same (both `action`) — the simple-
+        best loss path still uses this. If a future variant adds
+        independent action noise after the search, the search-chosen
+        action target should be plumbed separately.
 
         Flushes the episode to replay at `done`.
         """
@@ -352,6 +517,8 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
         # added on top of the MCTS pick) can keep them distinct.
         self._episode_actions[env_id].append(action.copy())
         self._episode_action_targets[env_id].append(action.copy())
+        self._episode_sampled_actions[env_id].append(sampled_actions.copy())
+        self._episode_improved_policy[env_id].append(improved_policy.copy())
         self._episode_rewards[env_id].append(reward)
         self._episode_values[env_id].append(value)
         self.total_steps += 1
@@ -395,17 +562,31 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             )
 
             comptime CAP = 50000
+            comptime K_ROOT = Self.Config.num_root_candidates
             var buf_idx = (
                 self.state.buffer.ptr - 1 + CAP
             ) % CAP
             # Continuous: mcts_policies stores the chosen-action vector
-            # (paper Eq. 8 simple-best-action target). The continuous
-            # policy-loss kernel reads this directly as `policy_target`.
+            # (paper Eq. 7 simple-best-action target). Still used by the
+            # legacy simple-best loss path; full-π uses the K-candidate
+            # buffers below.
             var ep_tgt = self._episode_action_targets[env_id][t].copy()
             for d in range(Self.Config.action_dim):
                 self.state.mcts_policies[
                     buf_idx * Self.Config.action_dim + d
                 ] = ep_tgt[d] if d < len(ep_tgt) else Scalar[dtype](0.0)
+            # Full-π targets (paper Eq. 6): K candidate actions + their
+            # improved-policy weights.
+            var ep_samp = self._episode_sampled_actions[env_id][t].copy()
+            var ep_pi = self._episode_improved_policy[env_id][t].copy()
+            for j in range(K_ROOT * Self.Config.action_dim):
+                self.state.mcts_sampled_actions[
+                    buf_idx * K_ROOT * Self.Config.action_dim + j
+                ] = ep_samp[j] if j < len(ep_samp) else Scalar[dtype](0.0)
+            for i in range(K_ROOT):
+                self.state.mcts_improved_policy[
+                    buf_idx * K_ROOT + i
+                ] = ep_pi[i] if i < len(ep_pi) else Scalar[dtype](0.0)
             self.state.mcts_values[buf_idx] = Scalar[dtype](
                 self._episode_values[env_id][t]
             )
@@ -523,18 +704,36 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
             # iterated over root candidate slots.
             var sum_value = Float64(0.0)
             var sum_visits = 0
+            comptime K_ROOT = Self.Config.num_root_candidates
             if len(self.mcts.nodes) > 0:
                 var root = self.mcts.nodes[0]
-                for i in range(Self.Config.num_root_candidates):
+                for i in range(K_ROOT):
                     sum_value += root.total_value[i]
                     sum_visits += root.visit_count[i]
             var sve = compute_sve(sum_value, sum_visits)
 
-            # Overwrite stored targets at this index.
+            # Overwrite stored targets at this index — both the simple-
+            # best chosen-action and the full-π K candidates + weights.
             for d in range(Self.Config.action_dim):
                 self.state.mcts_policies[
                     idx * Self.Config.action_dim + d
                 ] = Scalar[dtype](chosen[d])
+            if len(self.mcts.nodes) > 0:
+                var root = self.mcts.nodes[0]
+                for i in range(K_ROOT):
+                    for d in range(Self.Config.action_dim):
+                        self.state.mcts_sampled_actions[
+                            idx * K_ROOT * Self.Config.action_dim
+                            + i * Self.Config.action_dim
+                            + d
+                        ] = Scalar[dtype](
+                            root.actions[i * Self.Config.action_dim + d]
+                        )
+                var probs = self.mcts._improved_policy_at(0)
+                for i in range(K_ROOT):
+                    self.state.mcts_improved_policy[
+                        idx * K_ROOT + i
+                    ] = Scalar[dtype](probs[i])
             self.state.mcts_values[idx] = Scalar[dtype](sve)
             self.state.step_at_write[idx] = Scalar[DType.uint32](
                 self.train_step_count
@@ -655,6 +854,22 @@ struct GenericEZV2ContinuousAgent[Config: EZV2DiscreteConfig](Movable):
                     gpu.batch_mcts_pol_host[
                         (sampled * (K + 1) + k) * ACT + a
                     ] = self.state.mcts_policies[idx * ACT + a]
+                # Full-π targets (paper Eq. 6): K candidate actions +
+                # improved-policy weights per slot. Time-major upload
+                # matches the kernel's expected layout.
+                comptime K_ROOT_C = Self.Config.num_root_candidates
+                for j in range(K_ROOT_C * ACT):
+                    gpu.batch_mcts_samp_act_host[
+                        (sampled * (K + 1) + k) * K_ROOT_C * ACT + j
+                    ] = self.state.mcts_sampled_actions[
+                        idx * K_ROOT_C * ACT + j
+                    ]
+                for i in range(K_ROOT_C):
+                    gpu.batch_mcts_imp_pi_host[
+                        (sampled * (K + 1) + k) * K_ROOT_C + i
+                    ] = self.state.mcts_improved_policy[
+                        idx * K_ROOT_C + i
+                    ]
                 gpu.batch_mcts_val_host[
                     sampled * (K + 1) + k
                 ] = self.state.mcts_values[idx]

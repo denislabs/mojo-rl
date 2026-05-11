@@ -367,6 +367,163 @@ def ezv2_policy_loss_grad_continuous_kernel[
     per_sample_loss[b] = loss
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Full-π squashed-Gaussian NLL + entropy + grad — single time-slice
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Paper Eq. 6 (EfficientZero V2) loss for continuous actions with action_dim
+# == 1. Replaces the simple-best NLL of `ezv2_policy_loss_grad_continuous_
+# kernel` with a *weighted* NLL over K MCTS root-sampled candidate actions:
+#
+#     loss[b] = Σ_k π_target[b, k] · NLL(a_target[b, k] | μ, σ)  -  ent · H
+#
+# where NLL is the squashed-Normal negative-log-prob (same form as the simple-
+# best kernel; see that kernel's docstring for derivation), H is the analytic
+# Gaussian-on-u entropy bonus, and π_target is the improved-policy distribution
+# returned by sampled-Gumbel MCTS.
+#
+# Backward — per dim, accumulated across K:
+#     ∂loss/∂μ_d = ( μ_d · Σ_k π_k  -  Σ_k π_k · u*_d^(k) ) / σ_d²
+#     ∂loss/∂σ_d = ( Σ_k π_k  -  Σ_k π_k · η_d^(k)²  -  ent_scale ) / σ_d
+# Chain to (μ_raw, σ_raw) is identical to the simple-best kernel.
+#
+# Reference: `ez/utils/loss.py:continuous_loss` (action_dim==1 branch) in
+# the upstream EZ-V2 implementation.
+
+
+def ezv2_policy_loss_grad_continuous_fullpi_kernel[
+    BATCH: Int,
+    ACT_DIM: Int,
+    K_ROOT: Int,
+    PRED_OUT: Int,
+    dtype: DType,
+](
+    pred_out_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    target_actions: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_ROOT * ACT_DIM), MutAnyOrigin
+    ],
+    target_policy: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_ROOT), MutAnyOrigin
+    ],
+    grad_pred_out_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH * PRED_OUT), MutAnyOrigin
+    ],
+    per_sample_loss: LayoutTensor[
+        dtype, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    scale: Scalar[dtype],
+    ent_scale: Scalar[dtype],
+    max_action: Scalar[dtype],
+    min_std: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Full-π squashed-Gaussian weighted-NLL + entropy bonus + grad.
+
+    Pred-out layout matches the simple-best kernel: `pred_out_step[b,
+    0:2*ACT_DIM]` = (μ_raw ‖ σ_raw), trailing slots are value bins
+    (untouched here). Writes grad into the first 2·ACT_DIM elements
+    of `grad_pred_out_step[b]`. `target_policy` row should sum to 1.0
+    over the K candidates (the kernel doesn't normalize it).
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var po_off = b * PRED_OUT
+    var ta_off = b * K_ROOT * ACT_DIM
+    var tp_off = b * K_ROOT
+
+    var inv_max = Scalar[dtype](1.0) / max_action
+    var LOG_2PI = Scalar[dtype](1.8378770664093453)
+    var HALF_LOG_2PI = Scalar[dtype](0.5) * LOG_2PI
+    var HALF_LOG_2PIE = Scalar[dtype](0.5) * (LOG_2PI + Scalar[dtype](1.0))
+
+    var loss = Scalar[dtype](0.0)
+
+    for d in range(ACT_DIM):
+        var mu_raw = rebind[Scalar[dtype]](pred_out_step[po_off + d])
+        var sg_raw = rebind[Scalar[dtype]](
+            pred_out_step[po_off + ACT_DIM + d]
+        )
+
+        var th = tanh(mu_raw * inv_max)
+        var mu = max_action * th
+
+        var sg_raw_neg_abs = -sg_raw if sg_raw > Scalar[dtype](
+            0.0
+        ) else sg_raw
+        var sp_pos = sg_raw if sg_raw > Scalar[dtype](
+            0.0
+        ) else Scalar[dtype](0.0)
+        var sp = sp_pos + log(Scalar[dtype](1.0) + exp(sg_raw_neg_abs))
+        var sg = sp + min_std
+
+        var inv_sg = Scalar[dtype](1.0) / sg
+        var log_sg = log(sg)
+
+        # Accumulate weighted NLL across K candidates.
+        var sum_pi = Scalar[dtype](0.0)
+        var sum_pi_u = Scalar[dtype](0.0)
+        var sum_pi_eta_sq = Scalar[dtype](0.0)
+        var weighted_corr = Scalar[dtype](0.0)
+
+        for k in range(K_ROOT):
+            var pi_k = rebind[Scalar[dtype]](target_policy[tp_off + k])
+            var a_k = rebind[Scalar[dtype]](
+                target_actions[ta_off + k * ACT_DIM + d]
+            )
+            var c = a_k * inv_max
+            var c_lo = Scalar[dtype](-0.999)
+            var c_hi = Scalar[dtype](0.999)
+            if c > c_hi:
+                c = c_hi
+            if c < c_lo:
+                c = c_lo
+            var u_star = Scalar[dtype](0.5) * log(
+                (Scalar[dtype](1.0) + c) / (Scalar[dtype](1.0) - c)
+            )
+            var diff = u_star - mu
+            var eta = diff * inv_sg
+            var corr = log(Scalar[dtype](1.0) - c * c)
+            sum_pi = sum_pi + pi_k
+            sum_pi_u = sum_pi_u + pi_k * u_star
+            sum_pi_eta_sq = sum_pi_eta_sq + pi_k * eta * eta
+            weighted_corr = weighted_corr + pi_k * corr
+
+        var H_d = log_sg + HALF_LOG_2PIE
+        # Per-dim weighted-NLL: Σ_k π_k · nlp_d^(k)
+        #   = 0.5 · sum_pi_eta_sq + sum_pi · (log_sg + 0.5·log 2π) + weighted_corr
+        var weighted_nlp_d = (
+            Scalar[dtype](0.5) * sum_pi_eta_sq
+            + sum_pi * (log_sg + HALF_LOG_2PI)
+            + weighted_corr
+        )
+        loss = loss + weighted_nlp_d - ent_scale * H_d
+
+        # Gradients (accumulated across K):
+        var d_loss_d_mu = (mu * sum_pi - sum_pi_u) * inv_sg * inv_sg
+        var d_loss_d_sg = (
+            sum_pi - sum_pi_eta_sq - ent_scale
+        ) * inv_sg
+
+        var dmu_dmuraw = Scalar[dtype](1.0) - th * th
+        var sig_sg_raw: Scalar[dtype]
+        if sg_raw > Scalar[dtype](0.0):
+            var e_neg = exp(-sg_raw)
+            sig_sg_raw = Scalar[dtype](1.0) / (Scalar[dtype](1.0) + e_neg)
+        else:
+            var e_pos = exp(sg_raw)
+            sig_sg_raw = e_pos / (Scalar[dtype](1.0) + e_pos)
+
+        grad_pred_out_step[po_off + d] = scale * d_loss_d_mu * dmu_dmuraw
+        grad_pred_out_step[po_off + ACT_DIM + d] = (
+            scale * d_loss_d_sg * sig_sg_raw
+        )
+
+    per_sample_loss[b] = loss
+
+
 def ezv2_value_loss_grad_kernel[
     BATCH: Int,
     BINS: Int,
@@ -770,6 +927,59 @@ def ezv2_gather_policy_target_kernel[
     var dst_off = b * ACT
     for a in range(ACT):
         policy_target_step[dst_off + a] = batch_mcts_pol[src_off + a]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Per-sample gather of full-π targets (paper Eq. 6, ACT_DIM==1):
+# batch_mcts_samp_act[b, k_step, :, :] → target_actions_step[b, :, :]
+# batch_mcts_imp_pi[b, k_step, :]      → target_policy_step[b, :]
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def ezv2_gather_fullpi_targets_kernel[
+    BATCH: Int,
+    K_PLUS_1: Int,
+    K_ROOT: Int,
+    ACT_DIM: Int,
+    dtype: DType,
+](
+    batch_mcts_samp_act: LayoutTensor[
+        dtype,
+        Layout.row_major(BATCH * K_PLUS_1 * K_ROOT * ACT_DIM),
+        MutAnyOrigin,
+    ],
+    batch_mcts_imp_pi: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_PLUS_1 * K_ROOT), MutAnyOrigin
+    ],
+    target_actions_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_ROOT * ACT_DIM), MutAnyOrigin
+    ],
+    target_policy_step: LayoutTensor[
+        dtype, Layout.row_major(BATCH * K_ROOT), MutAnyOrigin
+    ],
+    k_step: Int,
+) where dtype.is_floating_point():
+    """Gather per-k full-π target slices from time-major batch buffers.
+
+    Source layouts match the upload: `batch_mcts_samp_act[(b · (K+1) +
+    k_step) · K_ROOT · ACT_DIM + i · ACT_DIM + d]` and
+    `batch_mcts_imp_pi[(b · (K+1) + k_step) · K_ROOT + i]`.
+    """
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+    var samp_src_off = (b * K_PLUS_1 + k_step) * K_ROOT * ACT_DIM
+    var samp_dst_off = b * K_ROOT * ACT_DIM
+    for j in range(K_ROOT * ACT_DIM):
+        target_actions_step[samp_dst_off + j] = batch_mcts_samp_act[
+            samp_src_off + j
+        ]
+    var pi_src_off = (b * K_PLUS_1 + k_step) * K_ROOT
+    var pi_dst_off = b * K_ROOT
+    for i in range(K_ROOT):
+        target_policy_step[pi_dst_off + i] = batch_mcts_imp_pi[
+            pi_src_off + i
+        ]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
